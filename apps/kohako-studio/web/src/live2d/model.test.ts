@@ -1,5 +1,7 @@
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { FrameMeter, LATEST_MODEL_ID, clipIdFor, clipName, micMouth, modelFor, modelStatus, poseFor, rigModels, rigStates, speechMouth } from './model'
+import { FrameMeter, LATEST_MODEL_ID, clipIdFor, clipName, micMouth, modelFor, modelStatus, poseFor, lostPrototypes, rigModels, rigStates, speechMouth } from './model'
 
 const expressions = ['angry', 'gloom', 'sad', 'shy', 'sleepy', 'smile', 'surprised']
 const clips = ['Blink', 'Idle', 'Nod', 'Shake', 'Talk']
@@ -43,16 +45,18 @@ describe('FrameMeter', () => {
 describe('modelFor', () => {
   it('defaults to the Kohako model and keeps the sample selectable', () => {
     expect(modelFor('').id).toBe(LATEST_MODEL_ID)
-    expect(LATEST_MODEL_ID).toBe('kohako-v6')
+    expect(LATEST_MODEL_ID).toBe('kohako-v12')
     expect(modelFor('?model=unknown').id).toBe(LATEST_MODEL_ID)
     expect(modelFor('?model=sample').id).toBe('sample')
     expect(modelFor('?model=kohako').id).toBe('kohako')
     expect(modelFor('?model=kohako-v0').id).toBe('kohako')
-    expect(modelFor('?model=kohako-v1').id).toBe(LATEST_MODEL_ID)
-    expect(modelFor('?model=kohako-v2').id).toBe(LATEST_MODEL_ID)
-    expect(modelStatus(modelFor(''))).toContain('最新の配備版')
+    expect(modelFor('?model=kohako-v1').id).toBe('kohako-v1')
+    expect(modelFor('?model=kohako-v2').id).toBe('kohako-v2')
+    expect(modelStatus(modelFor(''))).toContain('最新の試作')
     expect(modelStatus(modelFor('?model=kohako-v0'))).toContain('旧版')
-    expect(rigModels.map(m => m.id)).toEqual(['kohako', 'kohako-v5', 'kohako-v6', 'sample'])
+    for (const m of rigModels) expect(existsSync(resolve('public/kohako/live2d/sample', m.rig))).toBe(true)
+    for (const p of lostPrototypes) for (const image of p.images) expect(existsSync(resolve('public', image))).toBe(true)
+    expect(lostPrototypes.map(p => p.id)).toEqual(['kohako-v4', 'kohako-v7', 'kohako-v8', 'kohako-v9', 'kohako-v10'])
   })
 })
 

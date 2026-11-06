@@ -2,8 +2,8 @@
 <html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Kohako Web Rig Preview</title></head>
 <body><main class="shell">
   <header><div><span class="eyebrow">KOHAKO / WEB RIG PREVIEW</span><h1>Web リグ プレビュー</h1></div><div id="status" class="connection">読み込み中</div></header>
-  <nav id="models" class="actions" aria-label="モデルの切替"></nav>
   <p class="notice"><strong>方式:</strong> PSD2Live の独自 runtime（.p2lrt + WebAssembly + WebGL）。<strong>公式 Live2D Cubism ではありません</strong>（Cubism Core 不使用）。<br><strong>モデル:</strong> <span id="model-name"></span> — <span id="model-notice"></span></p>
+  <section id="prototype-selector" class="notice" aria-label="試作の比較"></section>
   <div class="layout"><section class="character"><canvas id="stage" aria-label="リグの描画"></canvas><p id="state" class="state" role="status">待機中</p></section>
   <section class="panel">
     <span class="eyebrow">STATE</span><h2>状態連動（Hermes 会話の状態を想定）</h2>

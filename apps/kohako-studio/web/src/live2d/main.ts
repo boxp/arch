@@ -1,6 +1,7 @@
 import '../studio/style.css'
 import './style.css'
-import { FrameMeter, clipName, micMouth, modelFor, modelStatus, mouthLevel, rigModels, rigStates, speechMouth, stateLabels, type RigState } from './model'
+import { FrameMeter, clipName, micMouth, modelFor, modelStatus, mouthLevel, rigStates, speechMouth, stateLabels, type RigState } from './model'
+import { setupSelector } from './selector'
 import { applyPose, loadRig, type Player } from './rig'
 
 // runtime（p2l.js / p2l_runtime.wasm）は sample 配下を共用し、モデルの .p2lrt だけを切り替える。
@@ -12,11 +13,8 @@ const canvas = el<HTMLCanvasElement>('stage'), error = el('error'), metrics = el
 el('model-name').textContent = `${model.name}・${modelStatus(model)}`
 el('model-notice').textContent = model.notice
 el('model-credits').textContent = model.credits
-for (const m of rigModels) {
-  const link = document.createElement('a'); link.href = `?model=${m.id}`; link.textContent = m.label; link.className = 'model-link'
-  if (m.id === model.id) link.setAttribute('aria-current', 'page')
-  el('models').append(link)
-}
+const lost = setupSelector(el('prototype-selector'), true)
+if (lost) { canvas.hidden = true; el('status').textContent = '比較画像を表示中'; el('model-name').textContent = '消失した試作'; el('model-notice').textContent = '下記の比較画像と理由をご覧ください。' }
 const report: Record<string, unknown> = { errors: [] as string[] }
 function fail(text: string) { (report.errors as string[]).push(text); error.textContent = text }
 window.addEventListener('error', e => fail(`エラー: ${e.message}`))
@@ -112,4 +110,4 @@ el('mic').addEventListener('click', async () => {
 
 // 自動計測用（同一ページの状態を読むだけ）。
 Object.assign(window, { __rigPreview: { report, apply, setMouth: (v: number) => { manual = v }, get player() { return player } } })
-load().catch(e => { el('status').textContent = '失敗'; fail(`読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`) })
+if (!lost) load().catch(e => { el('status').textContent = '失敗'; fail(`読み込みに失敗しました: ${e instanceof Error ? e.message : String(e)}`) })

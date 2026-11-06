@@ -68,12 +68,12 @@ export class FrameMeter {
   }
 }
 
-export type RigModelId = 'kohako' | 'kohako-v5' | 'kohako-v6' | 'sample'
-export type RigModel = { id: RigModelId; label: string; name: string; rig: string; notice: string; credits: string; clipNames?: Readonly<Record<string, string>>; skipSmallMouth?: boolean }
+export type RigModelId = 'kohako' | 'kohako-v1' | 'kohako-v2' | 'kohako-v3' | 'kohako-v5' | 'kohako-v6' | 'kohako-v11' | 'kohako-v12' | 'sample'
+export type RigModel = { id: RigModelId; label: string; name: string; rig: string; notice: string; credits: string; clipNames?: Readonly<Record<string, string>>; skipSmallMouth?: boolean; status: 'latest' | 'previous-latest' | 'old' | 'rejected'; evaluation: string; problems: string }
 
 export const rigModels: readonly RigModel[] = [
   {
-    id: 'kohako', label: 'コハコ（最小本人モデル）', name: 'コハコ 最小本人モデル v0', rig: '../kohako/kohako-min.p2lrt',
+    id: 'kohako', status: 'old', evaluation: '旧版', problems: '髪固定、目の下の境目、開口の二重線。', label: 'コハコ（最小本人モデル）', name: 'コハコ 最小本人モデル v0', rig: '../kohako/kohako-min.p2lrt',
     notice: 'コハコ正本キャラシートの胸像 1 体から、切り抜き・透過・周囲の肌色での穴埋めと、正本の線色での閉じ目・閉じ口の描き足しだけで作った試作 v0 です（画像生成 AI は不使用）。動くもの: まばたき・口の開閉・顔まわりの角度変形・呼吸・視線・表情。固定のもの: 髪（前後の分離と揺れ）・腕と手・眉。目の下の境目と、口を開いたときの二重線が残っています。',
     credits: 'コハコ: Owner のオリジナルキャラクター（正本シートからの派生、公開許可済み）。',
     clipNames: {
@@ -82,7 +82,7 @@ export const rigModels: readonly RigModel[] = [
     },
   },
   {
-    id: 'kohako-v5', label: 'コハコ v5 試作（三つ編み下の衣装）', name: 'コハコ 本人モデル v5 試作', rig: '../kohako/kohako-v5.p2lrt',
+    id: 'kohako-v5', status: 'old', evaluation: '旧版', problems: '閉眼でまつげが残り、口がやや下、上向きで髪下が赤い。', label: 'コハコ v5 試作（三つ編み下の衣装）', name: 'コハコ 本人モデル v5 試作', rig: '../kohako/kohako-v5.p2lrt',
     notice: 'v3 の構成のまま、三つ編みが揺れたときに見える胸の衣装（金紐・桜飾り・紫の着物）を、正本の欠損部だけを描き足した生成素材（Codex の ChatGPT 契約内の画像生成）で補完し、v3 のぼけた補完跡をなくした試作です。既定の見た目は v3 と同じです。既知の不具合: 後ろ髪の大半は体と同じ層で揺れません。桜の髪飾りの脇の白い縁と、前髪の隙間の細い肌色が一部残ります。Nod クリップと腕・手・眉は未対応です。',
     credits: 'コハコ: Owner のオリジナルキャラクター（正本シートからの派生と、正本を参照して生成した下地。公開許可済み）。',
     clipNames: {
@@ -91,7 +91,7 @@ export const rigModels: readonly RigModel[] = [
     },
   },
   {
-    id: 'kohako-v6', label: 'コハコ v6 試作（目・口・額）', name: 'コハコ 本人モデル v6 試作', rig: '../kohako/kohako-v6.p2lrt',
+    id: 'kohako-v6', status: 'previous-latest', evaluation: '前回の最新配備版', problems: 'まつげ残り、閉眼の四角いパッチ、口が上すぎ、前髪下の赤み。口パク動作確認済み。', label: 'コハコ v6 試作（目・口・額）', name: 'コハコ 本人モデル v6 試作', rig: '../kohako/kohako-v6.p2lrt',
     skipSmallMouth: true,
     notice: 'v5 の目尻・閉眼時のまつげと額の下地を調整し、閉じた口の位置を上げた試作です。小さく開いた口（0.1〜0.3）では閉口線と開口が重なるため、口パクではこの帯を飛ばしています。後ろ髪の大半は体と同じ層で揺れません。Nod クリップと腕・手・眉は未対応です。',
     credits: 'コハコ: Owner のオリジナルキャラクター（正本シートからの派生と、正本を参照して生成した下地。公開許可済み）。',
@@ -100,8 +100,13 @@ export const rigModels: readonly RigModel[] = [
       'modifier:m16:6d6f74696f6e': 'Talk',
     },
   },
+  { id: 'kohako-v1', label: 'コハコ v1', name: 'コハコ v1', rig: '../kohako/kohako-v1.p2lrt', status: 'old', evaluation: '旧版・試作', problems: '前髪と横髪を層分離し髪物理を追加。首振り極値で額・頬、三つ編み極値で衣装に継ぎ目。', notice: '前髪と横髪を層分離し髪物理を追加。首振り極値で額・頬、三つ編み極値で衣装に継ぎ目。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m11:6d6f74696f6e': 'Shake', 'modifier:m12:6d6f74696f6e': 'Idle', 'modifier:m13:6d6f74696f6e': 'Blink', 'modifier:m14:6d6f74696f6e': 'Talk' } },
+  { id: 'kohako-v2', label: 'コハコ v2', name: 'コハコ v2', rig: '../kohako/kohako-v2.p2lrt', status: 'old', evaluation: '旧版・試作', problems: '顔を分離し頬の継ぎ目を解消。頭頂の白縁、前髪隙間、三つ編み下の補完跡。', notice: '顔を分離し頬の継ぎ目を解消。頭頂の白縁、前髪隙間、三つ編み下の補完跡。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' } },
+  { id: 'kohako-v3', label: 'コハコ v3', name: 'コハコ v3', rig: '../kohako/kohako-v3.p2lrt', status: 'old', evaluation: '旧版・試作', problems: '頭頂の白縁を軽減。桜飾り脇の白縁、前髪隙間の肌色、三つ編み下の補完跡。', notice: '頭頂の白縁を軽減。桜飾り脇の白縁、前髪隙間の肌色、三つ編み下の補完跡。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' } },
+  { id: 'kohako-v11', label: 'コハコ v11', name: 'コハコ v11', rig: '../kohako/kohako-v11.p2lrt', status: 'rejected', evaluation: '担当評価: 不採用', problems: '開眼の縁は解消。閉眼の白い補修面と太い二重まつげが v6 より悪化。口 0.5 の二重線、額の赤三角。', notice: '開眼の縁は解消。閉眼の白い補修面と太い二重まつげが v6 より悪化。口 0.5 の二重線、額の赤三角。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' }, skipSmallMouth: true },
+  { id: 'kohako-v12', label: 'コハコ v12', name: 'コハコ v12', rig: '../kohako/kohako-v12.p2lrt', status: 'latest', evaluation: '最新の試作（担当評価: 不採用・本人確認用）', problems: '目・額は v6 と同じ。口 0.75/1 は原画にほぼ一致、閉口は高い位置のギザついた平坦線、0.25/0.5 は二重線。', notice: '目・額は v6 と同じ。口 0.75/1 は原画にほぼ一致、閉口は高い位置のギザついた平坦線、0.25/0.5 は二重線。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' }, skipSmallMouth: true },
   {
-    id: 'sample', label: 'サンプル（tml）', name: 'tml（PSD2Live の CC0 サンプル）', rig: 'tml.p2lrt',
+    id: 'sample', status: 'old', evaluation: '比較用サンプル', problems: '本人モデルではありません。', label: 'サンプル（tml）', name: 'tml（PSD2Live の CC0 サンプル）', rig: 'tml.p2lrt',
     notice: '比較用のサンプルです。コハコのモデルではありません。',
     credits: 'サンプル tml: CC0 1.0。',
   },
@@ -111,7 +116,7 @@ export const rigModels: readonly RigModel[] = [
  * クエリ無しの URL で表示する「最新の配備済み本人モデル」。新しい版を配備したらここを更新する。
  * 本人の美術受入とは別で、検証版として表示する（受入済みの意味ではない）。
  */
-export const LATEST_MODEL_ID: RigModelId = 'kohako-v6'
+export const LATEST_MODEL_ID: RigModelId = 'kohako-v12'
 
 /** `?model=` の値をモデル ID に直す（`kohako-v0` は v0 の別名）。 */
 export function normalizeModelId(id: string | null): string | null {
@@ -125,9 +130,7 @@ export function modelFor(search: string): RigModel {
 }
 
 /** 表示中のモデルが「クエリ無しで出る最新配備版」か、明示指定された比較用の版かの説明。 */
-export function modelStatus(model: Pick<RigModel, 'id'>): string {
-  return model.id === LATEST_MODEL_ID ? '最新の配備版（検証中・本人の美術受入前）' : '比較・戻し用の旧版／サンプル（?model で指定）'
-}
+export function modelStatus(model: RigModel): string { return model.evaluation }
 
 /** モデルのクリップ ID を表示名に直す（名前が無い ID はそのまま）。 */
 export function clipName(model: RigModel, id: string): string {
@@ -140,10 +143,19 @@ export function clipIdFor(model: RigModel, ids: readonly string[], name: string 
   return ids.find(id => clipName(model, id) === name) ?? null
 }
 
-/** 口パク出力の写像。skipSmallMouth のモデル（v6: 閉口線と開口が重なる小開度で二重線になる）だけ、0.12 未満を閉口、それ以上を 0.35 以上の開口にする。他のモデルは 0..1 にそのまま収める。 */
+/** 口パク出力の写像。skipSmallMouth のモデル（v6、v11、v12: 小開度で二重線が残る）だけ、0.12 未満を閉口、それ以上を 0.35 以上の開口にする。他のモデルは 0..1 にそのまま収める。 */
 export function mouthLevel(model: Pick<RigModel, 'skipSmallMouth'>, level: number): number {
   if (!(level > 0)) return 0
   if (!model.skipSmallMouth) return Math.min(1, level)
   if (!(level >= 0.12)) return 0
   return Math.min(1, 0.35 + 0.65 * level)
 }
+
+export type LostPrototype = { id: string; evaluation: string; problems: string; images: string[] }
+export const lostPrototypes: readonly LostPrototype[] = [
+  { id: 'kohako-v4', evaluation: '消失・担当不採用', problems: '生成した衣装下地の桜飾り・金縁が正本と合わず、揺れで縦筋。', images: ['./kohako/live2d/compare/kohako-v4-compare-v3.png'] },
+  { id: 'kohako-v7', evaluation: '消失・担当不採用', problems: '閉眼パッチは消えたが目周りがぼけ、開眼の目尻に白縁。口 0.5/1 に二重線。', images: ['./kohako/live2d/compare/kohako-v7-compare-eyes.png', './kohako/live2d/compare/kohako-v7-compare-mouth.png', './kohako/live2d/compare/kohako-v7-compare-forehead.png'] },
+  { id: 'kohako-v8', evaluation: '消失・担当不採用', problems: '閉眼が平坦線と肌ブロック、開眼の目頭に明るい三角、口 0.1〜0.5 に二重線。', images: ['./kohako/live2d/compare/kohako-v8-compare-eyes.png', './kohako/live2d/compare/kohako-v8-compare-mouth.png'] },
+  { id: 'kohako-v9', evaluation: '消失・担当不採用', problems: '閉眼に縦筋とまつ毛の垂れ、口 1.0 で上唇段差、額 Y−30 の縦筋が悪化。', images: ['./kohako/live2d/compare/kohako-v9-compare-eyes.png'] },
+  { id: 'kohako-v10', evaluation: '消失・担当不採用', problems: '開眼の縁は解消。閉眼の上まぶたが平坦な淡色で二重線の断片が残る。', images: ['./kohako/live2d/compare/kohako-v10-compare-eyes.png'] },
+]
