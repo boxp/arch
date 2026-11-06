@@ -365,8 +365,20 @@
   (boolean (or (re-matches #"--(?:regexp|file)(?:=.*)?" w)
                (and (not (str/starts-with? w "--")) (re-matches #"-[A-Za-z0-9]*[ef].*" w)))))
 
+(def max-scanned-words 512)
+(def max-scanned-items 256)
+(defn- over-limit?
+  "True when coll holds more than n items, realising at most n+1 of them."
+  [n coll]
+  (> (count (take (inc n) coll)) n))
+
+;; A command longer than the scan limits (512 words in a segment, 256 segments, 256 open() calls) is treated as a
+;; secret source as a whole (fail-closed) instead of being scanned in part, so a secret-named file placed after the
+;; limit (sed -n 1p <512 args> db_password) cannot pass (P0 arch#14503 segment-reads-secret-file?). Over-withholding
+;; accepted: such very long commands lose their output body even when they read only ordinary files.
 (defn- segment-reads-secret-file? [segment]
-  (let [words (vec (take 512 (shell-words segment)))
+  (let [all-words (shell-words segment)
+        words (vec (take max-scanned-words all-words))
         redirected (some (fn [[a b]] (and (re-matches #"\d?<" a) b (secret-file-word? b)))
                          (partition 2 1 (concat words [nil])))
         inline-redirect (some #(when-let [[_ f] (re-matches #"\d?<([^<].*)" %)] (secret-file-word? f)) words)
@@ -382,7 +394,8 @@
         ;; A secret-named file put in a variable (f=db_password; cat $f) is read through it later.
         assigned (some #(when-let [[_ f] (re-matches #"[A-Za-z_]\w*=(.*)" %)] (secret-file-word? f)) (take-while #(re-matches #"[A-Za-z_]\w*=.*" %) words))]
     (boolean
-     (or redirected inline-redirect dd-input assigned
+     (or (over-limit? max-scanned-words all-words)
+         redirected inline-redirect dd-input assigned
          (and program
               (cond (contains? search-programs program)
                     (or (some secret-file-word? (rest operands))
@@ -402,12 +415,15 @@
 
 (defn secret-file-command? [input]
   (boolean (some (fn [text]
-                   (or (some (fn [[_ f]] (secret-file-word? f)) (take 256 (re-seq open-call text)))
-                     (some segment-reads-secret-file?
-                           ;; Separators inside a quoted span (a note or commit message) do not split it.
-                           (take 256 (str/split (str/replace text #"\"(?:[^\"\\]|\\.){0,4096}\"|'[^']{0,4096}'"
-                                                             (fn [q] (str/replace q #"[;&|\n(){}`$]|\\n" " ")))
-                                                #"[;&|\n(){}`]|\$\(|\\n")))))
+                   (let [opens (re-seq open-call text)
+                         ;; Separators inside a quoted span (a note or commit message) do not split it.
+                         segments (str/split (str/replace text #"\"(?:[^\"\\]|\\.){0,4096}\"|'[^']{0,4096}'"
+                                                          (fn [q] (str/replace q #"[;&|\n(){}`$]|\\n" " ")))
+                                             #"[;&|\n(){}`]|\$\(|\\n")]
+                     (or (over-limit? max-scanned-items opens)
+                         (over-limit? max-scanned-items segments)
+                         (some (fn [[_ f]] (secret-file-word? f)) opens)
+                         (some segment-reads-secret-file? segments))))
                  (command-texts (str input)))))
 
 (defn withhold-output? [input]

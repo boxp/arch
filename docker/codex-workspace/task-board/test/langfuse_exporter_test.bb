@@ -1312,5 +1312,23 @@
   (is (nil? (:reason (#'lf/tool-exposure {:input {:command "sed -n 1p 'notes backup.txt'"}} {:output "ordinary notes"})))
       "control: a spaced ordinary file stays readable"))
 
+
+;; P0 arch#14503 segment-reads-secret-file? (BOXP-428). Words past the 512th, segments past the 256th and open()
+;; calls past the 256th were not scanned, so `sed -n 1p <512 ordinary args> db_password` printed the file's bare
+;; value. A command too long to scan whole is now withheld (fail-closed) instead of scanned in part.
+(deftest secret-file-past-scan-limits
+  (let [many (str/join " " (map #(str "f" %) (range 600)))
+        segs (str/join "; " (map #(str "echo " %) (range 300)))
+        opens (str/join " " (repeat 300 "open('notes.txt')"))]
+    (doseq [c [(str "sed -n 1p " many " db_password") (str "cat " many " db_password")
+               (str segs "; cat db_password") (str "python3 -c \"" opens " ; print(open('db_password').read())\"")
+               (str "{\"cmd\":\"sed -n 1p " many " db_password\"}")]]
+      (is (lf/withhold-output? c) (subs c 0 40)))
+    (is (= "sensitive_source" (:reason (#'lf/tool-exposure {:input {:command (str "sed -n 1p " many " db_password")}}
+                                                              {:output "pastlimitvalue9"})))))
+  (doseq [c [(str "sed -n 1p " (str/join " " (map #(str "f" %) (range 100))) " notes.txt")
+             (str/join "; " (map #(str "echo " %) (range 100)))]]
+    (is (not (lf/withhold-output? c)) (subs c 0 40))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

@@ -100,3 +100,5 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 - シェルの語の切り方を実際のシェルに合わせた: 隣接する引用部分と裸の部分は1語に連結し(`if='a b'`)、バックスラッシュによるエスケープ(`\ `)を解決する。
 - 文章を値に取るオプション(`--note`/`-m`/`--message`/`--body`/`--title`/`--description`/`--comment`/`--summary`/`--subject`/`--reason`/`--evidence`)の直後の空白入りの値は従来どおり文章として読める(Task Board の append-note、commit message、PR 本文)。
 - 過剰保留: 任意のプログラムに、秘密語を含む引用文を通常の引数として渡した場合(`python3 x.py "the password flow"`)はその出力を保留する。
+
+- 走査上限の fail-closed (P0 arch#14503 segment-reads-secret-file?): 1セグメント512語、256セグメント、open() 呼出し256件を超えるコマンドは、上限より後ろを走査しない代わりに全体を機密源として扱い本文を保留する（`sed -n 1p <512個の引数> db_password` を防ぐ）。過剰保留: 上限を超える長いコマンドは通常ファイルだけを読む場合でも出力本文が保留される。
