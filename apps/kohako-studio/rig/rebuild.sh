@@ -25,7 +25,7 @@ cleanup() {
   docker logs "$SERVER" > "$WORK/mcp.log" 2>&1 || true
   docker stop "$SERVER" >/dev/null 2>&1 || true
   if [ ! -d "$WORK/gradle-cache" ]; then docker cp "$TRANSFER:/tmp/boxp441/gradle-cache" "$WORK/" 2>/dev/null || true; fi
-  for d in kohako v1 v2 v3 v5b v6; do docker cp "$TRANSFER:/tmp/boxp441/$d" "$WORK/" 2>/dev/null || true; done
+  for d in kohako v1 v2 v3 v5b v6 v13; do docker cp "$TRANSFER:/tmp/boxp441/$d" "$WORK/" 2>/dev/null || true; done
   docker rm -f "$SERVER" "$TRANSFER" >/dev/null 2>&1 || true
   docker volume rm "$VOL" >/dev/null 2>&1 || true
 }
@@ -51,8 +51,24 @@ docker run --rm -v "$VOL:/tmp/boxp441" -e PYTHONPATH=/tmp/boxp441/python-deps py
 TOKEN=$(od -An -N16 -tx1 /dev/urandom | tr -d " \n")
 # Headless MCP and client share the Docker daemon host network.
 docker run -d --name "$SERVER" --network host -v "$VOL:/tmp/boxp441" -w /tmp/boxp441/psd2live -e GRADLE_USER_HOME=/tmp/boxp441/gradle-cache eclipse-temurin:21@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a ./gradlew -Ppsd2live.prebuiltRuntime=false run --args="mcp --port 18767 --token $TOKEN --store /tmp/boxp441/mcp-store --profile full" >/dev/null
-docker run --rm --network host -v "$VOL:/tmp/boxp441" -e PYTHONPATH=/tmp/boxp441/python-deps -e PSD2LIVE_MCP_TOKEN="$TOKEN" python:3.12-slim@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54 sh -ec 'for step in build opacity iris mid mouth mouth_open finalize; do python /tmp/boxp441/rig/kohako-v6/$step.py; done'
+docker run --rm --network host -v "$VOL:/tmp/boxp441" -e PYTHONPATH=/tmp/boxp441/python-deps -e PSD2LIVE_MCP_TOKEN="$TOKEN" python:3.12-slim@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54 sh -ec '
+ for step in build opacity iris mid mouth mouth_open finalize; do python /tmp/boxp441/rig/kohako-v6/$step.py; done
+ python /tmp/boxp441/rig/kohako-v13/capture.py
+ mkdir -p /tmp/boxp441/v13
+ cp -a /tmp/boxp441/v6/out /tmp/boxp441/v13/baseline-out
+ cp -a /tmp/boxp441/v6/layout /tmp/boxp441/v13/baseline-layout
+ python /tmp/boxp441/rig/kohako-v13/create_parts.py
+ for step in build opacity iris mid mouth mouth_open finalize; do python /tmp/boxp441/rig/kohako-v6/$step.py; done
+ python /tmp/boxp441/rig/kohako-v13/capture.py
+ cp -a /tmp/boxp441/v6/out /tmp/boxp441/v13/out
+ cp -a /tmp/boxp441/v6/layout /tmp/boxp441/v13/layout
+ rm -rf /tmp/boxp441/v6/out /tmp/boxp441/v6/layout
+ cp -a /tmp/boxp441/v13/baseline-out /tmp/boxp441/v6/out
+ cp -a /tmp/boxp441/v13/baseline-layout /tmp/boxp441/v6/layout'
 docker stop "$SERVER" >/dev/null
 docker run --rm -v "$VOL:/tmp/boxp441" -w /tmp/boxp441/psd2live -e GRADLE_USER_HOME=/tmp/boxp441/gradle-cache eclipse-temurin:21@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a ./gradlew -Ppsd2live.prebuiltRuntime=false run --args='export /tmp/boxp441/v6/out/kohako-v6.psd2live --target p2lrt --output /tmp/boxp441/v6/out --name kohako-v6'
-for d in kohako v1 v2 v3 v5b v6; do docker cp "$TRANSFER:/tmp/boxp441/$d" "$WORK/"; done
+docker run --rm -v "$VOL:/tmp/boxp441" -w /tmp/boxp441/psd2live -e GRADLE_USER_HOME=/tmp/boxp441/gradle-cache eclipse-temurin:21@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a ./gradlew -Ppsd2live.prebuiltRuntime=false run --args='export /tmp/boxp441/v13/out/kohako-v6.psd2live --target p2lrt --output /tmp/boxp441/v13/out --name kohako-v13'
+for d in kohako v1 v2 v3 v5b v6 v13; do docker cp "$TRANSFER:/tmp/boxp441/$d" "$WORK/"; done
 sha256sum "$WORK/v6/out/kohako-v6.p2lrt"
+
+sha256sum "$WORK/v13/out/kohako-v13.p2lrt"

@@ -14,3 +14,7 @@ psd2live は commit `6fe868a20c7bf12586fa8ce0a05982f099faa865`（GPL-3.0、compi
 Docker の名前付き volume と `docker cp` によりデーモンが別名前空間でも入力を渡す。MCP は Docker host network のポート 18767 を使用するため、他のサービスとの競合を避ける。キャラクターシートと gen 4 枚の SHA-256 を入力時に照合し、Docker イメージ digest と画像演算の依存バージョンを入口スクリプトで固定する。Gradle キャッシュが WORK_DIR にあれば利用し、初回のキャッシュは終了時に保存する。
 
 `mcp_proxy.py` は psd2live の pin commit に含まれるものをビルド時に使う。MCP クライアントを別途同梱する必要はない。
+
+## v13 の再構築と制約
+
+同じコマンドは v6 と v13 の両方を生成し、`WORK_DIR/v13/out/kohako-v13.p2lrt` と loss report を出力する。`kohako-v13/create_parts.py` は v6 の顔・目・口を変えず、原画の後ろ髪の露出部分を body から後ろ髪へ移し、18px のフェードで境界を緩める。角度と後ろ髪の変形への追従を試すもので、体に残る髪との継ぎ目は未解消。元画像も中間画像もリポジトリには含めない。`capture.py` の Shake は曲線を線形補間した近似で、物理シミュレーションは含まない。静止画の原画は全ポーズで同一であり、回転時の正解画像ではない。
