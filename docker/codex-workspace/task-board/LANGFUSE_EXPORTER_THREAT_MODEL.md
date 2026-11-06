@@ -85,3 +85,9 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 - 誤検出の修正: `date -u +%Y-%m-%dT%H:%M:%SZ` を `curl -u user:pass` と誤認していたため、`-u` の値が `+` で始まるもの・利用者部に `%` に英字が続く日付書式を含むものは対象外にした。`curl -u user%40example.com:pass` のようにパーセント符号化(`%` + 16進2桁)した利用者名は認証情報として扱う(P0 arch#14503 :46)(実 run BOXP-436 で依頼文走査により 8 件が保留される退行を検出し解消)。
 - 過剰保留: 依頼文が短いラベル付き例示値を引用する run(本票 BOXP-428 自身の runner prompt は Notes に `password: 123` 等を含む)は、最初の generation から本文が保留される。`Your password is too short.` のような依頼/応答も短い語を名指しするため以後の本文を保留する。過剰マスク: `password: username` を見た run では以後 `username` という語が伏字になる。
 - 実 run の比較(件数のみ、本文は出力していない): BOXP-436 sent 25 / BOXP-437 sent 5 は変更前と同一、BOXP-438/440/446/449/450 も変更前と同一。BOXP-428 の直近 run は sent 2 → 0(上記の過剰保留)。
+
+## 追記 (arch#14503 P0 :48 / :1130)
+
+- `curl -u +admin:huntertwo` のように `+` で始まる利用者名も認証情報として扱う(P0 :48)。`-u` の後で対象外にするのは日付書式 `+%` + 英字(`date -u +%Y…`、`'+%H:%M'`)だけにした。
+- runner が組み立てる `prompt.md` / `last-message.md`(root span の入力/出力)も依頼文・応答と同じ判定で走査する(P0 :1130)。セッションログが欠落した run ではこの2つが唯一の本文になるため、名指しされた値(`password: huntertwo`、`the password is …`)は pin して root と run 内の全 span でマスクする。pin できない値(`password: 123`、走査不能、値過多)を含む場合は root の入力/出力と run 内の generation/tool 本文を `withheld_after_secret_exposure` で保留し、`coverage.withheld_reason` に理由を残す。
+- 実 run 26 件(BOXP-436/437/440/446/449/450、件数のみ)の比較: 子 span の body_policy 件数は修正前後で同一。差分は root に新設した `body_policy=sent` の +1 のみで、root の保留は 0 件。

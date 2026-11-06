@@ -1237,5 +1237,38 @@
         (is (nil? reason) output)
         (is (not-any? #{"name" "key"} values) output)))))
 
+;; P0 arch#14503 :48 (BOXP-428). A user name starting with + (curl -u +admin:huntertwo) is a real -u credential; only
+;; a date format (+%H) after -u is skipped.
+(deftest cli-user-with-leading-plus
+  (doseq [cmd ["curl -u +admin:huntertwoplus https://x" "curl -u '+admin:huntertwoplus' https://x" "curl --user=+ci:huntertwoplus https://x"]]
+    (is (not (str/includes? (:value (lf/redact cmd #{})) "huntertwoplus")) cmd)
+    (is (contains? (:values (#'lf/body-exposure cmd)) "huntertwoplus") cmd))
+  (doseq [cmd ["date -u +%Y-%m-%dT%H:%M:%SZ" "date -u '+%H:%M'" "date -u \"+%d%H:%M\""]]
+    (is (= cmd (:value (lf/redact cmd #{}))) cmd)))
+
+;; P0 arch#14503 :1130 (BOXP-428). With no session log, the run's prompt.md and last-message.md are the only bodies.
+;; A value named in the prompt is pinned, so a bare repeat in the last message is masked; one that cannot be pinned
+;; withholds the root bodies. An ordinary prompt and reply stay readable.
+(deftest root-bodies-without-session-logs
+  (let [base (fs/create-temp-dir)
+        cfg (test-config base)
+        run-dir (fs/path (:root cfg) "runs" ticket run-id)
+        write! (fn [prompt last]
+                 (fs/create-dirs run-dir)
+                 (spit (str (fs/path run-dir "summary.edn")) (pr-str {:status :ok :agent "codex" :action :implement :finished-at "2000-01-01T00:00:00Z"}))
+                 (spit (str (fs/path run-dir "prompt.md")) prompt)
+                 (spit (str (fs/path run-dir "last-message.md")) last))
+        out (fn [] (pr-str (prepared cfg)))]
+    (doseq [[prompt last value] [["password: huntertworoot" "zz huntertworoot zz" "huntertworoot"]
+                                 ["the password is plumrootvalue" "zz plumrootvalue zz" "plumrootvalue"]
+                                 ["make a password" "password: kiwirootvalue then zz kiwirootvalue zz" "kiwirootvalue"]
+                                 ["password: 123" "zz 123 zz" "zz 123 zz"]]]
+      (write! prompt last)
+      (is (not (str/includes? (out) value)) prompt))
+    (write! "please list the files rootpromptmarker" "done rootreplymarker")
+    (let [o (out)]
+      (is (str/includes? o "rootpromptmarker") "control: an ordinary prompt is sent")
+      (is (str/includes? o "rootreplymarker") "control: an ordinary reply is sent"))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

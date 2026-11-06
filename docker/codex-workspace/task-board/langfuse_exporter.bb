@@ -44,8 +44,9 @@
    [:env-entry (re-pattern (str "(?i)" (entry-key "value") (value-pattern "{0,4096}?" "[^\\s,;}\\]]+") entry-gap "(?:" quote-pattern ")?" (entry-key "name") "(?:" quote-pattern ")?" secret-key-pattern))]
    [:flag (re-pattern (str "(?i)(?<![\\w-])--?" secret-key-pattern "[ \\t]+(?!-)" (value-pattern nil "\\S+")))]
    ;; A user name may hold percent-encoded bytes (user%40example.com); a bare % followed by a letter is a date
-   ;; format such as date -u '+%H:%M' and is no credential.
-   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?!\d+:\d+\b|\+)(?:[^\s:%]|%[0-9A-Fa-f]{2})+:\S+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p\S+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*\S+"]
+   ;; format such as date -u '+%H:%M' and is no credential. Only +% (a date format) is skipped: a user name can
+   ;; start with + (curl -u +admin:huntertwo, P0 arch#14503 :48).
+   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?!\d+:\d+\b|[\"']?\+%[A-Za-z])(?:[^\s:%]|%[0-9A-Fa-f]{2})+:\S+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p\S+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*\S+"]
    ;; A number after a name with token in it is a counter such as input_tokens: 12.
    [:assignment (re-pattern (str "(?i)[\"']?" secret-key-pattern "(?:" quote-pattern ")?" gap-pattern "(?:[:=]|\\\\+u00(?:3[aA]|3[dD]))" gap-pattern "(?!(?<=token[\\w.-]{0,16}[\"'\\\\]{0,8}\\s{0,4}[:=]\\s{0,4})\\d+(?:[\\s,;}\\\\\"']|$))(?:[|>][-+]?\\d?(?:(?:\\n|\\\\+n)[ \\t]+(?:(?!\\\\+n)[^\\n])*)+|" (value-pattern nil "[^\\s,;}\\]]+") ")"))]
    [:entropy #"\b[A-Za-z0-9_-]{40,}\b"]])
@@ -1124,9 +1125,19 @@
                    (assoc span :attributes
                           (into all-attrs (remove #(fixed (:key %)) (:attributes span))))))
         ctx {:tid tid :trace-attrs trace-attrs}
+        prompt-text (or (safe-slurp (fs/path run-dir "prompt.md")) "")
+        last-text (or (safe-slurp (fs/path run-dir "last-message.md")) "")
+        ;; The run's prompt and last message are bodies too: when the session log is missing they are the only ones
+        ;; (P0 arch#14503 :1130). A value they name is pinned for every span of the run; one that cannot be pinned
+        ;; withholds the root bodies and every generation/tool body, because any of them can repeat it.
+        root-exposures (map body-exposure [prompt-text last-text])
+        _ (swap! (:session-state pre-ctx) into (mapcat :values root-exposures))
+        root-reason (or (some :reason root-exposures)
+                        (when (> (count @(:session-state pre-ctx)) max-session-values) "too_many_session_values"))
         root (mk-span ctx {:key "root" :name (str "task-board-run " ticket) :start started :end finished
-                           :attrs-map {"langfuse.observation.input" (or (safe-slurp (fs/path run-dir "prompt.md")) "")
-                                       "langfuse.observation.output" (or (safe-slurp (fs/path run-dir "last-message.md")) "")
+                           :attrs-map {"langfuse.observation.input" (if root-reason withheld-model-output prompt-text)
+                                       "langfuse.observation.output" (if root-reason withheld-model-output last-text)
+                                       "langfuse.observation.metadata.body_policy" (if root-reason "withheld_after_secret_exposure" "sent")
                                        "langfuse.observation.metadata.source" "runner_assembled"}})
         prompts (->> (concat (:prompts claude) (mapcat :prompts parts))
                      (reduce (fn [acc p] (if (contains? acc (:hash p)) acc (assoc acc (:hash p) p))) {})
@@ -1165,11 +1176,12 @@
                                          :else span)
                             span)))
         children (mapv (fn [span]
-                         (cond (and run-private? (child-span? span)) (withhold-child span)
+                         (cond root-reason (withhold-child span)
+                               (and run-private? (child-span? span)) (withhold-child span)
                                child-private? (withhold-main span)
                                :else span))
                        children0)
-        first-reason (or (some :private-reason children0) "none")
+        first-reason (or root-reason (some :private-reason children0) "none")
         add-reason (fn [span] (update span :attributes conj (attr "langfuse.trace.metadata.coverage.withheld_reason" first-reason)))
         children (mapv add-reason children)
         root (add-reason root)
