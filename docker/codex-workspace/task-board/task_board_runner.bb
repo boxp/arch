@@ -4995,6 +4995,22 @@
                   (when-not (ignored-allowed? path) (str "ignored-unknown path=" (one-line path))))))
             (str/split (:out result) #"\u0000")))))
 
+(defn outside-checkout-hold
+  "First file, symlink or special entry in the run directory that does not
+  belong to any checkout. Agents sometimes leave notes or outputs next to the
+  checkouts; git cannot vouch for them, so a stale run holding one is kept."
+  [run-path checkout-paths]
+  (let [checkouts (set (map str checkout-paths))]
+    (letfn [(visit [dir]
+              (some (fn [entry]
+                      (cond
+                        (contains? checkouts (str entry)) nil
+                        (fs/directory? entry {:nofollow-links true}) (visit entry)
+                        :else (str "outside-checkout path=" (one-line (str (fs/relativize run-path entry))))))
+                    (sort-by str (fs/list-dir dir))))]
+      (try (visit run-path)
+           (catch Exception e (str "outside-checkout-scan-failed " (one-line (.getMessage e))))))))
+
 (defn stale-process-hold [run-real]
   ;; Missing /proc or mountinfo is treated as no mount information; readable
   ;; process cwd links are still checked when available.
@@ -5302,6 +5318,7 @@
             held (first (filter :hold checkouts))
             stale-hold (when (= mode :stale)
                          (or (stale-process-hold run-real)
+                             (outside-checkout-hold run-path (map :path checkouts))
                              (some #(inspect-ignored (:path %)) checkouts)))
             branch (ticket-worktree-branch ticket-id run-id)
             branch-repos (distinct (keep (fn [{:keys [external-common-dir repo]}]

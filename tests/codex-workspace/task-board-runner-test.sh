@@ -3376,7 +3376,7 @@ test_stale_prune() {
   mkdir -p "${bin}" "${state}/locks"
   make_fake_gh "${bin}"; make_prune_source_repo "${source}"; git -C "${source}" rev-parse HEAD >"${known}"
   write_board "${vault}" ""
-  for ticket in BOXP-901 BOXP-902 BOXP-903 BOXP-904 BOXP-905 BOXP-906 BOXP-907; do
+  for ticket in BOXP-901 BOXP-902 BOXP-903 BOXP-904 BOXP-905 BOXP-906 BOXP-907 BOXP-908; do
     if [[ "${ticket}" == BOXP-907 ]]; then
       write_prune_ticket "${vault}" "${ticket}" done "$(date -u +%Y-%m-%d)"
     else
@@ -3391,6 +3391,7 @@ test_stale_prune() {
           BOXP-903) prune_commit "${co}" unpushed >/dev/null ;;
           BOXP-904) echo results/ >>"$(git -C "${co}" rev-parse --git-path info/exclude)"; mkdir -p "${co}/results"; echo x >"${co}/results/out.bin" ;;
           BOXP-905) printf 'node_modules/\n.terraform/\n' >>"$(git -C "${co}" rev-parse --git-path info/exclude)"; mkdir -p "${co}/node_modules" "${co}/.terraform"; touch "${co}/node_modules/x" "${co}/.terraform/x" ;;
+          BOXP-908) echo note >"${ws}/${ticket}/${run}/agent-notes.md" ;;
         esac
       fi
     done
@@ -3403,10 +3404,11 @@ test_stale_prune() {
     [[ ! -e "${ws}/${ticket}/20200101T000000Z" && ! -e "${ws}/${ticket}/20200102T000000Z" ]] || fail "old stale runs retained: ${ticket}"
     [[ -d "${ws}/${ticket}/20200103T000000Z" && -d "${ws}/${ticket}/20200104T000000Z" ]] || fail "latest runs removed: ${ticket}"
   done
-  for ticket in BOXP-902 BOXP-903 BOXP-904 BOXP-906; do
+  for ticket in BOXP-902 BOXP-903 BOXP-904 BOXP-906 BOXP-908; do
     [[ -d "${ws}/${ticket}/20200101T000000Z" ]] || fail "unsafe stale run removed: ${ticket}"
   done
   assert_file_contains "${out}" 'reason=ignored-unknown path=results/'
+  assert_file_contains "${out}" "reason=outside-checkout path=agent-notes.md"
   assert_file_contains "${out}" 'reason=uncommitted-changes'
   assert_file_contains "${out}" 'reason=commit-not-on-github'
 }
