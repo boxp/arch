@@ -23,6 +23,6 @@
 
 ## codex-review P0 (late writer) 対応
 
-- 置換で外れた旧Board inodeは削除せず vault内 `.task-board-repair-retained/` へ同一inodeでrenameし保持、パスとハッシュを監査記録。
+- 置換用ファイルを vault内 `.task-board-repair-retained/` に作成し、交換前に監査へ `:retain-pending`（許容ハッシュ=置換後/置換前）を記録。交換で外れた旧Board inodeは削除せずその追跡済みパスに残る（交換直後の強制終了でも未追跡にならない）。完了時 `:retained`、未交換時 `:retain-cancelled` を記録。未完了pendingは以後の実行で許容ハッシュ一致と書込みfd保持者なしを確認し、不一致は `interrupted repair` で非0終了。
 - 成功を返す前に、保持inodeへ書込みfdを持つプロセスが無くなるまで待って（既定30秒）再照合。判定はカーネルのread lease(F_SETLEASE F_RDLCK)で、non-dumpable等で/procからfd表を隠した同一UIDのwriterも検出する。lease不可の環境では/proc走査で判定し、fd表を検査できないプロセスは保持中扱い(fail-closed)。待機後も開かれている／遅延書込みがあれば旧inodeを交換でBoardへ戻し、各版保存・conflict監査・非0終了（更新が保持ファイルだけに残る成功を返さない）。
 - 以後のreconcile-done実行（dry-run含む）で保持inodeを全件照合し、遅延書込み・欠落を検出したら非0終了。apply後は時間を置いたdry-runで読み戻す。（同一ホストから見えないwriter向けの残余対策）

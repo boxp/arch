@@ -289,6 +289,32 @@ class RepairTest(unittest.TestCase):
         retained[0].unlink()
         self.assertIn('retained displaced board missing', self.call('--dry-run', ok=False))
 
+    @unittest.skipUnless(EXCHANGE, 'mv --exchange unavailable')
+    def test_crash_right_after_exchange_keeps_displaced_board_tracked(self):
+        # P1: a kill between the exchange and the final audit record must not
+        # leave the displaced Board untracked; later dry-runs keep checking it.
+        self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR')
+        plan = self.plan()
+        self.env['CODEX_TASK_BOARD_TEST_RECONCILE_CRASH_AFTER_EXCHANGE'] = 'true'
+        try:
+            p = subprocess.run(self.cmd + self.args(plan), env=self.env, capture_output=True, text=True, timeout=10)
+        finally:
+            self.env.pop('CODEX_TASK_BOARD_TEST_RECONCILE_CRASH_AFTER_EXCHANGE')
+        self.assertEqual(p.returncode, 137, p.stderr)
+        self.assertEqual(self.board.read_text(), self.before.replace(STALE + '\n', '', 1))
+        self.assertFalse(list((self.vault / 'Boards').glob('.reconcile-433-*')))
+        audit = (self.vault / '.task-board-repair-audit.edn').read_text()
+        self.assertIn(':phase :retain-pending', audit)
+        self.assertNotIn(':phase :retained', audit)
+        retained = list((self.vault / '.task-board-repair-retained').glob('BOXP-433-*-displaced.md'))
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(retained[0].read_text(), self.before)
+        self.assertIn(str(retained[0]), audit)
+        self.assertEqual(self.plan()['retained-checked'], 1)
+        with retained[0].open('a') as f:
+            f.write('late writer after crash\n')
+        self.assertIn('interrupted repair: late concurrent write detected', self.call('--dry-run', ok=False))
+
     def test_without_exchange_requires_shared_lock(self):
         fake = self.base / 'nomv'
         fake.mkdir()

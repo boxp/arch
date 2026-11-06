@@ -842,9 +842,12 @@
   (let [{:keys [exit err]} (shell/sh "mv" "--exchange" "--no-target-directory" "--" (str a) (str b))]
     (repair-require (zero? exit) (str "atomic exchange failed: " (str/trim (str err))))))
 
-(defn repair-exchange-supported? [dir]
-  (let [a (fs/path dir (str ".reconcile-433-probe-" (random-uuid) ".a"))
-        b (fs/path dir (str ".reconcile-433-probe-" (random-uuid) ".b"))]
+(defn repair-exchange-supported?
+  ;; Probe across the two directories the real exchange uses (retained dir and
+  ;; Board dir), so a cross-mount layout is refused before anything is written.
+  [dir-a dir-b]
+  (let [a (fs/path dir-a (str ".reconcile-433-probe-" (random-uuid) ".a"))
+        b (fs/path dir-b (str ".reconcile-433-probe-" (random-uuid) ".b"))]
     (try
       (spit (str a) "a") (spit (str b) "b")
       (and (zero? (:exit (shell/sh "mv" "--exchange" "--no-target-directory" "--" (str a) (str b))))
@@ -970,15 +973,12 @@ fcntl.fcntl(fd, F_SETLEASE, fcntl.F_UNLCK)
     (repair-owned-path! dir)
     dir))
 
-(defn repair-retain! [tmp retain-dir label]
-  ;; Never delete an inode that has been the live Board. Rename it (same inode)
-  ;; into the retained dir; if that is impossible keep it where it is.
-  (let [dst (fs/path retain-dir (str "BOXP-433-" (random-uuid) "-" label ".md"))]
-    (try
-      (java.nio.file.Files/move tmp dst
-        (into-array java.nio.file.CopyOption [java.nio.file.StandardCopyOption/ATOMIC_MOVE]))
-      (str dst)
-      (catch Exception _ (str tmp)))))
+(defn repair-retain! [tmp]
+  ;; Never delete an inode that has been the live Board. With exchange the
+  ;; replacement file is created inside the retained dir and recorded in the
+  ;; audit (:retain-pending) before the exchange, so the displaced inode is
+  ;; already at its tracked retained path; nothing has to be moved afterwards.
+  (str tmp))
 
 (defn repair-check-retained!
   "Late-write detection: a writer that opened the Board before the exchange
@@ -996,14 +996,32 @@ fcntl.fcntl(fd, F_SETLEASE, fcntl.F_UNLCK)
                                   (repair-require (map? record) "unreadable repair audit record")
                                   (when (:retained-path record) record))))
                             (str/split-lines (read-text path)))]
-          (doseq [{:keys [retained-path retained-sha256]} records]
-            (repair-require (fs/exists? retained-path)
-                            (str "retained displaced board missing: " retained-path))
-            (repair-owned-path! retained-path)
-            (repair-require (= retained-sha256 (repair-sha (read-text retained-path)))
-                            (str "late concurrent write detected in retained displaced board " retained-path
-                                 "; merge it into the Board manually before any further repair")))
-          (count records))))))
+          ;; The latest record per path wins. :retain-pending is written before
+          ;; the exchange; if the apply was killed before its final :retained
+          ;; record, the pending record still tracks the inode: its content must
+          ;; be the pre-exchange replacement (after) or the displaced Board
+          ;; (before), and no process may still hold it open for write.
+          (let [latest (reduce (fn [m r] (assoc m (:retained-path r) r)) (array-map) records)
+                active (remove #(= :retain-cancelled (:phase %)) (vals latest))]
+            (doseq [{:keys [retained-path retained-sha256 retained-accept-sha256 phase]} active]
+              (repair-require (fs/exists? retained-path)
+                              (str "retained displaced board missing: " retained-path))
+              (repair-owned-path! retained-path)
+              (let [accept (if (= :retain-pending phase) (set retained-accept-sha256) #{retained-sha256})]
+                (repair-require (contains? accept (repair-sha (read-text retained-path)))
+                                (str (if (= :retain-pending phase) "interrupted repair: " "")
+                                     "late concurrent write detected in retained displaced board " retained-path
+                                     "; merge it into the Board manually before any further repair"))
+                (when (= :retain-pending phase)
+                  (let [holders (repair-wait-holders! retained-path)]
+                    (repair-require (empty? holders)
+                                    (str "interrupted repair: retained displaced board " retained-path
+                                         " still open by pid " (str/join "," holders)
+                                         "; wait for the writer to finish and merge it into the Board manually")))
+                  (repair-require (contains? accept (repair-sha (read-text retained-path)))
+                                  (str "interrupted repair: late concurrent write detected in retained displaced board "
+                                       retained-path "; merge it into the Board manually before any further repair")))))
+            (count active)))))))
 
 (defn repair-atomic-board!
   "Replace the board with `after` only if the replaced content was exactly
@@ -1016,16 +1034,18 @@ fcntl.fcntl(fd, F_SETLEASE, fcntl.F_UNLCK)
   (repair-check-retained!). Without exchange support only a shared writer
   lock may fall back to a plain atomic move. Returns {:conflict nil
   :retained [...]} or {:conflict reason :preserved [paths] :retained [...]}."
-  [path before after {:keys [exchange? preserve-dir retain-dir]}]
-  (let [tmp (fs/path (fs/parent path) (str ".reconcile-433-" (random-uuid) ".tmp"))
+  [path before after {:keys [exchange? preserve-dir retain-dir audit!]}]
+  (let [tmp (if exchange?
+              (fs/path retain-dir (str "BOXP-433-" (random-uuid) "-displaced.md"))
+              (fs/path (fs/parent path) (str ".reconcile-433-" (random-uuid) ".tmp")))
         exchanged? (atom false)
         preserve! (fn [label src]
                     (let [dst (fs/path preserve-dir (str "BOXP-433-" (random-uuid) "-" label ".md"))]
                       (spit (str dst) (read-text src))
                       (str dst)))
-        retain! (fn [label]
+        retain! (fn []
                   (let [content (read-text tmp)]
-                    [{:retained-path (repair-retain! tmp retain-dir label)
+                    [{:retained-path (repair-retain! tmp)
                       :retained-sha256 (repair-sha content)}]))]
     (try
       (spit (str tmp) after)
@@ -1033,6 +1053,11 @@ fcntl.fcntl(fd, F_SETLEASE, fcntl.F_UNLCK)
       (java.nio.file.Files/setPosixFilePermissions tmp
         (java.nio.file.Files/getPosixFilePermissions (fs/path path)
           (make-array java.nio.file.LinkOption 0)))
+      (when exchange?
+        ;; Track the inode before it can become (or displace) the live Board, so a
+        ;; crash anywhere after the exchange still leaves an audited retained file.
+        (audit! {:phase :retain-pending :retained-path (str tmp)
+                 :retained-accept-sha256 [(repair-sha after) (repair-sha before)]}))
       (repair-require (= before (read-text path)) "board changed before atomic replacement")
       (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_RECONCILE_CONCURRENT_WRITE"))
         ;; Deterministic hook: another writer replaces the board after the check.
@@ -1045,6 +1070,9 @@ fcntl.fcntl(fd, F_SETLEASE, fcntl.F_UNLCK)
         (do
           (repair-exchange! tmp path)
           (reset! exchanged? true)
+          (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_RECONCILE_CRASH_AFTER_EXCHANGE"))
+            ;; Deterministic hook: the process is killed right after the exchange.
+            (.halt (Runtime/getRuntime) 137))
           (Thread/sleep (repair-settle-ms))
           (let [displaced (read-text tmp)]
             (if (= displaced before)
@@ -1052,10 +1080,10 @@ fcntl.fcntl(fd, F_SETLEASE, fcntl.F_UNLCK)
                             ;; Deterministic hook: a writer opened the old inode before the
                             ;; exchange and writes through that descriptor after the settle delay.
                             (with-open [out (java.io.FileOutputStream. (str tmp) true)]
-                              (let [r (repair-retain! tmp retain-dir "displaced")]
+                              (let [r (repair-retain! tmp)]
                                 (.write out (.getBytes "late writer\n" "UTF-8"))
                                 r))
-                            (repair-retain! tmp retain-dir "displaced"))
+                            (repair-retain! tmp))
                     ;; The command must not report success while a writer can
                     ;; still write into the displaced inode: wait for every
                     ;; descriptor on it to close, then compare once more.
@@ -1105,7 +1133,7 @@ fcntl.fcntl(fd, F_SETLEASE, fcntl.F_UNLCK)
                 (let [returned (read-text tmp)]
                   (if (= returned after)
                     {:conflict "board changed concurrently; concurrent content restored"
-                     :preserved [displaced-copy] :retained (retain! "replaced")}
+                     :preserved [displaced-copy] :retained (retain!)}
                     (let [returned-copy (preserve! "newer" tmp)
                           displaced-content (read-text displaced-copy)]
                       (repair-exchange! tmp path)
@@ -1115,14 +1143,20 @@ fcntl.fcntl(fd, F_SETLEASE, fcntl.F_UNLCK)
                             extra (when-not (= again displaced-content) [(preserve! "newest" tmp)])]
                         {:conflict (str "board changed repeatedly during repair; newest content restored"
                                         (when extra (str "; merge " (first extra) " into the Board manually")))
-                         :preserved (into [displaced-copy returned-copy] extra) :retained (retain! "replaced")}))))))))
+                         :preserved (into [displaced-copy returned-copy] extra) :retained (retain!)}))))))))
         (do
           (java.nio.file.Files/move tmp (fs/path path)
             (into-array java.nio.file.CopyOption [java.nio.file.StandardCopyOption/ATOMIC_MOVE
                                                  java.nio.file.StandardCopyOption/REPLACE_EXISTING]))
           {:conflict nil}))
       ;; Only a temp file that never became the live Board may be deleted.
-      (finally (when-not @exchanged? (fs/delete-if-exists tmp))))))
+      (finally
+        (when-not @exchanged?
+          ;; Record the cancellation before deleting, so an interruption leaves
+          ;; at worst an untracked file that never was the live Board.
+          (when (and exchange? (fs/exists? tmp))
+            (audit! {:phase :retain-cancelled :retained-path (str tmp)}))
+          (fs/delete-if-exists tmp))))))
 
 (defn cmd-reconcile-done [opts id]
   ;; Deliberately no general force/dedupe operation. This is the approved 433 repair.
@@ -1199,7 +1233,8 @@ fcntl.fcntl(fd, F_SETLEASE, fcntl.F_UNLCK)
                                _ (when (fs/exists? dir) (repair-owned-path! dir))
                                _ (fs/create-dirs dir)
                                _ (repair-owned-path! dir)
-                               exchange? (repair-exchange-supported? dir)
+                               retain-dir (repair-retained-dir vault)
+                               exchange? (repair-exchange-supported? retain-dir (fs/parent bpath))
                                _ (repair-require (or exchange? writer)
                                                  "atomic exchange (mv --exchange) unavailable and no shared writer lock; refusing unsafe replacement")
                                stamp (.format (java.time.ZonedDateTime/now java.time.ZoneOffset/UTC)
@@ -1217,7 +1252,8 @@ fcntl.fcntl(fd, F_SETLEASE, fcntl.F_UNLCK)
                                                      :backup-path (str backup) :source-run (:run-id source)))
                            (let [{:keys [conflict preserved retained]} (repair-atomic-board! bpath board after
                                                                 {:exchange? exchange? :preserve-dir dir
-                                                                 :retain-dir (when exchange? (repair-retained-dir vault))})]
+                                                                 :retain-dir retain-dir
+                                                                 :audit! (fn [r] (repair-audit! vault (assoc r :id id :backup-path (str backup))))})]
                              ;; One audit line per retained inode so later runs can detect late writes.
                              (doseq [r retained]
                                (repair-audit! vault (assoc r :phase :retained :id id :backup-path (str backup))))
