@@ -40,3 +40,9 @@
 
 - 本物の Live2D 化: コハコ用 Live2D リグ（パーツ分け原画 + Cubism モデリング）と Cubism SDK ライセンス確認が必要。
 - コハコ専用の声: 既存 TTS 経路の選定（本人音声 clone は対象外）。
+
+## 2026-11-06 追記: arch への移管（TD-13）
+
+公開 arch に Web Studio と必要なモデルを移し、Hermes を唯一の人格・memory とする。Web 会話は kohako-web-*、限定 verifier は独立した kohako-verify-* を使う。認証は Cloudflare Access Owner と限定 TokenReview のみ。
+
+次段階は lolice に kohako-studio Deployment、Service、NetworkPolicy を作成する。cloudflared と codex-workspace から 8080 のみ許可し、Hermes Agent 8642 と TokenReview 用 apiserver への egress を許可する。tokenreviews create の RBAC、audience kohako-bff-verifier・有効期間 1 時間の codex-workspace projected token、Owner 限定 Access の Cloudflare tunnel hostname を設定する。Chainsaw で Red → Green を検証し、新経路の確認まで既存 even-g2-lab Studio URL を維持する。
