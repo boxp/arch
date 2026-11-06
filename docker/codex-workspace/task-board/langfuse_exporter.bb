@@ -43,7 +43,7 @@
    [:env-entry (re-pattern (str "(?i)" (entry-key "name") "(?:" quote-pattern ")?" secret-key-pattern "(?:" quote-pattern ")?" entry-gap "(?:" quote-pattern ")?" (entry-key "value") (value-pattern nil "[^\\s,;}\\]]+")))]
    [:env-entry (re-pattern (str "(?i)" (entry-key "value") (value-pattern "{0,4096}?" "[^\\s,;}\\]]+") entry-gap "(?:" quote-pattern ")?" (entry-key "name") "(?:" quote-pattern ")?" secret-key-pattern))]
    [:flag (re-pattern (str "(?i)(?<![\\w-])--?" secret-key-pattern "[ \\t]+(?!-)" (value-pattern nil "\\S+")))]
-   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?!\d+:\d+\b)[^\s:]+:\S+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p\S+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*\S+"]
+   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?!\d+:\d+\b|\+)[^\s:%]+:\S+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p\S+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*\S+"]
    ;; A number after a name with token in it is a counter such as input_tokens: 12.
    [:assignment (re-pattern (str "(?i)[\"']?" secret-key-pattern "(?:" quote-pattern ")?" gap-pattern "(?:[:=]|\\\\+u00(?:3[aA]|3[dD]))" gap-pattern "(?!(?<=token[\\w.-]{0,16}[\"'\\\\]{0,8}\\s{0,4}[:=]\\s{0,4})\\d+(?:[\\s,;}\\\\\"']|$))(?:[|>][-+]?\\d?(?:(?:\\n|\\\\+n)[ \\t]+(?:(?!\\\\+n)[^\\n])*)+|" (value-pattern nil "[^\\s,;}\\]]+") ")"))]
    [:entropy #"\b[A-Za-z0-9_-]{40,}\b"]])
@@ -552,9 +552,23 @@
 
 (def reference-value #"(?i)\$\{?[\w.-]*\}?|<[^>]*>|\{\{[^}]*\}\}|\[REDACTED:[a-z_-]+\]|\*+|x{3,}|\.\.\.|…|-|\|")
 
+(defn- reference-only?
+  "A variable, placeholder or secret name: never the value itself."
+  [t]
+  (boolean (or (str/blank? t) (re-find loose-word t) (re-matches reference-value t))))
+
+(def structure-word #"(?i)user|username|name|value|key|ref|from|data")
+(def scheme-word #"(?i)https?|basic|bearer|digest|negotiate")
+
 (defn- reference? [t]
-  (or (str/blank? t) (re-find loose-word t) (re-matches value-stopword t) (re-matches reference-value t)
-      (re-matches #"(?i)name|key|ref|from|data" t)))
+  (or (reference-only? t) (re-matches value-stopword t) (re-matches structure-word t)))
+
+;; A structure word is a key inside a structure (secretKeyRef: name: app-secrets / key: password) but the value
+;; itself when it stands alone or among plain words (password: username, password: value horsestaple): then it is
+;; pinned so a bare repeat is masked (P0 arch#14503 :552). An auth scheme word before a credential (Bearer xyz) is
+;; not part of the value. Over-masking accepted: after password: username the word username is masked later in the run.
+(defn- structural? [v] (boolean (re-find #"[:={}\[\]<>()]" v)))
+(defn- plain-value-token? [t] (not (or (reference-only? t) (re-matches scheme-word t))))
 
 ;; A whole value that is a literal or looks like a placeholder (password: true, none, xxxxx, ****) is still the value
 ;; and can be repeated bare later (P0 arch#14503 :548). A setting (password_required: true) is filtered by setting?
@@ -568,9 +582,10 @@
   bare 123), so it returns nil and the caller withholds this body and the bodies after it."
   [raw]
   (reduce (fn [acc v]
-            (let [tokens (remove reference? (map strip-value (str/split v #"[\s\"'`,;:=<>()\[\]{}\\]+")))]
+            (let [parts (map strip-value (str/split v #"[\s\"'`,;:=<>()\[\]{}\\]+"))
+                  tokens (if (structural? v) (remove reference? parts) (filter plain-value-token? parts))]
               (cond (nil? acc) acc
-                    (re-matches literal-value v) (when (>= (count v) 4) (conj acc v))
+                    (or (re-matches literal-value v) (re-matches structure-word v)) (when (>= (count v) 4) (conj acc v))
                     (or (reference? v) (empty? tokens)) acc
                     (some #(< (count %) 4) tokens) nil
                     (= 1 (count tokens)) (conj acc (first tokens))
@@ -682,7 +697,7 @@
             after-values (when (some #(re-matches prose-separator %) gap)
                            (->> rest-tokens
                                 (remove #(or (re-matches prose-connective %) (re-matches prose-separator %)))
-                                (remove reference?)
+                                (filter plain-value-token?)
                                 (filter #(re-matches #"[\x21-\x7e]+" %))))
             after-values (if (and (= 1 (count after-values)) (setting? name (first after-values))) [] after-values)
             before-value (when (and bword (some #(re-matches #"(?i)is|are|was|were" %) bgap)
@@ -725,17 +740,39 @@
                         :else {:values (into (set (:values in)) (concat (:values out) (:values in-prose) (:values prose) (when-not large? (candidate-values output))))})))))
 
 (defn- privacy-reason [tool result] (:reason (tool-exposure tool result)))
-(defn- privacy-analysis [ctx gens tools-of result-of]
+
+;; A value shown in a user message or in the model's own text (password: huntertwo in a request, then a bare
+;; huntertwo in a reply) is pinned the same way as one in a tool output, so a later repeat is masked (P0 arch#14503
+;; :728). Tool results already went through tool-exposure, so only the text around them adds anything here. A value
+;; that cannot be pinned (password: 123, the password is abc, an unscannable body) withholds this generation and the
+;; bodies after it, because this generation's own reply can repeat it. Over-withholding accepted: prose such as
+;; "Your password is too short." in a request or reply names a short word and withholds the rest of that run.
+(defn- body-exposure [text]
+  (let [text (str text)]
+    (if (> (count text) 262144)
+      {:reason "unscanned_large_output"}
+      (let [e (exposure text) p (prose-values text)]
+        {:reason (or (:reason e) (:reason p)) :values (into (set (:values e)) (:values p))}))))
+
+(defn- privacy-analysis [ctx gens tools-of result-of & [texts-of]]
   (let [shared (or (:session-state ctx) (atom #{}))
         analysis (reduce (fn [state [idx gen]]
-            (reduce (fn [state tool]
+            (as-> state state
+              (reduce (fn [state text]
+                        (let [{:keys [reason] found :values} (body-exposure text)
+                              values (into (:values state) found)
+                              reason (or reason (when (> (count values) max-session-values) "too_many_session_values"))]
+                          (cond-> (assoc state :values values)
+                            reason (update :first #(if % (min % (dec idx)) (dec idx))))))
+                      state (if texts-of (texts-of gen) []))
+              (reduce (fn [state tool]
                       (let [{:keys [reason] found :values} (tool-exposure tool (result-of tool))
                             values (into (:values state) found)
                             reason (or reason (when (> (count values) max-session-values) "too_many_session_values"))]
                         (cond-> (assoc state :values values)
                           reason (update :first #(or % idx))
                           reason (assoc-in [:reasons tool] reason))))
-                    state (tools-of gen)))
+                    state (tools-of gen))))
           {:values @shared :first nil :reasons {}} (map-indexed vector gens))]
     (reset! shared (:values analysis))
     analysis))
@@ -828,7 +865,8 @@
   (let [results (claude-results lines)
         gens (claude-generations lines)
         end-of-log (some ->millis (reverse (map :timestamp lines)))
-        analysis (privacy-analysis ctx gens #(filter (fn [tool] (= "tool_use" (:type tool))) (:blocks %)) #(get results (:id %)))
+        analysis (privacy-analysis ctx gens #(filter (fn [tool] (= "tool_use" (:type tool))) (:blocks %)) #(get results (:id %))
+                                    #(vector (:input %) (content-text (:blocks %))))
         first-sensitive (:first analysis)]
     (mapcat
      (fn [gen next-gen idx]
@@ -919,7 +957,7 @@
 (defn codex-spans [ctx parent prefix lines]
   (let [{:keys [gens results]} (codex-generations lines)
         end-of-log (some ->millis (reverse (map :timestamp lines)))
-        analysis (privacy-analysis ctx gens :tools #(get results (:call-id %)))
+        analysis (privacy-analysis ctx gens :tools #(get results (:call-id %)) #(vector (:input %) (str/join "\n" (:text %))))
         first-sensitive (:first analysis)]
     (mapcat
      (fn [gen next-gen idx]

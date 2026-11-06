@@ -77,3 +77,11 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 - 値全体がリテラルや伏字風 (`password: true` / `none` / `null` / `xxxxx` / `****`) でも値として扱う。4 文字以上は pin して以後の本文でマスク、4 文字未満 (`nil` / `***`) は `value_exposure` で保留。名前が toggle/カウンタ (`password_required: true`、`AUTH_DISABLE_PASSWORD=true`、`max_output_tokens: null`、`token_ttl: none`) の場合は設定値として pin しない。過剰マスク: `password: true` を読んだ run では以後 `true` という語が伏字になる。
 - 既知の認証ファイル (`~/.npmrc`, `~/.pypirc`, `~/.pgpass`, `~/.my.cnf`, `~/.mylogin.cnf`, `~/.docker/config.json`, `~/.dockercfg`, `~/.boto`, `~/.s3cfg`, `~/.vault-token`, `~/.terraformrc`, `credentials.tfrc.json`, `~/.kube/config`, `~/.yarnrc(.yml)`, `~/.curlrc`, `~/.wgetrc`, `~/.m2/settings(-security).xml`, `gradle.properties`, `~/.config/gh/hosts.yml`, `~/.config/gcloud`, `~/.config/hub`, `rclone.conf`, `~/.azure`, `application_default_credentials.json`, `~/.cargo/credentials`, `~/.gem/credentials`, `.htpasswd`) を機密源とし、その出力と以後の本文を保留する。列挙外の独自形式の認証ファイルは既知の残差 (形式/秘密語マスクのみ)。過剰保留: これらのファイル名に言及するだけのコマンドも保留する。
 - Hermes observer (lolice#1091) の `_SENSITIVE_PATH` には本追記の既知認証ファイル列挙をまだ入れていない (本 PR の blocking 対象外)。
+
+## 追記 (arch#14503 P0 :728 / :552)
+
+- 利用者の依頼文(Claude の user 行、Codex の user/developer message)とモデル自身の応答本文も、tool 出力と同じ判定(既知形式/代入/YAML・XML ブロック/散文)で走査する。名指しされた値(`password: huntertwo`、`the password is plumorchard`)は pin し、同じ run の以後の本文と root の出力でマスクする。値を pin できない場合(`password: 123`、`the password is abc`、256KB 超で走査不能)は、その generation 自身の応答も同じ値を再掲し得るため、その generation から後の本文を `withheld_after_secret_exposure` で保留する。
+- 値全体が構造語(`password: username`、`token = value`、`{"api_key": "name"}`)でも値として pin する(4 文字未満の `key` 等は保留)。区切りのない平文の複数語の値(`password: value horsestaple`)では構造語も値の一部として pin する。`secretKeyRef: name: … key: …` のような構造の中のキー語、`${VAR}` 等の参照、`Bearer`/`Basic` の認証スキーム語は値としない。
+- 誤検出の修正: `date -u +%Y-%m-%dT%H:%M:%SZ` を `curl -u user:pass` と誤認していたため、`-u` の値が `+` で始まるもの・利用者部に `%` を含むものは対象外にした(実 run BOXP-436 で依頼文走査により 8 件が保留される退行を検出し解消)。
+- 過剰保留: 依頼文が短いラベル付き例示値を引用する run(本票 BOXP-428 自身の runner prompt は Notes に `password: 123` 等を含む)は、最初の generation から本文が保留される。`Your password is too short.` のような依頼/応答も短い語を名指しするため以後の本文を保留する。過剰マスク: `password: username` を見た run では以後 `username` という語が伏字になる。
+- 実 run の比較(件数のみ、本文は出力していない): BOXP-436 sent 25 / BOXP-437 sent 5 は変更前と同一、BOXP-438/440/446/449/450 も変更前と同一。BOXP-428 の直近 run は sent 2 → 0(上記の過剰保留)。

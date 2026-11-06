@@ -1163,5 +1163,67 @@
                                                            {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text value}]}}]))]
     (is (not (str/includes? (pr-str spans) value)))))
 
+;; P0 arch#14503 :728 (BOXP-428). A value shown in a user message or model text (not a tool output) is pinned too,
+;; so a later bare repeat by the model is masked; a short one withholds that generation and the bodies after it.
+(deftest values-in-user-and-model-text
+  (let [state (atom #{})
+        ctx {:tid "01234567890123456789012345678901" :trace-attrs {} :session-state state}
+        ;; prepare-spans masks with the run's session values, as the exporter does.
+        clean (fn [spans] (let [spans (doall spans) values @state] (reset! state #{})
+                            (pr-str (map #(lf/sanitize-span {:secret-values values :max-field-bytes 100000} (atom {}) %) spans))))]
+    (doseq [[request value] [["password: huntertwo" "huntertwo"] ["the password is plumorchard" "plumorchard"]]]
+      (testing "claude"
+        (let [spans (doall (lf/claude-spans ctx "root" "test:" [{:type "user" :message {:content request}}
+                                                                 {:type "assistant" :message {:id "a" :model "test" :content [{:type "text" :text (str "zz " value " zz")}]}}
+                                                                 {:type "user" :message {:content "thanks, what next"}}
+                                                                 {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text (str "yy " value " yy")}]}}]))
+              out (clean spans)]
+          (is (not (str/includes? out (str "zz " value " zz"))) request)
+          (is (not (str/includes? out (str "yy " value " yy"))) request)
+          (is (str/includes? out "thanks, what next") "control: a later safe request is sent")))
+      (testing "codex"
+        (let [lines [{:type "response_item" :timestamp "2026-11-06T00:00:00Z" :payload {:type "message" :role "user" :content [{:type "input_text" :text request}]}}
+                     {:type "response_item" :timestamp "2026-11-06T00:00:01Z" :payload {:type "message" :role "assistant" :content [{:type "output_text" :text (str "zz " value " zz")}]}}]
+              out (clean (doall (lf/codex-spans ctx "root" "test:" lines)))]
+          (is (not (str/includes? out (str "zz " value " zz"))) request))))
+    (testing "the model names a value itself"
+      (let [out (clean (doall (lf/claude-spans ctx "root" "test:" [{:type "user" :message {:content "make one up"}}
+                                                                    {:type "assistant" :message {:id "a" :model "test" :content [{:type "text" :text "password: kiwimango"}]}}
+                                                                    {:type "user" :message {:content "again"}}
+                                                                    {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text "zz kiwimango zz"}]}}])))]
+        (is (not (str/includes? out "zz kiwimango zz")))))
+    (testing "a short value in a request withholds the replies that can repeat it"
+      (let [out (clean (doall (lf/claude-spans ctx "root" "test:" [{:type "user" :message {:content "password: 123"}}
+                                                                    {:type "assistant" :message {:id "a" :model "test" :content [{:type "text" :text "zz 123 zz"}]}}])))]
+        (is (not (str/includes? out "zz 123 zz")))))
+    (testing "ordinary requests and replies stay readable"
+      (let [out (clean (doall (lf/claude-spans ctx "root" "test:" [{:type "user" :message {:content "list the files please"}}
+                                                                    {:type "assistant" :message {:id "a" :model "test" :content [{:type "text" :text "harmlessreplymarker done"}]}}])))]
+        (is (str/includes? out "harmlessreplymarker done"))
+        (is (nil? (:reason (#'lf/body-exposure "run date -u +%Y-%m-%dT%H:%M:%SZ and curl -u $USER:$PASS later"))) "date -u format is no credential")
+        (is (:reason (#'lf/body-exposure "curl -u admin:x9 https://example.test")) "control: a real -u credential still counts")
+        (is (str/includes? out "list the files"))))))
+
+;; P0 arch#14503 :552 (BOXP-428). A whole value that is a structure word (password: username, token = value) is still
+;; the value and is pinned, so a later bare repeat is masked. A key word inside a structure (secretKeyRef name/key)
+;; stays a reference.
+(deftest structure-words-as-whole-values
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [[output value] [["password: username" "username"] ["token = value" "value"] ["{\"api_key\": \"name\"}" "name"]
+                            ["the password is username" "username"] ["password: value horsestaple" "value"]]]
+      (let [lines [{:type "user" :message {:content "first request"}}
+                   {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat config.txt"}}]}}
+                   {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content output}]}}
+                   {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text (str "zz " value " zz")}]}}]
+            spans (doall (lf/claude-spans ctx "root" "test:" lines))
+            sanitized (pr-str (map #(lf/sanitize-span {:secret-values (mapcat :session-values spans) :max-field-bytes 100000} (atom {}) %) spans))]
+        (is (contains? (set (:values (#'lf/tool-exposure {:input "cat config.txt"} {:output output}))) value) output)
+        (is (not (str/includes? sanitized (str "zz " value " zz"))) output)
+        (is (str/includes? sanitized "first request") "control: the request body is sent")))
+    (doseq [output ["secretKeyRef:\n  name: app-secrets\n  key: password" "password: ${DB_PASSWORD}"]]
+      (let [{:keys [reason values]} (#'lf/tool-exposure {:input "cat deploy.yaml"} {:output output})]
+        (is (nil? reason) output)
+        (is (not-any? #{"name" "key"} values) output)))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
