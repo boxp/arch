@@ -262,9 +262,9 @@
       (when-not (= "200" (http-code (str host "/"))) (die "anonymous access is not served:" host))))
   ;; portfolio stage は本人限定のまま。
   (when-not (= "302" (http-code "https://portfolio-stage.b0xp.io/")) (die "anonymous access is not redirected: portfolio-stage"))
-  ;; portfolio 本番への全体図の掲載は未承認。
-  (when (str/includes? (sh {} "curl" "-fsSL" "-m" "20" "https://b0xp.io/") "lolice-architecture")
-    (die "production portfolio mentions the architecture diagram")))
+  ;; portfolio 本番 (b0xp.io) は BOXP-442 の Owner 承認で両図のカードとサムネイルを掲載済み。
+  ;; この手順は本番を配備しないので、本番が配信を続けていることだけを確かめる。
+  (when-not (= "200" (http-code "https://b0xp.io/")) (die "production portfolio is not served")))
 
 (defn cmd-deploy [ticket]
   (let [m (manifest ticket) hashes (:built m)]
@@ -275,7 +275,7 @@
         (let [run (deploy-page! ticket d (get hashes id))]
           (save-manifest! ticket (assoc-in (manifest ticket) [:deployed id] (get hashes id)))
           (println "deployed" id "run" run))))
-    ;; 全体図のサムネイルは portfolio 本番への掲載が未承認なので repo に置かず、stage だけへ secret で渡す。lineage のものは基準更新の PR に入れる。
+    ;; 全体図のサムネイルは repo に置かず stage だけへ secret で渡す。本番は BOXP-442 で受入した固定版を配信し、この手順では更新しない。lineage のものは基準更新の PR に入れる。
     (let [thumb (fs/path (stage-dir ticket) "thumbnails/lolice-architecture.webp")
           b64 (.encodeToString (java.util.Base64/getEncoder) (fs/read-all-bytes thumb))
           thumb-sha (sha256-file thumb)]
