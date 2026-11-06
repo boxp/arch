@@ -29,5 +29,6 @@
 }
 html { scroll-behavior: smooth; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-[data-theme-controls] button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
+[data-theme-controls] [aria-checked="true"] { color: var(--accent); font-weight: 600; }
+[data-theme-controls] [aria-checked="true"]::before { content: "✓ "; }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
