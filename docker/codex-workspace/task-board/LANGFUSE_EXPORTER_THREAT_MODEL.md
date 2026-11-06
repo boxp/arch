@@ -61,7 +61,7 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 ## 追記 (arch#14503 P0 :280 / :541)
 
 - 読取コマンドの列挙をやめ、反転した: シェルの各セグメント(`;`/`&`/`|`/改行/`$(`/括弧/backtick で分割、引用符内の区切りでは分割しない)で、プログラムが言及専用コマンド(echo/printf/git/ls/find/gh/mkdir/rm/mv/chmod/stat/wc/cd 等)以外なら、秘密名ファイルを丸ごとの引数として受け取った時点で機密源とする(`sed -n 1p db_password`、`awk 1 db_password`、`jq . credentials.json`、`python3 show.py db_password`)。`< db_password` の入力リダイレクト、`dd if=`、`open('db_password')` 等のファイル open 呼出し、`/dev/stdout` への複写も同様。
-- `grep`/`rg` 等は最初の非オプション引数(検索語)だけを言及とみなし、2つ目以降の引数や `-e`/`-f` 使用時の秘密名ファイルは機密源(`grep . db_password`)。
+- `grep`/`rg` 等は最初の非オプション引数(検索語)だけを言及とみなし、2つ目以降の引数や `-e`/`-f` 使用時の秘密名ファイルは機密源(`grep . db_password`)。 検索語をオプションに結合した形(`grep -ex db_password`、`-iex`、`-fpats.txt`、`--regexp=x`、`--file=…`)も検索語の引数が残らないため、全引数をファイルとみなし秘密名ファイルは機密源。e/f を含む短いオプション群は一律この扱いで、`ag -f` 等の過剰保留を許容する。
 - JSON の tool 入力は `command`/`cmd`/`script`/`code` の値だけを見る(Bash の `description` が password に言及しても読める)。空白を含む引用符引数(`--note '...'`、commit message)はファイル名とみなさない。
 - 散文では行内の全ての秘密語を見る(最初の1語だけではない)。`Reset your password; kiwimango is my token` の `kiwimango` も pin する。
 - 過剰保留: 秘密語を名前に含む普通のファイルを任意のプログラムに渡すと保留(`make reset-password`、`kustomize build overlays/secrets`)。残差: 引用符内の任意コード中の非 open 系読取(`python3 -c "import x; x.load_it('db_password')"` 等)は未検出(変数への代入 `f=db_password` は機密源として保留する)で、既知形式/秘密語マスクのみ。

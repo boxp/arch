@@ -339,6 +339,14 @@
 (defn- secret-file-word? [w]
   (boolean (and (not (re-find #"\s" w)) (not (str/starts-with? w "-")) (re-matches secret-file-name w))))
 
+;; A search pattern given through an option, alone or joined to its value or to other short flags (-e x, -ex,
+;; -iex, -fpats.txt, --regexp=x, --file=pats.txt), leaves no pattern operand, so every operand is a file (P0
+;; arch#14503 segment-reads-secret-file?). Any short cluster containing e or f counts, which over-withholds a few
+;; flag clusters (ag -f) rather than letting a joined form pass.
+(defn- pattern-option? [w]
+  (boolean (or (re-matches #"--(?:regexp|file)(?:=.*)?" w)
+               (and (not (str/starts-with? w "--")) (re-matches #"-[A-Za-z0-9]*[ef].*" w)))))
+
 (defn- segment-reads-secret-file? [segment]
   (let [words (vec (take 512 (shell-words segment)))
         redirected (some (fn [[a b]] (and (re-matches #"\d?<" a) b (secret-file-word? b)))
@@ -357,7 +365,7 @@
          (and program
               (cond (contains? search-programs program)
                     (or (some secret-file-word? (rest operands))
-                        (and (some #(re-matches #"-e|--regexp|-f|--file" %) args) (some secret-file-word? operands)))
+                        (and (some pattern-option? (rest args)) (some secret-file-word? operands)))
                     (mention-only? program (rest args)) false
                     :else (some secret-file-word? operands)))
          (and (some #(re-matches stdout-sink %) words) (some secret-file-word? words))))))

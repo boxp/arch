@@ -1078,6 +1078,17 @@
              "sed -n 1,20p docs/reset.md" "awk 1 README.md" "python3 x.py --password-file-flag-doc"
              "{\"command\":\"ls\",\"description\":\"show password policy docs\"}" "{\"cmd\":\"ls\",\"max_output_tokens\":12000}"]]
     (is (not (lf/withhold-output? c)) c)))
+;; P0 arch#14503 segment-reads-secret-file? (BOXP-428). A pattern given through an option joined to its value
+;; (grep -ex db_password, grep -iex, grep -fpatterns, grep --regexp=x, rg -e=x) leaves no separate pattern operand,
+;; so every operand is a file and a secret-named one is a source. The pattern of a plain search stays readable.
+(deftest search-with-joined-pattern-option-reads-a-secret-named-file
+  (doseq [c ["grep -ex db_password" "grep -iex db_password" "grep -e. db_password" "grep -fpats.txt db_password"
+             "grep --regexp=x db_password" "grep --file=pats.txt db_password" "rg -ex db_password" "rg --regexp=x db_password"
+             "egrep -rex src db_password" "{\"command\":\"grep -ex db_password\"}"]]
+    (is (lf/withhold-output? c) c))
+  (doseq [c ["grep -rn db_password src" "grep -i db_password src" "rg -n db_password docs" "grep -rn --include=*.md password docs"
+             "grep -c db_password src" "rg -w db_password"]]
+    (is (not (lf/withhold-output? c)) c)))
 ;; P0 arch#14503 :296 (BOXP-428). git is not mention-only as a whole: git show HEAD:db_password, git cat-file -p,
 ;; git diff/log -p/blame/grep and the -p/-v forms of add/status/checkout print a secret-named file's content. Only
 ;; subcommands that do not print file content stay readable (deny by default). Same for gh api/gist/release, which
