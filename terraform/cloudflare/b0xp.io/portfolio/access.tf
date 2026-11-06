@@ -64,14 +64,5 @@ resource "cloudflare_zero_trust_access_application" "portfolio_stage_pages_dev" 
   policies         = [{ id = cloudflare_zero_trust_access_policy.portfolio_stage_owner.id }]
 }
 
-# lolice-architecture.b0xp.io（BOXP-435 の全体アーキテクチャ図）を本人限定にする。
-# 図の匿名公開は承認されていないので、stage と同じ本人限定 policy を再利用する。
-# Worker（apps/lolice-architecture）はこの application の AUD で JWT も検証する。
-resource "cloudflare_zero_trust_access_application" "lolice_architecture" {
-  zone_id          = var.zone_id
-  name             = "Access application for ${local.lolice_architecture_domain}"
-  domain           = local.lolice_architecture_domain
-  session_duration = "24h"
-  type             = "self_hosted"
-  policies         = [{ id = cloudflare_zero_trust_access_policy.portfolio_stage_owner.id }]
-}
+# lolice-architecture.b0xp.io（BOXP-435 の全体アーキテクチャ図）は Owner の承認で一般公開したので、
+# Access application を置かない。上の本人限定 policy と stage の application は変更しない。

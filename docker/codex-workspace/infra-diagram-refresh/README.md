@@ -44,14 +44,14 @@ lineage 図、全体図、portfolio のサムネイルを実構成に追従さ�
 
 自動でしないこと:
 
-- 全体図の匿名公開と Access の変更
+- 公開範囲と Access の変更（両図は Owner の承認で一般公開済み。portfolio stage は本人限定のまま）
 - portfolio 本番 (`b0xp.io`) の切替
 - 元のインフラ、モデル設定の変更。図の更新のために元を直しません
 - Secret の値、ENV、Terraform state、ConfigMap の本文の取得
 
-`publish.bb deploy` は全体図と stage が未認証で 302 になること、本番に全体図の語が無いことを確かめます。Owner が公開を承認した場合は、この検査も同時に見直します。
+`publish.bb deploy` は両図が未認証で開けて配信中の hash が build と一致すること、portfolio stage が未認証で 302 になること、本番に全体図の語が無いことを確かめます。
 
-新しい公開要素や公開範囲が必要なら、チケットを Blocked にして Owner に相談します。全体図の内容、live の値、全体図のサムネイルを public repo、Actions の log、artifact に出しません。
+新しい公開要素や公開範囲が必要なら、チケットを Blocked にして Owner に相談します。図の HTML の正本と live の値は public repo、Actions の log、artifact に出しません。全体図のサムネイルは portfolio 本番への掲載が未承認なので repo に置かず、stage へ secret で渡します。
 
 ## 失敗したとき
 

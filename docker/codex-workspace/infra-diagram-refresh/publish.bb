@@ -254,12 +254,17 @@
 (defn verify-boundaries!
   "配備後に公開境界を実 URL で確かめる。本文は表示しない。"
   [hashes]
-  (let [body (sh {} "curl" "-fsS" "-m" "20" "https://lolice-lineage.b0xp.io/sha256")]
-    (when-not (str/includes? body (get hashes "lineage")) (die "lineage hash mismatch on the live URL")))
-  (doseq [u ["https://lolice-architecture.b0xp.io/" "https://portfolio-stage.b0xp.io/"]]
-    (when-not (= "302" (http-code u)) (die "anonymous access is not redirected:" u)))
+  ;; 両図は一般公開 (lineage: BOXP-430, architecture: BOXP-435)。未認証で開け、配信中の hash が build と一致すること。
+  (doseq [id ["lineage" "architecture"]]
+    (let [host (str "https://lolice-" id ".b0xp.io")
+          body (sh {} "curl" "-fsS" "-m" "20" (str host "/sha256"))]
+      (when-not (str/includes? body (get hashes id)) (die id "hash mismatch on the live URL"))
+      (when-not (= "200" (http-code (str host "/"))) (die "anonymous access is not served:" host))))
+  ;; portfolio stage は本人限定のまま。
+  (when-not (= "302" (http-code "https://portfolio-stage.b0xp.io/")) (die "anonymous access is not redirected: portfolio-stage"))
+  ;; portfolio 本番への全体図の掲載は未承認。
   (when (str/includes? (sh {} "curl" "-fsSL" "-m" "20" "https://b0xp.io/") "lolice-architecture")
-    (die "production portfolio mentions the private diagram")))
+    (die "production portfolio mentions the architecture diagram")))
 
 (defn cmd-deploy [ticket]
   (let [m (manifest ticket) hashes (:built m)]
@@ -270,7 +275,7 @@
         (let [run (deploy-page! ticket d (get hashes id))]
           (save-manifest! ticket (assoc-in (manifest ticket) [:deployed id] (get hashes id)))
           (println "deployed" id "run" run))))
-    ;; 全体図のサムネイルは public repo に置けないので secret で渡す。lineage のものは基準更新の PR に入れる。
+    ;; 全体図のサムネイルは portfolio 本番への掲載が未承認なので repo に置かず、stage だけへ secret で渡す。lineage のものは基準更新の PR に入れる。
     (let [thumb (fs/path (stage-dir ticket) "thumbnails/lolice-architecture.webp")
           b64 (.encodeToString (java.util.Base64/getEncoder) (fs/read-all-bytes thumb))
           thumb-sha (sha256-file thumb)]
