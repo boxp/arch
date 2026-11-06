@@ -870,40 +870,22 @@
                                          (make-array java.nio.file.LinkOption 0))
        (catch Exception _ nil)))
 
-(defn repair-proc-creds
-  "Uid/Gid lines (real, effective, saved, fs) and CapPrm of a /proc entry from
-  its world-readable status file, or nil."
-  [proc]
-  (try (let [lines (java.nio.file.Files/readAllLines (fs/path proc "status"))
-             field (fn [k] (some #(when (str/starts-with? % k)
-                                    (str/join " " (str/split (str/trim (subs % (count k))) #"\s+")))
-                                 lines))
-             creds {:uid (field "Uid:") :gid (field "Gid:") :cap-prm (field "CapPrm:")}]
-         (when (every? some? (vals creds)) creds))
-       (catch Exception _ nil)))
+(defn repair-proc-label [proc]
+  (str (fs/file-name proc) "("
+       (or (try (str/trim (first (java.nio.file.Files/readAllLines (fs/path proc "comm"))))
+                (catch Exception _ nil)) "?")
+       ")"))
 
-(defn repair-foreign-credentials?
-  "True when `proc` runs with credentials other than ours (any real/effective/
-  saved/fs uid or gid differs, or a different permitted capability set). Those
-  are exactly the cases where a same-UID /proc/<pid>/fd is unreadable (ptrace
-  read check), e.g. (sd-pam) or a CI agent. Task-board writers run as this
-  plain unprivileged user (root refused), so such a process is not a Board
-  writer. Unknown credentials are not treated as foreign (fail closed)."
-  [proc]
-  (let [mine (repair-proc-creds "/proc/self")
-        theirs (repair-proc-creds proc)]
-    (boolean (and mine theirs (not= mine theirs)))))
-
-(defn repair-open-holders
-  "PIDs that hold the inode at `p` open, plus PIDs whose descriptors cannot be
-  inspected (unknown counts as holding: fail closed). Vanished PIDs are ignored.
-  Processes of another UID are only considered when the inode is group/other
-  writable: task-board writers run as this non-root UID (root is refused), and
-  an owner-only-writable inode cannot be written by another non-root UID, so
-  their unreadable /proc/<pid>/fd (e.g. root daemons) is not a writer signal.
-  A same-UID process whose fd table is unreadable because its credentials differ
-  from ours (see repair-foreign-credentials?) is likewise not a writer; any
-  other unreadable fd table still counts as holding."
+(defn repair-scan-holders
+  "Scan /proc for the inode at `p`. Returns {:holders [...] :uninspected [...]}
+  as pid(comm) labels. Processes of another UID are only considered when the
+  inode is group/other writable: task-board writers run as this non-root UID
+  (root is refused) and an owner-only-writable inode cannot be written by
+  another non-root UID. A process whose fd table the kernel refuses to show to
+  this same user (different saved ids/capabilities, non-dumpable, LSM, e.g.
+  (sd-pam) or a CI agent) is not a plain task-board writer -- those (bb, git,
+  sync clients) run as this user and are always inspectable -- so it is
+  reported as uninspected instead of holding. Vanished PIDs are ignored."
   [p]
   (let [k (repair-file-key p)
         uid (Long/parseLong (str/trim (:out (shell/sh "id" "-u"))))
@@ -912,34 +894,35 @@
                   (catch Exception _ nil))
         foreign-writable? (or (nil? mode) (not (zero? (bit-and mode 2r000010010))))]
     (repair-require k (str "cannot identify displaced board inode " p))
-    (vec (for [proc (fs/list-dir "/proc")
-               :let [pid (str (fs/file-name proc))]
-               :when (re-matches #"\d+" pid)
-               :let [owner (repair-proc-uid proc)]
-               :when (or foreign-writable? (nil? owner) (= uid owner))
-               :let [fds (try (vec (fs/list-dir (fs/path proc "fd")))
-                              (catch java.nio.file.NoSuchFileException _ [])
-                              (catch Exception _
-                                (when (and (fs/exists? proc)
-                                           (not (and (not foreign-writable?)
-                                                     (repair-foreign-credentials? proc))))
-                                  ::unknown)))]
-               :when (or (= ::unknown fds) (some #(= k (repair-file-key %)) fds))]
-           (str pid "(" (or (try (str/trim (first (java.nio.file.Files/readAllLines (fs/path proc "comm"))))
-                                 (catch Exception _ nil)) "?")
-                (when (= ::unknown fds) ",fd-unreadable") ")")))))
+    (reduce (fn [acc proc]
+              (let [owner (repair-proc-uid proc)]
+                (if-not (or foreign-writable? (nil? owner) (= uid owner))
+                  acc
+                  (let [fds (try (vec (fs/list-dir (fs/path proc "fd")))
+                                 (catch java.nio.file.NoSuchFileException _ [])
+                                 (catch Exception _ (when (fs/exists? proc) ::unknown)))]
+                    (cond
+                      (= ::unknown fds) (update acc :uninspected conj (repair-proc-label proc))
+                      (some #(= k (repair-file-key %)) fds) (update acc :holders conj (repair-proc-label proc))
+                      :else acc)))))
+            {:holders [] :uninspected []}
+            (filter #(re-matches #"\d+" (str (fs/file-name %))) (fs/list-dir "/proc")))))
 
 (defn repair-wait-holders!
   "Wait until no visible process holds the displaced inode open. After that no
   write can reach it any more (its old name now resolves to the new Board), so
   comparing its content afterwards is final for this host. Returns remaining
-  holder PIDs (empty on success)."
+  holder PIDs (empty on success). Uninspectable processes are named on stderr."
   [p]
   (let [deadline (+ (System/currentTimeMillis) (repair-holder-wait-ms))]
     (loop []
-      (let [holders (repair-open-holders p)]
+      (let [{:keys [holders uninspected]} (repair-scan-holders p)]
         (if (or (empty? holders) (> (System/currentTimeMillis) deadline))
-          holders
+          (do (when (seq uninspected)
+                (binding [*out* *err*]
+                  (println (str "reconcile-done: warning: fd table not inspectable (not a plain task-board writer): "
+                                (str/join "," uninspected)))))
+              holders)
           (do (Thread/sleep 100) (recur)))))))
 
 (defn repair-retained-dir [vault]
