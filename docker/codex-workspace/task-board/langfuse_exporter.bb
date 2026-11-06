@@ -780,7 +780,10 @@
             (let [parts (map strip-value (str/split v #"[\s\"'`,;:=<>()\[\]{}\\]+"))
                   ;; Inside a structure a word followed by : or = is a key (secretKeyRef: name: app-secrets).
                   keys (set (map second (re-seq #"([^\s\"'`,;:=<>()\[\]{}\\]{1,128})[\"']{0,2}\s{0,4}[:=]" v)))
-                  tokens (if (structural? v) (remove #(or (reference? %) (contains? keys %)) parts) (filter plain-value-token? parts))]
+                  tokens (if (structural? v) (remove #(or (reference? %) (contains? keys %)) parts) (filter plain-value-token? parts))
+                  ;; Outside a structure a bare secret word among other words (password: secrets valid) is part of the
+                  ;; value, not a name, so it is pinned with them (P0 arch#14503 :910).
+                  words (when-not (structural? v) (filter #(and (secret-name? %) (re-matches #"[\x21-\x7e]+" %)) parts))]
               (cond (nil? acc) acc
                     (or (re-matches literal-value v) (re-matches structure-word v)) (when (>= (count v) 4) (conj acc v))
                     ;; A whole value that is a bare secret word (password: secrets) is the value, not a name, and can
@@ -788,8 +791,9 @@
                     (and (secret-name? v) (re-matches #"[\x21-\x7e]+" v)) (when (>= (count v) 4) (conj acc v))
                     (or (reference? v) (empty? tokens)) acc
                     (some #(< (count %) 4) tokens) nil
-                    (= 1 (count tokens)) (conj acc (first tokens))
-                    :else (into (conj acc v) (filter #(and (>= (count %) 6) (not (re-matches #"[a-z]+|[0-9]{1,5}" %))) tokens)))))
+                    (some #(< (count %) 4) words) nil
+                    (= 1 (count tokens)) (into (conj acc (first tokens)) words)
+                    :else (into (into (conj acc v) words) (filter #(and (>= (count %) 6) (not (re-matches #"[a-z]+|[0-9]{1,5}" %))) tokens)))))
           #{}
           (keep #(let [v (strip-value %)] (when-not (str/blank? v) v)) raw)))
 
@@ -901,10 +905,12 @@
             before (reverse (take i tokens))
             bgap (take-while #(or (re-matches prose-connective %) (re-matches prose-separator %)) before)
             bword (first (drop (count bgap) before))
+            ;; A bare secret word among the named words (the password is secrets and valid) is part of the value too,
+            ;; so it is pinned with the rest and its later bare or encoded repeat is masked (P0 arch#14503 :910).
             after-values (when (some #(re-matches prose-separator %) gap)
                            (->> rest-tokens
                                 (remove #(or (re-matches prose-connective %) (re-matches prose-separator %)))
-                                (filter plain-value-token?)
+                                (filter #(or (plain-value-token? %) (secret-name? %)))
                                 (filter #(re-matches #"[\x21-\x7e]+" %))))
             ;; A bare secret word after a separator (the password is secrets) is the value (P0 arch#14503 :719).
             after-values (if (and (empty? after-values) (some #(re-matches prose-separator %) gap))

@@ -138,3 +138,10 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 - ハイフンで始まる秘密名ファイルも、必ずファイル名になる位置では機密源として扱う: オプション終端 `--` の後の被演算子(`sed -n 1p -- -db_password`、`grep -h x -- -db_password`、`grep -- -x -db_password` の2つ目以降)、入力リダイレクト(`< -db_password`、`<-db_password`)、`dd if=-db_password`、変数代入(`f=-db_password`)、`open('-db_password')`。以前は先頭 `-` の語を一律にオプションとみなして除外し、ラベルのない秘密値が送信されていた。
 - `--` より前の先頭 `-` の語は従来どおりオプションとして扱う(`--password-file=x.cnf`、`--token-ttl 5` で保留しない)。grep/rg で `--` の直後の最初の被演算子は検索語のまま(`grep -rn -- -password src` は読める)。`echo`/`ls` 等の言及専用コマンドも対象外。
 - 実 run 28 件(BOXP-436/437/440/446/449/450、件数のみ)の body_policy 件数は修正前後で完全一致。
+
+## 追記 (arch#14503 P0 :910)
+
+- 秘密語＋区切りで名指しされた値が複数語で、その中に秘密語単体が含まれる場合(`the password is secrets and valid`、`password: secrets valid`、`token = credentials horsestaple`)も、その秘密語を値の一部として pin する。以前は後続の語(valid)だけを pin し、秘密語(secrets)は名前として除外していたため、後続本文の Base64 形(`c2VjcmV0cw==`)や裸の再掲が送信されていた。pin した語は既存の復号照合(Base64/base64url/hex)でも検出される。
+- 構造値(`secretKeyRef: {name: ..., key: password}`)のキー語の扱い、区切りのない言及(`Reset your password ...`)は従来どおり。4 文字未満の秘密語(`pwd`)が値の中にある場合は value_exposure で保留。
+- 過剰マスク: `the password is stored in the secrets manager` のような説明文を読むと、以後同じ run で `secrets` も伏字になる(保留はしない)。
+- 実 run 28 件(BOXP-436/437/440/446/449/450、件数のみ)の body_policy 件数は修正前後で完全一致。

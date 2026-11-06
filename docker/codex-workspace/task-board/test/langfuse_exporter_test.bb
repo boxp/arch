@@ -1463,6 +1463,25 @@
     (is (not (contains? (:values (#'lf/body-exposure text)) "secret")) text))
   (is (nil? (:reason (#'lf/body-exposure "Reset your password from the settings page.")))))
 
+;; P0 arch#14503 :910 (BOXP-428). A bare secret word followed by more words (the password is secrets and valid) was
+;; dropped as a name, so only valid was pinned and the Base64 of secrets (c2VjcmV0cw==) was sent later. The secret word
+;; among the named words is pinned now, in prose and in an assignment.
+(deftest bare-secret-word-among-value-words-is-pinned
+  (doseq [[text v] [["the password is secrets and valid" "secrets"] ["the password is secrets valid" "secrets"]
+                    ["my token was credential plus extra" "credential"] ["password: secrets valid" "secrets"]
+                    ["token = credentials horsestaple" "credentials"]]]
+    (is (contains? (:values (#'lf/tool-exposure {:input "cat notes.txt"} {:output text})) v) text)
+    (is (contains? (:values (#'lf/body-exposure text)) v) text)
+    (let [b64 (.encodeToString (java.util.Base64/getEncoder) (.getBytes ^String v "UTF-8"))
+          vals (:values (#'lf/body-exposure text))
+          {:keys [value]} (lf/redact (str "later " b64 " and " v " again") vals)]
+      (is (not (str/includes? value b64)) text)
+      (is (not (str/includes? value (str " " v " "))) text)
+      (is (not (lf/guard-safe? (str "later " b64) vals)) text)))
+  ;; Controls: a mention without a separator still pins nothing.
+  (doseq [text ["Reset your password from the settings page." "Use the token endpoint to refresh."]]
+    (is (not (contains? (:values (#'lf/body-exposure text)) "password")) text)))
+
 ;; P0 arch#14503 secret-file-name (BOXP-428). The part of a file name after the secret word was capped at 64 of
 ;; [A-Za-z0-9_.-], so `cat db_password<65+ chars>` (or a name with + @ : , after the word) was not a source and the
 ;; file's bare value was sent. The rest of the last path component (up to the 255-byte name limit) is accepted now.
