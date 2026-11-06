@@ -55,7 +55,8 @@ class RepairTest(unittest.TestCase):
         self.before = '---\nkanban-plugin: board\n---\n\n## In Progress\n\n' + STALE + '\n' + FOREIGN + '\n\n## Done\n\n' + DONE + '\n\n## Notes\n\n' + STALE + '\n\n'
         self.board.write_text(self.before)
         self.env = dict(os.environ, TASK_BOARD_VAULT_WRITER_LOCK_DIR=str(self.writer),
-                        CODEX_TASK_BOARD_RECONCILE_SETTLE_MS='0')
+                        CODEX_TASK_BOARD_RECONCILE_SETTLE_MS='0',
+                        CODEX_TASK_BOARD_RECONCILE_HOLDER_WAIT_MS='5000')
         self.cmd = ['bb', str(HELPER), 'reconcile-done', 'BOXP-433', '--vault', str(self.vault), '--source-root', str(self.root), '--json']
 
     def call(self, *args, ok=True):
@@ -136,23 +137,55 @@ class RepairTest(unittest.TestCase):
                 self.assertFalse(list((self.vault / 'Boards').glob('.reconcile-433-*')))
 
     @unittest.skipUnless(EXCHANGE, 'mv --exchange unavailable')
-    def test_late_write_to_displaced_inode_is_retained_and_detected(self):
+    def test_late_write_to_displaced_inode_is_restored_immediately(self):
         # P0: a writer holding the old Board inode open writes after the settle
-        # delay. The displaced inode must not be deleted and later runs must fail.
+        # delay. The command itself must detect it, put that inode back as the
+        # live Board and fail; no success while the update sits only in a retained file.
         self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR')
         plan = self.plan()
         self.env['CODEX_TASK_BOARD_TEST_RECONCILE_LATE_WRITE'] = 'true'
         try:
-            result = self.call(*self.args(plan))
+            err = self.call(*self.args(plan), ok=False)
         finally:
             self.env.pop('CODEX_TASK_BOARD_TEST_RECONCILE_LATE_WRITE')
-        self.assertEqual(self.board.read_text(), self.before.replace(STALE + '\n', '', 1))
+        self.assertIn('late write to displaced board; writer content restored', err)
+        self.assertEqual(self.board.read_text(), self.before + 'late writer\n')
+        self.assertTrue(list((self.root / 'repair-backups').glob('BOXP-433-*-late-displaced.md')))
         retained = list((self.vault / '.task-board-repair-retained').glob('BOXP-433-*-displaced.md'))
         self.assertEqual(len(retained), 1)
-        self.assertEqual(retained[0].read_text(), self.before + 'late writer\n')
+        self.assertEqual(retained[0].read_text(), self.before.replace(STALE + '\n', '', 1))
         self.assertFalse(list((self.vault / 'Boards').glob('.reconcile-433-*')))
-        for args in (['--dry-run'], self.args(plan)):
-            self.assertIn('late concurrent write detected', self.call(*args, ok=False))
+        self.assertIn(':phase :conflict', (self.vault / '.task-board-repair-audit.edn').read_text())
+        # Retained inode is unchanged since, so later runs see the restored board as a fresh conflict.
+        self.assertEqual(self.plan()['retained-checked'], 1)
+
+    @unittest.skipUnless(EXCHANGE, 'mv --exchange unavailable')
+    def test_open_descriptor_on_displaced_board_restores_original(self):
+        # P0: a writer that still has the old Board open after the wait could
+        # write later; the command must restore that inode as the Board and fail.
+        self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR')
+        plan = self.plan()
+        holder = subprocess.Popen(['sh', '-c', 'exec 3<>"$1"; sleep 30', 'sh', str(self.board)])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        for _ in range(100):
+            if any(os.path.realpath(f'/proc/{holder.pid}/fd/{fd}') == str(self.board)
+                   for fd in os.listdir(f'/proc/{holder.pid}/fd')):
+                break
+            subprocess.run(['sleep', '0.05'])
+        self.env['CODEX_TASK_BOARD_RECONCILE_HOLDER_WAIT_MS'] = '300'
+        err = self.call(*self.args(plan), ok=False)
+        self.assertIn('displaced board still open by pid', err)
+        self.assertIn(str(holder.pid), err)
+        self.assertEqual(self.board.read_text(), self.before)
+        # The holder's descriptor points at the live Board again: its write is not lost.
+        with open(f'/proc/{holder.pid}/fd/3', 'a') as f:
+            f.write('held writer\n')
+        self.assertEqual(self.board.read_text(), self.before + 'held writer\n')
+        holder.kill()
+        holder.wait()
+        self.env.pop('CODEX_TASK_BOARD_RECONCILE_HOLDER_WAIT_MS')
+        self.assertEqual(self.plan()['retained-checked'], 1)
 
     @unittest.skipUnless(EXCHANGE, 'mv --exchange unavailable')
     def test_retained_inode_checked_after_clean_apply(self):

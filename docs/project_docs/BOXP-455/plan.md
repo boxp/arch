@@ -24,4 +24,5 @@
 ## codex-review P0 (late writer) 対応
 
 - 置換で外れた旧Board inodeは削除せず vault内 `.task-board-repair-retained/` へ同一inodeでrenameし保持、パスとハッシュを監査記録。
-- 以後のreconcile-done実行（dry-run含む）で保持inodeを全件照合し、遅延書込み・欠落を検出したら非0終了。apply後は時間を置いたdry-runで読み戻す。
+- 成功を返す前に`/proc/*/fd`を走査し、保持inodeを開くプロセスが無くなるまで待って（既定30秒、読めないfdは保持中扱い）再照合。待機後も開かれている／遅延書込みがあれば旧inodeを交換でBoardへ戻し、各版保存・conflict監査・非0終了（更新が保持ファイルだけに残る成功を返さない）。
+- 以後のreconcile-done実行（dry-run含む）で保持inodeを全件照合し、遅延書込み・欠落を検出したら非0終了。apply後は時間を置いたdry-runで読み戻す。（同一ホストから見えないwriter向けの残余対策）

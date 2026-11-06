@@ -856,6 +856,43 @@
   (try (Long/parseLong (or (System/getenv "CODEX_TASK_BOARD_RECONCILE_SETTLE_MS") "1000"))
        (catch Exception _ 1000)))
 
+(defn repair-holder-wait-ms []
+  (try (Long/parseLong (or (System/getenv "CODEX_TASK_BOARD_RECONCILE_HOLDER_WAIT_MS") "30000"))
+       (catch Exception _ 30000)))
+
+(defn repair-file-key [p]
+  (try (.fileKey (java.nio.file.Files/readAttributes (fs/path p) java.nio.file.attribute.BasicFileAttributes
+                   (make-array java.nio.file.LinkOption 0)))
+       (catch Exception _ nil)))
+
+(defn repair-open-holders
+  "PIDs that hold the inode at `p` open, plus PIDs whose descriptors cannot be
+  inspected (unknown counts as holding: fail closed). Vanished PIDs are ignored."
+  [p]
+  (let [k (repair-file-key p)]
+    (repair-require k (str "cannot identify displaced board inode " p))
+    (vec (for [proc (fs/list-dir "/proc")
+               :let [pid (str (fs/file-name proc))]
+               :when (re-matches #"\d+" pid)
+               :let [fds (try (vec (fs/list-dir (fs/path proc "fd")))
+                              (catch java.nio.file.NoSuchFileException _ [])
+                              (catch Exception _ (when (fs/exists? proc) ::unknown)))]
+               :when (or (= ::unknown fds) (some #(= k (repair-file-key %)) fds))]
+           pid))))
+
+(defn repair-wait-holders!
+  "Wait until no visible process holds the displaced inode open. After that no
+  write can reach it any more (its old name now resolves to the new Board), so
+  comparing its content afterwards is final for this host. Returns remaining
+  holder PIDs (empty on success)."
+  [p]
+  (let [deadline (+ (System/currentTimeMillis) (repair-holder-wait-ms))]
+    (loop []
+      (let [holders (repair-open-holders p)]
+        (if (or (empty? holders) (> (System/currentTimeMillis) deadline))
+          holders
+          (do (Thread/sleep 100) (recur)))))))
+
 (defn repair-retained-dir [vault]
   ;; Inside the vault so displaced Board inodes stay on the same filesystem and
   ;; can be renamed (not copied): a writer still holding the old inode open
@@ -944,14 +981,37 @@
           (Thread/sleep (repair-settle-ms))
           (let [displaced (read-text tmp)]
             (if (= displaced before)
-              (if (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_RECONCILE_LATE_WRITE"))
-                ;; Deterministic hook: a writer opened the old inode before the
-                ;; exchange and writes through that descriptor after the check.
-                (with-open [out (java.io.FileOutputStream. (str tmp) true)]
-                  (let [r (retain! "displaced")]
-                    (.write out (.getBytes "late writer\n" "UTF-8"))
-                    {:conflict nil :retained r}))
-                {:conflict nil :retained (retain! "displaced")})
+              (let [rpath (if (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_RECONCILE_LATE_WRITE"))
+                            ;; Deterministic hook: a writer opened the old inode before the
+                            ;; exchange and writes through that descriptor after the settle delay.
+                            (with-open [out (java.io.FileOutputStream. (str tmp) true)]
+                              (let [r (repair-retain! tmp retain-dir "displaced")]
+                                (.write out (.getBytes "late writer\n" "UTF-8"))
+                                r))
+                            (repair-retain! tmp retain-dir "displaced"))
+                    ;; The command must not report success while a writer can
+                    ;; still write into the displaced inode: wait for every
+                    ;; descriptor on it to close, then compare once more.
+                    holders (repair-wait-holders! rpath)
+                    final (read-text rpath)]
+                (if (and (empty? holders) (= final before))
+                  {:conflict nil :retained [{:retained-path rpath :retained-sha256 (repair-sha final)}]}
+                  ;; Late write or a still-open descriptor: put the displaced
+                  ;; inode back as the live Board so the writer's update (now or
+                  ;; later) lands in the real Board. Every version is preserved.
+                  (let [reason (if (seq holders)
+                                 (str "displaced board still open by pid " (str/join "," holders)
+                                      "; original board restored")
+                                 "late write to displaced board; writer content restored")
+                        displaced-copy (preserve! "late-displaced" rpath)]
+                    (if (= after (read-text path))
+                      (do (repair-exchange! rpath path)
+                          (let [now (read-text rpath)]
+                            {:conflict reason :preserved [displaced-copy]
+                             :retained [{:retained-path rpath :retained-sha256 (repair-sha now)}]}))
+                      {:conflict (str reason " failed: board replaced again; merge " displaced-copy " manually")
+                       :preserved [displaced-copy]
+                       :retained [{:retained-path rpath :retained-sha256 (repair-sha (read-text rpath))}]}))))
               ;; Someone else wrote between the check and the exchange: put
               ;; their content back. If the board changed again meanwhile,
               ;; restore that newest content too; every version is preserved.
