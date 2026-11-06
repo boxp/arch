@@ -45,3 +45,9 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
   from its value (`API key` with a space, a value far from its label).
 - Not in scope of this acceptance: collecting raw credentials on purpose, sending unprocessed fields,
   sending bodies outside the cluster. A new miss of a known source or known format is a regression.
+
+## 追記 (arch#14503 P0 :272 / :580)
+
+- 秘密名ファイル(password/secret/credentials/passphrase)を読む読取系コマンド(cat/head/tail/less/bat/nl/od/xxd/strings/base64/source 等)は、その引数が末尾でなくても機密源として本文を保留する(`cat password /tmp/other`)。`grep`/`rg`/`echo` 等の検索・言及は対象外で読める。
+- tool 入力の散文で秘密語に名指しされた値(`echo the password is huntertwo`)も出力と同様に pin し、出力と以後の本文でマスクする。4文字未満なら `value_exposure` で保留。
+- 過剰マスク: 入力で秘密語の後に区切り(is/:/=)で続く普通の語も以後マスクされる。

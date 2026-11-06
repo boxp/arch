@@ -272,8 +272,13 @@
   #"(?i)(?:(?:^|[/\\\s\"'=])(?:auth\.json|\.credentials[^/\s\"']*|\.env[^/\s\"']*|\.ssh(?:[/\\]|\b)|\.aws(?:[/\\]|\b)|kubeconfig|\.git-credentials|\.netrc|id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?|\.gnupg(?:[/\\]|\b)|secrets?[/\\]|(?<=/)secrets?(?=$|[\s\"'])|tokens?(?=[\s\"'/\\]|\z)|[^/\\\s\"'=]{0,255}?token(?=[\s\"'/\;|&)]|\z)|[^/\\\s\"'=]{0,255}?\.(?:key|pem|p8|p12|pfx|jks|keystore|ppk)(?=[\s\"';|&)]|\z))|[/\\][^/\\\s\"']{0,255}?token|token[^/\\\s\"']{0,255}?(?:\.[A-Za-z0-9]+(?![\w-])|[/\\]))|(?<=[/\\])[^/\\\s\"']{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)(?:\.[A-Za-z0-9]{1,16})?(?=[\s\"'/\;|&)]|\z)|(?:^|(?<=[\s\"'=]))[^/\\\s\"'=]{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)\.[A-Za-z0-9]{1,16}(?=[\s\"';|&)]|\z)|(?:^|(?<=[\s\"'=]))(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)(?=[\"']|\z)")
 (def sensitive-command
   #"(?i)(?:^|[;&|\s\"'(`/]|\\[nrt])(?:env(?:[ \t]+(?:-\S*|[A-Za-z_]\w*=\S*))*[ \t]*(?:[\"'|;&<>)`]|\\[nrt]|$)|printenv(?:[\s\"'|;&<>)]|$))|(?:^|[;&|\s\"'(`/])(?:set|export|declare|typeset)(?:\s+-[a-z]*[px]\b|[ \t]*(?:$|[|;&<>\"')`#]|\\[nrt\"]))|\benviron\b|\bprocess\.env\b|\bgetenv\b|\baws\b[^|;&\n]{0,1024}\b(?:ssm\s+get-parameter|secretsmanager\s+get-|configure\s+(?:get|export-credentials))|\bhelm\s+get\b|\bgh\s+auth\s+token\b|\bgit\s+credential\b")
+;; A file-reading command whose argument list names a secret file anywhere (cat password /tmp/other) prints that
+;; file; the bare-word clause of sensitive-path only sees it as the last argument, so grep/rg/echo searches and
+;; messages that mention the word stay readable (P0 arch#14503 :272).
+(def secret-file-read
+  #"(?i)(?:^|[;&|\s\"'(`])(?:cat|tac|head|tail|less|more|bat|batcat|nl|od|xxd|hexdump|strings|base64|source|\.)(?=[\s\"'])[^;&|\n]{0,1024}?(?<=[\s\"'=])(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)(?=[\s\"';|&)]|\z)")
 (defn withhold-output? [input]
-  (let [s (str input)] (boolean (or (re-find sensitive-path s) (re-find sensitive-command s)
+  (let [s (str input)] (boolean (or (re-find sensitive-path s) (re-find sensitive-command s) (re-find secret-file-read s)
                                     (and (re-find #"(?i)\b(?:kubectl|oc)\s" s) (re-find #"(?i)secret" s))))))
 (defn env-dump? [output]
   (let [s (str output)] (boolean (and (re-find #"(?:^|[^A-Za-z0-9_])PATH=" s)
@@ -579,11 +584,15 @@
           (env-dump? output) {:reason "sensitive_source"}
           :else (let [in (exposure input) out (exposure output)
                       large? (> (count output) 262144)
+                      ;; A value named in prose in the input (echo the password is huntertwo) is pinned too, so the
+                      ;; bare output and later repeats are masked (P0 arch#14503 :580).
+                      in-prose (when-not (> (count input) 262144) (prose-values input))
                       prose (when-not large? (prose-values output))]
                   (cond (:reason in) in
                         (:reason out) out
+                        (:reason in-prose) {:reason (:reason in-prose)}
                         (:reason prose) {:reason (:reason prose)}
-                        :else {:values (into (set (:values in)) (concat (:values out) (:values prose) (when-not large? (candidate-values output))))})))))
+                        :else {:values (into (set (:values in)) (concat (:values out) (:values in-prose) (:values prose) (when-not large? (candidate-values output))))})))))
 
 (defn- privacy-reason [tool result] (:reason (tool-exposure tool result)))
 (defn- privacy-analysis [ctx gens tools-of result-of]

@@ -989,5 +989,31 @@
         (is (nil? reason) output)
         (is (not-any? #{"generation" "configuration" "documented" "reset" "settings" "page" "what"} values) output)))))
 
+;; P0 arch#14503 :272 / :580 (BOXP-428). A secret-named file read with further arguments is still a source, and a
+;; value named in prose in the tool input is pinned so the bare output and later repeats are masked.
+(deftest secret-named-file-with-more-arguments
+  (doseq [c ["cat password /tmp/other" "head -n 5 secret /tmp/x" "less credentials notes.txt" "cat -n passwords other.txt"
+             "tail -f /tmp/app.log password"]]
+    (is (lf/withhold-output? c) c))
+  (doseq [c ["grep -rn password src" "echo password reset" "rg password docs" "git commit -m 'rotate password docs'"
+             "cat docs/reset.md README.md"]]
+    (is (not (lf/withhold-output? c)) c)))
+
+(deftest prose-values-in-tool-input
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        value "huntertwo"
+        lines [{:type "user" :message {:content "first request"}}
+               {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command (str "echo the password is " value)}}]}}
+               {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content value}]}}
+               {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text (str "zz " value " zz")}]}}]
+        spans (doall (lf/claude-spans ctx "root" "test:" lines))
+        sanitized (pr-str (map #(lf/sanitize-span {:secret-values (mapcat :session-values spans) :max-field-bytes 100000} (atom {}) %) spans))]
+    (is (contains? (set (:values (#'lf/tool-exposure {:input (str "echo the password is " value)} {:output value}))) value))
+    (is (not (str/includes? sanitized value)))
+    (is (= "value_exposure" (:reason (#'lf/tool-exposure {:input "echo the password is abc"} {:output "abc"}))))
+    (testing "an ordinary command stays readable"
+      (is (nil? (:reason (#'lf/tool-exposure {:input "grep -rn 'reset your password page' docs"} {:output "docs/a.md:1: reset your password"}))))
+      (is (str/includes? sanitized "first request") "control: the request body is sent"))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
