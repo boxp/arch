@@ -870,23 +870,29 @@
                                          (make-array java.nio.file.LinkOption 0))
        (catch Exception _ nil)))
 
-(defn repair-proc-cap-prm
-  "Permitted capability mask of a /proc entry (status is world-readable), or nil."
+(defn repair-proc-creds
+  "Uid/Gid lines (real, effective, saved, fs) and CapPrm of a /proc entry from
+  its world-readable status file, or nil."
   [proc]
-  (try (some->> (java.nio.file.Files/readAllLines (fs/path proc "status"))
-                (some #(when (str/starts-with? % "CapPrm:") (str/trim (subs % 7))))
-                (#(BigInteger. ^String % 16)))
+  (try (let [lines (java.nio.file.Files/readAllLines (fs/path proc "status"))
+             field (fn [k] (some #(when (str/starts-with? % k)
+                                    (str/join " " (str/split (str/trim (subs % (count k))) #"\s+")))
+                                 lines))
+             creds {:uid (field "Uid:") :gid (field "Gid:") :cap-prm (field "CapPrm:")}]
+         (when (every? some? (vals creds)) creds))
        (catch Exception _ nil)))
 
-(defn repair-privileged-beyond-self?
-  "True when `proc` holds capabilities this process lacks. That is the reason a
-  same-UID /proc/<pid>/fd is unreadable (ptrace read check); task-board writers
-  run unprivileged (root refused), so such a process is not a Board writer."
+(defn repair-foreign-credentials?
+  "True when `proc` runs with credentials other than ours (any real/effective/
+  saved/fs uid or gid differs, or a different permitted capability set). Those
+  are exactly the cases where a same-UID /proc/<pid>/fd is unreadable (ptrace
+  read check), e.g. (sd-pam) or a CI agent. Task-board writers run as this
+  plain unprivileged user (root refused), so such a process is not a Board
+  writer. Unknown credentials are not treated as foreign (fail closed)."
   [proc]
-  (let [mine (repair-proc-cap-prm "/proc/self")
-        theirs (repair-proc-cap-prm proc)]
-    (boolean (and mine theirs
-                  (not (zero? (.signum (.andNot ^BigInteger theirs ^BigInteger mine))))))))
+  (let [mine (repair-proc-creds "/proc/self")
+        theirs (repair-proc-creds proc)]
+    (boolean (and mine theirs (not= mine theirs)))))
 
 (defn repair-open-holders
   "PIDs that hold the inode at `p` open, plus PIDs whose descriptors cannot be
@@ -895,9 +901,9 @@
   writable: task-board writers run as this non-root UID (root is refused), and
   an owner-only-writable inode cannot be written by another non-root UID, so
   their unreadable /proc/<pid>/fd (e.g. root daemons) is not a writer signal.
-  A same-UID process whose fd table is unreadable only because it holds
-  capabilities beyond ours (e.g. a CI agent) is likewise not a writer; any other
-  unreadable fd table still counts as holding."
+  A same-UID process whose fd table is unreadable because its credentials differ
+  from ours (see repair-foreign-credentials?) is likewise not a writer; any
+  other unreadable fd table still counts as holding."
   [p]
   (let [k (repair-file-key p)
         uid (Long/parseLong (str/trim (:out (shell/sh "id" "-u"))))
@@ -916,7 +922,7 @@
                               (catch Exception _
                                 (when (and (fs/exists? proc)
                                            (not (and (not foreign-writable?)
-                                                     (repair-privileged-beyond-self? proc))))
+                                                     (repair-foreign-credentials? proc))))
                                   ::unknown)))]
                :when (or (= ::unknown fds) (some #(= k (repair-file-key %)) fds))]
            (str pid "(" (or (try (str/trim (first (java.nio.file.Files/readAllLines (fs/path proc "comm"))))
