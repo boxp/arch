@@ -1544,5 +1544,26 @@
              "git commit -m 'x' -- notes.md" "echo -- -db_password" "ls -- -db_password" "cat -- notes.md"]]
     (is (not (lf/withhold-output? c)) c)))
 
+;; P0 arch#14503 :781 (BOXP-428). A password that equals an auth scheme name (curl -u admin:bearer) was dropped as a
+;; scheme word, so it was not pinned and a later bare repeat of bearer was sent. A whole value that is a scheme word is
+;; pinned now, and a scheme word that is not the leading scheme of a credential (Bearer xyz) is part of the value.
+(deftest scheme-word-value-is-pinned
+  (doseq [[text v] [["curl -u admin:bearer https://x" "bearer"] ["curl --user=ci:Basic https://x" "Basic"]
+                    ["curl -u 'admin:negotiate' https://x" "negotiate"] ["password: digest" "digest"]
+                    ["the password is bearer" "bearer"] ["token = https" "https"]
+                    ["curl -u 'admin:horsestaple bearer' https://x" "bearer"] ["password: secretvalue basic" "basic"]]]
+    (is (contains? (:values (#'lf/body-exposure text)) v) text)
+    (is (contains? (:values (#'lf/tool-exposure {:input "cat notes.txt"} {:output text})) v) text)
+    (let [vals (:values (#'lf/body-exposure text))
+          b64 (.encodeToString (java.util.Base64/getEncoder) (.getBytes ^String v "UTF-8"))
+          {:keys [value]} (lf/redact (str "later " v " and " b64 " again") vals)]
+      (is (not (str/includes? value (str " " v " "))) text)
+      (is (not (str/includes? value b64)) text)))
+  ;; Controls: the leading scheme of a credential is not the value; the credential after it is.
+  (doseq [text ["Authorization: Bearer schemectlvalue9" "curl -H 'Authorization: Basic schemectlvalue9' https://x"]]
+    (let [vals (:values (#'lf/body-exposure text))]
+      (is (contains? vals "schemectlvalue9") text)
+      (is (not-any? #(re-matches #"(?i)bearer|basic" %) vals) text))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

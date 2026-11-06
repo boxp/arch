@@ -783,17 +783,22 @@
                   tokens (if (structural? v) (remove #(or (reference? %) (contains? keys %)) parts) (filter plain-value-token? parts))
                   ;; Outside a structure a bare secret word among other words (password: secrets valid) is part of the
                   ;; value, not a name, so it is pinned with them (P0 arch#14503 :910).
-                  words (when-not (structural? v) (filter #(and (secret-name? %) (re-matches #"[\x21-\x7e]+" %)) parts))]
+                  words (when-not (structural? v) (filter #(and (secret-name? %) (re-matches #"[\x21-\x7e]+" %)) parts))
+                  ;; Outside a structure an auth scheme word is part of the value unless it leads the value as the
+                  ;; scheme of a credential (Bearer xyz) (P0 arch#14503 :781).
+                  schemes (when-not (structural? v) (filter #(re-matches scheme-word %) (rest (remove str/blank? parts))))]
               (cond (nil? acc) acc
-                    (or (re-matches literal-value v) (re-matches structure-word v)) (when (>= (count v) 4) (conj acc v))
+                    ;; A whole value that is an auth scheme name (curl -u admin:bearer) is the value too (P0 arch#14503 :781).
+                    (or (re-matches literal-value v) (re-matches structure-word v) (re-matches scheme-word v))
+                    (when (>= (count v) 4) (conj acc v))
                     ;; A whole value that is a bare secret word (password: secrets) is the value, not a name, and can
                     ;; be repeated bare later (P0 arch#14503 :719). A name inside a longer value is still skipped.
                     (and (secret-name? v) (re-matches #"[\x21-\x7e]+" v)) (when (>= (count v) 4) (conj acc v))
                     (or (reference? v) (empty? tokens)) acc
                     (some #(< (count %) 4) tokens) nil
                     (some #(< (count %) 4) words) nil
-                    (= 1 (count tokens)) (into (conj acc (first tokens)) words)
-                    :else (into (into (conj acc v) words) (filter #(and (>= (count %) 6) (not (re-matches #"[a-z]+|[0-9]{1,5}" %))) tokens)))))
+                    (= 1 (count tokens)) (into (into (conj acc (first tokens)) words) schemes)
+                    :else (into (into (into (conj acc v) words) schemes) (filter #(and (>= (count %) 6) (not (re-matches #"[a-z]+|[0-9]{1,5}" %))) tokens)))))
           #{}
           (keep #(let [v (strip-value %)] (when-not (str/blank? v) v)) raw)))
 
@@ -814,7 +819,11 @@
        :flag [(last (str/split m #"[ \t]+"))]
        :assignment (let [[_ k v] (re-find #"(?s)^[\"']?([\w.-]*).*?(?:[:=]|\\+u00(?:3[aA]|3[dD]))(.*)$" m)]
                      ;; A setting such as password_min_length: 8 is no value to pin or withhold for.
-                     (if (setting? (str k) (strip-value v)) [] [v]))
+                     ;; Authorization: Bearer xyz names the scheme here; the credential after it is pinned by :bearer
+                     ;; and :header (P0 arch#14503 :781 keeps a password equal to a scheme name pinned elsewhere).
+                     (cond (setting? (str k) (strip-value v)) []
+                           (and (re-find #"(?i)authori[sz]ation" (str k)) (re-matches scheme-word (strip-value v))) []
+                           :else [v]))
        :bearer [(second (re-find #"(?i)bearer\s+(.*)" m))]
        ;; The env name of an entry (PASSWORD=...) is a name, never the value.
        :env-entry (remove secret-name? (str/split m #"[\s\"'`,;:=<>()\[\]{}\\]+"))
@@ -910,8 +919,11 @@
             after-values (when (some #(re-matches prose-separator %) gap)
                            (->> rest-tokens
                                 (remove #(or (re-matches prose-connective %) (re-matches prose-separator %)))
-                                (filter #(or (plain-value-token? %) (secret-name? %)))
-                                (filter #(re-matches #"[\x21-\x7e]+" %))))
+                                (filter #(or (plain-value-token? %) (secret-name? %) (re-matches scheme-word %)))
+                                (filter #(re-matches #"[\x21-\x7e]+" %))
+                                ;; An auth scheme name is the value (the password is bearer) unless it leads a
+                                ;; credential (the token is Bearer xyz) (P0 arch#14503 :781).
+                                (#(if (and (next %) (re-matches scheme-word (first %))) (rest %) %))))
             ;; A bare secret word after a separator (the password is secrets) is the value (P0 arch#14503 :719).
             after-values (if (and (empty? after-values) (some #(re-matches prose-separator %) gap))
                            (let [t (first (remove #(re-matches prose-connective %) rest-tokens))]

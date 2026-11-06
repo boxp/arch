@@ -145,3 +145,10 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 - 構造値(`secretKeyRef: {name: ..., key: password}`)のキー語の扱い、区切りのない言及(`Reset your password ...`)は従来どおり。4 文字未満の秘密語(`pwd`)が値の中にある場合は value_exposure で保留。
 - 過剰マスク: `the password is stored in the secrets manager` のような説明文を読むと、以後同じ run で `secrets` も伏字になる(保留はしない)。
 - 実 run 28 件(BOXP-436/437/440/446/449/450、件数のみ)の body_policy 件数は修正前後で完全一致。
+
+## 追記 (arch#14503 P0 :781)
+
+- 値が認証方式名と一致する場合(`curl -u admin:bearer`、`password: digest`、`the password is bearer`)も、その語を値として pin する。以前は方式名(https/basic/bearer/digest/negotiate)を値から一律に除外していたため、後続本文の裸の再掲や Base64 形が送信されていた。
+- 区切りのない複数語の値の中の方式名(`curl -u 'admin:horsestaple bearer'`、`password: secretvalue basic`)も値の一部として pin する。ただし資格情報の先頭に置かれた方式名(`Authorization: Bearer xyz`、`the token is Bearer xyz`)は方式であり値ではないため、従来どおり後続の資格情報だけを pin する。
+- 過剰マスク: 方式名がパスワードとして現れた run では、以後同じ run で `bearer` 等の語も伏字になる(保留はしない)。
+- 実 run 28 件(BOXP-436/437/440/446/449/450、件数のみ)の body_policy 件数は修正前後で完全一致。
