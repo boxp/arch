@@ -5011,23 +5011,34 @@
       (try (visit run-path)
            (catch Exception e (str "outside-checkout-scan-failed " (one-line (.getMessage e))))))))
 
-(defn stale-process-hold [run-real]
-  ;; Missing /proc or mountinfo is treated as no mount information; readable
-  ;; process cwd links are still checked when available.
-  (let [inside? (fn [path] (try (fs/starts-with? (fs/path path) run-real) (catch Exception _ false)))
-        mountinfo (try (slurp "/proc/self/mountinfo") (catch Exception _ ""))
-        mounts (map #(nth (str/split % #" ") 4 "") (str/split-lines mountinfo))
-        unescape (fn [s] (str/replace s #"\\([0-7]{3})" (fn [[_ oct]] (str (char (Integer/parseInt oct 8))))))]
-    (cond
-      (some #(inside? (unescape %)) mounts) "mount-present"
-      (try
-        (some (fn [entry]
-                (when (re-matches #"[0-9]+" (fs/file-name entry))
-                  (try (inside? (str (fs/real-path (fs/path entry "cwd"))))
-                       (catch Exception _ false))))
-              (fs/list-dir "/proc"))
-        (catch Exception _ false)) "process-active"
-      :else nil)))
+(defn stale-process-hold
+  ;; Fail closed: when mountinfo or the process table cannot be read, or a
+  ;; live process cwd cannot be resolved, hold the run instead of deleting.
+  ([run-real] (stale-process-hold run-real "/proc/self/mountinfo" "/proc"))
+  ([run-real mountinfo-path proc-root]
+   (let [inside? (fn [path] (try (fs/starts-with? (fs/path path) run-real) (catch Exception _ false)))
+         unescape (fn [s] (str/replace s #"\\([0-7]{3})" (fn [[_ oct]] (str (char (Integer/parseInt oct 8))))))
+         mountinfo (try (slurp mountinfo-path) (catch Exception _ nil))
+         mounts (when mountinfo
+                  (map #(nth (str/split % #" ") 4 nil) (str/split-lines mountinfo)))
+         procs (try (doall (filter #(re-matches #"[0-9]+" (fs/file-name %)) (fs/list-dir proc-root)))
+                    (catch Exception _ nil))
+         proc-state (fn [entry]
+                      (try (if (inside? (str (fs/real-path (fs/path entry "cwd")))) :inside :outside)
+                           (catch java.nio.file.NoSuchFileException _
+                             ;; Process exited, or its cwd was deleted.
+                             (if (fs/exists? entry) :outside :gone))
+                           (catch Exception _ :unknown)))]
+     (cond
+       (or (nil? mountinfo) (str/blank? mountinfo)) "mount-info-unavailable"
+       (some nil? mounts) "mount-info-unparseable"
+       (some #(inside? (unescape %)) mounts) "mount-present"
+       (or (nil? procs) (empty? procs)) "process-scan-unavailable"
+       :else (let [states (map proc-state procs)]
+               (cond
+                 (some #{:inside} states) "process-active"
+                 (some #{:unknown} states) "process-cwd-unreadable"
+                 :else nil))))))
 
 (defn parse-closed-date [value]
   (try
@@ -6127,6 +6138,38 @@
           (do
             (println (str "FAIL: " label " expected=" (pr-str expected) " actual=" (pr-str actual)))
             (swap! failures conj label)))))
+
+    (let [tmp (fs/create-temp-dir {:prefix "stale-proc-hold"})
+          run-real (fs/real-path (fs/create-dirs (fs/path tmp "run")))
+          outside (fs/create-dirs (fs/path tmp "elsewhere"))
+          mi (fs/path tmp "mountinfo")
+          mi-inside (fs/path tmp "mountinfo-inside")
+          proc-ok (fs/create-dirs (fs/path tmp "proc-ok"))
+          proc-in (fs/create-dirs (fs/path tmp "proc-in"))
+          proc-empty (fs/create-dirs (fs/path tmp "proc-empty"))
+          proc-bad (fs/create-dirs (fs/path tmp "proc-bad"))]
+      (try
+        (spit (str mi) "22 1 0:1 / / rw - overlay overlay rw\n")
+        (spit (str mi-inside) (str "22 1 0:1 / / rw - overlay overlay rw\n"
+                                   "23 22 0:2 / " (str run-real) "/m rw - tmpfs tmpfs rw\n"))
+        (fs/create-dirs (fs/path proc-ok "1"))
+        (fs/create-sym-link (fs/path proc-ok "1" "cwd") outside)
+        (fs/create-dirs (fs/path proc-in "1"))
+        (fs/create-sym-link (fs/path proc-in "1" "cwd") run-real)
+        (fs/create-dirs (fs/path proc-bad "1"))
+        (fs/create-sym-link (fs/path proc-bad "1" "cwd") (fs/path proc-bad "1" "cwd"))
+        (doseq [[label actual expected]
+                [["proc hold clean" (stale-process-hold run-real (str mi) (str proc-ok)) nil]
+                 ["proc hold mountinfo missing" (stale-process-hold run-real (str (fs/path tmp "nope")) (str proc-ok)) "mount-info-unavailable"]
+                 ["proc hold mountinfo empty" (stale-process-hold run-real (str proc-empty) (str proc-ok)) "mount-info-unavailable"]
+                 ["proc hold mount inside" (stale-process-hold run-real (str mi-inside) (str proc-ok)) "mount-present"]
+                 ["proc hold proc missing" (stale-process-hold run-real (str mi) (str (fs/path tmp "noproc"))) "process-scan-unavailable"]
+                 ["proc hold proc empty" (stale-process-hold run-real (str mi) (str proc-empty)) "process-scan-unavailable"]
+                 ["proc hold cwd inside" (stale-process-hold run-real (str mi) (str proc-in)) "process-active"]
+                 ["proc hold cwd unreadable" (stale-process-hold run-real (str mi) (str proc-bad)) "process-cwd-unreadable"]]]
+          (if (= actual expected) (println (str "PASS: " label))
+              (do (println (str "FAIL: " label " actual=" (pr-str actual))) (swap! failures conj label))))
+        (finally (fs/delete-tree tmp))))
 
     (let [ids ["20260928T000000Z" "20260929T000000Z" "20260930T000000Z" "bad"]
           instant (java.time.Instant/parse "2026-10-01T12:00:00Z")
