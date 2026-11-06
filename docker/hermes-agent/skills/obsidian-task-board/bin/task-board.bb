@@ -940,6 +940,42 @@ fcntl.fcntl(fd, F_SETLEASE, fcntl.F_UNLCK)
                  (catch Exception _ {:exit 4}))]
       (case (:exit r) 0 :free 3 :busy :unavailable))))
 
+(def repair-local-fs-types
+  ;; Filesystems whose inodes are only reachable through this kernel. A pod on
+  ;; another host cannot hold such an inode open (RWO block volumes attach to a
+  ;; single node; pods sharing that node share this kernel, so the kernel lease
+  ;; also covers their writers). Network/FUSE filesystems (nfs, cifs, ceph,
+  ;; glusterfs, fuse.*, 9p, ...) are not listed: their remote openers are
+  ;; invisible to both the lease and /proc. Unknown types fail closed.
+  #{"ext2/ext3" "ext4" "xfs" "btrfs" "tmpfs" "overlayfs" "zfs" "f2fs" "ramfs"})
+
+(defn repair-fs-type [p]
+  (or (present (System/getenv "CODEX_TASK_BOARD_TEST_RECONCILE_FSTYPE"))
+      (let [{:keys [exit out]} (try (shell/sh "stat" "-f" "-c" "%T" (str p))
+                                    (catch Exception _ {:exit 1}))]
+        (when (zero? exit) (str/trim out)))))
+
+(defn repair-require-single-kernel-detection!
+  "Without the shared writer lock the only protection against a writer that
+  still holds the pre-exchange Board open is the post-exchange holder check.
+  That check (kernel lease, /proc) only sees openers on this kernel, and /proc
+  only within this PID namespace. Refuse unless every possible opener is
+  provably visible: the Board lives on a local single-kernel filesystem and
+  the kernel lease works on it (the lease sees other pods on the same node,
+  /proc does not). Otherwise a writer in another pod/host could keep writing
+  into the displaced inode after success is reported."
+  [bpath]
+  (let [fstype (repair-fs-type (fs/parent bpath))
+        lease (repair-write-lease bpath)]
+    (repair-require (contains? repair-local-fs-types fstype)
+                    (str "board filesystem " (pr-str fstype)
+                         " may be shared with other hosts and no shared writer lock is set; "
+                         "a writer in another pod could hold the old board open undetected; refusing"))
+    (repair-require (not= :unavailable lease)
+                    (str "kernel write lease unavailable on board filesystem " fstype
+                         " and no shared writer lock is set; writers in other pods on this node "
+                         "would be invisible to the /proc scan; refusing"))))
+
 (defn repair-wait-holders!
   "Wait until no process can still write into the displaced inode. After that
   no write can reach it any more (its old name now resolves to the new Board),
@@ -1238,6 +1274,7 @@ fcntl.fcntl(fd, F_SETLEASE, fcntl.F_UNLCK)
                                exchange? (repair-exchange-supported? retain-dir (fs/parent bpath))
                                _ (repair-require (or exchange? writer)
                                                  "atomic exchange (mv --exchange) unavailable and no shared writer lock; refusing unsafe replacement")
+                               _ (when-not writer (repair-require-single-kernel-detection! bpath))
                                stamp (.format (java.time.ZonedDateTime/now java.time.ZoneOffset/UTC)
                                               (java.time.format.DateTimeFormatter/ofPattern "yyyyMMdd'T'HHmmssSSS'Z'"))
                                backup (fs/path dir (str id "-" stamp "-board.md"))]

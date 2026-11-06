@@ -254,7 +254,8 @@ class RepairTest(unittest.TestCase):
         # Without a kernel lease the /proc scan decides; a clean apply still
         # succeeds when every relevant process is inspectable, and the probe
         # result is never treated as proof of absence.
-        self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR')
+        # The /proc fallback is only reachable with the shared writer lock;
+        # without it a missing lease is refused up front (see below).
         self.env['CODEX_TASK_BOARD_TEST_RECONCILE_NO_LEASE'] = 'true'
         self.env['CODEX_TASK_BOARD_RECONCILE_HOLDER_WAIT_MS'] = '300'
         plan = self.plan()
@@ -281,7 +282,8 @@ class RepairTest(unittest.TestCase):
         # P1: without a lease the /proc scan must also consider root, which can
         # write an owner-only Board; a root writer holding the old inode must
         # not let the repair report success.
-        self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR')
+        # The /proc fallback is only reachable with the shared writer lock;
+        # without it a missing lease is refused up front (see below).
         self.env['CODEX_TASK_BOARD_TEST_RECONCILE_NO_LEASE'] = 'true'
         self.env['CODEX_TASK_BOARD_RECONCILE_HOLDER_WAIT_MS'] = '300'
         self.board.chmod(0o600)
@@ -302,6 +304,30 @@ class RepairTest(unittest.TestCase):
         holder.wait()
         self.env.pop('CODEX_TASK_BOARD_TEST_RECONCILE_NO_LEASE')
         self.env.pop('CODEX_TASK_BOARD_RECONCILE_HOLDER_WAIT_MS')
+
+    @unittest.skipUnless(EXCHANGE, 'mv --exchange unavailable')
+    def test_without_shared_lock_requires_single_kernel_detection(self):
+        # P0: without the shared writer lock a writer in another pod that keeps
+        # the pre-exchange Board open is only detectable when the Board is on a
+        # local single-kernel filesystem with a working kernel lease.
+        self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR')
+        plan = self.plan()
+        for fstype in ('nfs', 'fuse.sshfs', 'cifs', 'ceph'):
+            self.env['CODEX_TASK_BOARD_TEST_RECONCILE_FSTYPE'] = fstype
+            self.assertIn('may be shared with other hosts', self.call(*self.args(plan), ok=False))
+            self.unchanged()
+        self.env.pop('CODEX_TASK_BOARD_TEST_RECONCILE_FSTYPE')
+        self.env['CODEX_TASK_BOARD_TEST_RECONCILE_NO_LEASE'] = 'true'
+        self.assertIn('kernel write lease unavailable', self.call(*self.args(plan), ok=False))
+        self.unchanged()
+        self.assertFalse((self.root / 'repair-backups').exists() and list((self.root / 'repair-backups').iterdir()))
+        # The shared writer lock serializes every cooperating writer, so the
+        # repair may proceed there (holders on this kernel are still checked).
+        self.env['TASK_BOARD_VAULT_WRITER_LOCK_DIR'] = str(self.writer)
+        self.env['CODEX_TASK_BOARD_TEST_RECONCILE_FSTYPE'] = 'nfs'
+        self.assertEqual(self.call(*self.args(plan))['writer-lock'], 'shared')
+        self.env.pop('CODEX_TASK_BOARD_TEST_RECONCILE_FSTYPE')
+        self.env.pop('CODEX_TASK_BOARD_TEST_RECONCILE_NO_LEASE')
 
     @unittest.skipUnless(EXCHANGE, 'mv --exchange unavailable')
     def test_retained_inode_checked_after_clean_apply(self):
