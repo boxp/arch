@@ -1740,6 +1740,15 @@
 ;; are only ever appended: the only way to continue after exhaustion is an
 ;; explicit Owner grant (`gate-budget-grant`), which adds budget instead of
 ;; deleting history.  See docs/project_docs/BOXP-369/plan.md.
+;;
+;; BOXP-448: the ticket budget scales with the ticket's own PRs.  The ticket
+;; limit is max(unit x max(1, N), unit + legacy grants) + additive grants,
+;; where N counts distinct canonical PRs this ticket's runs actually put
+;; through the PR gate (or failed on), minus PRs first registered by another
+;; ticket and PRs the Owner excluded (`gate-budget-exclude-pr`).  Notes links
+;; alone never count.  Grants without :kind predate BOXP-448 and only act as a
+;; floor (no double counting with unit x N); new grants are :additive.  The
+;; per-PR limit stays unit + PR grants.  See docs/project_docs/BOXP-448/plan.md.
 
 (def gate-failure-budget-max 10)
 
@@ -1769,7 +1778,9 @@
         (f)))))
 
 (defn read-gate-failure-budget []
-  (read-edn-file (gate-failure-budget-path) {:format-version 1 :failures {} :grants [] :reservations {}}))
+  (merge {:format-version 1 :failures {} :grants [] :reservations {}
+          :pr-registrations {} :pr-exclusions []}
+         (read-edn-file (gate-failure-budget-path) {})))
 
 (defn write-gate-failure-budget! [budget]
   ;; Write a sibling file and rename it so a crash never truncates history.
@@ -1812,10 +1823,62 @@
   (let [field (if (= :ticket scope) :ticket :pr)]
     (count (filter #(= key (get % field)) (vals (:failures budget))))))
 
+(defn gate-budget-scope-prs [budget ticket-id]
+  (let [records (concat (map #(assoc % :time (:registered-at %)) (vals (:pr-registrations budget)))
+                        (map #(assoc % :time (:recorded-at %)) (vals (:failures budget))))
+        excluded (set (keep #(when (= ticket-id (:ticket %)) (:pr %)) (:pr-exclusions budget)))]
+    (->> records
+         (filter :pr)
+         (group-by :pr)
+         (keep (fn [[pr rs]]
+                 (let [earliest (first (sort (map #(or (:time %) "") rs)))
+                       owners (set (map :ticket (filter #(= earliest (or (:time %) "")) rs)))]
+                   (when (and (contains? owners ticket-id) (not (contains? excluded pr))) pr))))
+         sort vec)))
+
 (defn gate-budget-status [budget scope key]
   (let [used (gate-budget-usage budget scope key)
-        limit (+ (gate-failure-budget-limit) (gate-budget-granted budget scope key))]
-    {:scope scope :key key :used used :limit limit :exhausted? (>= used limit)}))
+        unit (gate-failure-budget-limit)
+        grants (filter #(and (= scope (:scope %)) (= key (:key %))) (:grants budget))
+        sum (fn [gs] (reduce + 0 (map #(long (or (:amount %) 0)) gs)))]
+    (if (= :ticket scope)
+      (let [prs (gate-budget-scope-prs budget key)
+            n (count prs)
+            base (* unit (max 1 n))
+            legacy (sum (filter #(not (contains? % :kind)) grants))
+            additive (sum (filter #(= :additive (:kind %)) grants))
+            limit (+ (max base (+ unit legacy)) additive)]
+        {:scope scope :key key :used used :limit limit :exhausted? (>= used limit)
+         :scope-prs prs :n n :base base :legacy-granted legacy :additive-granted additive})
+      (let [limit (+ unit (sum grants))]
+        {:scope scope :key key :used used :limit limit :exhausted? (>= used limit)}))))
+
+(defn record-gate-pr-registrations! [ticket-id run-id gate-result]
+  (with-gate-failure-budget-lock
+   (fn []
+     (let [budget (read-gate-failure-budget)
+           urls (concat (:checked-pr-urls gate-result) (:merged-pr-urls gate-result)
+                        (when (not (:ok? gate-result)) [(:url gate-result)]))
+           prs (distinct (keep canonical-pr-id urls))
+           updated (reduce (fn [b pr]
+                             (let [k (str ticket-id "|" pr)]
+                               (if (contains? (:pr-registrations b) k) b
+                                   (assoc-in b [:pr-registrations k]
+                                             {:ticket ticket-id :pr pr :run-id run-id :registered-at (now-str)}))))
+                           budget prs)]
+       (when (not= budget updated) (write-gate-failure-budget! updated))
+       updated))))
+
+(defn gate-budget-exclude-pr! [ticket-id pr-id by]
+  (with-gate-failure-budget-lock
+   (fn []
+     (let [budget (read-gate-failure-budget)
+           exists? (some #(and (= ticket-id (:ticket %)) (= pr-id (:pr %))) (:pr-exclusions budget))
+           updated (if exists? budget
+                       (update budget :pr-exclusions (fnil conj [])
+                               {:ticket ticket-id :pr pr-id :excluded-by by :excluded-at (now-str)}))]
+       (when-not exists? (write-gate-failure-budget! updated))
+       (gate-budget-status updated :ticket ticket-id)))))
 
 (defn gate-budget-statuses [budget ticket-id pr-id]
   (cond-> [(gate-budget-status budget :ticket ticket-id)]
@@ -1950,7 +2013,9 @@
     (str "ゲート累積失敗上限に到達したため自動再試行を停止しました。"
          " 上限: "
          (str/join ", " (map #(str (if (= :ticket (:scope %)) "ticket " "PR ")
-                                   (:key %) " " (:used %) "/" (:limit %))
+                                   (:key %) " " (:used %) "/" (:limit %)
+                                   (when (= :ticket (:scope %))
+                                     (str " (PR数N=" (:n %) "×" (gate-failure-budget-limit) ")")))
                              statuses))
          (if review-gate
            (str "。 直近: gate=" (some-> (:gate review-gate) name)
@@ -1978,7 +2043,7 @@
   (with-gate-failure-budget-lock
    (fn []
      (let [budget (read-gate-failure-budget)
-           grant {:scope scope :key key :amount amount
+           grant {:scope scope :key key :amount amount :kind :additive
                   :granted-by granted-by :granted-at (now-str)}
            budget (update budget :grants (fnil conj []) grant)]
        (write-gate-failure-budget! budget)
@@ -4572,6 +4637,7 @@
                     last-message (if committed (:last-message committed) last-message)
                     ;; A deferred localllm commit can still end in blocked.
                     outcome (intended-outcome action result exit)
+                    _ (when gate-result (record-gate-pr-registrations! ticket-id run-id gate-result))
                     review-gate (if gate-result
                                   (let [gate-result (assoc gate-result :diagnostic
                                                            (persist-pr-gate-diagnostic! ticket-id run-id gate-result))]
@@ -5417,7 +5483,7 @@
     (recur)))
 
 (defn usage []
-  (println "usage: task_board_runner.bb <tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|localllm-migrate-markers [--apply]|gate-budget-status BOXP-N|gate-budget-grant <BOXP-N|owner/repo#N> --amount N --by NAME>")
+  (println "usage: task_board_runner.bb <tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|localllm-migrate-markers [--apply]|gate-budget-status BOXP-N|gate-budget-exclude-pr BOXP-N owner/repo#N --by NAME|gate-budget-grant <BOXP-N|owner/repo#N> --amount N --by NAME>")
   (System/exit 2))
 
 (defn arg-value [args flag]
@@ -5439,6 +5505,49 @@
 
 (defn run-tests*! []
   (let [failures (atom [])]
+    ;; BOXP-448: isolated in-memory persistence, including duplicate and merged registrations.
+    (let [db (atom {:failures {} :grants [] :pr-registrations {} :pr-exclusions []})
+          check (fn [label ok] (if ok (println (str "PASS: " label))
+                                   (do (println (str "FAIL: " label)) (swap! failures conj label))))
+          status #(gate-budget-status @db :ticket "BOXP-1")
+          url #(str "https://github.com/Owner/Repo/pull/" %)]
+      (with-redefs [with-gate-failure-budget-lock (fn [f] (f))
+                    read-gate-failure-budget (fn [] @db)
+                    write-gate-failure-budget! (fn [b] (reset! db b))
+                    gate-failure-budget-limit (constantly 10)]
+        (check "budget N=0" (= 10 (:limit (status))))
+        (record-gate-pr-registrations! "BOXP-1" "first" {:ok? true :checked-pr-urls [(url 1)]})
+        (record-gate-pr-registrations! "BOXP-1" "second" {:ok? true :merged-pr-urls [(str (url 1) "/files")] :pr-urls [(url 99)]})
+        (check "budget N=1 duplicate and notes ignored" (and (= 1 (:n (status))) (= 10 (:limit (status)))
+                                                               (= "first" (get-in @db [:pr-registrations "BOXP-1|owner/repo#1" :run-id]))))
+        (record-gate-pr-registrations! "BOXP-2" "other" {:ok? true :checked-pr-urls [(url 4)]})
+        (swap! db assoc-in [:pr-registrations "BOXP-2|owner/repo#4" :registered-at] "0000")
+        (record-gate-pr-registrations! "BOXP-1" "third" {:ok? false :url (url 3) :merged-pr-urls [(url 2) (url 4)]})
+        (check "budget N=3 and earlier owner" (and (= 3 (:n (status))) (= 30 (:limit (status)))))
+        (check "PR limit independent" (= 10 (:limit (gate-budget-status @db :pr "owner/repo#1"))))
+        (with-redefs [gate-failure-budget-limit (constantly 2)]
+          (check "tightened unit" (= 6 (:limit (status)))))
+        (let [history (:failures @db)]
+          (gate-budget-exclude-pr! "BOXP-1" "owner/repo#3" "owner")
+          (gate-budget-exclude-pr! "BOXP-1" "owner/repo#3" "owner")
+          (check "exclusion idempotent preserves history" (and (= history (:failures @db)) (= 1 (count (:pr-exclusions @db))) (= 2 (:n (status))))))
+        (swap! db assoc :grants [{:scope :ticket :key "BOXP-1" :amount 5}])
+        (check "legacy floor below base" (= 20 (:limit (status))))
+        (swap! db assoc :grants [{:scope :ticket :key "BOXP-1" :amount 50} {:scope :ticket :key "BOXP-1" :amount 3 :kind :additive}])
+        (check "legacy floor and additive" (= 63 (:limit (status))))
+        (let [rng (java.util.Random. 448)]
+          (check "seeded legacy floor and monotonicity"
+                 (every? true? (for [_ (range 200)
+                                     :let [legacy (.nextInt rng 100) additive (.nextInt rng 10)
+                                           grants [{:scope :ticket :key "BOXP-1" :amount legacy}
+                                                   {:scope :ticket :key "BOXP-1" :amount additive :kind :additive}]
+                                           limits (for [n (range 7)]
+                                                    (:limit (gate-budget-status
+                                                             {:grants grants :pr-registrations
+                                                              (into {} (for [i (range n)] [i {:ticket "BOXP-1" :pr (str "o/r#" i) :registered-at "1"}]))}
+                                                             :ticket "BOXP-1")))]]
+                                 (and (every? #(>= % (+ 10 legacy additive)) limits)
+                                      (apply <= limits))))))))
     (doseq [[input verdict reason blocking low]
             [["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | a\n- real P1 defect in prose" :invalid :unstructured-findings 0 1]
              ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | a\n- extra prose" :invalid :unstructured-findings 1 0]
@@ -6005,6 +6114,7 @@
                         block-ticket! (fn [& _] (record! :block-ticket!) true)
                         restore-card-state! (partial record! :restore-card-state!)
                         persist-pr-gate-diagnostic! (fn [& _] (record! :persist-pr-gate-diagnostic!) nil)
+                        record-gate-pr-registrations! (fn [& _] nil)
                         record-pr-gate-failure! (fn [& _] (record! :record-pr-gate-failure!) nil)
                         clear-pr-gate-retries! (partial record! :clear-pr-gate-retries!)
                         reserve-gate-budget-run! (fn [& _] true)
@@ -6535,9 +6645,9 @@
   "gate-budget-status" (let [[ticket-id] (rest *command-line-args*)]
                          (when-not (and ticket-id (re-matches #"[A-Z]+-\d+" ticket-id)) (usage))
                          (let [budget (read-gate-failure-budget)
-                               pr-ids (->> (vals (:failures budget))
-                                           (filter #(= ticket-id (:ticket %)))
-                                           (keep :pr) distinct)]
+                               pr-ids (distinct (concat (gate-budget-scope-prs budget ticket-id)
+                                                        (->> (vals (:failures budget))
+                                                             (filter #(= ticket-id (:ticket %))) (keep :pr))))]
                            (prn {:ticket ticket-id
                                  :statuses (into [(gate-budget-status budget :ticket ticket-id)]
                                                  (map #(gate-budget-status budget :pr %) pr-ids))
@@ -6545,6 +6655,15 @@
                                                 (filter #(= ticket-id (:ticket %)))
                                                 (sort-by :recorded-at)
                                                 vec)})))
+  "gate-budget-exclude-pr" (let [args (vec (rest *command-line-args*))
+                                 [ticket-id target] args
+                                 by (arg-value args "--by")
+                                 pr (when (and target (re-matches #"[^/\s]+/[^/\s#]+#\d+" target))
+                                      (canonical-pr-id (str "github.com/" (str/replace target #"#" "/pull/"))))]
+                             (when-not (and (= 4 (count args)) (= "--by" (nth args 2))
+                                            ticket-id (re-matches #"[A-Z]+-\d+" ticket-id)
+                                            pr (not (str/blank? by))) (usage))
+                             (prn (gate-budget-exclude-pr! ticket-id pr by)))
   ;; BOXP-369: explicit Owner resume.  Not called by the runner itself.
   "gate-budget-grant" (let [args (vec (rest *command-line-args*))
                             target (first args)
