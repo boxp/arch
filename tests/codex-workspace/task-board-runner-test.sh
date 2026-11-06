@@ -3363,9 +3363,66 @@ run_prune() {
   local vault="$1"
   local state_root="$2"
   shift 2
+  CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE="${CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE:-false}" \
   CODEX_TASK_BOARD_VAULT="${vault}" \
   CODEX_TASK_BOARD_ROOT="${state_root}" \
   bb "${RUNNER}" prune-workspaces "$@"
+}
+
+test_stale_prune() {
+  local tmp vault state bin source known out ws ticket run co i
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  source="${tmp}/source"; known="${tmp}/known"; out="${tmp}/out"; ws="${state}/workspaces"
+  mkdir -p "${bin}" "${state}/locks"
+  make_fake_gh "${bin}"; make_prune_source_repo "${source}"; git -C "${source}" rev-parse HEAD >"${known}"
+  write_board "${vault}" ""
+  for ticket in BOXP-901 BOXP-902 BOXP-903 BOXP-904 BOXP-905 BOXP-906 BOXP-907 BOXP-908; do
+    if [[ "${ticket}" == BOXP-907 ]]; then
+      write_prune_ticket "${vault}" "${ticket}" done "$(date -u +%Y-%m-%d)"
+    else
+      write_prune_ticket "${vault}" "${ticket}" blocked 2020-01-01
+    fi
+    for i in 1 2 3 4; do
+      run="2020010${i}T000000Z"
+      co="$(add_prune_run "${state}" "${source}" "${ticket}" "${run}")"
+      if [[ "${i}" == 1 ]]; then
+        case "${ticket}" in
+          BOXP-902) echo dirty >"${co}/dirty" ;;
+          BOXP-903) prune_commit "${co}" unpushed >/dev/null ;;
+          BOXP-904) echo results/ >>"$(git -C "${co}" rev-parse --git-path info/exclude)"; mkdir -p "${co}/results"; echo x >"${co}/results/out.bin" ;;
+          BOXP-905) printf 'node_modules/\n.terraform/\n' >>"$(git -C "${co}" rev-parse --git-path info/exclude)"; mkdir -p "${co}/node_modules" "${co}/.terraform"; touch "${co}/node_modules/x" "${co}/.terraform/x" ;;
+          BOXP-908) echo note >"${ws}/${ticket}/${run}/agent-notes.md" ;;
+        esac
+      fi
+    done
+  done
+  echo lock >"${state}/locks/BOXP-906.edn"
+  # Scan a fixture process table: CI hosts have root processes whose cwd is
+  # unreadable, which the fail-closed scan would (correctly) treat as a hold.
+  mkdir -p "${tmp}/proc/100"; ln -s / "${tmp}/proc/100/cwd"
+  echo "22 1 0:21 / / rw - ext4 /dev/root rw" >"${tmp}/mountinfo"
+  export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" --dry-run >"${out}"
+  [[ -d "${ws}/BOXP-901/20200101T000000Z" ]] || fail "stale dry run removed data"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" >"${out}"
+  for ticket in BOXP-901 BOXP-905 BOXP-907; do
+    [[ ! -e "${ws}/${ticket}/20200101T000000Z" && ! -e "${ws}/${ticket}/20200102T000000Z" ]] || fail "old stale runs retained: ${ticket}"
+    [[ -d "${ws}/${ticket}/20200103T000000Z" && -d "${ws}/${ticket}/20200104T000000Z" ]] || fail "latest runs removed: ${ticket}"
+  done
+  for ticket in BOXP-902 BOXP-903 BOXP-904 BOXP-906 BOXP-908; do
+    [[ -d "${ws}/${ticket}/20200101T000000Z" ]] || fail "unsafe stale run removed: ${ticket}"
+  done
+  assert_file_contains "${out}" 'reason=ignored-unknown path=results/'
+  assert_file_contains "${out}" "reason=outside-checkout path=agent-notes.md"
+  assert_file_contains "${out}" 'reason=uncommitted-changes'
+  assert_file_contains "${out}" 'reason=commit-not-on-github'
+  # A live process inside an otherwise deletable stale run keeps it.
+  co="$(add_prune_run "${state}" "${source}" BOXP-901 20191231T000000Z)"
+  mkdir -p "${tmp}/proc/101"; ln -s "${co}" "${tmp}/proc/101/cwd"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" >"${out}"
+  [[ -d "${ws}/BOXP-901/20191231T000000Z" ]] || fail "stale run with live process removed"
+  assert_file_contains "${out}" "reason=process-active"
+  unset CODEX_TASK_BOARD_PRUNE_PROC_ROOT CODEX_TASK_BOARD_PRUNE_MOUNTINFO
 }
 
 test_prune_workspaces() {
@@ -3490,7 +3547,7 @@ test_prune_workspaces() {
   assert_file_contains "${out}" "^prune: delete-empty ${ws}/BOXP-301 \\(dry-run\\)$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-305/${old} reason=uncommitted-changes checkout=ghq/github.com/boxp/example$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-306/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
-  assert_file_contains "${out}" '^prune: summary deleted=2 held=6 skipped=4 recent-runs=1 branches=1 empty-dirs=3 dry-run=true skipped-detail=locked:1,not-done:1,ticket-missing:1,within-retention:1$'
+  assert_file_contains "${out}" '^prune: summary deleted=2 stale-deleted=0 held=6 skipped=4 recent-runs=1 branches=1 empty-dirs=3 dry-run=true skipped-detail=locked:1,not-done:1,ticket-missing:1,within-retention:1$'
 
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" GH_FAKE_API_LOG="${tmp}/api.log" \
     run_prune "${vault}" "${state}" >"${out}" || fail "prune-workspaces failed"
@@ -3531,14 +3588,14 @@ test_prune_workspaces() {
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-311/${old} reason=origin-not-github checkout=clone$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-312/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=clone$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-314/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
-  assert_file_contains "${out}" '^prune: summary deleted=2 held=6 skipped=4 recent-runs=1 branches=1 empty-dirs=3 dry-run=false '
+  assert_file_contains "${out}" '^prune: summary deleted=2 stale-deleted=0 held=6 skipped=4 recent-runs=1 branches=1 empty-dirs=3 dry-run=false '
   # Each SHA is looked up at most once per pass.
   [[ -z "$(sort "${tmp}/api.log" | uniq -d)" ]] || fail "expected GitHub lookups to be cached per prune pass"
 
   # A second pass is idempotent and keeps reporting held runs.
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
     || fail "second prune-workspaces failed"
-  assert_file_contains "${out}" '^prune: summary deleted=0 held=6 skipped=4 recent-runs=1 branches=0 empty-dirs=0 dry-run=false '
+  assert_file_contains "${out}" '^prune: summary deleted=0 stale-deleted=0 held=6 skipped=4 recent-runs=1 branches=0 empty-dirs=0 dry-run=false '
 
   # gh failures (auth, rate limit, network) are not treated as proof either way.
   write_prune_ticket "${vault}" BOXP-313 done 2020-01-01
@@ -3606,7 +3663,7 @@ test_prune_holds_checkout_over_commit_limit() {
   [[ ! -e "${ws}/BOXP-331" ]] || fail "expected run with exactly 200 commits to verify to be deleted"
   [[ -d "${ws}/BOXP-332/${old}" ]] || fail "expected run with 201 commits to verify to remain"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-332/${old} reason=too-many-unpushed-commits checkout=ghq/github.com/boxp/example$"
-  assert_file_contains "${out}" '^prune: summary deleted=1 held=1 '
+  assert_file_contains "${out}" '^prune: summary deleted=1 stale-deleted=0 held=1 '
   if grep -qxFf "${tmp}/over-limit-shas" "${tmp}/api.log"; then
     fail "expected no GitHub lookups for a checkout over the commit limit"
   fi
@@ -3671,7 +3728,7 @@ test_prune_inspects_nested_checkouts() {
 
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" --dry-run >"${out}" \
     || fail "prune-workspaces --dry-run with nested checkouts failed"
-  assert_file_contains "${out}" '^prune: summary deleted=1 held=3 '
+  assert_file_contains "${out}" '^prune: summary deleted=1 stale-deleted=0 held=3 '
 
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
     || fail "prune-workspaces with nested checkouts failed"
@@ -3694,7 +3751,7 @@ test_prune_inspects_nested_checkouts() {
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-342/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example/vendor/clone$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-343/${old} reason=stash-present checkout=ghq/github.com/boxp/example/vendor/clone$"
   assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-344/${old}$"
-  assert_file_contains "${out}" '^prune: summary deleted=1 held=3 '
+  assert_file_contains "${out}" '^prune: summary deleted=1 stale-deleted=0 held=3 '
 }
 
 test_prune_checks_reflog_commits() {
@@ -3754,7 +3811,7 @@ test_prune_checks_reflog_commits() {
 
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" --dry-run >"${out}" \
     || fail "prune-workspaces --dry-run with reflog-only commits failed"
-  assert_file_contains "${out}" '^prune: summary deleted=2 held=2 skipped=0 recent-runs=0 branches=1 '
+  assert_file_contains "${out}" '^prune: summary deleted=2 stale-deleted=0 held=2 skipped=0 recent-runs=0 branches=1 '
 
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
     || fail "prune-workspaces with reflog-only commits failed"
@@ -3776,7 +3833,7 @@ test_prune_checks_reflog_commits() {
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-352/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
   assert_file_contains "${out}" "^prune: delete-branch ${source}/.git codex-task-board/BOXP-353-${old}$"
   assert_file_contains "${out}" "^prune: keep-branch ${source}/.git codex-task-board/BOXP-354-${old} reason=reflog-commit-not-on-github sha=${dropped}$"
-  assert_file_contains "${out}" '^prune: summary deleted=2 held=2 skipped=0 recent-runs=0 branches=1 '
+  assert_file_contains "${out}" '^prune: summary deleted=2 stale-deleted=0 held=2 skipped=0 recent-runs=0 branches=1 '
 }
 
 test_prune_respects_board_lane() {
@@ -3809,7 +3866,7 @@ test_prune_respects_board_lane() {
     || fail "prune-workspaces with a reopened card failed"
   [[ -d "${ws}/BOXP-361/${old}" ]] || fail "expected run of a ticket whose card left Done to remain"
   [[ ! -e "${ws}/BOXP-362" ]] || fail "expected run of a ticket whose card is in Done to be deleted"
-  assert_file_contains "${out}" '^prune: summary deleted=1 held=0 skipped=1 .* skipped-detail=not-done:1$'
+  assert_file_contains "${out}" '^prune: summary deleted=1 stale-deleted=0 held=0 skipped=1 .* skipped-detail=not-done:1$'
 
   # Without a readable board nothing is deleted.
   write_prune_ticket "${vault}" BOXP-363 done 2020-01-01
@@ -3818,7 +3875,7 @@ test_prune_respects_board_lane() {
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
     || fail "prune-workspaces without a board failed"
   [[ -d "${ws}/BOXP-363/${old}" ]] || fail "expected run to remain when the board is missing"
-  assert_file_contains "${out}" '^prune: summary deleted=0 held=0 skipped=2 .* skipped-detail=board-unreadable:2$'
+  assert_file_contains "${out}" '^prune: summary deleted=0 stale-deleted=0 held=0 skipped=2 .* skipped-detail=board-unreadable:2$'
 }
 
 test_prune_invalid_settings_fall_back_to_defaults() {
@@ -3885,8 +3942,8 @@ test_loop_prunes_in_background() {
 
   [[ ! -e "${tmp}/state/workspaces/BOXP-321" ]] || fail "expected loop to prune the old done run"
   assert_file_contains "${tmp}/runner.out" '^workspace prune enabled, retention-days=3, interval-seconds=2$'
-  assert_file_contains "${tmp}/runner.out" '^prune: summary deleted=1 held=0 skipped=0 recent-runs=0 branches=1 '
-  assert_file_contains "${tmp}/runner.out" '^prune: summary deleted=0 held=0 skipped=0 '
+  assert_file_contains "${tmp}/runner.out" '^prune: summary deleted=1 stale-deleted=0 held=0 skipped=0 recent-runs=0 branches=1 '
+  assert_file_contains "${tmp}/runner.out" '^prune: summary deleted=0 stale-deleted=0 held=0 skipped=0 '
 }
 
 test_loop_prune_can_be_disabled() {
