@@ -1,6 +1,6 @@
 # コハコ v6 リグ再構築
 
-`./rebuild.sh VAULT WORK_DIR` を実行する。履歴スクリプトは `boxp/even-g2-lab` の `origin/main` commit `2ca1027c8acdf98246623b2c46d70afa253449c9` にある `docs/project_docs/BOXP-441/` から移した。コンテナ内のパスは `/tmp/boxp441` に固定し、引数の作業ディレクトリとは `docker cp` で受け渡す。Docker、git、ネットワーク、空き容量が必要。Vault は `attachments/kohako-exe-navigation-ai-character-sheet-final.png` と `Projects/kohako-openamika-ui/live2d/gen/` を含む BOXP のルート。WORK_DIR はスクラッチとして使用し、成功時 `v6/out/kohako-v6.p2lrt` と中間 layout を置く。画像素材はリポジトリに含めない。既存の同名出力を使うディレクトリは指定しない。
+`./rebuild.sh VAULT WORK_DIR` を実行する。履歴スクリプトは `boxp/even-g2-lab` の `origin/main` commit `2ca1027c8acdf98246623b2c46d70afa253449c9` にある `docs/project_docs/BOXP-441/` から移した。コンテナ内のパスは `/tmp/boxp441` に固定し、引数の作業ディレクトリとは `docker cp` で受け渡す。Docker、git、ネットワーク、空き容量が必要。Vault は `attachments/kohako-exe-navigation-ai-character-sheet-final.png` と `Projects/kohako-openamika-ui/live2d/gen/` を含む BOXP のルート。WORK_DIR はスクラッチとして使用し、成功時 `v6/out/kohako-v6.p2lrt` と中間 layout を置く。画像素材はリポジトリに含めない。再実行時は開始時に WORK_DIR 内の出力ディレクトリ(kohako, v1〜v3, v5b, v6, v13, v14, v14b)を削除してから作り直すため、前回の成果物は残らない(psd2live と gradle-cache は再利用する)。
 
 - `kohako-min`: キャラクターシートの左上胸像 (300,60)-(980,710) を切り、目・口などを分ける。
 - `kohako-v1`, `v2`, `v3`: 承認済み gen の頭・後ろ髪を参照し、髪と顔を分離する。v5 の入力は v3。

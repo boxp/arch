@@ -3,6 +3,10 @@ set -euo pipefail
 if [ "$#" -ne 2 ]; then echo "usage: $0 VAULT WORK_DIR" >&2; exit 2; fi
 VAULT=$(realpath "$1"); mkdir -p "$2"; WORK=$(realpath "$2")
 RIG=$(cd "$(dirname "$0")" && pwd)
+OUT_DIRS="kohako v1 v2 v3 v5b v6 v13 v14 v14b"
+# Remove previous results first so a re-run never returns stale models.
+for d in $OUT_DIRS; do rm -rf "${WORK:?}/$d"; done
+COPIED=0
 SRC="$VAULT/attachments/kohako-exe-navigation-ai-character-sheet-final.png"
 GEN="$VAULT/Projects/kohako-openamika-ui/live2d/gen"
 PIN=6fe868a20c7bf12586fa8ce0a05982f099faa865
@@ -25,7 +29,7 @@ cleanup() {
   docker logs "$SERVER" > "$WORK/mcp.log" 2>&1 || true
   docker stop "$SERVER" >/dev/null 2>&1 || true
   if [ ! -d "$WORK/gradle-cache" ]; then docker cp "$TRANSFER:/tmp/boxp441/gradle-cache" "$WORK/" 2>/dev/null || true; fi
-  for d in kohako v1 v2 v3 v5b v6 v13 v14 v14b; do docker cp "$TRANSFER:/tmp/boxp441/$d" "$WORK/" 2>/dev/null || true; done
+  if [ "$COPIED" != 1 ]; then for d in $OUT_DIRS; do rm -rf "${WORK:?}/$d"; docker cp "$TRANSFER:/tmp/boxp441/$d" "$WORK/$d" 2>/dev/null || true; done; fi
   docker rm -f "$SERVER" "$TRANSFER" >/dev/null 2>&1 || true
   docker volume rm "$VOL" >/dev/null 2>&1 || true
 }
@@ -83,7 +87,8 @@ docker run --rm -v "$VOL:/tmp/boxp441" -w /tmp/boxp441/psd2live -e GRADLE_USER_H
 docker run --rm -v "$VOL:/tmp/boxp441" -w /tmp/boxp441/psd2live -e GRADLE_USER_HOME=/tmp/boxp441/gradle-cache eclipse-temurin:21@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a ./gradlew -Ppsd2live.prebuiltRuntime=false run --args='export /tmp/boxp441/v13/out/kohako-v6.psd2live --target p2lrt --output /tmp/boxp441/v13/out --name kohako-v13'
 docker run --rm -v "$VOL:/tmp/boxp441" -w /tmp/boxp441/psd2live -e GRADLE_USER_HOME=/tmp/boxp441/gradle-cache eclipse-temurin:21@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a ./gradlew -Ppsd2live.prebuiltRuntime=false run --args='export /tmp/boxp441/v14/out/kohako-v6.psd2live --target p2lrt --output /tmp/boxp441/v14/out --name kohako-v14'
 docker run --rm -v "$VOL:/tmp/boxp441" -w /tmp/boxp441/psd2live -e GRADLE_USER_HOME=/tmp/boxp441/gradle-cache eclipse-temurin:21@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a ./gradlew -Ppsd2live.prebuiltRuntime=false run --args='export /tmp/boxp441/v14b/out/kohako-v6.psd2live --target p2lrt --output /tmp/boxp441/v14b/out --name kohako-v14b'
-for d in kohako v1 v2 v3 v5b v6 v13 v14 v14b; do docker cp "$TRANSFER:/tmp/boxp441/$d" "$WORK/"; done
+for d in $OUT_DIRS; do rm -rf "${WORK:?}/$d"; docker cp "$TRANSFER:/tmp/boxp441/$d" "$WORK/$d"; done
+COPIED=1
 sha256sum "$WORK/v6/out/kohako-v6.p2lrt"
 
 sha256sum "$WORK/v13/out/kohako-v13.p2lrt"
