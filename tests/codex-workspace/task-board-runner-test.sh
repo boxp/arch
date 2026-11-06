@@ -4170,7 +4170,7 @@ test_gate_failure_budget_evaluated_merged_pr() {
 }
 
 test_gate_failure_budget_multiple_prs_and_shared_pr() {
-  local tmp vault state bin
+  local tmp vault state bin t
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
   mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-461|BOXP-461: multi pr]] #ticket status::in-progress"
