@@ -1588,5 +1588,26 @@
         (is (nil? reason) text)
         (is (empty? values) text)))))
 
+;; P0 arch#14503 :781 (BOXP-428). A -u password holding a colon (curl -u admin:apple:true) read as a structure
+;; (apple: true), so the key word and the literal were both skipped, body-exposure returned no value and a later bare
+;; apple:true was sent. A credential field (-u / mysql -p / sshpass -p / URL userinfo) is one opaque password now:
+;; the whole value is pinned, or withheld when under 4 characters.
+(deftest credential-field-with-colon-is-pinned
+  (doseq [[text v] [["curl -u admin:apple:true https://x" "apple:true"] ["curl --user=ci:name:value https://x" "name:value"]
+                    ["curl -u 'admin:key=data' https://x" "key=data"] ["mysql -pfoo:true db" "foo:true"]
+                    ["sshpass -p user:none ssh h" "user:none"] ["git clone https://bob:apple:true@example.com/r" "apple:true"]]]
+    (is (contains? (:values (#'lf/body-exposure text)) v) text)
+    (is (contains? (:values (#'lf/tool-exposure {:input "cat notes.txt"} {:output text})) v) text)
+    (let [vals (:values (#'lf/body-exposure text))
+          b64 (.encodeToString (java.util.Base64/getEncoder) (.getBytes ^String v "UTF-8"))
+          {:keys [value]} (lf/redact (str "later " v " and " b64 " again") vals)]
+      (is (not (str/includes? value v)) text)
+      (is (not (str/includes? value b64)) text)))
+  (testing "a short credential withholds"
+    (is (= "value_exposure" (:reason (#'lf/body-exposure "curl -u admin:a:b https://x")))))
+  (testing "a variable reference is still no value"
+    (doseq [text ["curl -u admin:$PASS https://x" "curl -u \"admin:${TOKEN}\" https://x"]]
+      (is (empty? (:values (#'lf/body-exposure text))) text))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

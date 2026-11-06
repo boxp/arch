@@ -802,20 +802,32 @@
           #{}
           (keep #(let [v (strip-value %)] (when-not (str/blank? v) v)) raw)))
 
+;; A credential field (curl -u user:pass, mysql -p, sshpass -p, URL userinfo) holds one opaque password. Splitting
+;; it like a structure read curl -u admin:apple:true as the key apple and the literal true, pinned nothing and sent a
+;; later bare apple:true (P0 arch#14503 :781). The whole password is pinned with its longer tokens, a variable
+;; reference ($PASS, ${TOKEN}) is no value, and a password under 4 characters withholds.
+(defn- credential-values [raw]
+  (let [v (strip-value raw)]
+    (cond (or (str/blank? v) (re-matches reference-value v)) #{}
+          (< (count v) 4) nil
+          :else (into #{v} (filter #(and (>= (count %) 6) (not (reference-only? %)))
+                                   (map strip-value (str/split v #"[\s\"'`,;:=<>()\[\]{}\\]+")))))))
+
 (defn- pinned-values
   "The values a pattern match shows, so they can be masked wherever the model repeats them, or nil (withhold)."
   [kind m]
   (case kind
     :private-key nil
+    :cli-password (credential-values
+                   (if (re-find #"^(?i)(?:-u|--user)" m)
+                     ;; One shell word that may be quoted and hold spaces: drop the quotes, then the user name.
+                     (-> m (str/replace #"^(?i)(?:-u|--user)[ \t=]*" "") (str/replace #"[\"']" "") (str/replace #"^(?:\\.|[^:\\])*:(?=.)" "")
+                         (str/replace #"\\(.)" "$1"))
+                     (-> (last (str/split m #"\s+")) (str/replace #"^-p" ""))))
+    :url-credentials (credential-values (second (re-find #"://[^:/@\s]*:([^@\s]*)@" m)))
     (token-values
      (case kind
        :header [(second (re-find #"(?s)^[^:]*:\s*(.*)$" m))]
-       :url-credentials [(second (re-find #"://[^:/@\s]*:([^@\s]*)@" m))]
-       :cli-password [(if (re-find #"^(?i)(?:-u|--user)" m)
-                        ;; One shell word that may be quoted and hold spaces: drop the quotes, then the user name.
-                        (-> m (str/replace #"^(?i)(?:-u|--user)[ \t=]*" "") (str/replace #"[\"']" "") (str/replace #"^(?:\\.|[^:\\])*:(?=.)" "")
-                            (str/replace #"\\(.)" "$1"))
-                        (-> (last (str/split m #"\s+")) (str/replace #"^-p" "")))]
        :flag [(last (str/split m #"[ \t]+"))]
        :assignment (let [[_ k v] (re-find #"(?s)^[\"']?([\w.-]*).*?(?:[:=]|\\+u00(?:3[aA]|3[dD]))(.*)$" m)]
                      ;; A setting such as password_min_length: 8 is no value to pin or withhold for.
