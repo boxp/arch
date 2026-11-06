@@ -1096,5 +1096,41 @@
              "git -C repo add app-secret" "gh pr create --title 'rotate password docs'" "find . -name README.md -exec wc -l {} +"
              "ls db_password" "wc -c db_password" "stat db_password"]]
     (is (not (lf/withhold-output? c)) c)))
+;; P0 arch#14503 :548 (BOXP-428). A value that is a literal or looks like a placeholder (password: true, none, xxxxx)
+;; is still the value: it is pinned (4+ characters) so a later bare repeat is masked, or withholds when shorter. A
+;; toggle or counter name with such a value (password_required: true, max_output_tokens: null) is a setting.
+(deftest literal-values-are-values
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [[output value] [["password: true" "true"] ["api_key = false" "false"] ["{\"password\": \"none\"}" "none"]
+                            ["secret: xxxxx" "xxxxx"] ["password: null" "null"]]]
+      (let [lines [{:type "user" :message {:content "first request"}}
+                   {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat config.txt"}}]}}
+                   {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content output}]}}
+                   {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text (str "zz " value " zz")}]}}]
+            spans (doall (lf/claude-spans ctx "root" "test:" lines))
+            sanitized (pr-str (map #(lf/sanitize-span {:secret-values (mapcat :session-values spans) :max-field-bytes 100000} (atom {}) %) spans))]
+        (is (contains? (set (:values (#'lf/tool-exposure {:input "cat config.txt"} {:output output}))) value) output)
+        (is (not (str/includes? sanitized (str "zz " value " zz"))) output)
+        (is (str/includes? sanitized "first request") "control: the request body is sent")))
+    (doseq [output ["password: nil" "token: ***"]]
+      (is (= "value_exposure" (:reason (#'lf/tool-exposure {:input "cat config.txt"} {:output output}))) output))
+    (doseq [output ["password_required: true" "max_output_tokens: null" "AUTH_DISABLE_PASSWORD=true" "use_secret: false"]]
+      (let [{:keys [reason values]} (#'lf/tool-exposure {:input "cat config.txt"} {:output output})]
+        (is (nil? reason) output)
+        (is (not-any? #{"true" "false" "null"} values) output)))))
+
+;; P0 arch#14503 :272 (BOXP-428). Well-known credential files (~/.npmrc, ~/.pypirc, ~/.pgpass, ~/.docker/config.json,
+;; ...) hold bare tokens with no key or known format after a cut, so reading them is a sensitive source.
+(deftest well-known-credential-files
+  (doseq [c ["cat ~/.npmrc | cut -d= -f2" "cat .npmrc" "{\"file_path\":\"/home/u/.npmrc\"}" "cat ~/.pypirc" "cat ~/.pgpass"
+             "cat ~/.my.cnf" "cat ~/.docker/config.json" "cat ~/.dockercfg" "cat ~/.boto" "cat ~/.s3cfg" "cat ~/.vault-token"
+             "cat ~/.terraformrc" "cat ~/.terraform.d/credentials.tfrc.json" "cat ~/.kube/config" "cat ~/.config/gh/hosts.yml"
+             "cat ~/.yarnrc.yml" "cat ~/.cargo/credentials.toml" "cat ~/.gem/credentials" "cat ~/.m2/settings.xml"
+             "cat ~/.gradle/gradle.properties" "cat ~/.config/gcloud/application_default_credentials.json" "cat ~/.azure/accessTokens.json"
+             "cat ~/.curlrc" "cat ~/.wgetrc" "cat ~/.config/rclone/rclone.conf" "cat /etc/nginx/.htpasswd"]]
+    (is (lf/withhold-output? c) c))
+  (doseq [c ["cat package.json" "npm install" "cat README.md" "ls ~/.config" "cat ~/.bashrc" "cat docs/npm-guide.md"]]
+    (is (not (lf/withhold-output? c)) c)))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

@@ -62,7 +62,9 @@
     (cond
       (empty? words) false
       (re-matches flag-value v) (boolean (or (re-matches toggle-last-word (last words))
-                                             (re-matches toggle-first-word (first words))))
+                                             (some #(re-matches toggle-first-word %) (butlast words))
+                                             (re-matches toggle-first-word (first words))
+                                             (re-matches counter-last-word (last words))))
       :else (boolean (and (re-matches #"\d+" v) (re-matches counter-last-word (last words)))))))
 
 (defn secret-value?
@@ -269,7 +271,7 @@
 ;; secret.txt) holds a bare value the same way; the bare word counts only as a whole argument (cat password), so
 ;; grep -rn password src stays readable. File-name parts are bounded so a long line is scanned in linear time.
 (def sensitive-path
-  #"(?i)(?:(?:^|[/\\\s\"'=])(?:auth\.json|\.credentials[^/\s\"']*|\.env[^/\s\"']*|\.ssh(?:[/\\]|\b)|\.aws(?:[/\\]|\b)|kubeconfig|\.git-credentials|\.netrc|id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?|\.gnupg(?:[/\\]|\b)|secrets?[/\\]|(?<=/)secrets?(?=$|[\s\"'])|tokens?(?=[\s\"'/\\]|\z)|[^/\\\s\"'=]{0,255}?token(?=[\s\"'/\;|&)]|\z)|[^/\\\s\"'=]{0,255}?\.(?:key|pem|p8|p12|pfx|jks|keystore|ppk)(?=[\s\"';|&)]|\z))|[/\\][^/\\\s\"']{0,255}?token|token[^/\\\s\"']{0,255}?(?:\.[A-Za-z0-9]+(?![\w-])|[/\\]))|(?<=[/\\])[^/\\\s\"']{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)(?:\.[A-Za-z0-9]{1,16})?(?=[\s\"'/\;|&)]|\z)|(?:^|(?<=[\s\"'=]))[^/\\\s\"'=]{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)\.[A-Za-z0-9]{1,16}(?=[\s\"';|&)]|\z)|(?:^|(?<=[\s\"'=]))(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)(?=[\"']|\z)")
+  #"(?i)(?:(?:^|[/\\\s\"'=])(?:(?:\.npmrc|\.pypirc|\.pgpass|\.my\.cnf|\.mylogin\.cnf|\.dockercfg|\.docker[/\\]config\.json|\.boto|\.s3cfg|\.vault-token|\.terraformrc|credentials\.tfrc\.json|\.kube[/\\]config|\.yarnrc(?:\.yml)?|\.curlrc|\.wgetrc|\.m2[/\\]settings(?:-security)?\.xml|gradle\.properties|\.config[/\\](?:gh[/\\]hosts\.ya?ml|gcloud|hub|rclone[/\\]rclone\.conf)|\.azure|application_default_credentials\.json|\.cargo[/\\]credentials(?:\.toml)?|\.gem[/\\]credentials|\.htpasswd)(?=[\s\"'/\\;|&)]|\z)|auth\.json|\.credentials[^/\s\"']*|\.env[^/\s\"']*|\.ssh(?:[/\\]|\b)|\.aws(?:[/\\]|\b)|kubeconfig|\.git-credentials|\.netrc|id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?|\.gnupg(?:[/\\]|\b)|secrets?[/\\]|(?<=/)secrets?(?=$|[\s\"'])|tokens?(?=[\s\"'/\\]|\z)|[^/\\\s\"'=]{0,255}?token(?=[\s\"'/\;|&)]|\z)|[^/\\\s\"'=]{0,255}?\.(?:key|pem|p8|p12|pfx|jks|keystore|ppk)(?=[\s\"';|&)]|\z))|[/\\][^/\\\s\"']{0,255}?token|token[^/\\\s\"']{0,255}?(?:\.[A-Za-z0-9]+(?![\w-])|[/\\]))|(?<=[/\\])[^/\\\s\"']{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)(?:\.[A-Za-z0-9]{1,16})?(?=[\s\"'/\;|&)]|\z)|(?:^|(?<=[\s\"'=]))[^/\\\s\"'=]{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)\.[A-Za-z0-9]{1,16}(?=[\s\"';|&)]|\z)|(?:^|(?<=[\s\"'=]))(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)(?=[\"']|\z)")
 (def sensitive-command
   #"(?i)(?:^|[;&|\s\"'(`/]|\\[nrt])(?:env(?:[ \t]+(?:-\S*|[A-Za-z_]\w*=\S*))*[ \t]*(?:[\"'|;&<>)`]|\\[nrt]|$)|printenv(?:[\s\"'|;&<>)]|$))|(?:^|[;&|\s\"'(`/])(?:set|export|declare|typeset)(?:\s+-[a-z]*[px]\b|[ \t]*(?:$|[|;&<>\"')`#]|\\[nrt\"]))|\benviron\b|\bprocess\.env\b|\bgetenv\b|\baws\b[^|;&\n]{0,1024}\b(?:ssm\s+get-parameter|secretsmanager\s+get-|configure\s+(?:get|export-credentials))|\bhelm\s+get\b|\bgh\s+auth\s+token\b|\bgit\s+credential\b")
 ;; A file-reading command whose argument list names a secret file anywhere (cat password /tmp/other) prints that
@@ -546,6 +548,11 @@
   (or (str/blank? t) (re-find loose-word t) (re-matches value-stopword t) (re-matches reference-value t)
       (re-matches #"(?i)name|key|ref|from|data" t)))
 
+;; A whole value that is a literal or looks like a placeholder (password: true, none, xxxxx, ****) is still the value
+;; and can be repeated bare later (P0 arch#14503 :548). A setting (password_required: true) is filtered by setting?
+;; before this. Over-masking accepted: after password: true the word true is masked in the later bodies of the run.
+(def literal-value #"(?i)true|false|null|none|nil|\*+|x{3,}")
+
 (defn- token-values
   "Values to mask for matched text. A single token is the value itself; a value of several words keeps the whole
   text and its secret-looking tokens. A reference (a variable, placeholder, secret name or key word) is skipped.
@@ -554,7 +561,9 @@
   [raw]
   (reduce (fn [acc v]
             (let [tokens (remove reference? (map strip-value (str/split v #"[\s\"'`,;:=<>()\[\]{}\\]+")))]
-              (cond (or (nil? acc) (reference? v) (empty? tokens)) acc
+              (cond (nil? acc) acc
+                    (re-matches literal-value v) (when (>= (count v) 4) (conj acc v))
+                    (or (reference? v) (empty? tokens)) acc
                     (some #(< (count %) 4) tokens) nil
                     (= 1 (count tokens)) (conj acc (first tokens))
                     :else (into (conj acc v) (filter #(and (>= (count %) 6) (not (re-matches #"[a-z]+|[0-9]{1,5}" %))) tokens)))))
