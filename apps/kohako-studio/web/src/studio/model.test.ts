@@ -43,6 +43,7 @@ describe('Studio の状態', () => {
     expect(studioRigModelId('?model=kohako-v15c')).toBe('kohako-v15c')
     expect(studioRigModelId('?model=kohako-v16')).toBe('kohako-v16')
     expect(studioRigModelId('?model=kohako-v17')).toBe('kohako-v17')
+    expect(studioRigModelId('?model=kohako-v19')).toBe('kohako-v17')
     expect(studioRigModelId('?model=kohako-v15e')).toBe('kohako-v15e')
     expect(studioRigModelId('?model=kohako-v14b')).toBe('kohako-v14b')
   })
