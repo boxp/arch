@@ -110,3 +110,12 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 - 引用符内・エスケープしたワイルドカード(`jq '.[0]'`、`python3 -c 'print(a[0])'`)、URL、グロブのフィルタ値(`rg -g '*.py'`、`--glob`、`--include`、`find -name`)、言及専用コマンド(`ls db_*`、`echo *`)は対象外。
 - 許容残差(TD-07): 見えている文字に秘密語が現れないグロブ(`cat db_*`、`cat ./conf/*`、`cat src/*.py`)は、`cat $f` や `xargs cat` と同じく実際に読むファイル名がコマンドに現れないため検出しない。一律に保留すると実 run の可視性が大きく落ちる(試算: BOXP-436 の run で sent 26→6、BOXP-440 で 42→3。主因は `grep -rn x dir/*.bb` のような通常のグロブ読取)ため採らない。
 - 実 run 28 件(BOXP-436/437/440/446/449/450、件数のみ)の body_policy 件数は修正前後で完全一致。
+
+## 追記 (arch#14503 P0 :639 / :421)
+
+- 値の中に秘密語を含むもの(`password: mysecret123`、`token = my-token-value`)も値として pin する(P0 :639)。以前は秘密語を含む語を一律に名前とみなして除外していた。名前として除外するのは秘密語単体(`password`、`api_key`、`secrets`)と、非 ASCII で秘密語を含む語(`トークン数`)、構造の中で `:`/`=` が続くキー語(`secretKeyRef: name: app-secrets`)だけ。過剰マスク: 値位置に置かれた名前(`password = DB_PASSWORD`)は以後同じ run で伏字になる。
+- pin 値・環境変数値の符号化された再掲は、符号化の種類を列挙せず、本文中の Base64/base64url/hex らしい連続を復号して値を探す(復号開始位置を Base64 は 4 通り、hex は 2 通り試すため、長い符号化文字列の途中に値があっても検出する)。見つかればその連続ごと `[REDACTED:env]` にし、最終ガードも同じ処理で再検査する。4 文字未満の値は乱数的な復号結果に一致するため復号側では探さない。普通の Base64(`aGVsbG8gd29ybGQ=`)や英文はそのまま読める。
+- 許容残差(TD-07): base32、rot13、gzip、二重符号化、大文字化、言い換えなど上記以外の変換は検出しない。
+- 既知の認証ファイルは、シェルが引用符・エスケープを連結した後の語でも判定する(P0 :421): `cat ~/.npm''rc`、`cat ~/.np\mrc`、`cat ~/'.npmrc'`、`bash -lc "cat ~/.npm''rc"`。照合は語全体またはパス要素単位で、引用を含む語だけを再走査するため、引用付き引数の連結で別の語と融合した文字列(`rg 'x' a.bb",max_output_tokens`)をファイル名と誤認しない(最初の試作では全体照合で実 run BOXP-436 の sent 33→3 となる退行を検出し、語単位へ変更した)。
+- 処理量: 200KB の Base64 連続で約 40ms、2 万個の短い Base64 語 + 500 値で約 1.1 秒(非同期の exporter 内)。
+- 実 run 28 件(BOXP-436/437/440/446/449/450、件数のみ)の body_policy 件数は修正前後で完全一致。

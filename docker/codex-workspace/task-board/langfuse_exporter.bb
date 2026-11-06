@@ -250,15 +250,60 @@
         masked (set (mapcat (fn [i] (keep #(get filled %) [(dec i) i (inc i)])) hits))]
     (apply str (map-indexed (fn [i part] (if (contains? masked i) (mark :secret_line) part)) parts))))
 
+;; An encoded repeat of a known value (Base64, base64url or hex of mysecret123) is found by decoding each run of
+;; encoding characters and looking for the value in the decoded text, rather than by listing encodings of every value
+;; (P0 arch#14503 :639). The run is decoded from each of the 4 (Base64) or 2 (hex) start offsets, so a value inside a
+;; longer encoded string is found too. Values under 4 characters are not looked for in decoded bytes: they would
+;; match random decodings. Accepted residual (TD-07, LANGFUSE_EXPORTER_THREAT_MODEL.md): other transforms (base32,
+;; rot13, gzip, double encoding, paraphrase) are not decoded.
+(def encoded-run #"[A-Za-z0-9+/_-]{4,65536}={0,2}")
+(def max-encoded-runs 100000)
+
+(defn- decodings [run]
+  (let [body (str/replace run #"=+$" "")
+        std (-> body (str/replace "-" "+") (str/replace "_" "/"))
+        b64 (for [off (range 4)
+                  :let [t (when (< off (count std)) (subs std off))]
+                  :when (and t (seq t) (not (re-find #"[^A-Za-z0-9+/]" t)))
+                  :let [t (case (int (mod (count t) 4)) 0 t 1 (subs t 0 (dec (count t))) 2 (str t "==") 3 (str t "="))]
+                  :when (seq t)]
+              (try (String. (.decode (java.util.Base64/getDecoder) ^String t) "ISO-8859-1") (catch Exception _ nil)))
+        hex (when (re-matches #"[0-9a-fA-F]+" body)
+              (for [off (range 2)
+                    :let [t (subs body (min off (count body)))
+                          t (subs t 0 (- (count t) (mod (count t) 2)))]
+                    :when (seq t)]
+                (String. (byte-array (map #(unchecked-byte (Integer/parseInt (apply str %) 16)) (partition 2 t))) "ISO-8859-1")))]
+    (remove nil? (concat b64 hex))))
+
+(defn- value-bytes [v] (String. (.getBytes (str v) "UTF-8") "ISO-8859-1"))
+
+(defn mask-encoded-values [text values mark]
+  (let [needles (vec (keep #(when (>= (count %) 4) (value-bytes %)) values))
+        ;; A run shorter than the Base64 form of the shortest value cannot hold any value.
+        min-run (when (seq needles) (long (Math/ceil (/ (* 4 (apply min (map count needles))) 3.0))))
+        seen (atom 0)]
+    (if (empty? needles)
+      text
+      (str/replace text encoded-run
+                   (fn [run]
+                     (when (> (swap! seen inc) max-encoded-runs) (throw (ex-info "too many encoded runs" {})))
+                     (if (and (>= (count run) min-run)
+                              (some (fn [d] (some #(str/includes? d %) needles)) (decodings run)))
+                       (mark :env)
+                       run))))))
+
 (defn redact
   "Mask known secret forms and environment values. On any error, drop the field."
   [s values]
   (try
     (let [counts (atom {})
           mark (fn [kind] (swap! counts update kind (fnil inc 0)) (str "[REDACTED:" (name kind) "]"))
-          with-values (if-let [pattern (values-pattern (vec values))]
-                        (str/replace (str s) pattern (fn [_] (mark :env)))
-                        (str s))
+          with-values (mask-encoded-values
+                       (if-let [pattern (values-pattern (vec values))]
+                         (str/replace (str s) pattern (fn [_] (mark :env)))
+                         (str s))
+                       values mark)
           masked (mask-secret-lines (reduce (fn [text [kind pattern]]
                            (str/replace text pattern
                                         (fn [match]
@@ -453,6 +498,23 @@
             ["command" "cmd" "script" "code"])
       [s])))
 
+;; Known auth files matched against whole words after the shell joins quote and escape pieces (cat ~/.npm''rc,
+;; cat ~/.np\mrc, cat ~/'.npmrc'). Only words whose raw form holds a quote or backslash are rescanned: an unquoted
+;; word was already matched by sensitive-path as written. A quoted script (bash -lc "cat ~/.npm''rc") is split into
+;; words once more. The match is on a whole word or path component, so a joined quoted argument (rg 'x' a.bb",max_tokens)
+;; does not fuse into a file name (P0 arch#14503 :421).
+(def known-auth-file
+  #"(?i)(?:^|[/\\=])(?:\.npmrc|\.pypirc|\.pgpass|\.my\.cnf|\.mylogin\.cnf|\.dockercfg|\.docker[/\\]config\.json|\.boto|\.s3cfg|\.vault-token|\.terraformrc|credentials\.tfrc\.json|\.kube[/\\]config|\.yarnrc(?:\.yml)?|\.curlrc|\.wgetrc|\.m2[/\\]settings(?:-security)?\.xml|gradle\.properties|\.config[/\\](?:gh[/\\]hosts\.ya?ml|gcloud|hub|rclone[/\\]rclone\.conf)|\.azure|application_default_credentials\.json|\.cargo[/\\]credentials(?:\.toml)?|\.gem[/\\]credentials|\.htpasswd|auth\.json|\.credentials[^/\\\s]{0,64}|\.env(?:\.[\w.-]{1,64})?|\.ssh|\.aws|kubeconfig|\.git-credentials|\.netrc|id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?|\.gnupg)(?=[/\\]|\z)")
+
+(defn- quoted-auth-file? [segment]
+  (some (fn [[raw w]]
+          (when (re-find #"[\"'\\]" raw)
+            (some #(re-find known-auth-file %)
+                  (cons w (when (re-find #"[\s\"'\\]" w)
+                            (map second (filter (fn [[r]] (re-find #"[\"'\\]" r))
+                                                (map vector (re-seq raw-word w) (shell-words w)))))))))
+        (map vector (re-seq raw-word segment) (shell-words segment))))
+
 (defn secret-file-command? [input]
   (boolean (some (fn [text]
                    (let [opens (re-seq open-call text)
@@ -466,6 +528,9 @@
                                              #"[;&|\n(){}`]|\$\(|\\n")]
                      (or (over-limit? max-scanned-items opens)
                          (over-limit? max-scanned-items segments)
+                         ;; Quotes and escapes are joined as the shell does before known auth files are matched, so
+                         ;; cat ~/.npm''rc or cat ~/.np\mrc reads ~/.npmrc (P0 arch#14503 :421).
+                         (some quoted-auth-file? segments)
                          (some (fn [[_ f]] (secret-file-word? f)) opens)
                          (some segment-reads-secret-file? segments))))
                  (command-texts (str input)))))
@@ -633,10 +698,20 @@
 
 (def reference-value #"(?i)\$\{?[\w.-]*\}?|<[^>]*>|\{\{[^}]*\}\}|\[REDACTED:[a-z_-]+\]|\*+|x{3,}|\.\.\.|…|-|\|")
 
+;; Only a bare secret word (password, api_key, secrets) is a name. A value that merely contains one
+;; (password: mysecret123, token = my-token-value) is the value and is pinned, so a later bare or encoded repeat is
+;; masked (P0 arch#14503 :639). Over-masking accepted: a name in value position (password = DB_PASSWORD) is masked
+;; in the later bodies of the run.
+(def bare-secret-name (re-pattern (str "(?i)[_.-]{0,8}(?:" (.pattern loose-word) ")s?[_.-]{0,8}")))
+(defn- secret-name? [t]
+  (boolean (or (re-matches bare-secret-name t)
+               ;; A non-ASCII token holding a secret word (トークン数) has no word boundary to cut a value from.
+               (and (re-find #"[^\x00-\x7f]" t) (re-find loose-word t)))))
+
 (defn- reference-only?
   "A variable, placeholder or secret name: never the value itself."
   [t]
-  (boolean (or (str/blank? t) (re-find loose-word t) (re-matches reference-value t))))
+  (boolean (or (str/blank? t) (secret-name? t) (re-matches reference-value t))))
 
 (def structure-word #"(?i)user|username|name|value|key|ref|from|data")
 (def scheme-word #"(?i)https?|basic|bearer|digest|negotiate")
@@ -664,7 +739,9 @@
   [raw]
   (reduce (fn [acc v]
             (let [parts (map strip-value (str/split v #"[\s\"'`,;:=<>()\[\]{}\\]+"))
-                  tokens (if (structural? v) (remove reference? parts) (filter plain-value-token? parts))]
+                  ;; Inside a structure a word followed by : or = is a key (secretKeyRef: name: app-secrets).
+                  keys (set (map second (re-seq #"([^\s\"'`,;:=<>()\[\]{}\\]{1,128})[\"']{0,2}\s{0,4}[:=]" v)))
+                  tokens (if (structural? v) (remove #(or (reference? %) (contains? keys %)) parts) (filter plain-value-token? parts))]
               (cond (nil? acc) acc
                     (or (re-matches literal-value v) (re-matches structure-word v)) (when (>= (count v) 4) (conj acc v))
                     (or (reference? v) (empty? tokens)) acc

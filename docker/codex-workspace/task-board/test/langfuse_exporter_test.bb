@@ -1360,5 +1360,36 @@
   (doseq [c ["cat db_*" "cat ./conf/*"]]
     (is (not (lf/withhold-output? c)) c)))
 
+;; P0 arch#14503 :639 (BOXP-428). A value containing a secret word (password: mysecret123) was taken for a name and
+;; not pinned, and pinned values were matched only literally, so a later Base64 repeat was sent. Values containing a
+;; secret word are pinned now, and runs of encoding characters are decoded and searched for pinned values.
+(deftest secret-word-values-and-encoded-repeats
+  (let [v (str "my" "secret" "123")
+        b64 (.encodeToString (java.util.Base64/getEncoder) (.getBytes v "UTF-8"))
+        url (.encodeToString (java.util.Base64/getUrlEncoder) (.getBytes (str "?>" v) "UTF-8"))
+        hex (apply str (map #(format "%02x" %) (.getBytes v "UTF-8")))
+        inner (.encodeToString (java.util.Base64/getEncoder) (.getBytes (str "foo" v "bar") "UTF-8"))]
+    (doseq [text [(str "password: " v) (str "token = " v) (str "{\"api_key\": \"" v "\"}")]]
+      (is (contains? (:values (#'lf/tool-exposure {:input "cat notes.txt"} {:output text})) v) text)
+      (is (contains? (:values (#'lf/body-exposure text)) v) text))
+    (doseq [enc [b64 (str/replace b64 #"=+$" "") url hex (str/upper-case hex) inner (str "x" b64)]]
+      (let [{:keys [value]} (lf/redact (str "echo " enc " done") #{v})]
+        (is (not (str/includes? value enc)) enc)
+        (is (str/includes? value "[REDACTED:env]") enc))
+      (is (not (lf/guard-safe? (str "out " enc) #{v})) enc))
+    ;; Controls: ordinary Base64, prose and a bare secret word stay readable; a bare name is not pinned.
+    (is (= "aGVsbG8gd29ybGQ= ordinary words" (:value (lf/redact "aGVsbG8gd29ybGQ= ordinary words" #{v}))))
+    (is (empty? (:values (#'lf/tool-exposure {:input "cat notes.txt"} {:output "password: secrets"}))))
+    (is (empty? (:values (#'lf/body-exposure "Reset your password from the settings page."))))))
+
+;; P0 arch#14503 :421 (BOXP-428). Quote and escape pieces join before known auth paths are matched.
+(deftest known-auth-file-joined-quotes
+  (doseq [c ["cat ~/.npm''rc" "cat ~/.npm\"\"rc" "cat ~/.np\\mrc" "cat ~/'.npmrc'" "cat ~/.ku'be'/config" "sed -n 1p ~/.pg\"pass\""
+             "{\"cmd\":\"cat ~/.npm''rc\"}" "bash -lc \"cat ~/.npm''rc\""]]
+    (is (lf/withhold-output? c) c))
+  (is (= "sensitive_source" (:reason (#'lf/tool-exposure {:input {:command "cat ~/.npm''rc"}} {:output "unlabeledauthvalue9"}))))
+  (doseq [c ["cat package''.json" "cat ~/.bash''rc" "cat notes''.txt"]]
+    (is (not (lf/withhold-output? c)) c)))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
