@@ -124,3 +124,22 @@ it('rotates the session even without a run id when the create request outcome is
     expect(sessions[2]).toBe(sessions[1])
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
 })
+it('shows a new approval and sends the new generation when the same prompt id gets a new execution generation', async () => {
+  let cb: any = () => {}
+  const approvals: any[] = []
+  const hermes = { run: (_id: string, _text: string, _session: string, _i: string, onApproval: any) => { cb = onApproval; onApproval('run', { requestId: 'p1', generation: 1, description: 'test', command: 'echo hi', choices: ['once', 'deny'] }); return new Promise(() => {}) }, approve: async (...args: any[]) => { approvals.push(args); return 'ok' }, stop: async () => 'ok' } as unknown as ReturnType<typeof createHermes>
+  const server = createServer(createApp({ authenticate: async () => 'owner', hermes }))
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
+    expect((await fetch(base + 'messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId: 'owner-901', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }) })).status).toBe(202)
+    const first = await (await fetch(base + 'requests/owner-901')).json() as any
+    cb('run', { requestId: 'p1', generation: 2, description: 'test', command: 'echo hi', choices: ['once', 'deny'] })
+    const second = await (await fetch(base + 'requests/owner-901')).json() as any
+    expect(second.status).toBe('approval'); expect(second.approval.approvalId).not.toBe(first.approval.approvalId)
+    expect((await fetch(base + 'approvals', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId: 'owner-901', approvalId: second.approval.approvalId, choice: 'once' }) })).status).toBe(200)
+    expect(approvals).toEqual([['run', 'once', 'p1', 2]])
+    cb('run', { requestId: 'p1', generation: 2, description: 'test', command: 'echo hi', choices: ['once', 'deny'] })
+    expect(((await (await fetch(base + 'requests/owner-901')).json()) as any).approval?.approvalId ?? second.approval.approvalId).toBe(second.approval.approvalId)
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
+})

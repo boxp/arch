@@ -116,7 +116,8 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
       entries.set(input.requestId, entry)
       const onApproval: NonNullable<Parameters<typeof hermes.run>[4]> = (runId, approval) => {
           if (!approval) { if (entry.approval) entry.approval.active = false; return }
-          if (entry.approval && entry.approval.active && entry.approval.runId === runId && (approval.requestId ? entry.approval.hermesRequestId === approval.requestId : !entry.approval.hermesRequestId && !entry.approval.consumed)) return
+          // 同じ prompt_id でも execution_generation が変われば新しい承認として表示し直す（古い generation を送ると失敗するため）。
+          if (entry.approval && entry.approval.active && entry.approval.runId === runId && entry.approval.generation === approval.generation && (approval.requestId ? entry.approval.hermesRequestId === approval.requestId : !entry.approval.hermesRequestId && !entry.approval.consumed)) return
           const shown = approvalSummary(approval)
           entry.approval = { approvalId: randomBytes(8).toString('hex'), runId, hermesRequestId: approval.requestId, generation: approval.generation, summary: shown.summary, expiresAt: now() + 280_000, consumed: false, active: true, denyOnly: !approval.choices.includes('once') || !shown.fullyShown }
           // 放置は拒否: 期限で一度だけ deny を中継する（Hermes 側の timeout を待たずに会話を空ける）。
