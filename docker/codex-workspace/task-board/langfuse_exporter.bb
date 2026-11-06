@@ -53,7 +53,7 @@
 ;; Whole words of the name, at its ends: MINIO_ROOT_PASSWORD holds "min" and SUPPORT_SECRET holds "port".
 (def toggle-last-word #"(?i)enabled?|disabled?|required?|parallelism|rotation")
 (def toggle-first-word #"(?i)use|enable|disable|no|skip|require")
-(def counter-last-word #"(?i)tokens|count|limit|max|min|ttl|timeout|expiry|expires|interval|seconds|minutes|hours|days|age|size|port|bytes")
+(def counter-last-word #"(?i)tokens|count|limit|max|min|ttl|timeout|expiry|expires|interval|seconds|minutes|hours|days|age|size|port|bytes|length|len|chars|characters|attempts|retries|history|digits")
 
 (defn setting?
   "The value and the name have to agree: PASSWORD=disabled is a password, AUTH_ENABLED=disabled is a setting."
@@ -265,9 +265,11 @@
 ;; Same sources as the Hermes observer (_SENSITIVE_PATH). A file named for tokens (/tmp/tokens, tokens.json,
 ;; refresh_tokens.txt) or a private key/keystore file holds a bare value with no key or known format left to mask,
 ;; so reading it withholds the body. A bare key such as max_output_tokens has no path separator or extension, so it
-;; is not a path. File-name parts are bounded so a long line is scanned in linear time.
+;; is not a path. A file named for a password, passphrase, secret or credentials (/tmp/password, db_password,
+;; secret.txt) holds a bare value the same way; the bare word counts only as a whole argument (cat password), so
+;; grep -rn password src stays readable. File-name parts are bounded so a long line is scanned in linear time.
 (def sensitive-path
-  #"(?i)(?:(?:^|[/\\\s\"'=])(?:auth\.json|\.credentials[^/\s\"']*|\.env[^/\s\"']*|\.ssh(?:[/\\]|\b)|\.aws(?:[/\\]|\b)|kubeconfig|\.git-credentials|\.netrc|id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?|\.gnupg(?:[/\\]|\b)|secrets?[/\\]|(?<=/)secrets?(?=$|[\s\"'])|tokens?(?=[\s\"'/\\]|\z)|[^/\\\s\"'=]{0,255}?token(?=[\s\"'/\;|&)]|\z)|[^/\\\s\"'=]{0,255}?\.(?:key|pem|p8|p12|pfx|jks|keystore|ppk)(?=[\s\"';|&)]|\z))|[/\\][^/\\\s\"']{0,255}?token|token[^/\\\s\"']{0,255}?(?:\.[A-Za-z0-9]+(?![\w-])|[/\\]))")
+  #"(?i)(?:(?:^|[/\\\s\"'=])(?:auth\.json|\.credentials[^/\s\"']*|\.env[^/\s\"']*|\.ssh(?:[/\\]|\b)|\.aws(?:[/\\]|\b)|kubeconfig|\.git-credentials|\.netrc|id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?|\.gnupg(?:[/\\]|\b)|secrets?[/\\]|(?<=/)secrets?(?=$|[\s\"'])|tokens?(?=[\s\"'/\\]|\z)|[^/\\\s\"'=]{0,255}?token(?=[\s\"'/\;|&)]|\z)|[^/\\\s\"'=]{0,255}?\.(?:key|pem|p8|p12|pfx|jks|keystore|ppk)(?=[\s\"';|&)]|\z))|[/\\][^/\\\s\"']{0,255}?token|token[^/\\\s\"']{0,255}?(?:\.[A-Za-z0-9]+(?![\w-])|[/\\]))|(?<=[/\\])[^/\\\s\"']{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)(?:\.[A-Za-z0-9]{1,16})?(?=[\s\"'/\;|&)]|\z)|(?:^|(?<=[\s\"'=]))[^/\\\s\"'=]{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)\.[A-Za-z0-9]{1,16}(?=[\s\"';|&)]|\z)|(?:^|(?<=[\s\"'=]))(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)(?=[\"']|\z)")
 (def sensitive-command
   #"(?i)(?:^|[;&|\s\"'(`/]|\\[nrt])(?:env(?:[ \t]+(?:-\S*|[A-Za-z_]\w*=\S*))*[ \t]*(?:[\"'|;&<>)`]|\\[nrt]|$)|printenv(?:[\s\"'|;&<>)]|$))|(?:^|[;&|\s\"'(`/])(?:set|export|declare|typeset)(?:\s+-[a-z]*[px]\b|[ \t]*(?:$|[|;&<>\"')`#]|\\[nrt\"]))|\benviron\b|\bprocess\.env\b|\bgetenv\b|\baws\b[^|;&\n]{0,1024}\b(?:ssm\s+get-parameter|secretsmanager\s+get-|configure\s+(?:get|export-credentials))|\bhelm\s+get\b|\bgh\s+auth\s+token\b|\bgit\s+credential\b")
 (defn withhold-output? [input]
@@ -439,13 +441,14 @@
 (defn- token-values
   "Values to mask for matched text. A single token is the value itself; a value of several words keeps the whole
   text and its secret-looking tokens. A reference (a variable, placeholder, secret name or key word) is skipped.
-  A value under 4 characters is masked in place only: masking it everywhere would blank ordinary text, and it is
-  no credential on its own."
+  A value under 4 characters cannot be masked everywhere without blanking ordinary text (password: 123 and a later
+  bare 123), so it returns nil and the caller withholds this body and the bodies after it."
   [raw]
   (reduce (fn [acc v]
             (let [tokens (remove reference? (map strip-value (str/split v #"[\s\"'`,;:=<>()\[\]{}\\]+")))]
               (cond (or (nil? acc) (reference? v) (empty? tokens)) acc
-                    (= 1 (count tokens)) (if (< (count (first tokens)) 4) acc (conj acc (first tokens)))
+                    (some #(< (count %) 4) tokens) nil
+                    (= 1 (count tokens)) (conj acc (first tokens))
                     :else (into (conj acc v) (filter #(and (>= (count %) 6) (not (re-matches #"[a-z]+|[0-9]{1,5}" %))) tokens)))))
           #{}
           (keep #(let [v (strip-value %)] (when-not (str/blank? v) v)) raw)))
@@ -461,7 +464,9 @@
        :url-credentials [(second (re-find #"://[^:/@\s]*:([^@\s]*)@" m))]
        :cli-password [(-> (last (str/split m #"\s+")) (str/replace #"^(?:-p|(?:-u|--user)=?)" "") (str/replace #"^[^:]*:(?=.)" ""))]
        :flag [(last (str/split m #"[ \t]+"))]
-       :assignment [(second (re-find #"(?s)^.*?(?:[:=]|\\+u00(?:3[aA]|3[dD]))(.*)$" m))]
+       :assignment (let [[_ k v] (re-find #"(?s)^[\"']?([\w.-]*).*?(?:[:=]|\\+u00(?:3[aA]|3[dD]))(.*)$" m)]
+                     ;; A setting such as password_min_length: 8 is no value to pin or withhold for.
+                     (if (setting? (str k) (strip-value v)) [] [v]))
        :bearer [(second (re-find #"(?i)bearer\s+(.*)" m))]
        :env-entry (str/split m #"[\s\"'`,;:=<>()\[\]{}\\]+")
        [m]))))

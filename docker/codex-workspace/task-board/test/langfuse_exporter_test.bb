@@ -936,5 +936,35 @@
       (fn [url _]
         (is (= :ok (lf/post-batch (test-config base :url url) "{}")))))))
 
+(deftest password-files-are-sensitive-sources
+  ;; A file named for a password holds a bare value with no label or format to mask.
+  (doseq [c ["cat /tmp/password" "cat /tmp/passwords" "cat /run/secrets/db_password" "{\"file_path\":\"/tmp/password\"}"
+             "cat password" "cat password.txt" "cat db-passphrase.txt" "cat /etc/app/passwd" "cat /var/lib/app/password/current"
+             "cat ./secret" "cat secret.txt" "cat /tmp/credentials"]]
+    (is (lf/withhold-output? c) c))
+  (doseq [c ["grep -rn password src" "echo password reset" "cat docs/reset.md" "{\"cmd\":\"ls\",\"max_output_tokens\":12000}"]]
+    (is (not (lf/withhold-output? c)) c))
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        value "q7Zr"
+        spans (doall (lf/claude-spans ctx "root" "test:" [{:type "user" :message {:content "first request"}}
+                                                           {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat /tmp/password"}}]}}
+                                                           {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content value}]}}
+                                                           {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text (str "it is " value)}]}}]))]
+    (is (not (str/includes? (pr-str spans) value)))))
+
+(deftest short-labelled-values-withhold-later-bodies
+  ;; A value under 4 characters cannot be masked everywhere without blanking ordinary text, so it withholds.
+  (doseq [text ["password: 123" "password = ab" "{\"password\":\"x9\"}" "api_key: z1"]]
+    (is (:reason (#'lf/exposure text)) text))
+  (testing "settings and counters stay readable"
+    (doseq [text ["password_min_length: 8" "PASSWORD_REQUIRED=true" "\"input_tokens\": 12" "password: ${DB_PASSWORD}"]]
+      (is (nil? (:reason (#'lf/exposure text))) text)))
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        spans (doall (lf/claude-spans ctx "root" "test:" [{:type "user" :message {:content "first request"}}
+                                                           {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat app.conf"}}]}}
+                                                           {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content "password: 123"}]}}
+                                                           {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text "zz 123 zz"}]}}]))]
+    (is (not (str/includes? (pr-str spans) "zz 123 zz")))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
