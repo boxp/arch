@@ -1246,6 +1246,16 @@
   (doseq [cmd ["date -u +%Y-%m-%dT%H:%M:%SZ" "date -u '+%H:%M'" "date -u \"+%d%H:%M\""]]
     (is (= cmd (:value (lf/redact cmd #{}))) cmd)))
 
+;; P0 arch#14503 :49 (BOXP-428). A user name and password of digits only (curl -u 12345:67890) is a real -u
+;; credential, not a time; only a date format (+%H) after -u is skipped.
+(deftest cli-user-with-digits-only
+  (doseq [cmd ["curl -u 12345:67890 https://x" "curl --user=12345:67890 https://x" "curl -u '12345:67890' https://x"]]
+    (is (not (str/includes? (:value (lf/redact cmd #{})) "67890")) cmd)
+    (is (contains? (:values (#'lf/body-exposure cmd)) "67890") cmd))
+  (doseq [cmd ["date -u +%Y-%m-%dT%H:%M:%SZ" "date -u '+%H:%M'" "date -u \"+%d%H:%M\""]]
+    (is (= cmd (:value (lf/redact cmd #{}))) cmd)
+    (is (nil? (:reason (#'lf/body-exposure cmd))) cmd)))
+
 ;; P0 arch#14503 :1130 (BOXP-428). With no session log, the run's prompt.md and last-message.md are the only bodies.
 ;; A value named in the prompt is pinned, so a bare repeat in the last message is masked; one that cannot be pinned
 ;; withholds the root bodies. An ordinary prompt and reply stay readable.
