@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Black-box sanctioned repair fixtures; no production vault access."""
 import fcntl
+import shutil
 import hashlib
 import json
 import os
@@ -14,6 +15,18 @@ RUN = '20261105T135333Z-c1642584-907a-4d56-b559-cbdb87873658'
 DONE = '- [x] [[Tickets/BOXP-433|BOXP-433: title]] #ticket status::done priority::high assignee::boxp repo::boxp/lolice rev::test-rev done::2026-11-05'
 STALE = '- [ ] [[Tickets/BOXP-433|BOXP-433: title]] #ticket status::in-progress priority::high assignee::claude-opus repo::boxp/lolice rev::test-rev'
 FOREIGN = '- [ ] [[Tickets/BOXP-432|BOXP-432: title]] #ticket status::in-progress priority::high assignee::claude-opus'
+
+
+def exchange_supported():
+    with tempfile.TemporaryDirectory() as d:
+        a, b = Path(d, 'a'), Path(d, 'b')
+        a.write_text('a')
+        b.write_text('b')
+        p = subprocess.run(['mv', '--exchange', '--no-target-directory', '--', str(a), str(b)], capture_output=True)
+        return p.returncode == 0 and a.read_text() == 'b'
+
+
+EXCHANGE = exchange_supported()
 
 
 def digest(path):
@@ -41,7 +54,8 @@ class RepairTest(unittest.TestCase):
         self.board = self.vault / 'Boards/Task Board.md'
         self.before = '---\nkanban-plugin: board\n---\n\n## In Progress\n\n' + STALE + '\n' + FOREIGN + '\n\n## Done\n\n' + DONE + '\n\n## Notes\n\n' + STALE + '\n\n'
         self.board.write_text(self.before)
-        self.env = dict(os.environ, TASK_BOARD_VAULT_WRITER_LOCK_DIR=str(self.writer))
+        self.env = dict(os.environ, TASK_BOARD_VAULT_WRITER_LOCK_DIR=str(self.writer),
+                        CODEX_TASK_BOARD_RECONCILE_SETTLE_MS='0')
         self.cmd = ['bb', str(HELPER), 'reconcile-done', 'BOXP-433', '--vault', str(self.vault), '--source-root', str(self.root), '--json']
 
     def call(self, *args, ok=True):
@@ -84,6 +98,7 @@ class RepairTest(unittest.TestCase):
         self.assertTrue(self.call(*self.args(plan))['noop'])
         self.assertEqual((self.vault / '.task-board-repair-audit.edn').read_bytes(), audit)
 
+    @unittest.skipUnless(EXCHANGE, 'mv --exchange unavailable')
     def test_without_shared_lock_and_readback_conflict(self):
         self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR')
         plan = self.plan()
@@ -97,6 +112,42 @@ class RepairTest(unittest.TestCase):
         self.assertIn('post-apply readback mismatch; backup at', self.call(*self.args(plan), ok=False))
         self.assertIn(':phase :conflict', (self.vault / '.task-board-repair-audit.edn').read_text())
         self.assertTrue(list((self.root / 'repair-backups').glob('*-board.md')))
+
+    @unittest.skipUnless(EXCHANGE, 'mv --exchange unavailable')
+    def test_write_between_check_and_replace_is_restored(self):
+        # P0: a writer that lands after the final comparison must not be lost.
+        for shared in (False, True):
+            with self.subTest(shared=shared):
+                if not shared:
+                    self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR', None)
+                else:
+                    self.env['TASK_BOARD_VAULT_WRITER_LOCK_DIR'] = str(self.writer)
+                self.board.write_text(self.before)
+                plan = self.plan()
+                self.env['CODEX_TASK_BOARD_TEST_RECONCILE_CONCURRENT_WRITE'] = 'true'
+                try:
+                    err = self.call(*self.args(plan), ok=False)
+                finally:
+                    self.env.pop('CODEX_TASK_BOARD_TEST_RECONCILE_CONCURRENT_WRITE')
+                self.assertIn('board changed concurrently; concurrent content restored', err)
+                self.assertEqual(self.board.read_text(), self.before + 'concurrent writer\n')
+                self.assertIn(':reason "board changed concurrently', (self.vault / '.task-board-repair-audit.edn').read_text())
+                self.assertTrue(list((self.root / 'repair-backups').glob('BOXP-433-*-displaced.md')))
+                self.assertFalse(list((self.vault / 'Boards').glob('.reconcile-433-*')))
+
+    def test_without_exchange_requires_shared_lock(self):
+        fake = self.base / 'nomv'
+        fake.mkdir()
+        mv = fake / 'mv'
+        mv.write_text('#!/bin/sh\nfor a in "$@"; do [ "$a" = --exchange ] && exit 1; done\nexec ' + shutil.which('mv') + ' "$@"\n')
+        mv.chmod(0o755)
+        self.env['PATH'] = str(fake) + os.pathsep + self.env['PATH']
+        self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR')
+        plan = self.plan()
+        self.assertIn('unavailable and no shared writer lock', self.call(*self.args(plan), ok=False))
+        self.unchanged()
+        self.env['TASK_BOARD_VAULT_WRITER_LOCK_DIR'] = str(self.writer)
+        self.assertEqual(self.call(*self.args(plan))['writer-lock'], 'shared')
 
     def test_conflicts_and_missing_confirm(self):
         plan = self.plan()

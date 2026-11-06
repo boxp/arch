@@ -5036,13 +5036,21 @@ test_todo_existing_holds_win() {
 }
 
 test_terminal_revision_lww_and_duplicates() {
-  local tmp vault state bin mode rev before
+  local tmp vault state bin mode rev before variant
+  # norev: a legacy card without rev:: before the terminal stamp must not be
+  # projected back either when the old Board copy is restored.
+  for variant in rev norev; do
   for mode in blocked done; do
     tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
     mkdir -p "${bin}"; make_fake_codex "${bin}"
-    write_board "${vault}" '- [ ] [[Tickets/BOXP-991|BOXP-991: test]] #ticket status::in-progress assignee::codex rev::old'
-    write_ticket "${vault}" BOXP-991 in-progress codex
-    sed -i '/^status:/a board_rev: old' "${vault}/Tickets/BOXP-991.md"
+    if [[ "${variant}" == rev ]]; then
+      write_board "${vault}" '- [ ] [[Tickets/BOXP-991|BOXP-991: test]] #ticket status::in-progress assignee::codex rev::old'
+      write_ticket "${vault}" BOXP-991 in-progress codex
+      sed -i '/^status:/a board_rev: old' "${vault}/Tickets/BOXP-991.md"
+    else
+      write_board "${vault}" '- [ ] [[Tickets/BOXP-991|BOXP-991: test]] #ticket status::in-progress assignee::codex'
+      write_ticket "${vault}" BOXP-991 in-progress codex
+    fi
     cp "${vault}/Boards/Task Board.md" "${tmp}/old"
     PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE="TASK_BOARD_RESULT: ${mode}" run_tick "${vault}" "${state}" env >"${tmp}/run"
     assert_file_contains "${vault}/Tickets/BOXP-991.md" "^status: ${mode}$"
@@ -5054,6 +5062,7 @@ test_terminal_revision_lww_and_duplicates() {
     for _ in 1 2 3; do CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 run_tick "${vault}" "${state}" env >"${tmp}/sync"; done
     assert_file_contains "${vault}/Tickets/BOXP-991.md" "^status: ${mode}$"
     assert_file_contains "${vault}/Boards/Task Board.md" "status::${mode}.*rev::${rev}"
+  done
   done
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
   mkdir -p "${bin}"; make_fake_codex "${bin}"

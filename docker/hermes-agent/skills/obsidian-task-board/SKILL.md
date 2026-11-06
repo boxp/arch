@@ -127,7 +127,7 @@ Preview a control request (dry-run only):
 
 `reconcile-done BOXP-433` は、sourceの最新runがsucceeded/doneでclaimがなく、票がdone/boxpである場合だけ使えます。既存Doneカードと日付を保持し、同じtitle/repo/rev/priorityのIn Progress/claude-opusカードを1枚だけ除きます。通常のupdateの重複拒否は維持します。他のIDや一般的な状態変更には使えません。
 
-**配備条件**: source runnerと同じUID・実source volume・同じvaultで実行します。root、symlink、異なるUIDのpathを拒否し、source-rootはvault外に置きます。`TASK_BOARD_VAULT_WRITER_LOCK_DIR`設定時は共有writer lockも取得し、未設定時は取得しません。source guard、Boardとticketのファイルロック、各ハッシュ期待値の検証は両モードで維持します。atomic move直前にBoardがプレビュー時と同一であることを再確認し、変更前の正確なBoardをsource-rootの`repair-backups`に0600で保存・fsync・ハッシュ検証します。置換後にも読み戻して照合し、不一致ならconflictを記録して停止します。共有ロックなしではこの短い間に並行するrunnerやSyncの書き込みが失われる可能性があり、pod間の原子性は保証しません。runnerの終端revisionによる修復、またはバックアップから復旧してください。結果の`writer-lock`でモードを確認できます。
+**配備条件**: source runnerと同じUID・実source volume・同じvaultで実行します。root、symlink、異なるUIDのpathを拒否し、source-rootはvault外に置きます。`TASK_BOARD_VAULT_WRITER_LOCK_DIR`設定時は共有writer lockも取得し、未設定時は取得しません。source guard、Boardとticketのファイルロック、各ハッシュ期待値の検証は両モードで維持します。atomic move直前にBoardがプレビュー時と同一であることを再確認し、変更前の正確なBoardをsource-rootの`repair-backups`に0600で保存・fsync・ハッシュ検証します。置換は`mv --exchange`(renameat2 RENAME_EXCHANGE)で行い、置き換えられた実ファイルを保持して既定1秒(`CODEX_TASK_BOARD_RECONCILE_SETTLE_MS`)後にプレビュー時の内容と照合します。最終確認後にrunnerやSyncが書き込んでいた場合はその内容をBoardへ戻し、各版を`repair-backups`へ保存してconflictを監査記録し非0で停止します（並行書き込みを黙って上書きしません）。置換後も読み戻して照合します。`mv --exchange`が使えない環境では、共有writer lock設定時のみ通常のatomic moveを使い、未設定なら拒否します。pod間の原子的書き込みは保証せず、検出・正本保全・回復で扱います。結果の`writer-lock`でモードを確認できます。
 
 ```bash
 # 全writerと同一の既存lock domainを継承した環境で実行する。

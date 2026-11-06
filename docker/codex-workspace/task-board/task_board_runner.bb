@@ -779,8 +779,19 @@
 
 (defn card-rev [card] (when-let [line (:line card)] (attr-value line "rev")))
 
-(defn rev-mismatch? [card fm]
-  (and (card-rev card) (not= (card-rev card) (:board_rev fm))))
+(defn rev-mismatch?
+  "A card whose rev:: differs from the ticket's board_rev. A card without rev::
+  is legacy and normally follows its ticket, except when the ticket was moved
+  to a terminal state (done / blocked) with a revision and the card shows
+  another status: that card predates the terminal stamp (e.g. an older Board
+  copy restored by a last-writer-wins sync) and must not be projected back."
+  [card fm]
+  (let [cr (card-rev card)]
+    (if cr
+      (not= cr (:board_rev fm))
+      (boolean (and (not (str/blank? (:board_rev fm)))
+                    (#{"done" "blocked"} (:status fm))
+                    (not= (:status fm) (:status card)))))))
 
 (def revision-mismatches (atom {}))
 
@@ -828,7 +839,7 @@
             expired? (> (.toNanos (java.time.Duration/between (:first-seen entry) (now)))
                         (* 1000000000 (rev-mismatch-warn-seconds)))]
         (cond
-          (and expired? card-at ticket-at (> ticket-at card-at) ticket-lane)
+          (and expired? ticket-at (or (nil? card-rev') (and card-at (> ticket-at card-at))) ticket-lane)
           (do (log! (str "WARN: assignment revision mismatch persisted for " id "; the card write was lost, repairing the card from ticket rev=" ticket-rev
                          " (card rev=" card-rev' ")"))
               (swap! revision-mismatches dissoc id)

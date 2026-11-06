@@ -836,8 +836,40 @@
     (spit (str path) (str (pr-str (assoc record :at (str (java.time.Instant/now)))) "\n") :append true)
     (with-open [raf (RandomAccessFile. (str path) "rw")] (.force (.getChannel raf) true))))
 
-(defn repair-atomic-board! [path before after]
-  (let [tmp (fs/path (fs/parent path) (str ".reconcile-433-" (random-uuid) ".tmp"))]
+(defn repair-exchange! [a b]
+  ;; renameat2(RENAME_EXCHANGE): both names keep a file, so the content this
+  ;; replacement displaced is preserved and can be compared afterwards.
+  (let [{:keys [exit err]} (shell/sh "mv" "--exchange" "--no-target-directory" "--" (str a) (str b))]
+    (repair-require (zero? exit) (str "atomic exchange failed: " (str/trim (str err))))))
+
+(defn repair-exchange-supported? [dir]
+  (let [a (fs/path dir (str ".reconcile-433-probe-" (random-uuid) ".a"))
+        b (fs/path dir (str ".reconcile-433-probe-" (random-uuid) ".b"))]
+    (try
+      (spit (str a) "a") (spit (str b) "b")
+      (and (zero? (:exit (shell/sh "mv" "--exchange" "--no-target-directory" "--" (str a) (str b))))
+           (= "b" (slurp (str a))) (= "a" (slurp (str b))))
+      (catch Exception _ false)
+      (finally (fs/delete-if-exists a) (fs/delete-if-exists b)))))
+
+(defn repair-settle-ms []
+  (try (Long/parseLong (or (System/getenv "CODEX_TASK_BOARD_RECONCILE_SETTLE_MS") "1000"))
+       (catch Exception _ 1000)))
+
+(defn repair-atomic-board!
+  "Replace the board with `after` only if the replaced content was exactly
+  `before`. With an atomic exchange the displaced file is kept and compared
+  after a settle delay (covering an in-place write already in flight), so a
+  runner/Sync write that landed after the last check is detected and put
+  back instead of being silently overwritten. Without exchange support only a
+  shared writer lock may fall back to a plain atomic move. Returns
+  {:conflict nil} or {:conflict reason :preserved [paths]}."
+  [path before after {:keys [exchange? preserve-dir]}]
+  (let [tmp (fs/path (fs/parent path) (str ".reconcile-433-" (random-uuid) ".tmp"))
+        preserve! (fn [label src]
+                    (let [dst (fs/path preserve-dir (str "BOXP-433-" (random-uuid) "-" label ".md"))]
+                      (spit (str dst) (read-text src))
+                      (str dst)))]
     (try
       (spit (str tmp) after)
       (with-open [raf (RandomAccessFile. (str tmp) "rw")] (.force (.getChannel raf) true))
@@ -845,9 +877,38 @@
         (java.nio.file.Files/getPosixFilePermissions (fs/path path)
           (make-array java.nio.file.LinkOption 0)))
       (repair-require (= before (read-text path)) "board changed before atomic replacement")
-      (java.nio.file.Files/move tmp (fs/path path)
-        (into-array java.nio.file.CopyOption [java.nio.file.StandardCopyOption/ATOMIC_MOVE
-                                             java.nio.file.StandardCopyOption/REPLACE_EXISTING]))
+      (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_RECONCILE_CONCURRENT_WRITE"))
+        ;; Deterministic hook: another writer replaces the board after the check.
+        (let [other (fs/path (fs/parent path) (str ".reconcile-433-other-" (random-uuid) ".tmp"))]
+          (spit (str other) (str before "concurrent writer\n"))
+          (java.nio.file.Files/move other (fs/path path)
+            (into-array java.nio.file.CopyOption [java.nio.file.StandardCopyOption/ATOMIC_MOVE
+                                                 java.nio.file.StandardCopyOption/REPLACE_EXISTING]))))
+      (if exchange?
+        (do
+          (repair-exchange! tmp path)
+          (Thread/sleep (repair-settle-ms))
+          (let [displaced (read-text tmp)]
+            (if (= displaced before)
+              {:conflict nil}
+              ;; Someone else wrote between the check and the exchange: put
+              ;; their content back. If the board changed again meanwhile,
+              ;; restore that newest content too; every version is preserved.
+              (let [displaced-copy (preserve! "displaced" tmp)]
+                (repair-exchange! tmp path)
+                (let [returned (read-text tmp)]
+                  (if (= returned after)
+                    {:conflict "board changed concurrently; concurrent content restored"
+                     :preserved [displaced-copy]}
+                    (let [returned-copy (preserve! "newer" tmp)]
+                      (repair-exchange! tmp path)
+                      {:conflict "board changed repeatedly during repair; newest content restored"
+                       :preserved [displaced-copy returned-copy]})))))))
+        (do
+          (java.nio.file.Files/move tmp (fs/path path)
+            (into-array java.nio.file.CopyOption [java.nio.file.StandardCopyOption/ATOMIC_MOVE
+                                                 java.nio.file.StandardCopyOption/REPLACE_EXISTING]))
+          {:conflict nil}))
       (finally (fs/delete-if-exists tmp)))))
 
 (defn cmd-reconcile-done [opts id]
@@ -923,6 +984,9 @@
                                _ (when (fs/exists? dir) (repair-owned-path! dir))
                                _ (fs/create-dirs dir)
                                _ (repair-owned-path! dir)
+                               exchange? (repair-exchange-supported? dir)
+                               _ (repair-require (or exchange? writer)
+                                                 "atomic exchange (mv --exchange) unavailable and no shared writer lock; refusing unsafe replacement")
                                stamp (.format (java.time.ZonedDateTime/now java.time.ZoneOffset/UTC)
                                               (java.time.format.DateTimeFormatter/ofPattern "yyyyMMdd'T'HHmmssSSS'Z'"))
                                backup (fs/path dir (str id "-" stamp "-board.md"))]
@@ -936,7 +1000,13 @@
                            (repair-require (= (:board-sha256 hashes) (repair-sha (read-text backup))) "backup hash mismatch")
                            (repair-audit! vault (assoc hashes :phase :prepared :id id :rev (:rev ticket)
                                                      :backup-path (str backup) :source-run (:run-id source)))
-                           (repair-atomic-board! bpath board after)
+                           (let [{:keys [conflict preserved]} (repair-atomic-board! bpath board after
+                                                                {:exchange? exchange? :preserve-dir dir})]
+                             (when conflict
+                               (repair-audit! vault (assoc hashes :phase :conflict :id id :reason conflict
+                                                         :preserved preserved :backup-path (str backup)))
+                               (die (str "reconcile-done: " conflict "; nothing applied; backup at " backup
+                                         "; preserved " (str/join ", " preserved)))))
                            (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_RECONCILE_READBACK_MISMATCH"))
                              (spit (str bpath) "test readback mismatch"))
                            (let [observed (read-text bpath)]
