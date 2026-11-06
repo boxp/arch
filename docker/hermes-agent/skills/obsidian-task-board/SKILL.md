@@ -123,6 +123,30 @@ Preview a control request (dry-run only):
 
 `control-intent` only prints the request that an authenticated control API would receive and the single actor allowed to send it. `--actor owner` (the default) previews `:update-control` and may set any intent. `--actor runner` previews `:restrict-intent`, requires `--writer-generation`, and can only tighten to `pause`, `cancel`, or `wait-human`. The command never writes to the vault and refuses to run without `--dry-run`: editing a ticket, Notes, or frontmatter is not an authorization for autonomy v2 intent, decisions, or retries. Decision answers and retry changes have no control operation yet, so the helper has no preview for them.
 
+## 承認済み433重複の専用修復（BOXP-455）
+
+`reconcile-done BOXP-433` は、sourceの最新runがsucceeded/doneでclaimがなく、票がdone/boxpである場合だけ使えます。既存Doneカードと日付を保持し、同じtitle/repo/rev/priorityのIn Progress/claude-opusカードを1枚だけ除きます。通常のupdateの重複拒否は維持します。他のIDや一般的な状態変更には使えません。
+
+**配備条件**: source runnerと同じUID・実source volume・同じvaultで実行します。runnerと全helper writerが同じ実ファイルの`TASK_BOARD_VAULT_WRITER_LOCK_DIR/vault-writer.lock`を使うことを配備設定と実プロセスから確認してください。未設定時は拒否します。このコマンドだけに任意のlock dirを設定しても排他の証明にはなりません。Hermesの別replicaからsource lockを使えるとは仮定しません。shared lockの配備が未確認ならapplyしないでください。root、symlink、異なるUIDのpathも拒否します。
+
+```bash
+# 全writerと同一の既存lock domainを継承した環境で実行する。
+bb "$TASK_BOARD_HELPER" reconcile-done BOXP-433 \
+  --vault "$CODEX_TASK_BOARD_VAULT" --source-root /home/boxp/.codex-task-board \
+  --dry-run --json > /tmp/BOXP-433-repair-preview.json
+```
+
+dry-runは候補行・保持/除去理由となる属性、source-run、rev、ticket/board/after-board/source/helperのSHA-256を出します。vault/sourceにファイルを作らず、既存source guardとwriter lockを取得します。applyは`--dry-run`を外し、`--confirm`と、プレビュー値をそのまま渡す次の全引数が必要です。
+
+- `--expected-rev`
+- `--expected-ticket-sha256`
+- `--expected-board-sha256`
+- `--expected-after-board-sha256`
+- `--expected-source-sha256`
+- `--expected-helper-sha256`
+
+競合時は拒否して再調査します。票本文/担当/rev/完了日付は変更しません。Boardの古い1行だけをatomic renameで除き、`.task-board-repair-audit.edn`へprepared/appliedのhashを保存します。preparedだけならbefore/after hashを読戻して実状態を判断し、台帳を直接編集しません。同じプレビューの再適用はBoardがafter hashと一致するときだけno-opです。applyの結果だけで他replicaへの到達を判断せず、実利用入口のhashと433/432/425/active票を読戻します。
+
 ## Codex Request Workflow
 
 - Backlog: requirements grooming request. Keep the card in `Backlog`, set `assignee: codex`, and append the request to Notes.
