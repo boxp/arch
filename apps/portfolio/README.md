@@ -76,3 +76,7 @@ workflow は `.github/workflows/deploy-portfolio.yml`（`apps/portfolio/**` と 
 
 `scripts/fonts/` の Inter は SIL Open Font License 1.1（`scripts/fonts/LICENSE.txt`）。
 サイト本文・画像の著作権は Keitaro Takeuchi に帰属します。
+
+## 配色テーマ
+
+ヘッダーでライト・ダーク・システムを選択できます。初期状態は OS の設定に従い、未指定時はライトです。明示的な選択はブラウザに保存され、システムを選ぶと保存が解除されます。JavaScript 無効時も OS の設定に従います。

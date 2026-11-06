@@ -16,6 +16,46 @@ const ogImage = new URL('/og.png', Astro.site);
 <html lang="ja">
   <head>
     <meta charset="UTF-8" />
+    <script is:inline>
+      (() => {
+        const media = window.matchMedia?.('(prefers-color-scheme: dark)');
+        let choice = 'system';
+        try {
+          const saved = localStorage.getItem('theme');
+          if (saved === 'light' || saved === 'dark') choice = saved;
+        } catch {}
+        const apply = () => {
+          const theme = choice === 'system' ? (media?.matches ? 'dark' : 'light') : choice;
+          document.documentElement.dataset.theme = theme;
+          const meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute('content', theme === 'dark' ? '#0b0f14' : '#ffffff');
+          document.querySelectorAll('[data-theme-choice]').forEach((button) => {
+            button.setAttribute('aria-pressed', String(button.getAttribute('data-theme-choice') === choice));
+            if (button.getAttribute('data-theme-choice') === 'system') {
+              button.textContent = `システム（現在: ${theme === 'dark' ? 'ダーク' : 'ライト'}）`;
+            }
+          });
+        };
+        apply();
+        media?.addEventListener?.('change', () => { if (choice === 'system') apply(); });
+        document.addEventListener('DOMContentLoaded', () => {
+          const controls = document.querySelector('[data-theme-controls]');
+          if (!controls) return;
+          controls.hidden = false;
+          controls.addEventListener('click', (event) => {
+            const button = event.target.closest('[data-theme-choice]');
+            if (!button) return;
+            choice = button.getAttribute('data-theme-choice');
+            try {
+              if (choice === 'system') localStorage.removeItem('theme');
+              else localStorage.setItem('theme', choice);
+            } catch {}
+            apply();
+          });
+          apply();
+        });
+      })();
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title}</title>
     <meta name="description" content={description} />
@@ -23,7 +63,7 @@ const ogImage = new URL('/og.png', Astro.site);
     <link rel="canonical" href={canonical} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="sitemap" href="/sitemap-index.xml" />
-    <meta name="theme-color" content="#0b0f14" />
+    <meta name="theme-color" content="#ffffff" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="b0xp.io" />
     <meta property="og:title" content={title} />
@@ -41,7 +81,7 @@ const ogImage = new URL('/og.png', Astro.site);
   </head>
   <body class="min-h-screen bg-ink font-sans text-fg antialiased">
     {isStage && (
-      <div role="status" class="border-b border-amber-400/40 bg-amber-400/10 px-5 py-2 text-center text-xs text-amber-200">
+      <div role="status" class="border-b border-notice-line bg-notice-bg px-5 py-2 text-center text-xs text-notice">
         これは stage 環境（portfolio-stage.b0xp.io）です。内容は確認中で、本番の <a href="https://b0xp.io/" class="underline">b0xp.io</a> とは異なる場合があります。
       </div>
     )}
