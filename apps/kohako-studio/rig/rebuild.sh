@@ -3,7 +3,7 @@ set -euo pipefail
 if [ "$#" -ne 2 ]; then echo "usage: $0 VAULT WORK_DIR" >&2; exit 2; fi
 VAULT=$(realpath "$1"); mkdir -p "$2"; WORK=$(realpath "$2")
 RIG=$(cd "$(dirname "$0")" && pwd)
-OUT_DIRS="kohako v1 v2 v3 v5b v6 v13 v14 v14b v15 v15b v15c v15e"
+OUT_DIRS="kohako v1 v2 v3 v5b v6 v13 v14 v14b v15 v15b v15c v15e v16"
 # Remove previous results first so a re-run never returns stale models.
 for d in $OUT_DIRS; do rm -rf "${WORK:?}/$d"; done
 COPIED=0
@@ -20,6 +20,7 @@ verify() {
 verify "$SRC" 5427a014be21bfe2c938376c2882a1dbd6b64f669a44eebd4df2384df40021de
 verify "$GEN/codex-head-base-v1.png" 07e876d99e88c17370f3f05876285284bd389fbcc51e55c15a84ac872d9a6a5f
 verify "$GEN/codex-hair_back-v1.png" f3eab172173c36537673f59df259a1b90f355bd606507244177542040a958a7d
+verify "$GEN/codex-mouth-closed-v16-1.png" 5ff328a48f38f92ab3756ae9a1468e6f9423a2bd34a0a6c4b7f5771083428506
 verify "$GEN/codex-eyes-closed-v14-1.png" 1eb11e565d5b0812caee1fbbb435ab38a8a6bba5d905aca62bfe08510e084252
 verify "$GEN/codex-outfit-local-v5-1.png" c7e6299979df5c9e1a831432b5b85372b12bd5ec0763900e0bbe0779a5bec23f
 verify "$GEN/codex-outfit-local-v5-2.png" ff82009004b5488cacb5a528918ebb56f26ebf4a75297fc5c346b4c91302178f
@@ -44,7 +45,7 @@ docker run --rm -v "$VOL:/tmp/boxp441" python:3.12-slim@sha256:4840d514c583a4d3d
 # POSIX sh does not expand braces.
 docker run --rm -v "$VOL:/tmp/boxp441" python:3.12-slim@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54 mkdir -p /tmp/boxp441/v5/gen /tmp/boxp441/v5/ref /tmp/boxp441/v6/out /tmp/boxp441/v6/psd2live
 docker cp "$SRC" "$TRANSFER:/tmp/boxp441/kohako/source.png"
-for f in codex-head-base-v1.png codex-hair_back-v1.png codex-eyes-closed-v14-1.png; do docker cp "$GEN/$f" "$TRANSFER:/tmp/boxp441/gen/$f"; done
+for f in codex-head-base-v1.png codex-hair_back-v1.png codex-eyes-closed-v14-1.png codex-mouth-closed-v16-1.png; do docker cp "$GEN/$f" "$TRANSFER:/tmp/boxp441/gen/$f"; done
 for f in codex-outfit-local-v5-1.png codex-outfit-local-v5-2.png; do docker cp "$GEN/$f" "$TRANSFER:/tmp/boxp441/v5/gen/$f"; done
 docker cp "$RIG/outfit-defect-approx.png" "$TRANSFER:/tmp/boxp441/v5/ref/outfit-defect.png"
 docker run --rm -v "$VOL:/tmp/boxp441" -e PYTHONPATH=/tmp/boxp441/python-deps python:3.12-slim@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54 sh -ec '
@@ -59,6 +60,7 @@ docker run -d --name "$SERVER" --network host -v "$VOL:/tmp/boxp441" -w /tmp/box
 docker run --rm --network host -v "$VOL:/tmp/boxp441" -e PYTHONPATH=/tmp/boxp441/python-deps -e PSD2LIVE_MCP_TOKEN="$TOKEN" python:3.12-slim@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54 sh -ec '
  for step in build opacity iris mid mouth mouth_open finalize; do python /tmp/boxp441/rig/kohako-v6/$step.py; done
  python /tmp/boxp441/rig/kohako-v13/capture.py
+ python /tmp/boxp441/rig/kohako-v16/capture.py
  mkdir -p /tmp/boxp441/v13
  cp -a /tmp/boxp441/v6/out /tmp/boxp441/v13/baseline-out
  cp -a /tmp/boxp441/v6/layout /tmp/boxp441/v13/baseline-layout
@@ -67,6 +69,7 @@ docker run --rm --network host -v "$VOL:/tmp/boxp441" -e PYTHONPATH=/tmp/boxp441
  python /tmp/boxp441/rig/kohako-v13/capture.py
  python /tmp/boxp441/rig/kohako-v14/capture.py
  python /tmp/boxp441/rig/kohako-v15e/capture.py
+ python /tmp/boxp441/rig/kohako-v16/capture.py
  cp -a /tmp/boxp441/v6/out /tmp/boxp441/v13/out
  cp -a /tmp/boxp441/v6/layout /tmp/boxp441/v13/layout
  python /tmp/boxp441/rig/kohako-v14/create_parts.py
@@ -111,9 +114,21 @@ docker run --rm --network host -v "$VOL:/tmp/boxp441" -e PYTHONPATH=/tmp/boxp441
  python /tmp/boxp441/rig/kohako-v15e/create_parts.py
  for step in build opacity iris mid mouth mouth_open finalize; do python /tmp/boxp441/rig/kohako-v6/$step.py; done
  python /tmp/boxp441/rig/kohako-v15e/capture.py
+ python /tmp/boxp441/rig/kohako-v16/capture.py
  mkdir -p /tmp/boxp441/v15e
  cp -a /tmp/boxp441/v6/out /tmp/boxp441/v15e/out
  cp -a /tmp/boxp441/v6/layout /tmp/boxp441/v15e/layout
+ rm -rf /tmp/boxp441/v6/out /tmp/boxp441/v6/layout
+ cp -a /tmp/boxp441/v13/out /tmp/boxp441/v6/out
+ cp -a /tmp/boxp441/v13/layout /tmp/boxp441/v6/layout
+ python /tmp/boxp441/rig/kohako-v16/create_parts.py
+ for step in build opacity iris mid mouth mouth_open; do python /tmp/boxp441/rig/kohako-v6/$step.py; done
+ python /tmp/boxp441/rig/kohako-v16/eyes.py
+ python /tmp/boxp441/rig/kohako-v6/finalize.py
+ python /tmp/boxp441/rig/kohako-v16/capture.py
+ mkdir -p /tmp/boxp441/v16
+ cp -a /tmp/boxp441/v6/out /tmp/boxp441/v16/out
+ cp -a /tmp/boxp441/v6/layout /tmp/boxp441/v16/layout
  rm -rf /tmp/boxp441/v6/out /tmp/boxp441/v6/layout
  cp -a /tmp/boxp441/v13/baseline-out /tmp/boxp441/v6/out
  cp -a /tmp/boxp441/v13/baseline-layout /tmp/boxp441/v6/layout'
@@ -125,6 +140,7 @@ docker run --rm -v "$VOL:/tmp/boxp441" -w /tmp/boxp441/psd2live -e GRADLE_USER_H
 docker run --rm -v "$VOL:/tmp/boxp441" -w /tmp/boxp441/psd2live -e GRADLE_USER_HOME=/tmp/boxp441/gradle-cache eclipse-temurin:21@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a ./gradlew -Ppsd2live.prebuiltRuntime=false run --args='export /tmp/boxp441/v15/out/kohako-v6.psd2live --target p2lrt --output /tmp/boxp441/v15/out --name kohako-v15'
 docker run --rm -v "$VOL:/tmp/boxp441" -w /tmp/boxp441/psd2live -e GRADLE_USER_HOME=/tmp/boxp441/gradle-cache eclipse-temurin:21@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a ./gradlew -Ppsd2live.prebuiltRuntime=false run --args='export /tmp/boxp441/v15b/out/kohako-v6.psd2live --target p2lrt --output /tmp/boxp441/v15b/out --name kohako-v15b'
 docker run --rm -v "$VOL:/tmp/boxp441" -w /tmp/boxp441/psd2live -e GRADLE_USER_HOME=/tmp/boxp441/gradle-cache eclipse-temurin:21@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a ./gradlew -Ppsd2live.prebuiltRuntime=false run --args='export /tmp/boxp441/v15e/out/kohako-v6.psd2live --target p2lrt --output /tmp/boxp441/v15e/out --name kohako-v15e'
+docker run --rm -v "$VOL:/tmp/boxp441" -w /tmp/boxp441/psd2live -e GRADLE_USER_HOME=/tmp/boxp441/gradle-cache eclipse-temurin:21@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a ./gradlew -Ppsd2live.prebuiltRuntime=false run --args='export /tmp/boxp441/v16/out/kohako-v6.psd2live --target p2lrt --output /tmp/boxp441/v16/out --name kohako-v16'
 docker run --rm -v "$VOL:/tmp/boxp441" -w /tmp/boxp441/psd2live -e GRADLE_USER_HOME=/tmp/boxp441/gradle-cache eclipse-temurin:21@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a ./gradlew -Ppsd2live.prebuiltRuntime=false run --args='export /tmp/boxp441/v15c/out/kohako-v6.psd2live --target p2lrt --output /tmp/boxp441/v15c/out --name kohako-v15c'
 for d in $OUT_DIRS; do rm -rf "${WORK:?}/$d"; docker cp "$TRANSFER:/tmp/boxp441/$d" "$WORK/$d"; done
 COPIED=1
