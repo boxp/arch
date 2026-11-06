@@ -60,3 +60,13 @@ Owner の指定で、紹介ページ `/lineage` と `/architecture` をやめ、
 **他案を採らなかった理由**: Access で保護した Worker からサムネイルを `<img>` で読む案は、そのホストの Access セッションが無い初回に画像が出ない。stage の hostname に Worker route を足す案は、担当がログインできず実際の振る舞いを確認できない。
 
 図を更新したら、サムネイルを撮り直して secret を更新し、`deploy-portfolio` を手動実行する。本番切替と全体図の匿名公開は引き続き Owner の判断を待つ。
+
+## TD-04: 全体アーキテクチャ図の一般公開（2026-11-06）
+
+Owner が「アーキテクチャ図は全体公開して大丈夫です」と承認した。BOXP-430 の lineage 公開と同じ形にそろえる。
+
+- `terraform/cloudflare/b0xp.io/portfolio/access.tf` から `lolice-architecture.b0xp.io` の Access application を外す。本人限定 policy と portfolio stage の application はそのまま。
+- Worker (`apps/lolice-architecture`) の JWT 検証と `ACCESS_AUD` の取得をやめ、`/` と `/sha256` だけを匿名で返す。他のパスは 404、`workers_dev` と `preview_urls` は無効のまま。
+- 順序: merge → apply で Access を外す（その間は旧 Worker が JWT 無しを 403 で拒否するので閉じたまま）→ `Deploy lolice-architecture` を `mode=html` で実行し、readback が匿名 200 と hash 一致を確かめる。
+- 定期更新 (BOXP-436/438) の `publish.bb deploy` の検査を「全体図は未認証 302」から「両図とも未認証 200 で hash 一致、stage は 302」に変える。配備 workflow は main の Worker を使うので、定期更新で Access 保護へ巻き戻ることはない。
+- 変えないもの: portfolio stage の本人限定、portfolio 本番 (`b0xp.io`) の切替と本番ビルドへの全体図の掲載、Langfuse ほか他サービスの Access。全体図のサムネイルは本番掲載が未承認なので repo に入れず、stage へ secret で渡す運用を続ける。

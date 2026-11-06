@@ -24,5 +24,5 @@ pnpm-debug.log*
 .idea/
 .wrangler/
 
-# 全体図のサムネイル。匿名公開が未承認なので public repo に入れない。誤って置いたときのコミット防止。
+# 全体図のサムネイル。portfolio 本番への掲載が未承認なので repo に入れない。誤って置いたときのコミット防止。
 public/diagrams/lolice-architecture.webp

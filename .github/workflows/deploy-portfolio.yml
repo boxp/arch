@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 jobs:
-  # PR は本番設定でビルドする。この dist は public repo の artifact になるので、全体図のサムネイルを含めない。
+  # PR は本番設定でビルドする。この dist は public repo の artifact になり、本番掲載が未承認の全体図のサムネイルは含めない。
   build:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -48,7 +48,7 @@ jobs:
         working-directory: apps/portfolio
         run: npm run build
 
-      # architecture の匿名公開は未承認なので、本番設定のビルドに URL も導線もサムネイルも残さない。
+      # architecture の portfolio 本番への掲載は未承認なので、本番設定のビルドに URL も導線もサムネイルも残さない。
       - name: Check production output has no unapproved diagram
         working-directory: apps/portfolio
         run: |
