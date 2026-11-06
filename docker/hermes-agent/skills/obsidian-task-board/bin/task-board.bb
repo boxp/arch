@@ -894,7 +894,8 @@
                               (catch java.nio.file.NoSuchFileException _ [])
                               (catch Exception _ (when (fs/exists? proc) ::unknown)))]
                :when (or (= ::unknown fds) (some #(= k (repair-file-key %)) fds))]
-           pid))))
+           (str pid "(" (or (try (str/trim (slurp (str (fs/path proc "comm")))) (catch Exception _ nil)) "?")
+                (when (= ::unknown fds) ",fd-unreadable") ")")))))
 
 (defn repair-wait-holders!
   "Wait until no visible process holds the displaced inode open. After that no
