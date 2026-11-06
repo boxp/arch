@@ -1290,6 +1290,22 @@
   (doseq [cmd ["date -u +%Y-%m-%dT%H:%M:%SZ" "date -u +%FT%TZ" "date -u '+%H:%M'" "x=$(date -u +%H:%M)" "date -u +%H:%M; ls"]]
     (is (= cmd (:value (lf/redact cmd #{}))) cmd)
     (is (nil? (:reason (#'lf/body-exposure cmd))) cmd)))
+;; P0 arch#14503 :50 (BOXP-428). A quoted -u credential with spaces (curl -u 'user:my secret') was masked only up to
+;; the first space and the rest was sent. The whole shell word is the credential now, quoted or not, and an unclosed
+;; quote runs to the end of the line. A date format and an ordinary -u flag stay readable.
+(deftest cli-user-quoted-with-spaces
+  (doseq [cmd ["curl -u 'user:my plumspacezz' https://x" "curl -u \"user:my plumspacezz\" https://x"
+               "curl --user='user:my plumspacezz' https://x" "curl --user \"ci bot:hunter two plumspacezz\" https://x"
+               "curl -u user:'my plumspacezz' https://x" "curl -u 'user':\"my plumspacezz\" https://x"
+               "curl -u 'user:my plumspacezz" "curl -u \"user:my \\\" plumspacezz\" https://x"]]
+    (is (not (str/includes? (:value (lf/redact cmd #{})) "plumspacezz")) cmd)
+    (let [{:keys [values reason]} (#'lf/body-exposure cmd)]
+      (is (or reason (some #(str/includes? % "plumspacezz") values)) cmd)))
+  (let [{:keys [values]} (#'lf/body-exposure "curl -u 'user:longvalue plumspacezz' https://x")]
+    (is (contains? values "longvalue plumspacezz") "the whole quoted -u value is pinned, like any multi-word value"))
+  (doseq [cmd ["date -u '+%H:%M'" "date -u \"+%d %H:%M\"" "ls -u 'my notes.txt'" "curl -u 'user' https://x"]]
+    (is (= cmd (:value (lf/redact cmd #{}))) cmd)))
+
 ;; P0 arch#14503 :1130 (BOXP-428). With no session log, the run's prompt.md and last-message.md are the only bodies.
 ;; A value named in the prompt is pinned, so a bare repeat in the last message is masked; one that cannot be pinned
 ;; withholds the root bodies. An ordinary prompt and reply stay readable.

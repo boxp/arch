@@ -50,7 +50,9 @@
    ;; argument is a format: every letter is a %-directive or a literal T/Z, the rest punctuation. +%admin:huntertwo has
    ;; letters after the %a directive, so it is a credential (P0 arch#14503 :50). Accepted residual: a password made only
    ;; of %-directives and punctuation (+%a:%b) is read as a date format.
-   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?![\"']?\+[\"']?(?:%[-_0^#:]?[A-Za-z]|(?-i:[TZ])(?![A-Za-z])|[^A-Za-z0-9\s%\"'])+[\"']?(?=[\s;&|)]|\z))[^\s:]*:\S+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p\S+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*\S+"]
+   ;; The credential is one shell word: quoted parts may hold spaces (curl -u 'user:my secret', P0 arch#14503 :50) and an
+   ;; unclosed quote runs to the end of the line. The colon may sit inside or outside the quotes.
+   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?![\"']?\+[\"']?(?:%[-_0^#:]?[A-Za-z]|(?-i:[TZ])(?![A-Za-z])|[^A-Za-z0-9\s%\"'])+[\"']?(?=[\s;&|)]|\z))(?=(?:'[^'\n:]*'|\"[^\"\n:]*\"|[^\s'\":])*(?:'[^'\n:]*:|\"[^\"\n:]*:|:))(?:'[^'\n]{0,4096}'?|\"(?:[^\"\\\n]|\\.){0,4096}\"?|[^\s'\"])+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p\S+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*\S+"]
    ;; A number after a name with token in it is a counter such as input_tokens: 12.
    [:assignment (re-pattern (str "(?i)[\"']?" secret-key-pattern "(?:" quote-pattern ")?" gap-pattern "(?:[:=]|\\\\+u00(?:3[aA]|3[dD]))" gap-pattern "(?!(?<=token[\\w.-]{0,16}[\"'\\\\]{0,8}\\s{0,4}[:=]\\s{0,4})\\d+(?:[\\s,;}\\\\\"']|$))(?:[|>][-+]?\\d?(?:(?:\\n|\\\\+n)[ \\t]+(?:(?!\\\\+n)[^\\n])*)+|" (value-pattern nil "[^\\s,;}\\]]+") ")"))]
    [:entropy #"\b[A-Za-z0-9_-]{40,}\b"]])
@@ -771,7 +773,10 @@
      (case kind
        :header [(second (re-find #"(?s)^[^:]*:\s*(.*)$" m))]
        :url-credentials [(second (re-find #"://[^:/@\s]*:([^@\s]*)@" m))]
-       :cli-password [(-> (last (str/split m #"\s+")) (str/replace #"^(?:-p|(?:-u|--user)=?)" "") (str/replace #"^[^:]*:(?=.)" ""))]
+       :cli-password [(if (re-find #"^(?i)(?:-u|--user)" m)
+                        ;; One shell word that may be quoted and hold spaces: drop the quotes, then the user name.
+                        (-> m (str/replace #"^(?i)(?:-u|--user)[ \t=]*" "") (str/replace #"[\"']" "") (str/replace #"^[^:]*:(?=.)" ""))
+                        (-> (last (str/split m #"\s+")) (str/replace #"^-p" "")))]
        :flag [(last (str/split m #"[ \t]+"))]
        :assignment (let [[_ k v] (re-find #"(?s)^[\"']?([\w.-]*).*?(?:[:=]|\\+u00(?:3[aA]|3[dD]))(.*)$" m)]
                      ;; A setting such as password_min_length: 8 is no value to pin or withhold for.
