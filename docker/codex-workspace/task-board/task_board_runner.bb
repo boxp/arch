@@ -4961,9 +4961,9 @@
 
 (defn stale-run-decision [run-id run-ids now-instant hours keep-latest]
   (let [started (run-id-instant run-id)
-        ;; Unknown timestamps consume slots, but the newest known run is always protected.
-        unknown (count (remove run-id-instant run-ids))
-        protected (set (take (max 1 (- keep-latest unknown))
+        ;; Unparseable run ids are always held separately, so they never consume
+        ;; the keep-latest slots of known runs.
+        protected (set (take (max 1 keep-latest)
                              (sort-by (juxt run-id-instant str) #(compare %2 %1)
                                       (filter run-id-instant run-ids))))]
     (cond
@@ -6133,8 +6133,9 @@
           cases [["stale old" (:eligible? (stale-run-decision (first ids) ids instant 12 2)) true]
                  ["stale latest" (:reason (stale-run-decision (nth ids 2) ids instant 12 2)) "latest-run"]
                  ["stale unknown" (:reason (stale-run-decision "bad" ids instant 12 2)) "run-id-timestamp-unparseable"]
-                 ["unknown consumes slot" (:eligible? (stale-run-decision (nth ids 1) ids instant 12 2)) true]
+                 ["unknown does not consume slot" (:reason (stale-run-decision (nth ids 1) ids instant 12 2)) "latest-run"]
                  ["latest survives unknowns" (:reason (stale-run-decision (nth ids 2) (concat ids ["bad2"]) instant 12 2)) "latest-run"]
+                 ["second latest survives unknowns" (:reason (stale-run-decision (nth ids 1) (concat ids ["bad2"]) instant 12 2)) "latest-run"]
                  ["stale hours" (:reason (stale-run-decision (first ids) ids instant 100 1)) "within-stale-retention"]
                  ["ignored cache" (boolean (ignored-allowed? "x/.clj-kondo/.cache/a")) true]
                  ["ignored node" (boolean (ignored-allowed? "x/node_modules/a")) true]
