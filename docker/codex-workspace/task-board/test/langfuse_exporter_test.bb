@@ -1078,5 +1078,23 @@
              "sed -n 1,20p docs/reset.md" "awk 1 README.md" "python3 x.py --password-file-flag-doc"
              "{\"command\":\"ls\",\"description\":\"show password policy docs\"}" "{\"cmd\":\"ls\",\"max_output_tokens\":12000}"]]
     (is (not (lf/withhold-output? c)) c)))
+;; P0 arch#14503 :296 (BOXP-428). git is not mention-only as a whole: git show HEAD:db_password, git cat-file -p,
+;; git diff/log -p/blame/grep and the -p/-v forms of add/status/checkout print a secret-named file's content. Only
+;; subcommands that do not print file content stay readable (deny by default). Same for gh api/gist/release, which
+;; print remote file content, and find/fd with an exec action, which hand the file to an arbitrary reader.
+(deftest mention-programs-that-print-a-secret-named-file
+  (doseq [c ["git show HEAD:db_password" "git --no-pager show HEAD:db_password" "git -C repo show main:conf/app-secret"
+             "git cat-file -p HEAD:db_password" "git diff db_password" "git log -p -- db_password" "git blame db_password"
+             "git grep x -- db_password" "git add -p db_password" "git status -v db_password" "git checkout -p db_password"
+             "git stash show -p db_password" "git archive HEAD db_password" "git config -f db_password --list"
+             "git somealias db_password" "gh api repos/o/r/contents/db_password" "gh gist view db_password"
+             "find . -name db_password -exec cat {} \\;" "fd db_password -x cat" "command cat db_password"
+             "{\"command\":\"git show HEAD:db_password\"}"]]
+    (is (lf/withhold-output? c) c))
+  (doseq [c ["git add db_password" "git rm --cached db_password" "git mv db_password conf_db_password"
+             "git commit -m 'rename db_password'" "git status" "git checkout main -- db_password" "git push origin main"
+             "git -C repo add app-secret" "gh pr create --title 'rotate password docs'" "find . -name README.md -exec wc -l {} +"
+             "ls db_password" "wc -c db_password" "stat db_password"]]
+    (is (not (lf/withhold-output? c)) c)))
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

@@ -65,3 +65,8 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 - JSON の tool 入力は `command`/`cmd`/`script`/`code` の値だけを見る(Bash の `description` が password に言及しても読める)。空白を含む引用符引数(`--note '...'`、commit message)はファイル名とみなさない。
 - 散文では行内の全ての秘密語を見る(最初の1語だけではない)。`Reset your password; kiwimango is my token` の `kiwimango` も pin する。
 - 過剰保留: 秘密語を名前に含む普通のファイルを任意のプログラムに渡すと保留(`make reset-password`、`kustomize build overlays/secrets`)。残差: 引用符内の任意コード中の非 open 系読取(`python3 -c "import x; x.load_it('db_password')"` 等)は未検出(変数への代入 `f=db_password` は機密源として保留する)で、既知形式/秘密語マスクのみ。
+
+## 追記 (arch#14503 P0 :296)
+
+- `git`/`gh`/`find`/`fd` を一律に言及専用とせず、ファイル内容を出力しない形だけを言及専用とする(既定で拒否)。`git` は内容を出力しない subcommand(add/commit/status/push/pull/fetch/branch/switch/checkout/restore/rm/mv/reset/init/clone/remote/tag/merge/rebase/cherry-pick/revert/worktree/rev-parse)で、かつ `-p`/`--patch`/`-i`/`-v`/`-u` 等を伴わない場合だけ言及専用。`git show HEAD:db_password`、`git cat-file -p`、`git diff`/`log -p`/`blame`/`grep`/`archive`/`config -f`、未知の alias、`git add -p db_password` は機密源。`gh api`/`gist`/`release` 等、`find -exec`/`fd -x` も機密源。`command` は前置き(`command cat db_password`)として扱う。
+- 過剰保留: `git log -- db_password` のように内容を出さない読取系 subcommand も、秘密名ファイルを引数にすると保留する。

@@ -288,16 +288,42 @@
 ;; Any program can print a file it is given (sed -n 1p db_password, awk 1 db_password, python3 x.py db_password,
 ;; < db_password), so the readers are not enumerated (P0 arch#14503 :280). A shell segment whose program is not a
 ;; mention-only command and which takes a secret-named file as a whole argument, or redirects one in, is a source.
-;; Mention-only commands (echo, git, ls, ...) and the pattern argument of grep/rg stay readable; a quoted argument
+;; Mention-only commands (echo, ls, non-printing git/gh/find forms, ...) and the pattern argument of grep/rg stay readable; a quoted argument
 ;; containing whitespace (a note or commit message) is text, not a file name. JSON tool input is looked at only in
 ;; its command/cmd values so a description field that mentions a password stays readable.
 (def secret-file-name
   #"(?i)(?:[^\s]{0,1024}[/\\])?[^/\\\s]{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)[A-Za-z0-9_.-]{0,64}")
 (def mention-programs
-  #{"echo" "printf" "git" "ls" "find" "fd" "locate" "which" "type" "command" "man" "help" "gh" "mkdir" "rmdir" "touch"
+  #{"echo" "printf" "ls" "locate" "which" "type" "man" "help" "mkdir" "rmdir" "touch"
     "rm" "mv" "chmod" "chown" "stat" "wc" "test" "[" "cd" "pushd" "ln" "du" "file" "true" "false" "exit" "export"})
 (def search-programs #{"grep" "egrep" "fgrep" "rg" "ag" "ack" "zgrep"})
-(def prefix-programs #{"then" "do" "else" "if" "while" "until" "!" "sudo" "time" "nice" "nohup" "exec" "xargs" "env" "doas" "timeout" "stdbuf"})
+(def prefix-programs #{"then" "do" "else" "if" "while" "until" "!" "sudo" "time" "nice" "nohup" "exec" "xargs" "env" "doas" "timeout" "stdbuf" "command"})
+;; git, gh, find and fd are mention-only only in forms that cannot print a file's content (P0 arch#14503 :296):
+;; git show HEAD:db_password, git cat-file/diff/log -p/blame/grep/config -f, gh api/gist and find -exec all print it.
+;; Deny by default: an unlisted git subcommand (or alias) and any -p/--patch/-i/-v form count as a reader.
+(def git-quiet-subcommands
+  #{"add" "commit" "status" "push" "pull" "fetch" "branch" "switch" "checkout" "restore" "rm" "mv" "reset" "init"
+    "clone" "remote" "tag" "merge" "rebase" "cherry-pick" "revert" "worktree" "rev-parse"})
+(def git-printing-options #{"-p" "--patch" "-i" "--interactive" "-v" "--verbose" "-u" "--unified"})
+(def gh-printing-subcommands #{"api" "gist" "release" "browse" "extension" "alias"})
+(def find-exec-options #{"-exec" "-execdir" "-ok" "-okdir" "-x" "--exec" "-X" "--exec-batch" "-fprint" "-fprintf" "-fls"})
+
+(defn- mention-only?
+  "True when program with these words (after the program) only names files without printing their content."
+  [program words]
+  (case program
+    "git" (let [sub (loop [[w & more :as ws] words]
+                      (cond (nil? w) nil
+                            (#{"-C" "-c" "--git-dir" "--work-tree" "--namespace"} w) (recur (rest more))
+                            (str/starts-with? w "-") (recur more)
+                            :else w))]
+            (boolean (and sub (contains? git-quiet-subcommands sub)
+                          (not-any? #(or (contains? git-printing-options %) (re-matches #"-[A-Za-z]*[piv][A-Za-z]*" %)
+                                         (str/starts-with? % "--patch") (str/starts-with? % "--unified"))
+                                    words))))
+    "gh" (not (contains? gh-printing-subcommands (first (remove #(str/starts-with? % "-") words))))
+    ("find" "fd") (not-any? #(contains? find-exec-options %) words)
+    (contains? mention-programs program)))
 (def stdout-sink #"(?i)^(?:/dev/(?:stdout|stderr|tty|fd/\d+)|/proc/self/fd/\d+)$")
 (def open-call
   #"(?i)(?:\bopen|read_?text|read_?file|readFileSync|slurp|File\.read|load|cat)\s{0,8}\(\s{0,8}[\"']([^\"'\s]{1,1024})[\"']")
@@ -330,7 +356,7 @@
               (cond (contains? search-programs program)
                     (or (some secret-file-word? (rest operands))
                         (and (some #(re-matches #"-e|--regexp|-f|--file" %) args) (some secret-file-word? operands)))
-                    (contains? mention-programs program) false
+                    (mention-only? program (rest args)) false
                     :else (some secret-file-word? operands)))
          (and (some #(re-matches stdout-sink %) words) (some secret-file-word? words))))))
 
