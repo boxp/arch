@@ -5451,8 +5451,15 @@
 
 (defn prune-run-under-guard!
   "Must run inside with-ticket-lock-guard so no run of the ticket can start
-  between the lock check and the deletion. Returns {:result ...}."
-  [{:keys [dry-run? now-instant retention-days gh-cache planned] :as ctx} ticket-id run-id]
+  between the lock check and the deletion. Returns {:result ...}.
+
+  With :locked-unguarded? the caller holds no guard: the ticket is locked by a
+  live run whose heartbeat needs the guard every second, so GitHub lookups and
+  worktree removal (up to 600s) must not hold it. Only the final recheck takes
+  the guard briefly; the lock blocks new claims meanwhile, a later run always
+  gets a newer run-id, and an old run that is neither the active run nor among
+  the newest kept runs cannot become one again."
+  [{:keys [dry-run? now-instant retention-days gh-cache planned locked-unguarded?] :as ctx} ticket-id run-id]
   (let [run-path (run-workspace-dir ticket-id run-id)
         ticket (prune-ticket-status ctx ticket-id)
         mode (if (:eligible? ticket) :done :stale)
@@ -5463,6 +5470,9 @@
         hold (fn [reason] {:result :held :reason reason})]
     (cond
       (not (fs/exists? run-path {:nofollow-links true})) {:result :gone}
+      ;; The lock went away or became unreadable since the caller looked; the
+      ;; next pass handles the ticket under the regular guard.
+      (and locked-unguarded? (not= "locked-active" (:reason ticket))) {:result :ticket-skipped :reason (:reason ticket)}
       (and (not (:eligible? ticket)) (not stale?)) {:result :ticket-skipped :reason (:reason ticket)}
       (and (= "locked-active" (:reason ticket)) (= run-id (:active-run-id ticket))) {:result :recent}
       (contains? #{"within-retention" "within-stale-retention" "latest-run"} (:reason run)) {:result :recent}
@@ -5485,7 +5495,9 @@
                                          checkouts))
             ;; Inspection can take a while (GitHub lookups); look once more
             ;; for a reopened ticket right before anything is removed.
-            recheck (delay (prune-ticket-status ctx ticket-id))]
+            recheck (delay (if locked-unguarded?
+                             (with-ticket-lock-guard ticket-id #(prune-ticket-status ctx ticket-id))
+                             (prune-ticket-status ctx ticket-id)))]
         (cond
           held
           (hold (str (:hold held) " checkout=" (fs/relativize run-path (:path held))))
@@ -5503,6 +5515,7 @@
           (or (and (= mode :done) (not (:eligible? @recheck)))
               (and (= mode :stale)
                    (or (not (contains? stale-ticket-reasons (:reason @recheck)))
+                       (and locked-unguarded? (not= "locked-active" (:reason @recheck)))
                        (and (= "locked-active" (:reason @recheck))
                             (= run-id (:active-run-id @recheck)))
                        (not (:eligible? (stale-run-decision run-id
@@ -5542,9 +5555,13 @@
           (let [run-path (run-workspace-dir ticket-id run-id)
                 {:keys [result reason mode]}
                 (try
-                  (with-ticket-lock-guard
-                   ticket-id
-                   #(prune-run-under-guard! ctx ticket-id run-id))
+                  (if (= "locked-active" (:reason pre))
+                    ;; Holding the guard here would stall the live run's
+                    ;; heartbeat and let another runner reclaim its lock.
+                    (prune-run-under-guard! (assoc ctx :locked-unguarded? true) ticket-id run-id)
+                    (with-ticket-lock-guard
+                     ticket-id
+                     #(prune-run-under-guard! ctx ticket-id run-id)))
                   (catch Exception e
                     {:result :held :reason (str "error " (one-line (.getMessage e)))}))]
             (case result

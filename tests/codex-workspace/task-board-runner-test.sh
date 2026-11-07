@@ -340,6 +340,10 @@ if [[ "$1" == "api" && "$2" =~ ^repos/boxp/example/commits/([0-9a-f]{40})$ ]]; t
   if [[ -n "${GH_FAKE_API_LOG:-}" ]]; then
     printf '%s\n' "${sha}" >>"${GH_FAKE_API_LOG}"
   fi
+  # Records whether another process holds the ticket guard during the lookup.
+  if [[ -n "${GH_FAKE_GUARD_PROBE_FILE:-}" && -e "${GH_FAKE_GUARD_PROBE_FILE}" ]]; then
+    bb -e '(with-open [f (java.io.RandomAccessFile. (first *command-line-args*) "rw") c (.getChannel f)] (println (if (.tryLock c) "free" "held")))' "${GH_FAKE_GUARD_PROBE_FILE}" >>"${GH_FAKE_GUARD_PROBE_LOG}"
+  fi
   if [[ -n "${GH_FAKE_KNOWN_SHAS:-}" ]] && grep -qx "${sha}" "${GH_FAKE_KNOWN_SHAS}"; then
     printf '%s\n' "${sha}"
     exit 0
@@ -3434,6 +3438,20 @@ test_stale_prune() {
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" >"${out}"
   [[ -d "${ws}/BOXP-901/20191231T000000Z" ]] || fail "stale run with live process removed"
   assert_file_contains "${out}" "reason=process-active"
+  # A locked ticket's old runs are inspected without the ticket guard, so the
+  # live run's heartbeat is never stalled by GitHub lookups or deletion.
+  write_prune_ticket "${vault}" BOXP-911 blocked 2020-01-01
+  for i in 1 2 3 4; do
+    co="$(add_prune_run "${state}" "${source}" BOXP-911 "2020010${i}T000000Z")"
+    [[ "${i}" == 1 ]] && prune_commit "${co}" pushed >>"${known}"
+  done
+  printf '{:ticket "BOXP-911" :run-id "20200104T000000Z"}\n' >"${state}/locks/BOXP-911.edn"
+  mkdir -p "${state}/lock-guards"; touch "${state}/lock-guards/BOXP-911.lock"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" GH_FAKE_GUARD_PROBE_FILE="${state}/lock-guards/BOXP-911.lock" GH_FAKE_GUARD_PROBE_LOG="${tmp}/guard-probe" \
+    CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" >"${out}"
+  [[ ! -e "${ws}/BOXP-911/20200101T000000Z" && -d "${ws}/BOXP-911/20200103T000000Z" && -d "${ws}/BOXP-911/20200104T000000Z" ]] || fail "locked ticket stale run retention incorrect"
+  assert_file_contains "${tmp}/guard-probe" '^free$'
+  if grep -q '^held$' "${tmp}/guard-probe"; then fail "ticket guard held during locked ticket inspection"; fi
   unset CODEX_TASK_BOARD_PRUNE_PROC_ROOT CODEX_TASK_BOARD_PRUNE_MOUNTINFO
 }
 
