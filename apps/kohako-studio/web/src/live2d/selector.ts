@@ -103,9 +103,9 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   }
   if (lost) {
     const note = document.createElement('p'); note.textContent = lost.note ?? 'p2lrt は作業ディレクトリ消失により未保存・再現不能です。比較画像を表示します。'; container.append(note)
-    if (lost.id === 'kohako-v45-video') {
+    if (lost.id === 'kohako-v45-video' || lost.id === 'kohako-v46-video') {
       for (const [file, text] of [['idle', '待機・等速'], ['blink', '決定論的まばたき・等速'], ['slow', '同じ軌道の 1/5 倍速'], ['det', '口・髪を含む動作比較']]) {
-        const link = document.createElement('a'); link.href = `./kohako/live2d/compare/kohako-v45-${file}.mp4`; link.textContent = text; container.append(link, ' ／ ')
+        const link = document.createElement('a'); link.href = `./kohako/live2d/compare/${lost.id.replace('-video', '')}-${file}.mp4`; link.textContent = text; container.append(link, ' ／ ')
       }
     }
     if (lost.id === 'kohako-v28') {
