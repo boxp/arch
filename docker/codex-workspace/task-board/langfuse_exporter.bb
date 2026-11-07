@@ -450,16 +450,42 @@
                  (when (.find matcher) [(first-value (subs m (.end matcher)))]))
     nil))
 
+(def ^:private tag-close #"(?i)>|&gt;|&#0*62;|&#x0*3e;|\\+u003e")
+(def ^:private element-split
+  #"(?i)(?:<|&lt;|&#0*60;|&#x0*3c;|\\+u003c)[^<>&\\]{0,256}?(?:>|&gt;|&#0*62;|&#x0*3e;|\\+u003e)|\r?\n|\\+[nrt]")
+
+(defn- element-values
+  "Text values inside an XML element whose tag names a secret (<password>x</password>, encoded forms too). The
+  element is masked in place; its text is pinned like an assignment value so a bare restatement is masked too.
+  Nested child tags and line breaks separate values. A self-closing tag names nothing."
+  [m]
+  (let [closer (re-matcher tag-close m)]
+    (when (.find closer)
+      (let [open-tag (subs m 0 (.start closer))]
+        (when-not (re-find #"[/\\]\s*$" open-tag)
+          (let [inner (subs m (.end closer))
+                inner (if-let [c (re-find #"(?is)^(.*)(?:<|&lt;|&#0*60;|&#x0*3c;|\\+u003c)\\*/[\w:.-]+\s*(?:>|&gt;|&#0*62;|&#x0*3e;|\\+u003e)$" inner)]
+                        (second c) inner)]
+            (for [segment (str/split inner element-split)
+                  :let [v (-> segment str/trim (str/replace #"^(?:\\*[\"'])+|(?:\\*[\"'])+$" "") str/trim)]
+                  :when (not (str/blank? v))]
+              v)))))))
+
 (defn named-values
   "{:values [...] :unpinned? bool} for the name-based known formats in text."
   [text]
   (let [text (str text)
-        found (for [[kind pattern] patterns :when (pin-kinds kind)
-                    match (re-seq pattern text)
-                    v (match-values kind (if (vector? match) (first match) match))
-                    :let [v (str/trim (str v))]
-                    :when (and (not (str/blank? v)) (not (reference? v)))]
-                v)
+        found (concat
+               (for [[kind pattern] patterns :when (pin-kinds kind)
+                     match (re-seq pattern text)
+                     v (match-values kind (if (vector? match) (first match) match))
+                     :let [v (str/trim (str v))]
+                     :when (and (not (str/blank? v)) (not (reference? v)))]
+                 v)
+               (for [match (re-seq secret-element text)
+                     v (element-values (if (vector? match) (first match) match))
+                     :when (not (reference? v))]
+                 v))
         found (distinct found)
         unpinned? (boolean (or (some #(< (count %) min-pinned-length) found)
                                (some #(> (count %) max-pinned-length) found)
@@ -471,9 +497,9 @@
 (def ^:dynamic *exposure-values* [])
 
 ;; Kinds whose value is a credential by its own shape. A hit of one of these in a tool result withholds the
-;; later bodies of the lineage. Name-based kinds (assignment, env entry, flag, cli password, XML element) only
-;; mask the value in place: they also match ordinary code and logs such as TOKEN_FILE=/work/x or
-;; credentials: 'same-origin', and a bare restatement elsewhere is the accepted residual (THREAT_MODEL 2).
+;; later bodies of the lineage. Name-based kinds (assignment, env entry, flag, cli password, XML element) mask
+;; the value in place and pin it for the run (named-values): they also match ordinary code and logs such as TOKEN_FILE=/work/x or
+;; credentials: 'same-origin', and a transformed restatement elsewhere is the accepted residual (THREAT_MODEL 2).
 (def lineage-kinds #{:private-key :header :url-credentials :jwt :provider-key :aws-key :google-key :telegram :bearer})
 
 (defn- exposure? [output]

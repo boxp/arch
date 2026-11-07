@@ -900,7 +900,10 @@
                              ["run --token silverlakefern now" "silverlakefern"]
                              ["curl -u admin:goldenriverbank x" "goldenriverbank"]
                              ["{\"name\": \"APP_SECRET\", \"value\": \"brightcanyonmist\"}" "brightcanyonmist"]
-                             ["secret: |\n  firstblockline\n  secondblockline\n" "secondblockline"]]]
+                             ["secret: |\n  firstblockline\n  secondblockline\n" "secondblockline"]
+                             ["<password>quietmeadowstone</password>" "quietmeadowstone"]
+                             ["<config><db_password type=\"x\">\n  amberfieldsong\n</db_password></config>" "amberfieldsong"]
+                             ["&lt;apiToken&gt;copperhillwind&lt;/apiToken&gt;" "copperhillwind"]]]
       (let [lines (if (= format :claude)
                     [{:type "user" :message {:content "first request"}}
                      {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat notes.txt"}}]}}
@@ -930,6 +933,13 @@
 (deftest named-values-in-serialized-bodies
   (is (= ["quietriverstone"] (:values (lf/named-values "{\"command\":\"mysql -pquietriverstone\"}"))))
   (is (= ["quietriverstone"] (:values (lf/named-values "{\"output\":\"password: quietriverstone\\nnext\"}")))))
+
+(deftest named-values-in-xml-elements
+  (is (= ["quietmeadowstone"] (:values (lf/named-values "<password>quietmeadowstone</password>"))))
+  (is (= ["quietmeadowstone"] (:values (lf/named-values "{\"output\":\"\\u003cpassword\\u003equietmeadowstone\\u003c/password\\u003e\"}"))))
+  (is (= ["outerkeyvalue"] (:values (lf/named-values "<secret><value>outerkeyvalue</value></secret>"))))
+  (is (true? (:unpinned? (lf/named-values "<password>abc</password>"))))
+  (is (= [] (:values (lf/named-values "<password>${DB_PASSWORD}</password> <password/>")))))
 
 (deftest named-values-ignore-references-and-settings
   (is (= [] (:values (lf/named-values "--token $TOKEN and password: ${DB_PASSWORD} and PASSWORD_REQUIRED=true"))))
