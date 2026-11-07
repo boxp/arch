@@ -655,6 +655,46 @@
           (is (some #(re-find #"subagent:|delegate" (:name %)) spans) "the child's span exists")
           (is (str/includes? (pr-str spans) "runner prompt")))))))
 
+(deftest child-known-format-after-the-parent-read-a-known-source
+  ;; The parent read a known source. A later child tool result holds a known format and, further down, a value the
+  ;; parent passed on in plain text. The child's span is withheld, not just masked, because the lineage is already withheld.
+  (doseq [format [:claude :codex]]
+    (fs/with-temp-dir [base {}]
+      (write-fixture! base {})
+      (let [cfg (test-config base)
+            run-dir (fs/path (:root cfg) "runs" ticket run-id)
+            project (lf/claude-project-dir cfg ticket run-id)
+            day (fs/path base ".codex" "sessions" "2099" "12" "31")
+            child-output (str "password: " s-password "\nmiddle line\nanother line\nparentplainvalue childleakmarker")
+            parent [{:type "user" :message {:content "first request"}}
+                    {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat .env"}}]}}
+                    {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content "PARENT_VALUE=parentplainvalue"}]}}
+                    {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text "parent done"}]}}]
+            child (if (= format :claude)
+                    [{:type "user" :message {:content "child goal"}}
+                     {:type "assistant" :message {:id "c" :model "test" :content [{:type "tool_use" :id "u" :name "Bash" :input {:command "cat notes.txt"}}]}}
+                     {:type "user" :message {:content [{:type "tool_result" :tool_use_id "u" :content child-output}]}}
+                     {:type "assistant" :message {:id "d" :model "test" :content [{:type "text" :text "child done"}]}}]
+                    [{:type "response_item" :payload {:type "message" :role "user" :content "child goal"}}
+                     {:type "response_item" :payload {:type "function_call" :call_id "u" :name "exec" :arguments "{\"command\":\"cat notes.txt\"}"}}
+                     {:type "response_item" :payload {:type "function_call_output" :call_id "u" :output child-output}}
+                     {:type "response_item" :payload {:type "message" :role "assistant" :content "child done"}}])]
+        (spit (str (fs/path run-dir "last-message.md")) "done")
+        (spit (str (fs/path run-dir "prompt.md")) "runner prompt")
+        (spit (str (fs/path project "sess.jsonl")) (jsonl parent))
+        (if (= format :claude)
+          (spit (str (fs/path project "sess" "subagents" "agent-a.jsonl")) (jsonl child))
+          (spit (str (fs/path day (str "rollout-" thread-delegate ".jsonl"))) (jsonl child)))
+        (let [spans (:spans (prepared cfg))
+              text (pr-str spans)
+              ;; child spans follow the main session's spans
+              child-tool (last (filter #(contains? #{"tool:Bash" "tool:exec"} (:name %)) spans))]
+          (is (not (str/includes? text "parentplainvalue")) (str format))
+          (is (not (str/includes? text "childleakmarker")) (str format))
+          (is (not (str/includes? text s-password)) (str format))
+          (is (= "withheld_after_known_source" (attr-value child-tool "langfuse.observation.metadata.body_policy")) (str format))
+          (is (str/includes? text "runner prompt") "the root input is not part of the lineage withhold"))))))
+
 (defn- nested-json [value depth ascii-only?]
   (nth (iterate (fn [v] (let [out (json/generate-string v {:escape-non-ascii ascii-only?})]
                           (subs out 1 (dec (count out)))))
@@ -790,9 +830,11 @@
         (is (not (str/includes? text "[withheld")))
         (is (not-any? #(str/starts-with? (or (attr-value % "langfuse.observation.metadata.body_policy") "") "withheld_") spans))
         (is (= "sent" (attr-value (last (filter #(str/starts-with? (:name %) "generation:") spans)) "langfuse.observation.metadata.body_policy")))))
-    (doseq [path [".kube/config" ".npmrc" ".pypirc" ".pgpass" ".my.cnf" ".docker/config.json" ".boto" ".s3cfg" ".vault-token" ".terraformrc" ".htpasswd" ".config/gh/hosts.yml" ".config/gcloud/" ".azure/" ".cargo/credentials.toml" ".gem/credentials" "a.key" "a.pem" "a.p8" "a.p12" "a.pfx" "a.jks" "a.keystore" "a.ppk" "id_dsa" "id_ecdsa_sk" "id_ed25519_sk" ".gnupg/" "tokens.json" "/tmp/tokens"]]
+    (doseq [path [".kube/config" ".npmrc" ".pypirc" ".pgpass" ".my.cnf" ".docker/config.json" ".boto" ".s3cfg" ".vault-token" ".terraformrc" ".htpasswd" ".config/gh/hosts.yml" ".config/gcloud/" ".azure/" ".cargo/credentials.toml" ".gem/credentials" "a.key" "a.pem" "a.p8" "a.p12" "a.pfx" "a.jks" "a.keystore" "a.ppk" "id_dsa" "id_ecdsa_sk" "id_ed25519_sk" ".gnupg/" "tokens.json" "/tmp/tokens"
+                  ;; token files without an extension or a directory
+                  "cat mytoken" "mytoken" "cat access_token" "cat refresh_tokens_backup" "sed -n 1p my-token" "{\"file_path\":\"mytoken\"}" "{\"command\":\"head mytoken\"}" "f=mytoken"]]
       (is (lf/withhold-output? path) path))
-    (doseq [safe ["keyboard.md" "api-keys.md" "keymap.py" "package.json" ".bashrc" "kube-config.md" "ls ~/.config" "gcloud auth list" "az account show" "aws sts get-caller-identity" "oc whoami" "vault status" "kubectl get pods" "git commit -m 'count tokens per request'" "codex exec --max-output-tokens 5" "{\"max_output_tokens\":5}"]]
+    (doseq [safe ["keyboard.md" "api-keys.md" "keymap.py" "package.json" ".bashrc" "kube-config.md" "ls ~/.config" "gcloud auth list" "az account show" "aws sts get-caller-identity" "oc whoami" "vault status" "kubectl get pods" "git commit -m 'count tokens per request'" "codex exec --max-output-tokens 5" "{\"max_output_tokens\":5}" "input_tokens: 12" "echo $TOKENS" "tokenize input"]]
       (is (not (lf/withhold-output? safe)) safe))))
 
 (deftest observation-evidence-and-limits
@@ -816,7 +858,7 @@
 
 (deftest direct-source-policy
   (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
-    (doseq [source [".kube/config" ".npmrc" ".pypirc" ".pgpass" ".my.cnf" ".docker/config.json" ".boto" ".s3cfg" ".vault-token" ".terraformrc" ".htpasswd" ".config/gh/hosts.yml" ".config/gcloud/" ".azure/" ".cargo/credentials" ".gem/credentials" "a.key" "a.pem" "a.p8" "a.p12" "a.pfx" "a.jks" "a.keystore" "a.ppk" "id_dsa" "id_ecdsa" "id_ecdsa_sk" "id_ed25519_sk" ".gnupg/" "tokens.json" "/tmp/tokens"]]
+    (doseq [source [".kube/config" ".npmrc" ".pypirc" ".pgpass" ".my.cnf" ".docker/config.json" ".boto" ".s3cfg" ".vault-token" ".terraformrc" ".htpasswd" ".config/gh/hosts.yml" ".config/gcloud/" ".azure/" ".cargo/credentials" ".gem/credentials" "a.key" "a.pem" "a.p8" "a.p12" "a.pfx" "a.jks" "a.keystore" "a.ppk" "id_dsa" "id_ecdsa" "id_ecdsa_sk" "id_ed25519_sk" ".gnupg/" "tokens.json" "/tmp/tokens" "mytoken" "access_tokens_backup"]]
       (let [lines [{:type "response_item" :payload {:type "function_call" :call_id "1" :name "exec" :arguments (str "cat " source)}}
                    {:type "response_item" :payload {:type "function_call_output" :call_id "1" :output "opaquebody"}}]
             tool (first (filter #(= "tool:exec" (:name %)) (lf/codex-spans ctx "root" "test" lines)))]

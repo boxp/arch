@@ -263,7 +263,9 @@
     (catch Throwable _ {:value "[dropped: redaction error]" :redactions {:error 1}})))
 
 (def sensitive-path
-  #"(?i)(?:^|[/\\\s\"'=])(?:auth\.json|\.credentials[^/\s\"']*|\.env[^/\s\"']*|\.ssh(?:[/\\]|\b)|\.aws(?:[/\\]|\b)|kubeconfig|\.kube[/\\]config|\.git-credentials|\.netrc|id_rsa|id_ed25519(?:_sk)?|id_dsa|id_ecdsa(?:_sk)?|\.gnupg(?:[/\\]|\b)|secrets?(?:[/\\]|(?=$|[\s\"']))|[\w.-]{0,64}tokens?[\w.-]{0,64}\.[a-z0-9]{1,8}(?![\w.-])|[\w.-]{0,64}\.(?:key|pem|p8|p12|pfx|jks|keystore|ppk)(?![\w.-])|\.npmrc|\.pypirc|\.pgpass|\.my\.cnf|\.docker[/\\]config\.json|\.boto|\.s3cfg|\.vault-token|\.terraformrc|\.htpasswd|\.config[/\\]gh[/\\]hosts\.yml|\.config[/\\]gcloud(?:[/\\]|\b)|\.azure(?:[/\\]|\b)|\.cargo[/\\]credentials[^/\s\"']*|\.gem[/\\]credentials)|[/\\][\w.-]{0,64}tokens?[\w.-]{0,64}(?=[/\\\s\"']|$)")
+  #"(?i)(?:^|[/\\\s\"'=])(?:auth\.json|\.credentials[^/\s\"']*|\.env[^/\s\"']*|\.ssh(?:[/\\]|\b)|\.aws(?:[/\\]|\b)|kubeconfig|\.kube[/\\]config|\.git-credentials|\.netrc|id_rsa|id_ed25519(?:_sk)?|id_dsa|id_ecdsa(?:_sk)?|\.gnupg(?:[/\\]|\b)|secrets?(?:[/\\]|(?=$|[\s\"']))|[\w.-]{0,64}tokens?[\w.-]{0,64}\.[a-z0-9]{1,8}(?![\w.-])|[\w.-]{0,64}\.(?:key|pem|p8|p12|pfx|jks|keystore|ppk)(?![\w.-])|\.npmrc|\.pypirc|\.pgpass|\.my\.cnf|\.docker[/\\]config\.json|\.boto|\.s3cfg|\.vault-token|\.terraformrc|\.htpasswd|\.config[/\\]gh[/\\]hosts\.yml|\.config[/\\]gcloud(?:[/\\]|\b)|\.azure(?:[/\\]|\b)|\.cargo[/\\]credentials[^/\s\"']*|\.gem[/\\]credentials)|[/\\][\w.-]{0,64}tokens?[\w.-]{0,64}(?=[/\\\s\"']|$)|(?:^|[\s\"'=])(?:[\w.-]{0,64}token|[\w.-]{0,64}tokens[\w.-]{1,64})(?![\w.-])")
+;; The last alternative is a token file named without an extension or a directory: mytoken, access_token,
+;; refresh_tokens_backup. A bare plural (input_tokens, max_output_tokens, "count tokens") is a counter word, not a file.
 (def sensitive-command
   #"(?i)(?:^|[;&|\s\"'(`/]|\\[nrt])(?:env|printenv)(?:[\s\"'|;&<>)]|$)|(?:^|[;&|\s\"'(`/])(?:set|export|declare|typeset)(?:\s+-[a-z]*[px]\b|[ \t]*(?:$|[|;&<>\"')`#]|\\[nrt\"]))|\benviron\b|\bprocess\.env\b|\bgetenv\b|\baws\b[^|;&\n]{0,512}\b(?:ssm\s+get-parameter|secretsmanager\s+get-|configure\s+(?:get|export-credentials)|sts\s+(?:get-session-token|assume-role\S*|get-federation-token)|ecr\s+get-login-password|iam\s+create-access-key)|\bgcloud\b[^|;&\n]{0,512}\b(?:auth\s+(?:print-(?:access|identity)-token|application-default\s+print-access-token)|secrets\s+versions\s+access)|\baz\b[^|;&\n]{0,512}\b(?:account\s+get-access-token|keyvault\s+secret\s+show)|\bkubectl\b[^|;&\n]{0,512}\bcreate\s+token\b|\boc\s+whoami\s+-t\b|\bvault\s+(?:read|kv\s+get|token\s+(?:create|lookup)|login)\b|\bop\s+(?:read|item\s+get)\b|\bdocker-credential-\w+|\bhelm\s+get\b|\bgh\s+auth\s+token\b|\bgit\s+credential\b")
 (defn withhold-output? [input]
@@ -785,7 +787,9 @@
                               :else %) items))))
         children (mapv (fn [span]
                          (if (and reason (contains? #{"generation" "tool"} (span-type span))
-                                  (not (contains? (set evidence) span))
+                                  ;; Evidence spans are not exempt: a child's masked known-format result after the parent read a
+                                  ;; known source may carry the parent's plain value, so only already-withheld spans are skipped.
+                                  (not (str/starts-with? (or (policy-of span) "") "withheld_"))
                                   (or (and (child-span? span) (after? span main-evidence))
                                       (and (not (child-span? span)) (after? span child-evidence))))
                            (withhold span) span)) children0)
