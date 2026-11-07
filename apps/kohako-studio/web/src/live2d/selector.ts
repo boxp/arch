@@ -32,6 +32,12 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   if (model.id === LATEST_MODEL_ID && !lost) {
     // TD-23: 配備版を実ブラウザで録画し、同じ動きの旧新を横に並べた動画（時刻・角度を焼き込み）。髪の肩線の段差・折れが動作中にどう見えるか。
     // v27: 配備ページで v25 と同じ自然動作を録画し横並び（未配備候補は OVERRIDE_P2LRT で差し替えて同位相にした）。
+    // v29: 長い髪を体から分離。配備ページで v27 と同じ動きを録画し横並び（未配備の v29 は OVERRIDE_P2LRT で差し替え）。
+    const v29 = document.createElement('p'); v29.textContent = 'v29 の動作比較（v27 / v29）: '
+    for (const [file, label] of [['kohako-v29-nat-vs-v27.mp4', '待機→考え中→話す→首振り 23 秒'], ['kohako-v29-nat-shoulders.jpg', '考え中の左右の肩（時系列）'], ['kohako-v29-det-vs-v27.mp4', '大きな首振り（X±30・上下）15 秒'], ['kohako-v29-det-left.jpg', '大きな首振りの左肩'], ['kohako-v29-nat-full.jpg', '全体（時系列）'], ['kohako-v29-poses.jpg', '静止 9 ポーズ'], ['kohako-v29-hair-layer.jpg', '体から切り離した髪だけ（衣装の混入なしの確認）']]) {
+      const link = document.createElement('a'); link.href = `./kohako/live2d/compare/${file}`; link.textContent = label; v29.append(link, ' ／ ')
+    }
+    container.append(v29)
     const v27 = document.createElement('p'); v27.textContent = 'v27 の動作比較（v25 / v27）: '
     for (const [file, label] of [['kohako-v27-nat-vs-v25.mp4', '待機→考え中→話す→首振り 23 秒'], ['kohako-v27-nat-sheet.jpg', '考え中の時系列'], ['kohako-v27-det.mp4', '大きな首振り（X±30・上下）15 秒'], ['kohako-v27-shoulder.jpg', '肩の拡大（静止 11 ポーズ）'], ['kohako-v27-full.jpg', '全体（静止 11 ポーズ）']]) {
       const link = document.createElement('a'); link.href = `./kohako/live2d/compare/${file}`; link.textContent = label; v27.append(link, ' ／ ')
