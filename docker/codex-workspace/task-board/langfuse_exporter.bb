@@ -357,9 +357,17 @@
     (cond
       (empty? lines) (str/join "\n" out)
       (seq pending)
-      (let [{:keys [tag tabs keep]} (first pending) l (first lines)
+      (let [{:keys [tag tabs keep expands]} (first pending) l (first lines)
             done (= tag (if tabs (str/replace l #"^\t+" "") l))]
-        (recur (rest lines) (conj out (if (or keep done) l "")) (if done (subvec pending 1) pending)))
+        ;; An unquoted delimiter (<<EOF) still runs $(...) and `...` in the body: cat <<EOF with $(cat .env) or
+        ;; $(printenv) is judged as the commands it runs (BOXP-428 TD-12 P0). Quoted (<<'EOF') bodies are literal data.
+        (recur (rest lines)
+               (conj out (cond (or keep done) l
+                               expands (str/join " ; " (map #(let [x (if (string? %) % (first %))]
+                                                               (if (str/starts-with? x "$(") (subs x 2 (dec (count x))) (subs x 1 (dec (count x)))))
+                                                            (re-seq #"\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`" l)))
+                               :else ""))
+               (if done (subvec pending 1) pending)))
       :else
       (let [l (first lines)
             m (re-matcher #"(?<!<)<<(-?)[ \t]*(['\"]?)([A-Za-z_][\w-]*)\2" l)
@@ -370,7 +378,7 @@
                                                      (first tail)))
                                         (take-while seq (iterate rest words)))
                            keep (boolean (and runner (or code? (shell-names (last-element runner)))))]
-                       (recur (conj acc {:tag (.group m 3) :tabs (= "-" (.group m 1)) :keep keep})))
+                       (recur (conj acc {:tag (.group m 3) :tabs (= "-" (.group m 1)) :keep keep :expands (str/blank? (.group m 2))})))
                      acc))]
         (recur (rest lines) (conj out l) (vec docs))))))
 

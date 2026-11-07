@@ -1176,7 +1176,8 @@
 ;; Prose carried by a tool (a delegation prompt, a note, Edit/Write content), a grep pattern, a single ordinary
 ;; environment variable, a `set` inside code and documentation placeholders withheld every later body of the run.
 (def td12-mentions
-  [{:command "kubectl logs -n x pod --since=11h 2>&1 | grep -iE 'mcp' | grep -viE 'authorization|token|secret|key=' | tail -40" :description "logs without secrets"}
+  [{:command "cat <<'EOF'\n$(cat .env) printenv\nEOF"} {:command "cat <<EOF\nread .env and printenv $(date)\nEOF"}
+   {:command "kubectl logs -n x pod --since=11h 2>&1 | grep -iE 'mcp' | grep -viE 'authorization|token|secret|key=' | tail -40" :description "logs without secrets"}
    {:command "python3 /opt/x/delegate.py run <<'EOF'\nMCP の token をログに出さない。ID token の検証は Langfuse。.env や ~/.kube/config、kubectl get secret は使わない\nEOF"}
    {:command "bb task-board.bb append-note X --note \"ID token の検証、kubectl get secret は使わない、.env 禁止、printenv しない\""}
    {:command "git commit -m 'stop reading .env and gh auth token in tests'"}
@@ -1211,6 +1212,9 @@
    {:command "env LANG=C printenv"} {:command "env -u HOME printenv"} {:command "env -i LANG=C printenv PATH"}
    {:command "sudo env LANG=C printenv"} {:command "env LANG=C bash -c printenv"} {:command "env LANG=C cat mytoken"}
    {:command "env -S printenv"} {:command "env LANG=C env"} {:command "env A=1 2>&1"}
+   ;; an unquoted heredoc body still runs command substitutions (BOXP-428 TD-12 P0)
+   {:command "cat <<EOF\n$(cat .env)\nEOF"} {:command "cat <<EOF\nv=$(printenv)\nEOF"}
+   {:command "cat <<-EOF\n\t`cat mytoken`\nEOF"} {:command "tee /tmp/x <<\"EOF2\"\nok\nEOF2\ncat <<EOF\n$(env)\nEOF"}
    "{\"cmd\":[\"bash\",\"-lc\",\"printenv\"]}"])
 
 (deftest k0-is-judged-on-what-runs-or-is-read
