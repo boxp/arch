@@ -1323,6 +1323,23 @@
   (doseq [cmd ["ls -p 'my notes'" "mkdir -p 'a b'" "mysql -p db"]]
     (is (= cmd (:value (lf/redact cmd #{}))) cmd)))
 
+;; P0 arch#14503 :823 (BOXP-428). A credential field whose password looks like a placeholder (curl -u admin:xxxxx,
+;; ****) is still the password: it is pinned so a later bare repeat is masked, and one under 4 characters withholds.
+;; Only a variable reference ($PASS, ${TOKEN}) and an already-masked placeholder are no value.
+(deftest credential-placeholder-like-password
+  (doseq [[cmd v] [["curl -u admin:xxxxx https://x" "xxxxx"] ["curl -u admin:**** https://x" "****"]
+                   ["curl --user='admin:XXXXXX' https://x" "XXXXXX"] ["mysql -p'xxxxx' db" "xxxxx"]
+                   ["sshpass -p ***** ssh host" "*****"] ["curl https://admin:xxxxx@example.com/" "xxxxx"]
+                   ["curl -u admin:... https://x" "..."]]]
+    (let [{:keys [values reason]} (#'lf/body-exposure cmd)]
+      (is (or (contains? values v) (and (< (count v) 4) reason)) cmd)))
+  (let [s (#'lf/body-exposure "curl -u admin:xxxxx https://x")]
+    (is (not (str/includes? (:value (lf/redact "the password was xxxxx" (:values s))) "xxxxx"))
+        "a later bare repeat is masked"))
+  (doseq [cmd ["curl -u admin:$PASS https://x" "curl -u \"admin:${TOKEN}\" https://x"]]
+    (is (empty? (:values (#'lf/body-exposure cmd))) cmd)
+    (is (nil? (:reason (#'lf/body-exposure cmd))) cmd)))
+
 ;; P0 arch#14503 :1130 (BOXP-428). With no session log, the run's prompt.md and last-message.md are the only bodies.
 ;; A value named in the prompt is pinned, so a bare repeat in the last message is masked; one that cannot be pinned
 ;; withholds the root bodies. An ordinary prompt and reply stay readable.

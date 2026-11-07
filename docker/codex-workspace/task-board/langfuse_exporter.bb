@@ -824,10 +824,14 @@
                  (or (some-> dq (str/replace #"\\([\"\\$`])|\\\n" (fn [[_ c]] (or c ""))))
                      sq esc ""))))
 
+(def credential-reference #"\$\{?[\w.-]*\}?|\[REDACTED:[a-z_-]+\]")
+
 (defn- credential-values [raw & [exact?]]
   ;; exact? keeps a shell-resolved -u password as it is, so a quote that is part of it (plum"orchard) stays.
   (let [v (if exact? (str raw) (strip-value raw))]
-    (cond (or (str/blank? v) (re-matches reference-value v)) #{}
+    ;; Only a variable reference ($PASS, ${TOKEN}) or an already-masked placeholder is no value here. A password that
+    ;; looks like a placeholder (xxxxx, ****, ...) is the password and is pinned or withholds (P0 arch#14503 :823).
+    (cond (or (str/blank? v) (re-matches credential-reference v)) #{}
           (< (count v) 4) nil
           :else (into #{v} (filter #(and (>= (count %) 6) (not (reference-only? %)))
                                    (map strip-value (str/split v #"[\s\"'`,;:=<>()\[\]{}\\]+")))))))
