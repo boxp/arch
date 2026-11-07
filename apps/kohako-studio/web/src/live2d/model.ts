@@ -68,7 +68,7 @@ export class FrameMeter {
   }
 }
 
-export type RigModelId = 'kohako' | 'kohako-v1' | 'kohako-v2' | 'kohako-v3' | 'kohako-v5' | 'kohako-v6' | 'kohako-v11' | 'kohako-v12' | 'kohako-v13' | 'kohako-v14' | 'kohako-v14b' | 'kohako-v15' | 'kohako-v15b' | 'kohako-v15c' | 'kohako-v15e' | 'kohako-v16' | 'kohako-v17' | 'kohako-v23' | 'kohako-v24' | 'kohako-v25' | 'kohako-v27' | 'kohako-v29' | 'kohako-v30' | 'sample'
+export type RigModelId = 'kohako' | 'kohako-v1' | 'kohako-v2' | 'kohako-v3' | 'kohako-v5' | 'kohako-v6' | 'kohako-v11' | 'kohako-v12' | 'kohako-v13' | 'kohako-v14' | 'kohako-v14b' | 'kohako-v15' | 'kohako-v15b' | 'kohako-v15c' | 'kohako-v15e' | 'kohako-v16' | 'kohako-v17' | 'kohako-v23' | 'kohako-v24' | 'kohako-v25' | 'kohako-v27' | 'kohako-v29' | 'kohako-v30' | 'kohako-v35' | 'sample'
 export type RigModel = { id: RigModelId; label: string; name: string; rig: string; notice: string; credits: string; clipNames?: Readonly<Record<string, string>>; skipSmallMouth?: boolean; status: 'latest' | 'previous-latest' | 'old' | 'rejected'; evaluation: string; problems: string }
 
 export const rigModels: readonly RigModel[] = [
@@ -119,7 +119,8 @@ export const rigModels: readonly RigModel[] = [
   { id: 'kohako-v25', label: 'コハコ v25', name: 'コハコ v25', rig: '../kohako/kohako-v25.p2lrt', status: 'old', evaluation: '前回の試作・担当評価: v24 の静止時の口(赤い点線)を修正。髪飾り混入解消・口目連続変形は v24 と同じ', problems: '口 0.04 では閉口線と開口形が薄く重なります。髪: 肩線で上下に分けた構造のため、首振り（X±20〜30、考え中の約 14〜21°）で外側の髪の輪郭に段差・折れ、三つ編みの折れ、離れた側で下の髪の縁が体の横にはみ出します（TD-23 の録画で確認。v24 と同じ。次は分割をやめて追従を勾配にする v26 を予定）。', notice: '静止時は顔に追従する閉口線を表示し、開口に切り替えます。画像生成なし。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' } },
   { id: 'kohako-v27', label: 'コハコ v27', name: 'コハコ v27', rig: '../kohako/kohako-v27.p2lrt', status: 'old', evaluation: '過去の試作・担当評価: 自然な首振りの範囲で肩の髪の段差を軽減（本人確認用）', problems: '髪の肩線での分割をやめ、肩より下の髪の頂点を頭の動きと逆向きに補正しました。実際の動き（考え中の首振り X 約 15°）の録画では v25 の右肩外側の段差が目立たなくなりましたが、左肩外側に細い白い筋が出る瞬間があり、大きな首振り（X±30 と上下の組合せ）では肩下に約 10px のずれが残ります。口・目・髪飾りは v25 と同じ処理です。', notice: 'v26（髪の分割なし）に肩下の頂点補正を加えた試作です。画像生成なし。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' } },
   { id: 'kohako-v29', label: 'コハコ v29', name: 'コハコ v29', rig: '../kohako/kohako-v29.p2lrt', status: 'previous-latest', evaluation: '前回の試作・担当評価: 長い髪を体から分離し肩の下地を補完（本人確認用）', problems: '肩に掛かる長い髪（外側の細い房を含む）を、髪の色だけで選んで体から切り離し、後ろ髪と一緒に動くようにしました。体側の隠れていた肩・衣装は生成済みの下地（髪枠 1/4）で埋め、衣装の外の白い背景は透明にしています。v27 と同じ動きの録画では、右肩外側の白い筋と左肩の房と肩当ての間の白い帯が消えました。一方、左肩当ての上端に小さな白い欠片と細い線が出る瞬間が残ります。髪は全長が頭に追従するので、大きな首振りでは髪の先も一緒に動きます。口・目・髪飾りは v25 と同じ処理です。', notice: 'v26 の部品（v17 配置＋髪飾り下地修正）から作り直した試作です。今回の画像生成は 0 回です。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。肩の下地は Codex 組込み画像生成（ChatGPT 契約内、2026-11-07、髪枠 1/4）。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' } },
-{ id: 'kohako-v30', label: 'コハコ v30', name: 'コハコ v30', rig: '../kohako/kohako-v30.p2lrt', status: 'latest', evaluation: '最新の試作・担当評価: 左肩当て上端の白い欠片を解消（本人確認用）', problems: 'v29 で考え中の首振り（t≈6.0s）に左肩当ての上端に出ていた白い欠片は、体の層の肩の上端が水平に切れていて、髪が動くと背景が見えていたものでした（原画では三つ編みに隠れ、生成下地も背景だった所）。肩当ての上端から襟の脇までの自然な肩の線の下を、衣装の暗色で埋めました。同じ動きの録画では大きな白い欠片は消え、ごく小さな点と髪の中の細い線は残ります。大きな首振りでは v29 と同じく髪の先も一緒に動きます。口・目・髪飾り・髪は v29 と同じ処理です。', notice: 'v29 の体の層の左肩だけを直した試作です。今回の画像生成は 0 回です。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。肩の下地は Codex 組込み画像生成（ChatGPT 契約内、2026-11-07、髪枠 1/4）。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' } },
+{ id: 'kohako-v30', label: 'コハコ v30', name: 'コハコ v30', rig: '../kohako/kohako-v30.p2lrt', status: 'previous-latest', evaluation: '前回の試作・担当評価: 左肩当て上端の白い欠片を解消（本人確認用）', problems: 'v29 で考え中の首振り（t≈6.0s）に左肩当ての上端に出ていた白い欠片は、体の層の肩の上端が水平に切れていて、髪が動くと背景が見えていたものでした（原画では三つ編みに隠れ、生成下地も背景だった所）。肩当ての上端から襟の脇までの自然な肩の線の下を、衣装の暗色で埋めました。同じ動きの録画では大きな白い欠片は消え、ごく小さな点と髪の中の細い線は残ります。大きな首振りでは v29 と同じく髪の先も一緒に動きます。口・目・髪飾り・髪は v29 と同じ処理です。', notice: 'v29 の体の層の左肩だけを直した試作です。今回の画像生成は 0 回です。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。肩の下地は Codex 組込み画像生成（ChatGPT 契約内、2026-11-07、髪枠 1/4）。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' } },
+{ id: 'kohako-v35', label: 'コハコ v35', name: 'コハコ v35', rig: '../kohako/kohako-v35.p2lrt', status: 'latest', evaluation: '最新の試作・担当評価: 左肩上の髪の中の点線を解消（本人確認用）', problems: '考え中の首振りで左肩当ての上の暗い髪に出ていた細い白っぽい点線は、v29 で髪を色で切り出したとき、原画で房と房の間に残っていた 1〜3px の明るい隙間が後ろ髪の層の中で透ける細い切れ目になっていたものでした（描画のフィルタを変えても残ることを確認）。後ろ髪の層で幅 5px 未満の切れ目だけを隣の髪色で埋めました（1,674px、外形と房の先の広い隙間はそのまま）。v30 と同じ動きの録画では点線が消え、首振り全体でも退行は見当たりません。首振り開始直後の肩当て左上のごく小さな白い点は残り、大きな首振りでは髪の先も一緒に動きます。口・目・髪飾り・体は v30 と同じ処理です。', notice: 'v30 の後ろ髪の層の細い切れ目だけを埋めた試作です。今回の画像生成は 0 回です。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。肩の下地は Codex 組込み画像生成（ChatGPT 契約内、2026-11-07、髪枠 1/4）。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' } },
   {
     id: 'sample', status: 'old', evaluation: '比較用サンプル', problems: '本人モデルではありません。', label: 'サンプル（tml）', name: 'tml（PSD2Live の CC0 サンプル）', rig: 'tml.p2lrt',
     notice: '比較用のサンプルです。コハコのモデルではありません。',
@@ -128,10 +129,10 @@ export const rigModels: readonly RigModel[] = [
 ]
 
 /**
- * クエリ無しの URL で表示する「最新の配備済み本人モデル」（現在は v30）。新しい版を配備したらここを更新する。
+ * クエリ無しの URL で表示する「最新の配備済み本人モデル」（現在は v35）。新しい版を配備したらここを更新する。
  * 本人の美術受入とは別で、検証版として表示する（受入済みの意味ではない）。
  */
-export const LATEST_MODEL_ID: RigModelId = 'kohako-v30'
+export const LATEST_MODEL_ID: RigModelId = 'kohako-v35'
 
 /**
  * 本人モデルの視線（= 首振り）の倍率。BOXP-441 TD-18: 「考え中」の視線 (0.6, 0.5) と待機モーションが重なると

@@ -20,6 +20,9 @@ if (scenario === 'studio') { token = fs.readFileSync(process.env.TOKEN_FILE, 'ut
 // 未配備の候補モデルを同じページ・同じ軌道で比較するため、指定時だけ当該 p2lrt をローカルファイルで差し替える
 if (process.env.OVERRIDE_P2LRT) { const body = fs.readFileSync(process.env.OVERRIDE_P2LRT);
   await ctx.route(u => u.pathname.endsWith('/' + model + '.p2lrt'), r => r.fulfill({ status: 200, contentType: 'application/octet-stream', body })); }
+// 描画側の切り分け用: 指定時だけ runtime の p2l.js をローカルファイルで差し替える
+if (process.env.OVERRIDE_P2LJS) { const body = fs.readFileSync(process.env.OVERRIDE_P2LJS);
+  await ctx.route(u => u.pathname.endsWith('/p2l.js'), r => r.fulfill({ status: 200, contentType: 'text/javascript', body })); }
 const page = await ctx.newPage();
 const errs = []; page.on('console', m => { if (m.type() === 'error') errs.push(m.text()) }); page.on('pageerror', e => errs.push(String(e)));
 const p2 = []; page.on('request', r => { if (r.url().endsWith('.p2lrt')) p2.push(r.url().split('/').pop()) });

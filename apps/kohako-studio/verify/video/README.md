@@ -45,3 +45,10 @@ ffmpeg -framerate 30 -i pairs/x/%05d.jpg -pix_fmt yuv420p -c:v libx264 -crf 23 o
 - 低い fps で瞬間的な破綻が無いことは保証しない。必要な区間は `--every 1` で全 frame を見る。
 - `studio` はページを `http://localhost:8765`（secure context）で開き、全リクエストを `H` へ転送する。クラスタ内 http オリジンのままでは `crypto.randomUUID` が無く送信前に止まる（2026-11-07 まで「応答 timeout」と誤認していた原因）。
 - `studio` は Hermes の応答時間に依存する。前の送信が pending のまま（BFF が `busy`）だと新しい送信が進まない。
+
+## 描画側・層ごとの切り分け（v35）
+
+- `OVERRIDE_P2LJS=/work/<file>.js ./run.sh ...` で runtime の p2l.js だけを差し替えて録画できる（テクスチャフィルタや antialias の比較用）。
+- `node hires.mjs <model> <outdir>`（`X`/`Y` 環境変数で角度、`MESHES=id,...` で対象 ArtMesh、`OVERRIDE_P2LRT` 可）: behaviors 停止で
+  canvas を倍率 2 で撮り、全体・各 ArtMesh を除いた絵・単独の絵と、各メッシュの変形後の三角形（`wire.json`）を出力。
+  `node wire.mjs <outdir> <png名> <meshId> <出力名>` で三角形を重ね描き、`node crop.mjs <outdir> x y w h scale out.png 名前...` で同じ範囲を並べる。
