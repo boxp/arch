@@ -44,6 +44,12 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
       const link = document.createElement('a'); link.href = `./kohako/live2d/compare/${file}`; link.textContent = label; v35.append(link, ' ／ ')
     }
     container.append(v35)
+    // v36: 後ろ髪の根元を頭に、肩より下を体に追従させ、物理の振れ幅を下げた。v35 と同じページ・同じ動きで録画し比較（未配備の v36 は OVERRIDE_P2LRT）。
+    const v36 = document.createElement('p'); v36.textContent = 'v36 の動作比較（v35 / v36）: '
+    for (const [file, label] of [['kohako-v36-nat-vs-v35.mp4', '待機・考え中・発話・失敗の全体（等速）'], ['kohako-v36-thinking-left-vs-v35.mp4', '考え中の左肩（2 倍スロー）'], ['kohako-v36-nat-right.jpg', '待機の首振りの右側（時系列）'], ['kohako-v36-thinking-left.jpg', '考え中の左肩（時系列）'], ['kohako-v36-det-vs-v35.mp4', '大きな首振り（決定論の軌道）'], ['kohako-v36-det-full.jpg', '大きな首振りの全体（時系列）']]) {
+      const link = document.createElement('a'); link.href = `./kohako/live2d/compare/${file}`; link.textContent = label; v36.append(link, ' ／ ')
+    }
+    container.append(v36)
     // v29: 長い髪を体から分離。配備ページで v27 と同じ動きを録画し横並び（未配備の v29 は OVERRIDE_P2LRT で差し替え）。
     const v29 = document.createElement('p'); v29.textContent = 'v29 の動作比較（v27 / v29）: '
     for (const [file, label] of [['kohako-v29-nat-vs-v27.mp4', '待機→考え中→話す→首振り 23 秒'], ['kohako-v29-nat-shoulders.jpg', '考え中の左右の肩（時系列）'], ['kohako-v29-det-vs-v27.mp4', '大きな首振り（X±30・上下）15 秒'], ['kohako-v29-det-left.jpg', '大きな首振りの左肩'], ['kohako-v29-nat-full.jpg', '全体（時系列）'], ['kohako-v29-poses.jpg', '静止 9 ポーズ'], ['kohako-v29-hair-layer.jpg', '体から切り離した髪だけ（衣装の混入なしの確認）']]) {
