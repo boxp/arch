@@ -56,7 +56,7 @@ describe('modelFor', () => {
     expect(modelStatus(modelFor('?model=kohako-v0'))).toContain('旧版')
     for (const m of rigModels) expect(existsSync(resolve('public/kohako/live2d/sample', m.rig))).toBe(true)
     for (const p of lostPrototypes) for (const image of p.images) expect(existsSync(resolve('public', image))).toBe(true)
-    expect(lostPrototypes.map(p => p.id)).toEqual(['kohako-v4', 'kohako-v7', 'kohako-v8', 'kohako-v9', 'kohako-v10', 'kohako-v18', 'kohako-v19', 'kohako-v20', 'kohako-v21'])
+    expect(lostPrototypes.map(p => p.id)).toEqual(['kohako-v4', 'kohako-v7', 'kohako-v8', 'kohako-v9', 'kohako-v10', 'kohako-v18', 'kohako-v19', 'kohako-v20', 'kohako-v21', 'kohako-v22'])
   })
 })
 
@@ -92,6 +92,7 @@ describe('clip names', () => {
     expect(modelFor('?model=kohako-v16').status).toBe('rejected')
     expect(lostPrototypes.find(p => p.id === 'kohako-v19')?.images).toContain('./kohako/live2d/compare/kohako-v19-trial2-mouth.jpg')
     expect(lostPrototypes.find(p => p.id === 'kohako-v21')?.images).toContain('./kohako/live2d/compare/kohako-v21-material.jpg')
+    expect(lostPrototypes.find(p => p.id === 'kohako-v22')?.images).toContain('./kohako/live2d/compare/kohako-v22-compare-mouth.jpg')
     expect(lostPrototypes.find(p => p.id === 'kohako-v20')?.images).toContain('./kohako/live2d/compare/kohako-v20-material.jpg')
     expect(modelFor('?model=kohako-v17').status).toBe('latest')
     expect(modelFor('?model=kohako-v17').rig).toBe('../kohako/kohako-v17.p2lrt')
