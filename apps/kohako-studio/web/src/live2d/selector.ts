@@ -20,7 +20,7 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   for (const item of all) {
     const option = document.createElement('option'); option.value = item.id
     const version = item.id === 'kohako' ? 'v0' : item.id === 'sample' ? 'サンプル' : item.id.replace('kohako-', '')
-    option.textContent = `${version}（${'images' in item ? (item.id === 'kohako-v40' || item.id === 'kohako-v39' || item.id === 'kohako-v26' || item.id === 'kohako-v28' || item.id === 'kohako-v31' || item.id === 'kohako-v32' || item.id === 'kohako-v33' || item.id === 'kohako-v34') ? item.evaluation : '読込不能: 比較画像を表示' : item.evaluation}）`
+    option.textContent = `${version}（${'images' in item ? (item.id === 'kohako-v41' || item.id === 'kohako-v40' || item.id === 'kohako-v39' || item.id === 'kohako-v26' || item.id === 'kohako-v28' || item.id === 'kohako-v31' || item.id === 'kohako-v32' || item.id === 'kohako-v33' || item.id === 'kohako-v34') ? item.evaluation : '読込不能: 比較画像を表示' : item.evaluation}）`
     select.append(option)
   }
   select.value = lost?.id ?? (includeSample ? model.id : model.id === 'sample' ? LATEST_MODEL_ID : model.id)

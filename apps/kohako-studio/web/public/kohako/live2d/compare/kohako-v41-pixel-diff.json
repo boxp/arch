@@ -1,0 +1,52 @@
+{
+  "eyes-neutral": {
+    "changed": 10165,
+    "outside_face": 9324,
+    "outside_max": 15
+  },
+  "eyes-X -30": {
+    "changed": 14987,
+    "outside_face": 9709,
+    "outside_max": 15
+  },
+  "eyes-X +30": {
+    "changed": 11718,
+    "outside_face": 8953,
+    "outside_max": 15
+  },
+  "eyes-Y -20": {
+    "changed": 24205,
+    "outside_face": 11347,
+    "outside_max": 15
+  },
+  "eyes-Y +20": {
+    "changed": 23500,
+    "outside_face": 10829,
+    "outside_max": 255
+  },
+  "mouth-neutral": {
+    "changed": 9797,
+    "outside_face": 8622,
+    "outside_max": 65
+  },
+  "mouth-X -30": {
+    "changed": 14417,
+    "outside_face": 12126,
+    "outside_max": 10
+  },
+  "mouth-X +30": {
+    "changed": 11510,
+    "outside_face": 9750,
+    "outside_max": 21
+  },
+  "mouth-Y -20": {
+    "changed": 23888,
+    "outside_face": 17442,
+    "outside_max": 6
+  },
+  "mouth-Y +20": {
+    "changed": 22161,
+    "outside_face": 16890,
+    "outside_max": 51
+  }
+}
