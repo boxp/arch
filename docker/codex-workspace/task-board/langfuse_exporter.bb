@@ -432,7 +432,9 @@
     ;; mask (quote-pattern) matches them: the value ends at the same quote token.
     (if-let [q (re-find opening-quote s)]
       (let [body (subs s (count q))
-            closer (re-matcher (java.util.regex.Pattern/compile (java.util.regex.Pattern/quote q)
+            ;; Like the in-place mask ((?<!\\)\k<quote>), a quote token preceded by a backslash is escaped and does
+            ;; not end the value: password: "a\"b" captures a\"b (and its decoded form a"b), not a\.
+            closer (re-matcher (java.util.regex.Pattern/compile (str "(?<!\\\\)" (java.util.regex.Pattern/quote q))
                                                                 java.util.regex.Pattern/CASE_INSENSITIVE) body)]
         (if (.find closer) (subs body 0 (.start closer)) body))
       ;; Unquoted: stop at a quote, a backslash or an entity quote too, so a value inside serialized JSON or HTML
@@ -486,7 +488,7 @@
 ;; a later restatement can be the decoded text (a&b). Both are pinned: the decoded form is matched with its own
 ;; escapes by value-pattern, so pinning it covers the plain restatement and every serialization of it.
 (def ^:private entity-escape #"&(?:#0*(\d{1,7})|#[xX]0*([0-9a-fA-F]{1,6})|(amp|lt|gt|quot|apos));")
-(def ^:private json-escape #"\\(?:u([0-9a-fA-F]{4})|([\"\\/bfnrt]))")
+(def ^:private json-escape #"\\(?:u([0-9a-fA-F]{4})|([\"'\\/bfnrt]))")
 
 (defn- code-point-str [n]
   (when (and n (<= 1 n 0x10FFFF)) (String. (Character/toChars (int n)))))
@@ -503,7 +505,7 @@
                    (fn [[m hex c]]
                      (or (if hex
                            (str (char (Integer/parseInt hex 16)))
-                           ({"\"" "\"" "\\" "\\" "/" "/" "b" "\b" "f" "\f" "n" "\n" "r" "\r" "t" "\t"} c))
+                           ({"\"" "\"" "'" "'" "\\" "\\" "/" "/" "b" "\b" "f" "\f" "n" "\n" "r" "\r" "t" "\t"} c))
                          m)))))
 
 (defn- decoded-forms

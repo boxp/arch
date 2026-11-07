@@ -911,7 +911,9 @@
                              ["password: &quot;hunter&amp;horsefield&quot;" "hunter&horsefield"]
                              ["password: &quot;lake&#38;riverstone&quot;" "lake&riverstone"]
                              ["<password>pine&lt;hollowgate</password>" "pine<hollowgate"]
-                             ["{\"password\": \"amber\\u0026willowpond\"}" "amber&willowpond"]]]
+                             ["{\"password\": \"amber\\u0026willowpond\"}" "amber&willowpond"]
+                             ["password: \"hunter\\\"horsefield\"" "hunter\"horsefield"]
+                             ["{\"output\":\"password: \\\"maple\\\\\\\"brookstone\\\"\"}" "maple\"brookstone"]]]
       (let [lines (if (= format :claude)
                     [{:type "user" :message {:content "first request"}}
                      {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat notes.txt"}}]}}
@@ -927,6 +929,8 @@
             body (pr-str spans)]
         (is (nil? failed) (str format " " result))
         (is (not (str/includes? body secret)) (str format " " result))
+        ;; pr-str escapes quotes, so also check the value's trailing word (the part after an escaped quote).
+        (is (not (str/includes? body (re-find #"[a-z]+$" secret))) (str format " " result))
         (is (str/includes? body "laterreplymarker") (str format " " result))
         (is (str/includes? body "first request") (str format " " result))))))
 
@@ -965,6 +969,13 @@
   (is (= ["amber\\u0026pond" "amber&pond"] (:values (lf/named-values "{\"password\": \"amber\\u0026pond\"}"))))
   (is (= ["hunterhorse"] (:values (lf/named-values "password: hunterhorse"))))
   (is (= ["hunter&#99999999;horse"] (:values (lf/named-values "password: &quot;hunter&#99999999;horse&quot;")))))
+
+(deftest named-values-with-escaped-quotes
+  ;; An escaped quote inside a quoted value does not end it (the in-place mask's (?<!\\) rule).
+  (is (= ["hunter\\\"horsefield" "hunter\"horsefield"] (:values (lf/named-values "password: \"hunter\\\"horsefield\""))))
+  (is (= ["it\\'s-quietpond" "it's-quietpond"] (:values (lf/named-values "password: 'it\\'s-quietpond'"))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "password: \"hunterhorse\" next: \"x\""))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "{\"password\": \"hunterhorse\", \"note\": \"a\\\"b\"}")))))
 
 (deftest named-values-after-self-closing-elements
   (is (= ["hunterhorse"] (:values (lf/named-values "<password/><password>hunterhorse</password>"))))
