@@ -12,7 +12,7 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
     const number = (id: string) => {
       if (id === 'kohako') return 0
       if (id === 'sample') return 99
-      const match = id.match(/v(\d+)([a-z])?$/)
+      const match = id.match(/v(\d+)([a-z])?(?:-video)?$/)
       return match ? Number(match[1]) + (match[2] ? (match[2].charCodeAt(0) - 96) / 100 : 0) : 98
     }
     return number(a.id) - number(b.id)
@@ -20,7 +20,7 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   for (const item of all) {
     const option = document.createElement('option'); option.value = item.id
     const version = item.id === 'kohako' ? 'v0' : item.id === 'sample' ? 'サンプル' : item.id.replace('kohako-', '')
-    option.textContent = `${version}（${'images' in item ? (item.id === 'kohako-v42' || item.id === 'kohako-v41' || item.id === 'kohako-v40' || item.id === 'kohako-v39' || item.id === 'kohako-v26' || item.id === 'kohako-v28' || item.id === 'kohako-v31' || item.id === 'kohako-v32' || item.id === 'kohako-v33' || item.id === 'kohako-v34') ? item.evaluation : '読込不能: 比較画像を表示' : item.evaluation}）`
+    option.textContent = `${version}（${'images' in item ? (item.id === 'kohako-v45-video' || item.id === 'kohako-v42' || item.id === 'kohako-v41' || item.id === 'kohako-v40' || item.id === 'kohako-v39' || item.id === 'kohako-v26' || item.id === 'kohako-v28' || item.id === 'kohako-v31' || item.id === 'kohako-v32' || item.id === 'kohako-v33' || item.id === 'kohako-v34') ? item.evaluation : '読込不能: 比較画像を表示' : item.evaluation}）`
     select.append(option)
   }
   select.value = lost?.id ?? (includeSample ? model.id : model.id === 'sample' ? LATEST_MODEL_ID : model.id)
@@ -103,6 +103,11 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   }
   if (lost) {
     const note = document.createElement('p'); note.textContent = lost.note ?? 'p2lrt は作業ディレクトリ消失により未保存・再現不能です。比較画像を表示します。'; container.append(note)
+    if (lost.id === 'kohako-v45-video') {
+      for (const [file, text] of [['idle', '待機・等速'], ['blink', '決定論的まばたき・等速'], ['slow', '同じ軌道の 1/5 倍速'], ['det', '口・髪を含む動作比較']]) {
+        const link = document.createElement('a'); link.href = `./kohako/live2d/compare/kohako-v45-${file}.mp4`; link.textContent = text; container.append(link, ' ／ ')
+      }
+    }
     if (lost.id === 'kohako-v28') {
       for (const [file, text] of [['det', '複合首振り 3 秒'], ['nat', '考え中 4 秒']]) {
         const link = document.createElement('a'); link.href = `./kohako/live2d/compare/kohako-v28-probe-${file}.mp4`; link.textContent = text; container.append(link, ' ／ ')
