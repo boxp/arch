@@ -903,7 +903,11 @@
                              ["secret: |\n  firstblockline\n  secondblockline\n" "secondblockline"]
                              ["<password>quietmeadowstone</password>" "quietmeadowstone"]
                              ["<config><db_password type=\"x\">\n  amberfieldsong\n</db_password></config>" "amberfieldsong"]
-                             ["&lt;apiToken&gt;copperhillwind&lt;/apiToken&gt;" "copperhillwind"]]]
+                             ["&lt;apiToken&gt;copperhillwind&lt;/apiToken&gt;" "copperhillwind"]
+                             ["password: &quot;hunterhorseloft&quot;" "hunterhorseloft"]
+                             ["api_key=&#39;velvetdunepath&#39;" "velvetdunepath"]
+                             ["<password/><password>hunterhorsemill</password>" "hunterhorsemill"]
+                             ["&lt;password/&gt;&lt;password&gt;cedargroveink&lt;/password&gt;" "cedargroveink"]]]
       (let [lines (if (= format :claude)
                     [{:type "user" :message {:content "first request"}}
                      {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat notes.txt"}}]}}
@@ -940,6 +944,23 @@
   (is (= ["outerkeyvalue"] (:values (lf/named-values "<secret><value>outerkeyvalue</value></secret>"))))
   (is (true? (:unpinned? (lf/named-values "<password>abc</password>"))))
   (is (= [] (:values (lf/named-values "<password>${DB_PASSWORD}</password> <password/>")))))
+
+(deftest named-values-in-entity-quotes
+  (doseq [[text v] [["password: &quot;hunterhorse&quot;" "hunterhorse"]
+                    ["password: &#34;hunterhorse&#34;" "hunterhorse"]
+                    ["password: &#x22;hunterhorse&#x22;" "hunterhorse"]
+                    ["password=&apos;hunterhorse&apos;" "hunterhorse"]
+                    ["password=&#39;hunter horse&#39;" "hunter horse"]
+                    ["password: \\u0022hunterhorse\\u0022" "hunterhorse"]
+                    ["password: hunterhorse&quot;" "hunterhorse"]]]
+    (is (= [v] (:values (lf/named-values text))) text)))
+
+(deftest named-values-after-self-closing-elements
+  (is (= ["hunterhorse"] (:values (lf/named-values "<password/><password>hunterhorse</password>"))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "<password /> text <password>hunterhorse</password>"))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "&lt;password/&gt;&lt;password&gt;hunterhorse&lt;/password&gt;"))))
+  (is (= [] (:values (lf/named-values "<password/>"))))
+  (is (= [] (:values (lf/named-values "<password/><password/>")))))
 
 (deftest named-values-ignore-references-and-settings
   (is (= [] (:values (lf/named-values "--token $TOKEN and password: ${DB_PASSWORD} and PASSWORD_REQUIRED=true"))))

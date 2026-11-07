@@ -22,7 +22,7 @@
 (def secret-name-pattern
   #"(?i)(password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|auth(?!ors?(?![a-z]))|(?<![a-z])pass(?![a-z]))")
 
-(def quote-pattern "(?:\\\\*[\"']|\\\\+u00(?:22|27)|&quot;|&#0*(?:34|39);|&#x0*(?:22|27);)")
+(def quote-pattern "(?:\\\\*[\"']|\\\\+u00(?:22|27)|&quot;|&apos;|&#0*(?:34|39);|&#x0*(?:22|27);)")
 (def gap-pattern "(?:\\s|\\\\+[nrt])*")
 (def secret-key-pattern (str "[\\w.-]{0,64}(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|authorization|(?<![a-z])pass(?![a-z])|(?<![a-z])auth(?![a-z]))[\\w.-]{0,64}"))
 (defn value-pattern [limit bare]
@@ -231,7 +231,7 @@
 (def loose-word (re-pattern "(?i)(?:password|passwd|passphrase|pwd|secret|token(?!s(?![a-z])|_?count)|api[_-]?key|access[_-]?key|private[_-]?key|credential|cookie|authorization|(?<![a-z])pass(?![a-z])|(?<![a-z])auth(?![a-z])|パスワード|暗証番号|秘密鍵|認証情報|トークン|シークレット|合言葉)"))
 (def placeholder #"\[REDACTED:[a-z_-]+\]")
 (def segment-break #"\r?\n|\\+(?:r\\+)?n|[。！？]")
-(def secret-element (re-pattern (str "(?is)(?:<|&lt;|&#0*60;|&#x0*3c;|\\\\+u003c)(?<tag>[\\w:.-]{0,64}" (.pattern loose-word) "[\\w:.-]{0,64})(?=[\\s/>&\\\\]).*?(?:(?:<|&lt;|&#0*60;|&#x0*3c;|\\\\+u003c)\\\\*/\\k<tag>\\s*(?:>|&gt;|&#0*62;|&#x0*3e;|\\\\+u003e)|\\z)")))
+(def secret-element (re-pattern (str "(?is)(?:<|&lt;|&#0*60;|&#x0*3c;|\\\\+u003c)(?<tag>[\\w:.-]{0,64}" (.pattern loose-word) "[\\w:.-]{0,64})(?=[\\s/>&\\\\])(?!(?:(?!(?:>|&gt;|&#0*62;|&#x0*3e;|\\\\+u003e)).){0,512}?[/\\\\]\\s*(?:>|&gt;|&#0*62;|&#x0*3e;|\\\\+u003e)).*?(?:(?:<|&lt;|&#0*60;|&#x0*3c;|\\\\+u003c)\\\\*/\\k<tag>\\s*(?:>|&gt;|&#0*62;|&#x0*3e;|\\\\+u003e)|\\z)")))
 
 (defn mask-secret-lines [text mark]
   (let [matcher (.matcher segment-break text)
@@ -421,15 +421,23 @@
 (def max-pinned-values 64)
 (def name-separator #"(?s)^(.*?)(?:[:=]|\\+u00(?:3[aA]|3[dD]))")
 
+(def ^:private opening-quote (re-pattern (str "(?i)^" quote-pattern)))
+(def ^:private unquoted-value #"(?i)^(?:[^\s,;}\]\"'\\&]|&(?!quot|apos|#0*(?:34|39)(?!\d)|#x0*(?:22|27)(?![0-9a-fA-F])))++")
+
 (defn- first-value
   "The value at the start of s: up to the matching quote when quoted, else up to a delimiter."
   [s]
   (let [s (str/triml (str s))]
-    (if-let [[_ q] (re-find #"^(\\*[\"'])" s)]
-      (let [body (subs s (count q)) end (str/index-of body q)] (if end (subs body 0 end) body))
-      ;; Unquoted: stop at a quote or a backslash too, so a value inside serialized JSON does not take the closing
-      ;; quote or a \n escape with it.
-      (or (re-find #"^[^\s,;}\]\"'\\]+" s) ""))))
+    ;; Quotes include their serialized forms (\", \u0022, &quot;, &#34;, &#x22;, &apos;), matched as the in-place
+    ;; mask (quote-pattern) matches them: the value ends at the same quote token.
+    (if-let [q (re-find opening-quote s)]
+      (let [body (subs s (count q))
+            closer (re-matcher (java.util.regex.Pattern/compile (java.util.regex.Pattern/quote q)
+                                                                java.util.regex.Pattern/CASE_INSENSITIVE) body)]
+        (if (.find closer) (subs body 0 (.start closer)) body))
+      ;; Unquoted: stop at a quote, a backslash or an entity quote too, so a value inside serialized JSON or HTML
+      ;; does not take the closing quote or a \n escape with it.
+      (or (re-find unquoted-value s) ""))))
 
 (defn- reference? [v]
   (boolean (re-matches #"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|\[REDACTED:[a-z_-]+\]" v)))
@@ -457,12 +465,15 @@
 (defn- element-values
   "Text values inside an XML element whose tag names a secret (<password>x</password>, encoded forms too). The
   element is masked in place; its text is pinned like an assignment value so a bare restatement is masked too.
-  Nested child tags and line breaks separate values. A self-closing tag names nothing."
+  Nested child tags and line breaks separate values. A self-closing tag names nothing: secret-element does not
+  start a match at one (so <password/><password>x</password> yields the second element); an opening tag longer than
+  that lookahead's 512 characters is treated as an element (fail closed)."
   [m]
   (let [closer (re-matcher tag-close m)]
     (when (.find closer)
       (let [open-tag (subs m 0 (.start closer))]
-        (when-not (re-find #"[/\\]\s*$" open-tag)
+        (if (and (<= (count open-tag) 512) (re-find #"[/\\]\s*$" open-tag))
+          nil
           (let [inner (subs m (.end closer))
                 inner (if-let [c (re-find #"(?is)^(.*)(?:<|&lt;|&#0*60;|&#x0*3c;|\\+u003c)\\*/[\w:.-]+\s*(?:>|&gt;|&#0*62;|&#x0*3e;|\\+u003e)$" inner)]
                         (second c) inner)]
