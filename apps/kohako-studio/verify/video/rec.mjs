@@ -9,15 +9,20 @@ const b = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsaf
 const opts = dev === 'pixel7' ? { ...devices['Pixel 7'], deviceScaleFactor: 1 } : { viewport: { width: 1100, height: 820 }, deviceScaleFactor: 1 };
 const ctx = await b.newContext(opts);
 let token = null;
+const LOCAL = 'http://localhost:8765';
 if (scenario === 'studio') { token = fs.readFileSync(process.env.TOKEN_FILE, 'utf8').trim();
-  await ctx.route(u => u.pathname.startsWith('/kohako/api/'), r => r.continue({ headers: { ...r.request().headers(), authorization: 'Bearer ' + token } })); }
+  // Studio は送信時に crypto.randomUUID 等の secure context 専用 API を使う。クラスタ内 http オリジンでは
+  // 送信前に例外で止まるため、ページは localhost(secure context)で開き、全リクエストを実 Service へ転送する。
+  await ctx.route(u => u.origin === LOCAL, async r => { const req = r.request(); const u = new URL(req.url()); const headers = { ...req.headers() };
+    if (u.pathname.startsWith('/kohako/api/')) headers.authorization = 'Bearer ' + token;
+    await r.fulfill({ response: await r.fetch({ url: H + u.pathname + u.search, headers }) }); }); }
 // 未配備の候補モデルを同じページ・同じ軌道で比較するため、指定時だけ当該 p2lrt をローカルファイルで差し替える
 if (process.env.OVERRIDE_P2LRT) { const body = fs.readFileSync(process.env.OVERRIDE_P2LRT);
   await ctx.route(u => u.pathname.endsWith('/' + model + '.p2lrt'), r => r.fulfill({ status: 200, contentType: 'application/octet-stream', body })); }
 const page = await ctx.newPage();
 const errs = []; page.on('console', m => { if (m.type() === 'error') errs.push(m.text()) }); page.on('pageerror', e => errs.push(String(e)));
 const p2 = []; page.on('request', r => { if (r.url().endsWith('.p2lrt')) p2.push(r.url().split('/').pop()) });
-const url = H + (scenario === 'studio' ? '/kohako/studio.html' : '/kohako/live2d.html') + '?model=' + model;
+const url = (scenario === 'studio' ? LOCAL : H) + (scenario === 'studio' ? '/kohako/studio.html' : '/kohako/live2d.html') + '?model=' + model;
 await page.goto(url, { waitUntil: 'load' });
 await page.waitForFunction(() => (window.__rigPreview?.player) || (window.__studioRig?.player), null, { timeout: 20000 });
 await page.waitForTimeout(1500);
