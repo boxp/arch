@@ -1210,7 +1210,7 @@
    ;; env with assignments/options before the command runs that command (BOXP-428 TD-12 P1)
    {:command "env LANG=C printenv"} {:command "env -u HOME printenv"} {:command "env -i LANG=C printenv PATH"}
    {:command "sudo env LANG=C printenv"} {:command "env LANG=C bash -c printenv"} {:command "env LANG=C cat mytoken"}
-   {:command "env -S printenv"} {:command "env LANG=C env"}
+   {:command "env -S printenv"} {:command "env LANG=C env"} {:command "env A=1 2>&1"}
    "{\"cmd\":[\"bash\",\"-lc\",\"printenv\"]}"])
 
 (deftest k0-is-judged-on-what-runs-or-is-read

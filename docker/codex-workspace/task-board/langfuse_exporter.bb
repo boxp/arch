@@ -320,7 +320,8 @@
                             (#{"-u" "--unset" "-C" "--chdir"} (texts j)) (recur (+ j 2))
                             (or (str/starts-with? (texts j) "-") (re-matches #"[A-Za-z_]\w*=.*" (texts j))) (recur (inc j))
                             :else j))]
-              (if j (recur j) i))
+              ;; env A=1 2>&1: the last word is a file descriptor, not a command
+              (if (and j (not (and (= j (dec n)) (re-matches #"\d+" (texts j))))) (recur j) i))
             :else i))))))
 
 (defn- shell-words
@@ -477,6 +478,7 @@
                    (and (= "env" program)
                         (loop [[t & more] (map :text operands)]
                           (cond (nil? t) true
+                                (and (empty? more) (re-matches #"\d+" t)) true ; env A=1 2>&1
                                 (re-matches #"-[A-Za-z]*S.*|--split-string(?:=.*)?" t) true
                                 (#{"-u" "--unset" "-C" "--chdir"} t) (recur (rest more))
                                 (or (str/starts-with? t "-") (re-matches #"[A-Za-z_]\w*=.*" t)) (recur more)
