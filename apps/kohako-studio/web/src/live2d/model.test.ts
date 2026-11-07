@@ -45,7 +45,7 @@ describe('FrameMeter', () => {
 describe('modelFor', () => {
   it('defaults to the Kohako model and keeps the sample selectable', () => {
     expect(modelFor('').id).toBe(LATEST_MODEL_ID)
-    expect(LATEST_MODEL_ID).toBe('kohako-v30')
+    expect(LATEST_MODEL_ID).toBe('kohako-v35')
     expect(lostPrototypes.find(p => p.id === 'kohako-v34')?.evaluation).toContain('不採用')
     expect(lostPrototypes.find(p => p.id === 'kohako-v33')?.evaluation).toContain('不採用')
     expect(lostPrototypes.find(p => p.id === 'kohako-v32')?.evaluation).toContain('不採用')
@@ -56,7 +56,7 @@ describe('modelFor', () => {
     expect(modelFor('?model=kohako-v0').id).toBe('kohako')
     expect(modelFor('?model=kohako-v1').id).toBe('kohako-v1')
     expect(modelFor('?model=kohako-v2').id).toBe('kohako-v2')
-    expect(modelStatus(modelFor(''))).toContain('左肩当て上端の白い欠片を解消')
+    expect(modelStatus(modelFor(''))).toContain('左肩上の髪の中の点線を解消')
     expect(modelStatus(modelFor('?model=kohako-v0'))).toContain('旧版')
     for (const m of rigModels) expect(existsSync(resolve('public/kohako/live2d/sample', m.rig))).toBe(true)
     for (const p of lostPrototypes) for (const image of p.images) expect(existsSync(resolve('public', image))).toBe(true)
@@ -104,7 +104,9 @@ describe('clip names', () => {
     expect(modelFor('?model=kohako-v25').status).toBe('old')
     expect(modelFor('?model=kohako-v27').status).toBe('old')
     expect(modelFor('?model=kohako-v29').status).toBe('previous-latest')
-    expect(modelFor('?model=kohako-v30').status).toBe('latest')
+    expect(modelFor('?model=kohako-v30').status).toBe('previous-latest')
+    expect(modelFor('?model=kohako-v35').status).toBe('latest')
+    expect(modelFor('?model=kohako-v35').rig).toBe('../kohako/kohako-v35.p2lrt')
     expect(modelFor('?model=kohako-v30').rig).toBe('../kohako/kohako-v30.p2lrt')
     expect(modelFor('?model=kohako-v29').rig).toBe('../kohako/kohako-v29.p2lrt')
     expect(modelFor('?model=kohako-v27').rig).toBe('../kohako/kohako-v27.p2lrt')
