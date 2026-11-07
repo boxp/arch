@@ -466,8 +466,14 @@
       ;; (password: \mysecret123, its JSON form \\mysecret123, my\secret) is part of the value, not its end.
       (or (re-find unquoted-value s) ""))))
 
+;; A redaction placeholder is never a value. A $VAR / ${VAR} form may be a variable reference or a real password
+;; starting with $ (password: $hunterhorse): it is pinned like any value (masking a later ${VAR} is a harmless
+;; over-mask), and when it is too short to pin it does not withhold, since it is most likely a reference.
 (defn- reference? [v]
-  (boolean (re-matches #"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|\[REDACTED:[a-z_-]+\]" v)))
+  (boolean (re-matches #"\[REDACTED:[a-z_-]+\]" v)))
+
+(defn- variable-like? [v]
+  (boolean (re-matches #"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?" v)))
 
 ;; A list or object value (password: [a, b], token: {primary: a}) is masked in place as a whole (mask-structured);
 ;; each element is pinned too. Quoted elements keep their commas; a key followed by : or = names, not a value.
@@ -654,7 +660,7 @@
                      :when (not (reference? v))]
                  v))
         found (distinct (mapcat decoded-forms found))
-        unpinned? (boolean (or (some #(< (count %) min-pinned-length) found)
+        unpinned? (boolean (or (some #(and (< (count %) min-pinned-length) (not (variable-like? %))) found)
                                (some #(> (count %) max-pinned-length) found)
                                (> (count found) max-pinned-values)))]
     {:values (vec (filter #(<= min-pinned-length (count %) max-pinned-length) found)) :unpinned? unpinned?}))

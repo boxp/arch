@@ -917,7 +917,8 @@
                              ["password: \\mysecretlakeview" "\\mysecretlakeview"]
                              ["{\"output\":\"password: \\\\coldbackslashpine\\nnext\"}" "\\coldbackslashpine"]
                              ["password: amber\\slashgrove" "amber\\slashgrove"]
-                             ["password: \"hunterhorsefield\\\\\"" "hunterhorsefield\\"]]]
+                             ["password: \"hunterhorsefield\\\\\"" "hunterhorsefield\\"]
+                             ["password: $hunterhorsedollar" "$hunterhorsedollar"]]]
       (let [lines (if (= format :claude)
                     [{:type "user" :message {:content "first request"}}
                      {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat notes.txt"}}]}}
@@ -955,7 +956,7 @@
   (is (= ["quietmeadowstone"] (:values (lf/named-values "{\"output\":\"\\u003cpassword\\u003equietmeadowstone\\u003c/password\\u003e\"}"))))
   (is (= ["outerkeyvalue"] (:values (lf/named-values "<secret><value>outerkeyvalue</value></secret>"))))
   (is (true? (:unpinned? (lf/named-values "<password>abc</password>"))))
-  (is (= [] (:values (lf/named-values "<password>${DB_PASSWORD}</password> <password/>")))))
+  (is (= ["${DB_PASSWORD}"] (:values (lf/named-values "<password>${DB_PASSWORD}</password> <password/>")))))
 
 (deftest named-values-in-entity-quotes
   (doseq [[text v] [["password: &quot;hunterhorse&quot;" "hunterhorse"]
@@ -1007,9 +1008,22 @@
   (is (= [] (:values (lf/named-values "<password/>"))))
   (is (= [] (:values (lf/named-values "<password/><password/>")))))
 
-(deftest named-values-ignore-references-and-settings
-  (is (= [] (:values (lf/named-values "--token $TOKEN and password: ${DB_PASSWORD} and PASSWORD_REQUIRED=true"))))
-  (is (false? (:unpinned? (lf/named-values "--token $TOKEN and password: ${DB_PASSWORD} and PASSWORD_REQUIRED=true")))))
+(deftest named-values-ignore-placeholders-and-settings
+  (is (= [] (:values (lf/named-values "--flag x and PASSWORD_REQUIRED=true and password: $PW"))))
+  (is (false? (:unpinned? (lf/named-values "--flag x and PASSWORD_REQUIRED=true and password: $PW")))))
+
+(deftest named-values-pin-dollar-values
+  ;; Regression (lolice#1107 review, same rule): a real password starting with $ is not a variable reference to
+  ;; skip. $VAR / ${VAR} forms are pinned (a later ${VAR} is over-masked); a short one does not withhold.
+  (doseq [[text value] [["password: $hunterhorse" "$hunterhorse"] ["--token $TOKEN" "$TOKEN"]
+                        ["{\"api_key\": \"$quietmeadow\"}" "$quietmeadow"]
+                        ["<password>${DB_PASSWORD}</password>" "${DB_PASSWORD}"] ["password: ${VAR}" "${VAR}"]]]
+    (let [{:keys [values unpinned?]} (lf/named-values text)]
+      (is (false? unpinned?) text)
+      (is (and (seq values) (every? #(str/starts-with? value %) values)) (str text " " values))))
+  (is (nil? (re-find #"hunterhorse" (str/replace "it is $hunterhorse and keptmarker"
+                                                (lf/values-pattern (:values (lf/named-values "password: $hunterhorse")))
+                                                "[x]")))))
 
 (deftest named-values-in-quoted-cli-passwords
   ;; Regression (arch#14548 review): a quoted CLI password with spaces is one shell word; the whole value is pinned
