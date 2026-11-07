@@ -1,5 +1,7 @@
 import { fetchJson } from './fetchJson.js'
-import type { JsonWebKey } from 'node:crypto'
+import type { JsonWebKeyInput } from 'node:crypto'
+// @types/node 26 で node:crypto の JsonWebKey export が削除されたため、createPublicKey の jwk 入力型から導出する（@types/node 20〜26 共通）
+type JsonWebKey = JsonWebKeyInput['key']
 export type JwksProvider = { getKey(kid: string): Promise<JsonWebKey | null> }
 export function createJwksProvider({
   url,
