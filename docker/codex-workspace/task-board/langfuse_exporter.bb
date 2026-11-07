@@ -301,6 +301,28 @@
 (defn- interpreter? [w] (let [e (last-element w)] (boolean (or (interpreter-names e) (re-matches #"python[\d.]*" e)))))
 (defn- shell-flag? [w] (boolean (re-matches #"-[A-Za-z]*[ce]" (str w))))
 
+(defn- program-index
+  "Index of the program a segment runs: assignments and prefix programs are skipped, and so is `env` with its options and
+  assignments when a command follows it (env LANG=C printenv runs printenv; BOXP-428 TD-12 P1). A bare env, or env -S
+  (its command is a split string), stays on env and is judged as the environment dump."
+  [texts]
+  (let [n (count texts)]
+    (loop [i 0]
+      (when (< i n)
+        (let [t (texts i) e (last-element t)]
+          (cond
+            (re-matches #"[A-Za-z_]\w*=.*" t) (recur (inc i))
+            (prefix-programs e) (recur (inc i))
+            (= "env" e)
+            (let [j (loop [j (inc i)]
+                      (cond (>= j n) nil
+                            (re-matches #"-[A-Za-z]*S.*|--split-string(?:=.*)?" (texts j)) nil
+                            (#{"-u" "--unset" "-C" "--chdir"} (texts j)) (recur (+ j 2))
+                            (or (str/starts-with? (texts j) "-") (re-matches #"[A-Za-z_]\w*=.*" (texts j))) (recur (inc j))
+                            :else j))]
+              (if j (recur j) i))
+            :else i))))))
+
 (defn- shell-words
   "Words of a shell text with offsets. :ws marks whitespace inside quotes; segment breaks are {:break true}.
   An unclosed quote runs to the end."
@@ -362,7 +384,7 @@
   (let [words (shell-words s)]
     (for [seg (segments words)
           :let [ws (vec seg)
-                prog-idx (first (keep-indexed (fn [i w] (when-not (or (re-matches #"[A-Za-z_]\w*=.*" (:text w)) (prefix-programs (last-element (:text w)))) i)) ws))
+                prog-idx (program-index (mapv :text ws))
                 program (when prog-idx (last-element (:text (ws prog-idx))))
                 pattern-idx (when (pattern-programs program)
                               (let [e (first (keep-indexed (fn [i w] (when (and (> i prog-idx) (re-matches #"-[A-Za-z]*e|--regexp" (:text (ws (dec i))))) i)) ws))]
@@ -438,7 +460,7 @@
      (some (fn [seg]
              (let [ws (vec seg)
                    texts (mapv :text ws)
-                   prog-idx (first (keep-indexed (fn [i t] (when-not (or (re-matches #"[A-Za-z_]\w*=.*" t) (prefix-programs (last-element t))) i)) texts))
+                   prog-idx (program-index texts)
                    program (when prog-idx (last-element (texts prog-idx)))
                    operands (if prog-idx (subvec ws (inc prog-idx)) [])
                    token-file? (fn [t] (and (not (re-find #"\s" t)) (re-matches token-file-word (last-element t))))
@@ -455,6 +477,7 @@
                    (and (= "env" program)
                         (loop [[t & more] (map :text operands)]
                           (cond (nil? t) true
+                                (re-matches #"-[A-Za-z]*S.*|--split-string(?:=.*)?" t) true
                                 (#{"-u" "--unset" "-C" "--chdir"} t) (recur (rest more))
                                 (or (str/starts-with? t "-") (re-matches #"[A-Za-z_]\w*=.*" t)) (recur more)
                                 :else false)))

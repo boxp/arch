@@ -1184,7 +1184,7 @@
    {:command "python3 - <<'EOF'\nimport os\nlayout = os.environ.get('LAYOUT', '/tmp/x')\nc = Client(token=os.environ['MCP_TOKEN'])\nchanges = [{'op': 'set'}]\nEOF"}
    {:command "node -e \"const H = process.env.H || 'http://x'\""}
    {:command "python3 - <<'EOF'\nimport os, subprocess\nenv = os.environ.copy()\nenv['LANG'] = 'C'\nsubprocess.run(['make'], env=os.environ.copy())\nEOF"}
-   {:command "/usr/bin/env python3 x.py"} {:command "env LANG=C sort a.txt"} {:command "set -e; make"}
+   {:command "/usr/bin/env python3 x.py"} {:command "env LANG=C sort a.txt"} {:command "env -u HOME make test"} {:command "set -e; make"}
    {:file_path "/tmp/notes.md" :old_string "a" :new_string "the token is in .env; run printenv; kubectl get secret"}
    {:file_path "/tmp/x.md" :content "cat ~/.kube/config"}
    {:prompt "read .env and print the token" :description "x"}
@@ -1207,6 +1207,10 @@
    "{\"cmd\":[\"bash\",\"-lc\",\"cat ~/.npmrc\"]}" {:command "grep -r x src; cat secrets/db"}
    {:command "bash -c 'printenv'"} {:command "bash -c printenv"} {:command "sh -lc env"} {:command "bash -c 'export'"}
    {:command "sudo bash -c printenv"} {:command "bash -c 'cat mytoken'"} {:command "zsh -c \"bash -c printenv\""}
+   ;; env with assignments/options before the command runs that command (BOXP-428 TD-12 P1)
+   {:command "env LANG=C printenv"} {:command "env -u HOME printenv"} {:command "env -i LANG=C printenv PATH"}
+   {:command "sudo env LANG=C printenv"} {:command "env LANG=C bash -c printenv"} {:command "env LANG=C cat mytoken"}
+   {:command "env -S printenv"} {:command "env LANG=C env"}
    "{\"cmd\":[\"bash\",\"-lc\",\"printenv\"]}"])
 
 (deftest k0-is-judged-on-what-runs-or-is-read
