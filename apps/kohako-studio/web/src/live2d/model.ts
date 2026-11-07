@@ -179,6 +179,7 @@ export function mouthLevel(model: Pick<RigModel, 'skipSmallMouth'>, level: numbe
 
 export type LostPrototype = { id: string; evaluation: string; problems: string; images: string[]; note?: string }
 export const lostPrototypes: readonly LostPrototype[] = [
+  { id: 'kohako-v28', evaluation: '予備候補は不採用・検証未完', problems: '長髪マスクに衣装の暗色部分が混入し、肩に白い縁と衣装の欠けが生じます。補正あり・中間案は未検証です。', images: ['./kohako/live2d/compare/kohako-v28-probe-rest.jpg', './kohako/live2d/compare/kohako-v28-probe-layer.jpg', './kohako/live2d/compare/kohako-v28-probe-det.jpg', './kohako/live2d/compare/kohako-v28-probe-nat.jpg'], note: 'v28 の補正なし予備候補は不採用です。完成版ではありません。v27 を引き続き表示します。' },
   { id: 'kohako-v26', evaluation: '不採用・本人確認用', problems: '肩線分割を廃止し追従の勾配を試したが、肩以下の残差が大きく、録画でも改善を確認できませんでした。', images: ['./kohako/live2d/compare/kohako-v26-full.jpg', './kohako/live2d/compare/kohako-v26-shoulder.jpg', './kohako/live2d/compare/kohako-v26-ornament.jpg', './kohako/live2d/compare/kohako-v26-sheet.jpg', './kohako/live2d/compare/kohako-v26-extra.jpg'], note: 'v26 は不採用のためモデルを配布せず、比較資料のみ掲載しています。' },
   { id: 'kohako-v4', evaluation: '消失・担当不採用', problems: '生成した衣装下地の桜飾り・金縁が正本と合わず、揺れで縦筋。', images: ['./kohako/live2d/compare/kohako-v4-compare-v3.png'] },
   { id: 'kohako-v7', evaluation: '消失・担当不採用', problems: '閉眼パッチは消えたが目周りがぼけ、開眼の目尻に白縁。口 0.5/1 に二重線。', images: ['./kohako/live2d/compare/kohako-v7-compare-eyes.png', './kohako/live2d/compare/kohako-v7-compare-mouth.png', './kohako/live2d/compare/kohako-v7-compare-forehead.png'] },
