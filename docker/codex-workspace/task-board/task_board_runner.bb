@@ -5473,6 +5473,10 @@
       ;; The lock went away or became unreadable since the caller looked; the
       ;; next pass handles the ticket under the regular guard.
       (and locked-unguarded? (not= "locked-active" (:reason ticket))) {:result :ticket-skipped :reason (:reason ticket)}
+      ;; A run claimed the ticket after the caller's unguarded pre-check: never
+      ;; inspect or delete under the guard while a live run needs it for its
+      ;; heartbeat. The next pass takes the unguarded locked-active path.
+      (and (not locked-unguarded?) (= "locked-active" (:reason ticket))) {:result :ticket-skipped :reason "locked"}
       (and (not (:eligible? ticket)) (not stale?)) {:result :ticket-skipped :reason (:reason ticket)}
       (and (= "locked-active" (:reason ticket)) (= run-id (:active-run-id ticket))) {:result :recent}
       (contains? #{"within-retention" "within-stale-retention" "latest-run"} (:reason run)) {:result :recent}
