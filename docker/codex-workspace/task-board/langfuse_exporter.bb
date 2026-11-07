@@ -412,7 +412,14 @@
         false
         (let [after (subs s (.end m) (min (count s) (+ (.end m) 200)))]
           (if (re-find #"^\s*\.copy\s*\(\s*\)" after)
-            (recur)
+            ;; env = os.environ.copy() / run(cmd, env=os.environ.copy()) hands a copy to a child process without printing it;
+            ;; print(os.environ.copy()) or any other use of the copy is a dump.
+            (if (and (re-find #"^\s*\.copy\s*\(\s*\)\s*(?:[,)\n;#]|$)" after)
+                     (let [line-start (inc (or (str/last-index-of s "\n" (.start m)) -1))
+                           before (subs s line-start (.start m))]
+                       (and (re-find #"(?:^|[^=!<>])=\s*$" before) (not (re-find print-call before)))))
+              (recur)
+              true)
             (if-let [[_ name] (re-find env-single after)]
               (if (or (env-dump-methods name)
                       (and (re-find secret-env-name name)

@@ -1183,6 +1183,7 @@
    {:command "grep -c -i token out.log"} {:command "grep -il 'token\\|bearer' a.json"} {:command "rg -n '\"op\": \"set\"' src"}
    {:command "python3 - <<'EOF'\nimport os\nlayout = os.environ.get('LAYOUT', '/tmp/x')\nc = Client(token=os.environ['MCP_TOKEN'])\nchanges = [{'op': 'set'}]\nEOF"}
    {:command "node -e \"const H = process.env.H || 'http://x'\""}
+   {:command "python3 - <<'EOF'\nimport os, subprocess\nenv = os.environ.copy()\nenv['LANG'] = 'C'\nsubprocess.run(['make'], env=os.environ.copy())\nEOF"}
    {:command "/usr/bin/env python3 x.py"} {:command "env LANG=C sort a.txt"} {:command "set -e; make"}
    {:file_path "/tmp/notes.md" :old_string "a" :new_string "the token is in .env; run printenv; kubectl get secret"}
    {:file_path "/tmp/x.md" :content "cat ~/.kube/config"}
@@ -1195,6 +1196,9 @@
    {:command "env | grep -i grafana"} {:command "printenv"} {:command "export"} {:command "set"} {:command "declare -p"}
    {:command "python3 - <<'EOF'\nimport os\nprint(dict(os.environ))\nEOF"}
    {:command "python3 -c \"import os; print(os.environ['GITHUB_TOKEN'])\""}
+   {:command "python3 -c 'import os; print(os.environ.copy())'"}
+   {:command "python3 - <<'EOF'\nimport os, json\nprint(json.dumps(dict(os.environ.copy())))\nEOF"}
+   {:command "python3 -c 'import os; x = os.environ.copy().items(); print(list(x))'"}
    {:command "node -e 'console.log(JSON.stringify(process.env))'"}
    {:command "X=$(gh auth token) cmd"} {:command "echo \"$(cat .env)\""} {:command "git commit -m \"$(cat ~/.netrc)\""}
    {:command "cat mytoken"} {:command "head < access_token"} {:file_path "/app/.env"} {:file_path "mytoken"}
