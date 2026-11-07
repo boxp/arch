@@ -43,4 +43,5 @@ ffmpeg -framerate 30 -i pairs/x/%05d.jpg -pix_fmt yuv420p -c:v libx264 -crf 23 o
 
 - SwiftShader（ソフト描画）なので GPU 固有の描画差は見えない。fps は 60 前後。
 - 低い fps で瞬間的な破綻が無いことは保証しない。必要な区間は `--every 1` で全 frame を見る。
+- `studio` はページを `http://localhost:8765`（secure context）で開き、全リクエストを `H` へ転送する。クラスタ内 http オリジンのままでは `crypto.randomUUID` が無く送信前に止まる（2026-11-07 まで「応答 timeout」と誤認していた原因）。
 - `studio` は Hermes の応答時間に依存する。前の送信が pending のまま（BFF が `busy`）だと新しい送信が進まない。
