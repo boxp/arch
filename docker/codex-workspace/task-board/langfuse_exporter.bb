@@ -502,6 +502,16 @@
                              (not (mention-programs program)))]
                (or (some #(when-let [[_ v] (re-matches #"[A-Za-z_]\w*=(.*)" %)] (token-file? v)) (take (or prog-idx (count texts)) texts))
                    (= "printenv" program)
+                   ;; kubectl exec pod -- printenv GITHUB_TOKEN / -- sh -c 'printenv': the remote command is judged like a
+                   ;; local one (BOXP-428 TD-12 P0)
+                   (and (#{"kubectl" "oc"} program)
+                        (let [after (map :text operands)
+                              remote (rest (drop-while #(not= "--" %) after))
+                              quote-word (fn [t] (if (re-find #"[\s'\"$`\\;&|<>()]" t)
+                                                   (str "'" (str/replace t "'" "'\\''") "'")
+                                                   t))]
+                          (and (seq remote)
+                               (segment-source? (executed-text (str/join " " (map quote-word remote)))))))
                    ;; set / export / declare / typeset with nothing to set, or -p / -x, print the environment
                    (and (#{"set" "export" "declare" "typeset"} program)
                         (or (empty? operands) (some #(re-matches #"-[A-Za-z]*[px]" (:text %)) operands)))

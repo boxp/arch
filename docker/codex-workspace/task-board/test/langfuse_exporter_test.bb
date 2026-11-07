@@ -1192,7 +1192,8 @@
    "{\"cmd\":[\"bash\",\"-lc\",\"grep -rn token src\"]}"
    "{\"command\":\"echo the ID token is checked\"}"
    {:command "bash -c 'make'"} {:command "bash -c true"} {:command "grep -c token out.log"}
-   {:command "echo '<<x'; cat <<'EOF'\ncat .env\nEOF"}])
+   {:command "echo '<<x'; cat <<'EOF'\ncat .env\nEOF"}
+   {:command "kubectl exec pod -- ls /app"} {:command "kubectl exec pod -- sh -c 'make test'"}])
 
 (def td12-sources
   ["cat .env" {:command "bash -lc 'cat ~/.kube/config'"} {:command "kubectl get secret x -o yaml | base64 -d"}
@@ -1219,7 +1220,11 @@
    ;; a quoted or commented <<EOF is not a heredoc operator, so the next lines still run (BOXP-428 TD-12 P0)
    {:command "echo '<<EOF'\ncat .env\nEOF"} {:command "echo \"x <<EOF\"\ncat .env\nEOF"} {:command "echo a # <<EOF\ncat .env\nEOF"}
    {:command "printf '%s' 'a\n<<EOF'\nprintenv\nEOF"} {:command "echo \\<<EOF\ncat .env\nEOF"}
-   "{\"cmd\":[\"bash\",\"-lc\",\"printenv\"]}"])
+   "{\"cmd\":[\"bash\",\"-lc\",\"printenv\"]}"
+   ;; a remote command of kubectl/oc exec is judged like a local one (BOXP-428 TD-12 P0)
+   {:command "kubectl exec pod -- printenv GITHUB_TOKEN"} {:command "oc exec pod -- printenv"}
+   {:command "kubectl exec -n ns pod -c app -- env LANG=C printenv"} {:command "kubectl exec pod -- sh -c 'printenv'"}
+   {:command "kubectl exec pod -- env"} {:command "kubectl exec pod -- export"}])
 
 (deftest k0-is-judged-on-what-runs-or-is-read
   (doseq [input td12-mentions]
