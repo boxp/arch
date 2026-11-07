@@ -45,7 +45,7 @@ describe('FrameMeter', () => {
 describe('modelFor', () => {
   it('defaults to the Kohako model and keeps the sample selectable', () => {
     expect(modelFor('').id).toBe(LATEST_MODEL_ID)
-    expect(LATEST_MODEL_ID).toBe('kohako-v37')
+    expect(LATEST_MODEL_ID).toBe('kohako-v38')
     expect(lostPrototypes.find(p => p.id === 'kohako-v34')?.evaluation).toContain('不採用')
     expect(lostPrototypes.find(p => p.id === 'kohako-v33')?.evaluation).toContain('不採用')
     expect(lostPrototypes.find(p => p.id === 'kohako-v32')?.evaluation).toContain('不採用')
@@ -56,7 +56,7 @@ describe('modelFor', () => {
     expect(modelFor('?model=kohako-v0').id).toBe('kohako')
     expect(modelFor('?model=kohako-v1').id).toBe('kohako-v1')
     expect(modelFor('?model=kohako-v2').id).toBe('kohako-v2')
-    expect(modelStatus(modelFor(''))).toContain('体の層に残っていた頭の髪')
+    expect(modelStatus(modelFor(''))).toContain('右肩の外側の小さな暗い欠片')
     expect(modelStatus(modelFor('?model=kohako-v0'))).toContain('旧版')
     for (const m of rigModels) expect(existsSync(resolve('public/kohako/live2d/sample', m.rig))).toBe(true)
     for (const p of lostPrototypes) for (const image of p.images) expect(existsSync(resolve('public', image))).toBe(true)
@@ -107,9 +107,11 @@ describe('clip names', () => {
     expect(modelFor('?model=kohako-v30').status).toBe('previous-latest')
     expect(modelFor('?model=kohako-v35').status).toBe('previous-latest')
     expect(modelFor('?model=kohako-v36').status).toBe('previous-latest')
-    expect(modelFor('?model=kohako-v37').status).toBe('latest')
+    expect(modelFor('?model=kohako-v38').status).toBe('latest')
+    expect(modelFor('?model=kohako-v38').rig).toBe('../kohako/kohako-v38.p2lrt')
+    expect(modelFor('?model=kohako-v38').clipNames?.['modifier:m15:6d6f74696f6e']).toBe('Idle')
+    expect(modelFor('?model=kohako-v37').status).toBe('previous-latest')
     expect(modelFor('?model=kohako-v37').rig).toBe('../kohako/kohako-v37.p2lrt')
-    expect(modelFor('?model=kohako-v37').clipNames?.['modifier:m15:6d6f74696f6e']).toBe('Idle')
     expect(modelFor('?model=kohako-v36').rig).toBe('../kohako/kohako-v36.p2lrt')
     expect(modelFor('?model=kohako-v30').rig).toBe('../kohako/kohako-v30.p2lrt')
     expect(modelFor('?model=kohako-v29').rig).toBe('../kohako/kohako-v29.p2lrt')
@@ -173,7 +175,7 @@ describe('lookFor', () => {
 
 describe('motion ids of the v25+ builds', () => {
   it('maps m14..m17 so idle plays Idle and failed plays Shake (v35 until TD-26 played Shake while idle)', () => {
-    for (const id of ['kohako-v25', 'kohako-v27', 'kohako-v29', 'kohako-v30', 'kohako-v35', 'kohako-v36', 'kohako-v37']) {
+    for (const id of ['kohako-v25', 'kohako-v27', 'kohako-v29', 'kohako-v30', 'kohako-v35', 'kohako-v36', 'kohako-v37', 'kohako-v38']) {
       const m = modelFor(`?model=${id}`), ids = ['modifier:m14:6d6f74696f6e', 'modifier:m15:6d6f74696f6e', 'modifier:m16:6d6f74696f6e', 'modifier:m17:6d6f74696f6e']
       expect(ids.map(i => clipName(m, i))).toEqual(['Shake', 'Idle', 'Blink', 'Talk'])
       expect(clipIdFor(m, ids, 'Idle')).toBe('modifier:m15:6d6f74696f6e')
