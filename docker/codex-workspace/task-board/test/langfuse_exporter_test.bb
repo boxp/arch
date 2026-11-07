@@ -999,5 +999,35 @@
   (is (= [] (:values (lf/named-values "--token $TOKEN and password: ${DB_PASSWORD} and PASSWORD_REQUIRED=true"))))
   (is (false? (:unpinned? (lf/named-values "--token $TOKEN and password: ${DB_PASSWORD} and PASSWORD_REQUIRED=true")))))
 
+(deftest named-values-in-quoted-cli-passwords
+  ;; Regression (arch#14548 review): a quoted CLI password with spaces is one shell word; the whole value is pinned
+  ;; and masked in place, so a later restatement of the full value does not leak its second word.
+  (doseq [[text v] [["sshpass -p 'apple orchard' ssh host" "apple orchard"]
+                    ["sshpass -p \"pear grove stone\" ssh host" "pear grove stone"]
+                    ["mysql -h db -p'long meadow pass' app" "long meadow pass"]
+                    ["mysql -h db -p\"river bend\" app" "river bend"]
+                    ["curl -u admin:'quiet harbor' https://x" "quiet harbor"]
+                    ["curl -u 'admin:cedar hollow' https://x" "cedar hollow"]
+                    ["curl --user \"admin:amber cove\" https://x" "amber cove"]
+                    ["{\"command\":\"sshpass -p \\\"birch lane\\\" ssh host\"}" "birch lane"]]]
+    (is (some #{v} (:values (lf/named-values text))) text)
+    (let [masked (:value (lf/redact text []))]
+      (is (not (str/includes? masked (last (str/split v #" ")))) text)))
+  (is (= [] (:values (lf/named-values "mysql -p && ls -p 'some dir'"))))
+  (is (= [] (:values (lf/named-values "date -u +%H:%M"))))
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        root {:spanId "r" :name "root" :attributes [{:key "langfuse.observation.input" :value {:stringValue "runner prompt"}}]}
+        lines [{:type "user" :message {:content "first request"}}
+               {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "sshpass -p 'apple orchard' ssh host true"}}]}}
+               {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content "ok"}]}}
+               {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text "it was apple orchard and laterreplymarker"}]}}]
+        spans (lf/claude-spans ctx "root" "test:" lines)
+        run {:root root :spans spans :pinned-values (lf/pinned-values-of (cons root spans))}
+        {:keys [spans failed]} (lf/prepare-spans {:secret-values [] :max-spans 100 :max-field-bytes 65536 :max-run-bytes 10000000} run)
+        body (pr-str spans)]
+    (is (nil? failed))
+    (is (not (str/includes? body "orchard")))
+    (is (str/includes? body "laterreplymarker"))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
