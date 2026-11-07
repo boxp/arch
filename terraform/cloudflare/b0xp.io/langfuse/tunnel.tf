@@ -21,9 +21,11 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "langfuse_tunnel" {
         service  = "http_status:404"
       },
       {
-        # Starts the Access login instead of showing a page with one button (oidc.tf).
+        # Starts the Access login instead of showing a page with one button (oidc.tf). A signed-out
+        # page reaches sign-in by client-side navigation, which fetches the page props from
+        # /_next/data/<buildId>/auth/sign-in.json, so that path goes to the gateway as well.
         hostname = cloudflare_dns_record.langfuse.name
-        path     = "^/auth/sign-in$"
+        path     = "^/(_next/data/[A-Za-z0-9_-]+/)?auth/sign-in(\\.json)?$"
         service  = "http://langfuse-sign-in-gateway.langfuse.svc.cluster.local:3001"
       },
       {
