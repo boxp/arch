@@ -1105,7 +1105,17 @@
     (let [{:keys [values]} (lf/named-values "secret: {primary: hunterhorse, backup: meadowlake}")]
       (is (not-any? #{"primary" "backup"} values))))
   (testing "a short element is unpinned (fail closed)"
-    (is (:unpinned? (lf/named-values "password: [hunterhorse, ab]")))))
+    (is (:unpinned? (lf/named-values "password: [hunterhorse, ab]"))))
+  (testing "an object nested in a list with no space after the colon pins the value (lolice#1107 review)"
+    (doseq [[text vs] [["password: [{primary:hunterhorse}]" ["hunterhorse"]]
+                       ["password: [{primary=hunterhorse}, {backup:meadowlake}]" ["hunterhorse" "meadowlake"]]
+                       ["app --token [{primary:hunterhorse}]" ["hunterhorse"]]
+                       ["password: [({primary:hunterhorse})]" ["hunterhorse"]]]]
+      (let [{:keys [values]} (lf/named-values text)]
+        (is (not-any? #{"primary" "backup"} values) text)
+        (doseq [v vs]
+          (is (some #{v} values) (str text " -> " v))
+          (is (not (str/includes? (:value (lf/redact (str "reply: " v " and more") values)) v)) (str text " -> " v)))))))
 
 (deftest named-values-in-env-entry-list-and-object-values
   ;; Regression (arch#14548 review): an env entry whose value is a list or object ({"name":"API_SECRET",

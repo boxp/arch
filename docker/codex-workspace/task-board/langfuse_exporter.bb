@@ -494,7 +494,11 @@
                 key? (or (re-find #"^\s*(?:[:=]|\\+u00(?:3[aA]|3[dD]))" after)
                          (and (not q) (re-find #"[:=]$" v)))
                 after (if (and key? (not (re-find #"[:=]$" (str v)))) (str/replace-first after #"^\s*(?:[:=]|\\+u00(?:3[aA]|3[dD]))" "") after)
-                v (if (and (not q) (not key?) object?) (or (second (re-find #"^[\w.-]+[:=](.+)$" v)) v) v)]
+                ;; key:value with no space after the separator: inside an object only the value is a value; in a
+                ;; list ([{primary:a}], [a:b]) the token may be a nested object or a literal, so pin both.
+                pair (when (and (not q) (not key?)) (second (re-find #"^[\w.-]+[:=](.+)$" v)))
+                acc (if (and pair (not object?) (not (str/blank? v))) (conj acc v) acc)
+                v (or pair v)]
             (recur after (if (or key? (str/blank? v)) acc (conj acc v)) (inc n))))))))
 
 (def ^:private env-value-key (re-pattern (str "(?i)" key-start "value(?:" quote-pattern ")?" gap-pattern "[:=]" gap-pattern)))
