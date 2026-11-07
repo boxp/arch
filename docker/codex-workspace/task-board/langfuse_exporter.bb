@@ -432,6 +432,22 @@
 (def ^:private unquoted-value
   #"(?i)^(?:[^\s,;}\]\"'\\&]|\\\\|\\(?![nrt\"']|u00(?:22|27))|&(?!quot|apos|#0*(?:34|39)(?!\d)|#x0*(?:22|27)(?![0-9a-fA-F])))++")
 
+;; A quote is escaped by the backslash run before it. A plain quote (n backslashes in q: 0 at the top level, 1 for \" inside
+;; a JSON string, 3 a layer deeper) closes when that run is a multiple of 2*(n+1): each backslash of the value is written
+;; as n+1 backslashes at that depth, and an escaped quote adds an odd count of them. Other quote forms (\u0022, &quot;)
+;; close after an even run. The value keeps the escaped backslashes.
+(defn- closing-quote
+  "Index in body where the value opened by quote token q ends, or nil when it never closes."
+  [body q]
+  (let [plain (re-matches #"(\\*)[\"']" q)
+        unit (if plain (* 2 (inc (count (second plain)))) 2)
+        m (re-matcher (java.util.regex.Pattern/compile (str "(?<!\\\\)(\\\\*)" (java.util.regex.Pattern/quote q))
+                                                       java.util.regex.Pattern/CASE_INSENSITIVE) body)]
+    (loop []
+      (when (.find m)
+        (let [run (count (.group m 1))]
+          (if (zero? (mod run unit)) (+ (.start m) run) (recur)))))))
+
 (defn- first-value
   "The value at the start of s: up to the matching quote when quoted, else up to a delimiter."
   [s]
@@ -440,11 +456,11 @@
     ;; mask (quote-pattern) matches them: the value ends at the same quote token.
     (if-let [q (re-find opening-quote s)]
       (let [body (subs s (count q))
-            ;; Like the in-place mask ((?<!\\)\k<quote>), a quote token preceded by a backslash is escaped and does
-            ;; not end the value: password: "a\"b" captures a\"b (and its decoded form a"b), not a\.
-            closer (re-matcher (java.util.regex.Pattern/compile (str "(?<!\\\\)" (java.util.regex.Pattern/quote q))
-                                                                java.util.regex.Pattern/CASE_INSENSITIVE) body)]
-        (if (.find closer) (subs body 0 (.start closer)) body))
+            ;; A quote token preceded by an escaping backslash run does not end the value (password: "a\"b" captures
+            ;; a\"b and its decoded form a"b), while one preceded by escaped backslashes does (password: "hunterhorse\\"
+            ;; captures hunterhorse\\ and its decoded form hunterhorse\).
+            end (closing-quote body q)]
+        (if end (subs body 0 end) body))
       ;; Unquoted: stop at a quote, an entity quote or a quote/line escape (\", \u0022, \n, \r, \t) too, so a value
       ;; inside serialized JSON or HTML does not take the closing quote or a \n escape with it. Any other backslash
       ;; (password: \mysecret123, its JSON form \\mysecret123, my\secret) is part of the value, not its end.

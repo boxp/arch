@@ -916,7 +916,8 @@
                              ["{\"output\":\"password: \\\"maple\\\\\\\"brookstone\\\"\"}" "maple\"brookstone"]
                              ["password: \\mysecretlakeview" "\\mysecretlakeview"]
                              ["{\"output\":\"password: \\\\coldbackslashpine\\nnext\"}" "\\coldbackslashpine"]
-                             ["password: amber\\slashgrove" "amber\\slashgrove"]]]
+                             ["password: amber\\slashgrove" "amber\\slashgrove"]
+                             ["password: \"hunterhorsefield\\\\\"" "hunterhorsefield\\"]]]
       (let [lines (if (= format :claude)
                     [{:type "user" :message {:content "first request"}}
                      {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat notes.txt"}}]}}
@@ -933,7 +934,7 @@
         (is (nil? failed) (str format " " result))
         (is (not (str/includes? body secret)) (str format " " result))
         ;; pr-str escapes quotes, so also check the value's trailing word (the part after an escaped quote).
-        (is (not (str/includes? body (re-find #"[a-z]+$" secret))) (str format " " result))
+        (is (not (str/includes? body (re-find #"[a-z]+(?=[^a-z]*$)" secret))) (str format " " result))
         (is (str/includes? body "laterreplymarker") (str format " " result))
         (is (str/includes? body "first request") (str format " " result))))))
 
@@ -979,6 +980,17 @@
   (is (= ["it\\'s-quietpond" "it's-quietpond"] (:values (lf/named-values "password: 'it\\'s-quietpond'"))))
   (is (= ["hunterhorse"] (:values (lf/named-values "password: \"hunterhorse\" next: \"x\""))))
   (is (= ["hunterhorse"] (:values (lf/named-values "{\"password\": \"hunterhorse\", \"note\": \"a\\\"b\"}")))))
+
+;; Regression (lolice#1107 review, same rule): a value ending in an escaped backslash ("hunterhorse\\") closes at the
+;; quote after it, so the value and its decoded form (hunterhorse\) are pinned, not the rest of the text.
+(deftest named-values-ending-in-escaped-backslash
+  (is (= ["hunterhorse\\\\" "hunterhorse\\"] (:values (lf/named-values "password: \"hunterhorse\\\\\""))))
+  (is (= ["hunterhorse\\\\" "hunterhorse\\"] (:values (lf/named-values "password: \"hunterhorse\\\\\" next: \"x\""))))
+  (is (= ["pond\\\\" "pond\\"] (:values (lf/named-values "password: 'pond\\\\' note"))))
+  ;; One layer deeper (inside a JSON string): \\\\\" is an escaped backslash, then the closing \".
+  (is (some #{"maplebrook\\"} (:values (lf/named-values "{\"output\": \"password: \\\"maplebrook\\\\\\\\\\\" next\"}"))))
+  (is (= ["hunter\\\"horsefield" "hunter\"horsefield"] (:values (lf/named-values "password: \"hunter\\\"horsefield\""))))
+  (is (every? (set (:values (lf/named-values "password: [\"hunterhorse\\\\\", \"meadowlake\"]"))) ["hunterhorse\\" "meadowlake"])))
 
 (deftest named-values-with-backslashes
   ;; A backslash other than a quote/line escape is part of an unquoted value, including at its start.
