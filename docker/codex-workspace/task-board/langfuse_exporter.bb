@@ -482,6 +482,37 @@
                   :when (not (str/blank? v))]
               v)))))))
 
+;; A value captured from a serialized body keeps its escapes (password: &quot;a&amp;b&quot; captures a&amp;b), while
+;; a later restatement can be the decoded text (a&b). Both are pinned: the decoded form is matched with its own
+;; escapes by value-pattern, so pinning it covers the plain restatement and every serialization of it.
+(def ^:private entity-escape #"&(?:#0*(\d{1,7})|#[xX]0*([0-9a-fA-F]{1,6})|(amp|lt|gt|quot|apos));")
+(def ^:private json-escape #"\\(?:u([0-9a-fA-F]{4})|([\"\\/bfnrt]))")
+
+(defn- code-point-str [n]
+  (when (and n (<= 1 n 0x10FFFF)) (String. (Character/toChars (int n)))))
+
+(defn- decode-once [v]
+  (-> v
+      (str/replace entity-escape
+                   (fn [[m dec hex named]]
+                     (or (cond dec (code-point-str (parse-long dec))
+                               hex (code-point-str (Long/parseLong hex 16))
+                               :else ({"amp" "&" "lt" "<" "gt" ">" "quot" "\"" "apos" "'"} named))
+                         m)))
+      (str/replace json-escape
+                   (fn [[m hex c]]
+                     (or (if hex
+                           (str (char (Integer/parseInt hex 16)))
+                           ({"\"" "\"" "\\" "\\" "/" "/" "b" "\b" "f" "\f" "n" "\n" "r" "\r" "t" "\t"} c))
+                         m)))))
+
+(defn- decoded-forms
+  "v and its decoded forms (HTML entities and JSON escapes, up to 3 nested layers)."
+  [v]
+  (loop [v v acc [v] n 0]
+    (let [d (decode-once v)]
+      (if (or (= d v) (>= n 3)) acc (recur d (conj acc d) (inc n))))))
+
 (defn named-values
   "{:values [...] :unpinned? bool} for the name-based known formats in text."
   [text]
@@ -497,7 +528,7 @@
                      v (element-values (if (vector? match) (first match) match))
                      :when (not (reference? v))]
                  v))
-        found (distinct found)
+        found (distinct (mapcat decoded-forms found))
         unpinned? (boolean (or (some #(< (count %) min-pinned-length) found)
                                (some #(> (count %) max-pinned-length) found)
                                (> (count found) max-pinned-values)))]

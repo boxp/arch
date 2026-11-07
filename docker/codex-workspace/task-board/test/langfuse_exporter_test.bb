@@ -907,7 +907,11 @@
                              ["password: &quot;hunterhorseloft&quot;" "hunterhorseloft"]
                              ["api_key=&#39;velvetdunepath&#39;" "velvetdunepath"]
                              ["<password/><password>hunterhorsemill</password>" "hunterhorsemill"]
-                             ["&lt;password/&gt;&lt;password&gt;cedargroveink&lt;/password&gt;" "cedargroveink"]]]
+                             ["&lt;password/&gt;&lt;password&gt;cedargroveink&lt;/password&gt;" "cedargroveink"]
+                             ["password: &quot;hunter&amp;horsefield&quot;" "hunter&horsefield"]
+                             ["password: &quot;lake&#38;riverstone&quot;" "lake&riverstone"]
+                             ["<password>pine&lt;hollowgate</password>" "pine<hollowgate"]
+                             ["{\"password\": \"amber\\u0026willowpond\"}" "amber&willowpond"]]]
       (let [lines (if (= format :claude)
                     [{:type "user" :message {:content "first request"}}
                      {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat notes.txt"}}]}}
@@ -954,6 +958,13 @@
                     ["password: \\u0022hunterhorse\\u0022" "hunterhorse"]
                     ["password: hunterhorse&quot;" "hunterhorse"]]]
     (is (= [v] (:values (lf/named-values text))) text)))
+
+(deftest named-values-include-decoded-forms
+  (is (= ["hunter&amp;horse" "hunter&horse"] (:values (lf/named-values "password: &quot;hunter&amp;horse&quot;"))))
+  (is (= ["hunter&#x26;horse" "hunter&horse"] (:values (lf/named-values "password: &quot;hunter&#x26;horse&quot;"))))
+  (is (= ["amber\\u0026pond" "amber&pond"] (:values (lf/named-values "{\"password\": \"amber\\u0026pond\"}"))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "password: hunterhorse"))))
+  (is (= ["hunter&#99999999;horse"] (:values (lf/named-values "password: &quot;hunter&#99999999;horse&quot;")))))
 
 (deftest named-values-after-self-closing-elements
   (is (= ["hunterhorse"] (:values (lf/named-values "<password/><password>hunterhorse</password>"))))
