@@ -1609,5 +1609,24 @@
     (doseq [text ["curl -u admin:$PASS https://x" "curl -u \"admin:${TOKEN}\" https://x"]]
       (is (empty? (:values (#'lf/body-exposure text))) text))))
 
+;; P0 arch#14503 :781 (BOXP-428). The -u word dropped every quote, so curl -u "admin:plum\"orchard" pinned plumorchard
+;; and a later bare repeat of the real password plum"orchard was sent. The word is resolved as the shell does now.
+(deftest credential-field-keeps-escaped-quotes
+  (doseq [[text v] [["curl -u \"admin:plum\\\"orchard\" https://x" "plum\"orchard"]
+                    ["curl -u 'admin:it\"s-a-pass' https://x" "it\"s-a-pass"]
+                    ["curl -u admin:plum\\'orchard https://x" "plum'orchard"]
+                    ["curl -u \"admin:back\\\\slash\" https://x" "back\\slash"]
+                    ["curl -u \"admin:keep\\zed\" https://x" "keep\\zed"]
+                    ["curl -u \"adm:in\":trail\\\" https://x" "in:trail\""]]]
+    (let [vals (:values (#'lf/body-exposure text))]
+      (is (contains? vals v) text)
+      (is (contains? (:values (#'lf/tool-exposure {:input "cat notes.txt"} {:output text})) v) text)
+      (let [{:keys [value]} (lf/redact (str "later " v " again") vals)]
+        (is (not (str/includes? value v)) text))))
+  (testing "existing forms still pin the same value"
+    (doseq [[text v] [["curl -u 'user:my secret' https://x" "my secret"] ["curl -u user:longpass\\ secretvalue https://x" "longpass secretvalue"]
+                      ["curl -u :huntertwo https://x" "huntertwo"]]]
+      (is (contains? (:values (#'lf/body-exposure text)) v) text))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

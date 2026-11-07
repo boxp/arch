@@ -160,3 +160,4 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 - 過剰マスク: `Name is your password.` のような文を読むと以後同じ run で `Name` 等の語が伏字になる(保留はしない)。
 - 実 run 28 件(BOXP-436/437/440/446/449/450、件数のみ)の body_policy 件数は修正前後で完全一致。
 - 認証情報フィールド(curl -u / --user、mysql -p、sshpass -p、URL userinfo)のパスワードは1つの不透明な値として丸ごとpinする。`:` や `=` を含んでも構造(キー/値)として分解しない(`curl -u admin:apple:true` の `apple:true`、P0 arch#14503 :781)。4文字未満は value_exposure で保留、`$PASS`/`${TOKEN}` 等の変数参照は値としない。
+- `-u` の値はシェルと同じ規則で1語として解決してからpinする(単一引用符は中身そのまま、二重引用符内は `\"` `\\` `\$` `` \` `` のみ解決、引用外の `\` は次の1文字、閉じない引用は末尾まで)。引用符を一律に削除すると `curl -u "admin:plum\"orchard"` で `plumorchard` をpinし、実際の値 `plum"orchard` の再掲が送信されていた(P0 arch#14503 :781)。解決後の値は前後の引用符も削らずそのままpinする。

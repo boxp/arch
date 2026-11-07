@@ -806,8 +806,19 @@
 ;; it like a structure read curl -u admin:apple:true as the key apple and the literal true, pinned nothing and sent a
 ;; later bare apple:true (P0 arch#14503 :781). The whole password is pinned with its longer tokens, a variable
 ;; reference ($PASS, ${TOKEN}) is no value, and a password under 4 characters withholds.
-(defn- credential-values [raw]
-  (let [v (strip-value raw)]
+;; The value of one shell word as the shell passes it: single quotes keep everything, double quotes resolve only
+;; \" \\ \$ \` and a line continuation, an unquoted backslash escapes the next character, and an unclosed quote runs
+;; to the end. Dropping every quote instead pinned plumorchard for "admin:plum\"orchard" and sent the real value
+;; plum"orchard when repeated (P0 arch#14503 :781).
+(defn- shell-word-value [raw]
+  (str/replace raw #"(?s)\"((?:[^\"\\]|\\.)*)(?:\"|\z)|'([^']*)(?:'|\z)|\\(.)|\\\z"
+               (fn [[_ dq sq esc]]
+                 (or (some-> dq (str/replace #"\\([\"\\$`])|\\\n" (fn [[_ c]] (or c ""))))
+                     sq esc ""))))
+
+(defn- credential-values [raw & [exact?]]
+  ;; exact? keeps a shell-resolved -u password as it is, so a quote that is part of it (plum"orchard) stays.
+  (let [v (if exact? (str raw) (strip-value raw))]
     (cond (or (str/blank? v) (re-matches reference-value v)) #{}
           (< (count v) 4) nil
           :else (into #{v} (filter #(and (>= (count %) 6) (not (reference-only? %)))
@@ -818,12 +829,14 @@
   [kind m]
   (case kind
     :private-key nil
-    :cli-password (credential-values
+    :cli-password (apply credential-values
                    (if (re-find #"^(?i)(?:-u|--user)" m)
-                     ;; One shell word that may be quoted and hold spaces: drop the quotes, then the user name.
-                     (-> m (str/replace #"^(?i)(?:-u|--user)[ \t=]*" "") (str/replace #"[\"']" "") (str/replace #"^(?:\\.|[^:\\])*:(?=.)" "")
-                         (str/replace #"\\(.)" "$1"))
-                     (-> (last (str/split m #"\s+")) (str/replace #"^-p" ""))))
+                     ;; One shell word that may be quoted and hold spaces: resolve it as the shell does, then drop
+                     ;; the user name up to the first colon (P0 arch#14503 :781 "admin:plum\"orchard").
+                     (let [w (shell-word-value (str/replace m #"^(?i)(?:-u|--user)[ \t=]*" ""))
+                           i (str/index-of w ":")]
+                       [(if i (subs w (inc i)) w) true])
+                     [(-> (last (str/split m #"\s+")) (str/replace #"^-p" ""))]))
     :url-credentials (credential-values (second (re-find #"://[^:/@\s]*:([^@\s]*)@" m)))
     (token-values
      (case kind
