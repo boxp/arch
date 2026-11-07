@@ -6,7 +6,8 @@ const H = process.env.H || 'http://kohako-studio.kohako-studio.svc.cluster.local
 const [,, model, scenario, out, dev] = process.argv; // model: kohako-v25 ; scenario: det|nat|studio ; dev: pc|pixel7
 fs.mkdirSync(out + '/frames', { recursive: true });
 const b = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
-const opts = dev === 'pixel7' ? { ...devices['Pixel 7'], deviceScaleFactor: 1 } : { viewport: { width: 1100, height: 820 }, deviceScaleFactor: 1 };
+const dsf = Number(process.env.DSF || 1) // 画面倍率(既定1)。実機相当の高解像度描画を確認するときだけ 2 等を指定
+const opts = dev === 'pixel7' ? { ...devices['Pixel 7'], deviceScaleFactor: dsf } : { viewport: { width: 1100, height: 820 }, deviceScaleFactor: dsf };
 const ctx = await b.newContext(opts);
 let token = null;
 const LOCAL = 'http://localhost:8765';

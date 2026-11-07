@@ -46,6 +46,9 @@ describe('modelFor', () => {
   it('defaults to the Kohako model and keeps the sample selectable', () => {
     expect(modelFor('').id).toBe(LATEST_MODEL_ID)
     expect(LATEST_MODEL_ID).toBe('kohako-v30')
+    expect(lostPrototypes.find(p => p.id === 'kohako-v34')?.evaluation).toContain('不採用')
+    expect(lostPrototypes.find(p => p.id === 'kohako-v33')?.evaluation).toContain('不採用')
+    expect(lostPrototypes.find(p => p.id === 'kohako-v32')?.evaluation).toContain('不採用')
     expect(lostPrototypes.find(p => p.id === 'kohako-v31')?.evaluation).toContain('不採用')
     expect(modelFor('?model=unknown').id).toBe(LATEST_MODEL_ID)
     expect(modelFor('?model=sample').id).toBe('sample')
@@ -57,7 +60,7 @@ describe('modelFor', () => {
     expect(modelStatus(modelFor('?model=kohako-v0'))).toContain('旧版')
     for (const m of rigModels) expect(existsSync(resolve('public/kohako/live2d/sample', m.rig))).toBe(true)
     for (const p of lostPrototypes) for (const image of p.images) expect(existsSync(resolve('public', image))).toBe(true)
-    expect(lostPrototypes.map(p => p.id)).toEqual(['kohako-v31', 'kohako-v28', 'kohako-v26', 'kohako-v4', 'kohako-v7', 'kohako-v8', 'kohako-v9', 'kohako-v10', 'kohako-v18', 'kohako-v19', 'kohako-v20', 'kohako-v21', 'kohako-v22'])
+    expect(lostPrototypes.map(p => p.id)).toEqual(['kohako-v34', 'kohako-v33', 'kohako-v32', 'kohako-v31', 'kohako-v28', 'kohako-v26', 'kohako-v4', 'kohako-v7', 'kohako-v8', 'kohako-v9', 'kohako-v10', 'kohako-v18', 'kohako-v19', 'kohako-v20', 'kohako-v21', 'kohako-v22'])
   })
 })
 
