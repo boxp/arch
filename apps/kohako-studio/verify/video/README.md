@@ -23,6 +23,9 @@
 ./run.sh kohako-v25 studio pc   # studio.html で実 Hermes 会話（読み上げ off、応答まで最大 90s）
 ```
 
+未配備の候補を同じページ・同じ軌道で比べるときは `OVERRIDE_P2LRT=/work/<file>.p2lrt ./run.sh kohako-v25 nat pc` のように、
+`b441pw` コンテナ内のファイルで指定モデルの p2lrt だけを差し替える（画面表示の版名は指定した既存モデルのまま。出力 dir 名も同じなので実行ごとに移す）。
+
 出力 `out/<model>-<scenario>-<dev>/`: `frames/*.jpg`（CDP screencast、60fps、studio は 30fps）、`frames.json`（frame→ms）、
 `trace.json`（描画 frame ごとの parameter 値。`player.draw` を hook）、`events.json`（state 切替・送信などの時刻）、
 `meta.json`（読込 p2lrt、画面表示、stage の bbox、viewport、エラー）。時刻は最初の frame を 0 とした ms。

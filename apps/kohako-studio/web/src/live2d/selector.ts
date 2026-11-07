@@ -20,7 +20,7 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   for (const item of all) {
     const option = document.createElement('option'); option.value = item.id
     const version = item.id === 'kohako' ? 'v0' : item.id === 'sample' ? 'サンプル' : item.id.replace('kohako-', '')
-    option.textContent = `${version}（${'images' in item ? (item.id === 'kohako-v26' || item.id === 'kohako-v27') ? '不採用・本人確認用' : '読込不能: 比較画像を表示' : item.evaluation}）`
+    option.textContent = `${version}（${'images' in item ? item.id === 'kohako-v26' ? '不採用・本人確認用' : '読込不能: 比較画像を表示' : item.evaluation}）`
     select.append(option)
   }
   select.value = lost?.id ?? (includeSample ? model.id : model.id === 'sample' ? LATEST_MODEL_ID : model.id)
@@ -31,6 +31,12 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   container.append(label, select, details)
   if (model.id === LATEST_MODEL_ID && !lost) {
     // TD-23: 配備版を実ブラウザで録画し、同じ動きの旧新を横に並べた動画（時刻・角度を焼き込み）。髪の肩線の段差・折れが動作中にどう見えるか。
+    // v27: 配備ページで v25 と同じ自然動作を録画し横並び（未配備候補は OVERRIDE_P2LRT で差し替えて同位相にした）。
+    const v27 = document.createElement('p'); v27.textContent = 'v27 の動作比較（v25 / v27）: '
+    for (const [file, label] of [['kohako-v27-nat-vs-v25.mp4', '待機→考え中→話す→首振り 23 秒'], ['kohako-v27-nat-sheet.jpg', '考え中の時系列'], ['kohako-v27-det.mp4', '大きな首振り（X±30・上下）15 秒'], ['kohako-v27-shoulder.jpg', '肩の拡大（静止 11 ポーズ）'], ['kohako-v27-full.jpg', '全体（静止 11 ポーズ）']]) {
+      const link = document.createElement('a'); link.href = `./kohako/live2d/compare/${file}`; link.textContent = label; v27.append(link, ' ／ ')
+    }
+    container.append(v27)
     const videos = document.createElement('p'); videos.textContent = '動作の比較動画（v25 / v24、同じ parameter 軌道）: '
     for (const [file, label] of [['det-v25-vs-v24', '首振り・上下・髪揺れ・まばたき 15 秒'], ['det-x-slow3x-v25-vs-v24', '左右首振りの肩まわり 1/3 倍速'], ['nat-v25-vs-v24', '待機→考え中→話す→首振り 23 秒']]) {
       const link = document.createElement('a'); link.href = `./kohako/live2d/compare/kohako-td23-${file}.mp4`; link.textContent = label; videos.append(link, ' ／ ')
@@ -61,9 +67,6 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   }
   if (lost) {
     const note = document.createElement('p'); note.textContent = lost.note ?? 'p2lrt は作業ディレクトリ消失により未保存・再現不能です。比較画像を表示します。'; container.append(note)
-    if (lost.id === 'kohako-v27') {
-      const link = document.createElement('a'); link.href = './kohako/live2d/compare/kohako-v27-det.mp4'; link.textContent = 'v25 / v27 動作比較'; container.append(link)
-    }
     if (lost.id === 'kohako-v26') {
       for (const [file, text] of [['det', 'v25 / v26 動作比較'], ['shoulder-slow3x', '肩周辺 1/3 倍速']]) {
         const link = document.createElement('a'); link.href = `./kohako/live2d/compare/kohako-v26-${file}.mp4`; link.textContent = text; container.append(link, ' ／ ')

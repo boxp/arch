@@ -11,6 +11,9 @@ const ctx = await b.newContext(opts);
 let token = null;
 if (scenario === 'studio') { token = fs.readFileSync(process.env.TOKEN_FILE, 'utf8').trim();
   await ctx.route(u => u.pathname.startsWith('/kohako/api/'), r => r.continue({ headers: { ...r.request().headers(), authorization: 'Bearer ' + token } })); }
+// 未配備の候補モデルを同じページ・同じ軌道で比較するため、指定時だけ当該 p2lrt をローカルファイルで差し替える
+if (process.env.OVERRIDE_P2LRT) { const body = fs.readFileSync(process.env.OVERRIDE_P2LRT);
+  await ctx.route(u => u.pathname.endsWith('/' + model + '.p2lrt'), r => r.fulfill({ status: 200, contentType: 'application/octet-stream', body })); }
 const page = await ctx.newPage();
 const errs = []; page.on('console', m => { if (m.type() === 'error') errs.push(m.text()) }); page.on('pageerror', e => errs.push(String(e)));
 const p2 = []; page.on('request', r => { if (r.url().endsWith('.p2lrt')) p2.push(r.url().split('/').pop()) });
