@@ -374,7 +374,8 @@
           :when (and prog-idx (> i prog-idx))
           :let [prev (:text (ws (dec i)))
                 edit (cond
-                       (and (:ws w) (shell-flag? prev) (or (interpreter? program) (= "-c" prev)) (< depth 2))
+                       ;; bash -c 'printenv' / sh -lc env: a one-word script of an interpreter runs too (BOXP-428 TD-12 P1)
+                       (and (shell-flag? prev) (< depth 2) (or (interpreter? program) (and (:ws w) (= "-c" prev))))
                        (str "( " (executed-text (:text w) (inc depth) code?) " )")
                        (or (#{"echo" "printf"} program) (= i pattern-idx)
                            (and (:ws w) (or (str/starts-with? prev "-") (re-matches #"--?[\w-]+=.*" (:text w)))))

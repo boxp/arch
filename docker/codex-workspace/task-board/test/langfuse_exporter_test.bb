@@ -1189,7 +1189,8 @@
    {:file_path "/tmp/x.md" :content "cat ~/.kube/config"}
    {:prompt "read .env and print the token" :description "x"}
    "{\"cmd\":[\"bash\",\"-lc\",\"grep -rn token src\"]}"
-   "{\"command\":\"echo the ID token is checked\"}"])
+   "{\"command\":\"echo the ID token is checked\"}"
+   {:command "bash -c 'make'"} {:command "bash -c true"} {:command "grep -c token out.log"}])
 
 (def td12-sources
   ["cat .env" {:command "bash -lc 'cat ~/.kube/config'"} {:command "kubectl get secret x -o yaml | base64 -d"}
@@ -1203,7 +1204,10 @@
    {:command "X=$(gh auth token) cmd"} {:command "echo \"$(cat .env)\""} {:command "git commit -m \"$(cat ~/.netrc)\""}
    {:command "cat mytoken"} {:command "head < access_token"} {:file_path "/app/.env"} {:file_path "mytoken"}
    {:command "ssh host bash <<'EOF'\ncat .env\nEOF"} {:command "cat > /tmp/x <<EOF\nhello\nEOF\ncat .env"}
-   "{\"cmd\":[\"bash\",\"-lc\",\"cat ~/.npmrc\"]}" {:command "grep -r x src; cat secrets/db"}])
+   "{\"cmd\":[\"bash\",\"-lc\",\"cat ~/.npmrc\"]}" {:command "grep -r x src; cat secrets/db"}
+   {:command "bash -c 'printenv'"} {:command "bash -c printenv"} {:command "sh -lc env"} {:command "bash -c 'export'"}
+   {:command "sudo bash -c printenv"} {:command "bash -c 'cat mytoken'"} {:command "zsh -c \"bash -c printenv\""}
+   "{\"cmd\":[\"bash\",\"-lc\",\"printenv\"]}"])
 
 (deftest k0-is-judged-on-what-runs-or-is-read
   (doseq [input td12-mentions]
