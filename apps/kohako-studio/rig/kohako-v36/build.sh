@@ -11,7 +11,7 @@ JDK=eclipse-temurin:21@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68f
 RUN_ID=$(od -An -N4 -tx1 /dev/urandom | tr -d " \n")
 VOL=boxp441-v36-$RUN_ID; TR=boxp441-v36-tr-$RUN_ID; SV=boxp441-v36-mcp-$RUN_ID
 # MCP ポート 18767 は既存 rig スクリプト共通の固定値のため、同時ビルドはロックで直列化する（相手を消さず待つ）。
-exec 9>"${TMPDIR:-/tmp}/boxp441-v36-build.lock"; flock 9
+exec 9>"${TMPDIR:-/tmp}/boxp441-mcp18767.lock"; flock 9
 cleanup() { [ -n "${V36_KEEP:-}" ] && { echo "kept: $VOL $TR $SV" >&2; return; }; docker rm -f "$SV" "$TR" >/dev/null 2>&1 || true; docker volume rm "$VOL" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 docker volume create $VOL >/dev/null
