@@ -30,6 +30,15 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   details.textContent = `${select.selectedOptions[0]?.textContent} — ${selected.evaluation}。問題: ${selected.problems} 最新の試作は ${LATEST_MODEL_ID.replace('kohako-', '')}（担当評価は選択欄を参照）です。`
   container.append(label, select, details)
   if (model.id === LATEST_MODEL_ID && !lost) {
+    // TD-23: 配備版を実ブラウザで録画し、同じ動きの旧新を横に並べた動画（時刻・角度を焼き込み）。髪の肩線の段差・折れが動作中にどう見えるか。
+    const videos = document.createElement('p'); videos.textContent = '動作の比較動画（v25 / v24、同じ parameter 軌道）: '
+    for (const [file, label] of [['det-v25-vs-v24', '首振り・上下・髪揺れ・まばたき 15 秒'], ['det-x-slow3x-v25-vs-v24', '左右首振りの肩まわり 1/3 倍速'], ['nat-v25-vs-v24', '待機→考え中→話す→首振り 23 秒']]) {
+      const link = document.createElement('a'); link.href = `./kohako/live2d/compare/kohako-td23-${file}.mp4`; link.textContent = label; videos.append(link, ' ／ ')
+    }
+    for (const [file, label] of [['det-x-rightshoulder', '右肩の拡大（X±25°）'], ['det-x-shoulders', '肩まわり（X 掃引）'], ['nat-thinking-right', '考え中の右肩（時系列）']]) {
+      const link = document.createElement('a'); link.href = `./kohako/live2d/compare/kohako-td23-${file}.jpg`; link.textContent = label; videos.append(link, ' ／ ')
+    }
+    container.append(videos)
     for (const [file, label] of [['mouth', 'v24/v25 口 0〜1'], ['full', 'v24/v25 全体']]) {
       const comparison = document.createElement('a')
       comparison.href = `./kohako/live2d/compare/kohako-v25-vs-v24-${file}.jpg`
