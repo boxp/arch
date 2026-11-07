@@ -1055,5 +1055,18 @@
       (is (not (str/includes? (:value (lf/redact (str "reply: quietmeadowstone") values)) "quietmeadowstone")) text)
       (is (not (str/includes? (:value (lf/redact text values)) "quietmeadowstone")) text))))
 
+(deftest named-values-in-unclosed-quoted-cli-passwords
+  ;; Regression (arch#14548 review): a quote that never closes runs to the end of the line, so
+  ;; `curl -u 'admin:apple orchard` masks and pins the password and a later restatement is masked.
+  (doseq [[text v] [["curl -u 'admin:apple orchard" "apple orchard"]
+                    ["curl --user \"admin:pear grove" "pear grove"]
+                    ["curl -u admin:'quiet harbor" "quiet harbor"]
+                    ["sshpass -p 'birch lane" "birch lane"]
+                    ["mysql -h db -p'river bend" "river bend"]]]
+    (let [{:keys [values]} (lf/named-values text)]
+      (is (some #{v} values) text)
+      (is (not (str/includes? (:value (lf/redact text [])) (last (str/split v #" ")))) text)
+      (is (not (str/includes? (:value (lf/redact (str "later: " v) values)) (last (str/split v #" ")))) text))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

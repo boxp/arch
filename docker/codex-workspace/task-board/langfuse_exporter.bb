@@ -45,8 +45,9 @@
    [:env-entry (re-pattern (str "(?i)" (entry-key "value") (value-pattern "{0,4096}?" "[^\\s,;}\\]]+") entry-gap "(?:" quote-pattern ")?" (entry-key "name") "(?:" quote-pattern ")?" secret-key-pattern))]
    [:flag (re-pattern (str "(?i)(?<![\\w-])--?" secret-key-pattern "[ \\t]+(?!-)" (value-pattern nil "\\S+")))]
    ;; A CLI password is one shell word: a quoted value runs to its matching quote (value-pattern), so
-   ;; sshpass -p 'apple orchard' masks and pins the whole value, not just the part before the space.
-   [:cli-password (re-pattern (str "(?i)(?<![\\w-])(?:-u|--user)[ \\t=]*(?<uq>" quote-pattern ")(?!\\d+:\\d+\\b)[^\\s:]*:[^\\n]*?(?<!\\\\)\\k<uq>"))]
+   ;; sshpass -p 'apple orchard' masks and pins the whole value, not just the part before the space. A quote that never
+   ;; closes (-u 'admin:apple orchard) runs to the end of the line, like value-pattern.
+   [:cli-password (re-pattern (str "(?i)(?<![\\w-])(?:-u|--user)[ \\t=]*(?<uq>" quote-pattern ")(?!\\d+:\\d+\\b)[^\\s:]*:(?:[^\\n]*?(?<!\\\\)\\k<uq>|[^\\n]*)"))]
    [:cli-password (re-pattern (str "(?i)(?<![\\w-])(?:-u|--user)[ \\t=]*(?!" quote-pattern ")(?!\\d+:\\d+\\b)[^\\s:]+:" (value-pattern nil "\\S+")))]
    [:cli-password (re-pattern (str "(?i)\\b(?:mysql\\w*|mariadb\\w*)\\b[^\\n|;&]{0,512}?\\s-p" (value-pattern nil "\\S+")))]
    [:cli-password (re-pattern (str "(?i)\\bsshpass\\b[^\\n|;&]{0,512}?\\s-p[ \\t]*" (value-pattern nil "\\S+")))]
