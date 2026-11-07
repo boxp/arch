@@ -1191,7 +1191,8 @@
    {:prompt "read .env and print the token" :description "x"}
    "{\"cmd\":[\"bash\",\"-lc\",\"grep -rn token src\"]}"
    "{\"command\":\"echo the ID token is checked\"}"
-   {:command "bash -c 'make'"} {:command "bash -c true"} {:command "grep -c token out.log"}])
+   {:command "bash -c 'make'"} {:command "bash -c true"} {:command "grep -c token out.log"}
+   {:command "echo '<<x'; cat <<'EOF'\ncat .env\nEOF"}])
 
 (def td12-sources
   ["cat .env" {:command "bash -lc 'cat ~/.kube/config'"} {:command "kubectl get secret x -o yaml | base64 -d"}
@@ -1215,6 +1216,9 @@
    ;; an unquoted heredoc body still runs command substitutions (BOXP-428 TD-12 P0)
    {:command "cat <<EOF\n$(cat .env)\nEOF"} {:command "cat <<EOF\nv=$(printenv)\nEOF"}
    {:command "cat <<-EOF\n\t`cat mytoken`\nEOF"} {:command "tee /tmp/x <<\"EOF2\"\nok\nEOF2\ncat <<EOF\n$(env)\nEOF"}
+   ;; a quoted or commented <<EOF is not a heredoc operator, so the next lines still run (BOXP-428 TD-12 P0)
+   {:command "echo '<<EOF'\ncat .env\nEOF"} {:command "echo \"x <<EOF\"\ncat .env\nEOF"} {:command "echo a # <<EOF\ncat .env\nEOF"}
+   {:command "printf '%s' 'a\n<<EOF'\nprintenv\nEOF"} {:command "echo \\<<EOF\ncat .env\nEOF"}
    "{\"cmd\":[\"bash\",\"-lc\",\"printenv\"]}"])
 
 (deftest k0-is-judged-on-what-runs-or-is-read

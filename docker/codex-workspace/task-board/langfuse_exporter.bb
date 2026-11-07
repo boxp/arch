@@ -349,11 +349,36 @@
 
 (defn- segments [words] (remove empty? (partition-by :break words)))
 
+(def ^:private heredoc-operator #"(?<!<)<<(-?)[ \t]*(['\"]?)([A-Za-z_][\w-]*)\2")
+
+(defn- heredoc-operators
+  "<<TAG operators of a command line outside quotes, comments and backslash escapes, and the quote state after the line.
+  A quoted or commented <<EOF (echo '<<EOF', echo a # <<EOF, echo \\<<EOF) is not an operator, so the lines after it are
+  still judged as commands (BOXP-428 TD-12 P0). The quote state carries over lines; a missed operator only makes its
+  body judged as commands (fail closed)."
+  [^String l q]
+  (let [n (count l) m (re-matcher heredoc-operator l)]
+    (loop [i 0 q q acc []]
+      (if (>= i n)
+        [acc q]
+        (let [c (.charAt l i)]
+          (cond
+            q (cond (= c q) (recur (inc i) nil acc)
+                    (and (= c \\) (= q \")) (recur (+ i 2) q acc)
+                    :else (recur (inc i) q acc))
+            (#{\' \"} c) (recur (inc i) c acc)
+            (= c \\) (recur (+ i 2) q acc)
+            (and (= c \#) (or (zero? i) (Character/isWhitespace (.charAt l (dec i))) (#{\| \; \& \( \) \< \>} (.charAt l (dec i)))))
+            [acc q]
+            (and (= c \<) (.region m i n) (.lookingAt m))
+            (recur (.end m) q (conj acc {:start i :tag (.group m 3) :tabs (= "-" (.group m 1)) :expands (str/blank? (.group m 2))}))
+            :else (recur (inc i) q acc)))))))
+
 (defn- strip-heredocs
   "Blank the body of a heredoc unless an interpreter reads it as code (python3 -, ssh host bash, kubectl exec ... -- sh).
   With code? false, the body of a non-shell interpreter (python3 -, node -) is blanked too: it is not shell text."
   [s code?]
-  (loop [lines (str/split s #"\n" -1) out [] pending []]
+  (loop [lines (str/split s #"\n" -1) out [] pending [] q nil]
     (cond
       (empty? lines) (str/join "\n" out)
       (seq pending)
@@ -367,20 +392,17 @@
                                                                (if (str/starts-with? x "$(") (subs x 2 (dec (count x))) (subs x 1 (dec (count x)))))
                                                             (re-seq #"\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`" l)))
                                :else ""))
-               (if done (subvec pending 1) pending)))
+               (if done (subvec pending 1) pending) q))
       :else
       (let [l (first lines)
-            m (re-matcher #"(?<!<)<<(-?)[ \t]*(['\"]?)([A-Za-z_][\w-]*)\2" l)
-            docs (loop [acc []]
-                   (if (.find m)
-                     (let [words (map :text (remove :break (last (segments (shell-words (subs l 0 (.start m)))))))
-                           runner (some (fn [tail] (when (and (interpreter? (first tail)) (every? #(str/starts-with? % "-") (rest tail)))
-                                                     (first tail)))
-                                        (take-while seq (iterate rest words)))
-                           keep (boolean (and runner (or code? (shell-names (last-element runner)))))]
-                       (recur (conj acc {:tag (.group m 3) :tabs (= "-" (.group m 1)) :keep keep :expands (str/blank? (.group m 2))})))
-                     acc))]
-        (recur (rest lines) (conj out l) (vec docs))))))
+            [ops q'] (heredoc-operators l q)
+            docs (for [{:keys [start] :as op} ops
+                       :let [words (map :text (remove :break (last (segments (shell-words (subs l 0 start))))))
+                             runner (some (fn [tail] (when (and (interpreter? (first tail)) (every? #(str/starts-with? % "-") (rest tail)))
+                                                       (first tail)))
+                                          (take-while seq (iterate rest words)))]]
+                   (assoc (dissoc op :start) :keep (boolean (and runner (or code? (shell-names (last-element runner)))))))]
+        (recur (rest lines) (conj out l) (vec docs) q')))))
 
 (declare executed-text)
 
