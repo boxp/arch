@@ -52,3 +52,11 @@ ffmpeg -framerate 30 -i pairs/x/%05d.jpg -pix_fmt yuv420p -c:v libx264 -crf 23 o
 - `node hires.mjs <model> <outdir>`（`X`/`Y` 環境変数で角度、`MESHES=id,...` で対象 ArtMesh、`OVERRIDE_P2LRT` 可）: behaviors 停止で
   canvas を倍率 2 で撮り、全体・各 ArtMesh を除いた絵・単独の絵と、各メッシュの変形後の三角形（`wire.json`）を出力。
   `node wire.mjs <outdir> <png名> <meshId> <出力名>` で三角形を重ね描き、`node crop.mjs <outdir> x y w h scale out.png 名前...` で同じ範囲を並べる。
+
+## 動きの数値化（v36、TD-26）
+
+`node motion.mjs <model> <out.json> static|nat|idle`（`b441pw` 内、`OVERRIDE_P2LRT` 可）: 画像は撮らず、`player.meshVertices` で
+顔・前髪・衣装と後ろ髪（静止時の縦位置で 6 帯）の変形後頂点の平均変位を出す。`static` は behaviors を止め（ページの毎 frame の
+`lipSync` が behaviors を戻すので無効化する）、parameter を 1 つずつ動かして「物理なし（reset 直後 1 step）」「物理定常（3 秒）」を記録。
+`nat` は rec.mjs の自然動作と同じ状態切替で描画 frame ごとに記録する。後ろ髪の根元が前髪に、肩より下が衣装に付いて動くかを
+「後ろ髪 − 基準」の時系列のばらつきで比べる（値の改善だけで美術上の合格とはしない。録画の目視と併用）。
