@@ -483,6 +483,8 @@
 
 (def ^:private env-value-key (re-pattern (str "(?i)" key-start "value(?:" quote-pattern ")?" gap-pattern "[:=]" gap-pattern)))
 
+(def ^:private flag-head #"^\S+[ \t]+")
+
 (defn- match-values [kind m]
   (case kind
     :assignment (let [[head key] (re-find name-separator m)
@@ -491,7 +493,8 @@
                   (cond (re-find #"^\s*[|>]" tail) (map str/trim (rest (str/split tail #"\r?\n|\\+n")))
                         (re-find #"^\s*[\[{(]" tail) (collection-values tail)
                         :else (let [v (first-value tail)] (when-not (setting? key v) [v]))))
-    :flag [(first-value (str/replace-first m #"^\S+[ \t]+" ""))]
+    :flag (let [tail (str/replace-first m flag-head "")]
+            (if (re-find #"^[\[{(]" tail) (collection-values tail) [(first-value tail)]))
     :cli-password (if (re-find #"(?i)^(?:-u|--user)" m)
                     (let [rest (str/replace-first m #"(?i)^(?:-u|--user)[ \t=]*" "")]
                       (if (re-find opening-quote rest)
@@ -559,10 +562,11 @@
     (let [d (decode-once v)]
       (if (or (= d v) (>= n 3)) acc (recur d (conj acc d) (inc n))))))
 
-(defn- assignment-matches
-  "Assignment matches in text; one whose value opens a bracket extends to the matching close (or the end of text,
-  fail closed), as mask-structured masks it."
-  [pattern text]
+(defn- bracket-matches
+  "Assignment or flag matches in text; one whose value opens a bracket (password: [a, b], --password [a, b]) extends
+  to the matching close (or the end of text, fail closed), as mask-structured masks it. head-of returns the text
+  before the value (name and separator)."
+  [pattern text head-of]
   (let [m (re-matcher pattern text) n (count text)]
     ;; A match inside an extended value is already covered by it (its elements are scanned there); skipping it
     ;; keeps unclosed brackets (password: [password: [ ...) linear.
@@ -571,7 +575,7 @@
         (if (< (.start m) covered)
           (recur acc covered)
         (let [s (.group m)
-              head (first (re-find name-separator s))
+              head (head-of s)
               pos (loop [p (+ (.start m) (count head))]
                     (if (and (< p n) (#{\space \tab} (.charAt text p))) (recur (inc p)) p))]
           (if (and head (< pos n) (contains? closers (.charAt text pos)))
@@ -586,7 +590,10 @@
   (let [text (str text)
         found (concat
                (for [[kind pattern] patterns :when (pin-kinds kind)
-                     match (if (= kind :assignment) (assignment-matches pattern text) (re-seq pattern text))
+                     match (case kind
+                             :assignment (bracket-matches pattern text #(first (re-find name-separator %)))
+                             :flag (bracket-matches pattern text #(re-find flag-head %))
+                             (re-seq pattern text))
                      v (match-values kind (if (vector? match) (first match) match))
                      :let [v (str/trim (str v))]
                      :when (and (not (str/blank? v)) (not (reference? v)))]
