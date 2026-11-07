@@ -4,7 +4,7 @@
 
 ## 手順
 1. `mask.py BUST OUTDIR` — v28 予備マスク（`kohako-v28/mask_probe.py`）を 2px 広げた範囲で、原画の HSV 実測による髪色（H110〜132・S<90、または V<105）だけを残し、金（H<25）・衣装の紫（H≥133・S≥78）・白を除外。細い衣装輪郭は「4px 以上の太さの髪本体から 3px 以内」だけ残して除去。肩当て内側の暗い裏地 2 枚は多角形で除外、三つ編みの結び輪は含める。45,862 px。確認画像 `kohako-v29-hair-layer.jpg`（髪だけを単独表示、衣装片なし）。
-2. `build.sh` — v26 `create_parts.py`（v17 配置＋v25 髪飾り下地修正）→ `probe.py` → v6 `build.py` → v25 `eyes.py` / `mouth.py` → v6 `finalize.py` → v25 `capture.py v29` → p2lrt export。
+2. `WORK=... OUT=<手順1と同じ OUTDIR> build.sh`（`$OUT/v29-mask.png` を読む）— v26 `create_parts.py`（v17 配置＋v25 髪飾り下地修正）→ `probe.py` → v6 `build.py` → v25 `eyes.py` / `mouth.py` → v6 `finalize.py` → v25 `capture.py v29` → p2lrt export。
 3. `probe.py` の要点:
    - マスク内で v17 の髪層（hair_back / hair_side）がまだ不透明でない画素（7,307 px）を **hair_back に追加**（全キャンバス化）。別層 hair_outer にすると三つ編みが二重になり別々に動いたため不採用。
    - body のマスク域（2px 拡張）は位置合わせ済みの下地（`aligned-v28.png`）で置換。下地が白背景の所（衣装の外）は、髪そのものと房の脇の白い縁を透明にする（白い塊・半透明の縞が出ないように）。

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-WORK=${WORK:?set WORK to the rebuild-exp work dir (needs v17/, psd2live/, gradle-cache/, bust29.png, v28/aligned.png)}; O=${OUT:?set OUT (v29-mask.png in $OUT/out from mask.py)}
+WORK=${WORK:?set WORK to the rebuild-exp work dir (needs v17/, psd2live/, gradle-cache/, bust29.png, v28/aligned.png)}; O=${OUT:?set OUT to the same OUTDIR given to mask.py (reads $OUT/v29-mask.png)}
 RIG=$(cd "$(dirname "$0")/.." && pwd)
 PY=python:3.12-slim@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54
 JDK=eclipse-temurin:21@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a
@@ -15,7 +15,7 @@ docker cp $WORK/v17 $TR:/tmp/boxp441/v17
 docker run --rm -v $VOL:/tmp/boxp441 $PY mkdir -p /tmp/boxp441/kohako /tmp/boxp441/v6/out /tmp/boxp441/v6/psd2live
 docker cp $WORK/bust29.png $TR:/tmp/boxp441/kohako/bust-smile.png
 docker cp $WORK/v28/aligned.png $TR:/tmp/boxp441/aligned-v28.png
-docker cp $O/out/v29-mask.png $TR:/tmp/boxp441/v29-mask.png
+docker cp $O/v29-mask.png $TR:/tmp/boxp441/v29-mask.png
 docker run --rm -v $VOL:/tmp/boxp441 $PY sh -ec 'pip -q install --target /tmp/boxp441/python-deps numpy==2.5.4 pillow==13.0.0 opencv-python-headless==5.0.0.93; cp /tmp/boxp441/psd2live/mcp_proxy.py /tmp/boxp441/v6/psd2live/; cp /tmp/boxp441/rig/kohako-v6/pose_extra.py /tmp/boxp441/v6/'
 TOKEN=$(od -An -N16 -tx1 /dev/urandom | tr -d " \n")
 docker run -d --name $SV --network host -v $VOL:/tmp/boxp441 -w /tmp/boxp441/psd2live -e GRADLE_USER_HOME=/tmp/boxp441/gradle-cache $JDK ./gradlew -Ppsd2live.prebuiltRuntime=false run --args="mcp --port 18767 --token $TOKEN --store /tmp/boxp441/mcp-store --profile full" >/dev/null
