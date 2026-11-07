@@ -1094,6 +1094,21 @@
       (is (not (str/includes? (:value (lf/redact text [])) (last (str/split v #" ")))) text)
       (is (not (str/includes? (:value (lf/redact (str "later: " v) values)) (last (str/split v #" ")))) text))))
 
+(deftest named-values-in-backslash-escaped-cli-passwords
+  ;; Regression (lolice#1107 review, same rule): an unquoted shell word may escape its spaces (sshpass -p apple\ orchard).
+  ;; The whole word is masked in place, and both its written form and the shell-decoded password are pinned, so
+  ;; neither the rest of the word nor a restatement of the decoded password is sent.
+  (doseq [[text v] [["sshpass -p apple\\ orchard ssh host" "apple orchard"]
+                    ["mysql -h db -priver\\ bend\\ stone app" "river bend stone"]
+                    ["curl -u admin:quiet\\ harbor https://x" "quiet harbor"]
+                    ["tool --password cedar\\ hollow run" "cedar hollow"]
+                    ["{\"command\":\"sshpass -p birch\\\\ lane ssh host\"}" "birch lane"]]]
+    (let [{:keys [values]} (lf/named-values text)]
+      (is (some #{v} values) text)
+      (is (not (str/includes? (:value (lf/redact text [])) (last (str/split v #" ")))) text)
+      (is (not (str/includes? (:value (lf/redact (str "later: " v) values)) (last (str/split v #" ")))) text)))
+  (is (= ["plainpass"] (vec (:values (lf/named-values "sshpass -p plainpass ssh host"))))))
+
 (deftest named-values-in-list-and-object-values
   ;; Regression (arch#14548 review): a list or object value (password: [a, b], token: {primary: a}) is masked in
   ;; place as a whole, so every element is pinned for the run too, not only the text up to the first delimiter.

@@ -27,6 +27,9 @@
 (def secret-key-pattern (str "[\\w.-]{0,64}(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|authorization|(?<![a-z])pass(?![a-z])|(?<![a-z])auth(?![a-z]))[\\w.-]{0,64}"))
 (defn value-pattern [limit bare]
   (str "(?:(?<quote>" quote-pattern ")(?:[^\\n]" (or limit "*?") "(?<!\\\\)\\k<quote>" (when-not limit "|[^\\n]*") ")|" bare ")"))
+;; One unquoted shell word, whose spaces may be escaped (apple\ orchard, apple\\ orchard in JSON). A backslash run
+;; is tried as an escape only from its start, so a long run stays linear.
+(def shell-word-pattern "(?:(?<!\\\\)\\\\++[ \\t]|\\S)++")
 (def key-start "(?:(?<![\\w-])|(?<=\\\\u00(?:22|27)))") ; a key may follow a \u0022 quote escape
 (defn entry-key [name] (str key-start name "(?:" quote-pattern ")?" gap-pattern "[:=]" gap-pattern))
 (def entry-gap "(?:\\s|\\\\+[nrt]|,)*")
@@ -43,14 +46,14 @@
    [:bearer #"(?i)\bbearer\s+[A-Za-z0-9._~+/-]+=*"]
    [:env-entry (re-pattern (str "(?i)" (entry-key "name") "(?:" quote-pattern ")?" secret-key-pattern "(?:" quote-pattern ")?" entry-gap "(?:" quote-pattern ")?" (entry-key "value") (value-pattern nil "[^\\s,;}\\]]+")))]
    [:env-entry (re-pattern (str "(?i)" (entry-key "value") (value-pattern "{0,4096}?" "[^\\s,;}\\]]+") entry-gap "(?:" quote-pattern ")?" (entry-key "name") "(?:" quote-pattern ")?" secret-key-pattern))]
-   [:flag (re-pattern (str "(?i)(?<![\\w-])--?" secret-key-pattern "[ \\t]+(?!-)" (value-pattern nil "\\S+")))]
+   [:flag (re-pattern (str "(?i)(?<![\\w-])--?" secret-key-pattern "[ \\t]+(?!-)" (value-pattern nil shell-word-pattern)))]
    ;; A CLI password is one shell word: a quoted value runs to its matching quote (value-pattern), so
    ;; sshpass -p 'apple orchard' masks and pins the whole value, not just the part before the space. A quote that never
    ;; closes (-u 'admin:apple orchard) runs to the end of the line, like value-pattern.
    [:cli-password (re-pattern (str "(?i)(?<![\\w-])(?:-u|--user)[ \\t=]*(?<uq>" quote-pattern ")(?!\\d+:\\d+\\b)[^\\s:]*:(?:[^\\n]*?(?<!\\\\)\\k<uq>|[^\\n]*)"))]
-   [:cli-password (re-pattern (str "(?i)(?<![\\w-])(?:-u|--user)[ \\t=]*(?!" quote-pattern ")(?!\\d+:\\d+\\b)[^\\s:]+:" (value-pattern nil "\\S+")))]
-   [:cli-password (re-pattern (str "(?i)\\b(?:mysql\\w*|mariadb\\w*)\\b[^\\n|;&]{0,512}?\\s-p" (value-pattern nil "\\S+")))]
-   [:cli-password (re-pattern (str "(?i)\\bsshpass\\b[^\\n|;&]{0,512}?\\s-p[ \\t]*" (value-pattern nil "\\S+")))]
+   [:cli-password (re-pattern (str "(?i)(?<![\\w-])(?:-u|--user)[ \\t=]*(?!" quote-pattern ")(?!\\d+:\\d+\\b)[^\\s:]+:" (value-pattern nil shell-word-pattern)))]
+   [:cli-password (re-pattern (str "(?i)\\b(?:mysql\\w*|mariadb\\w*)\\b[^\\n|;&]{0,512}?\\s-p" (value-pattern nil shell-word-pattern)))]
+   [:cli-password (re-pattern (str "(?i)\\bsshpass\\b[^\\n|;&]{0,512}?\\s-p[ \\t]*" (value-pattern nil shell-word-pattern)))]
    ;; A number after a name with token in it is a counter such as input_tokens: 12.
    [:assignment (re-pattern (str "(?i)[\"']?" secret-key-pattern "(?:" quote-pattern ")?" gap-pattern "(?:[:=]|\\\\+u00(?:3[aA]|3[dD]))" gap-pattern "(?!(?<=token[\\w.-]{0,16}[\"'\\\\]{0,8}\\s{0,4}[:=]\\s{0,4})\\d+(?:[\\s,;}\\\\\"']|$))(?:[|>][-+]?\\d?(?:(?:\\n|\\\\+n)[ \\t]+(?:(?!\\\\+n)[^\\n])*)+|" (value-pattern nil "[^\\s,;}\\]]+") ")"))]
    [:entropy #"\b[A-Za-z0-9_-]{40,}\b"]])
@@ -429,8 +432,12 @@
 (def name-separator #"(?s)^(.*?)(?:[:=]|\\+u00(?:3[aA]|3[dD]))")
 
 (def ^:private opening-quote (re-pattern (str "(?i)^" quote-pattern)))
-(def ^:private unquoted-value
-  #"(?i)^(?:[^\s,;}\]\"'\\&]|\\\\|\\(?![nrt\"']|u00(?:22|27))|&(?!quot|apos|#0*(?:34|39)(?!\d)|#x0*(?:22|27)(?![0-9a-fA-F])))++")
+(def ^:private unquoted-chars
+  (str #"[^\s,;}\]\"'\\&]|\\\\|\\(?![nrt\"']|u00(?:22|27))|&(?!quot|apos|#0*(?:34|39)(?!\d)|#x0*(?:22|27)(?![0-9a-fA-F]))"))
+(def ^:private unquoted-value (re-pattern (str "(?i)^(?:" unquoted-chars ")++")))
+;; A CLI password or flag value is a shell word: an escaped space (apple\ orchard) does not end it.
+(def ^:private unquoted-shell-value (re-pattern (str "(?i)^(?:(?<!\\\\)\\\\++[ \\t]|" unquoted-chars ")++")))
+(def ^:private escaped-space #"(?<!\\)\\++([ \t])")
 
 ;; A quote is escaped by the backslash run before it. A plain quote (n backslashes in q: 0 at the top level, 1 for \" inside
 ;; a JSON string, 3 a layer deeper) closes when that run is a multiple of 2*(n+1): each backslash of the value is written
@@ -511,6 +518,16 @@
 
 (def ^:private flag-head #"^\S+[ \t]+")
 
+(defn- shell-values
+  "A CLI password or flag value as written and, when it escapes spaces, as the shell decodes it (apple orchard)."
+  [s]
+  (let [s (str/triml (str s))]
+    (if (or (re-find opening-quote s) (re-find #"^\[REDACTED:" s))
+      [(first-value s)]
+      (let [w (str/trim (or (re-find unquoted-shell-value s) ""))
+            d (str/replace w escaped-space "$1")]
+        (if (= d w) [w] [w d])))))
+
 (defn- match-values [kind m]
   (case kind
     :assignment (let [[head key] (re-find name-separator m)
@@ -520,14 +537,14 @@
                         (re-find #"^\s*[\[{(]" tail) (collection-values tail)
                         :else (let [v (first-value tail)] (when-not (setting? key v) [v]))))
     :flag (let [tail (str/replace-first m flag-head "")]
-            (if (re-find #"^[\[{(]" tail) (collection-values tail) [(first-value tail)]))
+            (if (re-find #"^[\[{(]" tail) (collection-values tail) (shell-values tail)))
     :cli-password (if (re-find #"(?i)^(?:-u|--user)" m)
                     (let [rest (str/replace-first m #"(?i)^(?:-u|--user)[ \t=]*" "")]
                       (if (re-find opening-quote rest)
                         ;; -u 'user:pass word': the whole quoted word is user:password.
                         (let [w (first-value rest) i (str/index-of w ":")] (when i [(subs w (inc i))]))
-                        [(first-value (str/replace-first rest #"^[^\s:]+:" ""))]))
-                    [(first-value (str/replace-first m #"(?is)^.*?\s-p[ \t]*" ""))])
+                        (shell-values (str/replace-first rest #"^[^\s:]+:" ""))))
+                    (shell-values (str/replace-first m #"(?is)^.*?\s-p[ \t]*" "")))
     ;; The value key takes every serialized quote form (&quot;value&quot;:, \u0022value\u0022:), as entry-key does.
     ;; A list or object value ("value": ["a", "b"]) is masked in place as a whole; each element is pinned.
     :env-entry (let [matcher (re-matcher env-value-key m)]
