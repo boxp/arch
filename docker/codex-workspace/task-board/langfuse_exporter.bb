@@ -30,7 +30,7 @@
 (defn entry-key [name] (str "(?<![\\w-])" name "(?:" quote-pattern ")?" gap-pattern "[:=]" gap-pattern))
 (def entry-gap "(?:\\s|\\\\+[nrt]|,)*")
 
-(def cli-word "(?:'[^'\\n]{0,4096}'?|\\\"(?:[^\\\"\\\\\\n]|\\\\.){0,4096}\\\"?|\\\\[^\\n]|[^\\s'\\\"\\\\])+")
+(def cli-word "(?:'[^'\\n]*+'?|\\\"(?:[^\\\"\\\\\\n]|\\\\.)*+\\\"?|\\\\[^\\n]|[^\\s'\\\"\\\\])+")
 
 (def patterns
   [[:private-key #"(?s)-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----.*?(?:-----END (?:[A-Z ]+ )?PRIVATE KEY-----|\z)"]
@@ -58,7 +58,9 @@
 ;; The mysql/mariadb -p and sshpass -p value is the same kind of shell word: mysql -p'long password' and
 ;; sshpass -p 'long password' were masked only up to the space (P0 arch#14503 :56). mysql -p with no attached value
 ;; (it prompts) is no credential.
-   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?![\"']?\+[\"']?(?:%[-_0^#:]?[A-Za-z]|(?-i:[TZ])(?![A-Za-z])|[^A-Za-z0-9\s%\"'])+[\"']?(?=[\s;&|)]|\z))(?=(?:'[^'\n:]*'|\"[^\"\n:]*\"|\\[^\n:]|[^\s'\":\\])*(?:'[^'\n:]*:|\"[^\"\n:]*:|\\?:))(?:'[^'\n]{0,4096}'?|\"(?:[^\"\\\n]|\\.){0,4096}\"?|\\[^\n]|[^\s'\"\\])+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p(?:'[^'\n]{0,4096}'?|\"(?:[^\"\\\n]|\\.){0,4096}\"?|\\[^\n]|[^\s'\"\\])+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*(?:'[^'\n]{0,4096}'?|\"(?:[^\"\\\n]|\\.){0,4096}\"?|\\[^\n]|[^\s'\"\\])+"]
+;; A quoted part has no length bound (possessive, linear): a bound of 4096 ended the match inside a longer quoted
+;; password and sent the rest after a space (P0 arch#14503 :59).
+   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?![\"']?\+[\"']?(?:%[-_0^#:]?[A-Za-z]|(?-i:[TZ])(?![A-Za-z])|[^A-Za-z0-9\s%\"'])+[\"']?(?=[\s;&|)]|\z))(?=(?:'[^'\n:]*'|\"[^\"\n:]*\"|\\[^\n:]|[^\s'\":\\])*(?:'[^'\n:]*:|\"[^\"\n:]*:|\\?:))(?:'[^'\n]*+'?|\"(?:[^\"\\\n]|\\.)*+\"?|\\[^\n]|[^\s'\"\\])+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p(?:'[^'\n]*+'?|\"(?:[^\"\\\n]|\\.)*+\"?|\\[^\n]|[^\s'\"\\])+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*(?:'[^'\n]*+'?|\"(?:[^\"\\\n]|\\.)*+\"?|\\[^\n]|[^\s'\"\\])+"]
    ;; A number after a name with token in it is a counter such as input_tokens: 12.
    [:assignment (re-pattern (str "(?i)[\"']?" secret-key-pattern "(?:" quote-pattern ")?" gap-pattern "(?:[:=]|\\\\+u00(?:3[aA]|3[dD]))" gap-pattern "(?!(?<=token[\\w.-]{0,16}[\"'\\\\]{0,8}\\s{0,4}[:=]\\s{0,4})\\d+(?:[\\s,;}\\\\\"']|$))(?:[|>][-+]?\\d?(?:(?:\\n|\\\\+n)[ \\t]+(?:(?!\\\\+n)[^\\n])*)+|" (value-pattern nil "[^\\s,;}\\]]+") ")"))]
    [:entropy #"\b[A-Za-z0-9_-]{40,}\b"]])
@@ -819,7 +821,7 @@
 ;; to the end. Dropping every quote instead pinned plumorchard for "admin:plum\"orchard" and sent the real value
 ;; plum"orchard when repeated (P0 arch#14503 :781).
 (defn- shell-word-value [raw]
-  (str/replace raw #"(?s)\"((?:[^\"\\]|\\.)*)(?:\"|\z)|'([^']*)(?:'|\z)|\\(.)|\\\z"
+  (str/replace raw #"(?s)\"((?:[^\"\\]++|\\.)*+)(?:\"|\z)|'([^']*+)(?:'|\z)|\\(.)|\\\z"
                (fn [[_ dq sq esc]]
                  (or (some-> dq (str/replace #"\\([\"\\$`])|\\\n" (fn [[_ c]] (or c ""))))
                      sq esc ""))))

@@ -1662,6 +1662,21 @@
                       ["curl -u :huntertwo https://x" "huntertwo"]]]
       (is (contains? (:values (#'lf/body-exposure text)) v) text))))
 
+;; P0 arch#14503 :59 (BOXP-428). A quoted -u / -p credential longer than 4096 characters stopped the match at the
+;; 4096th character, and when a space sat there the rest of the password was sent. A quoted part has no length bound
+;; now (possessive, so the scan stays linear).
+(deftest cli-credential-longer-than-4096
+  (doseq [n [4090 4095 4096 4097 5000 20000]
+          [prefix suffix] [["curl -u 'user:" "' https://x"] ["curl -u \"user:" "\" https://x"] ["curl --user='user:" "'"]
+                           ["mysql -p'" "' db"] ["sshpass -p \"" "\" ssh h"]]]
+    (let [cmd (str prefix (apply str (repeat n "a")) " longtailplumzz" suffix)
+          {:keys [value]} (lf/redact cmd #{})]
+      (is (not (str/includes? value "longtailplumzz")) [n prefix])
+      (is (some #(str/includes? % "longtailplumzz") (:values (#'lf/body-exposure cmd))) [n prefix])))
+  (testing "a long unquoted run still ends at a space"
+    (let [{:keys [value]} (lf/redact (str "curl -u user:" (apply str (repeat 5000 "b")) " https://keep.example/readme") #{})]
+      (is (str/includes? value "https://keep.example/readme")))))
+
 ;; P0 arch#14503 :336 (BOXP-428). env with an option (env -u HOME) still prints the environment, but the option
 ;; argument was not an assignment or terminator, so the command missed the env-dump rule and the output had no HOME=.
 ;; Any option to env now counts as a dump, the same as the Hermes observer (_ENV_DUMP).
