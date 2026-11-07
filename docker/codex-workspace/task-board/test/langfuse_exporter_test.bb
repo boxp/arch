@@ -888,5 +888,48 @@
         (is (= "withheld_known_source" (attr-value tool "langfuse.observation.metadata.body_policy")) source)
         (is (not (str/includes? (pr-str tool) "opaquebody")) source)))))
 
+;; Regression (BOXP-428, arch#14548 review): a name-based known format no longer withholds the lineage, so the
+;; value it named is masked in every field of the run; a bare restatement in a later reply must not be sent.
+(deftest named-values-are-masked-across-the-run
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        root {:spanId "r" :name "root" :attributes [{:key "langfuse.observation.input" :value {:stringValue "runner prompt"}}]}]
+    (doseq [format [:claude :codex]
+            [result secret] [["password: hunterhorsebattery\n" "hunterhorsebattery"]
+                             ["db:\n  password: \"plumorchardtree\"\n" "plumorchardtree"]
+                             ["{\"api_key\": \"quietmeadowstone\"}" "quietmeadowstone"]
+                             ["run --token silverlakefern now" "silverlakefern"]
+                             ["curl -u admin:goldenriverbank x" "goldenriverbank"]
+                             ["{\"name\": \"APP_SECRET\", \"value\": \"brightcanyonmist\"}" "brightcanyonmist"]
+                             ["secret: |\n  firstblockline\n  secondblockline\n" "secondblockline"]]]
+      (let [lines (if (= format :claude)
+                    [{:type "user" :message {:content "first request"}}
+                     {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat notes.txt"}}]}}
+                     {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content result}]}}
+                     {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text (str "it is " secret " and laterreplymarker")}]}}]
+                    [{:type "response_item" :payload {:type "message" :role "user" :content "first request"}}
+                     {:type "response_item" :payload {:type "function_call" :call_id "t" :name "exec" :arguments "{\"command\":\"cat notes.txt\"}"}}
+                     {:type "response_item" :payload {:type "function_call_output" :call_id "t" :output result}}
+                     {:type "response_item" :payload {:type "message" :role "assistant" :content (str "it is " secret " and laterreplymarker")}}])
+            spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" lines)
+            run {:root root :spans spans :pinned-values (lf/pinned-values-of (cons root spans))}
+            {:keys [spans failed]} (lf/prepare-spans {:secret-values [] :max-spans 100 :max-field-bytes 65536 :max-run-bytes 10000000} run)
+            body (pr-str spans)]
+        (is (nil? failed) (str format " " result))
+        (is (not (str/includes? body secret)) (str format " " result))
+        (is (str/includes? body "laterreplymarker") (str format " " result))
+        (is (str/includes? body "first request") (str format " " result))))))
+
+(deftest short-named-values-withhold-the-lineage
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [format [:claude :codex]]
+      (let [spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (privacy-lines format "Bash" "password: q7z\nlaterreplymarker"))
+            gen (last (filter #(str/starts-with? (:name %) "generation:") spans))]
+        (is (str/starts-with? (attr-value gen "langfuse.observation.metadata.body_policy") "withheld_after_") (str format))
+        (is (not (str/includes? (pr-str gen) "q7z")) (str format))))))
+
+(deftest named-values-ignore-references-and-settings
+  (is (= [] (:values (lf/named-values "--token $TOKEN and password: ${DB_PASSWORD} and PASSWORD_REQUIRED=true"))))
+  (is (false? (:unpinned? (lf/named-values "--token $TOKEN and password: ${DB_PASSWORD} and PASSWORD_REQUIRED=true")))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

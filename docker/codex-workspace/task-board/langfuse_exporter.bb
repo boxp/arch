@@ -410,6 +410,60 @@
       parent (assoc :parentSpanId (span-id tid parent))
       (= level "ERROR") (assoc :status {:code 2}))))
 
+;; Values that a name-based known format named (password: x, --token x, -u user:x, env entries). Masking them only
+;; in place leaves a bare restatement elsewhere in the run readable, so the exporter masks the same value in every
+;; field of the run (exact text and its serialized escapes; other transforms are the accepted residual,
+;; THREAT_MODEL 2). A value too short to mask without blanking ordinary words, or too long or too many to mask,
+;; is unpinned: in a tool result it withholds the later bodies of the lineage.
+(def pin-kinds #{:env-entry :flag :cli-password :assignment})
+(def min-pinned-length 4)
+(def max-pinned-length 256)
+(def max-pinned-values 64)
+(def name-separator #"(?s)^(.*?)(?:[:=]|\\+u00(?:3[aA]|3[dD]))")
+
+(defn- first-value
+  "The value at the start of s: up to the matching quote when quoted, else up to a delimiter."
+  [s]
+  (let [s (str/triml (str s))]
+    (if-let [[_ q] (re-find #"^(\\*[\"'])" s)]
+      (let [body (subs s (count q)) end (str/index-of body q)] (if end (subs body 0 end) body))
+      (or (re-find #"^[^\s,;}\]]+" s) ""))))
+
+(defn- reference? [v]
+  (boolean (re-matches #"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|\[REDACTED:[a-z_-]+\]" v)))
+
+(defn- match-values [kind m]
+  (case kind
+    :assignment (let [[head key] (re-find name-separator m)
+                      tail (subs m (count head))
+                      key (str/replace (str key) #"[\"'\\\s]" "")]
+                  (if (re-find #"^\s*[|>]" tail)
+                    (map str/trim (rest (str/split tail #"\r?\n|\\+n")))
+                    (let [v (first-value tail)] (when-not (setting? key v) [v]))))
+    :flag [(first-value (str/replace-first m #"^\S+[ \t]+" ""))]
+    :cli-password (if (re-find #"^(?:-u|--user)" m)
+                    [(first-value (str/replace-first m #"^(?:-u|--user)[ \t=]*[^\s:]+:" ""))]
+                    [(first-value (str/replace-first m #"(?s)^.*\s-p[ \t]*" ""))])
+    :env-entry (let [matcher (re-matcher #"(?i)(?<![\w-])value(?:\\*[\"'])?(?:\s|\\+[nrt])*[:=](?:\s|\\+[nrt])*" m)]
+                 (when (.find matcher) [(first-value (subs m (.end matcher)))]))
+    nil))
+
+(defn named-values
+  "{:values [...] :unpinned? bool} for the name-based known formats in text."
+  [text]
+  (let [text (str text)
+        found (for [[kind pattern] patterns :when (pin-kinds kind)
+                    match (re-seq pattern text)
+                    v (match-values kind (if (vector? match) (first match) match))
+                    :let [v (str/trim (str v))]
+                    :when (and (not (str/blank? v)) (not (reference? v)))]
+                v)
+        found (distinct found)
+        unpinned? (boolean (or (some #(< (count %) min-pinned-length) found)
+                               (some #(> (count %) max-pinned-length) found)
+                               (> (count found) max-pinned-values)))]
+    {:values (vec (filter #(<= min-pinned-length (count %) max-pinned-length) found)) :unpinned? unpinned?}))
+
 (def withheld-model-output "[withheld: the session saw a known source or a known format]")
 (def withheld-tool-output "[withheld: sensitive path or command]")
 (def ^:dynamic *exposure-values* [])
@@ -423,7 +477,8 @@
 (defn- exposure? [output]
   (let [text (str output)]
     (or (some #(str/includes? text %) *exposure-values*)
-        (some (fn [[kind pattern]] (when (contains? lineage-kinds kind) (re-find pattern text))) patterns))))
+        (some (fn [[kind pattern]] (when (contains? lineage-kinds kind) (re-find pattern text))) patterns)
+        (:unpinned? (named-values text)))))
 
 (defn- tool-reason [tool result]
   (try
@@ -710,6 +765,18 @@
   (when-let [text (safe-slurp path)]
     (try (json/parse-string text true) (catch Exception _ nil))))
 
+(def max-run-pinned-values 256)
+
+(defn pinned-values-of
+  "Values named by a name-based known format anywhere in the bodies of the run, or :overflow."
+  [spans]
+  (let [values (->> spans
+                    (mapcat :attributes)
+                    (filter #(contains? #{"langfuse.observation.input" "langfuse.observation.output"} (:key %)))
+                    (mapcat #(:values (named-values (get-in % [:value :stringValue]))))
+                    distinct vec)]
+    (if (> (count values) max-run-pinned-values) :overflow values)))
+
 (defn- build-run*
   "Returns {:spans raw-spans :root-key ...} for one terminal run. Nothing here is redacted yet."
   [cfg ticket run]
@@ -807,6 +874,7 @@
     {:ticket ticket :run run :trace-id tid
      :root root
      :spans (concat prompts children)
+     :pinned-values (pinned-values-of (concat [root] prompts children))
      :counts (:counts claude)}))
 
 (defn build-run [cfg ticket run]
@@ -841,10 +909,16 @@
   (let [strings (concat [(:name span)] (filter string? (tree-seq coll? seq (map :value (:attributes span)))))]
     (every? #(guard-safe? % (:secret-values cfg)) strings)))
 
+(declare prepare-spans*)
 (defn prepare-spans
   "Returns {:spans :stats}: sanitized, capped and final-guarded spans (root first), or
   :failed when the root itself does not pass the guard."
-  [cfg {:keys [root spans]}]
+  [cfg {:keys [root spans pinned-values]}]
+  (if (= :overflow pinned-values)
+    {:failed "pinned_values_over_limit" :stats {:redactions {} :dropped-secret-guard 0}}
+    (prepare-spans* (update cfg :secret-values #(vec (distinct (concat % pinned-values)))) root spans)))
+
+(defn- prepare-spans* [cfg root spans]
   (let [tally (atom {})
         clean-root (sanitize-span cfg tally root)
         limit (dec (:max-spans cfg))
