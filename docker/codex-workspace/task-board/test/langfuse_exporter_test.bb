@@ -840,21 +840,44 @@
 (deftest observation-evidence-and-limits
   (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
     (doseq [format [:claude :codex]]
-      (doseq [[value expected] [[(str "host: db\npassword: " s-password "\nneighbour\nkeptdistantmarker") "masked_known_format"]
-                                ["Set the password in settings" "sent"]
-                                [(apply str (repeat (inc (* 1024 1024)) "x")) "withheld_unscanned_output"]]]
+      ;; [tool output, tool policy before sanitizing, later generation policy, policy after sanitizing]
+      ;; A credential shape (bearer, provider key, URL credentials ...) withholds what follows. A secret name with a value
+      ;; (assignment, flag, XML element) is masked in place only: ordinary code and logs match it too.
+      (doseq [[value expected gen-expected clean-expected secret]
+              [[(str "host: db\nAuthorization: Bearer " s-bearer "\nneighbour\nkeptdistantmarker") "masked_known_format" "withheld_after_known_format_in_tool_output" "masked_known_format" s-bearer]
+               [(str "host: db\nurl: https://user:" s-url "@db.example\nneighbour\nkeptdistantmarker") "masked_known_format" "withheld_after_known_format_in_tool_output" "masked_known_format" s-url]
+               [(str "host: db\npassword: " s-password "\nneighbour\nkeptdistantmarker") "sent" "sent" "masked_known_format" s-password]
+               [(str "<password>" s-password "</password>\nneighbour\nkeptdistantmarker") "sent" "sent" "masked_known_format" s-password]
+               ["Set the password in settings" "sent" "sent" "masked_known_format" nil]
+               [(apply str (repeat (inc (* 1024 1024)) "x")) "withheld_unscanned_output" "withheld_after_unscanned_output" "withheld_unscanned_output" nil]]]
         (let [spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (privacy-lines format "Bash" value))
               tool (first (filter #(= "tool:Bash" (:name %)) spans))
               gen (last (filter #(str/starts-with? (:name %) "generation:") spans))
               clean (lf/sanitize-span {:secret-values [] :max-field-bytes (* 2 1024 1024)} (atom {}) tool)]
-          (is (= expected (attr-value tool "langfuse.observation.metadata.body_policy")))
-          (is (= (case expected "masked_known_format" "withheld_after_known_format_in_tool_output" "withheld_unscanned_output" "withheld_after_unscanned_output" "sent")
-                 (attr-value gen "langfuse.observation.metadata.body_policy")))
-          (when (= expected "masked_known_format")
-            (is (not (str/includes? (pr-str clean) s-password)))
+          (is (= expected (attr-value tool "langfuse.observation.metadata.body_policy")) (str format " " (subs value 0 (min 30 (count value)))))
+          (is (= gen-expected (attr-value gen "langfuse.observation.metadata.body_policy")) (str format " " (subs value 0 (min 30 (count value)))))
+          (is (= clean-expected (attr-value clean "langfuse.observation.metadata.body_policy")) (str format " " (subs value 0 (min 30 (count value)))))
+          (when secret
+            (is (not (str/includes? (pr-str clean) secret)))
             (is (str/includes? (pr-str clean) "keptdistantmarker"))))))
     (doseq [command ["gcloud auth print-access-token" "gcloud auth print-identity-token" "gcloud auth application-default print-access-token" "gcloud secrets versions access 1" "az account get-access-token" "az keyvault secret show" "aws sts get-session-token" "aws sts assume-role-with-web-identity" "aws sts get-federation-token" "aws ecr get-login-password" "aws iam create-access-key" "kubectl -n x create token y" "oc whoami -t" "vault read x" "vault kv get x" "vault token create" "vault token lookup" "vault login" "op read x" "op item get x" "docker-credential-helper" "env -u X"]]
       (is (lf/withhold-output? command) command))))
+
+;; Regression (BOXP-428, production 2026-11-07): ordinary code and logs that only name a secret with a non-credential
+;; value withheld every later body of the run. The value is still masked in place; what follows stays readable.
+(deftest ordinary-secret-names-in-code-do-not-withhold-the-lineage
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [format [:claude :codex]
+            value ["TOKEN_FILE=/work/.cache/state\nlaterreplymarker"
+                   "headers = {}\ntoken = os.environ['API']\nlaterreplymarker"
+                   "fetch(url, { credentials: 'same-origin' })\nlaterreplymarker"
+                   "PASS: disk check\nlaterreplymarker"
+                   "mytool --token $TOKEN run\nlaterreplymarker"]]
+      (let [spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (privacy-lines format "Bash" value))
+            gen (last (filter #(str/starts-with? (:name %) "generation:") spans))]
+        (is (= "sent" (attr-value gen "langfuse.observation.metadata.body_policy")) (str format " " value))
+        (is (str/includes? (pr-str gen) "laterreplymarker") (str format " " value))
+        (is (not-any? #(str/starts-with? (or (attr-value % "langfuse.observation.metadata.body_policy") "") "withheld_") spans) (str format " " value))))))
 
 (deftest direct-source-policy
   (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
@@ -864,6 +887,290 @@
             tool (first (filter #(= "tool:exec" (:name %)) (lf/codex-spans ctx "root" "test" lines)))]
         (is (= "withheld_known_source" (attr-value tool "langfuse.observation.metadata.body_policy")) source)
         (is (not (str/includes? (pr-str tool) "opaquebody")) source)))))
+
+;; Regression (BOXP-428, arch#14548 review): a name-based known format no longer withholds the lineage, so the
+;; value it named is masked in every field of the run; a bare restatement in a later reply must not be sent.
+(deftest named-values-are-masked-across-the-run
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        root {:spanId "r" :name "root" :attributes [{:key "langfuse.observation.input" :value {:stringValue "runner prompt"}}]}]
+    (doseq [format [:claude :codex]
+            [result secret] [["password: hunterhorsebattery\n" "hunterhorsebattery"]
+                             ["db:\n  password: \"plumorchardtree\"\n" "plumorchardtree"]
+                             ["{\"api_key\": \"quietmeadowstone\"}" "quietmeadowstone"]
+                             ["run --token silverlakefern now" "silverlakefern"]
+                             ["curl -u admin:goldenriverbank x" "goldenriverbank"]
+                             ["{\"name\": \"APP_SECRET\", \"value\": \"brightcanyonmist\"}" "brightcanyonmist"]
+                             ["secret: |\n  firstblockline\n  secondblockline\n" "secondblockline"]
+                             ["<password>quietmeadowstone</password>" "quietmeadowstone"]
+                             ["<config><db_password type=\"x\">\n  amberfieldsong\n</db_password></config>" "amberfieldsong"]
+                             ["&lt;apiToken&gt;copperhillwind&lt;/apiToken&gt;" "copperhillwind"]
+                             ["password: &quot;hunterhorseloft&quot;" "hunterhorseloft"]
+                             ["api_key=&#39;velvetdunepath&#39;" "velvetdunepath"]
+                             ["<password/><password>hunterhorsemill</password>" "hunterhorsemill"]
+                             ["&lt;password/&gt;&lt;password&gt;cedargroveink&lt;/password&gt;" "cedargroveink"]
+                             ["password: &quot;hunter&amp;horsefield&quot;" "hunter&horsefield"]
+                             ["password: &quot;lake&#38;riverstone&quot;" "lake&riverstone"]
+                             ["<password>pine&lt;hollowgate</password>" "pine<hollowgate"]
+                             ["{\"password\": \"amber\\u0026willowpond\"}" "amber&willowpond"]
+                             ["password: \"hunter\\\"horsefield\"" "hunter\"horsefield"]
+                             ["{\"output\":\"password: \\\"maple\\\\\\\"brookstone\\\"\"}" "maple\"brookstone"]
+                             ["password: \\mysecretlakeview" "\\mysecretlakeview"]
+                             ["{\"output\":\"password: \\\\coldbackslashpine\\nnext\"}" "\\coldbackslashpine"]
+                             ["password: amber\\slashgrove" "amber\\slashgrove"]
+                             ["password: \"hunterhorsefield\\\\\"" "hunterhorsefield\\"]
+                             ["password: $hunterhorsedollar" "$hunterhorsedollar"]]]
+      (let [lines (if (= format :claude)
+                    [{:type "user" :message {:content "first request"}}
+                     {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat notes.txt"}}]}}
+                     {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content result}]}}
+                     {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text (str "it is " secret " and laterreplymarker")}]}}]
+                    [{:type "response_item" :payload {:type "message" :role "user" :content "first request"}}
+                     {:type "response_item" :payload {:type "function_call" :call_id "t" :name "exec" :arguments "{\"command\":\"cat notes.txt\"}"}}
+                     {:type "response_item" :payload {:type "function_call_output" :call_id "t" :output result}}
+                     {:type "response_item" :payload {:type "message" :role "assistant" :content (str "it is " secret " and laterreplymarker")}}])
+            spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" lines)
+            run {:root root :spans spans :pinned-values (lf/pinned-values-of (cons root spans))}
+            {:keys [spans failed]} (lf/prepare-spans {:secret-values [] :max-spans 100 :max-field-bytes 65536 :max-run-bytes 10000000} run)
+            body (pr-str spans)]
+        (is (nil? failed) (str format " " result))
+        (is (not (str/includes? body secret)) (str format " " result))
+        ;; pr-str escapes quotes, so also check the value's trailing word (the part after an escaped quote).
+        (is (not (str/includes? body (re-find #"[a-z]+(?=[^a-z]*$)" secret))) (str format " " result))
+        (is (str/includes? body "laterreplymarker") (str format " " result))
+        (is (str/includes? body "first request") (str format " " result))))))
+
+(deftest short-named-values-withhold-the-lineage
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [format [:claude :codex]]
+      (let [spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (privacy-lines format "Bash" "password: q7z\nlaterreplymarker"))
+            gen (last (filter #(str/starts-with? (:name %) "generation:") spans))]
+        (is (str/starts-with? (attr-value gen "langfuse.observation.metadata.body_policy") "withheld_after_") (str format))
+        (is (not (str/includes? (pr-str gen) "q7z")) (str format))))))
+
+(deftest named-values-in-serialized-bodies
+  (is (= ["quietriverstone"] (:values (lf/named-values "{\"command\":\"mysql -pquietriverstone\"}"))))
+  (is (= ["quietriverstone"] (:values (lf/named-values "{\"output\":\"password: quietriverstone\\nnext\"}")))))
+
+(deftest named-values-in-xml-elements
+  (is (= ["quietmeadowstone"] (:values (lf/named-values "<password>quietmeadowstone</password>"))))
+  (is (= ["quietmeadowstone"] (:values (lf/named-values "{\"output\":\"\\u003cpassword\\u003equietmeadowstone\\u003c/password\\u003e\"}"))))
+  (is (= ["outerkeyvalue"] (:values (lf/named-values "<secret><value>outerkeyvalue</value></secret>"))))
+  (is (true? (:unpinned? (lf/named-values "<password>abc</password>"))))
+  (is (= ["${DB_PASSWORD}"] (:values (lf/named-values "<password>${DB_PASSWORD}</password> <password/>")))))
+
+(deftest named-values-in-entity-quotes
+  (doseq [[text v] [["password: &quot;hunterhorse&quot;" "hunterhorse"]
+                    ["password: &#34;hunterhorse&#34;" "hunterhorse"]
+                    ["password: &#x22;hunterhorse&#x22;" "hunterhorse"]
+                    ["password=&apos;hunterhorse&apos;" "hunterhorse"]
+                    ["password=&#39;hunter horse&#39;" "hunter horse"]
+                    ["password: \\u0022hunterhorse\\u0022" "hunterhorse"]
+                    ["password: hunterhorse&quot;" "hunterhorse"]]]
+    (is (= [v] (:values (lf/named-values text))) text)))
+
+(deftest named-values-include-decoded-forms
+  (is (= ["hunter&amp;horse" "hunter&horse"] (:values (lf/named-values "password: &quot;hunter&amp;horse&quot;"))))
+  (is (= ["hunter&#x26;horse" "hunter&horse"] (:values (lf/named-values "password: &quot;hunter&#x26;horse&quot;"))))
+  (is (= ["amber\\u0026pond" "amber&pond"] (:values (lf/named-values "{\"password\": \"amber\\u0026pond\"}"))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "password: hunterhorse"))))
+  (is (= ["hunter&#99999999;horse"] (:values (lf/named-values "password: &quot;hunter&#99999999;horse&quot;")))))
+
+(deftest named-values-with-escaped-quotes
+  ;; An escaped quote inside a quoted value does not end it (the in-place mask's (?<!\\) rule).
+  (is (= ["hunter\\\"horsefield" "hunter\"horsefield"] (:values (lf/named-values "password: \"hunter\\\"horsefield\""))))
+  (is (= ["it\\'s-quietpond" "it's-quietpond"] (:values (lf/named-values "password: 'it\\'s-quietpond'"))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "password: \"hunterhorse\" next: \"x\""))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "{\"password\": \"hunterhorse\", \"note\": \"a\\\"b\"}")))))
+
+;; Regression (lolice#1107 review, same rule): a value ending in an escaped backslash ("hunterhorse\\") closes at the
+;; quote after it, so the value and its decoded form (hunterhorse\) are pinned, not the rest of the text.
+(deftest named-values-ending-in-escaped-backslash
+  (is (= ["hunterhorse\\\\" "hunterhorse\\"] (:values (lf/named-values "password: \"hunterhorse\\\\\""))))
+  (is (= ["hunterhorse\\\\" "hunterhorse\\"] (:values (lf/named-values "password: \"hunterhorse\\\\\" next: \"x\""))))
+  (is (= ["pond\\\\" "pond\\"] (:values (lf/named-values "password: 'pond\\\\' note"))))
+  ;; One layer deeper (inside a JSON string): \\\\\" is an escaped backslash, then the closing \".
+  (is (some #{"maplebrook\\"} (:values (lf/named-values "{\"output\": \"password: \\\"maplebrook\\\\\\\\\\\" next\"}"))))
+  (is (= ["hunter\\\"horsefield" "hunter\"horsefield"] (:values (lf/named-values "password: \"hunter\\\"horsefield\""))))
+  (is (every? (set (:values (lf/named-values "password: [\"hunterhorse\\\\\", \"meadowlake\"]"))) ["hunterhorse\\" "meadowlake"])))
+
+(deftest named-values-with-backslashes
+  ;; A backslash other than a quote/line escape is part of an unquoted value, including at its start.
+  (is (= ["\\mysecret123"] (:values (lf/named-values "password: \\mysecret123"))))
+  (is (= ["\\\\coldpine" "\\coldpine"] (:values (lf/named-values "{\"output\":\"password: \\\\coldpine\\nnext\"}"))))
+  (is (= ["amber\\slash"] (:values (lf/named-values "password: amber\\slash"))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "{\"output\":\"password: hunterhorse\\nnext\"}"))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "{\"password\": \"x\", \"o\": \"password: hunterhorse\\\"\"}")))))
+
+(deftest named-values-after-self-closing-elements
+  (is (= ["hunterhorse"] (:values (lf/named-values "<password/><password>hunterhorse</password>"))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "<password /> text <password>hunterhorse</password>"))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "&lt;password/&gt;&lt;password&gt;hunterhorse&lt;/password&gt;"))))
+  (is (= [] (:values (lf/named-values "<password/>"))))
+  (is (= [] (:values (lf/named-values "<password/><password/>")))))
+
+(deftest named-values-ignore-placeholders-and-settings
+  (is (= [] (:values (lf/named-values "--flag x and PASSWORD_REQUIRED=true and password: $PW"))))
+  (is (false? (:unpinned? (lf/named-values "--flag x and PASSWORD_REQUIRED=true and password: $PW")))))
+
+(deftest named-values-pin-dollar-values
+  ;; Regression (lolice#1107 review, same rule): a real password starting with $ is not a variable reference to
+  ;; skip. $VAR / ${VAR} forms are pinned (a later ${VAR} is over-masked); a short one does not withhold.
+  (doseq [[text value] [["password: $hunterhorse" "$hunterhorse"] ["--token $TOKEN" "$TOKEN"]
+                        ["{\"api_key\": \"$quietmeadow\"}" "$quietmeadow"]
+                        ["<password>${DB_PASSWORD}</password>" "${DB_PASSWORD}"] ["password: ${VAR}" "${VAR}"]]]
+    (let [{:keys [values unpinned?]} (lf/named-values text)]
+      (is (false? unpinned?) text)
+      (is (and (seq values) (every? #(str/starts-with? value %) values)) (str text " " values))))
+  (is (nil? (re-find #"hunterhorse" (str/replace "it is $hunterhorse and keptmarker"
+                                                (lf/values-pattern (:values (lf/named-values "password: $hunterhorse")))
+                                                "[x]")))))
+
+(deftest named-values-in-quoted-cli-passwords
+  ;; Regression (arch#14548 review): a quoted CLI password with spaces is one shell word; the whole value is pinned
+  ;; and masked in place, so a later restatement of the full value does not leak its second word.
+  (doseq [[text v] [["sshpass -p 'apple orchard' ssh host" "apple orchard"]
+                    ["sshpass -p \"pear grove stone\" ssh host" "pear grove stone"]
+                    ["mysql -h db -p'long meadow pass' app" "long meadow pass"]
+                    ["mysql -h db -p\"river bend\" app" "river bend"]
+                    ["curl -u admin:'quiet harbor' https://x" "quiet harbor"]
+                    ["curl -u 'admin:cedar hollow' https://x" "cedar hollow"]
+                    ["curl --user \"admin:amber cove\" https://x" "amber cove"]
+                    ["{\"command\":\"sshpass -p \\\"birch lane\\\" ssh host\"}" "birch lane"]]]
+    (is (some #{v} (:values (lf/named-values text))) text)
+    (let [masked (:value (lf/redact text []))]
+      (is (not (str/includes? masked (last (str/split v #" ")))) text)))
+  (is (= [] (:values (lf/named-values "mysql -p && ls -p 'some dir'"))))
+  (is (= [] (:values (lf/named-values "date -u +%H:%M"))))
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        root {:spanId "r" :name "root" :attributes [{:key "langfuse.observation.input" :value {:stringValue "runner prompt"}}]}
+        lines [{:type "user" :message {:content "first request"}}
+               {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "sshpass -p 'apple orchard' ssh host true"}}]}}
+               {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content "ok"}]}}
+               {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text "it was apple orchard and laterreplymarker"}]}}]
+        spans (lf/claude-spans ctx "root" "test:" lines)
+        run {:root root :spans spans :pinned-values (lf/pinned-values-of (cons root spans))}
+        {:keys [spans failed]} (lf/prepare-spans {:secret-values [] :max-spans 100 :max-field-bytes 65536 :max-run-bytes 10000000} run)
+        body (pr-str spans)]
+    (is (nil? failed))
+    (is (not (str/includes? body "orchard")))
+    (is (str/includes? body "laterreplymarker"))))
+
+(deftest named-values-in-uppercase-cli-flags
+  ;; Regression (arch#14548 review): the in-place match is case-insensitive, so value extraction must be too;
+  ;; `curl --USER admin:secretvalue` pins the password and a later bare restatement is masked.
+  (doseq [[text v] [["curl --USER admin:secretvalue https://x" "secretvalue"]
+                    ["curl -U admin:lanternfield https://x" "lanternfield"]
+                    ["curl --User 'admin:copper ridge' https://x" "copper ridge"]
+                    ["sshpass -P marblestone ssh host" "marblestone"]]]
+    (is (some #{v} (:values (lf/named-values text))) text)
+    (let [{:keys [values]} (lf/named-values text)]
+      (is (not (str/includes? (:value (lf/redact (str "reply: " v) values)) (last (str/split v #" ")))) text))))
+
+(deftest named-values-in-encoded-env-entries
+  ;; Regression (arch#14548 review): the env-entry value key accepts every serialized quote form (&quot;, &#34;,
+  ;; \u0022, \") like the in-place mask, so the value of an HTML/JSON-encoded entry is pinned and a later bare
+  ;; restatement is masked.
+  (doseq [text ["&quot;name&quot;: &quot;API_SECRET&quot;, &quot;value&quot;: &quot;quietmeadowstone&quot;"
+                "&#34;name&#34;: &#34;API_SECRET&#34;, &#34;value&#34;: &#34;quietmeadowstone&#34;"
+                "&#x22;value&#x22;: &#x22;quietmeadowstone&#x22;, &#x22;name&#x22;: &#x22;API_SECRET&#x22;"
+                "{\\u0022name\\u0022: \\u0022API_SECRET\\u0022, \\u0022value\\u0022: \\u0022quietmeadowstone\\u0022}"
+                "{\\\"name\\\": \\\"API_SECRET\\\", \\\"value\\\": \\\"quietmeadowstone\\\"}"
+                "&apos;name&apos;: &apos;API_SECRET&apos;, &apos;value&apos;: &apos;quietmeadowstone&apos;"]]
+    (let [{:keys [values]} (lf/named-values text)]
+      (is (some #{"quietmeadowstone"} values) text)
+      (is (not (str/includes? (:value (lf/redact (str "reply: quietmeadowstone") values)) "quietmeadowstone")) text)
+      (is (not (str/includes? (:value (lf/redact text values)) "quietmeadowstone")) text))))
+
+(deftest named-values-in-unclosed-quoted-cli-passwords
+  ;; Regression (arch#14548 review): a quote that never closes runs to the end of the line, so
+  ;; `curl -u 'admin:apple orchard` masks and pins the password and a later restatement is masked.
+  (doseq [[text v] [["curl -u 'admin:apple orchard" "apple orchard"]
+                    ["curl --user \"admin:pear grove" "pear grove"]
+                    ["curl -u admin:'quiet harbor" "quiet harbor"]
+                    ["sshpass -p 'birch lane" "birch lane"]
+                    ["mysql -h db -p'river bend" "river bend"]]]
+    (let [{:keys [values]} (lf/named-values text)]
+      (is (some #{v} values) text)
+      (is (not (str/includes? (:value (lf/redact text [])) (last (str/split v #" ")))) text)
+      (is (not (str/includes? (:value (lf/redact (str "later: " v) values)) (last (str/split v #" ")))) text))))
+
+(deftest named-values-in-backslash-escaped-cli-passwords
+  ;; Regression (lolice#1107 review, same rule): an unquoted shell word may escape its spaces (sshpass -p apple\ orchard).
+  ;; The whole word is masked in place, and both its written form and the shell-decoded password are pinned, so
+  ;; neither the rest of the word nor a restatement of the decoded password is sent.
+  (doseq [[text v] [["sshpass -p apple\\ orchard ssh host" "apple orchard"]
+                    ["mysql -h db -priver\\ bend\\ stone app" "river bend stone"]
+                    ["curl -u admin:quiet\\ harbor https://x" "quiet harbor"]
+                    ["tool --password cedar\\ hollow run" "cedar hollow"]
+                    ["{\"command\":\"sshpass -p birch\\\\ lane ssh host\"}" "birch lane"]]]
+    (let [{:keys [values]} (lf/named-values text)]
+      (is (some #{v} values) text)
+      (is (not (str/includes? (:value (lf/redact text [])) (last (str/split v #" ")))) text)
+      (is (not (str/includes? (:value (lf/redact (str "later: " v) values)) (last (str/split v #" ")))) text)))
+  (is (= ["plainpass"] (vec (:values (lf/named-values "sshpass -p plainpass ssh host"))))))
+
+(deftest named-values-in-list-and-object-values
+  ;; Regression (arch#14548 review): a list or object value (password: [a, b], token: {primary: a}) is masked in
+  ;; place as a whole, so every element is pinned for the run too, not only the text up to the first delimiter.
+  (doseq [[text vs] [["password: [hunterhorse, meadowlake]" ["hunterhorse" "meadowlake"]]
+                     ["password = [\"hunterhorse\", 'meadowlake']" ["hunterhorse" "meadowlake"]]
+                     ["{\"api_key\": [\"hunterhorse\", \"meadowlake\"]}" ["hunterhorse" "meadowlake"]]
+                     ["secret: {primary: hunterhorse, backup: meadowlake}" ["hunterhorse" "meadowlake"]]
+                     ["{\\\"token\\\": [\\\"hunterhorse\\\", \\\"mead,owlake\\\"]}" ["hunterhorse" "mead,owlake"]]
+                     ["password: [[hunterhorse], (meadowlake)]" ["hunterhorse" "meadowlake"]]
+                     ["password: [hunterhorse, meadowlake" ["hunterhorse" "meadowlake"]]
+                     ;; The flag form (--password [a, b]) is masked in place as a whole by mask-structured too.
+                     ["app --password [hunterhorse, meadowlake]" ["hunterhorse" "meadowlake"]]
+                     ["app --api-key {primary: hunterhorse, backup: meadowlake} --verbose" ["hunterhorse" "meadowlake"]]
+                     ["app --token\t[\"hunterhorse\", 'meadowlake']" ["hunterhorse" "meadowlake"]]
+                     ["app --password [hunterhorse, meadowlake" ["hunterhorse" "meadowlake"]]]]
+    (let [{:keys [values]} (lf/named-values text)]
+      (doseq [v vs]
+        (is (some #{v} values) (str text " -> " v))
+        (is (not (str/includes? (:value (lf/redact (str "reply: " v " and more") values)) v)) (str text " -> " v)))
+      (is (not-any? #(str/starts-with? % "[") values) text)
+      (doseq [v vs] (is (not (str/includes? (:value (lf/redact text [])) v)) text))))
+  (testing "object keys are names, not values"
+    (let [{:keys [values]} (lf/named-values "secret: {primary: hunterhorse, backup: meadowlake}")]
+      (is (not-any? #{"primary" "backup"} values))))
+  (testing "a short element is unpinned (fail closed)"
+    (is (:unpinned? (lf/named-values "password: [hunterhorse, ab]"))))
+  (testing "an object nested in a list with no space after the colon pins the value (lolice#1107 review)"
+    (doseq [[text vs] [["password: [{primary:hunterhorse}]" ["hunterhorse"]]
+                       ["password: [{primary=hunterhorse}, {backup:meadowlake}]" ["hunterhorse" "meadowlake"]]
+                       ["app --token [{primary:hunterhorse}]" ["hunterhorse"]]
+                       ["password: [({primary:hunterhorse})]" ["hunterhorse"]]]]
+      (let [{:keys [values]} (lf/named-values text)]
+        (is (not-any? #{"primary" "backup"} values) text)
+        (doseq [v vs]
+          (is (some #{v} values) (str text " -> " v))
+          (is (not (str/includes? (:value (lf/redact (str "reply: " v " and more") values)) v)) (str text " -> " v)))))))
+
+(deftest named-values-in-env-entry-list-and-object-values
+  ;; Regression (arch#14548 review): an env entry whose value is a list or object ({"name":"API_SECRET",
+  ;; "value":["a","b"]}) is masked in place as a whole (mask-structured / mask-reversed-entries), so every element
+  ;; is pinned for the run too, not only the text up to the first delimiter.
+  (doseq [[text vs] [["{\"name\":\"API_SECRET\",\"value\":[\"hunterhorse\",\"meadowlake\"]}" ["hunterhorse" "meadowlake"]]
+                     ["{\"name\": \"DB_PASSWORD\", \"value\": [hunterhorse, meadowlake]}" ["hunterhorse" "meadowlake"]]
+                     ["{\"name\":\"API_TOKEN\",\"value\":{\"primary\":\"hunterhorse\",\"backup\":\"meadowlake\"}}" ["hunterhorse" "meadowlake"]]
+                     ["{\\\"name\\\":\\\"API_SECRET\\\",\\\"value\\\":[\\\"hunterhorse\\\",\\\"meadowlake\\\"]}" ["hunterhorse" "meadowlake"]]
+                     ["{&quot;name&quot;:&quot;API_SECRET&quot;,&quot;value&quot;:[&quot;hunterhorse&quot;,&quot;meadowlake&quot;]}" ["hunterhorse" "meadowlake"]]
+                     ["{\"name\":\"API_SECRET\",\"value\":[\"hunterhorse\",\"meadowlake\"" ["hunterhorse" "meadowlake"]]
+                     ;; Value before name.
+                     ["{\"value\":[\"hunterhorse\",\"meadowlake\"],\"name\":\"API_SECRET\"}" ["hunterhorse" "meadowlake"]]
+                     ["{\"value\": {\"primary\": \"hunterhorse\", \"backup\": \"meadowlake\"}, \"name\": \"DB_PASSWORD\"}" ["hunterhorse" "meadowlake"]]]]
+    (let [{:keys [values]} (lf/named-values text)]
+      (doseq [v vs]
+        (is (some #{v} values) (str text " -> " v))
+        (is (not (str/includes? (:value (lf/redact (str "reply: " v " and more") values)) v)) (str text " -> " v)))
+      (is (not-any? #(str/starts-with? % "[") values) text)
+      (is (not-any? #{"primary" "backup"} values) text)
+      (doseq [v vs] (is (not (str/includes? (:value (lf/redact text [])) v)) text))))
+  (testing "a short element is unpinned (fail closed)"
+    (is (:unpinned? (lf/named-values "{\"name\":\"API_SECRET\",\"value\":[\"hunterhorse\",\"ab\"]}")))
+    (is (:unpinned? (lf/named-values "{\"value\":[\"hunterhorse\",\"ab\"],\"name\":\"API_SECRET\"}"))))
+  (testing "a non-secret entry with a list value pins nothing"
+    (is (empty? (:values (lf/named-values "{\"name\":\"PATH_LIST\",\"value\":[\"alphabeta\",\"gammadelta\"]}"))))))
 
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

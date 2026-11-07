@@ -22,12 +22,16 @@
 (def secret-name-pattern
   #"(?i)(password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|auth(?!ors?(?![a-z]))|(?<![a-z])pass(?![a-z]))")
 
-(def quote-pattern "(?:\\\\*[\"']|\\\\+u00(?:22|27)|&quot;|&#0*(?:34|39);|&#x0*(?:22|27);)")
+(def quote-pattern "(?:\\\\*[\"']|\\\\+u00(?:22|27)|&quot;|&apos;|&#0*(?:34|39);|&#x0*(?:22|27);)")
 (def gap-pattern "(?:\\s|\\\\+[nrt])*")
 (def secret-key-pattern (str "[\\w.-]{0,64}(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|authorization|(?<![a-z])pass(?![a-z])|(?<![a-z])auth(?![a-z]))[\\w.-]{0,64}"))
 (defn value-pattern [limit bare]
   (str "(?:(?<quote>" quote-pattern ")(?:[^\\n]" (or limit "*?") "(?<!\\\\)\\k<quote>" (when-not limit "|[^\\n]*") ")|" bare ")"))
-(defn entry-key [name] (str "(?<![\\w-])" name "(?:" quote-pattern ")?" gap-pattern "[:=]" gap-pattern))
+;; One unquoted shell word, whose spaces may be escaped (apple\ orchard, apple\\ orchard in JSON). A backslash run
+;; is tried as an escape only from its start, so a long run stays linear.
+(def shell-word-pattern "(?:(?<!\\\\)\\\\++[ \\t]|\\S)++")
+(def key-start "(?:(?<![\\w-])|(?<=\\\\u00(?:22|27)))") ; a key may follow a \u0022 quote escape
+(defn entry-key [name] (str key-start name "(?:" quote-pattern ")?" gap-pattern "[:=]" gap-pattern))
 (def entry-gap "(?:\\s|\\\\+[nrt]|,)*")
 
 (def patterns
@@ -42,8 +46,14 @@
    [:bearer #"(?i)\bbearer\s+[A-Za-z0-9._~+/-]+=*"]
    [:env-entry (re-pattern (str "(?i)" (entry-key "name") "(?:" quote-pattern ")?" secret-key-pattern "(?:" quote-pattern ")?" entry-gap "(?:" quote-pattern ")?" (entry-key "value") (value-pattern nil "[^\\s,;}\\]]+")))]
    [:env-entry (re-pattern (str "(?i)" (entry-key "value") (value-pattern "{0,4096}?" "[^\\s,;}\\]]+") entry-gap "(?:" quote-pattern ")?" (entry-key "name") "(?:" quote-pattern ")?" secret-key-pattern))]
-   [:flag (re-pattern (str "(?i)(?<![\\w-])--?" secret-key-pattern "[ \\t]+(?!-)" (value-pattern nil "\\S+")))]
-   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?!\d+:\d+\b)[^\s:]+:\S+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p\S+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*\S+"]
+   [:flag (re-pattern (str "(?i)(?<![\\w-])--?" secret-key-pattern "[ \\t]+(?!-)" (value-pattern nil shell-word-pattern)))]
+   ;; A CLI password is one shell word: a quoted value runs to its matching quote (value-pattern), so
+   ;; sshpass -p 'apple orchard' masks and pins the whole value, not just the part before the space. A quote that never
+   ;; closes (-u 'admin:apple orchard) runs to the end of the line, like value-pattern.
+   [:cli-password (re-pattern (str "(?i)(?<![\\w-])(?:-u|--user)[ \\t=]*(?<uq>" quote-pattern ")(?!\\d+:\\d+\\b)[^\\s:]*:(?:[^\\n]*?(?<!\\\\)\\k<uq>|[^\\n]*)"))]
+   [:cli-password (re-pattern (str "(?i)(?<![\\w-])(?:-u|--user)[ \\t=]*(?!" quote-pattern ")(?!\\d+:\\d+\\b)[^\\s:]+:" (value-pattern nil shell-word-pattern)))]
+   [:cli-password (re-pattern (str "(?i)\\b(?:mysql\\w*|mariadb\\w*)\\b[^\\n|;&]{0,512}?\\s-p" (value-pattern nil shell-word-pattern)))]
+   [:cli-password (re-pattern (str "(?i)\\bsshpass\\b[^\\n|;&]{0,512}?\\s-p[ \\t]*" (value-pattern nil shell-word-pattern)))]
    ;; A number after a name with token in it is a counter such as input_tokens: 12.
    [:assignment (re-pattern (str "(?i)[\"']?" secret-key-pattern "(?:" quote-pattern ")?" gap-pattern "(?:[:=]|\\\\+u00(?:3[aA]|3[dD]))" gap-pattern "(?!(?<=token[\\w.-]{0,16}[\"'\\\\]{0,8}\\s{0,4}[:=]\\s{0,4})\\d+(?:[\\s,;}\\\\\"']|$))(?:[|>][-+]?\\d?(?:(?:\\n|\\\\+n)[ \\t]+(?:(?!\\\\+n)[^\\n])*)+|" (value-pattern nil "[^\\s,;}\\]]+") ")"))]
    [:entropy #"\b[A-Za-z0-9_-]{40,}\b"]])
@@ -231,7 +241,7 @@
 (def loose-word (re-pattern "(?i)(?:password|passwd|passphrase|pwd|secret|token(?!s(?![a-z])|_?count)|api[_-]?key|access[_-]?key|private[_-]?key|credential|cookie|authorization|(?<![a-z])pass(?![a-z])|(?<![a-z])auth(?![a-z])|パスワード|暗証番号|秘密鍵|認証情報|トークン|シークレット|合言葉)"))
 (def placeholder #"\[REDACTED:[a-z_-]+\]")
 (def segment-break #"\r?\n|\\+(?:r\\+)?n|[。！？]")
-(def secret-element (re-pattern (str "(?is)(?:<|&lt;|&#0*60;|&#x0*3c;|\\\\+u003c)(?<tag>[\\w:.-]{0,64}" (.pattern loose-word) "[\\w:.-]{0,64})(?=[\\s/>&\\\\]).*?(?:(?:<|&lt;|&#0*60;|&#x0*3c;|\\\\+u003c)\\\\*/\\k<tag>\\s*(?:>|&gt;|&#0*62;|&#x0*3e;|\\\\+u003e)|\\z)")))
+(def secret-element (re-pattern (str "(?is)(?:<|&lt;|&#0*60;|&#x0*3c;|\\\\+u003c)(?<tag>[\\w:.-]{0,64}" (.pattern loose-word) "[\\w:.-]{0,64})(?=[\\s/>&\\\\])(?!(?:(?!(?:>|&gt;|&#0*62;|&#x0*3e;|\\\\+u003e)).){0,512}?[/\\\\]\\s*(?:>|&gt;|&#0*62;|&#x0*3e;|\\\\+u003e)).*?(?:(?:<|&lt;|&#0*60;|&#x0*3c;|\\\\+u003c)\\\\*/\\k<tag>\\s*(?:>|&gt;|&#0*62;|&#x0*3e;|\\\\+u003e)|\\z)")))
 
 (defn mask-secret-lines [text mark]
   (let [matcher (.matcher segment-break text)
@@ -410,15 +420,283 @@
       parent (assoc :parentSpanId (span-id tid parent))
       (= level "ERROR") (assoc :status {:code 2}))))
 
+;; Values that a name-based known format named (password: x, --token x, -u user:x, env entries). Masking them only
+;; in place leaves a bare restatement elsewhere in the run readable, so the exporter masks the same value in every
+;; field of the run (exact text and its serialized escapes; other transforms are the accepted residual,
+;; THREAT_MODEL 2). A value too short to mask without blanking ordinary words, or too long or too many to mask,
+;; is unpinned: in a tool result it withholds the later bodies of the lineage.
+(def pin-kinds #{:env-entry :flag :cli-password :assignment})
+(def min-pinned-length 4)
+(def max-pinned-length 256)
+(def max-pinned-values 64)
+(def name-separator #"(?s)^(.*?)(?:[:=]|\\+u00(?:3[aA]|3[dD]))")
+
+(def ^:private opening-quote (re-pattern (str "(?i)^" quote-pattern)))
+(def ^:private unquoted-chars
+  (str #"[^\s,;}\]\"'\\&]|\\\\|\\(?![nrt\"']|u00(?:22|27))|&(?!quot|apos|#0*(?:34|39)(?!\d)|#x0*(?:22|27)(?![0-9a-fA-F]))"))
+(def ^:private unquoted-value (re-pattern (str "(?i)^(?:" unquoted-chars ")++")))
+;; A CLI password or flag value is a shell word: an escaped space (apple\ orchard) does not end it.
+(def ^:private unquoted-shell-value (re-pattern (str "(?i)^(?:(?<!\\\\)\\\\++[ \\t]|" unquoted-chars ")++")))
+(def ^:private escaped-space #"(?<!\\)\\++([ \t])")
+
+;; A quote is escaped by the backslash run before it. A plain quote (n backslashes in q: 0 at the top level, 1 for \" inside
+;; a JSON string, 3 a layer deeper) closes when that run is a multiple of 2*(n+1): each backslash of the value is written
+;; as n+1 backslashes at that depth, and an escaped quote adds an odd count of them. Other quote forms (\u0022, &quot;)
+;; close after an even run. The value keeps the escaped backslashes.
+(defn- closing-quote
+  "Index in body where the value opened by quote token q ends, or nil when it never closes."
+  [body q]
+  (let [plain (re-matches #"(\\*)[\"']" q)
+        unit (if plain (* 2 (inc (count (second plain)))) 2)
+        m (re-matcher (java.util.regex.Pattern/compile (str "(?<!\\\\)(\\\\*)" (java.util.regex.Pattern/quote q))
+                                                       java.util.regex.Pattern/CASE_INSENSITIVE) body)]
+    (loop []
+      (when (.find m)
+        (let [run (count (.group m 1))]
+          (if (zero? (mod run unit)) (+ (.start m) run) (recur)))))))
+
+(defn- first-value
+  "The value at the start of s: up to the matching quote when quoted, else up to a delimiter."
+  [s]
+  (let [s (str/triml (str s))]
+    ;; Quotes include their serialized forms (\", \u0022, &quot;, &#34;, &#x22;, &apos;), matched as the in-place
+    ;; mask (quote-pattern) matches them: the value ends at the same quote token.
+    (if-let [q (re-find opening-quote s)]
+      (let [body (subs s (count q))
+            ;; A quote token preceded by an escaping backslash run does not end the value (password: "a\"b" captures
+            ;; a\"b and its decoded form a"b), while one preceded by escaped backslashes does (password: "hunterhorse\\"
+            ;; captures hunterhorse\\ and its decoded form hunterhorse\).
+            end (closing-quote body q)]
+        (if end (subs body 0 end) body))
+      ;; Unquoted: stop at a quote, an entity quote or a quote/line escape (\", \u0022, \n, \r, \t) too, so a value
+      ;; inside serialized JSON or HTML does not take the closing quote or a \n escape with it. Any other backslash
+      ;; (password: \mysecret123, its JSON form \\mysecret123, my\secret) is part of the value, not its end.
+      (or (re-find unquoted-value s) ""))))
+
+;; A redaction placeholder is never a value. A $VAR / ${VAR} form may be a variable reference or a real password
+;; starting with $ (password: $hunterhorse): it is pinned like any value (masking a later ${VAR} is a harmless
+;; over-mask), and when it is too short to pin it does not withhold, since it is most likely a reference.
+(defn- reference? [v]
+  (boolean (re-matches #"\[REDACTED:[a-z_-]+\]" v)))
+
+(defn- variable-like? [v]
+  (boolean (re-matches #"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?" v)))
+
+;; A list or object value (password: [a, b], token: {primary: a}) is masked in place as a whole (mask-structured);
+;; each element is pinned too. Quoted elements keep their commas; a key followed by : or = names, not a value.
+(def ^:private collection-gap #"^(?:[\s,;\[\]{}()]++|\\++[nrt](?![A-Za-z0-9]))++")
+
+(defn- collection-values [s]
+  (let [object? (str/starts-with? (str/triml s) "{")]
+    (loop [s s acc [] n 0]
+      (let [s (str/replace-first s collection-gap "")]
+        ;; More than max-pinned-values elements already unpins the value; stop scanning there. Past 256 tokens
+        ;; (mostly keys) the rest is returned as one value, which unpins it when long (fail closed).
+        (cond
+          (or (str/blank? s) (> (count acc) max-pinned-values)) acc
+          (> n 256) (conj acc s)
+          :else
+          (let [q (re-find opening-quote s)
+                v (first-value s)
+                v (if q v (first (str/split v #"[\[\]{}()]" 2)))
+                consumed (cond (not q) (count v)
+                               (> (count s) (+ (count q) (count v))) (+ (count q) (count v) (count q))
+                               :else (count s))
+                consumed (max 1 (min consumed (count s)))
+                after (subs s consumed)
+                key? (or (re-find #"^\s*(?:[:=]|\\+u00(?:3[aA]|3[dD]))" after)
+                         (and (not q) (re-find #"[:=]$" v)))
+                after (if (and key? (not (re-find #"[:=]$" (str v)))) (str/replace-first after #"^\s*(?:[:=]|\\+u00(?:3[aA]|3[dD]))" "") after)
+                ;; key:value with no space after the separator: inside an object only the value is a value; in a
+                ;; list ([{primary:a}], [a:b]) the token may be a nested object or a literal, so pin both.
+                pair (when (and (not q) (not key?)) (second (re-find #"^[\w.-]+[:=](.+)$" v)))
+                acc (if (and pair (not object?) (not (str/blank? v))) (conj acc v) acc)
+                v (or pair v)]
+            (recur after (if (or key? (str/blank? v)) acc (conj acc v)) (inc n))))))))
+
+(def ^:private env-value-key (re-pattern (str "(?i)" key-start "value(?:" quote-pattern ")?" gap-pattern "[:=]" gap-pattern)))
+
+(def ^:private flag-head #"^\S+[ \t]+")
+
+(defn- shell-values
+  "A CLI password or flag value as written and, when it escapes spaces, as the shell decodes it (apple orchard)."
+  [s]
+  (let [s (str/triml (str s))]
+    (if (or (re-find opening-quote s) (re-find #"^\[REDACTED:" s))
+      [(first-value s)]
+      (let [w (str/trim (or (re-find unquoted-shell-value s) ""))
+            d (str/replace w escaped-space "$1")]
+        (if (= d w) [w] [w d])))))
+
+(defn- match-values [kind m]
+  (case kind
+    :assignment (let [[head key] (re-find name-separator m)
+                      tail (subs m (count head))
+                      key (str/replace (str key) #"[\"'\\\s]" "")]
+                  (cond (re-find #"^\s*[|>]" tail) (map str/trim (rest (str/split tail #"\r?\n|\\+n")))
+                        (re-find #"^\s*[\[{(]" tail) (collection-values tail)
+                        :else (let [v (first-value tail)] (when-not (setting? key v) [v]))))
+    :flag (let [tail (str/replace-first m flag-head "")]
+            (if (re-find #"^[\[{(]" tail) (collection-values tail) (shell-values tail)))
+    :cli-password (if (re-find #"(?i)^(?:-u|--user)" m)
+                    (let [rest (str/replace-first m #"(?i)^(?:-u|--user)[ \t=]*" "")]
+                      (if (re-find opening-quote rest)
+                        ;; -u 'user:pass word': the whole quoted word is user:password.
+                        (let [w (first-value rest) i (str/index-of w ":")] (when i [(subs w (inc i))]))
+                        (shell-values (str/replace-first rest #"^[^\s:]+:" ""))))
+                    (shell-values (str/replace-first m #"(?is)^.*?\s-p[ \t]*" "")))
+    ;; The value key takes every serialized quote form (&quot;value&quot;:, \u0022value\u0022:), as entry-key does.
+    ;; A list or object value ("value": ["a", "b"]) is masked in place as a whole; each element is pinned.
+    :env-entry (let [matcher (re-matcher env-value-key m)]
+                 (when (.find matcher)
+                   (let [tail (str/triml (subs m (.end matcher)))]
+                     (if (re-find #"^[\[{(]" tail) (collection-values tail) [(first-value tail)]))))
+    nil))
+
+(def ^:private tag-close #"(?i)>|&gt;|&#0*62;|&#x0*3e;|\\+u003e")
+(def ^:private element-split
+  #"(?i)(?:<|&lt;|&#0*60;|&#x0*3c;|\\+u003c)[^<>&\\]{0,256}?(?:>|&gt;|&#0*62;|&#x0*3e;|\\+u003e)|\r?\n|\\+[nrt]")
+
+(defn- element-values
+  "Text values inside an XML element whose tag names a secret (<password>x</password>, encoded forms too). The
+  element is masked in place; its text is pinned like an assignment value so a bare restatement is masked too.
+  Nested child tags and line breaks separate values. A self-closing tag names nothing: secret-element does not
+  start a match at one (so <password/><password>x</password> yields the second element); an opening tag longer than
+  that lookahead's 512 characters is treated as an element (fail closed)."
+  [m]
+  (let [closer (re-matcher tag-close m)]
+    (when (.find closer)
+      (let [open-tag (subs m 0 (.start closer))]
+        (if (and (<= (count open-tag) 512) (re-find #"[/\\]\s*$" open-tag))
+          nil
+          (let [inner (subs m (.end closer))
+                inner (if-let [c (re-find #"(?is)^(.*)(?:<|&lt;|&#0*60;|&#x0*3c;|\\+u003c)\\*/[\w:.-]+\s*(?:>|&gt;|&#0*62;|&#x0*3e;|\\+u003e)$" inner)]
+                        (second c) inner)]
+            (for [segment (str/split inner element-split)
+                  :let [v (-> segment str/trim (str/replace #"^(?:\\*[\"'])+|(?:\\*[\"'])+$" "") str/trim)]
+                  :when (not (str/blank? v))]
+              v)))))))
+
+;; A value captured from a serialized body keeps its escapes (password: &quot;a&amp;b&quot; captures a&amp;b), while
+;; a later restatement can be the decoded text (a&b). Both are pinned: the decoded form is matched with its own
+;; escapes by value-pattern, so pinning it covers the plain restatement and every serialization of it.
+(def ^:private entity-escape #"&(?:#0*(\d{1,7})|#[xX]0*([0-9a-fA-F]{1,6})|(amp|lt|gt|quot|apos));")
+(def ^:private json-escape #"\\(?:u([0-9a-fA-F]{4})|([\"'\\/bfnrt]))")
+
+(defn- code-point-str [n]
+  (when (and n (<= 1 n 0x10FFFF)) (String. (Character/toChars (int n)))))
+
+(defn- decode-once [v]
+  (-> v
+      (str/replace entity-escape
+                   (fn [[m dec hex named]]
+                     (or (cond dec (code-point-str (parse-long dec))
+                               hex (code-point-str (Long/parseLong hex 16))
+                               :else ({"amp" "&" "lt" "<" "gt" ">" "quot" "\"" "apos" "'"} named))
+                         m)))
+      (str/replace json-escape
+                   (fn [[m hex c]]
+                     (or (if hex
+                           (str (char (Integer/parseInt hex 16)))
+                           ({"\"" "\"" "'" "'" "\\" "\\" "/" "/" "b" "\b" "f" "\f" "n" "\n" "r" "\r" "t" "\t"} c))
+                         m)))))
+
+(defn- decoded-forms
+  "v and its decoded forms (HTML entities and JSON escapes, up to 3 nested layers)."
+  [v]
+  (loop [v v acc [v] n 0]
+    (let [d (decode-once v)]
+      (if (or (= d v) (>= n 3)) acc (recur d (conj acc d) (inc n))))))
+
+(defn- bracket-matches
+  "Assignment or flag matches in text; one whose value opens a bracket (password: [a, b], --password [a, b]) extends
+  to the matching close (or the end of text, fail closed), as mask-structured masks it. head-of returns the text
+  before the value (name and separator)."
+  [pattern text head-of]
+  (let [m (re-matcher pattern text) n (count text)]
+    ;; A match inside an extended value is already covered by it (its elements are scanned there); skipping it
+    ;; keeps unclosed brackets (password: [password: [ ...) linear.
+    (loop [acc [] covered 0]
+      (if (.find m)
+        (if (< (.start m) covered)
+          (recur acc covered)
+        (let [s (.group m)
+              head (head-of s)
+              pos (loop [p (+ (.start m) (count head))]
+                    (if (and (< p n) (#{\space \tab} (.charAt text p))) (recur (inc p)) p))]
+          (if (and head (< pos n) (contains? closers (.charAt text pos)))
+            (let [end (max (.end m) (bracket-end text pos n))]
+              (recur (conj acc (subs text (.start m) end)) end))
+            (recur (conj acc s) covered))))
+        acc))))
+
+(defn- env-value-head
+  "The text of an env entry match up to its value (name, value key and separator), or nil."
+  [s]
+  (let [m (re-matcher env-value-key s)] (when (.find m) (subs s 0 (.end m)))))
+
+(defn- reversed-bracket-entries
+  "Env entries whose list or object value comes before a secret name ({\"value\": [a, b], \"name\": \"API_SECRET\"}),
+  as mask-reversed-entries masks them in place: each is the text from the value key to the bracket's close. The scan
+  is bounded by the same limits; past them mask-reversed-entries fails and the field is withheld."
+  [text]
+  (let [matcher (.matcher entry-value text)]
+    (loop [acc [] position 0 scanned 0]
+      (if (and (< scanned max-reversed-entries) (.find matcher))
+        (if (< (.start matcher) position)
+          (recur acc position (inc scanned))
+          (let [end (bracket-end text (.end matcher) (+ (.end matcher) max-reversed-value))
+                after (.matcher entry-name-after text) _ (.region after end (count text))]
+            (if (.lookingAt after)
+              (recur (conj acc (subs text (.start matcher) end)) end (inc scanned))
+              (recur acc position (inc scanned)))))
+        acc))))
+
+(defn named-values
+  "{:values [...] :unpinned? bool} for the name-based known formats in text."
+  [text]
+  (let [text (str text)
+        found (concat
+               (for [[kind pattern] patterns :when (pin-kinds kind)
+                     match (case kind
+                             :assignment (bracket-matches pattern text #(first (re-find name-separator %)))
+                             :flag (bracket-matches pattern text #(re-find flag-head %))
+                             :env-entry (bracket-matches pattern text env-value-head)
+                             (re-seq pattern text))
+                     v (match-values kind (if (vector? match) (first match) match))
+                     :let [v (str/trim (str v))]
+                     :when (and (not (str/blank? v)) (not (reference? v)))]
+                 v)
+               (for [entry (reversed-bracket-entries text)
+                     v (match-values :env-entry entry)
+                     :let [v (str/trim (str v))]
+                     :when (and (not (str/blank? v)) (not (reference? v)))]
+                 v)
+               (for [match (re-seq secret-element text)
+                     v (element-values (if (vector? match) (first match) match))
+                     :when (not (reference? v))]
+                 v))
+        found (distinct (mapcat decoded-forms found))
+        unpinned? (boolean (or (some #(and (< (count %) min-pinned-length) (not (variable-like? %))) found)
+                               (some #(> (count %) max-pinned-length) found)
+                               (> (count found) max-pinned-values)))]
+    {:values (vec (filter #(<= min-pinned-length (count %) max-pinned-length) found)) :unpinned? unpinned?}))
+
 (def withheld-model-output "[withheld: the session saw a known source or a known format]")
 (def withheld-tool-output "[withheld: sensitive path or command]")
 (def ^:dynamic *exposure-values* [])
 
+;; Kinds whose value is a credential by its own shape. A hit of one of these in a tool result withholds the
+;; later bodies of the lineage. Name-based kinds (assignment, env entry, flag, cli password, XML element) mask
+;; the value in place and pin it for the run (named-values): they also match ordinary code and logs such as TOKEN_FILE=/work/x or
+;; credentials: 'same-origin', and a transformed restatement elsewhere is the accepted residual (THREAT_MODEL 2).
+(def lineage-kinds #{:private-key :header :url-credentials :jwt :provider-key :aws-key :google-key :telegram :bearer})
+
 (defn- exposure? [output]
   (let [text (str output)]
     (or (some #(str/includes? text %) *exposure-values*)
-        (re-find secret-element text)
-        (some (fn [[kind pattern]] (when (not (contains? #{:entropy :data-uri} kind)) (re-find pattern text))) patterns))))
+        (some (fn [[kind pattern]] (when (contains? lineage-kinds kind) (re-find pattern text))) patterns)
+        (:unpinned? (named-values text)))))
 
 (defn- tool-reason [tool result]
   (try
@@ -705,6 +983,18 @@
   (when-let [text (safe-slurp path)]
     (try (json/parse-string text true) (catch Exception _ nil))))
 
+(def max-run-pinned-values 256)
+
+(defn pinned-values-of
+  "Values named by a name-based known format anywhere in the bodies of the run, or :overflow."
+  [spans]
+  (let [values (->> spans
+                    (mapcat :attributes)
+                    (filter #(contains? #{"langfuse.observation.input" "langfuse.observation.output"} (:key %)))
+                    (mapcat #(:values (named-values (get-in % [:value :stringValue]))))
+                    distinct vec)]
+    (if (> (count values) max-run-pinned-values) :overflow values)))
+
 (defn- build-run*
   "Returns {:spans raw-spans :root-key ...} for one terminal run. Nothing here is redacted yet."
   [cfg ticket run]
@@ -802,6 +1092,7 @@
     {:ticket ticket :run run :trace-id tid
      :root root
      :spans (concat prompts children)
+     :pinned-values (pinned-values-of (concat [root] prompts children))
      :counts (:counts claude)}))
 
 (defn build-run [cfg ticket run]
@@ -836,10 +1127,16 @@
   (let [strings (concat [(:name span)] (filter string? (tree-seq coll? seq (map :value (:attributes span)))))]
     (every? #(guard-safe? % (:secret-values cfg)) strings)))
 
+(declare prepare-spans*)
 (defn prepare-spans
   "Returns {:spans :stats}: sanitized, capped and final-guarded spans (root first), or
   :failed when the root itself does not pass the guard."
-  [cfg {:keys [root spans]}]
+  [cfg {:keys [root spans pinned-values]}]
+  (if (= :overflow pinned-values)
+    {:failed "pinned_values_over_limit" :stats {:redactions {} :dropped-secret-guard 0}}
+    (prepare-spans* (update cfg :secret-values #(vec (distinct (concat % pinned-values)))) root spans)))
+
+(defn- prepare-spans* [cfg root spans]
   (let [tally (atom {})
         clean-root (sanitize-span cfg tally root)
         limit (dec (:max-spans cfg))
