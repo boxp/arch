@@ -7,8 +7,13 @@ export V36_TUNING=${V36_TUNING-'{"backHairSway":7,"backHairTurn":0}'} V36_PHYS_B
 RIG=$(cd "$(dirname "$0")/.." && pwd)
 PY=python:3.12-slim@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54
 JDK=eclipse-temurin:21@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a
-VOL=boxp441-v36; TR=boxp441-v36-tr; SV=boxp441-v36-mcp
-docker rm -f $SV $TR >/dev/null 2>&1 || true; docker volume rm $VOL >/dev/null 2>&1 || true
+# 実行ごとに一意なコンテナ・ボリューム名を使い、同時に走る別の v36 ビルドのコンテナ/ボリュームを消さない。
+RUN_ID=$(od -An -N4 -tx1 /dev/urandom | tr -d " \n")
+VOL=boxp441-v36-$RUN_ID; TR=boxp441-v36-tr-$RUN_ID; SV=boxp441-v36-mcp-$RUN_ID
+# MCP ポート 18767 は既存 rig スクリプト共通の固定値のため、同時ビルドはロックで直列化する（相手を消さず待つ）。
+exec 9>"${TMPDIR:-/tmp}/boxp441-v36-build.lock"; flock 9
+cleanup() { [ -n "${V36_KEEP:-}" ] && { echo "kept: $VOL $TR $SV" >&2; return; }; docker rm -f "$SV" "$TR" >/dev/null 2>&1 || true; docker volume rm "$VOL" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
 docker volume create $VOL >/dev/null
 docker create --name $TR -v $VOL:/tmp/boxp441 $PY true >/dev/null
 docker cp "$RIG" $TR:/tmp/boxp441/rig
