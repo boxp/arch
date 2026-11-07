@@ -840,21 +840,44 @@
 (deftest observation-evidence-and-limits
   (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
     (doseq [format [:claude :codex]]
-      (doseq [[value expected] [[(str "host: db\npassword: " s-password "\nneighbour\nkeptdistantmarker") "masked_known_format"]
-                                ["Set the password in settings" "sent"]
-                                [(apply str (repeat (inc (* 1024 1024)) "x")) "withheld_unscanned_output"]]]
+      ;; [tool output, tool policy before sanitizing, later generation policy, policy after sanitizing]
+      ;; A credential shape (bearer, provider key, URL credentials ...) withholds what follows. A secret name with a value
+      ;; (assignment, flag, XML element) is masked in place only: ordinary code and logs match it too.
+      (doseq [[value expected gen-expected clean-expected secret]
+              [[(str "host: db\nAuthorization: Bearer " s-bearer "\nneighbour\nkeptdistantmarker") "masked_known_format" "withheld_after_known_format_in_tool_output" "masked_known_format" s-bearer]
+               [(str "host: db\nurl: https://user:" s-url "@db.example\nneighbour\nkeptdistantmarker") "masked_known_format" "withheld_after_known_format_in_tool_output" "masked_known_format" s-url]
+               [(str "host: db\npassword: " s-password "\nneighbour\nkeptdistantmarker") "sent" "sent" "masked_known_format" s-password]
+               [(str "<password>" s-password "</password>\nneighbour\nkeptdistantmarker") "sent" "sent" "masked_known_format" s-password]
+               ["Set the password in settings" "sent" "sent" "masked_known_format" nil]
+               [(apply str (repeat (inc (* 1024 1024)) "x")) "withheld_unscanned_output" "withheld_after_unscanned_output" "withheld_unscanned_output" nil]]]
         (let [spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (privacy-lines format "Bash" value))
               tool (first (filter #(= "tool:Bash" (:name %)) spans))
               gen (last (filter #(str/starts-with? (:name %) "generation:") spans))
               clean (lf/sanitize-span {:secret-values [] :max-field-bytes (* 2 1024 1024)} (atom {}) tool)]
-          (is (= expected (attr-value tool "langfuse.observation.metadata.body_policy")))
-          (is (= (case expected "masked_known_format" "withheld_after_known_format_in_tool_output" "withheld_unscanned_output" "withheld_after_unscanned_output" "sent")
-                 (attr-value gen "langfuse.observation.metadata.body_policy")))
-          (when (= expected "masked_known_format")
-            (is (not (str/includes? (pr-str clean) s-password)))
+          (is (= expected (attr-value tool "langfuse.observation.metadata.body_policy")) (str format " " (subs value 0 (min 30 (count value)))))
+          (is (= gen-expected (attr-value gen "langfuse.observation.metadata.body_policy")) (str format " " (subs value 0 (min 30 (count value)))))
+          (is (= clean-expected (attr-value clean "langfuse.observation.metadata.body_policy")) (str format " " (subs value 0 (min 30 (count value)))))
+          (when secret
+            (is (not (str/includes? (pr-str clean) secret)))
             (is (str/includes? (pr-str clean) "keptdistantmarker"))))))
     (doseq [command ["gcloud auth print-access-token" "gcloud auth print-identity-token" "gcloud auth application-default print-access-token" "gcloud secrets versions access 1" "az account get-access-token" "az keyvault secret show" "aws sts get-session-token" "aws sts assume-role-with-web-identity" "aws sts get-federation-token" "aws ecr get-login-password" "aws iam create-access-key" "kubectl -n x create token y" "oc whoami -t" "vault read x" "vault kv get x" "vault token create" "vault token lookup" "vault login" "op read x" "op item get x" "docker-credential-helper" "env -u X"]]
       (is (lf/withhold-output? command) command))))
+
+;; Regression (BOXP-428, production 2026-11-07): ordinary code and logs that only name a secret with a non-credential
+;; value withheld every later body of the run. The value is still masked in place; what follows stays readable.
+(deftest ordinary-secret-names-in-code-do-not-withhold-the-lineage
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [format [:claude :codex]
+            value ["TOKEN_FILE=/work/.cache/state\nlaterreplymarker"
+                   "headers = {}\ntoken = os.environ['API']\nlaterreplymarker"
+                   "fetch(url, { credentials: 'same-origin' })\nlaterreplymarker"
+                   "PASS: disk check\nlaterreplymarker"
+                   "mytool --token $TOKEN run\nlaterreplymarker"]]
+      (let [spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (privacy-lines format "Bash" value))
+            gen (last (filter #(str/starts-with? (:name %) "generation:") spans))]
+        (is (= "sent" (attr-value gen "langfuse.observation.metadata.body_policy")) (str format " " value))
+        (is (str/includes? (pr-str gen) "laterreplymarker") (str format " " value))
+        (is (not-any? #(str/starts-with? (or (attr-value % "langfuse.observation.metadata.body_policy") "") "withheld_") spans) (str format " " value))))))
 
 (deftest direct-source-policy
   (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]

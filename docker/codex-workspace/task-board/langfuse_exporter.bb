@@ -414,11 +414,16 @@
 (def withheld-tool-output "[withheld: sensitive path or command]")
 (def ^:dynamic *exposure-values* [])
 
+;; Kinds whose value is a credential by its own shape. A hit of one of these in a tool result withholds the
+;; later bodies of the lineage. Name-based kinds (assignment, env entry, flag, cli password, XML element) only
+;; mask the value in place: they also match ordinary code and logs such as TOKEN_FILE=/work/x or
+;; credentials: 'same-origin', and a bare restatement elsewhere is the accepted residual (THREAT_MODEL 2).
+(def lineage-kinds #{:private-key :header :url-credentials :jwt :provider-key :aws-key :google-key :telegram :bearer})
+
 (defn- exposure? [output]
   (let [text (str output)]
     (or (some #(str/includes? text %) *exposure-values*)
-        (re-find secret-element text)
-        (some (fn [[kind pattern]] (when (not (contains? #{:entropy :data-uri} kind)) (re-find pattern text))) patterns))))
+        (some (fn [[kind pattern]] (when (contains? lineage-kinds kind) (re-find pattern text))) patterns))))
 
 (defn- tool-reason [tool result]
   (try
