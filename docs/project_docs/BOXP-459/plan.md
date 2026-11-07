@@ -19,3 +19,39 @@
 
 ## 範囲外
 - 署名検証の無効化・require_checksum の緩和はしない。
+
+---
+
+# BOXP-459 TD-05: Kubernetes / CRI-O (ansible/playbooks) を Dependency Dashboard 承認制にする
+
+## 背景
+- `ansible/playbooks/*.yml` の `kubernetes_version` / `crio_version` は customManager(regex) で
+  `kubernetes/kubernetes` / `cri-o/cri-o` として追跡され、main merge で `apply-ansible.yml`
+  が本番 cluster に反映され得る。クラスタ upgrade は `upgrade-k8s.yml` の手動 dispatch が正規手順。
+- Owner は TD-04 の案A（検知は残し、PR 作成を Dashboard 承認制にする）を承認した。
+
+## 変更
+- `renovate.json5` に packageRule を追加:
+  `matchFileNames: ["ansible/playbooks/**"]`, `matchManagers: ["custom.regex"]`,
+  `matchPackageNames: ["kubernetes/kubernetes", "cri-o/cri-o"]`, `dependencyDashboardApproval: true`。
+- 既存の「Kubernetes components」rule（automerge:false / manual-review-required / group）は維持。
+
+## 運用ルール
+- Dashboard のチェックは **PR 作成の許可だけ**。merge・Ansible Apply・クラスタ upgrade の承認ではない。
+- bot / agent は Owner の代わりに Dashboard のチェックを入れない。
+
+## 検証（Renovate 44.222.0）
+- `renovate-config-validator --strict`: 成功。
+- `--platform=local --dry-run=lookup` で抽出を確認: playbooks 5 file の k8s 1.36.5→1.37.2、CRI-O 1.36.6→1.37.3、
+  Dockerfile の kubectl 1.37.1→1.37.2。
+- 解決済み config に `applyPackageRules` をかけた結果: playbooks の k8s/CRI-O（minor・patch）は
+  `dependencyDashboardApproval=true`。Dockerfile の kubectl・kube-vip・kustomize・GitHub Actions・npm は `false`
+  （従来どおり）。
+- Renovate のソース（`workers/repository/update/branch/index.js`）では、承認チェックは
+  **ブランチが無いとき（`!branchExists`）だけ**行われる。
+  このため既存 PR #13440（branch `renovate/ansible/playbooks-kubernetes-components`）は自動 Close されず、
+  これまでどおり更新され続ける。承認制が効くのは、このブランチが無くなった後の新しいブランチからになる。
+  #13440 は手動 Close しない（Close すると Renovate がその版を ignore するため）。
+
+## 範囲外
+- 本番 Ansible Apply / upgrade-k8s 実行、kubectl の allowedVersions（案C）、kube-vip、TS7 等。
