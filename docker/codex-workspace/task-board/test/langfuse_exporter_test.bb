@@ -221,10 +221,10 @@
                     (by-name "cli-system-prompt"))))
       (testing "tool failure and withheld output"
         (let [tools (by-name "tool:Read")]
-          (is (= "tool_body_policy" (:omitted (json/parse-string (attr-value (first tools) "langfuse.observation.output") true)))))
+          (is (= "withheld_known_source" (attr-value (first tools) "langfuse.observation.metadata.body_policy"))))
         (let [bash (first (by-name "tool:Bash"))]
           (is (= 2 (get-in bash [:status :code])))
-          (is (= "tool_body_policy" (:omitted (json/parse-string (attr-value bash "langfuse.observation.output") true))))))
+          (is (= "withheld_after_known_source" (attr-value bash "langfuse.observation.metadata.body_policy")))))
       (testing "generation usage and delta input"
         (let [first-gen (first (by-name "generation:claude-test"))]
           (is (= {:input 10 :output 5 :cache_read_input_tokens 3 :cache_creation_input_tokens 2}
@@ -306,7 +306,7 @@
           (is (= 1 (:dropped-secret-guard stats)))
           (is (= 1 (count spans)))
           (is (not (str/includes? (json/generate-string spans) s-github)))
-          (is (= "1" (attr-value (first spans) "langfuse.trace.metadata.coverage.dropped_secret_guard")))))
+          (is (= "1" (attr-value (first spans) "langfuse.trace.metadata.coverage.dropped_guard")))))
       (testing "a leaky root fails the whole run and spools nothing"
         (binding [lf/*redact-field* no-op]
           (let [state (lf/export-run! cfg (lf/load-state cfg 0) {:ticket ticket :run run-id} 0)]
@@ -484,7 +484,7 @@
 (deftest sensitive-command-corpus
   (doseq [[group commands] {"B1" ["kubectl get -n ns secret x" "kubectl -n ns get secrets" "kubectl describe secret" "oc -n ns get secret"]
                             "B2" ["env" "env LANG=C" "env -i" "env -0" "printenv" "export" "export -p" "set" "declare -p" "declare" "typeset" "cat /proc/1/environ" "process.env" "os.environ" "getenv"]
-                            "B4" ["aws ssm get-parameter" "aws ssm get-parameter --with-decryption" "aws secretsmanager get-secret-value" "aws configure get x" "aws configure export-credentials" "helm get values x" "gh auth token" "git credential" "cat auth.json" "cat .credentials-old" "cat .env.local" "cat .ssh/x" "cat .aws/x" "cat kubeconfig" "cat .git-credentials" "cat .netrc" "cat id_rsa" "cat id_ed25519" "cat secret/x" "cat mytoken"]} command commands]
+                            "B4" ["aws ssm get-parameter" "aws ssm get-parameter --with-decryption" "aws secretsmanager get-secret-value" "aws configure get x" "aws configure export-credentials" "helm get values x" "gh auth token" "git credential" "cat auth.json" "cat .credentials-old" "cat .env.local" "cat .ssh/x" "cat .aws/x" "cat kubeconfig" "cat .git-credentials" "cat .netrc" "cat id_rsa" "cat id_ed25519" "cat secret/x" "cat tokens.json"]} command commands]
     (is (lf/withhold-output? command) (str group " " command)))
   (doseq [command ["echo hello" "cat README.md" "reset" "kubectl get pods"]]
     (is (not (lf/withhold-output? command)) (str "B6 " command))))
@@ -558,11 +558,11 @@
   (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
         span (#'lf/tool-span ctx {:key "x" :name "Bash" :input {:command "FOO=bar /bin/echo hidden" :path "src/a" :content "hidden"} :output "one\ntwo"})
         input (json/parse-string (attr-value span "langfuse.observation.input") true)
-        output (json/parse-string (attr-value span "langfuse.observation.output") true)]
-    (is (= "echo" (:command input)))
+        output (attr-value span "langfuse.observation.output")]
+    (is (= "FOO=bar /bin/echo hidden" (:command input)))
     (is (= "src/a" (:path input)))
-    (is (not (str/includes? (pr-str input) "hidden")))
-    (is (= {:omitted "tool_body_policy" :chars 7 :lines 2} output)))
+    (is (str/includes? (pr-str input) "hidden"))
+    (is (= "one\ntwo" output)))
   (doseq [text ["before\nmy passphrase is sample\nafter\nkeep" "before\\n秘密鍵 sample\\nafter\\nkeep" "before。token sample！after？keep"]]
     (let [out (:value (lf/redact text []))]
       (is (not (str/includes? out "sample")))
@@ -582,13 +582,13 @@
         (is (= "result" (attr-value span "langfuse.observation.output")))))
     (let [span (#'lf/tool-span ctx {:key "c" :name "exec" :input "{\"command\":\"A=b /usr/bin/echo hi\",\"notebook_path\":\"x.ipynb\",\"other\":\"opaque\"}" :output "ok" :status "completed"})
           view (json/parse-string (attr-value span "langfuse.observation.input") true)]
-      (is (= "echo" (:command view)))
+      (is (= "A=b /usr/bin/echo hi" (:command view)))
       (is (= "x.ipynb" (:notebook_path view)))
       (is (= "completed" (attr-value span "langfuse.observation.metadata.status")))
-      (is (not (str/includes? (pr-str view) "opaque")))))
+      (is (str/includes? (pr-str view) "opaque"))))
   (fs/with-temp-dir [base {}]
     (write-fixture! base {})
-    (is (= "body_tools_until_tool_output" (attr-value (first (:spans (prepared (test-config base)))) "langfuse.trace.metadata.coverage.tool_body")))))
+    (is (= "sent through the known-format mask; withheld after a known source, an environment dump or a known format in a tool result (body_policy on each observation)" (attr-value (first (:spans (prepared (test-config base)))) "langfuse.trace.metadata.coverage.tool_bodies")))))
 
 (defn privacy-lines [format tool value]
   (if (= format :claude)
@@ -610,7 +610,7 @@
             serialized (pr-str spans)]
         (is (str/includes? serialized "first request") (str format tool))
         (is (str/includes? serialized "before tool") (str format tool))
-        (is (= (contains? #{"TodoWrite" "WebSearch" "web_search"} tool) (str/includes? serialized "plainconfigvalue")) (str format tool))))))
+        (is (str/includes? serialized "plainconfigvalue") (str format tool))))))
 
 (deftest private-child-and-root-output
   (doseq [format [:claude :codex] tool ["Bash" "Read" "unknown_tool"]]
@@ -627,7 +627,7 @@
           (spit (str (fs/path project "sess" "subagents" "agent-a.jsonl")) (jsonl (privacy-lines :claude tool "plainconfigvalue")))
           (spit (str (fs/path day (str "rollout-" thread-delegate ".jsonl"))) (jsonl (privacy-lines :codex tool "plainconfigvalue"))))
         (let [spans (:spans (prepared cfg))]
-          (is (not (str/includes? (pr-str spans) "plainconfigvalue")) (str format tool))
+          (is (str/includes? (pr-str spans) "plainconfigvalue") (str format tool))
           (is (str/includes? (pr-str spans) "runner prompt")))))))
 
 (deftest child-prompt-after-the-parent-read-a-file
@@ -646,12 +646,12 @@
                      {:type "response_item" :payload {:type "message" :role "assistant" :content "childsaysdone"}}])]
         (spit (str (fs/path run-dir "last-message.md")) "done")
         (spit (str (fs/path run-dir "prompt.md")) "runner prompt")
-        (spit (str (fs/path project "sess.jsonl")) (jsonl (privacy-lines :claude "Read" "plainconfigvalue")))
+        (spit (str (fs/path project "sess.jsonl")) (jsonl (privacy-lines :claude "Bash" "plainconfigvalue")))
         (if (= format :claude)
           (spit (str (fs/path project "sess" "subagents" "agent-a.jsonl")) (jsonl child))
           (spit (str (fs/path day (str "rollout-" thread-delegate ".jsonl"))) (jsonl child)))
         (let [spans (:spans (prepared cfg))]
-          (is (not (str/includes? (pr-str spans) "plainconfigvalue")) (str format))
+          (is (str/includes? (pr-str spans) "plainconfigvalue") (str format))
           (is (some #(re-find #"subagent:|delegate" (:name %)) spans) "the child's span exists")
           (is (str/includes? (pr-str spans) "runner prompt")))))))
 
@@ -769,7 +769,7 @@
                     [{:type "response_item" :payload {:type "function_call" :call_id "u" :name "Read" :arguments "{\"file_path\":\"/tmp/plainconfigvalue\"}"}}
                      {:type "response_item" :payload {:type "function_call" :call_id "v" :name "TodoWrite" :arguments "{\"text\":\"plainconfigvalue\"}"}}])
             spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (concat lines extra))]
-        (is (not (str/includes? (pr-str spans) "plainconfigvalue")) (str format))))))
+        (is (str/includes? (pr-str spans) "plainconfigvalue") (str format))))))
 
 (deftest post-batch-does-not-request-h2c-upgrade
   ;; Langfuse closes the connection on the JDK's default `Upgrade: h2c`, without any response.
@@ -777,6 +777,51 @@
     (with-server* (fn [req] {:status (if (get-in req [:headers "upgrade"]) 500 200)})
       (fn [url _]
         (is (= :ok (lf/post-batch (test-config base :url url) "{}")))))))
+
+(deftest settled-observation-contract
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [format [:claude :codex] tool ["Bash" "Read"]]
+      (let [lines (privacy-lines format tool "harmlesslistingmarker")
+            lines (assoc-in lines (if (= format :claude) [3 :message :content 0 :text] [4 :payload :content]) "harmlessreplymarker")
+            spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" lines)
+            text (pr-str spans)]
+        (is (str/includes? text "harmlesslistingmarker"))
+        (is (str/includes? text "harmlessreplymarker"))
+        (is (not (str/includes? text "[withheld")))
+        (is (not-any? #(str/starts-with? (or (attr-value % "langfuse.observation.metadata.body_policy") "") "withheld_") spans))
+        (is (= "sent" (attr-value (last (filter #(str/starts-with? (:name %) "generation:") spans)) "langfuse.observation.metadata.body_policy")))))
+    (doseq [path [".kube/config" ".npmrc" ".pypirc" ".pgpass" ".my.cnf" ".docker/config.json" ".boto" ".s3cfg" ".vault-token" ".terraformrc" ".htpasswd" ".config/gh/hosts.yml" ".config/gcloud/" ".azure/" ".cargo/credentials.toml" ".gem/credentials" "a.key" "a.pem" "a.p8" "a.p12" "a.pfx" "a.jks" "a.keystore" "a.ppk" "id_dsa" "id_ecdsa_sk" "id_ed25519_sk" ".gnupg/" "tokens.json" "/tmp/tokens"]]
+      (is (lf/withhold-output? path) path))
+    (doseq [safe ["keyboard.md" "api-keys.md" "keymap.py" "package.json" ".bashrc" "kube-config.md" "ls ~/.config" "gcloud auth list" "az account show" "aws sts get-caller-identity" "oc whoami" "vault status" "kubectl get pods" "git commit -m 'count tokens per request'" "codex exec --max-output-tokens 5" "{\"max_output_tokens\":5}"]]
+      (is (not (lf/withhold-output? safe)) safe))))
+
+(deftest observation-evidence-and-limits
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [format [:claude :codex]]
+      (doseq [[value expected] [[(str "host: db\npassword: " s-password "\nneighbour\nkeptdistantmarker") "masked_known_format"]
+                                ["Set the password in settings" "sent"]
+                                [(apply str (repeat (inc (* 1024 1024)) "x")) "withheld_unscanned_output"]]]
+        (let [spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (privacy-lines format "Bash" value))
+              tool (first (filter #(= "tool:Bash" (:name %)) spans))
+              gen (last (filter #(str/starts-with? (:name %) "generation:") spans))
+              clean (lf/sanitize-span {:secret-values [] :max-field-bytes (* 2 1024 1024)} (atom {}) tool)]
+          (is (= expected (attr-value tool "langfuse.observation.metadata.body_policy")))
+          (is (= (case expected "masked_known_format" "withheld_after_known_format_in_tool_output" "withheld_unscanned_output" "withheld_after_unscanned_output" "sent")
+                 (attr-value gen "langfuse.observation.metadata.body_policy")))
+          (when (= expected "masked_known_format")
+            (is (not (str/includes? (pr-str clean) s-password)))
+            (is (str/includes? (pr-str clean) "keptdistantmarker"))))))
+    (doseq [command ["gcloud auth print-access-token" "gcloud auth print-identity-token" "gcloud auth application-default print-access-token" "gcloud secrets versions access 1" "az account get-access-token" "az keyvault secret show" "aws sts get-session-token" "aws sts assume-role-with-web-identity" "aws sts get-federation-token" "aws ecr get-login-password" "aws iam create-access-key" "kubectl -n x create token y" "oc whoami -t" "vault read x" "vault kv get x" "vault token create" "vault token lookup" "vault login" "op read x" "op item get x" "docker-credential-helper" "env -u X"]]
+      (is (lf/withhold-output? command) command))))
+
+(deftest direct-source-policy
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [source [".kube/config" ".npmrc" ".pypirc" ".pgpass" ".my.cnf" ".docker/config.json" ".boto" ".s3cfg" ".vault-token" ".terraformrc" ".htpasswd" ".config/gh/hosts.yml" ".config/gcloud/" ".azure/" ".cargo/credentials" ".gem/credentials" "a.key" "a.pem" "a.p8" "a.p12" "a.pfx" "a.jks" "a.keystore" "a.ppk" "id_dsa" "id_ecdsa" "id_ecdsa_sk" "id_ed25519_sk" ".gnupg/" "tokens.json" "/tmp/tokens"]]
+      (let [lines [{:type "response_item" :payload {:type "function_call" :call_id "1" :name "exec" :arguments (str "cat " source)}}
+                   {:type "response_item" :payload {:type "function_call_output" :call_id "1" :output "opaquebody"}}]
+            tool (first (filter #(= "tool:exec" (:name %)) (lf/codex-spans ctx "root" "test" lines)))]
+        (is (= "withheld_known_source" (attr-value tool "langfuse.observation.metadata.body_policy")) source)
+        (is (not (str/includes? (pr-str tool) "opaquebody")) source)))))
 
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
