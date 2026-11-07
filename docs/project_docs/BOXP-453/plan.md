@@ -36,3 +36,16 @@ kube-prometheus 標準 `KubePersistentVolumeFillingUp`（残 3%/ 4 日以内予�
 ## 5. やらないこと
 
 PVC 拡張・縮小、他ディスク掃除、hold 一括解除、失敗台帳 reset、worktree 再利用の大規模再設計（stale prune で 1 票あたり保持量を上限化することで代替）。
+
+## TD-02 (2026-11-07): lock中票の古いrun回収（Owner承認: 案Aのみ）
+
+- 背景: TD-01再測定で、lock中票(例: BOXP-441)は票ごとskipされ、古いrunのworktree(1run≈230MB)が回収されず増加の主因になっていた。
+- 変更: `prune-ticket-status` が lock を読み、`:run-id` が読める場合のみ `locked-active` として stale mode で走査する。
+  - lockが指す active run は常に保護（`recent` 扱い、検査・削除しない）。
+  - 最新2本・12h保持・既存hold条件（dirty/未push/ignored固有成果/checkout外/mount/cwdプロセス等）は不変。
+  - lock読取不能・`:run-id` 不正・`:ticket` 不一致は従来どおり票ごとskip（fail-closed）。
+  - 削除直前のguard内recheckで、lockが指すrunが対象runになっていないことを再確認。
+  - stale prune無効時は従来どおり lock 票を全skip。
+- 対象外: 案B（hold runの依存dirの部分削除）、retention短縮、hold解除、容量拡張、新cron/権限。
+- 検証: self-test（lock解析7ケース）、`test_stale_prune` に lock中票 BOXP-909（active=最古run）/BOXP-910（active run dirなし+dirty古run）を追加。旧コードでRed、新コードでGreen。
+- 配備後: 稼働image確認→prune summary の deleted/held/recent と df を確認し、24〜48h で生成量・回収量・純増を分けて報告する。
