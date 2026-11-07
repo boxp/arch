@@ -12,6 +12,7 @@
             [babashka.http-client :as http]
             [cheshire.core :as json]
             [clojure.edn :as edn]
+            [clojure.set :as set]
             [clojure.string :as str]
             [clojure.walk :as walk]))
 
@@ -273,14 +274,294 @@
     (catch Throwable _ {:value "[dropped: redaction error]" :redactions {:error 1}})))
 
 (def sensitive-path
-  #"(?i)(?:^|[/\\\s\"'=])(?:auth\.json|\.credentials[^/\s\"']*|\.env[^/\s\"']*|\.ssh(?:[/\\]|\b)|\.aws(?:[/\\]|\b)|kubeconfig|\.kube[/\\]config|\.git-credentials|\.netrc|id_rsa|id_ed25519(?:_sk)?|id_dsa|id_ecdsa(?:_sk)?|\.gnupg(?:[/\\]|\b)|secrets?(?:[/\\]|(?=$|[\s\"']))|[\w.-]{0,64}tokens?[\w.-]{0,64}\.[a-z0-9]{1,8}(?![\w.-])|[\w.-]{0,64}\.(?:key|pem|p8|p12|pfx|jks|keystore|ppk)(?![\w.-])|\.npmrc|\.pypirc|\.pgpass|\.my\.cnf|\.docker[/\\]config\.json|\.boto|\.s3cfg|\.vault-token|\.terraformrc|\.htpasswd|\.config[/\\]gh[/\\]hosts\.yml|\.config[/\\]gcloud(?:[/\\]|\b)|\.azure(?:[/\\]|\b)|\.cargo[/\\]credentials[^/\s\"']*|\.gem[/\\]credentials)|[/\\][\w.-]{0,64}tokens?[\w.-]{0,64}(?=[/\\\s\"']|$)|(?:^|[\s\"'=])(?:[\w.-]{0,64}token|[\w.-]{0,64}tokens[\w.-]{1,64})(?![\w.-])")
-;; The last alternative is a token file named without an extension or a directory: mytoken, access_token,
-;; refresh_tokens_backup. A bare plural (input_tokens, max_output_tokens, "count tokens") is a counter word, not a file.
+  #"(?i)(?:^|[/\\\s\"'=])(?:auth\.json|\.credentials[^/\s\"']*|\.env[^/\s\"']*|\.ssh(?:[/\\]|\b)|\.aws(?:[/\\]|\b)|kubeconfig|\.kube[/\\]config|\.git-credentials|\.netrc|id_rsa|id_ed25519(?:_sk)?|id_dsa|id_ecdsa(?:_sk)?|\.gnupg(?:[/\\]|\b)|secrets?(?:[/\\]|(?=$|[\s\"']))|[\w.-]{0,64}tokens?[\w.-]{0,64}\.[a-z0-9]{1,8}(?![\w.-])|[\w.-]{0,64}\.(?:key|pem|p8|p12|pfx|jks|keystore|ppk)(?![\w.-])|\.npmrc|\.pypirc|\.pgpass|\.my\.cnf|\.docker[/\\]config\.json|\.boto|\.s3cfg|\.vault-token|\.terraformrc|\.htpasswd|\.config[/\\]gh[/\\]hosts\.yml|\.config[/\\]gcloud(?:[/\\]|\b)|\.azure(?:[/\\]|\b)|\.cargo[/\\]credentials[^/\s\"']*|\.gem[/\\]credentials)|[/\\][\w.-]{0,64}tokens?[\w.-]{0,64}(?=[/\\\s\"']|$)")
+;; A token file named without an extension or a directory (mytoken, access_token, refresh_tokens_backup) is
+;; token-file-word, checked only in a reading position. A bare plural (input_tokens, max_output_tokens) is a counter word.
 (def sensitive-command
-  #"(?i)(?:^|[;&|\s\"'(`/]|\\[nrt])(?:env|printenv)(?:[\s\"'|;&<>)]|$)|(?:^|[;&|\s\"'(`/])(?:set|export|declare|typeset)(?:\s+-[a-z]*[px]\b|[ \t]*(?:$|[|;&<>\"')`#]|\\[nrt\"]))|\benviron\b|\bprocess\.env\b|\bgetenv\b|\baws\b[^|;&\n]{0,512}\b(?:ssm\s+get-parameter|secretsmanager\s+get-|configure\s+(?:get|export-credentials)|sts\s+(?:get-session-token|assume-role\S*|get-federation-token)|ecr\s+get-login-password|iam\s+create-access-key)|\bgcloud\b[^|;&\n]{0,512}\b(?:auth\s+(?:print-(?:access|identity)-token|application-default\s+print-access-token)|secrets\s+versions\s+access)|\baz\b[^|;&\n]{0,512}\b(?:account\s+get-access-token|keyvault\s+secret\s+show)|\bkubectl\b[^|;&\n]{0,512}\bcreate\s+token\b|\boc\s+whoami\s+-t\b|\bvault\s+(?:read|kv\s+get|token\s+(?:create|lookup)|login)\b|\bop\s+(?:read|item\s+get)\b|\bdocker-credential-\w+|\bhelm\s+get\b|\bgh\s+auth\s+token\b|\bgit\s+credential\b")
-(defn withhold-output? [input]
-  (let [s (str input)] (boolean (or (re-find sensitive-path s) (re-find sensitive-command s)
-                                    (and (re-find #"(?i)\b(?:kubectl|oc)\s" s) (re-find #"(?i)secret" s))))))
+  #"(?i)\baws\b[^|;&\n]{0,512}\b(?:ssm\s+get-parameter|secretsmanager\s+get-|configure\s+(?:get|export-credentials)|sts\s+(?:get-session-token|assume-role\S*|get-federation-token)|ecr\s+get-login-password|iam\s+create-access-key)|\bgcloud\b[^|;&\n]{0,512}\b(?:auth\s+(?:print-(?:access|identity)-token|application-default\s+print-access-token)|secrets\s+versions\s+access)|\baz\b[^|;&\n]{0,512}\b(?:account\s+get-access-token|keyvault\s+secret\s+show)|\bkubectl\b[^|;&\n]{0,512}\bcreate\s+token\b|\boc\s+whoami\s+-t\b|\bvault\s+(?:read|kv\s+get|token\s+(?:create|lookup)|login)\b|\bop\s+(?:read|item\s+get)\b|\bdocker-credential-\w+|\bhelm\s+get\b|\bgh\s+auth\s+token\b|\bgit\s+credential\b")
+;; K0 is decided where a tool reads or runs something: path arguments and the shell text that executes. Text that is only
+;; carried along (Edit/Write content, a description, a prompt, a heredoc fed to a program that is not an interpreter, an
+;; option value or echo text with spaces, a grep pattern) names a source without reading it. In production such mentions
+;; ("the ID token is checked by Langfuse", grep -viE 'token|secret', a delegation prompt) withheld whole runs (BOXP-428 TD-12).
+(def token-file-word #"(?i)[\w.-]{0,64}token|[\w.-]{0,64}tokens[\w.-]{1,64}")
+(def path-keys [:file_path :filePath :path :notebook_path :filename :file :target_file])
+(def command-keys [:command :cmd :script :code])
+(def shell-names #{"bash" "sh" "zsh" "dash" "ksh" "fish"})
+(def interpreter-names (into shell-names #{"bb" "node" "deno" "bun" "ruby" "perl" "php"}))
+(def mention-programs #{"echo" "printf" "grep" "egrep" "fgrep" "rg" "ag" "ack" "ls" "find" "fd" "rm" "mv" "cp" "mkdir" "rmdir"
+                        "touch" "chmod" "chown" "test" "[" "stat" "file" "which" "type" "du" "tree" "basename" "dirname"
+                        "realpath" "readlink" "cd" "pushd" "true" "false" ":" "wc" "ln"})
+(def pattern-programs #{"grep" "egrep" "fgrep" "rg" "ag" "ack"})
+(def prefix-programs #{"sudo" "command" "time" "nice" "nohup" "exec" "xargs" "doas" "!"})
+(def reading-subcommands {"git" #{"show" "cat-file" "diff" "blame" "grep" "archive"} "gh" #{"api" "gist"}})
+(def kubectl-secret #"(?i)\b(?:kubectl|oc)\b[^|;&\n]{0,512}?(?<![\w.-])secrets?(?![\w-])")
+(def max-k0-scan (* 256 1024))
+
+(defn- last-element [w] (last (str/split (str/replace (str w) #"[/\\]+$" "") #"[/\\]")))
+(defn- interpreter? [w] (let [e (last-element w)] (boolean (or (interpreter-names e) (re-matches #"python[\d.]*" e)))))
+(defn- shell-flag? [w] (boolean (re-matches #"-[A-Za-z]*[ce]" (str w))))
+
+(defn- program-index
+  "Index of the program a segment runs: assignments and prefix programs are skipped, and so is `env` with its options and
+  assignments when a command follows it (env LANG=C printenv runs printenv; BOXP-428 TD-12 P1). A bare env, or env -S
+  (its command is a split string), stays on env and is judged as the environment dump."
+  [texts]
+  (let [n (count texts)]
+    (loop [i 0]
+      (when (< i n)
+        (let [t (texts i) e (last-element t)]
+          (cond
+            (re-matches #"[A-Za-z_]\w*=.*" t) (recur (inc i))
+            (prefix-programs e) (recur (inc i))
+            (= "env" e)
+            (let [j (loop [j (inc i)]
+                      (cond (>= j n) nil
+                            (re-matches #"-[A-Za-z]*S.*|--split-string(?:=.*)?" (texts j)) nil
+                            (#{"-u" "--unset" "-C" "--chdir"} (texts j)) (recur (+ j 2))
+                            (or (str/starts-with? (texts j) "-") (re-matches #"[A-Za-z_]\w*=.*" (texts j))) (recur (inc j))
+                            :else j))]
+              ;; env A=1 2>&1: the last word is a file descriptor, not a command
+              (if (and j (not (and (= j (dec n)) (re-matches #"\d+" (texts j))))) (recur j) i))
+            :else i))))))
+
+(defn- shell-words
+  "Words of a shell text with offsets. :ws marks whitespace inside quotes; segment breaks are {:break true}.
+  An unclosed quote runs to the end."
+  [^String s]
+  (let [n (count s) out (transient []) sb (StringBuilder.)]
+    (loop [i 0 start nil q nil ws false]
+      (let [flush (fn [end] (when start (conj! out {:start start :end end :text (str sb) :ws ws}) (.setLength sb 0)))]
+        (if (>= i n)
+          (do (flush n) (persistent! out))
+          (let [c (.charAt s i)]
+            (cond
+              (= q \') (if (= c \') (recur (inc i) start nil ws) (do (.append sb c) (recur (inc i) start q (or ws (Character/isWhitespace c)))))
+              (= q \") (cond (and (= c \\) (< (inc i) n) (#{\" \\ \$ \`} (.charAt s (inc i))))
+                             (do (.append sb (.charAt s (inc i))) (recur (+ i 2) start q ws))
+                             (= c \") (recur (inc i) start nil ws)
+                             :else (do (.append sb c) (recur (inc i) start q (or ws (Character/isWhitespace c)))))
+              (= c \\) (do (when (< (inc i) n) (.append sb (.charAt s (inc i)))) (recur (+ i 2) (or start i) q ws))
+              (#{\' \"} c) (recur (inc i) (or start i) c ws)
+              (#{\space \tab \return} c) (do (flush i) (recur (inc i) nil nil false))
+              (#{\| \; \& \( \) \newline \< \>} c) (do (flush i) (conj! out {:break true :start i :end (inc i) :text (str c)}) (recur (inc i) nil nil false))
+              (and (= c \#) (nil? start)) (let [j (or (str/index-of s "\n" i) n)] (recur j nil nil false))
+              :else (do (.append sb c) (recur (inc i) (or start i) q ws)))))))))
+
+(defn- segments [words] (remove empty? (partition-by :break words)))
+
+(def ^:private heredoc-operator #"(?<!<)<<(-?)[ \t]*(['\"]?)([A-Za-z_][\w-]*)\2")
+
+(defn- heredoc-operators
+  "<<TAG operators of a command line outside quotes, comments and backslash escapes, and the quote state after the line.
+  A quoted or commented <<EOF (echo '<<EOF', echo a # <<EOF, echo \\<<EOF) is not an operator, so the lines after it are
+  still judged as commands (BOXP-428 TD-12 P0). The quote state carries over lines; a missed operator only makes its
+  body judged as commands (fail closed)."
+  [^String l q]
+  (let [n (count l) m (re-matcher heredoc-operator l)]
+    (loop [i 0 q q acc []]
+      (if (>= i n)
+        [acc q]
+        (let [c (.charAt l i)]
+          (cond
+            q (cond (= c q) (recur (inc i) nil acc)
+                    (and (= c \\) (= q \")) (recur (+ i 2) q acc)
+                    :else (recur (inc i) q acc))
+            (#{\' \"} c) (recur (inc i) c acc)
+            (= c \\) (recur (+ i 2) q acc)
+            (and (= c \#) (or (zero? i) (Character/isWhitespace (.charAt l (dec i))) (#{\| \; \& \( \) \< \>} (.charAt l (dec i)))))
+            [acc q]
+            (and (= c \<) (.region m i n) (.lookingAt m))
+            (recur (.end m) q (conj acc {:start i :tag (.group m 3) :tabs (= "-" (.group m 1)) :expands (str/blank? (.group m 2))}))
+            :else (recur (inc i) q acc)))))))
+
+(defn- strip-heredocs
+  "Blank the body of a heredoc unless an interpreter reads it as code (python3 -, ssh host bash, kubectl exec ... -- sh).
+  With code? false, the body of a non-shell interpreter (python3 -, node -) is blanked too: it is not shell text."
+  [s code?]
+  (loop [lines (str/split s #"\n" -1) out [] pending [] q nil]
+    (cond
+      (empty? lines) (str/join "\n" out)
+      (seq pending)
+      (let [{:keys [tag tabs keep expands]} (first pending) l (first lines)
+            done (= tag (if tabs (str/replace l #"^\t+" "") l))]
+        ;; An unquoted delimiter (<<EOF) still runs $(...) and `...` in the body: cat <<EOF with $(cat .env) or
+        ;; $(printenv) is judged as the commands it runs (BOXP-428 TD-12 P0). Quoted (<<'EOF') bodies are literal data.
+        (recur (rest lines)
+               (conj out (cond (or keep done) l
+                               expands (str/join " ; " (map #(let [x (if (string? %) % (first %))]
+                                                               (if (str/starts-with? x "$(") (subs x 2 (dec (count x))) (subs x 1 (dec (count x)))))
+                                                            (re-seq #"\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`" l)))
+                               :else ""))
+               (if done (subvec pending 1) pending) q))
+      :else
+      (let [l (first lines)
+            [ops q'] (heredoc-operators l q)
+            docs (for [{:keys [start] :as op} ops
+                       :let [words (map :text (remove :break (last (segments (shell-words (subs l 0 start))))))
+                             runner (some (fn [tail] (when (and (interpreter? (first tail)) (every? #(str/starts-with? % "-") (rest tail)))
+                                                       (first tail)))
+                                          (take-while seq (iterate rest words)))]]
+                   (assoc (dissoc op :start) :keep (boolean (and runner (or code? (shell-names (last-element runner)))))))]
+        (recur (rest lines) (conj out l) (vec docs) q')))))
+
+(declare executed-text)
+
+(defn- substitutions [raw] (str/join " " (map #(if (string? %) % (first %)) (re-seq #"\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`" raw))))
+
+(defn- prose-edits
+  "Spans to replace: carried prose is blanked (its command substitutions stay); a -c/-e script is replaced by its own
+  executed text."
+  [s depth code?]
+  (let [words (shell-words s)]
+    (for [seg (segments words)
+          :let [ws (vec seg)
+                prog-idx (program-index (mapv :text ws))
+                program (when prog-idx (last-element (:text (ws prog-idx))))
+                pattern-idx (when (pattern-programs program)
+                              (let [e (first (keep-indexed (fn [i w] (when (and (> i prog-idx) (re-matches #"-[A-Za-z]*e|--regexp" (:text (ws (dec i))))) i)) ws))]
+                                (or e (first (keep-indexed (fn [i w] (when (and (> i prog-idx) (not (str/starts-with? (:text w) "-"))
+                                                                                  (not (re-matches #"-[ABCmgt]|--(?:max-count|glob|type|include|exclude)" (:text (ws (dec i))))))
+                                                                         i)) ws)))))
+                quoted-src (fn [w] (subs s (:start w) (:end w)))]
+          [i w] (map-indexed vector ws)
+          :when (and prog-idx (> i prog-idx))
+          :let [prev (:text (ws (dec i)))
+                edit (cond
+                       ;; bash -c 'printenv' / sh -lc env: a one-word script of an interpreter runs too (BOXP-428 TD-12 P1)
+                       (and (shell-flag? prev) (< depth 2) (or (interpreter? program) (and (:ws w) (= "-c" prev))))
+                       (str "( " (executed-text (:text w) (inc depth) code?) " )")
+                       (or (#{"echo" "printf"} program) (= i pattern-idx)
+                           (and (:ws w) (or (str/starts-with? prev "-") (re-matches #"--?[\w-]+=.*" (:text w)))))
+                       (str " " (substitutions (quoted-src w)) " "))]
+          :when edit]
+      [(:start w) (:end w) edit])))
+
+(defn executed-text
+  "The part of a shell text that runs or names files (the first 256 KiB; command-source? withholds a longer one). code? keeps the code that a non-shell interpreter
+  reads from a heredoc (for the regex checks); without it the text is shell only (for the word checks)."
+  ([s] (executed-text s 0 true))
+  ([s depth] (executed-text s depth true))
+  ([s depth code?]
+   (let [s (strip-heredocs (subs (str s) 0 (min (count (str s)) max-k0-scan)) code?)]
+     (let [sb (StringBuilder.)
+           pos (reduce (fn [pos [start end edit]] (.append sb (subs s pos start)) (.append sb edit) end)
+                       0 (sort-by first (prose-edits s depth code?)))]
+       (str (.append sb (subs s pos)))))))
+
+(def env-accessor #"(?i)\b(?:os\.)?environ\b|\bprocess\.env\b|\bgetenv\b")
+(def env-single #"^\s*(?:\.(?:get|setdefault|pop|fetch)\s*\(|\?\.|\.|\[|\()\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)")
+(def env-dump-methods #{"items" "keys" "values" "entries" "toJSON" "to_h" "to_a" "each"})
+(def secret-env-name #"(?i)token|secret|passw|passphrase|api_?key|private_?key|credential|cookie|session|access_?key|auth")
+
+(def print-call #"(?i)\b(?:print|println|printf|puts|pp|echo|console\.(?:log|error|info|warn)|(?:sys\.)?std(?:out|err)\.write|prn|pprint)\b")
+
+(defn- env-access?
+  "The whole environment (os.environ, process.env, getenv(), /proc/*/environ), or one variable with a secret name printed on
+  the same line. os.environ.get('LAYOUT') reads an ordinary value; token=os.environ['MCP_TOKEN'] passes a secret to a
+  client without printing it (printing it through another variable is the accepted residual)."
+  [s]
+  (let [m (re-matcher env-accessor s)]
+    (loop []
+      (if-not (.find m)
+        false
+        (let [after (subs s (.end m) (min (count s) (+ (.end m) 200)))]
+          (if (re-find #"^\s*\.copy\s*\(\s*\)" after)
+            ;; env = os.environ.copy() / run(cmd, env=os.environ.copy()) hands a copy to a child process without printing it;
+            ;; print(os.environ.copy()) or any other use of the copy is a dump.
+            (if (and (re-find #"^\s*\.copy\s*\(\s*\)\s*(?:[,)\n;#]|$)" after)
+                     (let [line-start (inc (or (str/last-index-of s "\n" (.start m)) -1))
+                           before (subs s line-start (.start m))]
+                       (and (re-find #"(?:^|[^=!<>])=\s*$" before) (not (re-find print-call before)))))
+              (recur)
+              true)
+            (if-let [[_ name] (re-find env-single after)]
+              (if (or (env-dump-methods name)
+                      (and (re-find secret-env-name name)
+                           (let [line-start (inc (or (str/last-index-of s "\n" (.start m)) -1))]
+                             (re-find print-call (subs s line-start (.start m))))))
+                true
+                (recur))
+              true)))))))
+
+(defn- segment-source?
+  "env/printenv printing the environment, and a token-named file in a reading position (cat mytoken, < mytoken, f=mytoken)."
+  [text]
+  (let [words (shell-words text)]
+    (boolean
+     (some (fn [seg]
+             (let [ws (vec seg)
+                   texts (mapv :text ws)
+                   prog-idx (program-index texts)
+                   program (when prog-idx (last-element (texts prog-idx)))
+                   operands (if prog-idx (subvec ws (inc prog-idx)) [])
+                   token-file? (fn [t] (and (not (re-find #"\s" t)) (re-matches token-file-word (last-element t))))
+                   subs-ok (if-let [allowed (reading-subcommands program)]
+                             (let [names (set (map :text operands))]
+                               (or (seq (set/intersection names allowed))
+                                   (and (= program "git") (names "log") (seq (set/intersection names #{"-p" "--patch" "-u" "--cc"})))))
+                             (not (mention-programs program)))]
+               (or (some #(when-let [[_ v] (re-matches #"[A-Za-z_]\w*=(.*)" %)] (token-file? v)) (take (or prog-idx (count texts)) texts))
+                   (= "printenv" program)
+                   ;; kubectl exec pod -- printenv GITHUB_TOKEN / -- sh -c 'printenv': the remote command is judged like a
+                   ;; local one (BOXP-428 TD-12 P0)
+                   (and (#{"kubectl" "oc"} program)
+                        (let [after (map :text operands)
+                              remote (rest (drop-while #(not= "--" %) after))
+                              quote-word (fn [t] (if (re-find #"[\s'\"$`\\;&|<>()]" t)
+                                                   (str "'" (str/replace t "'" "'\\''") "'")
+                                                   t))]
+                          (and (seq remote)
+                               (segment-source? (executed-text (str/join " " (map quote-word remote)))))))
+                   ;; set / export / declare / typeset with nothing to set, or -p / -x, print the environment
+                   (and (#{"set" "export" "declare" "typeset"} program)
+                        (or (empty? operands) (some #(re-matches #"-[A-Za-z]*[px]" (:text %)) operands)))
+                   (and (= "env" program)
+                        (loop [[t & more] (map :text operands)]
+                          (cond (nil? t) true
+                                (and (empty? more) (re-matches #"\d+" t)) true ; env A=1 2>&1
+                                (re-matches #"-[A-Za-z]*S.*|--split-string(?:=.*)?" t) true
+                                (#{"-u" "--unset" "-C" "--chdir"} t) (recur (rest more))
+                                (or (str/starts-with? t "-") (re-matches #"[A-Za-z_]\w*=.*" t)) (recur more)
+                                :else false)))
+                   (and subs-ok (some #(and (not (str/starts-with? (:text %) "-")) (token-file? (:text %))) operands)))))
+           (segments words)))))
+
+(defn- redirect-source? [text]
+  ;; `< file` is read by any program, including a mention program.
+  (boolean (some (fn [[a b]] (and (= "<" (:text a)) (not (:break b)) (re-matches token-file-word (last-element (:text b)))))
+                 (partition 2 1 (shell-words text)))))
+
+(defn- command-source? [text]
+  (let [t (executed-text text) sh (executed-text text 0 false)]
+    (boolean (or (> (count (str text)) max-k0-scan) ; not parsed beyond this: fail closed
+                 (re-find sensitive-path t) (re-find sensitive-command t) (re-find kubectl-secret t)
+                 (env-access? t) (segment-source? sh) (redirect-source? sh)))))
+
+(defn- path-source? [v]
+  (let [v (str v)]
+    (boolean (or (re-find sensitive-path (str " " v)) (re-matches token-file-word (last-element v))))))
+
+(defn- command-of [v]
+  (if (sequential? v)
+    (let [v (mapv str v) i (first (keep-indexed (fn [i w] (when (shell-flag? w) i)) v))]
+      (if (and i (interpreter? (first v)) (< (inc i) (count v)))
+        (v (inc i))
+        (str/join " " (map #(if (re-find #"\s" %) (str "'" (str/replace % "'" "'\\''") "'") %) v))))
+    (str v)))
+
+(defn withhold-output?
+  "K0 on a tool input: a map (or JSON object text) is judged by its path and command arguments only."
+  [input]
+  (try
+    (let [m (cond (map? input) input
+                  (and (string? input) (str/starts-with? (str/triml input) "{")) (json/parse-string input true))]
+      (if (map? m)
+        (boolean (or (some #(some-> (get m %) path-source?) path-keys)
+                     (some #(some-> (get m %) command-of command-source?) command-keys)))
+        (let [s (str input)]
+          (or (command-source? s) (and (not (re-find #"\s" (str/trim s))) (path-source? (str/trim s)))))))
+    (catch Throwable _ true)))
+
 (defn env-dump? [output]
   (let [s (str output)] (boolean (and (re-find #"(?:^|[^A-Za-z0-9_])PATH=" s)
                                         (re-find #"(?:^|[^A-Za-z0-9_])HOME=" s)))))
@@ -692,10 +973,33 @@
 ;; credentials: 'same-origin', and a transformed restatement elsewhere is the accepted residual (THREAT_MODEL 2).
 (def lineage-kinds #{:private-key :header :url-credentials :jwt :provider-key :aws-key :google-key :telegram :bearer})
 
+(def placeholder-credential
+  #"(?i)[$<{%*\[].*|x+|\.+|pass(?:word|wd|phrase)?\d?|pwd|secret|(?:api[_-]?|access[_-]?|auth[_-]?)?(?:key|token)|changeme|your[\w-]*|my[\w-]*pass\w*|example\w*")
+
+(defn- placeholder-credential? [v]
+  ;; Surrounding punctuation is prose ("a bearer token."); a short lower-case word ("bearer tokens", "Bearer auth") is a word.
+  (let [v (str/replace (str/trim (str v)) #"^[\"'`(\[{]+|[\"'`.,;:)\]}/]+$" "")]
+    (boolean (or (str/blank? v) (re-matches placeholder-credential v) (re-matches #"[A-Z_]+" v) (re-matches #"[a-z]{1,12}" v)))))
+
+(defn- credential-shaped?
+  "A header, bearer or URL-credential hit is lineage evidence unless its value is a documentation placeholder:
+  `Authorization: Bearer <token>`, `Bearer YOUR_API_TOKEN`, `Bearer $TOKEN`, `postgres://user:password@db` (BOXP-428 TD-12).
+  Either way the hit is masked in place; only the withholding of what follows depends on this."
+  [kind m]
+  (case kind
+    :bearer (not (placeholder-credential? (first (str/split (str/replace m #"(?i)^bearer\s+" "") #"\s+"))))
+    :header (let [v (str/replace (str/trim (str (second (str/split m #":" 2)))) #"(?i)^(?:bearer|basic|token|digest)\s+" "")]
+              (not (placeholder-credential? (first (str/split v #"\s+")))))
+    :url-credentials (not (placeholder-credential? (second (re-find #":([^:@]*)@$" m))))
+    true))
+
 (defn- exposure? [output]
   (let [text (str output)]
     (or (some #(str/includes? text %) *exposure-values*)
-        (some (fn [[kind pattern]] (when (contains? lineage-kinds kind) (re-find pattern text))) patterns)
+        (some (fn [[kind pattern]]
+                (when (contains? lineage-kinds kind)
+                  (some #(credential-shaped? kind (if (string? %) % (first %))) (re-seq pattern text))))
+              patterns)
         (:unpinned? (named-values text)))))
 
 (defn- tool-reason [tool result]

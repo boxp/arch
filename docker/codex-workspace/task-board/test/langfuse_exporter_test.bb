@@ -1172,5 +1172,101 @@
   (testing "a non-secret entry with a list value pins nothing"
     (is (empty? (:values (lf/named-values "{\"name\":\"PATH_LIST\",\"value\":[\"alphabeta\",\"gammadelta\"]}"))))))
 
+;; Regression (BOXP-428 TD-12, production 2026-11-07): the first withheld trigger of most runs was a mention, not a read.
+;; Prose carried by a tool (a delegation prompt, a note, Edit/Write content), a grep pattern, a single ordinary
+;; environment variable, a `set` inside code and documentation placeholders withheld every later body of the run.
+(def td12-mentions
+  [{:command "cat <<'EOF'\n$(cat .env) printenv\nEOF"} {:command "cat <<EOF\nread .env and printenv $(date)\nEOF"}
+   {:command "kubectl logs -n x pod --since=11h 2>&1 | grep -iE 'mcp' | grep -viE 'authorization|token|secret|key=' | tail -40" :description "logs without secrets"}
+   {:command "python3 /opt/x/delegate.py run <<'EOF'\nMCP の token をログに出さない。ID token の検証は Langfuse。.env や ~/.kube/config、kubectl get secret は使わない\nEOF"}
+   {:command "bb task-board.bb append-note X --note \"ID token の検証、kubectl get secret は使わない、.env 禁止、printenv しない\""}
+   {:command "git commit -m 'stop reading .env and gh auth token in tests'"}
+   {:command "grep -c -i token out.log"} {:command "grep -il 'token\\|bearer' a.json"} {:command "rg -n '\"op\": \"set\"' src"}
+   {:command "python3 - <<'EOF'\nimport os\nlayout = os.environ.get('LAYOUT', '/tmp/x')\nc = Client(token=os.environ['MCP_TOKEN'])\nchanges = [{'op': 'set'}]\nEOF"}
+   {:command "node -e \"const H = process.env.H || 'http://x'\""}
+   {:command "python3 - <<'EOF'\nimport os, subprocess\nenv = os.environ.copy()\nenv['LANG'] = 'C'\nsubprocess.run(['make'], env=os.environ.copy())\nEOF"}
+   {:command "/usr/bin/env python3 x.py"} {:command "env LANG=C sort a.txt"} {:command "env -u HOME make test"} {:command "set -e; make"}
+   {:file_path "/tmp/notes.md" :old_string "a" :new_string "the token is in .env; run printenv; kubectl get secret"}
+   {:file_path "/tmp/x.md" :content "cat ~/.kube/config"}
+   {:prompt "read .env and print the token" :description "x"}
+   "{\"cmd\":[\"bash\",\"-lc\",\"grep -rn token src\"]}"
+   "{\"command\":\"echo the ID token is checked\"}"
+   {:command "bash -c 'make'"} {:command "bash -c true"} {:command "grep -c token out.log"}
+   {:command "echo '<<x'; cat <<'EOF'\ncat .env\nEOF"}
+   {:command "kubectl exec pod -- ls /app"} {:command "kubectl exec pod -- sh -c 'make test'"}])
+
+(def td12-sources
+  ["cat .env" {:command "bash -lc 'cat ~/.kube/config'"} {:command "kubectl get secret x -o yaml | base64 -d"}
+   {:command "env | grep -i grafana"} {:command "printenv"} {:command "export"} {:command "set"} {:command "declare -p"}
+   {:command "python3 - <<'EOF'\nimport os\nprint(dict(os.environ))\nEOF"}
+   {:command "python3 -c \"import os; print(os.environ['GITHUB_TOKEN'])\""}
+   {:command "python3 -c 'import os; print(os.environ.copy())'"}
+   {:command "python3 - <<'EOF'\nimport os, json\nprint(json.dumps(dict(os.environ.copy())))\nEOF"}
+   {:command "python3 -c 'import os; x = os.environ.copy().items(); print(list(x))'"}
+   {:command "node -e 'console.log(JSON.stringify(process.env))'"}
+   {:command "X=$(gh auth token) cmd"} {:command "echo \"$(cat .env)\""} {:command "git commit -m \"$(cat ~/.netrc)\""}
+   {:command "cat mytoken"} {:command "head < access_token"} {:file_path "/app/.env"} {:file_path "mytoken"}
+   {:command "ssh host bash <<'EOF'\ncat .env\nEOF"} {:command "cat > /tmp/x <<EOF\nhello\nEOF\ncat .env"}
+   "{\"cmd\":[\"bash\",\"-lc\",\"cat ~/.npmrc\"]}" {:command "grep -r x src; cat secrets/db"}
+   {:command "bash -c 'printenv'"} {:command "bash -c printenv"} {:command "sh -lc env"} {:command "bash -c 'export'"}
+   {:command "sudo bash -c printenv"} {:command "bash -c 'cat mytoken'"} {:command "zsh -c \"bash -c printenv\""}
+   ;; env with assignments/options before the command runs that command (BOXP-428 TD-12 P1)
+   {:command "env LANG=C printenv"} {:command "env -u HOME printenv"} {:command "env -i LANG=C printenv PATH"}
+   {:command "sudo env LANG=C printenv"} {:command "env LANG=C bash -c printenv"} {:command "env LANG=C cat mytoken"}
+   {:command "env -S printenv"} {:command "env LANG=C env"} {:command "env A=1 2>&1"}
+   ;; an unquoted heredoc body still runs command substitutions (BOXP-428 TD-12 P0)
+   {:command "cat <<EOF\n$(cat .env)\nEOF"} {:command "cat <<EOF\nv=$(printenv)\nEOF"}
+   {:command "cat <<-EOF\n\t`cat mytoken`\nEOF"} {:command "tee /tmp/x <<\"EOF2\"\nok\nEOF2\ncat <<EOF\n$(env)\nEOF"}
+   ;; a quoted or commented <<EOF is not a heredoc operator, so the next lines still run (BOXP-428 TD-12 P0)
+   {:command "echo '<<EOF'\ncat .env\nEOF"} {:command "echo \"x <<EOF\"\ncat .env\nEOF"} {:command "echo a # <<EOF\ncat .env\nEOF"}
+   {:command "printf '%s' 'a\n<<EOF'\nprintenv\nEOF"} {:command "echo \\<<EOF\ncat .env\nEOF"}
+   "{\"cmd\":[\"bash\",\"-lc\",\"printenv\"]}"
+   ;; a remote command of kubectl/oc exec is judged like a local one (BOXP-428 TD-12 P0)
+   {:command "kubectl exec pod -- printenv GITHUB_TOKEN"} {:command "oc exec pod -- printenv"}
+   {:command "kubectl exec -n ns pod -c app -- env LANG=C printenv"} {:command "kubectl exec pod -- sh -c 'printenv'"}
+   {:command "kubectl exec pod -- env"} {:command "kubectl exec pod -- export"}])
+
+(deftest k0-is-judged-on-what-runs-or-is-read
+  (doseq [input td12-mentions]
+    (is (not (lf/withhold-output? input)) (str "mention " (pr-str input))))
+  (doseq [input td12-sources]
+    (is (lf/withhold-output? input) (str "source " (pr-str input)))))
+
+(deftest documentation-placeholders-do-not-withhold-the-lineage
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        real (str "abcd1234" "efgh5678" "ijkl9012")]
+    (doseq [format [:claude :codex]]
+      (doseq [[value gen-expected]
+              [["curl -H 'Authorization: Bearer <token>' https://x\nBearer YOUR_API_TOKEN\npostgres://user:password@db:5432/app\ndocplaceholdermarker" "sent"]
+               [(str "Authorization: Bearer " real "\ndocplaceholdermarker") "withheld_after_known_format_in_tool_output"]
+               [(str "postgres://app:" real "@db/app\ndocplaceholdermarker") "withheld_after_known_format_in_tool_output"]
+               ;; a value without digits is a credential too, unless it is a placeholder shape
+               ["Authorization: Bearer plainwordvaluenodigits\ndocplaceholdermarker" "withheld_after_known_format_in_tool_output"]]]
+        (let [spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (privacy-lines format "WebFetch" value))
+              gen (last (filter #(str/starts-with? (:name %) "generation:") spans))]
+          (is (= gen-expected (attr-value gen "langfuse.observation.metadata.body_policy")) (str format " " (subs value 0 30)))
+          (is (not (str/includes? (:value (lf/redact (pr-str spans) [])) real)) "the credential itself is masked in place"))))))
+
+(defn- continued-session [command]
+  [{:type "user" :message {:content "request td12requestmarker"}}
+   {:type "assistant" :message {:id "a" :model "test" :content [{:type "text" :text "checking"} {:type "tool_use" :id "t1" :name "Bash" :input {:command command}}]}}
+   {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t1" :content "td12tooloutputmarker"}]}}
+   {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text "next"} {:type "tool_use" :id "t2" :name "Read" :input {:file_path "/work/README.md"}}]}}
+   {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t2" :content "td12readmemarker"}]}}
+   {:type "user" :message {:content "follow-up td12nextturnmarker"}}
+   {:type "assistant" :message {:id "c" :model "test" :content [{:type "text" :text "done td12replymarker"}]}}])
+
+(deftest continued-conversation-stays-readable-after-a-mention
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        text (fn [command] (pr-str (lf/claude-spans ctx "root" "test:" (continued-session command))))]
+    (let [t (text "kubectl logs pod | grep -viE 'authorization|token|secret|key=' | tail")]
+      (doseq [marker ["td12requestmarker" "td12tooloutputmarker" "td12readmemarker" "td12nextturnmarker" "td12replymarker"]]
+        (is (str/includes? t marker) marker))
+      (is (not (str/includes? t "[withheld"))))
+    (let [t (text "cat /app/.env")]
+      (is (str/includes? t "td12requestmarker"))
+      (doseq [marker ["td12tooloutputmarker" "td12readmemarker" "td12nextturnmarker" "td12replymarker"]]
+        (is (not (str/includes? t marker)) (str "after a known source " marker))))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
