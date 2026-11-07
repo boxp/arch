@@ -27,7 +27,8 @@
 (def secret-key-pattern (str "[\\w.-]{0,64}(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|authorization|(?<![a-z])pass(?![a-z])|(?<![a-z])auth(?![a-z]))[\\w.-]{0,64}"))
 (defn value-pattern [limit bare]
   (str "(?:(?<quote>" quote-pattern ")(?:[^\\n]" (or limit "*?") "(?<!\\\\)\\k<quote>" (when-not limit "|[^\\n]*") ")|" bare ")"))
-(defn entry-key [name] (str "(?<![\\w-])" name "(?:" quote-pattern ")?" gap-pattern "[:=]" gap-pattern))
+(def key-start "(?:(?<![\\w-])|(?<=\\\\u00(?:22|27)))") ; a key may follow a \u0022 quote escape
+(defn entry-key [name] (str key-start name "(?:" quote-pattern ")?" gap-pattern "[:=]" gap-pattern))
 (def entry-gap "(?:\\s|\\\\+[nrt]|,)*")
 
 (def patterns
@@ -451,6 +452,8 @@
 (defn- reference? [v]
   (boolean (re-matches #"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|\[REDACTED:[a-z_-]+\]" v)))
 
+(def ^:private env-value-key (re-pattern (str "(?i)" key-start "value(?:" quote-pattern ")?" gap-pattern "[:=]" gap-pattern)))
+
 (defn- match-values [kind m]
   (case kind
     :assignment (let [[head key] (re-find name-separator m)
@@ -467,7 +470,8 @@
                         (let [w (first-value rest) i (str/index-of w ":")] (when i [(subs w (inc i))]))
                         [(first-value (str/replace-first rest #"^[^\s:]+:" ""))]))
                     [(first-value (str/replace-first m #"(?is)^.*?\s-p[ \t]*" ""))])
-    :env-entry (let [matcher (re-matcher #"(?i)(?<![\w-])value(?:\\*[\"'])?(?:\s|\\+[nrt])*[:=](?:\s|\\+[nrt])*" m)]
+    ;; The value key takes every serialized quote form (&quot;value&quot;:, \u0022value\u0022:), as entry-key does.
+    :env-entry (let [matcher (re-matcher env-value-key m)]
                  (when (.find matcher) [(first-value (subs m (.end matcher)))]))
     nil))
 

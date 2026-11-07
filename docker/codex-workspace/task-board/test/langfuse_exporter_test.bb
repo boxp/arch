@@ -1040,5 +1040,20 @@
     (let [{:keys [values]} (lf/named-values text)]
       (is (not (str/includes? (:value (lf/redact (str "reply: " v) values)) (last (str/split v #" ")))) text))))
 
+(deftest named-values-in-encoded-env-entries
+  ;; Regression (arch#14548 review): the env-entry value key accepts every serialized quote form (&quot;, &#34;,
+  ;; \u0022, \") like the in-place mask, so the value of an HTML/JSON-encoded entry is pinned and a later bare
+  ;; restatement is masked.
+  (doseq [text ["&quot;name&quot;: &quot;API_SECRET&quot;, &quot;value&quot;: &quot;quietmeadowstone&quot;"
+                "&#34;name&#34;: &#34;API_SECRET&#34;, &#34;value&#34;: &#34;quietmeadowstone&#34;"
+                "&#x22;value&#x22;: &#x22;quietmeadowstone&#x22;, &#x22;name&#x22;: &#x22;API_SECRET&#x22;"
+                "{\\u0022name\\u0022: \\u0022API_SECRET\\u0022, \\u0022value\\u0022: \\u0022quietmeadowstone\\u0022}"
+                "{\\\"name\\\": \\\"API_SECRET\\\", \\\"value\\\": \\\"quietmeadowstone\\\"}"
+                "&apos;name&apos;: &apos;API_SECRET&apos;, &apos;value&apos;: &apos;quietmeadowstone&apos;"]]
+    (let [{:keys [values]} (lf/named-values text)]
+      (is (some #{"quietmeadowstone"} values) text)
+      (is (not (str/includes? (:value (lf/redact (str "reply: quietmeadowstone") values)) "quietmeadowstone")) text)
+      (is (not (str/includes? (:value (lf/redact text values)) "quietmeadowstone")) text))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
