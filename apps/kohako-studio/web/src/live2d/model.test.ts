@@ -45,7 +45,7 @@ describe('FrameMeter', () => {
 describe('modelFor', () => {
   it('defaults to the Kohako model and keeps the sample selectable', () => {
     expect(modelFor('').id).toBe(LATEST_MODEL_ID)
-    expect(LATEST_MODEL_ID).toBe('kohako-v23')
+    expect(LATEST_MODEL_ID).toBe('kohako-v24')
     expect(modelFor('?model=unknown').id).toBe(LATEST_MODEL_ID)
     expect(modelFor('?model=sample').id).toBe('sample')
     expect(modelFor('?model=kohako').id).toBe('kohako')
@@ -94,8 +94,11 @@ describe('clip names', () => {
     expect(lostPrototypes.find(p => p.id === 'kohako-v21')?.images).toContain('./kohako/live2d/compare/kohako-v21-material.jpg')
     expect(lostPrototypes.find(p => p.id === 'kohako-v22')?.images).toContain('./kohako/live2d/compare/kohako-v22-compare-mouth.jpg')
     expect(lostPrototypes.find(p => p.id === 'kohako-v20')?.images).toContain('./kohako/live2d/compare/kohako-v20-material.jpg')
-    expect(modelFor('?model=kohako-v17').status).toBe('previous-latest')
-    expect(modelFor('?model=kohako-v23').status).toBe('latest')
+    expect(modelFor('?model=kohako-v17').status).toBe('old')
+    expect(modelFor('?model=kohako-v23').status).toBe('previous-latest')
+    expect(modelFor('?model=kohako-v24').status).toBe('latest')
+    expect(modelFor('?model=kohako-v24').rig).toBe('../kohako/kohako-v24.p2lrt')
+    expect(modelFor('?model=kohako-v24').skipSmallMouth).toBeUndefined()
     expect(modelFor('?model=kohako-v17').rig).toBe('../kohako/kohako-v17.p2lrt')
     expect(modelFor('?model=kohako-v16').rig).toBe('../kohako/kohako-v16.p2lrt')
     expect(modelFor('?model=kohako-v15b').status).toBe('rejected')
