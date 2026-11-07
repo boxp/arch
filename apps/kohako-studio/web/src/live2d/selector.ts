@@ -20,7 +20,7 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   for (const item of all) {
     const option = document.createElement('option'); option.value = item.id
     const version = item.id === 'kohako' ? 'v0' : item.id === 'sample' ? 'サンプル' : item.id.replace('kohako-', '')
-    option.textContent = `${version}（${'images' in item ? '読込不能: 比較画像を表示' : item.evaluation}）`
+    option.textContent = `${version}（${'images' in item ? item.id === 'kohako-v26' ? '不採用・本人確認用' : '読込不能: 比較画像を表示' : item.evaluation}）`
     select.append(option)
   }
   select.value = lost?.id ?? (includeSample ? model.id : model.id === 'sample' ? LATEST_MODEL_ID : model.id)
@@ -30,6 +30,15 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   details.textContent = `${select.selectedOptions[0]?.textContent} — ${selected.evaluation}。問題: ${selected.problems} 最新の試作は ${LATEST_MODEL_ID.replace('kohako-', '')}（担当評価は選択欄を参照）です。`
   container.append(label, select, details)
   if (model.id === LATEST_MODEL_ID && !lost) {
+    // TD-23: 配備版を実ブラウザで録画し、同じ動きの旧新を横に並べた動画（時刻・角度を焼き込み）。髪の肩線の段差・折れが動作中にどう見えるか。
+    const videos = document.createElement('p'); videos.textContent = '動作の比較動画（v25 / v24、同じ parameter 軌道）: '
+    for (const [file, label] of [['det-v25-vs-v24', '首振り・上下・髪揺れ・まばたき 15 秒'], ['det-x-slow3x-v25-vs-v24', '左右首振りの肩まわり 1/3 倍速'], ['nat-v25-vs-v24', '待機→考え中→話す→首振り 23 秒']]) {
+      const link = document.createElement('a'); link.href = `./kohako/live2d/compare/kohako-td23-${file}.mp4`; link.textContent = label; videos.append(link, ' ／ ')
+    }
+    for (const [file, label] of [['det-x-rightshoulder', '右肩の拡大（X±25°）'], ['det-x-shoulders', '肩まわり（X 掃引）'], ['nat-thinking-right', '考え中の右肩（時系列）']]) {
+      const link = document.createElement('a'); link.href = `./kohako/live2d/compare/kohako-td23-${file}.jpg`; link.textContent = label; videos.append(link, ' ／ ')
+    }
+    container.append(videos)
     for (const [file, label] of [['mouth', 'v24/v25 口 0〜1'], ['full', 'v24/v25 全体']]) {
       const comparison = document.createElement('a')
       comparison.href = `./kohako/live2d/compare/kohako-v25-vs-v24-${file}.jpg`
@@ -52,6 +61,11 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   }
   if (lost) {
     const note = document.createElement('p'); note.textContent = lost.note ?? 'p2lrt は作業ディレクトリ消失により未保存・再現不能です。比較画像を表示します。'; container.append(note)
+    if (lost.id === 'kohako-v26') {
+      for (const [file, text] of [['det', 'v25 / v26 動作比較'], ['shoulder-slow3x', '肩周辺 1/3 倍速']]) {
+        const link = document.createElement('a'); link.href = `./kohako/live2d/compare/kohako-v26-${file}.mp4`; link.textContent = text; container.append(link, ' ／ ')
+      }
+    }
     for (const src of lost.images) { const img = document.createElement('img'); img.src = src; img.alt = `${lost.id} の比較: ${src.split('-compare-')[1]?.replace(/\.(png|jpg)$/, '')}`; img.style.maxWidth = '100%'; img.loading = 'lazy'; container.append(img) }
   }
   return !!lost
