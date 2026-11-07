@@ -1214,7 +1214,9 @@
       (doseq [[value gen-expected]
               [["curl -H 'Authorization: Bearer <token>' https://x\nBearer YOUR_API_TOKEN\npostgres://user:password@db:5432/app\ndocplaceholdermarker" "sent"]
                [(str "Authorization: Bearer " real "\ndocplaceholdermarker") "withheld_after_known_format_in_tool_output"]
-               [(str "postgres://app:" real "@db/app\ndocplaceholdermarker") "withheld_after_known_format_in_tool_output"]]]
+               [(str "postgres://app:" real "@db/app\ndocplaceholdermarker") "withheld_after_known_format_in_tool_output"]
+               ;; a value without digits is a credential too, unless it is a placeholder shape
+               ["Authorization: Bearer plainwordvaluenodigits\ndocplaceholdermarker" "withheld_after_known_format_in_tool_output"]]]
         (let [spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (privacy-lines format "WebFetch" value))
               gen (last (filter #(str/starts-with? (:name %) "generation:") spans))]
           (is (= gen-expected (attr-value gen "langfuse.observation.metadata.body_policy")) (str format " " (subs value 0 30)))

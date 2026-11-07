@@ -900,21 +900,24 @@
 ;; credentials: 'same-origin', and a transformed restatement elsewhere is the accepted residual (THREAT_MODEL 2).
 (def lineage-kinds #{:private-key :header :url-credentials :jwt :provider-key :aws-key :google-key :telegram :bearer})
 
-(defn- credential-run? [s]
-  (boolean (some #(and (re-find #"\d" %) (re-find #"[A-Za-z]" %)) (re-seq #"[A-Za-z0-9._~+/=-]{16,}" (str s)))))
+(def placeholder-credential
+  #"(?i)[$<{%*\[].*|x+|\.+|pass(?:word|wd|phrase)?\d?|pwd|secret|(?:api[_-]?|access[_-]?|auth[_-]?)?(?:key|token)|changeme|your[\w-]*|my[\w-]*pass\w*|example\w*")
 
-(def placeholder-password
-  #"(?i)[$<{%*\[].*|x+|\.+|pass(?:word|wd|phrase)?\d?|pwd|secret|token|changeme|your[\w-]*|my[\w-]*pass\w*|example\w*")
+(defn- placeholder-credential? [v]
+  ;; Surrounding punctuation is prose ("a bearer token."); a short lower-case word ("bearer tokens", "Bearer auth") is a word.
+  (let [v (str/replace (str/trim (str v)) #"^[\"'`(\[{]+|[\"'`.,;:)\]}/]+$" "")]
+    (boolean (or (str/blank? v) (re-matches placeholder-credential v) (re-matches #"[A-Z_]+" v) (re-matches #"[a-z]{1,12}" v)))))
 
 (defn- credential-shaped?
-  "A header, bearer or URL-credential hit is lineage evidence only when it carries a credential, not documentation such as
-  `Authorization: Bearer <token>`, `Bearer YOUR_TOKEN` or `postgres://user:password@db` (BOXP-428 TD-12). Either way the
-  hit is masked in place; only the withholding of what follows depends on this."
+  "A header, bearer or URL-credential hit is lineage evidence unless its value is a documentation placeholder:
+  `Authorization: Bearer <token>`, `Bearer YOUR_API_TOKEN`, `Bearer $TOKEN`, `postgres://user:password@db` (BOXP-428 TD-12).
+  Either way the hit is masked in place; only the withholding of what follows depends on this."
   [kind m]
   (case kind
-    :bearer (credential-run? (str/replace m #"(?i)^bearer\s+" ""))
-    :header (credential-run? (second (str/split m #":" 2)))
-    :url-credentials (let [pw (second (re-find #":([^:@]*)@$" m))] (not (re-matches placeholder-password (str pw))))
+    :bearer (not (placeholder-credential? (first (str/split (str/replace m #"(?i)^bearer\s+" "") #"\s+"))))
+    :header (let [v (str/replace (str/trim (str (second (str/split m #":" 2)))) #"(?i)^(?:bearer|basic|token|digest)\s+" "")]
+              (not (placeholder-credential? (first (str/split v #"\s+")))))
+    :url-credentials (not (placeholder-credential? (second (re-find #":([^:@]*)@$" m))))
     true))
 
 (defn- exposure? [output]
