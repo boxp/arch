@@ -44,6 +44,12 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
       const link = document.createElement('a'); link.href = `./kohako/live2d/compare/${file}`; link.textContent = label; v35.append(link, ' ／ ')
     }
     container.append(v35)
+    // v38: 体の層に残っていた髪の欠片を除去（首の傾きで右肩外側に見えていた）。髪の動きは本人受入済みの v37 と同じ。
+    const v38 = document.createElement('p'); v38.textContent = 'v38 の比較（上 v37 / 下 v38）: '
+    for (const [file, label] of [['kohako-v38-shoulder-vs-v37.jpg', '右肩の外側（静止・首の傾き ±30・首振り+傾き）']]) {
+      const link = document.createElement('a'); link.href = `./kohako/live2d/compare/${file}`; link.textContent = label; v38.append(link, ' ／ ')
+    }
+    container.append(v38)
     // v37: 体の層に残っていた頭の髪を後ろ髪へ移した。v36 と同じページ・同じ軌道で、顔だけ／顔固定で髪・呼吸・体だけ／通常動作を録画（未配備の v37 は OVERRIDE_P2LRT）。
     const v37 = document.createElement('p'); v37.textContent = 'v37 の動作比較（v36 / v37、点=実際の頂点、白丸=顔または体に付いて動いた場合の位置）: '
     for (const [file, label] of [['kohako-v37-cause-v36-layers.jpg', '原因: v36 の体の層だけ／後ろ髪の層だけの描画'], ['kohako-v37-A-vs-v36.mp4', 'A 顔だけ動かす（左右・上下・傾き）'], ['kohako-v37-B-vs-v36.mp4', 'B 顔を固定し髪の物理・呼吸・体の回転だけ'], ['kohako-v37-C-vs-v36.mp4', 'C 通常の待機・考え中・発話'], ['kohako-v37-tilt-vs-v36.jpg', '首の傾き（静止）'], ['kohako-v37-thinking-vs-v36.jpg', '考え中の首振り（静止）'], ['kohako-v37-bodyx-vs-v36.jpg', '体の回転 −10 / 0 / +10（上 v36・下 v37）']]) {
