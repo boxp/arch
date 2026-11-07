@@ -30,6 +30,8 @@
 (defn entry-key [name] (str "(?<![\\w-])" name "(?:" quote-pattern ")?" gap-pattern "[:=]" gap-pattern))
 (def entry-gap "(?:\\s|\\\\+[nrt]|,)*")
 
+(def cli-word "(?:'[^'\\n]{0,4096}'?|\\\"(?:[^\\\"\\\\\\n]|\\\\.){0,4096}\\\"?|\\\\[^\\n]|[^\\s'\\\"\\\\])+")
+
 (def patterns
   [[:private-key #"(?s)-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----.*?(?:-----END (?:[A-Z ]+ )?PRIVATE KEY-----|\z)"]
    [:header #"(?im)\b(?:proxy-authorization|authorization|set-cookie|cookie)\s*:\s*[^\r\n]+"]
@@ -53,7 +55,10 @@
    ;; The credential is one shell word: quoted parts may hold spaces (curl -u 'user:my secret', P0 arch#14503 :50) and an
    ;; unclosed quote runs to the end of the line. The colon may sit inside or outside the quotes. A backslash escape is
    ;; part of the word, so an escaped space does not end it (curl -u user:longpass\ secretvalue, P0 arch#14503 :55).
-   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?![\"']?\+[\"']?(?:%[-_0^#:]?[A-Za-z]|(?-i:[TZ])(?![A-Za-z])|[^A-Za-z0-9\s%\"'])+[\"']?(?=[\s;&|)]|\z))(?=(?:'[^'\n:]*'|\"[^\"\n:]*\"|\\[^\n:]|[^\s'\":\\])*(?:'[^'\n:]*:|\"[^\"\n:]*:|\\?:))(?:'[^'\n]{0,4096}'?|\"(?:[^\"\\\n]|\\.){0,4096}\"?|\\[^\n]|[^\s'\"\\])+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p\S+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*\S+"]
+;; The mysql/mariadb -p and sshpass -p value is the same kind of shell word: mysql -p'long password' and
+;; sshpass -p 'long password' were masked only up to the space (P0 arch#14503 :56). mysql -p with no attached value
+;; (it prompts) is no credential.
+   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?![\"']?\+[\"']?(?:%[-_0^#:]?[A-Za-z]|(?-i:[TZ])(?![A-Za-z])|[^A-Za-z0-9\s%\"'])+[\"']?(?=[\s;&|)]|\z))(?=(?:'[^'\n:]*'|\"[^\"\n:]*\"|\\[^\n:]|[^\s'\":\\])*(?:'[^'\n:]*:|\"[^\"\n:]*:|\\?:))(?:'[^'\n]{0,4096}'?|\"(?:[^\"\\\n]|\\.){0,4096}\"?|\\[^\n]|[^\s'\"\\])+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p(?:'[^'\n]{0,4096}'?|\"(?:[^\"\\\n]|\\.){0,4096}\"?|\\[^\n]|[^\s'\"\\])+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*(?:'[^'\n]{0,4096}'?|\"(?:[^\"\\\n]|\\.){0,4096}\"?|\\[^\n]|[^\s'\"\\])+"]
    ;; A number after a name with token in it is a counter such as input_tokens: 12.
    [:assignment (re-pattern (str "(?i)[\"']?" secret-key-pattern "(?:" quote-pattern ")?" gap-pattern "(?:[:=]|\\\\+u00(?:3[aA]|3[dD]))" gap-pattern "(?!(?<=token[\\w.-]{0,16}[\"'\\\\]{0,8}\\s{0,4}[:=]\\s{0,4})\\d+(?:[\\s,;}\\\\\"']|$))(?:[|>][-+]?\\d?(?:(?:\\n|\\\\+n)[ \\t]+(?:(?!\\\\+n)[^\\n])*)+|" (value-pattern nil "[^\\s,;}\\]]+") ")"))]
    [:entropy #"\b[A-Za-z0-9_-]{40,}\b"]])
@@ -839,7 +844,10 @@
                      (let [w (shell-word-value (str/replace m #"^(?i)(?:-u|--user)[ \t=]*" ""))
                            i (str/index-of w ":")]
                        [(if i (subs w (inc i)) w) true])
-                     [(-> (last (str/split m #"\s+")) (str/replace #"^-p" ""))]))
+                     ;; mysql -p'..' / sshpass -p '..': the last -p word, resolved as the shell does (P0 arch#14503 :56).
+                     [(shell-word-value (or (second (re-find (re-pattern (str "(?s)\\s-p[ \\t]*(" cli-word ")\\z")) m))
+                                            (str/replace (last (str/split m #"\s+")) #"^-p" "")))
+                      true]))
     :url-credentials (credential-values (second (re-find #"://[^:/@\s]*:([^@\s]*)@" m)))
     (token-values
      (case kind

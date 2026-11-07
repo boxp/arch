@@ -1306,6 +1306,23 @@
   (doseq [cmd ["date -u '+%H:%M'" "date -u \"+%d %H:%M\"" "ls -u 'my notes.txt'" "curl -u 'user' https://x"]]
     (is (= cmd (:value (lf/redact cmd #{}))) cmd)))
 
+;; P0 arch#14503 :56 (BOXP-428). mysql -p'long password' and sshpass -p 'long password' were masked only up to the
+;; first space, so the rest and a later bare repeat of the whole password were sent. The -p value is one shell word
+;; now, like curl -u. An ordinary -p (ls -p, mkdir -p, mysql -p with no value) stays readable.
+(deftest cli-p-password-quoted-with-spaces
+  (doseq [cmd ["mysql -uroot -p'long plumspacezz' db" "mysql -p\"long plumspacezz\" db" "mariadb -h h -p'long plumspacezz'"
+               "sshpass -p 'long plumspacezz' ssh host" "sshpass -p\"long plumspacezz\" ssh host"
+               "sshpass -p long\\ plumspacezz ssh host" "mysql -p'long plumspacezz"]]
+    (is (not (str/includes? (:value (lf/redact cmd #{})) "plumspacezz")) cmd)
+    (let [{:keys [values reason]} (#'lf/body-exposure cmd)]
+      (is (or reason (contains? values "long plumspacezz")) cmd)))
+  (let [{:keys [values]} (#'lf/body-exposure "sshpass -p 'long plumspacezz' ssh host")]
+    (is (contains? values "long plumspacezz") "the whole quoted -p value is pinned"))
+  (let [{:keys [values]} (#'lf/body-exposure "mysql -p'plum\"orchard zz' db")]
+    (is (contains? values "plum\"orchard zz") "a quote inside single quotes is part of the password"))
+  (doseq [cmd ["ls -p 'my notes'" "mkdir -p 'a b'" "mysql -p db"]]
+    (is (= cmd (:value (lf/redact cmd #{}))) cmd)))
+
 ;; P0 arch#14503 :1130 (BOXP-428). With no session log, the run's prompt.md and last-message.md are the only bodies.
 ;; A value named in the prompt is pinned, so a bare repeat in the last message is masked; one that cannot be pinned
 ;; withholds the root bodies. An ordinary prompt and reply stay readable.
