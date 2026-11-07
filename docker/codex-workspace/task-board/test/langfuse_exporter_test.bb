@@ -927,6 +927,10 @@
         (is (str/starts-with? (attr-value gen "langfuse.observation.metadata.body_policy") "withheld_after_") (str format))
         (is (not (str/includes? (pr-str gen) "q7z")) (str format))))))
 
+(deftest named-values-in-serialized-bodies
+  (is (= ["quietriverstone"] (:values (lf/named-values "{\"command\":\"mysql -pquietriverstone\"}"))))
+  (is (= ["quietriverstone"] (:values (lf/named-values "{\"output\":\"password: quietriverstone\\nnext\"}")))))
+
 (deftest named-values-ignore-references-and-settings
   (is (= [] (:values (lf/named-values "--token $TOKEN and password: ${DB_PASSWORD} and PASSWORD_REQUIRED=true"))))
   (is (false? (:unpinned? (lf/named-values "--token $TOKEN and password: ${DB_PASSWORD} and PASSWORD_REQUIRED=true")))))

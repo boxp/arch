@@ -427,7 +427,9 @@
   (let [s (str/triml (str s))]
     (if-let [[_ q] (re-find #"^(\\*[\"'])" s)]
       (let [body (subs s (count q)) end (str/index-of body q)] (if end (subs body 0 end) body))
-      (or (re-find #"^[^\s,;}\]]+" s) ""))))
+      ;; Unquoted: stop at a quote or a backslash too, so a value inside serialized JSON does not take the closing
+      ;; quote or a \n escape with it.
+      (or (re-find #"^[^\s,;}\]\"'\\]+" s) ""))))
 
 (defn- reference? [v]
   (boolean (re-matches #"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|\[REDACTED:[a-z_-]+\]" v)))
