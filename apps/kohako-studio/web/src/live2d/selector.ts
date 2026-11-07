@@ -20,7 +20,7 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   for (const item of all) {
     const option = document.createElement('option'); option.value = item.id
     const version = item.id === 'kohako' ? 'v0' : item.id === 'sample' ? 'サンプル' : item.id.replace('kohako-', '')
-    option.textContent = `${version}（${'images' in item ? '読込不能: 比較画像を表示' : item.evaluation}）`
+    option.textContent = `${version}（${'images' in item ? item.id === 'kohako-v26' ? '不採用・本人確認用' : '読込不能: 比較画像を表示' : item.evaluation}）`
     select.append(option)
   }
   select.value = lost?.id ?? (includeSample ? model.id : model.id === 'sample' ? LATEST_MODEL_ID : model.id)
@@ -61,6 +61,11 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   }
   if (lost) {
     const note = document.createElement('p'); note.textContent = lost.note ?? 'p2lrt は作業ディレクトリ消失により未保存・再現不能です。比較画像を表示します。'; container.append(note)
+    if (lost.id === 'kohako-v26') {
+      for (const [file, text] of [['det', 'v25 / v26 動作比較'], ['shoulder-slow3x', '肩周辺 1/3 倍速']]) {
+        const link = document.createElement('a'); link.href = `./kohako/live2d/compare/kohako-v26-${file}.mp4`; link.textContent = text; container.append(link, ' ／ ')
+      }
+    }
     for (const src of lost.images) { const img = document.createElement('img'); img.src = src; img.alt = `${lost.id} の比較: ${src.split('-compare-')[1]?.replace(/\.(png|jpg)$/, '')}`; img.style.maxWidth = '100%'; img.loading = 'lazy'; container.append(img) }
   }
   return !!lost
