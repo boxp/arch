@@ -1068,5 +1068,27 @@
       (is (not (str/includes? (:value (lf/redact text [])) (last (str/split v #" ")))) text)
       (is (not (str/includes? (:value (lf/redact (str "later: " v) values)) (last (str/split v #" ")))) text))))
 
+(deftest named-values-in-list-and-object-values
+  ;; Regression (arch#14548 review): a list or object value (password: [a, b], token: {primary: a}) is masked in
+  ;; place as a whole, so every element is pinned for the run too, not only the text up to the first delimiter.
+  (doseq [[text vs] [["password: [hunterhorse, meadowlake]" ["hunterhorse" "meadowlake"]]
+                     ["password = [\"hunterhorse\", 'meadowlake']" ["hunterhorse" "meadowlake"]]
+                     ["{\"api_key\": [\"hunterhorse\", \"meadowlake\"]}" ["hunterhorse" "meadowlake"]]
+                     ["secret: {primary: hunterhorse, backup: meadowlake}" ["hunterhorse" "meadowlake"]]
+                     ["{\\\"token\\\": [\\\"hunterhorse\\\", \\\"mead,owlake\\\"]}" ["hunterhorse" "mead,owlake"]]
+                     ["password: [[hunterhorse], (meadowlake)]" ["hunterhorse" "meadowlake"]]
+                     ["password: [hunterhorse, meadowlake" ["hunterhorse" "meadowlake"]]]]
+    (let [{:keys [values]} (lf/named-values text)]
+      (doseq [v vs]
+        (is (some #{v} values) (str text " -> " v))
+        (is (not (str/includes? (:value (lf/redact (str "reply: " v " and more") values)) v)) (str text " -> " v)))
+      (is (not-any? #(str/starts-with? % "[") values) text)
+      (doseq [v vs] (is (not (str/includes? (:value (lf/redact text [])) v)) text))))
+  (testing "object keys are names, not values"
+    (let [{:keys [values]} (lf/named-values "secret: {primary: hunterhorse, backup: meadowlake}")]
+      (is (not-any? #{"primary" "backup"} values))))
+  (testing "a short element is unpinned (fail closed)"
+    (is (:unpinned? (lf/named-values "password: [hunterhorse, ab]")))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

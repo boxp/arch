@@ -453,6 +453,34 @@
 (defn- reference? [v]
   (boolean (re-matches #"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|\[REDACTED:[a-z_-]+\]" v)))
 
+;; A list or object value (password: [a, b], token: {primary: a}) is masked in place as a whole (mask-structured);
+;; each element is pinned too. Quoted elements keep their commas; a key followed by : or = names, not a value.
+(def ^:private collection-gap #"^(?:[\s,;\[\]{}()]++|\\++[nrt](?![A-Za-z0-9]))++")
+
+(defn- collection-values [s]
+  (let [object? (str/starts-with? (str/triml s) "{")]
+    (loop [s s acc [] n 0]
+      (let [s (str/replace-first s collection-gap "")]
+        ;; More than max-pinned-values elements already unpins the value; stop scanning there. Past 256 tokens
+        ;; (mostly keys) the rest is returned as one value, which unpins it when long (fail closed).
+        (cond
+          (or (str/blank? s) (> (count acc) max-pinned-values)) acc
+          (> n 256) (conj acc s)
+          :else
+          (let [q (re-find opening-quote s)
+                v (first-value s)
+                v (if q v (first (str/split v #"[\[\]{}()]" 2)))
+                consumed (cond (not q) (count v)
+                               (> (count s) (+ (count q) (count v))) (+ (count q) (count v) (count q))
+                               :else (count s))
+                consumed (max 1 (min consumed (count s)))
+                after (subs s consumed)
+                key? (or (re-find #"^\s*(?:[:=]|\\+u00(?:3[aA]|3[dD]))" after)
+                         (and (not q) (re-find #"[:=]$" v)))
+                after (if (and key? (not (re-find #"[:=]$" (str v)))) (str/replace-first after #"^\s*(?:[:=]|\\+u00(?:3[aA]|3[dD]))" "") after)
+                v (if (and (not q) (not key?) object?) (or (second (re-find #"^[\w.-]+[:=](.+)$" v)) v) v)]
+            (recur after (if (or key? (str/blank? v)) acc (conj acc v)) (inc n))))))))
+
 (def ^:private env-value-key (re-pattern (str "(?i)" key-start "value(?:" quote-pattern ")?" gap-pattern "[:=]" gap-pattern)))
 
 (defn- match-values [kind m]
@@ -460,9 +488,9 @@
     :assignment (let [[head key] (re-find name-separator m)
                       tail (subs m (count head))
                       key (str/replace (str key) #"[\"'\\\s]" "")]
-                  (if (re-find #"^\s*[|>]" tail)
-                    (map str/trim (rest (str/split tail #"\r?\n|\\+n")))
-                    (let [v (first-value tail)] (when-not (setting? key v) [v]))))
+                  (cond (re-find #"^\s*[|>]" tail) (map str/trim (rest (str/split tail #"\r?\n|\\+n")))
+                        (re-find #"^\s*[\[{(]" tail) (collection-values tail)
+                        :else (let [v (first-value tail)] (when-not (setting? key v) [v]))))
     :flag [(first-value (str/replace-first m #"^\S+[ \t]+" ""))]
     :cli-password (if (re-find #"(?i)^(?:-u|--user)" m)
                     (let [rest (str/replace-first m #"(?i)^(?:-u|--user)[ \t=]*" "")]
@@ -531,13 +559,34 @@
     (let [d (decode-once v)]
       (if (or (= d v) (>= n 3)) acc (recur d (conj acc d) (inc n))))))
 
+(defn- assignment-matches
+  "Assignment matches in text; one whose value opens a bracket extends to the matching close (or the end of text,
+  fail closed), as mask-structured masks it."
+  [pattern text]
+  (let [m (re-matcher pattern text) n (count text)]
+    ;; A match inside an extended value is already covered by it (its elements are scanned there); skipping it
+    ;; keeps unclosed brackets (password: [password: [ ...) linear.
+    (loop [acc [] covered 0]
+      (if (.find m)
+        (if (< (.start m) covered)
+          (recur acc covered)
+        (let [s (.group m)
+              head (first (re-find name-separator s))
+              pos (loop [p (+ (.start m) (count head))]
+                    (if (and (< p n) (#{\space \tab} (.charAt text p))) (recur (inc p)) p))]
+          (if (and head (< pos n) (contains? closers (.charAt text pos)))
+            (let [end (max (.end m) (bracket-end text pos n))]
+              (recur (conj acc (subs text (.start m) end)) end))
+            (recur (conj acc s) covered))))
+        acc))))
+
 (defn named-values
   "{:values [...] :unpinned? bool} for the name-based known formats in text."
   [text]
   (let [text (str text)
         found (concat
                (for [[kind pattern] patterns :when (pin-kinds kind)
-                     match (re-seq pattern text)
+                     match (if (= kind :assignment) (assignment-matches pattern text) (re-seq pattern text))
                      v (match-values kind (if (vector? match) (first match) match))
                      :let [v (str/trim (str v))]
                      :when (and (not (str/blank? v)) (not (reference? v)))]
