@@ -3376,7 +3376,7 @@ test_stale_prune() {
   mkdir -p "${bin}" "${state}/locks"
   make_fake_gh "${bin}"; make_prune_source_repo "${source}"; git -C "${source}" rev-parse HEAD >"${known}"
   write_board "${vault}" ""
-  for ticket in BOXP-901 BOXP-902 BOXP-903 BOXP-904 BOXP-905 BOXP-906 BOXP-907 BOXP-908; do
+  for ticket in BOXP-901 BOXP-902 BOXP-903 BOXP-904 BOXP-905 BOXP-906 BOXP-907 BOXP-908 BOXP-909 BOXP-910; do
     if [[ "${ticket}" == BOXP-907 ]]; then
       write_prune_ticket "${vault}" "${ticket}" done "$(date -u +%Y-%m-%d)"
     else
@@ -3387,7 +3387,7 @@ test_stale_prune() {
       co="$(add_prune_run "${state}" "${source}" "${ticket}" "${run}")"
       if [[ "${i}" == 1 ]]; then
         case "${ticket}" in
-          BOXP-902) echo dirty >"${co}/dirty" ;;
+          BOXP-910|BOXP-902) echo dirty >"${co}/dirty" ;;
           BOXP-903) prune_commit "${co}" unpushed >/dev/null ;;
           BOXP-904) echo results/ >>"$(git -C "${co}" rev-parse --git-path info/exclude)"; mkdir -p "${co}/results"; echo x >"${co}/results/out.bin" ;;
           BOXP-905) printf 'node_modules/\n.terraform/\n' >>"$(git -C "${co}" rev-parse --git-path info/exclude)"; mkdir -p "${co}/node_modules" "${co}/.terraform"; touch "${co}/node_modules/x" "${co}/.terraform/x" ;;
@@ -3397,13 +3397,21 @@ test_stale_prune() {
     done
   done
   echo lock >"${state}/locks/BOXP-906.edn"
+  printf '{:ticket "BOXP-909" :run-id "20200101T000000Z" :heartbeat-at "2020-01-01T00:00:00Z"}\n' >"${state}/locks/BOXP-909.edn"
+  printf '{:ticket "BOXP-910" :run-id "20200105T000000Z"}\n' >"${state}/locks/BOXP-910.edn"
   # Scan a fixture process table: CI hosts have root processes whose cwd is
   # unreadable, which the fail-closed scan would (correctly) treat as a hold.
   mkdir -p "${tmp}/proc/100"; ln -s / "${tmp}/proc/100/cwd"
   echo "22 1 0:21 / / rw - ext4 /dev/root rw" >"${tmp}/mountinfo"
   export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=false run_prune "${vault}" "${state}" >"${out}"
+  for ticket in BOXP-909 BOXP-910; do
+    for i in 1 2 3 4; do
+      [[ -d "${ws}/${ticket}/2020010${i}T000000Z" ]] || fail "locked run removed with stale prune disabled: ${ticket}"
+    done
+  done
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" --dry-run >"${out}"
-  [[ -d "${ws}/BOXP-901/20200101T000000Z" ]] || fail "stale dry run removed data"
+  [[ -d "${ws}/BOXP-901/20200101T000000Z" && -d "${ws}/BOXP-909/20200102T000000Z" && -d "${ws}/BOXP-910/20200102T000000Z" ]] || fail "stale dry run removed data"
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" >"${out}"
   for ticket in BOXP-901 BOXP-905 BOXP-907; do
     [[ ! -e "${ws}/${ticket}/20200101T000000Z" && ! -e "${ws}/${ticket}/20200102T000000Z" ]] || fail "old stale runs retained: ${ticket}"
@@ -3412,6 +3420,10 @@ test_stale_prune() {
   for ticket in BOXP-902 BOXP-903 BOXP-904 BOXP-906 BOXP-908; do
     [[ -d "${ws}/${ticket}/20200101T000000Z" ]] || fail "unsafe stale run removed: ${ticket}"
   done
+  for ticket in BOXP-909 BOXP-910; do
+    [[ -d "${ws}/${ticket}/20200101T000000Z" && ! -e "${ws}/${ticket}/20200102T000000Z" && -d "${ws}/${ticket}/20200103T000000Z" && -d "${ws}/${ticket}/20200104T000000Z" ]] || fail "locked stale run retention incorrect: ${ticket}"
+  done
+  assert_file_contains "${out}" 'BOXP-910/20200101T000000Z.*reason=uncommitted-changes'
   assert_file_contains "${out}" 'reason=ignored-unknown path=results/'
   assert_file_contains "${out}" "reason=outside-checkout path=agent-notes.md"
   assert_file_contains "${out}" 'reason=uncommitted-changes'

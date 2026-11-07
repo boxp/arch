@@ -5421,15 +5421,31 @@
                           lines)))))
     (catch Exception _ nil)))
 
+(def stale-ticket-reasons #{"not-done" "within-retention" "locked-active"})
+
+(defn lock-prune-info [lock ticket-id]
+  (if (and (map? lock)
+           (string? (:run-id lock))
+           (not (str/blank? (:run-id lock)))
+           (or (not (contains? lock :ticket)) (= ticket-id (:ticket lock))))
+    {:reason "locked-active" :active-run-id (:run-id lock)}
+    {:reason "locked"}))
+
 (defn prune-ticket-status [{:keys [today-date retention-days]} ticket-id]
-  (let [card-lanes (board-card-lanes ticket-id)]
+  (let [lock-info (when (fs/exists? (lock-path ticket-id))
+                    (if (stale-prune-enabled?)
+                      (try (lock-prune-info (read-edn-file (lock-path ticket-id) nil) ticket-id)
+                           (catch Exception _ {:reason "locked"}))
+                      {:reason "locked"}))
+        card-lanes (board-card-lanes ticket-id)]
     (cond
-      (fs/exists? (lock-path ticket-id)) {:eligible? false :reason "locked"}
+      (= "locked" (:reason lock-info)) (assoc lock-info :eligible? false)
       (nil? card-lanes) {:eligible? false :reason "board-unreadable"}
       ;; The board lane is the source of truth and frontmatter only follows at
       ;; the next sync, so a card moved out of Done wins over `status: done`.
       ;; Tickets without a card are judged by frontmatter alone.
       (nil? (ticket-frontmatter-or-nil ticket-id)) {:eligible? false :reason "ticket-missing"}
+      lock-info (assoc lock-info :eligible? false)
       (some #(not= "Done" %) card-lanes) {:eligible? false :reason "not-done"}
       :else (prune-ticket-decision (ticket-frontmatter-or-nil ticket-id) today-date retention-days))))
 
@@ -5440,7 +5456,7 @@
   (let [run-path (run-workspace-dir ticket-id run-id)
         ticket (prune-ticket-status ctx ticket-id)
         mode (if (:eligible? ticket) :done :stale)
-        stale? (and (stale-prune-enabled?) (contains? #{"not-done" "within-retention"} (:reason ticket)))
+        stale? (and (stale-prune-enabled?) (contains? stale-ticket-reasons (:reason ticket)))
         run-ids (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))
         run (if (= mode :done) (prune-run-decision run-id now-instant retention-days)
                 (stale-run-decision run-id run-ids now-instant (stale-retention-hours) (keep-latest-runs)))
@@ -5448,6 +5464,7 @@
     (cond
       (not (fs/exists? run-path {:nofollow-links true})) {:result :gone}
       (and (not (:eligible? ticket)) (not stale?)) {:result :ticket-skipped :reason (:reason ticket)}
+      (and (= "locked-active" (:reason ticket)) (= run-id (:active-run-id ticket))) {:result :recent}
       (contains? #{"within-retention" "within-stale-retention" "latest-run"} (:reason run)) {:result :recent}
       (not (:eligible? run)) (hold (:reason run))
       (not (safe-run-workspace-path? ticket-id run-id run-path)) (hold "unsafe-path")
@@ -5485,7 +5502,9 @@
 
           (or (and (= mode :done) (not (:eligible? @recheck)))
               (and (= mode :stale)
-                   (or (not (contains? #{"not-done" "within-retention"} (:reason @recheck)))
+                   (or (not (contains? stale-ticket-reasons (:reason @recheck)))
+                       (and (= "locked-active" (:reason @recheck))
+                            (= run-id (:active-run-id @recheck)))
                        (not (:eligible? (stale-run-decision run-id
                               (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))
                               (now) (stale-retention-hours) (keep-latest-runs)))))))
@@ -5516,7 +5535,7 @@
     (cond
       (empty? run-ids) nil
       (and (not (:eligible? pre))
-           (not (and (stale-prune-enabled?) (contains? #{"not-done" "within-retention"} (:reason pre))))) (skip-ticket! (:reason pre))
+           (not (and (stale-prune-enabled?) (contains? stale-ticket-reasons (:reason pre))))) (skip-ticket! (:reason pre))
       :else
       (loop [[run-id & more] run-ids]
         (when (and run-id (not (stop?)))
@@ -6308,7 +6327,14 @@
 
     (let [ids ["20260928T000000Z" "20260929T000000Z" "20260930T000000Z" "bad"]
           instant (java.time.Instant/parse "2026-10-01T12:00:00Z")
-          cases [["stale old" (:eligible? (stale-run-decision (first ids) ids instant 12 2)) true]
+          cases [["valid lock" (lock-prune-info {:ticket "BOXP-1" :run-id "run"} "BOXP-1") {:reason "locked-active" :active-run-id "run"}]
+                 ["lock without ticket" (lock-prune-info {:run-id "run"} "BOXP-1") {:reason "locked-active" :active-run-id "run"}]
+                 ["nil lock" (lock-prune-info nil "BOXP-1") {:reason "locked"}]
+                 ["blank lock run" (lock-prune-info {:run-id " "} "BOXP-1") {:reason "locked"}]
+                 ["missing lock run" (lock-prune-info {} "BOXP-1") {:reason "locked"}]
+                 ["non-string lock run" (lock-prune-info {:run-id 1} "BOXP-1") {:reason "locked"}]
+                 ["mismatched lock ticket" (lock-prune-info {:ticket "BOXP-2" :run-id "run"} "BOXP-1") {:reason "locked"}]
+                 ["stale old" (:eligible? (stale-run-decision (first ids) ids instant 12 2)) true]
                  ["stale latest" (:reason (stale-run-decision (nth ids 2) ids instant 12 2)) "latest-run"]
                  ["stale unknown" (:reason (stale-run-decision "bad" ids instant 12 2)) "run-id-timestamp-unparseable"]
                  ["unknown does not consume slot" (:reason (stale-run-decision (nth ids 1) ids instant 12 2)) "latest-run"]
