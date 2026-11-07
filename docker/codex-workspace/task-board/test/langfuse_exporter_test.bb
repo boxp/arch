@@ -1628,5 +1628,24 @@
                       ["curl -u :huntertwo https://x" "huntertwo"]]]
       (is (contains? (:values (#'lf/body-exposure text)) v) text))))
 
+;; P0 arch#14503 :336 (BOXP-428). env with an option (env -u HOME) still prints the environment, but the option
+;; argument was not an assignment or terminator, so the command missed the env-dump rule and the output had no HOME=.
+;; Any option to env now counts as a dump, the same as the Hermes observer (_ENV_DUMP).
+(deftest env-with-options-is-an-env-dump
+  (doseq [c ["env -u HOME" "env -u PATH -u HOME" "env --unset=HOME" "env --unset HOME" "env -uHOME" "env -C /tmp"
+             "env --chdir /tmp" "env -u HOME | grep A" "x; env -u HOME > out" "/usr/bin/env -u HOME" "env LANG=C -u HOME"
+             "{\"command\":\"env -u HOME\"}" "bash -lc 'env -u HOME'"]]
+    (is (lf/withhold-output? c) c))
+  (testing "a dump through env -u HOME does not send a value with no secret word"
+    (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+          lines [{:type "response_item" :payload {:type "function_call" :call_id "1" :name "exec" :arguments "env -u HOME"}}
+                 {:type "response_item" :payload {:type "function_call_output" :call_id "1" :output "PATH=/bin\nAPP_SETTING=plainenvvalue77"}}
+                 {:type "response_item" :payload {:type "message" :role "assistant" :content "the value is plainenvvalue77"}}]
+          body (json/generate-string (doall (lf/codex-spans ctx "root" "test" lines)))]
+      (is (not (str/includes? body "plainenvvalue77")))))
+  (testing "env running a command and mentions stay readable"
+    (doseq [c ["/usr/bin/env python3 x.py" "env LANG=C ls" "echo environment" "git commit -m 'update envs'"]]
+      (is (not (lf/withhold-output? c)) c))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
