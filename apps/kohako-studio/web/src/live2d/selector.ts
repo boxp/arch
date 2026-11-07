@@ -30,6 +30,12 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   details.textContent = `${select.selectedOptions[0]?.textContent} — ${selected.evaluation}。問題: ${selected.problems} 最新の試作は ${LATEST_MODEL_ID.replace('kohako-', '')}（担当評価は選択欄を参照）です。`
   container.append(label, select, details)
   if (model.id === LATEST_MODEL_ID && !lost) {
+    for (const [file, label] of [['mouth', 'v24/v25 口 0〜1'], ['full', 'v24/v25 全体']]) {
+      const comparison = document.createElement('a')
+      comparison.href = `./kohako/live2d/compare/kohako-v25-vs-v24-${file}.jpg`
+      comparison.textContent = label
+      container.append(comparison, ' ／ ')
+    }
     for (const [file, label] of [['ornament', 'v23/v24 髪飾りの下地（首振り複合）'], ['mouth', 'v23/v24 口 0〜1'], ['eyes', 'v23/v24 目 1〜0'], ['full', 'v23/v24 全体（9 ポーズ）']]) {
       const comparison = document.createElement('a')
       comparison.href = `./kohako/live2d/compare/kohako-v24-vs-v23-${file}.jpg`
