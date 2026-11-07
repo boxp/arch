@@ -12,13 +12,13 @@ docker rm -f $SV $TR >/dev/null 2>&1 || true; docker volume rm $VOL >/dev/null 2
 docker volume create $VOL >/dev/null
 docker create --name $TR -v $VOL:/tmp/boxp441 $PY true >/dev/null
 docker cp "$RIG" $TR:/tmp/boxp441/rig
-docker cp $WORK/psd2live $TR:/tmp/boxp441/psd2live
-docker cp $WORK/gradle-cache $TR:/tmp/boxp441/gradle-cache
-docker cp $WORK/v17 $TR:/tmp/boxp441/v17
+docker cp "$WORK/psd2live" $TR:/tmp/boxp441/psd2live
+docker cp "$WORK/gradle-cache" $TR:/tmp/boxp441/gradle-cache
+docker cp "$WORK/v17" $TR:/tmp/boxp441/v17
 docker run --rm -v $VOL:/tmp/boxp441 $PY mkdir -p /tmp/boxp441/kohako /tmp/boxp441/v6/out /tmp/boxp441/v6/psd2live
-docker cp $WORK/bust29.png $TR:/tmp/boxp441/kohako/bust-smile.png
-docker cp $WORK/v28/aligned.png $TR:/tmp/boxp441/aligned-v28.png
-docker cp $O/v29-mask.png $TR:/tmp/boxp441/v29-mask.png
+docker cp "$WORK/bust29.png" $TR:/tmp/boxp441/kohako/bust-smile.png
+docker cp "$WORK/v28/aligned.png" $TR:/tmp/boxp441/aligned-v28.png
+docker cp "$O/v29-mask.png" $TR:/tmp/boxp441/v29-mask.png
 docker run --rm -v $VOL:/tmp/boxp441 $PY sh -ec 'pip -q install --target /tmp/boxp441/python-deps numpy==2.5.4 pillow==13.0.0 opencv-python-headless==5.0.0.93; cp /tmp/boxp441/psd2live/mcp_proxy.py /tmp/boxp441/v6/psd2live/; cp /tmp/boxp441/rig/kohako-v6/pose_extra.py /tmp/boxp441/v6/; python /tmp/boxp441/rig/kohako-v36/patch_psd2live.py /tmp/boxp441/psd2live /tmp/boxp441/rig/kohako-v36/backhair-anchor.patch'
 TOKEN=$(od -An -N16 -tx1 /dev/urandom | tr -d " \n")
 docker run -d --log-driver none --name $SV --network host -v $VOL:/tmp/boxp441 -w /tmp/boxp441/psd2live -e GRADLE_USER_HOME=/tmp/boxp441/gradle-cache -e P2L_BACKHAIR_ANCHOR -e P2L_BACKHAIR_FX -e P2L_BACKHAIR_FY -e P2L_BACKHAIR_G -e P2L_BACKHAIR_SHOULDER_Y -e P2L_BACKHAIR_ROWS $JDK ./gradlew -Ppsd2live.prebuiltRuntime=false run --args="mcp --port 18767 --token $TOKEN --store /tmp/boxp441/mcp-store --profile full" >/dev/null
@@ -38,5 +38,6 @@ P
  python /tmp/boxp441/rig/kohako-v25/capture.py v36'
 docker stop $SV >/dev/null
 docker run --rm -v $VOL:/tmp/boxp441 -w /tmp/boxp441/psd2live -e GRADLE_USER_HOME=/tmp/boxp441/gradle-cache -e P2L_BACKHAIR_ANCHOR -e P2L_BACKHAIR_FX -e P2L_BACKHAIR_FY -e P2L_BACKHAIR_G -e P2L_BACKHAIR_SHOULDER_Y -e P2L_BACKHAIR_ROWS $JDK ./gradlew -q -Ppsd2live.prebuiltRuntime=false run --args='export /tmp/boxp441/v6/out/kohako-v6.psd2live --target p2lrt --output /tmp/boxp441/v6/out --name kohako-v36'
-rm -rf $O/v36; mkdir -p $O/v36; docker cp $TR:/tmp/boxp441/v6/out $O/v36/out; docker cp $TR:/tmp/boxp441/v6/layout $O/v36/layout
-sha256sum $O/v36/out/kohako-v36.p2lrt
+case "$O" in ""|/) echo "refusing unsafe OUT: '$O'" >&2; exit 1;; esac
+rm -rf -- "$O/v36"; mkdir -p -- "$O/v36"; docker cp "$TR:/tmp/boxp441/v6/out" "$O/v36/out"; docker cp "$TR:/tmp/boxp441/v6/layout" "$O/v36/layout"
+sha256sum "$O/v36/out/kohako-v36.p2lrt"
