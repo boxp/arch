@@ -309,6 +309,20 @@
       prPriority: -10,
       labels: ["kubernetes", "manual-review-required"]
     },
+    // 🚨 BOXP-459 (TD-04 案A): クラスタ本体の Kubernetes / CRI-O 版は手動 upgrade
+    // (upgrade-k8s.yml) の対象で、main merge で apply-ansible.yml が本番 cluster に
+    // 反映され得る。新版の検知は Dependency Dashboard に残したまま、Owner が Dashboard
+    // でチェックするまで PR を作らない。
+    // - Dashboard のチェックは「PR 作成の許可」だけで、merge / Ansible Apply /
+    //   クラスタ upgrade の承認ではない。bot・agent は Owner の代わりにチェックしない。
+    // - ansible/playbooks のみに限定し、docker/codex-workspace の kubectl
+    //   (同じ depName kubernetes/kubernetes) や kube-vip 等は従来どおり。
+    {
+      matchFileNames: ["ansible/playbooks/**"],
+      matchManagers: ["custom.regex"],
+      matchPackageNames: ["kubernetes/kubernetes", "cri-o/cri-o"],
+      dependencyDashboardApproval: true,
+    },
     // kube-vip (manual review)
     {
       matchManagers: ["custom.regex"],
