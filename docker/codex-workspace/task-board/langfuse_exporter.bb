@@ -422,7 +422,8 @@
 (def name-separator #"(?s)^(.*?)(?:[:=]|\\+u00(?:3[aA]|3[dD]))")
 
 (def ^:private opening-quote (re-pattern (str "(?i)^" quote-pattern)))
-(def ^:private unquoted-value #"(?i)^(?:[^\s,;}\]\"'\\&]|&(?!quot|apos|#0*(?:34|39)(?!\d)|#x0*(?:22|27)(?![0-9a-fA-F])))++")
+(def ^:private unquoted-value
+  #"(?i)^(?:[^\s,;}\]\"'\\&]|\\\\|\\(?![nrt\"']|u00(?:22|27))|&(?!quot|apos|#0*(?:34|39)(?!\d)|#x0*(?:22|27)(?![0-9a-fA-F])))++")
 
 (defn- first-value
   "The value at the start of s: up to the matching quote when quoted, else up to a delimiter."
@@ -437,8 +438,9 @@
             closer (re-matcher (java.util.regex.Pattern/compile (str "(?<!\\\\)" (java.util.regex.Pattern/quote q))
                                                                 java.util.regex.Pattern/CASE_INSENSITIVE) body)]
         (if (.find closer) (subs body 0 (.start closer)) body))
-      ;; Unquoted: stop at a quote, a backslash or an entity quote too, so a value inside serialized JSON or HTML
-      ;; does not take the closing quote or a \n escape with it.
+      ;; Unquoted: stop at a quote, an entity quote or a quote/line escape (\", \u0022, \n, \r, \t) too, so a value
+      ;; inside serialized JSON or HTML does not take the closing quote or a \n escape with it. Any other backslash
+      ;; (password: \mysecret123, its JSON form \\mysecret123, my\secret) is part of the value, not its end.
       (or (re-find unquoted-value s) ""))))
 
 (defn- reference? [v]

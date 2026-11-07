@@ -913,7 +913,10 @@
                              ["<password>pine&lt;hollowgate</password>" "pine<hollowgate"]
                              ["{\"password\": \"amber\\u0026willowpond\"}" "amber&willowpond"]
                              ["password: \"hunter\\\"horsefield\"" "hunter\"horsefield"]
-                             ["{\"output\":\"password: \\\"maple\\\\\\\"brookstone\\\"\"}" "maple\"brookstone"]]]
+                             ["{\"output\":\"password: \\\"maple\\\\\\\"brookstone\\\"\"}" "maple\"brookstone"]
+                             ["password: \\mysecretlakeview" "\\mysecretlakeview"]
+                             ["{\"output\":\"password: \\\\coldbackslashpine\\nnext\"}" "\\coldbackslashpine"]
+                             ["password: amber\\slashgrove" "amber\\slashgrove"]]]
       (let [lines (if (= format :claude)
                     [{:type "user" :message {:content "first request"}}
                      {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat notes.txt"}}]}}
@@ -976,6 +979,14 @@
   (is (= ["it\\'s-quietpond" "it's-quietpond"] (:values (lf/named-values "password: 'it\\'s-quietpond'"))))
   (is (= ["hunterhorse"] (:values (lf/named-values "password: \"hunterhorse\" next: \"x\""))))
   (is (= ["hunterhorse"] (:values (lf/named-values "{\"password\": \"hunterhorse\", \"note\": \"a\\\"b\"}")))))
+
+(deftest named-values-with-backslashes
+  ;; A backslash other than a quote/line escape is part of an unquoted value, including at its start.
+  (is (= ["\\mysecret123"] (:values (lf/named-values "password: \\mysecret123"))))
+  (is (= ["\\\\coldpine" "\\coldpine"] (:values (lf/named-values "{\"output\":\"password: \\\\coldpine\\nnext\"}"))))
+  (is (= ["amber\\slash"] (:values (lf/named-values "password: amber\\slash"))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "{\"output\":\"password: hunterhorse\\nnext\"}"))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "{\"password\": \"x\", \"o\": \"password: hunterhorse\\\"\"}")))))
 
 (deftest named-values-after-self-closing-elements
   (is (= ["hunterhorse"] (:values (lf/named-values "<password/><password>hunterhorse</password>"))))
