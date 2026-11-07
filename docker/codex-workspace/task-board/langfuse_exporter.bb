@@ -460,13 +460,13 @@
                     (map str/trim (rest (str/split tail #"\r?\n|\\+n")))
                     (let [v (first-value tail)] (when-not (setting? key v) [v]))))
     :flag [(first-value (str/replace-first m #"^\S+[ \t]+" ""))]
-    :cli-password (if (re-find #"^(?:-u|--user)" m)
-                    (let [rest (str/replace-first m #"^(?:-u|--user)[ \t=]*" "")]
+    :cli-password (if (re-find #"(?i)^(?:-u|--user)" m)
+                    (let [rest (str/replace-first m #"(?i)^(?:-u|--user)[ \t=]*" "")]
                       (if (re-find opening-quote rest)
                         ;; -u 'user:pass word': the whole quoted word is user:password.
                         (let [w (first-value rest) i (str/index-of w ":")] (when i [(subs w (inc i))]))
                         [(first-value (str/replace-first rest #"^[^\s:]+:" ""))]))
-                    [(first-value (str/replace-first m #"(?s)^.*?\s-p[ \t]*" ""))])
+                    [(first-value (str/replace-first m #"(?is)^.*?\s-p[ \t]*" ""))])
     :env-entry (let [matcher (re-matcher #"(?i)(?<![\w-])value(?:\\*[\"'])?(?:\s|\\+[nrt])*[:=](?:\s|\\+[nrt])*" m)]
                  (when (.find matcher) [(first-value (subs m (.end matcher)))]))
     nil))

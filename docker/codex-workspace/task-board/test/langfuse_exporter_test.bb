@@ -1029,5 +1029,16 @@
     (is (not (str/includes? body "orchard")))
     (is (str/includes? body "laterreplymarker"))))
 
+(deftest named-values-in-uppercase-cli-flags
+  ;; Regression (arch#14548 review): the in-place match is case-insensitive, so value extraction must be too;
+  ;; `curl --USER admin:secretvalue` pins the password and a later bare restatement is masked.
+  (doseq [[text v] [["curl --USER admin:secretvalue https://x" "secretvalue"]
+                    ["curl -U admin:lanternfield https://x" "lanternfield"]
+                    ["curl --User 'admin:copper ridge' https://x" "copper ridge"]
+                    ["sshpass -P marblestone ssh host" "marblestone"]]]
+    (is (some #{v} (:values (lf/named-values text))) text)
+    (let [{:keys [values]} (lf/named-values text)]
+      (is (not (str/includes? (:value (lf/redact (str "reply: " v) values)) (last (str/split v #" ")))) text))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
