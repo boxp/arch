@@ -1095,5 +1095,31 @@
   (testing "a short element is unpinned (fail closed)"
     (is (:unpinned? (lf/named-values "password: [hunterhorse, ab]")))))
 
+(deftest named-values-in-env-entry-list-and-object-values
+  ;; Regression (arch#14548 review): an env entry whose value is a list or object ({"name":"API_SECRET",
+  ;; "value":["a","b"]}) is masked in place as a whole (mask-structured / mask-reversed-entries), so every element
+  ;; is pinned for the run too, not only the text up to the first delimiter.
+  (doseq [[text vs] [["{\"name\":\"API_SECRET\",\"value\":[\"hunterhorse\",\"meadowlake\"]}" ["hunterhorse" "meadowlake"]]
+                     ["{\"name\": \"DB_PASSWORD\", \"value\": [hunterhorse, meadowlake]}" ["hunterhorse" "meadowlake"]]
+                     ["{\"name\":\"API_TOKEN\",\"value\":{\"primary\":\"hunterhorse\",\"backup\":\"meadowlake\"}}" ["hunterhorse" "meadowlake"]]
+                     ["{\\\"name\\\":\\\"API_SECRET\\\",\\\"value\\\":[\\\"hunterhorse\\\",\\\"meadowlake\\\"]}" ["hunterhorse" "meadowlake"]]
+                     ["{&quot;name&quot;:&quot;API_SECRET&quot;,&quot;value&quot;:[&quot;hunterhorse&quot;,&quot;meadowlake&quot;]}" ["hunterhorse" "meadowlake"]]
+                     ["{\"name\":\"API_SECRET\",\"value\":[\"hunterhorse\",\"meadowlake\"" ["hunterhorse" "meadowlake"]]
+                     ;; Value before name.
+                     ["{\"value\":[\"hunterhorse\",\"meadowlake\"],\"name\":\"API_SECRET\"}" ["hunterhorse" "meadowlake"]]
+                     ["{\"value\": {\"primary\": \"hunterhorse\", \"backup\": \"meadowlake\"}, \"name\": \"DB_PASSWORD\"}" ["hunterhorse" "meadowlake"]]]]
+    (let [{:keys [values]} (lf/named-values text)]
+      (doseq [v vs]
+        (is (some #{v} values) (str text " -> " v))
+        (is (not (str/includes? (:value (lf/redact (str "reply: " v " and more") values)) v)) (str text " -> " v)))
+      (is (not-any? #(str/starts-with? % "[") values) text)
+      (is (not-any? #{"primary" "backup"} values) text)
+      (doseq [v vs] (is (not (str/includes? (:value (lf/redact text [])) v)) text))))
+  (testing "a short element is unpinned (fail closed)"
+    (is (:unpinned? (lf/named-values "{\"name\":\"API_SECRET\",\"value\":[\"hunterhorse\",\"ab\"]}")))
+    (is (:unpinned? (lf/named-values "{\"value\":[\"hunterhorse\",\"ab\"],\"name\":\"API_SECRET\"}"))))
+  (testing "a non-secret entry with a list value pins nothing"
+    (is (empty? (:values (lf/named-values "{\"name\":\"PATH_LIST\",\"value\":[\"alphabeta\",\"gammadelta\"]}"))))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

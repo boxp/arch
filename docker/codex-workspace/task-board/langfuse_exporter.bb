@@ -503,8 +503,11 @@
                         [(first-value (str/replace-first rest #"^[^\s:]+:" ""))]))
                     [(first-value (str/replace-first m #"(?is)^.*?\s-p[ \t]*" ""))])
     ;; The value key takes every serialized quote form (&quot;value&quot;:, \u0022value\u0022:), as entry-key does.
+    ;; A list or object value ("value": ["a", "b"]) is masked in place as a whole; each element is pinned.
     :env-entry (let [matcher (re-matcher env-value-key m)]
-                 (when (.find matcher) [(first-value (subs m (.end matcher)))]))
+                 (when (.find matcher)
+                   (let [tail (str/triml (subs m (.end matcher)))]
+                     (if (re-find #"^[\[{(]" tail) (collection-values tail) [(first-value tail)]))))
     nil))
 
 (def ^:private tag-close #"(?i)>|&gt;|&#0*62;|&#x0*3e;|\\+u003e")
@@ -584,6 +587,28 @@
             (recur (conj acc s) covered))))
         acc))))
 
+(defn- env-value-head
+  "The text of an env entry match up to its value (name, value key and separator), or nil."
+  [s]
+  (let [m (re-matcher env-value-key s)] (when (.find m) (subs s 0 (.end m)))))
+
+(defn- reversed-bracket-entries
+  "Env entries whose list or object value comes before a secret name ({\"value\": [a, b], \"name\": \"API_SECRET\"}),
+  as mask-reversed-entries masks them in place: each is the text from the value key to the bracket's close. The scan
+  is bounded by the same limits; past them mask-reversed-entries fails and the field is withheld."
+  [text]
+  (let [matcher (.matcher entry-value text)]
+    (loop [acc [] position 0 scanned 0]
+      (if (and (< scanned max-reversed-entries) (.find matcher))
+        (if (< (.start matcher) position)
+          (recur acc position (inc scanned))
+          (let [end (bracket-end text (.end matcher) (+ (.end matcher) max-reversed-value))
+                after (.matcher entry-name-after text) _ (.region after end (count text))]
+            (if (.lookingAt after)
+              (recur (conj acc (subs text (.start matcher) end)) end (inc scanned))
+              (recur acc position (inc scanned)))))
+        acc))))
+
 (defn named-values
   "{:values [...] :unpinned? bool} for the name-based known formats in text."
   [text]
@@ -593,8 +618,14 @@
                      match (case kind
                              :assignment (bracket-matches pattern text #(first (re-find name-separator %)))
                              :flag (bracket-matches pattern text #(re-find flag-head %))
+                             :env-entry (bracket-matches pattern text env-value-head)
                              (re-seq pattern text))
                      v (match-values kind (if (vector? match) (first match) match))
+                     :let [v (str/trim (str v))]
+                     :when (and (not (str/blank? v)) (not (reference? v)))]
+                 v)
+               (for [entry (reversed-bracket-entries text)
+                     v (match-values :env-entry entry)
                      :let [v (str/trim (str v))]
                      :when (and (not (str/blank? v)) (not (reference? v)))]
                  v)
