@@ -5,7 +5,7 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   const id = normalizeModelId(params.get('model'))
   const lost = lostPrototypes.find(p => p.id === id)
   const model = modelFor(location.search)
-  document.body.classList.toggle('full-model', (model.id === 'kohako-full-v1' || model.id === 'kohako-full-v2' || model.id === 'kohako-full-v3') && !lost)
+  document.body.classList.toggle('full-model', (model.id === 'kohako-full-v1' || model.id === 'kohako-full-v2' || model.id === 'kohako-full-v3' || model.id === 'kohako-full-v4') && !lost)
   const select = document.createElement('select'); select.id = 'model-select'
   const label = document.createElement('label'); label.htmlFor = select.id; label.textContent = '試作の選択 '
   const all = [...rigModels.filter(m => includeSample || m.id !== 'sample'), ...lostPrototypes]
@@ -30,8 +30,9 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   const selected = lost ?? (includeSample || model.id !== 'sample' ? model : modelFor(''))
   details.textContent = `${select.selectedOptions[0]?.textContent} — ${selected.evaluation}。問題: ${selected.problems} 最新の試作は ${LATEST_MODEL_ID.replace('kohako-', '')}（担当評価は選択欄を参照）です。`
   container.append(label, select, details)
-  if ((model.id === 'kohako-full-v1' || model.id === 'kohako-full-v2' || model.id === 'kohako-full-v3') && !lost) {
+  if ((model.id === 'kohako-full-v1' || model.id === 'kohako-full-v2' || model.id === 'kohako-full-v3' || model.id === 'kohako-full-v4') && !lost) {
     const link = document.createElement('a'); link.href = `./kohako/live2d/compare/${model.id}-compare.jpg`; link.textContent = '原画・静止ポーズの比較'; container.append(link)
+    if (model.id === 'kohako-full-v4') for (const [file, title] of [['kohako-full-v4-eyes-sequence.jpg', '目の開閉'], ['kohako-full-v4-mouth-sequence.jpg', '口の開閉'], ['kohako-full-v4-hair-arms-crops.jpg', '髪・腕'], ['kohako-full-v4-feet-crops.jpg', '足元']]) { const crop = document.createElement('a'); crop.href = `./kohako/live2d/compare/${file}`; crop.textContent = ` ／ ${title}`; container.append(crop) }
     if (model.id === 'kohako-full-v3') for (const [file, title] of [['kohako-full-v3-eyes-crops.jpg', '目元'], ['kohako-full-v3-mouth-crops.jpg', '口元'], ['kohako-full-v3-hair-arms-crops.jpg', '髪・腕'], ['kohako-full-v3-feet-crops.jpg', '足元']]) { const crop = document.createElement('a'); crop.href = `./kohako/live2d/compare/${file}`; crop.textContent = ` ／ ${title}`; container.append(crop) }
   }
   if (model.id === LATEST_MODEL_ID && !lost) {
