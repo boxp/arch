@@ -8,11 +8,16 @@ export interface Player {
   parameterValues(): number[]
   play(id: string | null): void; expression(id: string | null): void; lookAt(x: number, y: number): void
   lipSync(level: number): void; setParameter(id: string, value: number): void
+  view: { zoom: number; x: number; y: number }; width: number; height: number
   start(): void; draw(): void
 }
 interface PlayerModule { P2LPlayer: { fromBytes(canvas: HTMLCanvasElement, runtime: WebAssembly.Exports, bytes: Uint8Array): Promise<Player> } }
 
 export type RigLoad = { player: Player; fetchMs: number; instantiateMs: number; modelMs: number; totalMs: number; wasmBytes: number; rigBytes: number }
+
+export function frameFor(model: RigModel, search: string): 'full' | 'upper' {
+  return model.id.startsWith('kohako-full-') && new URLSearchParams(search).get('frame') === 'upper' ? 'upper' : 'full'
+}
 
 /** runtime（p2l.js / p2l_runtime.wasm）は [runtimeDir] から、モデルは model.rig（runtimeDir 相対）から読む。 */
 export async function loadRig(canvas: HTMLCanvasElement, model: RigModel, runtimeDir: string): Promise<RigLoad> {
@@ -28,6 +33,20 @@ export async function loadRig(canvas: HTMLCanvasElement, model: RigModel, runtim
   const { instance } = await WebAssembly.instantiate(wasm, {})
   const t2 = performance.now()
   const player = await mod.P2LPlayer.fromBytes(canvas, instance.exports, new Uint8Array(rig))
+  if (model.id.startsWith('kohako-full-')) {
+    const updateFrame = () => {
+      const upper = frameFor(model, location.search) === 'upper'
+      const rect = canvas.getBoundingClientRect()
+      const fit = Math.min(rect.width / player.width, rect.height / player.height)
+      player.view.zoom = upper ? 1.8 : 1
+      player.view.x = 0
+      player.view.y = upper ? fit * player.height * 0.37 : 0
+      player.draw()
+    }
+    window.addEventListener('kohako-frame-change', updateFrame)
+    new ResizeObserver(updateFrame).observe(canvas)
+    updateFrame()
+  }
   const t3 = performance.now()
   return { player, fetchMs: t1 - t0, instantiateMs: t2 - t1, modelMs: t3 - t2, totalMs: t3 - t0, wasmBytes: wasm.byteLength, rigBytes: rig.byteLength }
 }
