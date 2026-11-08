@@ -49,3 +49,8 @@ PVC 拡張・縮小、他ディスク掃除、hold 一括解除、失敗台帳 r
 - 対象外: 案B（hold runの依存dirの部分削除）、retention短縮、hold解除、容量拡張、新cron/権限。
 - 検証: self-test（lock解析7ケース）、`test_stale_prune` に lock中票 BOXP-909（active=最古run）/BOXP-910（active run dirなし+dirty古run）を追加。旧コードでRed、新コードでGreen。
 - 配備後: 稼働image確認→prune summary の deleted/held/recent と df を確認し、24〜48h で生成量・回収量・純増を分けて報告する。
+
+## TD-03: kohako-studio の dist 回収
+
+- stale prune で `boxp/arch` の `apps/kohako-studio/web/dist/` のみを検査し、既知の生成物と追跡済み public の同一コピーだけなら回収する。未知の ignored パス、特殊ファイル、リンク、未追跡のビルド入力、検査失敗は保持する。
+- 最新2本・12時間・active run と既存 hold 条件、done mode は変更しない。隔離 fixture で旧実装の失敗と新実装の回収・保持を検証する。
