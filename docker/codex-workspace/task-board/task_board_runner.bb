@@ -2524,7 +2524,7 @@
 (defn progress-marker
   "The single `TASK_BOARD_PROGRESS:` line of a final message, trimmed and capped."
   [text]
-  (when-let [[_ wrapper key-close colon-close value] (re-find #"(?im)^[ \t]*(?:[-*+][ \t]+)?(\*\*|`)?TASK_BOARD_PROGRESS(\*\*|`)?:(\*\*|`)?[ \t]*(\S[^\r\n]*)$" (or text ""))]
+  (when-let [[_ wrapper key-close colon-close value] (re-find #"(?im)^[ \t]*(?:[-*+][ \t]+)?(\*\*|__|`)?TASK_BOARD_PROGRESS(\*\*|__|`)?:(\*\*|__|`)?[ \t]*(\S[^\r\n]*)$" (or text ""))]
     (let [value (str/trim value)
           value (if (and wrapper (not= wrapper key-close) (not= wrapper colon-close)
                          (str/ends-with? value wrapper))
@@ -6886,8 +6886,9 @@
               ["decorated progress markers"
                (mapv progress-marker ["- TASK_BOARD_PROGRESS: evidence" "**TASK_BOARD_PROGRESS:** evidence"
                                       "**TASK_BOARD_PROGRESS**: evidence" "`TASK_BOARD_PROGRESS: evidence`"
-                                      "  + **TASK_BOARD_PROGRESS: evidence**"])
-               ["evidence" "evidence" "evidence" "evidence" "evidence"]]
+                                      "  + **TASK_BOARD_PROGRESS: evidence**" "__TASK_BOARD_PROGRESS: evidence__"
+                                      "__TASK_BOARD_PROGRESS:__ evidence" "- __TASK_BOARD_PROGRESS__: evidence"])
+               ["evidence" "evidence" "evidence" "evidence" "evidence" "evidence" "evidence" "evidence"]]
               ["progress marker trim cap and absence"
                [(progress-marker "other\nTASK_BOARD_PROGRESS:   進展あり  \n")
                 (progress-marker (str "TASK_BOARD_PROGRESS: " (apply str (repeat 601 "x"))))
