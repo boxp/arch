@@ -7,6 +7,15 @@ case "$OUT" in ''|/) echo 'unsafe OUT' >&2; exit 1;; esac
 mkdir -p "$OUT" "$GRADLE_CACHE"
 OUT=$(realpath "$OUT"); [ "$OUT" != / ] || { echo "unsafe OUT" >&2; exit 1; }; SOURCE=$(realpath "$SOURCE"); P2L=$(realpath "$P2L"); GRADLE_CACHE=$(realpath "$GRADLE_CACHE")
 RIG=$(cd "$(dirname "$0")" && pwd)
+# rm -rf "$OUT/layout" "$OUT/out" の前に、入力と出力先の重なりを拒否する(入力の消失防止)。
+INPUT_LAYOUT=$(realpath -e "$INPUT_LAYOUT"); LAYOUT_OUT=$(realpath -m "$OUT/layout"); OUT_OUT=$(realpath -m "$OUT/out")
+inside() { case "$1/" in "$2"/*) return 0;; *) return 1;; esac; }
+for target in "$LAYOUT_OUT" "$OUT_OUT"; do
+  for input in "$INPUT_LAYOUT" "$SOURCE" "$P2L" "$GRADLE_CACHE" "$RIG"; do
+    if inside "$input" "$target"; then echo "input $input overlaps output $target" >&2; exit 1; fi
+  done
+  if inside "$target" "$INPUT_LAYOUT"; then echo "output $target is inside INPUT_LAYOUT $INPUT_LAYOUT" >&2; exit 1; fi
+done
 # braid-anchor.patch は v10g の後ろ髪パッチも含むため、未適用の v10g ツリーでは v10j を出力しない。
 git -C "$P2L" apply --reverse --check "$RIG/braid-anchor.patch" || { echo "braid anchor patch (includes v10g back hair anchor) is not applied" >&2; exit 1; }
 PY=python:3.12-slim@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54
