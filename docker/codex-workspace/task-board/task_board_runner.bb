@@ -2524,22 +2524,31 @@
 (defn progress-marker
   "The single `TASK_BOARD_PROGRESS:` line of a final message, trimmed and capped."
   [text]
-  (when-let [[_ value] (re-find #"(?im)^TASK_BOARD_PROGRESS:[ \t]*(\S[^\r\n]*)$" (or text ""))]
-    (let [value (str/trim value)]
-      (if (> (count value) progress-max-chars)
-        (str (subs value 0 progress-max-chars) "…")
-        value))))
+  (when-let [[_ wrapper key-close colon-close value] (re-find #"(?im)^[ \t]*(?:[-*+][ \t]+)?(\*\*|__|`)?TASK_BOARD_PROGRESS(\*\*|__|`)?:(\*\*|__|`)?[ \t]*(\S[^\r\n]*)$" (or text ""))]
+    (let [value (str/trim value)
+          value (if (and wrapper (not= wrapper key-close) (not= wrapper colon-close)
+                         (str/ends-with? value wrapper))
+                  (str/trim (subs value 0 (- (count value) (count wrapper))))
+                  value)]
+      (when (seq value)
+        (if (> (count value) progress-max-chars)
+          (str (subs value 0 progress-max-chars) "…")
+          value)))))
+
+(defn stagnation-review-pattern [id-pattern]
+  (re-pattern (str "(?m)^[ \t]*(?:[-*+][ \t]+)?(?:\\*\\*|__|`)?stagnation-review-of::(?:\\*\\*|__|`)?[ \t]*(?:\\*\\*|__|`)?"
+                   id-pattern "(?=$|[ \t\\r\\n(]|\\*\\*|__|`)")))
 
 (defn stagnation-review-of
   "The original ticket id when this ticket text is a stagnation review ticket."
   [ticket-text]
-  (second (re-find #"(?m)^stagnation-review-of::[ \t]*([A-Z][A-Z0-9]*-\d+)[ \t]*$" (or ticket-text ""))))
+  (second (re-find (stagnation-review-pattern "([A-Z][A-Z0-9]*-\\d+)") (or ticket-text ""))))
 
 (defn stagnation-reviews-for
   "Review tickets linked to `ticket-id`, oldest first: [{:id :status}]."
   [ticket-id]
   (let [dir (tickets-dir)
-        pattern (re-pattern (str "(?m)^stagnation-review-of::[ \\t]*" (java.util.regex.Pattern/quote ticket-id) "[ \\t]*$"))]
+        pattern (stagnation-review-pattern (java.util.regex.Pattern/quote ticket-id))]
     (when (fs/exists? dir)
       (->> (fs/list-dir dir)
            (filter #(str/ends-with? (str (fs/file-name %)) ".md"))
@@ -2595,7 +2604,8 @@
 (defn stagnation-requester-prompt [ticket-id ticket-text reviews quota-status]
   (let [helper "~/.claude/skills/obsidian-task-board/bin/task-board.bb"
         open (filter stagnation-review-open? reviews)
-        unreceived (filter #(and (= "done" (:status %)) (not (stagnation-review-received? ticket-text (:id %)))) reviews)]
+        unreceived (filter #(and (= "done" (:status %)) (not (stagnation-review-received? ticket-text (:id %)))) reviews)
+        stopped (filter #(not (contains? #{"ready" "in-progress" "done"} (:status %))) reviews)]
     (str progress-record-contract
          "Stagnation check (停滞確認, judged by you from the :progress lines above and the Notes): a stagnation candidate is the same unresolved problem with no comparative improvement, repeated rejection without an updated usable artifact, the same hypothesis retried with small tweaks, or a local metric improving while the goal does not get closer. "
          "It is NOT stagnation when an independent stage is progressing, when waiting for the Owner or an external system, on a real quota/permission/cost shortage, for a legitimate CI re-run, or merely because of the run count or the continuation limit.\n"
@@ -2608,6 +2618,9 @@
            (seq unreceived)
            (str "A finished stagnation review is not yet received: read its result (its Notes and the Project document it names) before anything else, then run: bb " helper " append-note " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --source <you> --note \"停滞レビュー受領: <REVIEW-ID> — 反映: <採る案と次の最小試験>\" for each of " (str/join ", " (map :id unreceived)) ". "
                 "Apply its recommendation only inside the already approved scope; anything that needs a new decision goes to the Owner as one short choice.\n")
+
+           (seq stopped)
+           (str "A stagnation review (" (str/join ", " (map :id stopped)) ") is stopped (status not finished) for this ticket: do not request another review for the same problem and do not work around it. Continue only independent, non-conflicting work inside the approved scope; if the original problem cannot progress without that review, return blocked with TASK_BOARD_WAIT_REASON: owner-decision and say which review is waiting.\n")
 
            :else
            (str "If this run is a stagnation candidate and no review exists for the same unresolved problem, request one independent review instead of the next inertial retry (no Owner permission needed for this limited review): "
@@ -6838,6 +6851,44 @@
               ["stagnation requester no open hold"
                (let [p (stagnation-prompt :implement "BOXP-1" "original" [] {:decision :clear})]
                  (not (str/includes? p "is open for this ticket"))) true]
+              ["stopped reviews prevent duplicate requests"
+               (mapv (fn [status]
+                       (let [p (stagnation-requester-prompt "BOXP-1" "original" [{:id "BOXP-2" :status status}] nil)]
+                         (and (str/includes? p "is stopped") (str/includes? p "BOXP-2")
+                              (str/includes? p "TASK_BOARD_WAIT_REASON: owner-decision")
+                              (not (str/includes? p "request one independent review"))
+                              (not (str/includes? p "is open for this ticket")))))
+                     ["blocked" "backlog" nil]) [true true true]]
+              ["open review takes precedence over stopped review"
+               (str/includes? (stagnation-requester-prompt "BOXP-1" "original"
+                                [{:id "BOXP-2" :status "blocked"} {:id "BOXP-3" :status "ready"}] nil)
+                              "is open for this ticket") true]
+              ["decorated stagnation review links"
+               (mapv stagnation-review-of
+                     ["- stagnation-review-of:: BOXP-468" "* stagnation-review-of:: BOXP-468"
+                      "**stagnation-review-of::** BOXP-468" "**stagnation-review-of:: BOXP-468**"
+                      "`stagnation-review-of:: BOXP-468`" "stagnation-review-of:: BOXP-468 (問題: x)"
+                      "  + __stagnation-review-of::__ __BOXP-468__"
+                      "stagnation-review-of:: BOXP-4680" "stagnation-review-of:: BOXP-4680x"
+                      "see stagnation-review-of:: BOXP-1 in text"])
+               ["BOXP-468" "BOXP-468" "BOXP-468" "BOXP-468" "BOXP-468" "BOXP-468" "BOXP-468" "BOXP-4680" nil nil]]
+              ["decorated linked reviews match whole id"
+               (let [dir (fs/create-temp-dir)
+                     lines ["- stagnation-review-of:: BOXP-468" "* stagnation-review-of:: BOXP-468"
+                            "**stagnation-review-of::** BOXP-468" "**stagnation-review-of:: BOXP-468**"
+                            "`stagnation-review-of:: BOXP-468`" "stagnation-review-of:: BOXP-468 (問題: x)"
+                            "stagnation-review-of:: BOXP-4680"]]
+                 (doseq [[i line] (map-indexed vector lines)]
+                   (spit (str (fs/path dir (str "BOXP-" (inc i) ".md"))) (str "---\nstatus: ready\n---\n" line "\n")))
+                 (with-redefs [tickets-dir (constantly dir)]
+                   (mapv :id (stagnation-reviews-for "BOXP-468"))))
+               ["BOXP-1" "BOXP-2" "BOXP-3" "BOXP-4" "BOXP-5" "BOXP-6"]]
+              ["decorated progress markers"
+               (mapv progress-marker ["- TASK_BOARD_PROGRESS: evidence" "**TASK_BOARD_PROGRESS:** evidence"
+                                      "**TASK_BOARD_PROGRESS**: evidence" "`TASK_BOARD_PROGRESS: evidence`"
+                                      "  + **TASK_BOARD_PROGRESS: evidence**" "__TASK_BOARD_PROGRESS: evidence__"
+                                      "__TASK_BOARD_PROGRESS:__ evidence" "- __TASK_BOARD_PROGRESS__: evidence"])
+               ["evidence" "evidence" "evidence" "evidence" "evidence" "evidence" "evidence" "evidence"]]
               ["progress marker trim cap and absence"
                [(progress-marker "other\nTASK_BOARD_PROGRESS:   進展あり  \n")
                 (progress-marker (str "TASK_BOARD_PROGRESS: " (apply str (repeat 601 "x"))))

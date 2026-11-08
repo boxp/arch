@@ -21,3 +21,10 @@
 
 ## 戻し方
 本 PR を revert して image を再ビルドし、image updater で配備する。既存票に残る `stagnation-review-of::` 行や `:progress` は旧 runner から無視される。
+
+## 追補: 停滞レビュー BOXP-469 指摘の硬化（2026-11-08）
+
+- (1) 連携レビュー票が blocked/backlog/不明 status の時、requester prompt が新規依頼分岐へ落ちないよう「停止中レビュー」分岐を追加（同一問題の再依頼禁止・独立作業のみ・必要なら blocked/owner-decision）。開始保留の条件（ready/in-progress）は不変。
+- (2) `stagnation-review-of::` と `TASK_BOARD_PROGRESS:` の検出を Markdown 装飾（行頭空白・`- `/`* `/`+ `・`**`/`__`/backtick・末尾補足）に耐性化。ID は後続数字を許さない完全一致。
+- (3) 進展記録の Notes 転記は既存実装（終了 Note に「進展記録: …」）で充足済みのため変更なし。
+- fixture 5 件追加。
