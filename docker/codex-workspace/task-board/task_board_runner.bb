@@ -5291,16 +5291,64 @@
     (or (some regenerable-components parts)
         (some #{[".clj-kondo" ".cache"] [".lsp" ".cache"]} (partition 2 1 parts)))))
 
-(defn inspect-ignored [checkout]
+(def studio-dist "apps/kohako-studio/web/dist/")
+(def studio-public "apps/kohako-studio/web/public/")
+(def studio-inputs ["apps/kohako-studio/web/package.json"
+                    "apps/kohako-studio/web/package-lock.json"
+                    "apps/kohako-studio/web/vite.config.ts"])
+
+(defn studio-dist-hold [checkout]
+  (try
+    (let [result (command-result (into ["git" "-C" (str checkout) "ls-files" "-z" "--"]
+                                       (conj studio-inputs (subs studio-public 0 (dec (count studio-public))))))]
+      (if-not (zero? (:exit result))
+        "studio-dist-scan-failed git-ls-files"
+        (let [tracked (set (str/split (:out result) #"\u0000"))
+              missing (some #(when-not (contains? tracked %) %) studio-inputs)
+              root (fs/path checkout studio-dist)
+              nofollow (into-array java.nio.file.LinkOption [java.nio.file.LinkOption/NOFOLLOW_LINKS])
+              comparisons (atom [])
+              unknown (fn [rel] (str "ignored-unknown path=" (one-line (str studio-dist rel))))]
+          (if missing
+            (str "studio-dist-build-input-untracked path=" (one-line missing))
+            (letfn [(visit [path rel]
+                      (cond
+                        (java.nio.file.Files/isDirectory path nofollow)
+                        (some (fn [entry]
+                                (visit entry (str rel (when-not (empty? rel) "/") (fs/file-name entry))))
+                              (sort-by str (fs/list-dir path)))
+
+                        (not (java.nio.file.Files/isRegularFile path nofollow)) (unknown rel)
+                        (> (long (java.nio.file.Files/getAttribute path "unix:nlink" nofollow)) 1) (unknown rel)
+                        (or (contains? #{"index.html" "studio.html" "live2d.html"} rel)
+                            (re-matches #"assets/[^/]+-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+" rel)) nil
+                        :else
+                        (let [public (fs/path checkout (str studio-public rel))]
+                          (if (and (contains? tracked (str studio-public rel))
+                                   (java.nio.file.Files/isRegularFile public nofollow)
+                                   (= (java.nio.file.Files/size path) (java.nio.file.Files/size public)))
+                            (do (swap! comparisons conj [path public rel]) nil)
+                            (unknown rel)))))]
+              (or (visit root "")
+                  (some (fn [[path public rel]]
+                          (when (not= -1 (java.nio.file.Files/mismatch path public)) (unknown rel)))
+                        @comparisons)))))))
+    (catch Exception e (str "studio-dist-scan-failed " (one-line (.getMessage e))))))
+
+(defn inspect-ignored [checkout repo]
   ;; NUL output avoids ambiguity from quoted names and embedded newlines.
   (let [result (command-result ["git" "-C" (str checkout) "status" "--porcelain" "-z" "--ignored=matching"])]
     (if-not (zero? (:exit result))
       "git-error"
-      (some (fn [entry]
-              (when (str/starts-with? entry "!! ")
-                (let [path (subs entry 3)]
-                  (when-not (ignored-allowed? path) (str "ignored-unknown path=" (one-line path))))))
-            (str/split (:out result) #"\u0000")))))
+      (let [paths (keep #(when (str/starts-with? % "!! ") (subs % 3))
+                        (str/split (:out result) #"\u0000"))
+            unknown (some #(when-not (or (ignored-allowed? %) (= studio-dist %)) %) paths)]
+        (cond
+          unknown (str "ignored-unknown path=" (one-line unknown))
+          (some #{studio-dist} paths) (if (= repo "boxp/arch")
+                                       (studio-dist-hold checkout)
+                                       (str "ignored-unknown path=" studio-dist))
+          :else nil)))))
 
 (defn outside-checkout-hold
   "First file, symlink or special entry in the run directory that does not
@@ -5672,10 +5720,10 @@
                               (assoc (inspect-checkout run-real checkout gh-cache) :path checkout))
                             (find-checkouts run-path))
             held (first (filter :hold checkouts))
-            stale-hold (when (= mode :stale)
+            stale-hold (when (and (= mode :stale) (not held))
                          (or (stale-process-hold run-real)
                              (outside-checkout-hold run-path (map :path checkouts))
-                             (some #(inspect-ignored (:path %)) checkouts)))
+                             (some #(inspect-ignored (:path %) (:repo %)) checkouts)))
             branch (ticket-worktree-branch ticket-id run-id)
             branch-repos (distinct (keep (fn [{:keys [external-common-dir repo]}]
                                            (when external-common-dir
