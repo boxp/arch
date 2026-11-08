@@ -190,3 +190,9 @@ describe('motion ids of the v25+ builds', () => {
     expect(clipName(v24, 'modifier:m14:6d6f74696f6e')).toBe('Idle')
   })
 })
+
+it('全身試作は明示選択のみで既定版を変更しない', () => {
+  expect(modelFor('?model=kohako-full-v1').id).toBe('kohako-full-v1')
+  expect(modelFor('').id).toBe('kohako-v45')
+  expect(clipName(modelFor('?model=kohako-full-v1'), 'modifier:m16:6d6f74696f6e')).toBe('Idle')
+})

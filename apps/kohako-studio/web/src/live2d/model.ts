@@ -68,13 +68,15 @@ export class FrameMeter {
   }
 }
 
-export type RigModelId = 'kohako' | 'kohako-v1' | 'kohako-v2' | 'kohako-v3' | 'kohako-v5' | 'kohako-v6' | 'kohako-v11' | 'kohako-v12' | 'kohako-v13' | 'kohako-v14' | 'kohako-v14b' | 'kohako-v15' | 'kohako-v15b' | 'kohako-v15c' | 'kohako-v15e' | 'kohako-v16' | 'kohako-v17' | 'kohako-v23' | 'kohako-v24' | 'kohako-v25' | 'kohako-v27' | 'kohako-v29' | 'kohako-v30' | 'kohako-v35' | 'kohako-v36' | 'kohako-v37' | 'kohako-v38' | 'kohako-v45' | 'kohako-v46' | 'sample'
+export type RigModelId = 'kohako-full-v1' | 'kohako' | 'kohako-v1' | 'kohako-v2' | 'kohako-v3' | 'kohako-v5' | 'kohako-v6' | 'kohako-v11' | 'kohako-v12' | 'kohako-v13' | 'kohako-v14' | 'kohako-v14b' | 'kohako-v15' | 'kohako-v15b' | 'kohako-v15c' | 'kohako-v15e' | 'kohako-v16' | 'kohako-v17' | 'kohako-v23' | 'kohako-v24' | 'kohako-v25' | 'kohako-v27' | 'kohako-v29' | 'kohako-v30' | 'kohako-v35' | 'kohako-v36' | 'kohako-v37' | 'kohako-v38' | 'kohako-v45' | 'kohako-v46' | 'sample'
 // v25 以降のビルドは物理モディファイアが 1 つ増え、モーションの ID が m14〜m17 にずれている（v24 までは m13〜m16）。
 // v35 までこの表が m13〜m16 のままで、待機に Shake（首振り）が再生され失敗時の Shake が無かった（BOXP-441 TD-26 で修正）。
 const CLIPS_M14: Readonly<Record<string, string>> = { 'modifier:m14:6d6f74696f6e': 'Shake', 'modifier:m15:6d6f74696f6e': 'Idle', 'modifier:m16:6d6f74696f6e': 'Blink', 'modifier:m17:6d6f74696f6e': 'Talk' }
 export type RigModel = { id: RigModelId; label: string; name: string; rig: string; notice: string; credits: string; clipNames?: Readonly<Record<string, string>>; skipSmallMouth?: boolean; status: 'latest' | 'previous-latest' | 'old' | 'rejected'; evaluation: string; problems: string }
 
 export const rigModels: readonly RigModel[] = [
+  { id: 'kohako-full-v1', label: '全身 v1', name: '全身 v1', rig: '../kohako/kohako-full-v1.p2lrt', status: 'old', evaluation: '全身モデル試作・本人の美術受入前', problems: '目が閉じず、口元に透過穴があります。髪周囲と足元に白背景が残り、動作で継ぎ目が露出します。自動分離は未完成です。', notice: '原画からローカル処理で切り出した検証用試作です。', credits: 'コハコ: Owner のオリジナルキャラクター。', clipNames: { 'modifier:m15:6d6f74696f6e': 'Shake', 'modifier:m16:6d6f74696f6e': 'Idle', 'modifier:m17:6d6f74696f6e': 'Blink', 'modifier:m18:6d6f74696f6e': 'Talk' } },
+
   {
     id: 'kohako', status: 'old', evaluation: '旧版', problems: '髪固定、目の下の境目、開口の二重線。', label: 'コハコ（最小本人モデル）', name: 'コハコ 最小本人モデル v0', rig: '../kohako/kohako-min.p2lrt',
     notice: 'コハコ正本キャラシートの胸像 1 体から、切り抜き・透過・周囲の肌色での穴埋めと、正本の線色での閉じ目・閉じ口の描き足しだけで作った試作 v0 です（画像生成 AI は不使用）。動くもの: まばたき・口の開閉・顔まわりの角度変形・呼吸・視線・表情。固定のもの: 髪（前後の分離と揺れ）・腕と手・眉。目の下の境目と、口を開いたときの二重線が残っています。',
