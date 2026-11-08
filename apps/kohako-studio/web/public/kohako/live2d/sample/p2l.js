@@ -627,8 +627,10 @@ export class P2LPlayer {
     const gl = this.gl;
     const rt = this.rt;
     const canvas = this.canvas;
-    const ratio = window.devicePixelRatio || 1;
-    const w = Math.round(canvas.clientWidth * ratio), h = Math.round(canvas.clientHeight * ratio);
+    const ratio = canvas.dataset.fullModel === 'true' ? Math.max(window.devicePixelRatio || 1, 2) : (window.devicePixelRatio || 1);
+    const rect = canvas.dataset.fullModel === 'true' ? canvas.getBoundingClientRect() : null;
+    const w = rect ? Math.ceil(rect.width * ratio) : Math.round(canvas.clientWidth * ratio);
+    const h = rect ? Math.ceil(rect.height * ratio) : Math.round(canvas.clientHeight * ratio);
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w;
       canvas.height = h;

@@ -200,3 +200,9 @@ it('全身試作は明示選択のみで既定版を変更しない', () => {
   expect(modelFor('').id).toBe('kohako-v45')
   expect(clipName(modelFor('?model=kohako-full-v1'), 'modifier:m16:6d6f74696f6e')).toBe('Idle')
 })
+
+
+it('selects full-v6 without changing the default model', () => {
+  expect(modelFor('?model=kohako-full-v6').id).toBe('kohako-full-v6')
+  expect(LATEST_MODEL_ID).toBe('kohako-v45')
+})
