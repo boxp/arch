@@ -9,3 +9,5 @@ body.full-model .shell>.layout{order:1}
 body.full-model .shell>.notice{order:2}
 body.full-model .shell>footer{order:3}
 body.full-model .portrait.rig{width:min(100%,380px,calc((100dvh - 245px) * .75))}
+/* 選択肢の説明文が長いと select がその幅に広がり、スマホでページ全体が縮小される。 */
+#model-select,#frame-select{max-width:100%}

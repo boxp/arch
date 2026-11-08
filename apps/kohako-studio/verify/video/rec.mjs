@@ -68,6 +68,8 @@ if (scenario === 'det') {
   await page.waitForTimeout(3000);
   await page.fill('#message', 'こんにちは。今日はどんな一日でしたか？'); await page.evaluate(() => window.__ev('send'));
   await page.click('#send');
+  // 応答の表示で段組みが動くと顔が録画範囲から外れるため、モデルの位置を録画開始時に合わせ続ける。
+  await page.evaluate(({ y }) => { window.__keep = setInterval(() => { const r = document.getElementById('rig').getBoundingClientRect(); window.scrollBy(0, r.y - y) }, 50) }, { y: setup.stage.y });
   await page.waitForFunction(() => /応答を表示中|失敗|承認待ち|停止/.test(document.getElementById('state').textContent), null, { timeout: 90000 });
   await page.waitForTimeout(3000);
   setup.reply = await page.locator('#reply').textContent();
