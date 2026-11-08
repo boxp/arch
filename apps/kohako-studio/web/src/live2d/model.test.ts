@@ -57,6 +57,7 @@ describe('modelFor', () => {
     expect(modelFor('?model=unknown').id).toBe(LATEST_MODEL_ID)
     expect(modelFor('?model=sample').id).toBe('sample')
     expect(modelFor('?model=kohako').id).toBe('kohako')
+    expect(modelFor('?model=kohako-full-v10a').status).toBe('rejected')
     expect(modelFor('?model=kohako-v0').id).toBe('kohako')
     expect(modelFor('?model=kohako-v1').id).toBe('kohako-v1')
     expect(modelFor('?model=kohako-v2').id).toBe('kohako-v2')
