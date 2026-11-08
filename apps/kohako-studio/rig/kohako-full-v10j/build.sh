@@ -7,7 +7,8 @@ case "$OUT" in ''|/) echo 'unsafe OUT' >&2; exit 1;; esac
 mkdir -p "$OUT" "$GRADLE_CACHE"
 OUT=$(realpath "$OUT"); [ "$OUT" != / ] || { echo "unsafe OUT" >&2; exit 1; }; SOURCE=$(realpath "$SOURCE"); P2L=$(realpath "$P2L"); GRADLE_CACHE=$(realpath "$GRADLE_CACHE")
 RIG=$(cd "$(dirname "$0")" && pwd)
-git -C "$P2L" apply --reverse --check "$RIG/../kohako-full-v10g/backhair-anchor.patch" || { echo "anchor patch is not applied" >&2; exit 1; }
+# braid-anchor.patch は v10g の後ろ髪パッチも含むため、未適用の v10g ツリーでは v10j を出力しない。
+git -C "$P2L" apply --reverse --check "$RIG/braid-anchor.patch" || { echo "braid anchor patch (includes v10g back hair anchor) is not applied" >&2; exit 1; }
 PY=python:3.12-slim@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54
 JDK=eclipse-temurin:21@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a
 ID=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n'); SERVER=boxp441-full8-$ID; VOL=boxp441-full8-vol-$ID; TRANSFER=boxp441-full8-transfer-$ID
