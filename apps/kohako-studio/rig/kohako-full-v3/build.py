@@ -30,14 +30,15 @@ for clip in ['Shake','Idle','Blink','Talk']:
  if d:
   for i,entry in enumerate(d.get('entries',[])): run('modifier_add',entry,'motion-'+clip+str(i),True)
 # v25 eye and mouth visibility keys. Resolve against generated mesh IDs.
+# Required: a failure here would export a model without blink/mouth keys.
 for side in 'LR':
  for part in ['Eyelash','EyeClose']:
   values=[(0,1 if part=='EyeClose' else 0),(.15,0 if part=='EyeClose' else 1),(.2,0 if part=='EyeClose' else 1),(1,0 if part=='EyeClose' else 1)]
   changes=[{'op':'set','target':'mesh:ArtMesh'+part+side,'key':{'ParamEye'+side+'Open':v},'channels':{'opacity':o}} for v,o in values]
-  run('keyform_apply',{'changes':changes},'eye-key-'+part+side,True)
+  run('keyform_apply',{'changes':changes},'eye-key-'+part+side,True,True)
 for target,values in [('ArtMeshMouthOpen',[(0,0),(.08,1),(1,1)]),('ArtMeshFaceDetail',[(0,1),(.08,0),(1,0)])]:
  changes=[{'op':'set','target':'mesh:'+target,'key':{'ParamMouthOpenY':v},'channels':{'opacity':o}} for v,o in values]
- run('keyform_apply',{'changes':changes},'mouth-key-'+target,True)
+ run('keyform_apply',{'changes':changes},'mouth-key-'+target,True,True)
 for scope in ['parameters','layers','objects','physics']: run('workspace_inspect',{'scope':scope},scope)
 run('motion_list',{},'motions')
 run('project_save_as',{'path':str(out/'kohako-full-v3.psd2live')},'save',True,True)
