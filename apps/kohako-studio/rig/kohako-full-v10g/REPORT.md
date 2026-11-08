@@ -25,3 +25,14 @@ v10f を指定手順で再構築し SHA-256 `da851618bea569f4d95f6df6dbd4d010fe2
 コード上は back hair follow → head container → head rotation → breath → body lean → body XY。DeformLegs は別ルートで、肩下と脚が一体となることは確認できていない。肩・脚の頂点の定量検証、実機 GPU・Owner 確認も未実施。web の typecheck、test（4 files / 30 tests）、build 成功。比較画像は各 1.5MB 以下。LATEST は kohako-v45 のまま。画像生成・外部画像 API・Core 取得・push・PR・merge・配備は行っていない。
 
 リポジトリ指定の trivy config は trivy が環境にないため未実施。
+
+## 追記（担当 Opus、run 20261108T044046Z）: anchor が効かなかった原因と再ビルド
+
+v10g 初版が v10e と同一だった原因は、`build.sh` が P2L_BACKHAIR_* 環境変数を MCP サーバーにしか渡しておらず、p2lrt を書き出す `export` コンテナ（rig を再生成する）に渡していなかったこと。胸像 v36/v37 の build.sh は export 側にも渡している。export に同じ環境変数（ANCHOR=1, FX=15, FY=-6, SHOULDER_Y=455）を追加して再ビルドした。
+
+- 新 p2lrt SHA-256 `f4080344c56850b8e8b42aa78a5276a3dbf52165ac0a58733e98cd07e27c737e`（v10e と別物）。
+- 静止 RGB 差分 200 画素（v10e 比）。
+- 首傾け AngleZ +10 で、v10e は左肩外側の長い髪が裂けて背景（マゼンタ）が見えていたが、v10g では髪がつながる（拡大比較 compare/kohako-full-v10g-zoom.jpg）。
+- 右頬横の細い縦の隙間は v10e/v10g とも**静止時にも**見える。頭の動きで開く隙間ではなく、移植した顔・側髪の間の静止的な欠けで、別の修正が必要。
+- 頭部矩形のマゼンタ画素数（外側背景を含む）: idle4 17599→17670、idle10 16854→16954、AngleX −20 18160→18298、+20 18231→18286、AngleZ −10 18445→18563、+10 18274→18360、BodyAngleX ±10 と静止は同数。数値は外側背景込みのため隙間の増減を表さず、目視比較を優先した。
+- 担当評価: 首傾け時の髪の裂けは改善。右頬横の隙間が残るため未受入（比較候補）。

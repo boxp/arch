@@ -27,7 +27,7 @@ TOKEN=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
 docker run -d --log-driver none --name "$SERVER" --network host -v "$VOL:/tmp/full8" -w /tmp/full8/psd2live -e GRADLE_USER_HOME=/tmp/full8/gradle-cache -e P2L_BACKHAIR_ANCHOR=1 -e P2L_BACKHAIR_FX=15 -e P2L_BACKHAIR_FY=-6 -e P2L_BACKHAIR_SHOULDER_Y=455 "$JDK" ./gradlew -Ppsd2live.prebuiltRuntime=false run --args="mcp --port 18767 --token $TOKEN --store /tmp/full8/mcp-store --profile full" >/dev/null
 docker run --rm --network host -v "$VOL:/tmp/full8" -e OUT=/tmp/full8/out -e P2L=/tmp/full8/psd2live -e PSD2LIVE_MCP_TOKEN="$TOKEN" "$PY" python /tmp/full8/rig/build.py
 docker stop "$SERVER" >/dev/null
-docker run --rm -v "$VOL:/tmp/full8" -w /tmp/full8/psd2live -e GRADLE_USER_HOME=/tmp/full8/gradle-cache "$JDK" ./gradlew -q -Ppsd2live.prebuiltRuntime=false run --args="export /tmp/full8/out/kohako-full-v10g.psd2live --target p2lrt --output /tmp/full8/out --name kohako-full-v10g"
+docker run --rm -v "$VOL:/tmp/full8" -w /tmp/full8/psd2live -e GRADLE_USER_HOME=/tmp/full8/gradle-cache -e P2L_BACKHAIR_ANCHOR=1 -e P2L_BACKHAIR_FX=15 -e P2L_BACKHAIR_FY=-6 -e P2L_BACKHAIR_SHOULDER_Y=455 "$JDK" ./gradlew -q -Ppsd2live.prebuiltRuntime=false run --args="export /tmp/full8/out/kohako-full-v10g.psd2live --target p2lrt --output /tmp/full8/out --name kohako-full-v10g"
 docker cp "$TRANSFER:/tmp/full8/layout/." "$OUT/layout"
 docker cp "$TRANSFER:/tmp/full8/out/." "$OUT/out"
 sha256sum "$OUT/out/kohako-full-v10g.p2lrt"
