@@ -51,7 +51,7 @@ priority: medium
 ## Notes
 TICKET
   before="$(cd "$t/vault" && find . -type f -print0 | sort -z | xargs -0 sha256sum)"
-  for cmd in create update append-note request-codex delete; do
+  for cmd in create update append-note request-codex delete reconcile-done; do
     for mode in normal dry; do
       local extra=()
       [[ "$mode" == dry ]] && extra=(--dry-run)
@@ -339,6 +339,13 @@ if [[ "$1" == "api" && "$2" =~ ^repos/boxp/example/commits/([0-9a-f]{40})$ ]]; t
   sha="${BASH_REMATCH[1]}"
   if [[ -n "${GH_FAKE_API_LOG:-}" ]]; then
     printf '%s\n' "${sha}" >>"${GH_FAKE_API_LOG}"
+  fi
+  # Records whether another process holds the ticket guard during the lookup.
+  # Simulates a run claiming the ticket right after the first lookup.
+  if [[ -n "${GH_FAKE_LOCK_ON_LOOKUP:-}" && "${sha}" == "${GH_FAKE_LOCK_ON_SHA:-}" && ! -e "${GH_FAKE_LOCK_ON_LOOKUP}" ]]; then
+    printf "%s\n" "${GH_FAKE_LOCK_CONTENT}" >"${GH_FAKE_LOCK_ON_LOOKUP}"
+  elif [[ -n "${GH_FAKE_GUARD_PROBE_FILE:-}" && -e "${GH_FAKE_GUARD_PROBE_FILE}" ]]; then
+    bb -e '(with-open [f (java.io.RandomAccessFile. (first *command-line-args*) "rw") c (.getChannel f)] (println (if (.tryLock c) "free" "held")))' "${GH_FAKE_GUARD_PROBE_FILE}" >>"${GH_FAKE_GUARD_PROBE_LOG}"
   fi
   if [[ -n "${GH_FAKE_KNOWN_SHAS:-}" ]] && grep -qx "${sha}" "${GH_FAKE_KNOWN_SHAS}"; then
     printf '%s\n' "${sha}"
@@ -3363,9 +3370,109 @@ run_prune() {
   local vault="$1"
   local state_root="$2"
   shift 2
+  CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE="${CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE:-false}" \
   CODEX_TASK_BOARD_VAULT="${vault}" \
   CODEX_TASK_BOARD_ROOT="${state_root}" \
   bb "${RUNNER}" prune-workspaces "$@"
+}
+
+test_stale_prune() {
+  local tmp vault state bin source known out ws ticket run co i
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  source="${tmp}/source"; known="${tmp}/known"; out="${tmp}/out"; ws="${state}/workspaces"
+  mkdir -p "${bin}" "${state}/locks"
+  make_fake_gh "${bin}"; make_prune_source_repo "${source}"; git -C "${source}" rev-parse HEAD >"${known}"
+  write_board "${vault}" ""
+  for ticket in BOXP-901 BOXP-902 BOXP-903 BOXP-904 BOXP-905 BOXP-906 BOXP-907 BOXP-908 BOXP-909 BOXP-910; do
+    if [[ "${ticket}" == BOXP-907 ]]; then
+      write_prune_ticket "${vault}" "${ticket}" done "$(date -u +%Y-%m-%d)"
+    else
+      write_prune_ticket "${vault}" "${ticket}" blocked 2020-01-01
+    fi
+    for i in 1 2 3 4; do
+      run="2020010${i}T000000Z"
+      co="$(add_prune_run "${state}" "${source}" "${ticket}" "${run}")"
+      if [[ "${i}" == 1 ]]; then
+        case "${ticket}" in
+          BOXP-910|BOXP-902) echo dirty >"${co}/dirty" ;;
+          BOXP-903) prune_commit "${co}" unpushed >/dev/null ;;
+          BOXP-904) echo results/ >>"$(git -C "${co}" rev-parse --git-path info/exclude)"; mkdir -p "${co}/results"; echo x >"${co}/results/out.bin" ;;
+          BOXP-905) printf 'node_modules/\n.terraform/\n' >>"$(git -C "${co}" rev-parse --git-path info/exclude)"; mkdir -p "${co}/node_modules" "${co}/.terraform"; touch "${co}/node_modules/x" "${co}/.terraform/x" ;;
+          BOXP-908) echo note >"${ws}/${ticket}/${run}/agent-notes.md" ;;
+        esac
+      fi
+    done
+  done
+  echo lock >"${state}/locks/BOXP-906.edn"
+  printf '{:ticket "BOXP-909" :run-id "20200101T000000Z" :heartbeat-at "2020-01-01T00:00:00Z"}\n' >"${state}/locks/BOXP-909.edn"
+  printf '{:ticket "BOXP-910" :run-id "20200105T000000Z"}\n' >"${state}/locks/BOXP-910.edn"
+  # Scan a fixture process table: CI hosts have root processes whose cwd is
+  # unreadable, which the fail-closed scan would (correctly) treat as a hold.
+  mkdir -p "${tmp}/proc/100"; ln -s / "${tmp}/proc/100/cwd"
+  echo "22 1 0:21 / / rw - ext4 /dev/root rw" >"${tmp}/mountinfo"
+  export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=false run_prune "${vault}" "${state}" >"${out}"
+  for ticket in BOXP-909 BOXP-910; do
+    for i in 1 2 3 4; do
+      [[ -d "${ws}/${ticket}/2020010${i}T000000Z" ]] || fail "locked run removed with stale prune disabled: ${ticket}"
+    done
+  done
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" --dry-run >"${out}"
+  [[ -d "${ws}/BOXP-901/20200101T000000Z" && -d "${ws}/BOXP-909/20200102T000000Z" && -d "${ws}/BOXP-910/20200102T000000Z" ]] || fail "stale dry run removed data"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" >"${out}"
+  for ticket in BOXP-901 BOXP-905 BOXP-907; do
+    [[ ! -e "${ws}/${ticket}/20200101T000000Z" && ! -e "${ws}/${ticket}/20200102T000000Z" ]] || fail "old stale runs retained: ${ticket}"
+    [[ -d "${ws}/${ticket}/20200103T000000Z" && -d "${ws}/${ticket}/20200104T000000Z" ]] || fail "latest runs removed: ${ticket}"
+  done
+  for ticket in BOXP-902 BOXP-903 BOXP-904 BOXP-906 BOXP-908; do
+    [[ -d "${ws}/${ticket}/20200101T000000Z" ]] || fail "unsafe stale run removed: ${ticket}"
+  done
+  for ticket in BOXP-909 BOXP-910; do
+    [[ -d "${ws}/${ticket}/20200101T000000Z" && ! -e "${ws}/${ticket}/20200102T000000Z" && -d "${ws}/${ticket}/20200103T000000Z" && -d "${ws}/${ticket}/20200104T000000Z" ]] || fail "locked stale run retention incorrect: ${ticket}"
+  done
+  assert_file_contains "${out}" 'BOXP-910/20200101T000000Z.*reason=uncommitted-changes'
+  assert_file_contains "${out}" 'reason=ignored-unknown path=results/'
+  assert_file_contains "${out}" "reason=outside-checkout path=agent-notes.md"
+  assert_file_contains "${out}" 'reason=uncommitted-changes'
+  assert_file_contains "${out}" 'reason=commit-not-on-github'
+  # A live process inside an otherwise deletable stale run keeps it.
+  co="$(add_prune_run "${state}" "${source}" BOXP-901 20191231T000000Z)"
+  mkdir -p "${tmp}/proc/101"; ln -s "${co}" "${tmp}/proc/101/cwd"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" >"${out}"
+  [[ -d "${ws}/BOXP-901/20191231T000000Z" ]] || fail "stale run with live process removed"
+  assert_file_contains "${out}" "reason=process-active"
+  # A locked ticket's old runs are inspected without the ticket guard, so the
+  # live run's heartbeat is never stalled by GitHub lookups or deletion.
+  write_prune_ticket "${vault}" BOXP-911 blocked 2020-01-01
+  for i in 1 2 3 4; do
+    co="$(add_prune_run "${state}" "${source}" BOXP-911 "2020010${i}T000000Z")"
+    [[ "${i}" == 1 ]] && prune_commit "${co}" pushed >>"${known}"
+  done
+  printf '{:ticket "BOXP-911" :run-id "20200104T000000Z"}\n' >"${state}/locks/BOXP-911.edn"
+  mkdir -p "${state}/lock-guards"; touch "${state}/lock-guards/BOXP-911.lock"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" GH_FAKE_GUARD_PROBE_FILE="${state}/lock-guards/BOXP-911.lock" GH_FAKE_GUARD_PROBE_LOG="${tmp}/guard-probe" \
+    CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" >"${out}"
+  [[ ! -e "${ws}/BOXP-911/20200101T000000Z" && -d "${ws}/BOXP-911/20200103T000000Z" && -d "${ws}/BOXP-911/20200104T000000Z" ]] || fail "locked ticket stale run retention incorrect"
+  assert_file_contains "${tmp}/guard-probe" '^free$'
+  if grep -q '^held$' "${tmp}/guard-probe"; then fail "ticket guard held during locked ticket inspection"; fi
+  # A run that claims the ticket after the unguarded pre-check must not make
+  # the guarded path inspect the remaining runs while holding the guard.
+  write_prune_ticket "${vault}" BOXP-912 blocked 2020-01-01
+  for i in 1 2 3 4; do
+    co="$(add_prune_run "${state}" "${source}" BOXP-912 "2020010${i}T000000Z")"
+    if [[ "${i}" -le 2 ]]; then
+      prune_commit "${co}" pushed >"${tmp}/sha-912-${i}"; cat "${tmp}/sha-912-${i}" >>"${known}"
+    fi
+  done
+  mkdir -p "${state}/lock-guards"; touch "${state}/lock-guards/BOXP-912.lock"
+  : >"${tmp}/guard-probe-912"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" GH_FAKE_LOCK_ON_SHA="$(cat "${tmp}/sha-912-1")" GH_FAKE_LOCK_ON_LOOKUP="${state}/locks/BOXP-912.edn" GH_FAKE_LOCK_CONTENT='{:ticket "BOXP-912" :run-id "20200105T000000Z"}' \
+    GH_FAKE_GUARD_PROBE_FILE="${state}/lock-guards/BOXP-912.lock" GH_FAKE_GUARD_PROBE_LOG="${tmp}/guard-probe-912" \
+    CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${state}/locks/BOXP-912.edn" && -d "${ws}/BOXP-912/20200102T000000Z" ]] || fail "run inspected under guard after concurrent claim"
+  if grep -q '^held$' "${tmp}/guard-probe-912"; then fail "ticket guard held after concurrent claim"; fi
+  rm -f "${state}/locks/BOXP-912.edn"
+  unset CODEX_TASK_BOARD_PRUNE_PROC_ROOT CODEX_TASK_BOARD_PRUNE_MOUNTINFO
 }
 
 test_prune_workspaces() {
@@ -3490,7 +3597,7 @@ test_prune_workspaces() {
   assert_file_contains "${out}" "^prune: delete-empty ${ws}/BOXP-301 \\(dry-run\\)$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-305/${old} reason=uncommitted-changes checkout=ghq/github.com/boxp/example$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-306/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
-  assert_file_contains "${out}" '^prune: summary deleted=2 held=6 skipped=4 recent-runs=1 branches=1 empty-dirs=3 dry-run=true skipped-detail=locked:1,not-done:1,ticket-missing:1,within-retention:1$'
+  assert_file_contains "${out}" '^prune: summary deleted=2 stale-deleted=0 held=6 skipped=4 recent-runs=1 branches=1 empty-dirs=3 dry-run=true skipped-detail=locked:1,not-done:1,ticket-missing:1,within-retention:1$'
 
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" GH_FAKE_API_LOG="${tmp}/api.log" \
     run_prune "${vault}" "${state}" >"${out}" || fail "prune-workspaces failed"
@@ -3531,14 +3638,14 @@ test_prune_workspaces() {
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-311/${old} reason=origin-not-github checkout=clone$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-312/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=clone$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-314/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
-  assert_file_contains "${out}" '^prune: summary deleted=2 held=6 skipped=4 recent-runs=1 branches=1 empty-dirs=3 dry-run=false '
+  assert_file_contains "${out}" '^prune: summary deleted=2 stale-deleted=0 held=6 skipped=4 recent-runs=1 branches=1 empty-dirs=3 dry-run=false '
   # Each SHA is looked up at most once per pass.
   [[ -z "$(sort "${tmp}/api.log" | uniq -d)" ]] || fail "expected GitHub lookups to be cached per prune pass"
 
   # A second pass is idempotent and keeps reporting held runs.
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
     || fail "second prune-workspaces failed"
-  assert_file_contains "${out}" '^prune: summary deleted=0 held=6 skipped=4 recent-runs=1 branches=0 empty-dirs=0 dry-run=false '
+  assert_file_contains "${out}" '^prune: summary deleted=0 stale-deleted=0 held=6 skipped=4 recent-runs=1 branches=0 empty-dirs=0 dry-run=false '
 
   # gh failures (auth, rate limit, network) are not treated as proof either way.
   write_prune_ticket "${vault}" BOXP-313 done 2020-01-01
@@ -3606,7 +3713,7 @@ test_prune_holds_checkout_over_commit_limit() {
   [[ ! -e "${ws}/BOXP-331" ]] || fail "expected run with exactly 200 commits to verify to be deleted"
   [[ -d "${ws}/BOXP-332/${old}" ]] || fail "expected run with 201 commits to verify to remain"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-332/${old} reason=too-many-unpushed-commits checkout=ghq/github.com/boxp/example$"
-  assert_file_contains "${out}" '^prune: summary deleted=1 held=1 '
+  assert_file_contains "${out}" '^prune: summary deleted=1 stale-deleted=0 held=1 '
   if grep -qxFf "${tmp}/over-limit-shas" "${tmp}/api.log"; then
     fail "expected no GitHub lookups for a checkout over the commit limit"
   fi
@@ -3671,7 +3778,7 @@ test_prune_inspects_nested_checkouts() {
 
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" --dry-run >"${out}" \
     || fail "prune-workspaces --dry-run with nested checkouts failed"
-  assert_file_contains "${out}" '^prune: summary deleted=1 held=3 '
+  assert_file_contains "${out}" '^prune: summary deleted=1 stale-deleted=0 held=3 '
 
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
     || fail "prune-workspaces with nested checkouts failed"
@@ -3694,7 +3801,7 @@ test_prune_inspects_nested_checkouts() {
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-342/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example/vendor/clone$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-343/${old} reason=stash-present checkout=ghq/github.com/boxp/example/vendor/clone$"
   assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-344/${old}$"
-  assert_file_contains "${out}" '^prune: summary deleted=1 held=3 '
+  assert_file_contains "${out}" '^prune: summary deleted=1 stale-deleted=0 held=3 '
 }
 
 test_prune_checks_reflog_commits() {
@@ -3754,7 +3861,7 @@ test_prune_checks_reflog_commits() {
 
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" --dry-run >"${out}" \
     || fail "prune-workspaces --dry-run with reflog-only commits failed"
-  assert_file_contains "${out}" '^prune: summary deleted=2 held=2 skipped=0 recent-runs=0 branches=1 '
+  assert_file_contains "${out}" '^prune: summary deleted=2 stale-deleted=0 held=2 skipped=0 recent-runs=0 branches=1 '
 
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
     || fail "prune-workspaces with reflog-only commits failed"
@@ -3776,7 +3883,7 @@ test_prune_checks_reflog_commits() {
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-352/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
   assert_file_contains "${out}" "^prune: delete-branch ${source}/.git codex-task-board/BOXP-353-${old}$"
   assert_file_contains "${out}" "^prune: keep-branch ${source}/.git codex-task-board/BOXP-354-${old} reason=reflog-commit-not-on-github sha=${dropped}$"
-  assert_file_contains "${out}" '^prune: summary deleted=2 held=2 skipped=0 recent-runs=0 branches=1 '
+  assert_file_contains "${out}" '^prune: summary deleted=2 stale-deleted=0 held=2 skipped=0 recent-runs=0 branches=1 '
 }
 
 test_prune_respects_board_lane() {
@@ -3809,7 +3916,7 @@ test_prune_respects_board_lane() {
     || fail "prune-workspaces with a reopened card failed"
   [[ -d "${ws}/BOXP-361/${old}" ]] || fail "expected run of a ticket whose card left Done to remain"
   [[ ! -e "${ws}/BOXP-362" ]] || fail "expected run of a ticket whose card is in Done to be deleted"
-  assert_file_contains "${out}" '^prune: summary deleted=1 held=0 skipped=1 .* skipped-detail=not-done:1$'
+  assert_file_contains "${out}" '^prune: summary deleted=1 stale-deleted=0 held=0 skipped=1 .* skipped-detail=not-done:1$'
 
   # Without a readable board nothing is deleted.
   write_prune_ticket "${vault}" BOXP-363 done 2020-01-01
@@ -3818,7 +3925,7 @@ test_prune_respects_board_lane() {
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
     || fail "prune-workspaces without a board failed"
   [[ -d "${ws}/BOXP-363/${old}" ]] || fail "expected run to remain when the board is missing"
-  assert_file_contains "${out}" '^prune: summary deleted=0 held=0 skipped=2 .* skipped-detail=board-unreadable:2$'
+  assert_file_contains "${out}" '^prune: summary deleted=0 stale-deleted=0 held=0 skipped=2 .* skipped-detail=board-unreadable:2$'
 }
 
 test_prune_invalid_settings_fall_back_to_defaults() {
@@ -3885,8 +3992,8 @@ test_loop_prunes_in_background() {
 
   [[ ! -e "${tmp}/state/workspaces/BOXP-321" ]] || fail "expected loop to prune the old done run"
   assert_file_contains "${tmp}/runner.out" '^workspace prune enabled, retention-days=3, interval-seconds=2$'
-  assert_file_contains "${tmp}/runner.out" '^prune: summary deleted=1 held=0 skipped=0 recent-runs=0 branches=1 '
-  assert_file_contains "${tmp}/runner.out" '^prune: summary deleted=0 held=0 skipped=0 '
+  assert_file_contains "${tmp}/runner.out" '^prune: summary deleted=1 stale-deleted=0 held=0 skipped=0 recent-runs=0 branches=1 '
+  assert_file_contains "${tmp}/runner.out" '^prune: summary deleted=0 stale-deleted=0 held=0 skipped=0 '
 }
 
 test_loop_prune_can_be_disabled() {
@@ -4643,7 +4750,12 @@ test_assignment_repairs() {
   PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 >"${tmp}/tick" 2>&1
   assert_file_contains "${tmp}/tick" 'the card write was lost, repairing the card from ticket rev=.* for BOXP-992|BOXP-992; the card write was lost'
   assert_file_contains "${tmp}/starts" BOXP-992
-  assert_file_contains "${vault}/Boards/Task Board.md" "BOXP-992.*rev::${new}"
+  # The dispatched run's terminal transition issues a fresh revision on both
+  # the card and the ticket, so the repaired stale revision is gone.
+  rev1="$(sed -n 's/^board_rev: //p' "${vault}/Tickets/BOXP-992.md")"
+  [[ -n "${rev1}" && "${rev1}" != "${old}" ]] || fail "stale ticket revision after repair: ${rev1}"
+  assert_file_contains "${vault}/Boards/Task Board.md" "BOXP-992.*rev::${rev1}"
+  assert_file_not_contains "${vault}/Boards/Task Board.md" "BOXP-992.*rev::${old}"
   # A newer card whose ticket never arrives: after the warn window the ticket frontmatter is repaired from the card.
   rm -rf "${vault}" "${state}" "${tmp}/starts"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-993|BOXP-993: test]] #ticket status::in-progress assignee::codex rev::${new}"
@@ -4651,10 +4763,13 @@ test_assignment_repairs() {
   sed -i "s/^type: task$/type: task\nboard_rev: ${old}/" "${vault}/Tickets/BOXP-993.md"
   PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 >"${tmp}/tick" 2>&1
   assert_file_contains "${tmp}/tick" 'WARN: assignment revision mismatch persisted for BOXP-993'
-  assert_file_contains "${vault}/Tickets/BOXP-993.md" "^board_rev: ${new}$"
   # The repaired ticket carries the card's assignee, so the same tick dispatches it.
   assert_file_contains "${tmp}/tick" 'processing BOXP-993 from In Progress'
   assert_file_contains "${tmp}/starts" BOXP-993
+  # The dispatched run's terminal transition then issues a fresh revision to both.
+  rev1="$(sed -n 's/^board_rev: //p' "${vault}/Tickets/BOXP-993.md")"
+  [[ -n "${rev1}" && "${rev1}" != "${old}" ]] || fail "stale ticket revision after repair: ${rev1}"
+  assert_file_contains "${vault}/Boards/Task Board.md" "BOXP-993.*rev::${rev1}"
   # Notes and text edits keep the revision; only a lane or assignee change issues a new one.
   rm -rf "${vault}"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-994|BOXP-994: test]] #ticket status::in-progress assignee::boxp'
@@ -4968,6 +5083,74 @@ test_todo_existing_holds_win() {
       assert_run_summary_contains "${state}" BOXP-989 ':idle-timeout\? true'
     fi
   done
+}
+
+test_terminal_revision_lww_and_duplicates() {
+  local tmp vault state bin mode rev before variant
+  # norev: a legacy card without rev:: before the terminal stamp must not be
+  # projected back either when the old Board copy is restored.
+  for variant in rev norev; do
+  for mode in blocked done; do
+    tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+    mkdir -p "${bin}"; make_fake_codex "${bin}"
+    if [[ "${variant}" == rev ]]; then
+      write_board "${vault}" '- [ ] [[Tickets/BOXP-991|BOXP-991: test]] #ticket status::in-progress assignee::codex rev::old'
+      write_ticket "${vault}" BOXP-991 in-progress codex
+      sed -i '/^status:/a board_rev: old' "${vault}/Tickets/BOXP-991.md"
+    else
+      write_board "${vault}" '- [ ] [[Tickets/BOXP-991|BOXP-991: test]] #ticket status::in-progress assignee::codex'
+      write_ticket "${vault}" BOXP-991 in-progress codex
+    fi
+    cp "${vault}/Boards/Task Board.md" "${tmp}/old"
+    PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE="TASK_BOARD_RESULT: ${mode}" run_tick "${vault}" "${state}" env >"${tmp}/run"
+    assert_file_contains "${vault}/Tickets/BOXP-991.md" "^status: ${mode}$"
+    rev="$(sed -n 's/^board_rev: //p' "${vault}/Tickets/BOXP-991.md")"
+    [[ "$rev" != old && "$rev" =~ ^[a-z0-9]+-[0-9a-f]{4}$ ]] || fail 'missing fresh revision'
+    assert_file_contains "${vault}/Boards/Task Board.md" "rev::${rev}"
+    assert_run_summary_contains "${state}" BOXP-991 ':status :(blocked|succeeded)'
+    cp "${tmp}/old" "${vault}/Boards/Task Board.md"
+    for _ in 1 2 3; do PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/held-starts" CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 run_tick "${vault}" "${state}" env >>"${tmp}/sync"; done
+    assert_file_contains "${vault}/Tickets/BOXP-991.md" "^status: ${mode}$"
+    [[ ! -e "${tmp}/held-starts" ]] || fail 'restored card dispatched'
+    if [[ "${variant}" == rev ]]; then
+      assert_file_contains "${vault}/Boards/Task Board.md" "status::${mode}.*rev::${rev}"
+    else
+      # The pre-transition rev-less line is indistinguishable from a user who
+      # rebuilt it by hand: it is held (no projection / dispatch) but never
+      # rewritten, so a hand-made re-request is not reverted to ${mode}.
+      cmp -s "${tmp}/old" "${vault}/Boards/Task Board.md" || fail 'held rev-less card was rewritten'
+      assert_file_contains "${tmp}/sync" "WARN: BOXP-991 card equals the pre-transition rev-less line"
+      # A re-request moves the same rev-less line to another lane (here Ready,
+      # e.g. edited on a replica that still showed the old Board). It differs
+      # from the pre-transition Board and must be followed, not reverted.
+      sed -n '/BOXP-991/p' "${tmp}/old" >"${tmp}/line"
+      write_board "${vault}" ''
+      sed -i "/^## Ready/r ${tmp}/line" "${vault}/Boards/Task Board.md"
+      for _ in 1 2; do PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: continue' CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 run_tick "${vault}" "${state}" env >"${tmp}/rerequest"; done
+      assert_file_not_contains "${vault}/Tickets/BOXP-991.md" "^status: ${mode}$"
+      assert_file_not_contains "${vault}/Boards/Task Board.md" "BOXP-991.*status::${mode}"
+    fi
+  done
+  done
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-990|BOXP-990: test]] #ticket status::in-progress assignee::codex rev::old'
+  write_ticket "${vault}" BOXP-990 in-progress codex
+  sed -i '/^status:/a board_rev: old' "${vault}/Tickets/BOXP-990.md"
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_FORCE_POST_COMMIT_EXCEPTION=true CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: done' run_tick "${vault}" "${state}" env >"${tmp}/exception"
+  assert_run_summary_contains "${state}" BOXP-990 ':status :blocked'
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-992|BOXP-992: test]] #ticket status::in-progress assignee::codex rev::old'
+  sed -i '/^## Done/a\\n- [x] [[Tickets/BOXP-992|BOXP-992: test]] #ticket status::done assignee::boxp rev::old done::2026-01-01' "${vault}/Boards/Task Board.md"
+  write_ticket "${vault}" BOXP-992 in-progress codex
+  before="$(sha256sum "${vault}/Tickets/BOXP-992.md") $(stat -c %Y "${vault}/Tickets/BOXP-992.md")"
+  for _ in 1 2; do PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env >"${tmp}/duplicate"; done
+  [[ "$before" == "$(sha256sum "${vault}/Tickets/BOXP-992.md") $(stat -c %Y "${vault}/Tickets/BOXP-992.md")" && ! -e "${tmp}/starts" ]] || fail 'duplicate projected or dispatched'
+  if CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" TEST_RUNNER="${RUNNER}" bb -e '(System/setProperty "babashka.file" "/tmp/load-runner.bb") (load-file (System/getenv "TEST_RUNNER")) (move-card! "BOXP-992" "done")' >"${tmp}/move" 2>&1; then
+    fail 'duplicate move succeeded'
+  fi
+  assert_file_contains "${tmp}/move" 'duplicate board cards for BOXP-992'
 }
 
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a

@@ -221,10 +221,10 @@
                     (by-name "cli-system-prompt"))))
       (testing "tool failure and withheld output"
         (let [tools (by-name "tool:Read")]
-          (is (= "tool_body_policy" (:omitted (json/parse-string (attr-value (first tools) "langfuse.observation.output") true)))))
+          (is (= "withheld_known_source" (attr-value (first tools) "langfuse.observation.metadata.body_policy"))))
         (let [bash (first (by-name "tool:Bash"))]
           (is (= 2 (get-in bash [:status :code])))
-          (is (= "tool_body_policy" (:omitted (json/parse-string (attr-value bash "langfuse.observation.output") true))))))
+          (is (= "withheld_after_known_source" (attr-value bash "langfuse.observation.metadata.body_policy")))))
       (testing "generation usage and delta input"
         (let [first-gen (first (by-name "generation:claude-test"))]
           (is (= {:input 10 :output 5 :cache_read_input_tokens 3 :cache_creation_input_tokens 2}
@@ -306,7 +306,7 @@
           (is (= 1 (:dropped-secret-guard stats)))
           (is (= 1 (count spans)))
           (is (not (str/includes? (json/generate-string spans) s-github)))
-          (is (= "1" (attr-value (first spans) "langfuse.trace.metadata.coverage.dropped_secret_guard")))))
+          (is (= "1" (attr-value (first spans) "langfuse.trace.metadata.coverage.dropped_guard")))))
       (testing "a leaky root fails the whole run and spools nothing"
         (binding [lf/*redact-field* no-op]
           (let [state (lf/export-run! cfg (lf/load-state cfg 0) {:ticket ticket :run run-id} 0)]
@@ -484,7 +484,7 @@
 (deftest sensitive-command-corpus
   (doseq [[group commands] {"B1" ["kubectl get -n ns secret x" "kubectl -n ns get secrets" "kubectl describe secret" "oc -n ns get secret"]
                             "B2" ["env" "env LANG=C" "env -i" "env -0" "printenv" "export" "export -p" "set" "declare -p" "declare" "typeset" "cat /proc/1/environ" "process.env" "os.environ" "getenv"]
-                            "B4" ["aws ssm get-parameter" "aws ssm get-parameter --with-decryption" "aws secretsmanager get-secret-value" "aws configure get x" "aws configure export-credentials" "helm get values x" "gh auth token" "git credential" "cat auth.json" "cat .credentials-old" "cat .env.local" "cat .ssh/x" "cat .aws/x" "cat kubeconfig" "cat .git-credentials" "cat .netrc" "cat id_rsa" "cat id_ed25519" "cat secret/x" "cat mytoken"]} command commands]
+                            "B4" ["aws ssm get-parameter" "aws ssm get-parameter --with-decryption" "aws secretsmanager get-secret-value" "aws configure get x" "aws configure export-credentials" "helm get values x" "gh auth token" "git credential" "cat auth.json" "cat .credentials-old" "cat .env.local" "cat .ssh/x" "cat .aws/x" "cat kubeconfig" "cat .git-credentials" "cat .netrc" "cat id_rsa" "cat id_ed25519" "cat secret/x" "cat tokens.json"]} command commands]
     (is (lf/withhold-output? command) (str group " " command)))
   (doseq [command ["echo hello" "cat README.md" "reset" "kubectl get pods"]]
     (is (not (lf/withhold-output? command)) (str "B6 " command))))
@@ -558,11 +558,11 @@
   (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
         span (#'lf/tool-span ctx {:key "x" :name "Bash" :input {:command "FOO=bar /bin/echo hidden" :path "src/a" :content "hidden"} :output "one\ntwo"})
         input (json/parse-string (attr-value span "langfuse.observation.input") true)
-        output (json/parse-string (attr-value span "langfuse.observation.output") true)]
-    (is (= "echo" (:command input)))
+        output (attr-value span "langfuse.observation.output")]
+    (is (= "FOO=bar /bin/echo hidden" (:command input)))
     (is (= "src/a" (:path input)))
-    (is (not (str/includes? (pr-str input) "hidden")))
-    (is (= {:omitted "tool_body_policy" :chars 7 :lines 2} output)))
+    (is (str/includes? (pr-str input) "hidden"))
+    (is (= "one\ntwo" output)))
   (doseq [text ["before\nmy passphrase is sample\nafter\nkeep" "before\\n秘密鍵 sample\\nafter\\nkeep" "before。token sample！after？keep"]]
     (let [out (:value (lf/redact text []))]
       (is (not (str/includes? out "sample")))
@@ -582,13 +582,13 @@
         (is (= "result" (attr-value span "langfuse.observation.output")))))
     (let [span (#'lf/tool-span ctx {:key "c" :name "exec" :input "{\"command\":\"A=b /usr/bin/echo hi\",\"notebook_path\":\"x.ipynb\",\"other\":\"opaque\"}" :output "ok" :status "completed"})
           view (json/parse-string (attr-value span "langfuse.observation.input") true)]
-      (is (= "echo" (:command view)))
+      (is (= "A=b /usr/bin/echo hi" (:command view)))
       (is (= "x.ipynb" (:notebook_path view)))
       (is (= "completed" (attr-value span "langfuse.observation.metadata.status")))
-      (is (not (str/includes? (pr-str view) "opaque")))))
+      (is (str/includes? (pr-str view) "opaque"))))
   (fs/with-temp-dir [base {}]
     (write-fixture! base {})
-    (is (= "body_tools_until_tool_output" (attr-value (first (:spans (prepared (test-config base)))) "langfuse.trace.metadata.coverage.tool_body")))))
+    (is (= "sent through the known-format mask; withheld after a known source, an environment dump or a known format in a tool result (body_policy on each observation)" (attr-value (first (:spans (prepared (test-config base)))) "langfuse.trace.metadata.coverage.tool_bodies")))))
 
 (defn privacy-lines [format tool value]
   (if (= format :claude)
@@ -610,7 +610,7 @@
             serialized (pr-str spans)]
         (is (str/includes? serialized "first request") (str format tool))
         (is (str/includes? serialized "before tool") (str format tool))
-        (is (= (contains? #{"TodoWrite" "WebSearch" "web_search"} tool) (str/includes? serialized "plainconfigvalue")) (str format tool))))))
+        (is (str/includes? serialized "plainconfigvalue") (str format tool))))))
 
 (deftest private-child-and-root-output
   (doseq [format [:claude :codex] tool ["Bash" "Read" "unknown_tool"]]
@@ -627,7 +627,7 @@
           (spit (str (fs/path project "sess" "subagents" "agent-a.jsonl")) (jsonl (privacy-lines :claude tool "plainconfigvalue")))
           (spit (str (fs/path day (str "rollout-" thread-delegate ".jsonl"))) (jsonl (privacy-lines :codex tool "plainconfigvalue"))))
         (let [spans (:spans (prepared cfg))]
-          (is (not (str/includes? (pr-str spans) "plainconfigvalue")) (str format tool))
+          (is (str/includes? (pr-str spans) "plainconfigvalue") (str format tool))
           (is (str/includes? (pr-str spans) "runner prompt")))))))
 
 (deftest child-prompt-after-the-parent-read-a-file
@@ -646,14 +646,54 @@
                      {:type "response_item" :payload {:type "message" :role "assistant" :content "childsaysdone"}}])]
         (spit (str (fs/path run-dir "last-message.md")) "done")
         (spit (str (fs/path run-dir "prompt.md")) "runner prompt")
-        (spit (str (fs/path project "sess.jsonl")) (jsonl (privacy-lines :claude "Read" "plainconfigvalue")))
+        (spit (str (fs/path project "sess.jsonl")) (jsonl (privacy-lines :claude "Bash" "plainconfigvalue")))
         (if (= format :claude)
           (spit (str (fs/path project "sess" "subagents" "agent-a.jsonl")) (jsonl child))
           (spit (str (fs/path day (str "rollout-" thread-delegate ".jsonl"))) (jsonl child)))
         (let [spans (:spans (prepared cfg))]
-          (is (not (str/includes? (pr-str spans) "plainconfigvalue")) (str format))
+          (is (str/includes? (pr-str spans) "plainconfigvalue") (str format))
           (is (some #(re-find #"subagent:|delegate" (:name %)) spans) "the child's span exists")
           (is (str/includes? (pr-str spans) "runner prompt")))))))
+
+(deftest child-known-format-after-the-parent-read-a-known-source
+  ;; The parent read a known source. A later child tool result holds a known format and, further down, a value the
+  ;; parent passed on in plain text. The child's span is withheld, not just masked, because the lineage is already withheld.
+  (doseq [format [:claude :codex]]
+    (fs/with-temp-dir [base {}]
+      (write-fixture! base {})
+      (let [cfg (test-config base)
+            run-dir (fs/path (:root cfg) "runs" ticket run-id)
+            project (lf/claude-project-dir cfg ticket run-id)
+            day (fs/path base ".codex" "sessions" "2099" "12" "31")
+            child-output (str "password: " s-password "\nmiddle line\nanother line\nparentplainvalue childleakmarker")
+            parent [{:type "user" :message {:content "first request"}}
+                    {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat .env"}}]}}
+                    {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content "PARENT_VALUE=parentplainvalue"}]}}
+                    {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text "parent done"}]}}]
+            child (if (= format :claude)
+                    [{:type "user" :message {:content "child goal"}}
+                     {:type "assistant" :message {:id "c" :model "test" :content [{:type "tool_use" :id "u" :name "Bash" :input {:command "cat notes.txt"}}]}}
+                     {:type "user" :message {:content [{:type "tool_result" :tool_use_id "u" :content child-output}]}}
+                     {:type "assistant" :message {:id "d" :model "test" :content [{:type "text" :text "child done"}]}}]
+                    [{:type "response_item" :payload {:type "message" :role "user" :content "child goal"}}
+                     {:type "response_item" :payload {:type "function_call" :call_id "u" :name "exec" :arguments "{\"command\":\"cat notes.txt\"}"}}
+                     {:type "response_item" :payload {:type "function_call_output" :call_id "u" :output child-output}}
+                     {:type "response_item" :payload {:type "message" :role "assistant" :content "child done"}}])]
+        (spit (str (fs/path run-dir "last-message.md")) "done")
+        (spit (str (fs/path run-dir "prompt.md")) "runner prompt")
+        (spit (str (fs/path project "sess.jsonl")) (jsonl parent))
+        (if (= format :claude)
+          (spit (str (fs/path project "sess" "subagents" "agent-a.jsonl")) (jsonl child))
+          (spit (str (fs/path day (str "rollout-" thread-delegate ".jsonl"))) (jsonl child)))
+        (let [spans (:spans (prepared cfg))
+              text (pr-str spans)
+              ;; child spans follow the main session's spans
+              child-tool (last (filter #(contains? #{"tool:Bash" "tool:exec"} (:name %)) spans))]
+          (is (not (str/includes? text "parentplainvalue")) (str format))
+          (is (not (str/includes? text "childleakmarker")) (str format))
+          (is (not (str/includes? text s-password)) (str format))
+          (is (= "withheld_after_known_source" (attr-value child-tool "langfuse.observation.metadata.body_policy")) (str format))
+          (is (str/includes? text "runner prompt") "the root input is not part of the lineage withhold"))))))
 
 (defn- nested-json [value depth ascii-only?]
   (nth (iterate (fn [v] (let [out (json/generate-string v {:escape-non-ascii ascii-only?})]
@@ -769,7 +809,7 @@
                     [{:type "response_item" :payload {:type "function_call" :call_id "u" :name "Read" :arguments "{\"file_path\":\"/tmp/plainconfigvalue\"}"}}
                      {:type "response_item" :payload {:type "function_call" :call_id "v" :name "TodoWrite" :arguments "{\"text\":\"plainconfigvalue\"}"}}])
             spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (concat lines extra))]
-        (is (not (str/includes? (pr-str spans) "plainconfigvalue")) (str format))))))
+        (is (str/includes? (pr-str spans) "plainconfigvalue") (str format))))))
 
 (deftest post-batch-does-not-request-h2c-upgrade
   ;; Langfuse closes the connection on the JDK's default `Upgrade: h2c`, without any response.
@@ -777,6 +817,456 @@
     (with-server* (fn [req] {:status (if (get-in req [:headers "upgrade"]) 500 200)})
       (fn [url _]
         (is (= :ok (lf/post-batch (test-config base :url url) "{}")))))))
+
+(deftest settled-observation-contract
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [format [:claude :codex] tool ["Bash" "Read"]]
+      (let [lines (privacy-lines format tool "harmlesslistingmarker")
+            lines (assoc-in lines (if (= format :claude) [3 :message :content 0 :text] [4 :payload :content]) "harmlessreplymarker")
+            spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" lines)
+            text (pr-str spans)]
+        (is (str/includes? text "harmlesslistingmarker"))
+        (is (str/includes? text "harmlessreplymarker"))
+        (is (not (str/includes? text "[withheld")))
+        (is (not-any? #(str/starts-with? (or (attr-value % "langfuse.observation.metadata.body_policy") "") "withheld_") spans))
+        (is (= "sent" (attr-value (last (filter #(str/starts-with? (:name %) "generation:") spans)) "langfuse.observation.metadata.body_policy")))))
+    (doseq [path [".kube/config" ".npmrc" ".pypirc" ".pgpass" ".my.cnf" ".docker/config.json" ".boto" ".s3cfg" ".vault-token" ".terraformrc" ".htpasswd" ".config/gh/hosts.yml" ".config/gcloud/" ".azure/" ".cargo/credentials.toml" ".gem/credentials" "a.key" "a.pem" "a.p8" "a.p12" "a.pfx" "a.jks" "a.keystore" "a.ppk" "id_dsa" "id_ecdsa_sk" "id_ed25519_sk" ".gnupg/" "tokens.json" "/tmp/tokens"
+                  ;; token files without an extension or a directory
+                  "cat mytoken" "mytoken" "cat access_token" "cat refresh_tokens_backup" "sed -n 1p my-token" "{\"file_path\":\"mytoken\"}" "{\"command\":\"head mytoken\"}" "f=mytoken"]]
+      (is (lf/withhold-output? path) path))
+    (doseq [safe ["keyboard.md" "api-keys.md" "keymap.py" "package.json" ".bashrc" "kube-config.md" "ls ~/.config" "gcloud auth list" "az account show" "aws sts get-caller-identity" "oc whoami" "vault status" "kubectl get pods" "git commit -m 'count tokens per request'" "codex exec --max-output-tokens 5" "{\"max_output_tokens\":5}" "input_tokens: 12" "echo $TOKENS" "tokenize input"]]
+      (is (not (lf/withhold-output? safe)) safe))))
+
+(deftest observation-evidence-and-limits
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [format [:claude :codex]]
+      ;; [tool output, tool policy before sanitizing, later generation policy, policy after sanitizing]
+      ;; A credential shape (bearer, provider key, URL credentials ...) withholds what follows. A secret name with a value
+      ;; (assignment, flag, XML element) is masked in place only: ordinary code and logs match it too.
+      (doseq [[value expected gen-expected clean-expected secret]
+              [[(str "host: db\nAuthorization: Bearer " s-bearer "\nneighbour\nkeptdistantmarker") "masked_known_format" "withheld_after_known_format_in_tool_output" "masked_known_format" s-bearer]
+               [(str "host: db\nurl: https://user:" s-url "@db.example\nneighbour\nkeptdistantmarker") "masked_known_format" "withheld_after_known_format_in_tool_output" "masked_known_format" s-url]
+               [(str "host: db\npassword: " s-password "\nneighbour\nkeptdistantmarker") "sent" "sent" "masked_known_format" s-password]
+               [(str "<password>" s-password "</password>\nneighbour\nkeptdistantmarker") "sent" "sent" "masked_known_format" s-password]
+               ["Set the password in settings" "sent" "sent" "masked_known_format" nil]
+               [(apply str (repeat (inc (* 1024 1024)) "x")) "withheld_unscanned_output" "withheld_after_unscanned_output" "withheld_unscanned_output" nil]]]
+        (let [spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (privacy-lines format "Bash" value))
+              tool (first (filter #(= "tool:Bash" (:name %)) spans))
+              gen (last (filter #(str/starts-with? (:name %) "generation:") spans))
+              clean (lf/sanitize-span {:secret-values [] :max-field-bytes (* 2 1024 1024)} (atom {}) tool)]
+          (is (= expected (attr-value tool "langfuse.observation.metadata.body_policy")) (str format " " (subs value 0 (min 30 (count value)))))
+          (is (= gen-expected (attr-value gen "langfuse.observation.metadata.body_policy")) (str format " " (subs value 0 (min 30 (count value)))))
+          (is (= clean-expected (attr-value clean "langfuse.observation.metadata.body_policy")) (str format " " (subs value 0 (min 30 (count value)))))
+          (when secret
+            (is (not (str/includes? (pr-str clean) secret)))
+            (is (str/includes? (pr-str clean) "keptdistantmarker"))))))
+    (doseq [command ["gcloud auth print-access-token" "gcloud auth print-identity-token" "gcloud auth application-default print-access-token" "gcloud secrets versions access 1" "az account get-access-token" "az keyvault secret show" "aws sts get-session-token" "aws sts assume-role-with-web-identity" "aws sts get-federation-token" "aws ecr get-login-password" "aws iam create-access-key" "kubectl -n x create token y" "oc whoami -t" "vault read x" "vault kv get x" "vault token create" "vault token lookup" "vault login" "op read x" "op item get x" "docker-credential-helper" "env -u X"]]
+      (is (lf/withhold-output? command) command))))
+
+;; Regression (BOXP-428, production 2026-11-07): ordinary code and logs that only name a secret with a non-credential
+;; value withheld every later body of the run. The value is still masked in place; what follows stays readable.
+(deftest ordinary-secret-names-in-code-do-not-withhold-the-lineage
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [format [:claude :codex]
+            value ["TOKEN_FILE=/work/.cache/state\nlaterreplymarker"
+                   "headers = {}\ntoken = os.environ['API']\nlaterreplymarker"
+                   "fetch(url, { credentials: 'same-origin' })\nlaterreplymarker"
+                   "PASS: disk check\nlaterreplymarker"
+                   "mytool --token $TOKEN run\nlaterreplymarker"]]
+      (let [spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (privacy-lines format "Bash" value))
+            gen (last (filter #(str/starts-with? (:name %) "generation:") spans))]
+        (is (= "sent" (attr-value gen "langfuse.observation.metadata.body_policy")) (str format " " value))
+        (is (str/includes? (pr-str gen) "laterreplymarker") (str format " " value))
+        (is (not-any? #(str/starts-with? (or (attr-value % "langfuse.observation.metadata.body_policy") "") "withheld_") spans) (str format " " value))))))
+
+(deftest direct-source-policy
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [source [".kube/config" ".npmrc" ".pypirc" ".pgpass" ".my.cnf" ".docker/config.json" ".boto" ".s3cfg" ".vault-token" ".terraformrc" ".htpasswd" ".config/gh/hosts.yml" ".config/gcloud/" ".azure/" ".cargo/credentials" ".gem/credentials" "a.key" "a.pem" "a.p8" "a.p12" "a.pfx" "a.jks" "a.keystore" "a.ppk" "id_dsa" "id_ecdsa" "id_ecdsa_sk" "id_ed25519_sk" ".gnupg/" "tokens.json" "/tmp/tokens" "mytoken" "access_tokens_backup"]]
+      (let [lines [{:type "response_item" :payload {:type "function_call" :call_id "1" :name "exec" :arguments (str "cat " source)}}
+                   {:type "response_item" :payload {:type "function_call_output" :call_id "1" :output "opaquebody"}}]
+            tool (first (filter #(= "tool:exec" (:name %)) (lf/codex-spans ctx "root" "test" lines)))]
+        (is (= "withheld_known_source" (attr-value tool "langfuse.observation.metadata.body_policy")) source)
+        (is (not (str/includes? (pr-str tool) "opaquebody")) source)))))
+
+;; Regression (BOXP-428, arch#14548 review): a name-based known format no longer withholds the lineage, so the
+;; value it named is masked in every field of the run; a bare restatement in a later reply must not be sent.
+(deftest named-values-are-masked-across-the-run
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        root {:spanId "r" :name "root" :attributes [{:key "langfuse.observation.input" :value {:stringValue "runner prompt"}}]}]
+    (doseq [format [:claude :codex]
+            [result secret] [["password: hunterhorsebattery\n" "hunterhorsebattery"]
+                             ["db:\n  password: \"plumorchardtree\"\n" "plumorchardtree"]
+                             ["{\"api_key\": \"quietmeadowstone\"}" "quietmeadowstone"]
+                             ["run --token silverlakefern now" "silverlakefern"]
+                             ["curl -u admin:goldenriverbank x" "goldenriverbank"]
+                             ["{\"name\": \"APP_SECRET\", \"value\": \"brightcanyonmist\"}" "brightcanyonmist"]
+                             ["secret: |\n  firstblockline\n  secondblockline\n" "secondblockline"]
+                             ["<password>quietmeadowstone</password>" "quietmeadowstone"]
+                             ["<config><db_password type=\"x\">\n  amberfieldsong\n</db_password></config>" "amberfieldsong"]
+                             ["&lt;apiToken&gt;copperhillwind&lt;/apiToken&gt;" "copperhillwind"]
+                             ["password: &quot;hunterhorseloft&quot;" "hunterhorseloft"]
+                             ["api_key=&#39;velvetdunepath&#39;" "velvetdunepath"]
+                             ["<password/><password>hunterhorsemill</password>" "hunterhorsemill"]
+                             ["&lt;password/&gt;&lt;password&gt;cedargroveink&lt;/password&gt;" "cedargroveink"]
+                             ["password: &quot;hunter&amp;horsefield&quot;" "hunter&horsefield"]
+                             ["password: &quot;lake&#38;riverstone&quot;" "lake&riverstone"]
+                             ["<password>pine&lt;hollowgate</password>" "pine<hollowgate"]
+                             ["{\"password\": \"amber\\u0026willowpond\"}" "amber&willowpond"]
+                             ["password: \"hunter\\\"horsefield\"" "hunter\"horsefield"]
+                             ["{\"output\":\"password: \\\"maple\\\\\\\"brookstone\\\"\"}" "maple\"brookstone"]
+                             ["password: \\mysecretlakeview" "\\mysecretlakeview"]
+                             ["{\"output\":\"password: \\\\coldbackslashpine\\nnext\"}" "\\coldbackslashpine"]
+                             ["password: amber\\slashgrove" "amber\\slashgrove"]
+                             ["password: \"hunterhorsefield\\\\\"" "hunterhorsefield\\"]
+                             ["password: $hunterhorsedollar" "$hunterhorsedollar"]]]
+      (let [lines (if (= format :claude)
+                    [{:type "user" :message {:content "first request"}}
+                     {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat notes.txt"}}]}}
+                     {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content result}]}}
+                     {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text (str "it is " secret " and laterreplymarker")}]}}]
+                    [{:type "response_item" :payload {:type "message" :role "user" :content "first request"}}
+                     {:type "response_item" :payload {:type "function_call" :call_id "t" :name "exec" :arguments "{\"command\":\"cat notes.txt\"}"}}
+                     {:type "response_item" :payload {:type "function_call_output" :call_id "t" :output result}}
+                     {:type "response_item" :payload {:type "message" :role "assistant" :content (str "it is " secret " and laterreplymarker")}}])
+            spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" lines)
+            run {:root root :spans spans :pinned-values (lf/pinned-values-of (cons root spans))}
+            {:keys [spans failed]} (lf/prepare-spans {:secret-values [] :max-spans 100 :max-field-bytes 65536 :max-run-bytes 10000000} run)
+            body (pr-str spans)]
+        (is (nil? failed) (str format " " result))
+        (is (not (str/includes? body secret)) (str format " " result))
+        ;; pr-str escapes quotes, so also check the value's trailing word (the part after an escaped quote).
+        (is (not (str/includes? body (re-find #"[a-z]+(?=[^a-z]*$)" secret))) (str format " " result))
+        (is (str/includes? body "laterreplymarker") (str format " " result))
+        (is (str/includes? body "first request") (str format " " result))))))
+
+(deftest short-named-values-withhold-the-lineage
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [format [:claude :codex]]
+      (let [spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (privacy-lines format "Bash" "password: q7z\nlaterreplymarker"))
+            gen (last (filter #(str/starts-with? (:name %) "generation:") spans))]
+        (is (str/starts-with? (attr-value gen "langfuse.observation.metadata.body_policy") "withheld_after_") (str format))
+        (is (not (str/includes? (pr-str gen) "q7z")) (str format))))))
+
+(deftest named-values-in-serialized-bodies
+  (is (= ["quietriverstone"] (:values (lf/named-values "{\"command\":\"mysql -pquietriverstone\"}"))))
+  (is (= ["quietriverstone"] (:values (lf/named-values "{\"output\":\"password: quietriverstone\\nnext\"}")))))
+
+(deftest named-values-in-xml-elements
+  (is (= ["quietmeadowstone"] (:values (lf/named-values "<password>quietmeadowstone</password>"))))
+  (is (= ["quietmeadowstone"] (:values (lf/named-values "{\"output\":\"\\u003cpassword\\u003equietmeadowstone\\u003c/password\\u003e\"}"))))
+  (is (= ["outerkeyvalue"] (:values (lf/named-values "<secret><value>outerkeyvalue</value></secret>"))))
+  (is (true? (:unpinned? (lf/named-values "<password>abc</password>"))))
+  (is (= ["${DB_PASSWORD}"] (:values (lf/named-values "<password>${DB_PASSWORD}</password> <password/>")))))
+
+(deftest named-values-in-entity-quotes
+  (doseq [[text v] [["password: &quot;hunterhorse&quot;" "hunterhorse"]
+                    ["password: &#34;hunterhorse&#34;" "hunterhorse"]
+                    ["password: &#x22;hunterhorse&#x22;" "hunterhorse"]
+                    ["password=&apos;hunterhorse&apos;" "hunterhorse"]
+                    ["password=&#39;hunter horse&#39;" "hunter horse"]
+                    ["password: \\u0022hunterhorse\\u0022" "hunterhorse"]
+                    ["password: hunterhorse&quot;" "hunterhorse"]]]
+    (is (= [v] (:values (lf/named-values text))) text)))
+
+(deftest named-values-include-decoded-forms
+  (is (= ["hunter&amp;horse" "hunter&horse"] (:values (lf/named-values "password: &quot;hunter&amp;horse&quot;"))))
+  (is (= ["hunter&#x26;horse" "hunter&horse"] (:values (lf/named-values "password: &quot;hunter&#x26;horse&quot;"))))
+  (is (= ["amber\\u0026pond" "amber&pond"] (:values (lf/named-values "{\"password\": \"amber\\u0026pond\"}"))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "password: hunterhorse"))))
+  (is (= ["hunter&#99999999;horse"] (:values (lf/named-values "password: &quot;hunter&#99999999;horse&quot;")))))
+
+(deftest named-values-with-escaped-quotes
+  ;; An escaped quote inside a quoted value does not end it (the in-place mask's (?<!\\) rule).
+  (is (= ["hunter\\\"horsefield" "hunter\"horsefield"] (:values (lf/named-values "password: \"hunter\\\"horsefield\""))))
+  (is (= ["it\\'s-quietpond" "it's-quietpond"] (:values (lf/named-values "password: 'it\\'s-quietpond'"))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "password: \"hunterhorse\" next: \"x\""))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "{\"password\": \"hunterhorse\", \"note\": \"a\\\"b\"}")))))
+
+;; Regression (lolice#1107 review, same rule): a value ending in an escaped backslash ("hunterhorse\\") closes at the
+;; quote after it, so the value and its decoded form (hunterhorse\) are pinned, not the rest of the text.
+(deftest named-values-ending-in-escaped-backslash
+  (is (= ["hunterhorse\\\\" "hunterhorse\\"] (:values (lf/named-values "password: \"hunterhorse\\\\\""))))
+  (is (= ["hunterhorse\\\\" "hunterhorse\\"] (:values (lf/named-values "password: \"hunterhorse\\\\\" next: \"x\""))))
+  (is (= ["pond\\\\" "pond\\"] (:values (lf/named-values "password: 'pond\\\\' note"))))
+  ;; One layer deeper (inside a JSON string): \\\\\" is an escaped backslash, then the closing \".
+  (is (some #{"maplebrook\\"} (:values (lf/named-values "{\"output\": \"password: \\\"maplebrook\\\\\\\\\\\" next\"}"))))
+  (is (= ["hunter\\\"horsefield" "hunter\"horsefield"] (:values (lf/named-values "password: \"hunter\\\"horsefield\""))))
+  (is (every? (set (:values (lf/named-values "password: [\"hunterhorse\\\\\", \"meadowlake\"]"))) ["hunterhorse\\" "meadowlake"])))
+
+(deftest named-values-with-backslashes
+  ;; A backslash other than a quote/line escape is part of an unquoted value, including at its start.
+  (is (= ["\\mysecret123"] (:values (lf/named-values "password: \\mysecret123"))))
+  (is (= ["\\\\coldpine" "\\coldpine"] (:values (lf/named-values "{\"output\":\"password: \\\\coldpine\\nnext\"}"))))
+  (is (= ["amber\\slash"] (:values (lf/named-values "password: amber\\slash"))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "{\"output\":\"password: hunterhorse\\nnext\"}"))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "{\"password\": \"x\", \"o\": \"password: hunterhorse\\\"\"}")))))
+
+(deftest named-values-after-self-closing-elements
+  (is (= ["hunterhorse"] (:values (lf/named-values "<password/><password>hunterhorse</password>"))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "<password /> text <password>hunterhorse</password>"))))
+  (is (= ["hunterhorse"] (:values (lf/named-values "&lt;password/&gt;&lt;password&gt;hunterhorse&lt;/password&gt;"))))
+  (is (= [] (:values (lf/named-values "<password/>"))))
+  (is (= [] (:values (lf/named-values "<password/><password/>")))))
+
+(deftest named-values-ignore-placeholders-and-settings
+  (is (= [] (:values (lf/named-values "--flag x and PASSWORD_REQUIRED=true and password: $PW"))))
+  (is (false? (:unpinned? (lf/named-values "--flag x and PASSWORD_REQUIRED=true and password: $PW")))))
+
+(deftest named-values-pin-dollar-values
+  ;; Regression (lolice#1107 review, same rule): a real password starting with $ is not a variable reference to
+  ;; skip. $VAR / ${VAR} forms are pinned (a later ${VAR} is over-masked); a short one does not withhold.
+  (doseq [[text value] [["password: $hunterhorse" "$hunterhorse"] ["--token $TOKEN" "$TOKEN"]
+                        ["{\"api_key\": \"$quietmeadow\"}" "$quietmeadow"]
+                        ["<password>${DB_PASSWORD}</password>" "${DB_PASSWORD}"] ["password: ${VAR}" "${VAR}"]]]
+    (let [{:keys [values unpinned?]} (lf/named-values text)]
+      (is (false? unpinned?) text)
+      (is (and (seq values) (every? #(str/starts-with? value %) values)) (str text " " values))))
+  (is (nil? (re-find #"hunterhorse" (str/replace "it is $hunterhorse and keptmarker"
+                                                (lf/values-pattern (:values (lf/named-values "password: $hunterhorse")))
+                                                "[x]")))))
+
+(deftest named-values-in-quoted-cli-passwords
+  ;; Regression (arch#14548 review): a quoted CLI password with spaces is one shell word; the whole value is pinned
+  ;; and masked in place, so a later restatement of the full value does not leak its second word.
+  (doseq [[text v] [["sshpass -p 'apple orchard' ssh host" "apple orchard"]
+                    ["sshpass -p \"pear grove stone\" ssh host" "pear grove stone"]
+                    ["mysql -h db -p'long meadow pass' app" "long meadow pass"]
+                    ["mysql -h db -p\"river bend\" app" "river bend"]
+                    ["curl -u admin:'quiet harbor' https://x" "quiet harbor"]
+                    ["curl -u 'admin:cedar hollow' https://x" "cedar hollow"]
+                    ["curl --user \"admin:amber cove\" https://x" "amber cove"]
+                    ["{\"command\":\"sshpass -p \\\"birch lane\\\" ssh host\"}" "birch lane"]]]
+    (is (some #{v} (:values (lf/named-values text))) text)
+    (let [masked (:value (lf/redact text []))]
+      (is (not (str/includes? masked (last (str/split v #" ")))) text)))
+  (is (= [] (:values (lf/named-values "mysql -p && ls -p 'some dir'"))))
+  (is (= [] (:values (lf/named-values "date -u +%H:%M"))))
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        root {:spanId "r" :name "root" :attributes [{:key "langfuse.observation.input" :value {:stringValue "runner prompt"}}]}
+        lines [{:type "user" :message {:content "first request"}}
+               {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "sshpass -p 'apple orchard' ssh host true"}}]}}
+               {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content "ok"}]}}
+               {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text "it was apple orchard and laterreplymarker"}]}}]
+        spans (lf/claude-spans ctx "root" "test:" lines)
+        run {:root root :spans spans :pinned-values (lf/pinned-values-of (cons root spans))}
+        {:keys [spans failed]} (lf/prepare-spans {:secret-values [] :max-spans 100 :max-field-bytes 65536 :max-run-bytes 10000000} run)
+        body (pr-str spans)]
+    (is (nil? failed))
+    (is (not (str/includes? body "orchard")))
+    (is (str/includes? body "laterreplymarker"))))
+
+(deftest named-values-in-uppercase-cli-flags
+  ;; Regression (arch#14548 review): the in-place match is case-insensitive, so value extraction must be too;
+  ;; `curl --USER admin:secretvalue` pins the password and a later bare restatement is masked.
+  (doseq [[text v] [["curl --USER admin:secretvalue https://x" "secretvalue"]
+                    ["curl -U admin:lanternfield https://x" "lanternfield"]
+                    ["curl --User 'admin:copper ridge' https://x" "copper ridge"]
+                    ["sshpass -P marblestone ssh host" "marblestone"]]]
+    (is (some #{v} (:values (lf/named-values text))) text)
+    (let [{:keys [values]} (lf/named-values text)]
+      (is (not (str/includes? (:value (lf/redact (str "reply: " v) values)) (last (str/split v #" ")))) text))))
+
+(deftest named-values-in-encoded-env-entries
+  ;; Regression (arch#14548 review): the env-entry value key accepts every serialized quote form (&quot;, &#34;,
+  ;; \u0022, \") like the in-place mask, so the value of an HTML/JSON-encoded entry is pinned and a later bare
+  ;; restatement is masked.
+  (doseq [text ["&quot;name&quot;: &quot;API_SECRET&quot;, &quot;value&quot;: &quot;quietmeadowstone&quot;"
+                "&#34;name&#34;: &#34;API_SECRET&#34;, &#34;value&#34;: &#34;quietmeadowstone&#34;"
+                "&#x22;value&#x22;: &#x22;quietmeadowstone&#x22;, &#x22;name&#x22;: &#x22;API_SECRET&#x22;"
+                "{\\u0022name\\u0022: \\u0022API_SECRET\\u0022, \\u0022value\\u0022: \\u0022quietmeadowstone\\u0022}"
+                "{\\\"name\\\": \\\"API_SECRET\\\", \\\"value\\\": \\\"quietmeadowstone\\\"}"
+                "&apos;name&apos;: &apos;API_SECRET&apos;, &apos;value&apos;: &apos;quietmeadowstone&apos;"]]
+    (let [{:keys [values]} (lf/named-values text)]
+      (is (some #{"quietmeadowstone"} values) text)
+      (is (not (str/includes? (:value (lf/redact (str "reply: quietmeadowstone") values)) "quietmeadowstone")) text)
+      (is (not (str/includes? (:value (lf/redact text values)) "quietmeadowstone")) text))))
+
+(deftest named-values-in-unclosed-quoted-cli-passwords
+  ;; Regression (arch#14548 review): a quote that never closes runs to the end of the line, so
+  ;; `curl -u 'admin:apple orchard` masks and pins the password and a later restatement is masked.
+  (doseq [[text v] [["curl -u 'admin:apple orchard" "apple orchard"]
+                    ["curl --user \"admin:pear grove" "pear grove"]
+                    ["curl -u admin:'quiet harbor" "quiet harbor"]
+                    ["sshpass -p 'birch lane" "birch lane"]
+                    ["mysql -h db -p'river bend" "river bend"]]]
+    (let [{:keys [values]} (lf/named-values text)]
+      (is (some #{v} values) text)
+      (is (not (str/includes? (:value (lf/redact text [])) (last (str/split v #" ")))) text)
+      (is (not (str/includes? (:value (lf/redact (str "later: " v) values)) (last (str/split v #" ")))) text))))
+
+(deftest named-values-in-backslash-escaped-cli-passwords
+  ;; Regression (lolice#1107 review, same rule): an unquoted shell word may escape its spaces (sshpass -p apple\ orchard).
+  ;; The whole word is masked in place, and both its written form and the shell-decoded password are pinned, so
+  ;; neither the rest of the word nor a restatement of the decoded password is sent.
+  (doseq [[text v] [["sshpass -p apple\\ orchard ssh host" "apple orchard"]
+                    ["mysql -h db -priver\\ bend\\ stone app" "river bend stone"]
+                    ["curl -u admin:quiet\\ harbor https://x" "quiet harbor"]
+                    ["tool --password cedar\\ hollow run" "cedar hollow"]
+                    ["{\"command\":\"sshpass -p birch\\\\ lane ssh host\"}" "birch lane"]]]
+    (let [{:keys [values]} (lf/named-values text)]
+      (is (some #{v} values) text)
+      (is (not (str/includes? (:value (lf/redact text [])) (last (str/split v #" ")))) text)
+      (is (not (str/includes? (:value (lf/redact (str "later: " v) values)) (last (str/split v #" ")))) text)))
+  (is (= ["plainpass"] (vec (:values (lf/named-values "sshpass -p plainpass ssh host"))))))
+
+(deftest named-values-in-list-and-object-values
+  ;; Regression (arch#14548 review): a list or object value (password: [a, b], token: {primary: a}) is masked in
+  ;; place as a whole, so every element is pinned for the run too, not only the text up to the first delimiter.
+  (doseq [[text vs] [["password: [hunterhorse, meadowlake]" ["hunterhorse" "meadowlake"]]
+                     ["password = [\"hunterhorse\", 'meadowlake']" ["hunterhorse" "meadowlake"]]
+                     ["{\"api_key\": [\"hunterhorse\", \"meadowlake\"]}" ["hunterhorse" "meadowlake"]]
+                     ["secret: {primary: hunterhorse, backup: meadowlake}" ["hunterhorse" "meadowlake"]]
+                     ["{\\\"token\\\": [\\\"hunterhorse\\\", \\\"mead,owlake\\\"]}" ["hunterhorse" "mead,owlake"]]
+                     ["password: [[hunterhorse], (meadowlake)]" ["hunterhorse" "meadowlake"]]
+                     ["password: [hunterhorse, meadowlake" ["hunterhorse" "meadowlake"]]
+                     ;; The flag form (--password [a, b]) is masked in place as a whole by mask-structured too.
+                     ["app --password [hunterhorse, meadowlake]" ["hunterhorse" "meadowlake"]]
+                     ["app --api-key {primary: hunterhorse, backup: meadowlake} --verbose" ["hunterhorse" "meadowlake"]]
+                     ["app --token\t[\"hunterhorse\", 'meadowlake']" ["hunterhorse" "meadowlake"]]
+                     ["app --password [hunterhorse, meadowlake" ["hunterhorse" "meadowlake"]]]]
+    (let [{:keys [values]} (lf/named-values text)]
+      (doseq [v vs]
+        (is (some #{v} values) (str text " -> " v))
+        (is (not (str/includes? (:value (lf/redact (str "reply: " v " and more") values)) v)) (str text " -> " v)))
+      (is (not-any? #(str/starts-with? % "[") values) text)
+      (doseq [v vs] (is (not (str/includes? (:value (lf/redact text [])) v)) text))))
+  (testing "object keys are names, not values"
+    (let [{:keys [values]} (lf/named-values "secret: {primary: hunterhorse, backup: meadowlake}")]
+      (is (not-any? #{"primary" "backup"} values))))
+  (testing "a short element is unpinned (fail closed)"
+    (is (:unpinned? (lf/named-values "password: [hunterhorse, ab]"))))
+  (testing "an object nested in a list with no space after the colon pins the value (lolice#1107 review)"
+    (doseq [[text vs] [["password: [{primary:hunterhorse}]" ["hunterhorse"]]
+                       ["password: [{primary=hunterhorse}, {backup:meadowlake}]" ["hunterhorse" "meadowlake"]]
+                       ["app --token [{primary:hunterhorse}]" ["hunterhorse"]]
+                       ["password: [({primary:hunterhorse})]" ["hunterhorse"]]]]
+      (let [{:keys [values]} (lf/named-values text)]
+        (is (not-any? #{"primary" "backup"} values) text)
+        (doseq [v vs]
+          (is (some #{v} values) (str text " -> " v))
+          (is (not (str/includes? (:value (lf/redact (str "reply: " v " and more") values)) v)) (str text " -> " v)))))))
+
+(deftest named-values-in-env-entry-list-and-object-values
+  ;; Regression (arch#14548 review): an env entry whose value is a list or object ({"name":"API_SECRET",
+  ;; "value":["a","b"]}) is masked in place as a whole (mask-structured / mask-reversed-entries), so every element
+  ;; is pinned for the run too, not only the text up to the first delimiter.
+  (doseq [[text vs] [["{\"name\":\"API_SECRET\",\"value\":[\"hunterhorse\",\"meadowlake\"]}" ["hunterhorse" "meadowlake"]]
+                     ["{\"name\": \"DB_PASSWORD\", \"value\": [hunterhorse, meadowlake]}" ["hunterhorse" "meadowlake"]]
+                     ["{\"name\":\"API_TOKEN\",\"value\":{\"primary\":\"hunterhorse\",\"backup\":\"meadowlake\"}}" ["hunterhorse" "meadowlake"]]
+                     ["{\\\"name\\\":\\\"API_SECRET\\\",\\\"value\\\":[\\\"hunterhorse\\\",\\\"meadowlake\\\"]}" ["hunterhorse" "meadowlake"]]
+                     ["{&quot;name&quot;:&quot;API_SECRET&quot;,&quot;value&quot;:[&quot;hunterhorse&quot;,&quot;meadowlake&quot;]}" ["hunterhorse" "meadowlake"]]
+                     ["{\"name\":\"API_SECRET\",\"value\":[\"hunterhorse\",\"meadowlake\"" ["hunterhorse" "meadowlake"]]
+                     ;; Value before name.
+                     ["{\"value\":[\"hunterhorse\",\"meadowlake\"],\"name\":\"API_SECRET\"}" ["hunterhorse" "meadowlake"]]
+                     ["{\"value\": {\"primary\": \"hunterhorse\", \"backup\": \"meadowlake\"}, \"name\": \"DB_PASSWORD\"}" ["hunterhorse" "meadowlake"]]]]
+    (let [{:keys [values]} (lf/named-values text)]
+      (doseq [v vs]
+        (is (some #{v} values) (str text " -> " v))
+        (is (not (str/includes? (:value (lf/redact (str "reply: " v " and more") values)) v)) (str text " -> " v)))
+      (is (not-any? #(str/starts-with? % "[") values) text)
+      (is (not-any? #{"primary" "backup"} values) text)
+      (doseq [v vs] (is (not (str/includes? (:value (lf/redact text [])) v)) text))))
+  (testing "a short element is unpinned (fail closed)"
+    (is (:unpinned? (lf/named-values "{\"name\":\"API_SECRET\",\"value\":[\"hunterhorse\",\"ab\"]}")))
+    (is (:unpinned? (lf/named-values "{\"value\":[\"hunterhorse\",\"ab\"],\"name\":\"API_SECRET\"}"))))
+  (testing "a non-secret entry with a list value pins nothing"
+    (is (empty? (:values (lf/named-values "{\"name\":\"PATH_LIST\",\"value\":[\"alphabeta\",\"gammadelta\"]}"))))))
+
+;; Regression (BOXP-428 TD-12, production 2026-11-07): the first withheld trigger of most runs was a mention, not a read.
+;; Prose carried by a tool (a delegation prompt, a note, Edit/Write content), a grep pattern, a single ordinary
+;; environment variable, a `set` inside code and documentation placeholders withheld every later body of the run.
+(def td12-mentions
+  [{:command "cat <<'EOF'\n$(cat .env) printenv\nEOF"} {:command "cat <<EOF\nread .env and printenv $(date)\nEOF"}
+   {:command "kubectl logs -n x pod --since=11h 2>&1 | grep -iE 'mcp' | grep -viE 'authorization|token|secret|key=' | tail -40" :description "logs without secrets"}
+   {:command "python3 /opt/x/delegate.py run <<'EOF'\nMCP の token をログに出さない。ID token の検証は Langfuse。.env や ~/.kube/config、kubectl get secret は使わない\nEOF"}
+   {:command "bb task-board.bb append-note X --note \"ID token の検証、kubectl get secret は使わない、.env 禁止、printenv しない\""}
+   {:command "git commit -m 'stop reading .env and gh auth token in tests'"}
+   {:command "grep -c -i token out.log"} {:command "grep -il 'token\\|bearer' a.json"} {:command "rg -n '\"op\": \"set\"' src"}
+   {:command "python3 - <<'EOF'\nimport os\nlayout = os.environ.get('LAYOUT', '/tmp/x')\nc = Client(token=os.environ['MCP_TOKEN'])\nchanges = [{'op': 'set'}]\nEOF"}
+   {:command "node -e \"const H = process.env.H || 'http://x'\""}
+   {:command "python3 - <<'EOF'\nimport os, subprocess\nenv = os.environ.copy()\nenv['LANG'] = 'C'\nsubprocess.run(['make'], env=os.environ.copy())\nEOF"}
+   {:command "/usr/bin/env python3 x.py"} {:command "env LANG=C sort a.txt"} {:command "env -u HOME make test"} {:command "set -e; make"}
+   {:file_path "/tmp/notes.md" :old_string "a" :new_string "the token is in .env; run printenv; kubectl get secret"}
+   {:file_path "/tmp/x.md" :content "cat ~/.kube/config"}
+   {:prompt "read .env and print the token" :description "x"}
+   "{\"cmd\":[\"bash\",\"-lc\",\"grep -rn token src\"]}"
+   "{\"command\":\"echo the ID token is checked\"}"
+   {:command "bash -c 'make'"} {:command "bash -c true"} {:command "grep -c token out.log"}
+   {:command "echo '<<x'; cat <<'EOF'\ncat .env\nEOF"}
+   {:command "kubectl exec pod -- ls /app"} {:command "kubectl exec pod -- sh -c 'make test'"}])
+
+(def td12-sources
+  ["cat .env" {:command "bash -lc 'cat ~/.kube/config'"} {:command "kubectl get secret x -o yaml | base64 -d"}
+   {:command "env | grep -i grafana"} {:command "printenv"} {:command "export"} {:command "set"} {:command "declare -p"}
+   {:command "python3 - <<'EOF'\nimport os\nprint(dict(os.environ))\nEOF"}
+   {:command "python3 -c \"import os; print(os.environ['GITHUB_TOKEN'])\""}
+   {:command "python3 -c 'import os; print(os.environ.copy())'"}
+   {:command "python3 - <<'EOF'\nimport os, json\nprint(json.dumps(dict(os.environ.copy())))\nEOF"}
+   {:command "python3 -c 'import os; x = os.environ.copy().items(); print(list(x))'"}
+   {:command "node -e 'console.log(JSON.stringify(process.env))'"}
+   {:command "X=$(gh auth token) cmd"} {:command "echo \"$(cat .env)\""} {:command "git commit -m \"$(cat ~/.netrc)\""}
+   {:command "cat mytoken"} {:command "head < access_token"} {:file_path "/app/.env"} {:file_path "mytoken"}
+   {:command "ssh host bash <<'EOF'\ncat .env\nEOF"} {:command "cat > /tmp/x <<EOF\nhello\nEOF\ncat .env"}
+   "{\"cmd\":[\"bash\",\"-lc\",\"cat ~/.npmrc\"]}" {:command "grep -r x src; cat secrets/db"}
+   {:command "bash -c 'printenv'"} {:command "bash -c printenv"} {:command "sh -lc env"} {:command "bash -c 'export'"}
+   {:command "sudo bash -c printenv"} {:command "bash -c 'cat mytoken'"} {:command "zsh -c \"bash -c printenv\""}
+   ;; env with assignments/options before the command runs that command (BOXP-428 TD-12 P1)
+   {:command "env LANG=C printenv"} {:command "env -u HOME printenv"} {:command "env -i LANG=C printenv PATH"}
+   {:command "sudo env LANG=C printenv"} {:command "env LANG=C bash -c printenv"} {:command "env LANG=C cat mytoken"}
+   {:command "env -S printenv"} {:command "env LANG=C env"} {:command "env A=1 2>&1"}
+   ;; an unquoted heredoc body still runs command substitutions (BOXP-428 TD-12 P0)
+   {:command "cat <<EOF\n$(cat .env)\nEOF"} {:command "cat <<EOF\nv=$(printenv)\nEOF"}
+   {:command "cat <<-EOF\n\t`cat mytoken`\nEOF"} {:command "tee /tmp/x <<\"EOF2\"\nok\nEOF2\ncat <<EOF\n$(env)\nEOF"}
+   ;; a quoted or commented <<EOF is not a heredoc operator, so the next lines still run (BOXP-428 TD-12 P0)
+   {:command "echo '<<EOF'\ncat .env\nEOF"} {:command "echo \"x <<EOF\"\ncat .env\nEOF"} {:command "echo a # <<EOF\ncat .env\nEOF"}
+   {:command "printf '%s' 'a\n<<EOF'\nprintenv\nEOF"} {:command "echo \\<<EOF\ncat .env\nEOF"}
+   "{\"cmd\":[\"bash\",\"-lc\",\"printenv\"]}"
+   ;; a remote command of kubectl/oc exec is judged like a local one (BOXP-428 TD-12 P0)
+   {:command "kubectl exec pod -- printenv GITHUB_TOKEN"} {:command "oc exec pod -- printenv"}
+   {:command "kubectl exec -n ns pod -c app -- env LANG=C printenv"} {:command "kubectl exec pod -- sh -c 'printenv'"}
+   {:command "kubectl exec pod -- env"} {:command "kubectl exec pod -- export"}])
+
+(deftest k0-is-judged-on-what-runs-or-is-read
+  (doseq [input td12-mentions]
+    (is (not (lf/withhold-output? input)) (str "mention " (pr-str input))))
+  (doseq [input td12-sources]
+    (is (lf/withhold-output? input) (str "source " (pr-str input)))))
+
+(deftest documentation-placeholders-do-not-withhold-the-lineage
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        real (str "abcd1234" "efgh5678" "ijkl9012")]
+    (doseq [format [:claude :codex]]
+      (doseq [[value gen-expected]
+              [["curl -H 'Authorization: Bearer <token>' https://x\nBearer YOUR_API_TOKEN\npostgres://user:password@db:5432/app\ndocplaceholdermarker" "sent"]
+               [(str "Authorization: Bearer " real "\ndocplaceholdermarker") "withheld_after_known_format_in_tool_output"]
+               [(str "postgres://app:" real "@db/app\ndocplaceholdermarker") "withheld_after_known_format_in_tool_output"]
+               ;; a value without digits is a credential too, unless it is a placeholder shape
+               ["Authorization: Bearer plainwordvaluenodigits\ndocplaceholdermarker" "withheld_after_known_format_in_tool_output"]]]
+        (let [spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (privacy-lines format "WebFetch" value))
+              gen (last (filter #(str/starts-with? (:name %) "generation:") spans))]
+          (is (= gen-expected (attr-value gen "langfuse.observation.metadata.body_policy")) (str format " " (subs value 0 30)))
+          (is (not (str/includes? (:value (lf/redact (pr-str spans) [])) real)) "the credential itself is masked in place"))))))
+
+(defn- continued-session [command]
+  [{:type "user" :message {:content "request td12requestmarker"}}
+   {:type "assistant" :message {:id "a" :model "test" :content [{:type "text" :text "checking"} {:type "tool_use" :id "t1" :name "Bash" :input {:command command}}]}}
+   {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t1" :content "td12tooloutputmarker"}]}}
+   {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text "next"} {:type "tool_use" :id "t2" :name "Read" :input {:file_path "/work/README.md"}}]}}
+   {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t2" :content "td12readmemarker"}]}}
+   {:type "user" :message {:content "follow-up td12nextturnmarker"}}
+   {:type "assistant" :message {:id "c" :model "test" :content [{:type "text" :text "done td12replymarker"}]}}])
+
+(deftest continued-conversation-stays-readable-after-a-mention
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        text (fn [command] (pr-str (lf/claude-spans ctx "root" "test:" (continued-session command))))]
+    (let [t (text "kubectl logs pod | grep -viE 'authorization|token|secret|key=' | tail")]
+      (doseq [marker ["td12requestmarker" "td12tooloutputmarker" "td12readmemarker" "td12nextturnmarker" "td12replymarker"]]
+        (is (str/includes? t marker) marker))
+      (is (not (str/includes? t "[withheld"))))
+    (let [t (text "cat /app/.env")]
+      (is (str/includes? t "td12requestmarker"))
+      (doseq [marker ["td12tooloutputmarker" "td12readmemarker" "td12nextturnmarker" "td12replymarker"]]
+        (is (not (str/includes? t marker)) (str "after a known source " marker))))))
 
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

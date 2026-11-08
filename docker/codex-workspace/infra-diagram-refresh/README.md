@@ -44,14 +44,14 @@ lineage 図、全体図、portfolio のサムネイルを実構成に追従さ�
 
 自動でしないこと:
 
-- 公開範囲と Access の変更（両図は Owner の承認で一般公開済み。portfolio stage は本人限定のまま）
-- portfolio 本番 (`b0xp.io`) の切替
+- 公開範囲と Access の変更（両図は Owner の承認で一般公開済み: lineage は BOXP-430、全体図は BOXP-435。portfolio stage は本人限定のまま）
+- portfolio 本番 (`b0xp.io`) の配備。本番は BOXP-442 の Owner 承認で両図のカードとサムネイルを掲載した受入済みの固定版を配信しています。サムネイルの本番更新は Owner の承認を受けてから既存の本番 workflow で行います
 - 元のインフラ、モデル設定の変更。図の更新のために元を直しません
 - Secret の値、ENV、Terraform state、ConfigMap の本文の取得
 
-`publish.bb deploy` は両図が未認証で開けて配信中の hash が build と一致すること、portfolio stage が未認証で 302 になること、本番に全体図の語が無いことを確かめます。
+`publish.bb deploy` は両図が未認証で開けて配信中の hash が build と一致すること、portfolio stage が未認証で 302 になること、本番が配信を続けていること (HTTP 200) を確かめます。
 
-新しい公開要素や公開範囲が必要なら、チケットを Blocked にして Owner に相談します。図の HTML の正本と live の値は public repo、Actions の log、artifact に出しません。全体図のサムネイルは portfolio 本番への掲載が未承認なので repo に置かず、stage へ secret で渡します。
+public repo (arch、lolice) の IaC にある要素と既に公開済みの要素は、Secret の値を除いて承認範囲内として図へ反映します (BOXP-456)。それ以外の新しい公開要素や公開範囲が必要なら、チケットを Blocked にして Owner に相談します。図の HTML の正本と live の値は public repo、Actions の log、artifact に出しません。全体図のサムネイルは repo に置かず、stage へ secret で渡します。
 
 ## 失敗したとき
 

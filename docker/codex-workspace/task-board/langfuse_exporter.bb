@@ -12,6 +12,7 @@
             [babashka.http-client :as http]
             [cheshire.core :as json]
             [clojure.edn :as edn]
+            [clojure.set :as set]
             [clojure.string :as str]
             [clojure.walk :as walk]))
 
@@ -22,12 +23,16 @@
 (def secret-name-pattern
   #"(?i)(password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|auth(?!ors?(?![a-z]))|(?<![a-z])pass(?![a-z]))")
 
-(def quote-pattern "(?:\\\\*[\"']|\\\\+u00(?:22|27)|&quot;|&#0*(?:34|39);|&#x0*(?:22|27);)")
+(def quote-pattern "(?:\\\\*[\"']|\\\\+u00(?:22|27)|&quot;|&apos;|&#0*(?:34|39);|&#x0*(?:22|27);)")
 (def gap-pattern "(?:\\s|\\\\+[nrt])*")
 (def secret-key-pattern (str "[\\w.-]{0,64}(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|authorization|(?<![a-z])pass(?![a-z])|(?<![a-z])auth(?![a-z]))[\\w.-]{0,64}"))
 (defn value-pattern [limit bare]
   (str "(?:(?<quote>" quote-pattern ")(?:[^\\n]" (or limit "*?") "(?<!\\\\)\\k<quote>" (when-not limit "|[^\\n]*") ")|" bare ")"))
-(defn entry-key [name] (str "(?<![\\w-])" name "(?:" quote-pattern ")?" gap-pattern "[:=]" gap-pattern))
+;; One unquoted shell word, whose spaces may be escaped (apple\ orchard, apple\\ orchard in JSON). A backslash run
+;; is tried as an escape only from its start, so a long run stays linear.
+(def shell-word-pattern "(?:(?<!\\\\)\\\\++[ \\t]|\\S)++")
+(def key-start "(?:(?<![\\w-])|(?<=\\\\u00(?:22|27)))") ; a key may follow a \u0022 quote escape
+(defn entry-key [name] (str key-start name "(?:" quote-pattern ")?" gap-pattern "[:=]" gap-pattern))
 (def entry-gap "(?:\\s|\\\\+[nrt]|,)*")
 
 (def patterns
@@ -42,8 +47,14 @@
    [:bearer #"(?i)\bbearer\s+[A-Za-z0-9._~+/-]+=*"]
    [:env-entry (re-pattern (str "(?i)" (entry-key "name") "(?:" quote-pattern ")?" secret-key-pattern "(?:" quote-pattern ")?" entry-gap "(?:" quote-pattern ")?" (entry-key "value") (value-pattern nil "[^\\s,;}\\]]+")))]
    [:env-entry (re-pattern (str "(?i)" (entry-key "value") (value-pattern "{0,4096}?" "[^\\s,;}\\]]+") entry-gap "(?:" quote-pattern ")?" (entry-key "name") "(?:" quote-pattern ")?" secret-key-pattern))]
-   [:flag (re-pattern (str "(?i)(?<![\\w-])--?" secret-key-pattern "[ \\t]+(?!-)" (value-pattern nil "\\S+")))]
-   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?!\d+:\d+\b)[^\s:]+:\S+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p\S+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*\S+"]
+   [:flag (re-pattern (str "(?i)(?<![\\w-])--?" secret-key-pattern "[ \\t]+(?!-)" (value-pattern nil shell-word-pattern)))]
+   ;; A CLI password is one shell word: a quoted value runs to its matching quote (value-pattern), so
+   ;; sshpass -p 'apple orchard' masks and pins the whole value, not just the part before the space. A quote that never
+   ;; closes (-u 'admin:apple orchard) runs to the end of the line, like value-pattern.
+   [:cli-password (re-pattern (str "(?i)(?<![\\w-])(?:-u|--user)[ \\t=]*(?<uq>" quote-pattern ")(?!\\d+:\\d+\\b)[^\\s:]*:(?:[^\\n]*?(?<!\\\\)\\k<uq>|[^\\n]*)"))]
+   [:cli-password (re-pattern (str "(?i)(?<![\\w-])(?:-u|--user)[ \\t=]*(?!" quote-pattern ")(?!\\d+:\\d+\\b)[^\\s:]+:" (value-pattern nil shell-word-pattern)))]
+   [:cli-password (re-pattern (str "(?i)\\b(?:mysql\\w*|mariadb\\w*)\\b[^\\n|;&]{0,512}?\\s-p" (value-pattern nil shell-word-pattern)))]
+   [:cli-password (re-pattern (str "(?i)\\bsshpass\\b[^\\n|;&]{0,512}?\\s-p[ \\t]*" (value-pattern nil shell-word-pattern)))]
    ;; A number after a name with token in it is a counter such as input_tokens: 12.
    [:assignment (re-pattern (str "(?i)[\"']?" secret-key-pattern "(?:" quote-pattern ")?" gap-pattern "(?:[:=]|\\\\+u00(?:3[aA]|3[dD]))" gap-pattern "(?!(?<=token[\\w.-]{0,16}[\"'\\\\]{0,8}\\s{0,4}[:=]\\s{0,4})\\d+(?:[\\s,;}\\\\\"']|$))(?:[|>][-+]?\\d?(?:(?:\\n|\\\\+n)[ \\t]+(?:(?!\\\\+n)[^\\n])*)+|" (value-pattern nil "[^\\s,;}\\]]+") ")"))]
    [:entropy #"\b[A-Za-z0-9_-]{40,}\b"]])
@@ -231,7 +242,7 @@
 (def loose-word (re-pattern "(?i)(?:password|passwd|passphrase|pwd|secret|token(?!s(?![a-z])|_?count)|api[_-]?key|access[_-]?key|private[_-]?key|credential|cookie|authorization|(?<![a-z])pass(?![a-z])|(?<![a-z])auth(?![a-z])|パスワード|暗証番号|秘密鍵|認証情報|トークン|シークレット|合言葉)"))
 (def placeholder #"\[REDACTED:[a-z_-]+\]")
 (def segment-break #"\r?\n|\\+(?:r\\+)?n|[。！？]")
-(def secret-element (re-pattern (str "(?is)(?:<|&lt;|&#0*60;|&#x0*3c;|\\\\+u003c)(?<tag>[\\w:.-]{0,64}" (.pattern loose-word) "[\\w:.-]{0,64})(?=[\\s/>&\\\\]).*?(?:(?:<|&lt;|&#0*60;|&#x0*3c;|\\\\+u003c)\\\\*/\\k<tag>\\s*(?:>|&gt;|&#0*62;|&#x0*3e;|\\\\+u003e)|\\z)")))
+(def secret-element (re-pattern (str "(?is)(?:<|&lt;|&#0*60;|&#x0*3c;|\\\\+u003c)(?<tag>[\\w:.-]{0,64}" (.pattern loose-word) "[\\w:.-]{0,64})(?=[\\s/>&\\\\])(?!(?:(?!(?:>|&gt;|&#0*62;|&#x0*3e;|\\\\+u003e)).){0,512}?[/\\\\]\\s*(?:>|&gt;|&#0*62;|&#x0*3e;|\\\\+u003e)).*?(?:(?:<|&lt;|&#0*60;|&#x0*3c;|\\\\+u003c)\\\\*/\\k<tag>\\s*(?:>|&gt;|&#0*62;|&#x0*3e;|\\\\+u003e)|\\z)")))
 
 (defn mask-secret-lines [text mark]
   (let [matcher (.matcher segment-break text)
@@ -263,12 +274,294 @@
     (catch Throwable _ {:value "[dropped: redaction error]" :redactions {:error 1}})))
 
 (def sensitive-path
-  #"(?i)(?:^|[/\\\s\"'=])(?:auth\.json|\.credentials[^/\s\"']*|\.env[^/\s\"']*|\.ssh(?:[/\\]|\b)|\.aws(?:[/\\]|\b)|kubeconfig|\.git-credentials|\.netrc|id_rsa|id_ed25519|secrets?(?:[/\\]|(?=$|[\s\"']))|[^/\s\"']*token[^/\s\"']*)")
+  #"(?i)(?:^|[/\\\s\"'=])(?:auth\.json|\.credentials[^/\s\"']*|\.env[^/\s\"']*|\.ssh(?:[/\\]|\b)|\.aws(?:[/\\]|\b)|kubeconfig|\.kube[/\\]config|\.git-credentials|\.netrc|id_rsa|id_ed25519(?:_sk)?|id_dsa|id_ecdsa(?:_sk)?|\.gnupg(?:[/\\]|\b)|secrets?(?:[/\\]|(?=$|[\s\"']))|[\w.-]{0,64}tokens?[\w.-]{0,64}\.[a-z0-9]{1,8}(?![\w.-])|[\w.-]{0,64}\.(?:key|pem|p8|p12|pfx|jks|keystore|ppk)(?![\w.-])|\.npmrc|\.pypirc|\.pgpass|\.my\.cnf|\.docker[/\\]config\.json|\.boto|\.s3cfg|\.vault-token|\.terraformrc|\.htpasswd|\.config[/\\]gh[/\\]hosts\.yml|\.config[/\\]gcloud(?:[/\\]|\b)|\.azure(?:[/\\]|\b)|\.cargo[/\\]credentials[^/\s\"']*|\.gem[/\\]credentials)|[/\\][\w.-]{0,64}tokens?[\w.-]{0,64}(?=[/\\\s\"']|$)")
+;; A token file named without an extension or a directory (mytoken, access_token, refresh_tokens_backup) is
+;; token-file-word, checked only in a reading position. A bare plural (input_tokens, max_output_tokens) is a counter word.
 (def sensitive-command
-  #"(?i)(?:^|[;&|\s\"'(`/]|\\[nrt])(?:env|printenv)(?:[\s\"'|;&<>)]|$)|(?:^|[;&|\s\"'(`/])(?:set|export|declare|typeset)(?:\s+-[a-z]*[px]\b|[ \t]*(?:$|[|;&<>\"')`#]|\\[nrt\"]))|\benviron\b|\bprocess\.env\b|\bgetenv\b|\baws\b[^|;&\n]{0,1024}\b(?:ssm\s+get-parameter|secretsmanager\s+get-|configure\s+(?:get|export-credentials))|\bhelm\s+get\b|\bgh\s+auth\s+token\b|\bgit\s+credential\b")
-(defn withhold-output? [input]
-  (let [s (str input)] (boolean (or (re-find sensitive-path s) (re-find sensitive-command s)
-                                    (and (re-find #"(?i)\b(?:kubectl|oc)\s" s) (re-find #"(?i)secret" s))))))
+  #"(?i)\baws\b[^|;&\n]{0,512}\b(?:ssm\s+get-parameter|secretsmanager\s+get-|configure\s+(?:get|export-credentials)|sts\s+(?:get-session-token|assume-role\S*|get-federation-token)|ecr\s+get-login-password|iam\s+create-access-key)|\bgcloud\b[^|;&\n]{0,512}\b(?:auth\s+(?:print-(?:access|identity)-token|application-default\s+print-access-token)|secrets\s+versions\s+access)|\baz\b[^|;&\n]{0,512}\b(?:account\s+get-access-token|keyvault\s+secret\s+show)|\bkubectl\b[^|;&\n]{0,512}\bcreate\s+token\b|\boc\s+whoami\s+-t\b|\bvault\s+(?:read|kv\s+get|token\s+(?:create|lookup)|login)\b|\bop\s+(?:read|item\s+get)\b|\bdocker-credential-\w+|\bhelm\s+get\b|\bgh\s+auth\s+token\b|\bgit\s+credential\b")
+;; K0 is decided where a tool reads or runs something: path arguments and the shell text that executes. Text that is only
+;; carried along (Edit/Write content, a description, a prompt, a heredoc fed to a program that is not an interpreter, an
+;; option value or echo text with spaces, a grep pattern) names a source without reading it. In production such mentions
+;; ("the ID token is checked by Langfuse", grep -viE 'token|secret', a delegation prompt) withheld whole runs (BOXP-428 TD-12).
+(def token-file-word #"(?i)[\w.-]{0,64}token|[\w.-]{0,64}tokens[\w.-]{1,64}")
+(def path-keys [:file_path :filePath :path :notebook_path :filename :file :target_file])
+(def command-keys [:command :cmd :script :code])
+(def shell-names #{"bash" "sh" "zsh" "dash" "ksh" "fish"})
+(def interpreter-names (into shell-names #{"bb" "node" "deno" "bun" "ruby" "perl" "php"}))
+(def mention-programs #{"echo" "printf" "grep" "egrep" "fgrep" "rg" "ag" "ack" "ls" "find" "fd" "rm" "mv" "cp" "mkdir" "rmdir"
+                        "touch" "chmod" "chown" "test" "[" "stat" "file" "which" "type" "du" "tree" "basename" "dirname"
+                        "realpath" "readlink" "cd" "pushd" "true" "false" ":" "wc" "ln"})
+(def pattern-programs #{"grep" "egrep" "fgrep" "rg" "ag" "ack"})
+(def prefix-programs #{"sudo" "command" "time" "nice" "nohup" "exec" "xargs" "doas" "!"})
+(def reading-subcommands {"git" #{"show" "cat-file" "diff" "blame" "grep" "archive"} "gh" #{"api" "gist"}})
+(def kubectl-secret #"(?i)\b(?:kubectl|oc)\b[^|;&\n]{0,512}?(?<![\w.-])secrets?(?![\w-])")
+(def max-k0-scan (* 256 1024))
+
+(defn- last-element [w] (last (str/split (str/replace (str w) #"[/\\]+$" "") #"[/\\]")))
+(defn- interpreter? [w] (let [e (last-element w)] (boolean (or (interpreter-names e) (re-matches #"python[\d.]*" e)))))
+(defn- shell-flag? [w] (boolean (re-matches #"-[A-Za-z]*[ce]" (str w))))
+
+(defn- program-index
+  "Index of the program a segment runs: assignments and prefix programs are skipped, and so is `env` with its options and
+  assignments when a command follows it (env LANG=C printenv runs printenv; BOXP-428 TD-12 P1). A bare env, or env -S
+  (its command is a split string), stays on env and is judged as the environment dump."
+  [texts]
+  (let [n (count texts)]
+    (loop [i 0]
+      (when (< i n)
+        (let [t (texts i) e (last-element t)]
+          (cond
+            (re-matches #"[A-Za-z_]\w*=.*" t) (recur (inc i))
+            (prefix-programs e) (recur (inc i))
+            (= "env" e)
+            (let [j (loop [j (inc i)]
+                      (cond (>= j n) nil
+                            (re-matches #"-[A-Za-z]*S.*|--split-string(?:=.*)?" (texts j)) nil
+                            (#{"-u" "--unset" "-C" "--chdir"} (texts j)) (recur (+ j 2))
+                            (or (str/starts-with? (texts j) "-") (re-matches #"[A-Za-z_]\w*=.*" (texts j))) (recur (inc j))
+                            :else j))]
+              ;; env A=1 2>&1: the last word is a file descriptor, not a command
+              (if (and j (not (and (= j (dec n)) (re-matches #"\d+" (texts j))))) (recur j) i))
+            :else i))))))
+
+(defn- shell-words
+  "Words of a shell text with offsets. :ws marks whitespace inside quotes; segment breaks are {:break true}.
+  An unclosed quote runs to the end."
+  [^String s]
+  (let [n (count s) out (transient []) sb (StringBuilder.)]
+    (loop [i 0 start nil q nil ws false]
+      (let [flush (fn [end] (when start (conj! out {:start start :end end :text (str sb) :ws ws}) (.setLength sb 0)))]
+        (if (>= i n)
+          (do (flush n) (persistent! out))
+          (let [c (.charAt s i)]
+            (cond
+              (= q \') (if (= c \') (recur (inc i) start nil ws) (do (.append sb c) (recur (inc i) start q (or ws (Character/isWhitespace c)))))
+              (= q \") (cond (and (= c \\) (< (inc i) n) (#{\" \\ \$ \`} (.charAt s (inc i))))
+                             (do (.append sb (.charAt s (inc i))) (recur (+ i 2) start q ws))
+                             (= c \") (recur (inc i) start nil ws)
+                             :else (do (.append sb c) (recur (inc i) start q (or ws (Character/isWhitespace c)))))
+              (= c \\) (do (when (< (inc i) n) (.append sb (.charAt s (inc i)))) (recur (+ i 2) (or start i) q ws))
+              (#{\' \"} c) (recur (inc i) (or start i) c ws)
+              (#{\space \tab \return} c) (do (flush i) (recur (inc i) nil nil false))
+              (#{\| \; \& \( \) \newline \< \>} c) (do (flush i) (conj! out {:break true :start i :end (inc i) :text (str c)}) (recur (inc i) nil nil false))
+              (and (= c \#) (nil? start)) (let [j (or (str/index-of s "\n" i) n)] (recur j nil nil false))
+              :else (do (.append sb c) (recur (inc i) (or start i) q ws)))))))))
+
+(defn- segments [words] (remove empty? (partition-by :break words)))
+
+(def ^:private heredoc-operator #"(?<!<)<<(-?)[ \t]*(['\"]?)([A-Za-z_][\w-]*)\2")
+
+(defn- heredoc-operators
+  "<<TAG operators of a command line outside quotes, comments and backslash escapes, and the quote state after the line.
+  A quoted or commented <<EOF (echo '<<EOF', echo a # <<EOF, echo \\<<EOF) is not an operator, so the lines after it are
+  still judged as commands (BOXP-428 TD-12 P0). The quote state carries over lines; a missed operator only makes its
+  body judged as commands (fail closed)."
+  [^String l q]
+  (let [n (count l) m (re-matcher heredoc-operator l)]
+    (loop [i 0 q q acc []]
+      (if (>= i n)
+        [acc q]
+        (let [c (.charAt l i)]
+          (cond
+            q (cond (= c q) (recur (inc i) nil acc)
+                    (and (= c \\) (= q \")) (recur (+ i 2) q acc)
+                    :else (recur (inc i) q acc))
+            (#{\' \"} c) (recur (inc i) c acc)
+            (= c \\) (recur (+ i 2) q acc)
+            (and (= c \#) (or (zero? i) (Character/isWhitespace (.charAt l (dec i))) (#{\| \; \& \( \) \< \>} (.charAt l (dec i)))))
+            [acc q]
+            (and (= c \<) (.region m i n) (.lookingAt m))
+            (recur (.end m) q (conj acc {:start i :tag (.group m 3) :tabs (= "-" (.group m 1)) :expands (str/blank? (.group m 2))}))
+            :else (recur (inc i) q acc)))))))
+
+(defn- strip-heredocs
+  "Blank the body of a heredoc unless an interpreter reads it as code (python3 -, ssh host bash, kubectl exec ... -- sh).
+  With code? false, the body of a non-shell interpreter (python3 -, node -) is blanked too: it is not shell text."
+  [s code?]
+  (loop [lines (str/split s #"\n" -1) out [] pending [] q nil]
+    (cond
+      (empty? lines) (str/join "\n" out)
+      (seq pending)
+      (let [{:keys [tag tabs keep expands]} (first pending) l (first lines)
+            done (= tag (if tabs (str/replace l #"^\t+" "") l))]
+        ;; An unquoted delimiter (<<EOF) still runs $(...) and `...` in the body: cat <<EOF with $(cat .env) or
+        ;; $(printenv) is judged as the commands it runs (BOXP-428 TD-12 P0). Quoted (<<'EOF') bodies are literal data.
+        (recur (rest lines)
+               (conj out (cond (or keep done) l
+                               expands (str/join " ; " (map #(let [x (if (string? %) % (first %))]
+                                                               (if (str/starts-with? x "$(") (subs x 2 (dec (count x))) (subs x 1 (dec (count x)))))
+                                                            (re-seq #"\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`" l)))
+                               :else ""))
+               (if done (subvec pending 1) pending) q))
+      :else
+      (let [l (first lines)
+            [ops q'] (heredoc-operators l q)
+            docs (for [{:keys [start] :as op} ops
+                       :let [words (map :text (remove :break (last (segments (shell-words (subs l 0 start))))))
+                             runner (some (fn [tail] (when (and (interpreter? (first tail)) (every? #(str/starts-with? % "-") (rest tail)))
+                                                       (first tail)))
+                                          (take-while seq (iterate rest words)))]]
+                   (assoc (dissoc op :start) :keep (boolean (and runner (or code? (shell-names (last-element runner)))))))]
+        (recur (rest lines) (conj out l) (vec docs) q')))))
+
+(declare executed-text)
+
+(defn- substitutions [raw] (str/join " " (map #(if (string? %) % (first %)) (re-seq #"\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`" raw))))
+
+(defn- prose-edits
+  "Spans to replace: carried prose is blanked (its command substitutions stay); a -c/-e script is replaced by its own
+  executed text."
+  [s depth code?]
+  (let [words (shell-words s)]
+    (for [seg (segments words)
+          :let [ws (vec seg)
+                prog-idx (program-index (mapv :text ws))
+                program (when prog-idx (last-element (:text (ws prog-idx))))
+                pattern-idx (when (pattern-programs program)
+                              (let [e (first (keep-indexed (fn [i w] (when (and (> i prog-idx) (re-matches #"-[A-Za-z]*e|--regexp" (:text (ws (dec i))))) i)) ws))]
+                                (or e (first (keep-indexed (fn [i w] (when (and (> i prog-idx) (not (str/starts-with? (:text w) "-"))
+                                                                                  (not (re-matches #"-[ABCmgt]|--(?:max-count|glob|type|include|exclude)" (:text (ws (dec i))))))
+                                                                         i)) ws)))))
+                quoted-src (fn [w] (subs s (:start w) (:end w)))]
+          [i w] (map-indexed vector ws)
+          :when (and prog-idx (> i prog-idx))
+          :let [prev (:text (ws (dec i)))
+                edit (cond
+                       ;; bash -c 'printenv' / sh -lc env: a one-word script of an interpreter runs too (BOXP-428 TD-12 P1)
+                       (and (shell-flag? prev) (< depth 2) (or (interpreter? program) (and (:ws w) (= "-c" prev))))
+                       (str "( " (executed-text (:text w) (inc depth) code?) " )")
+                       (or (#{"echo" "printf"} program) (= i pattern-idx)
+                           (and (:ws w) (or (str/starts-with? prev "-") (re-matches #"--?[\w-]+=.*" (:text w)))))
+                       (str " " (substitutions (quoted-src w)) " "))]
+          :when edit]
+      [(:start w) (:end w) edit])))
+
+(defn executed-text
+  "The part of a shell text that runs or names files (the first 256 KiB; command-source? withholds a longer one). code? keeps the code that a non-shell interpreter
+  reads from a heredoc (for the regex checks); without it the text is shell only (for the word checks)."
+  ([s] (executed-text s 0 true))
+  ([s depth] (executed-text s depth true))
+  ([s depth code?]
+   (let [s (strip-heredocs (subs (str s) 0 (min (count (str s)) max-k0-scan)) code?)]
+     (let [sb (StringBuilder.)
+           pos (reduce (fn [pos [start end edit]] (.append sb (subs s pos start)) (.append sb edit) end)
+                       0 (sort-by first (prose-edits s depth code?)))]
+       (str (.append sb (subs s pos)))))))
+
+(def env-accessor #"(?i)\b(?:os\.)?environ\b|\bprocess\.env\b|\bgetenv\b")
+(def env-single #"^\s*(?:\.(?:get|setdefault|pop|fetch)\s*\(|\?\.|\.|\[|\()\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)")
+(def env-dump-methods #{"items" "keys" "values" "entries" "toJSON" "to_h" "to_a" "each"})
+(def secret-env-name #"(?i)token|secret|passw|passphrase|api_?key|private_?key|credential|cookie|session|access_?key|auth")
+
+(def print-call #"(?i)\b(?:print|println|printf|puts|pp|echo|console\.(?:log|error|info|warn)|(?:sys\.)?std(?:out|err)\.write|prn|pprint)\b")
+
+(defn- env-access?
+  "The whole environment (os.environ, process.env, getenv(), /proc/*/environ), or one variable with a secret name printed on
+  the same line. os.environ.get('LAYOUT') reads an ordinary value; token=os.environ['MCP_TOKEN'] passes a secret to a
+  client without printing it (printing it through another variable is the accepted residual)."
+  [s]
+  (let [m (re-matcher env-accessor s)]
+    (loop []
+      (if-not (.find m)
+        false
+        (let [after (subs s (.end m) (min (count s) (+ (.end m) 200)))]
+          (if (re-find #"^\s*\.copy\s*\(\s*\)" after)
+            ;; env = os.environ.copy() / run(cmd, env=os.environ.copy()) hands a copy to a child process without printing it;
+            ;; print(os.environ.copy()) or any other use of the copy is a dump.
+            (if (and (re-find #"^\s*\.copy\s*\(\s*\)\s*(?:[,)\n;#]|$)" after)
+                     (let [line-start (inc (or (str/last-index-of s "\n" (.start m)) -1))
+                           before (subs s line-start (.start m))]
+                       (and (re-find #"(?:^|[^=!<>])=\s*$" before) (not (re-find print-call before)))))
+              (recur)
+              true)
+            (if-let [[_ name] (re-find env-single after)]
+              (if (or (env-dump-methods name)
+                      (and (re-find secret-env-name name)
+                           (let [line-start (inc (or (str/last-index-of s "\n" (.start m)) -1))]
+                             (re-find print-call (subs s line-start (.start m))))))
+                true
+                (recur))
+              true)))))))
+
+(defn- segment-source?
+  "env/printenv printing the environment, and a token-named file in a reading position (cat mytoken, < mytoken, f=mytoken)."
+  [text]
+  (let [words (shell-words text)]
+    (boolean
+     (some (fn [seg]
+             (let [ws (vec seg)
+                   texts (mapv :text ws)
+                   prog-idx (program-index texts)
+                   program (when prog-idx (last-element (texts prog-idx)))
+                   operands (if prog-idx (subvec ws (inc prog-idx)) [])
+                   token-file? (fn [t] (and (not (re-find #"\s" t)) (re-matches token-file-word (last-element t))))
+                   subs-ok (if-let [allowed (reading-subcommands program)]
+                             (let [names (set (map :text operands))]
+                               (or (seq (set/intersection names allowed))
+                                   (and (= program "git") (names "log") (seq (set/intersection names #{"-p" "--patch" "-u" "--cc"})))))
+                             (not (mention-programs program)))]
+               (or (some #(when-let [[_ v] (re-matches #"[A-Za-z_]\w*=(.*)" %)] (token-file? v)) (take (or prog-idx (count texts)) texts))
+                   (= "printenv" program)
+                   ;; kubectl exec pod -- printenv GITHUB_TOKEN / -- sh -c 'printenv': the remote command is judged like a
+                   ;; local one (BOXP-428 TD-12 P0)
+                   (and (#{"kubectl" "oc"} program)
+                        (let [after (map :text operands)
+                              remote (rest (drop-while #(not= "--" %) after))
+                              quote-word (fn [t] (if (re-find #"[\s'\"$`\\;&|<>()]" t)
+                                                   (str "'" (str/replace t "'" "'\\''") "'")
+                                                   t))]
+                          (and (seq remote)
+                               (segment-source? (executed-text (str/join " " (map quote-word remote)))))))
+                   ;; set / export / declare / typeset with nothing to set, or -p / -x, print the environment
+                   (and (#{"set" "export" "declare" "typeset"} program)
+                        (or (empty? operands) (some #(re-matches #"-[A-Za-z]*[px]" (:text %)) operands)))
+                   (and (= "env" program)
+                        (loop [[t & more] (map :text operands)]
+                          (cond (nil? t) true
+                                (and (empty? more) (re-matches #"\d+" t)) true ; env A=1 2>&1
+                                (re-matches #"-[A-Za-z]*S.*|--split-string(?:=.*)?" t) true
+                                (#{"-u" "--unset" "-C" "--chdir"} t) (recur (rest more))
+                                (or (str/starts-with? t "-") (re-matches #"[A-Za-z_]\w*=.*" t)) (recur more)
+                                :else false)))
+                   (and subs-ok (some #(and (not (str/starts-with? (:text %) "-")) (token-file? (:text %))) operands)))))
+           (segments words)))))
+
+(defn- redirect-source? [text]
+  ;; `< file` is read by any program, including a mention program.
+  (boolean (some (fn [[a b]] (and (= "<" (:text a)) (not (:break b)) (re-matches token-file-word (last-element (:text b)))))
+                 (partition 2 1 (shell-words text)))))
+
+(defn- command-source? [text]
+  (let [t (executed-text text) sh (executed-text text 0 false)]
+    (boolean (or (> (count (str text)) max-k0-scan) ; not parsed beyond this: fail closed
+                 (re-find sensitive-path t) (re-find sensitive-command t) (re-find kubectl-secret t)
+                 (env-access? t) (segment-source? sh) (redirect-source? sh)))))
+
+(defn- path-source? [v]
+  (let [v (str v)]
+    (boolean (or (re-find sensitive-path (str " " v)) (re-matches token-file-word (last-element v))))))
+
+(defn- command-of [v]
+  (if (sequential? v)
+    (let [v (mapv str v) i (first (keep-indexed (fn [i w] (when (shell-flag? w) i)) v))]
+      (if (and i (interpreter? (first v)) (< (inc i) (count v)))
+        (v (inc i))
+        (str/join " " (map #(if (re-find #"\s" %) (str "'" (str/replace % "'" "'\\''") "'") %) v))))
+    (str v)))
+
+(defn withhold-output?
+  "K0 on a tool input: a map (or JSON object text) is judged by its path and command arguments only."
+  [input]
+  (try
+    (let [m (cond (map? input) input
+                  (and (string? input) (str/starts-with? (str/triml input) "{")) (json/parse-string input true))]
+      (if (map? m)
+        (boolean (or (some #(some-> (get m %) path-source?) path-keys)
+                     (some #(some-> (get m %) command-of command-source?) command-keys)))
+        (let [s (str input)]
+          (or (command-source? s) (and (not (re-find #"\s" (str/trim s))) (path-source? (str/trim s)))))))
+    (catch Throwable _ true)))
+
 (defn env-dump? [output]
   (let [s (str output)] (boolean (and (re-find #"(?:^|[^A-Za-z0-9_])PATH=" s)
                                         (re-find #"(?:^|[^A-Za-z0-9_])HOME=" s)))))
@@ -408,43 +701,332 @@
       parent (assoc :parentSpanId (span-id tid parent))
       (= level "ERROR") (assoc :status {:code 2}))))
 
-(def body-tools #{"Task" "Agent" "TodoWrite" "delegate_task" "delegate" "spawn_agent"})
-(def tools-without-private-output (into body-tools #{"WebSearch" "web_search"}))
-(def withheld-model-output "[withheld: the model has seen tool output]")
+;; Values that a name-based known format named (password: x, --token x, -u user:x, env entries). Masking them only
+;; in place leaves a bare restatement elsewhere in the run readable, so the exporter masks the same value in every
+;; field of the run (exact text and its serialized escapes; other transforms are the accepted residual,
+;; THREAT_MODEL 2). A value too short to mask without blanking ordinary words, or too long or too many to mask,
+;; is unpinned: in a tool result it withholds the later bodies of the lineage.
+(def pin-kinds #{:env-entry :flag :cli-password :assignment})
+(def min-pinned-length 4)
+(def max-pinned-length 256)
+(def max-pinned-values 64)
+(def name-separator #"(?s)^(.*?)(?:[:=]|\\+u00(?:3[aA]|3[dD]))")
 
-(defn- private-tool? [tool result]
-  (or (not (contains? tools-without-private-output (:name tool)))
-      (withhold-output? (:input tool)) (env-dump? (:output result))))
-(defn- tool-input-view [input]
-  (let [input (if (string? input) (try (json/parse-string input true) (catch Exception _ input)) input)]
-    (if (map? input)
-      (let [command (or (:command input) (get input "command"))
-            program (when (string? command) (second (re-find #"^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(?:[^\s'\"]*/)?([\w.+-]+)(?:\s|$)" (str/trim command))))]
-        (cond-> {:arg_names (sort (map name (keys input)))}
-          program (assoc :command program)
-          true (merge (into {} (keep (fn [k] (let [v (or (get input k) (get input (name k)))] (when (string? v) [k v]))) [:file_path :path :notebook_path])))))
-      {:arg_names []})))
+(def ^:private opening-quote (re-pattern (str "(?i)^" quote-pattern)))
+(def ^:private unquoted-chars
+  (str #"[^\s,;}\]\"'\\&]|\\\\|\\(?![nrt\"']|u00(?:22|27))|&(?!quot|apos|#0*(?:34|39)(?!\d)|#x0*(?:22|27)(?![0-9a-fA-F]))"))
+(def ^:private unquoted-value (re-pattern (str "(?i)^(?:" unquoted-chars ")++")))
+;; A CLI password or flag value is a shell word: an escaped space (apple\ orchard) does not end it.
+(def ^:private unquoted-shell-value (re-pattern (str "(?i)^(?:(?<!\\\\)\\\\++[ \\t]|" unquoted-chars ")++")))
+(def ^:private escaped-space #"(?<!\\)\\++([ \t])")
 
-(defn- tool-span [ctx {:keys [key parent name start end input output error? status hide-view? private?]}]
-  (let [input-str (if (string? input) input (json/generate-string input))
-        body? (contains? body-tools name)
-        withheld? (and body? (or (withhold-output? input-str) (env-dump? output)))
-        out (str (or output ""))]
-    (mk-span ctx {:key key :parent parent :name (str "tool:" name) :start start :end end
-                  :level (when error? "ERROR")
-                  :attrs-map (cond-> {"langfuse.observation.type" "tool"
-                                      "langfuse.observation.input" (cond hide-view? withheld-model-output withheld? withheld-model-output body? input-str :else (json/generate-string (tool-input-view input)))
-                                      "langfuse.observation.output" (cond withheld? withheld-model-output body? out :else (json/generate-string {:omitted "tool_body_policy" :chars (count out) :lines (if (empty? out) 0 (inc (count (re-seq #"\n" out))))}))}
-                               private? (assoc "langfuse.observation.metadata.output_policy" withheld-model-output)
-                               status (assoc "langfuse.observation.metadata.status" status)
-                               error? (assoc "langfuse.observation.level" "ERROR"))})))
+;; A quote is escaped by the backslash run before it. A plain quote (n backslashes in q: 0 at the top level, 1 for \" inside
+;; a JSON string, 3 a layer deeper) closes when that run is a multiple of 2*(n+1): each backslash of the value is written
+;; as n+1 backslashes at that depth, and an escaped quote adds an odd count of them. Other quote forms (\u0022, &quot;)
+;; close after an even run. The value keeps the escaped backslashes.
+(defn- closing-quote
+  "Index in body where the value opened by quote token q ends, or nil when it never closes."
+  [body q]
+  (let [plain (re-matches #"(\\*)[\"']" q)
+        unit (if plain (* 2 (inc (count (second plain)))) 2)
+        m (re-matcher (java.util.regex.Pattern/compile (str "(?<!\\\\)(\\\\*)" (java.util.regex.Pattern/quote q))
+                                                       java.util.regex.Pattern/CASE_INSENSITIVE) body)]
+    (loop []
+      (when (.find m)
+        (let [run (count (.group m 1))]
+          (if (zero? (mod run unit)) (+ (.start m) run) (recur)))))))
 
-(defn- generation-span [ctx {:keys [key parent model usage start end input output]}]
+(defn- first-value
+  "The value at the start of s: up to the matching quote when quoted, else up to a delimiter."
+  [s]
+  (let [s (str/triml (str s))]
+    ;; Quotes include their serialized forms (\", \u0022, &quot;, &#34;, &#x22;, &apos;), matched as the in-place
+    ;; mask (quote-pattern) matches them: the value ends at the same quote token.
+    (if-let [q (re-find opening-quote s)]
+      (let [body (subs s (count q))
+            ;; A quote token preceded by an escaping backslash run does not end the value (password: "a\"b" captures
+            ;; a\"b and its decoded form a"b), while one preceded by escaped backslashes does (password: "hunterhorse\\"
+            ;; captures hunterhorse\\ and its decoded form hunterhorse\).
+            end (closing-quote body q)]
+        (if end (subs body 0 end) body))
+      ;; Unquoted: stop at a quote, an entity quote or a quote/line escape (\", \u0022, \n, \r, \t) too, so a value
+      ;; inside serialized JSON or HTML does not take the closing quote or a \n escape with it. Any other backslash
+      ;; (password: \mysecret123, its JSON form \\mysecret123, my\secret) is part of the value, not its end.
+      (or (re-find unquoted-value s) ""))))
+
+;; A redaction placeholder is never a value. A $VAR / ${VAR} form may be a variable reference or a real password
+;; starting with $ (password: $hunterhorse): it is pinned like any value (masking a later ${VAR} is a harmless
+;; over-mask), and when it is too short to pin it does not withhold, since it is most likely a reference.
+(defn- reference? [v]
+  (boolean (re-matches #"\[REDACTED:[a-z_-]+\]" v)))
+
+(defn- variable-like? [v]
+  (boolean (re-matches #"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?" v)))
+
+;; A list or object value (password: [a, b], token: {primary: a}) is masked in place as a whole (mask-structured);
+;; each element is pinned too. Quoted elements keep their commas; a key followed by : or = names, not a value.
+(def ^:private collection-gap #"^(?:[\s,;\[\]{}()]++|\\++[nrt](?![A-Za-z0-9]))++")
+
+(defn- collection-values [s]
+  (let [object? (str/starts-with? (str/triml s) "{")]
+    (loop [s s acc [] n 0]
+      (let [s (str/replace-first s collection-gap "")]
+        ;; More than max-pinned-values elements already unpins the value; stop scanning there. Past 256 tokens
+        ;; (mostly keys) the rest is returned as one value, which unpins it when long (fail closed).
+        (cond
+          (or (str/blank? s) (> (count acc) max-pinned-values)) acc
+          (> n 256) (conj acc s)
+          :else
+          (let [q (re-find opening-quote s)
+                v (first-value s)
+                v (if q v (first (str/split v #"[\[\]{}()]" 2)))
+                consumed (cond (not q) (count v)
+                               (> (count s) (+ (count q) (count v))) (+ (count q) (count v) (count q))
+                               :else (count s))
+                consumed (max 1 (min consumed (count s)))
+                after (subs s consumed)
+                key? (or (re-find #"^\s*(?:[:=]|\\+u00(?:3[aA]|3[dD]))" after)
+                         (and (not q) (re-find #"[:=]$" v)))
+                after (if (and key? (not (re-find #"[:=]$" (str v)))) (str/replace-first after #"^\s*(?:[:=]|\\+u00(?:3[aA]|3[dD]))" "") after)
+                ;; key:value with no space after the separator: inside an object only the value is a value; in a
+                ;; list ([{primary:a}], [a:b]) the token may be a nested object or a literal, so pin both.
+                pair (when (and (not q) (not key?)) (second (re-find #"^[\w.-]+[:=](.+)$" v)))
+                acc (if (and pair (not object?) (not (str/blank? v))) (conj acc v) acc)
+                v (or pair v)]
+            (recur after (if (or key? (str/blank? v)) acc (conj acc v)) (inc n))))))))
+
+(def ^:private env-value-key (re-pattern (str "(?i)" key-start "value(?:" quote-pattern ")?" gap-pattern "[:=]" gap-pattern)))
+
+(def ^:private flag-head #"^\S+[ \t]+")
+
+(defn- shell-values
+  "A CLI password or flag value as written and, when it escapes spaces, as the shell decodes it (apple orchard)."
+  [s]
+  (let [s (str/triml (str s))]
+    (if (or (re-find opening-quote s) (re-find #"^\[REDACTED:" s))
+      [(first-value s)]
+      (let [w (str/trim (or (re-find unquoted-shell-value s) ""))
+            d (str/replace w escaped-space "$1")]
+        (if (= d w) [w] [w d])))))
+
+(defn- match-values [kind m]
+  (case kind
+    :assignment (let [[head key] (re-find name-separator m)
+                      tail (subs m (count head))
+                      key (str/replace (str key) #"[\"'\\\s]" "")]
+                  (cond (re-find #"^\s*[|>]" tail) (map str/trim (rest (str/split tail #"\r?\n|\\+n")))
+                        (re-find #"^\s*[\[{(]" tail) (collection-values tail)
+                        :else (let [v (first-value tail)] (when-not (setting? key v) [v]))))
+    :flag (let [tail (str/replace-first m flag-head "")]
+            (if (re-find #"^[\[{(]" tail) (collection-values tail) (shell-values tail)))
+    :cli-password (if (re-find #"(?i)^(?:-u|--user)" m)
+                    (let [rest (str/replace-first m #"(?i)^(?:-u|--user)[ \t=]*" "")]
+                      (if (re-find opening-quote rest)
+                        ;; -u 'user:pass word': the whole quoted word is user:password.
+                        (let [w (first-value rest) i (str/index-of w ":")] (when i [(subs w (inc i))]))
+                        (shell-values (str/replace-first rest #"^[^\s:]+:" ""))))
+                    (shell-values (str/replace-first m #"(?is)^.*?\s-p[ \t]*" "")))
+    ;; The value key takes every serialized quote form (&quot;value&quot;:, \u0022value\u0022:), as entry-key does.
+    ;; A list or object value ("value": ["a", "b"]) is masked in place as a whole; each element is pinned.
+    :env-entry (let [matcher (re-matcher env-value-key m)]
+                 (when (.find matcher)
+                   (let [tail (str/triml (subs m (.end matcher)))]
+                     (if (re-find #"^[\[{(]" tail) (collection-values tail) [(first-value tail)]))))
+    nil))
+
+(def ^:private tag-close #"(?i)>|&gt;|&#0*62;|&#x0*3e;|\\+u003e")
+(def ^:private element-split
+  #"(?i)(?:<|&lt;|&#0*60;|&#x0*3c;|\\+u003c)[^<>&\\]{0,256}?(?:>|&gt;|&#0*62;|&#x0*3e;|\\+u003e)|\r?\n|\\+[nrt]")
+
+(defn- element-values
+  "Text values inside an XML element whose tag names a secret (<password>x</password>, encoded forms too). The
+  element is masked in place; its text is pinned like an assignment value so a bare restatement is masked too.
+  Nested child tags and line breaks separate values. A self-closing tag names nothing: secret-element does not
+  start a match at one (so <password/><password>x</password> yields the second element); an opening tag longer than
+  that lookahead's 512 characters is treated as an element (fail closed)."
+  [m]
+  (let [closer (re-matcher tag-close m)]
+    (when (.find closer)
+      (let [open-tag (subs m 0 (.start closer))]
+        (if (and (<= (count open-tag) 512) (re-find #"[/\\]\s*$" open-tag))
+          nil
+          (let [inner (subs m (.end closer))
+                inner (if-let [c (re-find #"(?is)^(.*)(?:<|&lt;|&#0*60;|&#x0*3c;|\\+u003c)\\*/[\w:.-]+\s*(?:>|&gt;|&#0*62;|&#x0*3e;|\\+u003e)$" inner)]
+                        (second c) inner)]
+            (for [segment (str/split inner element-split)
+                  :let [v (-> segment str/trim (str/replace #"^(?:\\*[\"'])+|(?:\\*[\"'])+$" "") str/trim)]
+                  :when (not (str/blank? v))]
+              v)))))))
+
+;; A value captured from a serialized body keeps its escapes (password: &quot;a&amp;b&quot; captures a&amp;b), while
+;; a later restatement can be the decoded text (a&b). Both are pinned: the decoded form is matched with its own
+;; escapes by value-pattern, so pinning it covers the plain restatement and every serialization of it.
+(def ^:private entity-escape #"&(?:#0*(\d{1,7})|#[xX]0*([0-9a-fA-F]{1,6})|(amp|lt|gt|quot|apos));")
+(def ^:private json-escape #"\\(?:u([0-9a-fA-F]{4})|([\"'\\/bfnrt]))")
+
+(defn- code-point-str [n]
+  (when (and n (<= 1 n 0x10FFFF)) (String. (Character/toChars (int n)))))
+
+(defn- decode-once [v]
+  (-> v
+      (str/replace entity-escape
+                   (fn [[m dec hex named]]
+                     (or (cond dec (code-point-str (parse-long dec))
+                               hex (code-point-str (Long/parseLong hex 16))
+                               :else ({"amp" "&" "lt" "<" "gt" ">" "quot" "\"" "apos" "'"} named))
+                         m)))
+      (str/replace json-escape
+                   (fn [[m hex c]]
+                     (or (if hex
+                           (str (char (Integer/parseInt hex 16)))
+                           ({"\"" "\"" "'" "'" "\\" "\\" "/" "/" "b" "\b" "f" "\f" "n" "\n" "r" "\r" "t" "\t"} c))
+                         m)))))
+
+(defn- decoded-forms
+  "v and its decoded forms (HTML entities and JSON escapes, up to 3 nested layers)."
+  [v]
+  (loop [v v acc [v] n 0]
+    (let [d (decode-once v)]
+      (if (or (= d v) (>= n 3)) acc (recur d (conj acc d) (inc n))))))
+
+(defn- bracket-matches
+  "Assignment or flag matches in text; one whose value opens a bracket (password: [a, b], --password [a, b]) extends
+  to the matching close (or the end of text, fail closed), as mask-structured masks it. head-of returns the text
+  before the value (name and separator)."
+  [pattern text head-of]
+  (let [m (re-matcher pattern text) n (count text)]
+    ;; A match inside an extended value is already covered by it (its elements are scanned there); skipping it
+    ;; keeps unclosed brackets (password: [password: [ ...) linear.
+    (loop [acc [] covered 0]
+      (if (.find m)
+        (if (< (.start m) covered)
+          (recur acc covered)
+        (let [s (.group m)
+              head (head-of s)
+              pos (loop [p (+ (.start m) (count head))]
+                    (if (and (< p n) (#{\space \tab} (.charAt text p))) (recur (inc p)) p))]
+          (if (and head (< pos n) (contains? closers (.charAt text pos)))
+            (let [end (max (.end m) (bracket-end text pos n))]
+              (recur (conj acc (subs text (.start m) end)) end))
+            (recur (conj acc s) covered))))
+        acc))))
+
+(defn- env-value-head
+  "The text of an env entry match up to its value (name, value key and separator), or nil."
+  [s]
+  (let [m (re-matcher env-value-key s)] (when (.find m) (subs s 0 (.end m)))))
+
+(defn- reversed-bracket-entries
+  "Env entries whose list or object value comes before a secret name ({\"value\": [a, b], \"name\": \"API_SECRET\"}),
+  as mask-reversed-entries masks them in place: each is the text from the value key to the bracket's close. The scan
+  is bounded by the same limits; past them mask-reversed-entries fails and the field is withheld."
+  [text]
+  (let [matcher (.matcher entry-value text)]
+    (loop [acc [] position 0 scanned 0]
+      (if (and (< scanned max-reversed-entries) (.find matcher))
+        (if (< (.start matcher) position)
+          (recur acc position (inc scanned))
+          (let [end (bracket-end text (.end matcher) (+ (.end matcher) max-reversed-value))
+                after (.matcher entry-name-after text) _ (.region after end (count text))]
+            (if (.lookingAt after)
+              (recur (conj acc (subs text (.start matcher) end)) end (inc scanned))
+              (recur acc position (inc scanned)))))
+        acc))))
+
+(defn named-values
+  "{:values [...] :unpinned? bool} for the name-based known formats in text."
+  [text]
+  (let [text (str text)
+        found (concat
+               (for [[kind pattern] patterns :when (pin-kinds kind)
+                     match (case kind
+                             :assignment (bracket-matches pattern text #(first (re-find name-separator %)))
+                             :flag (bracket-matches pattern text #(re-find flag-head %))
+                             :env-entry (bracket-matches pattern text env-value-head)
+                             (re-seq pattern text))
+                     v (match-values kind (if (vector? match) (first match) match))
+                     :let [v (str/trim (str v))]
+                     :when (and (not (str/blank? v)) (not (reference? v)))]
+                 v)
+               (for [entry (reversed-bracket-entries text)
+                     v (match-values :env-entry entry)
+                     :let [v (str/trim (str v))]
+                     :when (and (not (str/blank? v)) (not (reference? v)))]
+                 v)
+               (for [match (re-seq secret-element text)
+                     v (element-values (if (vector? match) (first match) match))
+                     :when (not (reference? v))]
+                 v))
+        found (distinct (mapcat decoded-forms found))
+        unpinned? (boolean (or (some #(and (< (count %) min-pinned-length) (not (variable-like? %))) found)
+                               (some #(> (count %) max-pinned-length) found)
+                               (> (count found) max-pinned-values)))]
+    {:values (vec (filter #(<= min-pinned-length (count %) max-pinned-length) found)) :unpinned? unpinned?}))
+
+(def withheld-model-output "[withheld: the session saw a known source or a known format]")
+(def withheld-tool-output "[withheld: sensitive path or command]")
+(def ^:dynamic *exposure-values* [])
+
+;; Kinds whose value is a credential by its own shape. A hit of one of these in a tool result withholds the
+;; later bodies of the lineage. Name-based kinds (assignment, env entry, flag, cli password, XML element) mask
+;; the value in place and pin it for the run (named-values): they also match ordinary code and logs such as TOKEN_FILE=/work/x or
+;; credentials: 'same-origin', and a transformed restatement elsewhere is the accepted residual (THREAT_MODEL 2).
+(def lineage-kinds #{:private-key :header :url-credentials :jwt :provider-key :aws-key :google-key :telegram :bearer})
+
+(def placeholder-credential
+  #"(?i)[$<{%*\[].*|x+|\.+|pass(?:word|wd|phrase)?\d?|pwd|secret|(?:api[_-]?|access[_-]?|auth[_-]?)?(?:key|token)|changeme|your[\w-]*|my[\w-]*pass\w*|example\w*")
+
+(defn- placeholder-credential? [v]
+  ;; Surrounding punctuation is prose ("a bearer token."); a short lower-case word ("bearer tokens", "Bearer auth") is a word.
+  (let [v (str/replace (str/trim (str v)) #"^[\"'`(\[{]+|[\"'`.,;:)\]}/]+$" "")]
+    (boolean (or (str/blank? v) (re-matches placeholder-credential v) (re-matches #"[A-Z_]+" v) (re-matches #"[a-z]{1,12}" v)))))
+
+(defn- credential-shaped?
+  "A header, bearer or URL-credential hit is lineage evidence unless its value is a documentation placeholder:
+  `Authorization: Bearer <token>`, `Bearer YOUR_API_TOKEN`, `Bearer $TOKEN`, `postgres://user:password@db` (BOXP-428 TD-12).
+  Either way the hit is masked in place; only the withholding of what follows depends on this."
+  [kind m]
+  (case kind
+    :bearer (not (placeholder-credential? (first (str/split (str/replace m #"(?i)^bearer\s+" "") #"\s+"))))
+    :header (let [v (str/replace (str/trim (str (second (str/split m #":" 2)))) #"(?i)^(?:bearer|basic|token|digest)\s+" "")]
+              (not (placeholder-credential? (first (str/split v #"\s+")))))
+    :url-credentials (not (placeholder-credential? (second (re-find #":([^:@]*)@$" m))))
+    true))
+
+(defn- exposure? [output]
+  (let [text (str output)]
+    (or (some #(str/includes? text %) *exposure-values*)
+        (some (fn [[kind pattern]]
+                (when (contains? lineage-kinds kind)
+                  (some #(credential-shaped? kind (if (string? %) % (first %))) (re-seq pattern text))))
+              patterns)
+        (:unpinned? (named-values text)))))
+
+(defn- tool-reason [tool result]
+  (try
+    (cond (withhold-output? (:input tool)) "known_source"
+          (> (bytes-of (str (:output result))) (* 1024 1024)) "unscanned_output"
+          (env-dump? (:output result)) "env_dump"
+          (exposure? (:output result)) "known_format_in_tool_output")
+    (catch Throwable _ "unscanned_output")))
+
+(defn- tool-span [ctx {:keys [key parent name start end input output error? status policy]}]
+  (mk-span ctx {:key key :parent parent :name (str "tool:" name) :start start :end end
+                :level (when error? "ERROR")
+                :attrs-map (cond-> {"langfuse.observation.type" "tool"
+                                    "langfuse.observation.input" (if (string? input) input (json/generate-string input))
+                                    "langfuse.observation.output" (str (or output ""))
+                                    "langfuse.observation.metadata.body_policy" (or policy "sent")}
+                             status (assoc "langfuse.observation.metadata.status" status)
+                             error? (assoc "langfuse.observation.level" "ERROR"))}))
+
+(defn- generation-span [ctx {:keys [key parent model usage start end input output policy]}]
   (mk-span ctx {:key key :parent parent :name (str "generation:" (or model "unknown")) :start start :end end
                 :attrs-map (cond-> {"langfuse.observation.type" "generation"
                                     "langfuse.observation.input" input
                                     "langfuse.observation.output" output
-                                    "langfuse.observation.metadata.input_scope" "delta"}
+                                    "langfuse.observation.metadata.input_scope" "delta"
+                                    "langfuse.observation.metadata.body_policy" (or policy "sent")}
                              model (assoc "langfuse.observation.model.name" model)
                              (seq usage) (assoc "langfuse.observation.usage_details" (json/generate-string usage)))}))
 
@@ -504,33 +1086,43 @@
          lines)]
     gens))
 
-(defn claude-spans [ctx parent prefix lines]
-  (let [results (claude-results lines)
-        gens (claude-generations lines)
-        end-of-log (some ->millis (reverse (map :timestamp lines)))
-        sensitive-gen? (fn [gen] (some (fn [tool] (let [result (get results (:id tool))]
-                                                   (private-tool? tool result)))
-                                      (filter #(= "tool_use" (:type %)) (:blocks gen))))
-        first-sensitive (first (keep-indexed #(when (sensitive-gen? %2) %1) gens))]
+(declare codex-usage)
+(defn- session-spans [ctx parent prefix gens results format end-of-log]
+  (let [tools-of (fn [gen] (if (= format :claude) (filter #(= "tool_use" (:type %)) (:blocks gen)) (:tools gen)))
+        tool-id (if (= format :claude) :id :call-id)
+        reason-of (fn [tool] (tool-reason tool (get results (tool-id tool))))
+        first-hit (first (keep-indexed (fn [i gen] (when-let [reason (some reason-of (tools-of gen))] [i reason])) gens))]
     (mapcat
      (fn [gen next-gen idx]
-       (let [gen-key (str prefix "gen:" idx)
-             tools (filter #(= "tool_use" (:type %)) (:blocks gen))
+       (let [gen-key (str prefix "gen:" idx) tools (tools-of gen)
              end (or (:ts next-gen) end-of-log (:ts gen))
-             output (str/join "\n" (concat [(content-text (:blocks gen))]
-                                           (map #(str "[tool_use " (:name %) "]") tools)))]
+             later? (and first-hit (> idx (first first-hit)))
+             output (if (= format :claude) (content-text (:blocks gen)) (str/join "\n" (:text gen)))
+             output (str/trim (str/join "\n" (cons output (map #(str "[tool_use " (:name %) "]") tools))))]
          (cons
           (generation-span ctx {:key gen-key :parent parent :model (:model gen)
-                                :usage (claude-usage (:usage gen)) :start (:ts gen) :end end
-                                :input (if (and first-sensitive (> idx first-sensitive)) "[withheld: the model has seen tool output]" (:input gen)) :output (if (and first-sensitive (> idx first-sensitive)) "[withheld: the model has seen tool output]" (str/trim output))})
-          (map (fn [tool]
-                 (let [result (get results (:id tool))
-                       later? (and first-sensitive (> idx first-sensitive))]
-                   (tool-span ctx {:key (str gen-key ":tool:" (:id tool)) :parent gen-key :name (:name tool)
-                                   :start (:ts gen) :end (or (:ts result) end) :private? (private-tool? tool result) :hide-view? (and later? (not (contains? body-tools (:name tool))))
-                                   :input (if (and later? (contains? body-tools (:name tool))) "[withheld: the model has seen tool output]" (:input tool)) :output (if (and later? (contains? body-tools (:name tool))) "[withheld: the model has seen tool output]" (:output result)) :error? (:error? result)})))
-               tools))))
+                                :usage ((if (= format :claude) claude-usage codex-usage) (:usage gen))
+                                :start (:ts gen) :end end :input (if later? withheld-model-output (:input gen))
+                                :output (if later? withheld-model-output output)
+                                :policy (when later? (str "withheld_after_" (second first-hit)))})
+          (map-indexed (fn [tool-idx tool]
+                 (let [result (get results (tool-id tool)) reason (reason-of tool)
+                       prior (or (when later? (second first-hit)) (some reason-of (take tool-idx tools)))
+                       policy (cond (and reason (not= reason "known_format_in_tool_output")) (str "withheld_" reason)
+                                    prior (str "withheld_after_" prior)
+                                    (= reason "known_format_in_tool_output") "masked_known_format"
+                                    :else "sent")
+                       withheld? (and reason (not= reason "known_format_in_tool_output"))
+                       body (cond withheld? withheld-tool-output prior withheld-model-output)]
+                   (tool-span ctx {:key (str gen-key ":tool:" (tool-id tool)) :parent gen-key :name (:name tool)
+                                   :start (or (:ts tool) (:ts gen)) :end (or (:ts result) end)
+                                   :input (or body (:input tool)) :output (or body (:output result))
+                                   :policy policy :status (:status tool) :error? (or (:error? tool) (:error? result))}))) tools))))
      gens (concat (rest gens) [nil]) (range))))
+
+(defn claude-spans [ctx parent prefix lines]
+  (session-spans ctx parent prefix (claude-generations lines) (claude-results lines) :claude
+                 (some ->millis (reverse (map :timestamp lines)))))
 
 (defn- claude-system-prompts [lines]
   (for [line lines
@@ -599,27 +1191,8 @@
     (select-keys result [:gens :results])))
 
 (defn codex-spans [ctx parent prefix lines]
-  (let [{:keys [gens results]} (codex-generations lines)
-        end-of-log (some ->millis (reverse (map :timestamp lines)))
-        sensitive-gen? (fn [gen] (some (fn [tool] (let [result (get results (:call-id tool))]
-                                                   (private-tool? tool result))) (:tools gen)))
-        first-sensitive (first (keep-indexed #(when (sensitive-gen? %2) %1) gens))]
-    (mapcat
-     (fn [gen next-gen idx]
-       (let [gen-key (str prefix "gen:" idx)
-             end (or (:ts next-gen) end-of-log (:ts gen))
-             output (str/join "\n" (concat (:text gen) (map #(str "[tool_use " (:name %) "]") (:tools gen))))]
-         (cons
-          (generation-span ctx {:key gen-key :parent parent :model (:model gen) :usage (codex-usage (:usage gen))
-                                :start (:ts gen) :end end :input (if (and first-sensitive (> idx first-sensitive)) "[withheld: the model has seen tool output]" (:input gen)) :output (if (and first-sensitive (> idx first-sensitive)) "[withheld: the model has seen tool output]" output)})
-          (map (fn [tool]
-                 (let [result (get results (:call-id tool))
-                       later? (and first-sensitive (> idx first-sensitive))]
-                   (tool-span ctx {:key (str gen-key ":tool:" (:call-id tool)) :parent gen-key :name (:name tool)
-                                   :start (:ts tool) :end (or (:ts result) end) :private? (private-tool? tool result) :hide-view? (and later? (not (contains? body-tools (:name tool))))
-                                   :input (if (and later? (contains? body-tools (:name tool))) "[withheld: the model has seen tool output]" (:input tool)) :output (if (and later? (contains? body-tools (:name tool))) "[withheld: the model has seen tool output]" (:output result)) :status (:status tool) :error? (:error? tool)})))
-               (:tools gen)))))
-     gens (concat (rest gens) [nil]) (range))))
+  (let [{:keys [gens results]} (codex-generations lines)]
+    (session-spans ctx parent prefix gens results :codex (some ->millis (reverse (map :timestamp lines))))))
 
 (defn- codex-system-prompts [lines]
   (for [line lines
@@ -714,7 +1287,19 @@
   (when-let [text (safe-slurp path)]
     (try (json/parse-string text true) (catch Exception _ nil))))
 
-(defn build-run
+(def max-run-pinned-values 256)
+
+(defn pinned-values-of
+  "Values named by a name-based known format anywhere in the bodies of the run, or :overflow."
+  [spans]
+  (let [values (->> spans
+                    (mapcat :attributes)
+                    (filter #(contains? #{"langfuse.observation.input" "langfuse.observation.output"} (:key %)))
+                    (mapcat #(:values (named-values (get-in % [:value :stringValue]))))
+                    distinct vec)]
+    (if (> (count values) max-run-pinned-values) :overflow values)))
+
+(defn- build-run*
   "Returns {:spans raw-spans :root-key ...} for one terminal run. Nothing here is redacted yet."
   [cfg ticket run]
   (let [run-dir (fs/path (:root cfg) "runs" ticket run)
@@ -734,7 +1319,7 @@
                     "langfuse.trace.metadata.agent" agent-name
                     "langfuse.trace.metadata.action" (str action)
                     "langfuse.trace.metadata.exporter_version" exporter-version
-                    "langfuse.trace.metadata.coverage.tool_body" "body_tools_until_tool_output"
+                    "langfuse.trace.metadata.coverage.tool_bodies" "sent through the known-format mask; withheld after a known source, an environment dump or a known format in a tool result (body_policy on each observation)"
                     "langfuse.trace.metadata.coverage.reasoning" "not_collected"
                     "langfuse.trace.metadata.coverage.provider_payload"
                     "partial: Claude api-request-blob and Codex response_item only; the CLI may add content it does not log"}
@@ -777,68 +1362,68 @@
                      (map #(system-prompt-span ctx (assoc % :parent "root" :ts (or (:ts %) started)))))
         children0 (mapv reattr (concat (:spans claude) (mapcat :spans parts)))
         span-type (fn [span] (some #(when (= "langfuse.observation.type" (:key %)) (get-in % [:value :stringValue])) (:attributes span)))
-        private-span? (fn [span] (some #(= "langfuse.observation.metadata.output_policy" (:key %)) (:attributes span)))
+        policy-of (fn [span] (some #(when (= "langfuse.observation.metadata.body_policy" (:key %)) (get-in % [:value :stringValue])) (:attributes span)))
+        evidence (filter #(contains? #{"withheld_known_source" "withheld_env_dump" "withheld_unscanned_output" "masked_known_format"} (policy-of %)) children0)
+        first-evidence (first (sort-by #(bigint (:endTimeUnixNano %)) evidence))
+        reason (some-> (policy-of first-evidence) ({"withheld_known_source" "known_source" "withheld_env_dump" "env_dump" "withheld_unscanned_output" "unscanned_output" "masked_known_format" "known_format_in_tool_output"}))
         agent-ids (set (map :spanId (filter #(= "agent" (span-type %)) children0)))
         child-gen-ids (set (map :spanId (filter #(and (= "generation" (span-type %)) (agent-ids (:parentSpanId %))) children0)))
         child-span? (fn [span] (or (agent-ids (:parentSpanId span)) (child-gen-ids (:parentSpanId span))))
-        run-private? (some private-span? children0)
-        child-private? (some #(and (child-span? %) (private-span? %)) children0)
-        main-gens (filter #(and (= "generation" (span-type %)) (not (child-span? %))) children0)
-        later-main-gens (set (map :spanId (rest main-gens)))
-        withhold-keys (fn [span keys]
-                        (update span :attributes (fn [items] (mapv #(if (contains? keys (:key %))
-                                                                     (assoc-in % [:value :stringValue] withheld-model-output) %) items))))
-        both #{"langfuse.observation.input" "langfuse.observation.output"}
-        input-only #{"langfuse.observation.input"}
-        body-span? (fn [span] (contains? body-tools (str/replace-first (:name span) #"^tool:" "")))
-        ;; A child's first prompt can repeat what its parent read, and the parent can repeat what any child read.
-        withhold-child (fn [span]
-                         (case (span-type span)
-                           "generation" (withhold-keys span both)
-                           "tool" (withhold-keys span (if (body-span? span) both input-only))
-                           span))
-        withhold-main (fn [span]
-                        (let [later? (later-main-gens (:parentSpanId span))]
-                          (case (span-type span)
-                            "generation" (if (later-main-gens (:spanId span)) (withhold-keys span both) span)
-                            "tool" (cond (and (body-span? span) later?) (withhold-keys span both)
-                                         (body-span? span) (withhold-keys span #{"langfuse.observation.output"})
-                                         later? (withhold-keys span input-only)
-                                         :else span)
-                            span)))
+        main-evidence (first (sort-by #(bigint (:endTimeUnixNano %)) (remove child-span? evidence)))
+        child-evidence (first (sort-by #(bigint (:endTimeUnixNano %)) (filter child-span? evidence)))
+        after? (fn [span hit] (and hit (or (= "0" (:startTimeUnixNano span)) (= "0" (:endTimeUnixNano hit))
+                                             (>= (bigint (:startTimeUnixNano span)) (bigint (:endTimeUnixNano hit))))))
+        withhold (fn [span]
+                   (update span :attributes (fn [items]
+                     (mapv #(cond
+                              (contains? #{"langfuse.observation.input" "langfuse.observation.output"} (:key %)) (assoc-in % [:value :stringValue] withheld-model-output)
+                              (= "langfuse.observation.metadata.body_policy" (:key %)) (assoc-in % [:value :stringValue] (str "withheld_after_" reason))
+                              :else %) items))))
         children (mapv (fn [span]
-                         (cond (and run-private? (child-span? span)) (withhold-child span)
-                               child-private? (withhold-main span)
-                               :else span))
-                       children0)
-        sensitive? (some #(some (fn [a] (= withheld-model-output (get-in a [:value :stringValue]))) (:attributes %)) children)
-        root (if sensitive?
-               (update root :attributes (fn [items] (mapv #(if (= "langfuse.observation.output" (:key %))
-                                                             (assoc-in % [:value :stringValue] "[withheld: the model has seen tool output]") %) items)))
-               root)]
+                         (if (and reason (contains? #{"generation" "tool"} (span-type span))
+                                  ;; Evidence spans are not exempt: a child's masked known-format result after the parent read a
+                                  ;; known source may carry the parent's plain value, so only already-withheld spans are skipped.
+                                  (not (str/starts-with? (or (policy-of span) "") "withheld_"))
+                                  (or (and (child-span? span) (after? span main-evidence))
+                                      (and (not (child-span? span)) (after? span child-evidence))))
+                           (withhold span) span)) children0)
+        root (cond-> root reason (update :attributes (fn [items] (conj (mapv #(if (= "langfuse.observation.output" (:key %)) (assoc-in % [:value :stringValue] withheld-model-output) %) items)
+                                                                             (attr "langfuse.observation.metadata.body_policy" (str "withheld_after_" reason))))))
+        add-reason (fn [span] (update span :attributes conj (attr "langfuse.trace.metadata.coverage.withheld_reason" (or reason "none"))))
+        root (add-reason root)
+        children (mapv add-reason children)
+        prompts (map add-reason prompts)]
     {:ticket ticket :run run :trace-id tid
      :root root
      :spans (concat prompts children)
+     :pinned-values (pinned-values-of (concat [root] prompts children))
      :counts (:counts claude)}))
+
+(defn build-run [cfg ticket run]
+  (binding [*exposure-values* (:secret-values cfg)]
+    (build-run* cfg ticket run)))
 
 ;; ---------------------------------------------------------------- sanitizing
 
 (defn sanitize-span
-  "Every exported string goes through redaction before truncation, so a cut can never hide a
-  secret from the mask. A failure in here costs the field, not the fail-closed property."
+  "Mask before truncating; all spool payloads pass this and the final guard."
   [cfg tally span]
   (let [clean (fn [s]
                 (let [{:keys [value redactions]} (*redact-field* s (:secret-values cfg))]
                   (when (seq redactions) (swap! tally #(merge-with + % redactions)))
-                  (truncate-field value (:max-field-bytes cfg))))]
-    (-> span
-        (update :name clean)
-        (update :attributes
-                (fn [items]
-                  (mapv (fn [item]
-                          (update item :value
-                                  #(walk/postwalk (fn [x] (if (string? x) (clean x) x)) %)))
-                        items))))))
+                  (truncate-field value (:max-field-bytes cfg))))
+        span (-> span
+                 (update :name clean)
+                 (update :attributes (fn [items] (mapv (fn [item] (update item :value #(walk/postwalk (fn [x] (if (string? x) (clean x) x)) %))) items))))
+        attrs (:attributes span)
+        current (some #(when (= "langfuse.observation.metadata.body_policy" (:key %)) (get-in % [:value :stringValue])) attrs)
+        bodies (keep #(when (contains? #{"langfuse.observation.input" "langfuse.observation.output"} (:key %)) (get-in % [:value :stringValue])) attrs)
+        policy (cond (and current (not= current "sent")) current
+                     (some #(str/includes? % "[REDACTED:") bodies) "masked_known_format"
+                     (some #(str/includes? % "[truncated") bodies) "truncated"
+                     :else "sent")]
+    (assoc span :attributes (conj (vec (remove #(= "langfuse.observation.metadata.body_policy" (:key %)) attrs))
+                                  (attr "langfuse.observation.metadata.body_policy" policy)))))
 
 (defn span-safe?
   "The final guard. It covers every string in the span, whatever the per-field pass did."
@@ -846,10 +1431,16 @@
   (let [strings (concat [(:name span)] (filter string? (tree-seq coll? seq (map :value (:attributes span)))))]
     (every? #(guard-safe? % (:secret-values cfg)) strings)))
 
+(declare prepare-spans*)
 (defn prepare-spans
   "Returns {:spans :stats}: sanitized, capped and final-guarded spans (root first), or
   :failed when the root itself does not pass the guard."
-  [cfg {:keys [root spans]}]
+  [cfg {:keys [root spans pinned-values]}]
+  (if (= :overflow pinned-values)
+    {:failed "pinned_values_over_limit" :stats {:redactions {} :dropped-secret-guard 0}}
+    (prepare-spans* (update cfg :secret-values #(vec (distinct (concat % pinned-values)))) root spans)))
+
+(defn- prepare-spans* [cfg root spans]
   (let [tally (atom {})
         clean-root (sanitize-span cfg tally root)
         limit (dec (:max-spans cfg))
@@ -870,7 +1461,7 @@
         truncated? (or over-count? (< (count kept) (count guarded)))
         clean-root (cond-> clean-root
                      truncated? (update :attributes conj (attr "langfuse.trace.metadata.coverage.truncated" "true"))
-                     (pos? guard-drops) (update :attributes conj (attr "langfuse.trace.metadata.coverage.dropped_secret_guard" (str guard-drops))))]
+                     (pos? guard-drops) (update :attributes conj (attr "langfuse.trace.metadata.coverage.dropped_guard" (str guard-drops))))]
     (if (span-safe? cfg clean-root)
       {:spans (into [clean-root] kept)
        :stats {:redactions @tally :dropped-secret-guard guard-drops :bytes bytes :truncated truncated?}}

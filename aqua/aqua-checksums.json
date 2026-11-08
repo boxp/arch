@@ -306,38 +306,38 @@
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/suzuki-shunsuke/tfprovidercheck/v1.0.7/tfprovidercheck_darwin_amd64.tar.gz",
-      "checksum": "A72CD3322E3BCA105752E43C61D7B3A88C1C7A5436451D02B45AAD4AFEEE98BF",
+      "id": "github_release/github.com/suzuki-shunsuke/tfprovidercheck/v1.0.8/tfprovidercheck_darwin_amd64.tar.gz",
+      "checksum": "C5EDB735F7328626F5CE09A799248FBB253B5BC0DE6A480D882A8791AB3F0ECC",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/suzuki-shunsuke/tfprovidercheck/v1.0.7/tfprovidercheck_darwin_arm64.tar.gz",
-      "checksum": "C95E787C3ADE838FFD03236F46C554BE159E7910E0AEB80914BD726DAFD762D3",
+      "id": "github_release/github.com/suzuki-shunsuke/tfprovidercheck/v1.0.8/tfprovidercheck_darwin_arm64.tar.gz",
+      "checksum": "4D2D4B35D7FE6646B585103F299CC0E22DF59E8DC0D9DE44AA1E5973FAFE6C78",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/suzuki-shunsuke/tfprovidercheck/v1.0.7/tfprovidercheck_linux_amd64.tar.gz",
-      "checksum": "359F87994FEECDB3E5F2F53FAB81EE06F793395714C17EA5E310925EA494585A",
+      "id": "github_release/github.com/suzuki-shunsuke/tfprovidercheck/v1.0.8/tfprovidercheck_linux_amd64.tar.gz",
+      "checksum": "C297269D63AE1C5E77015B4904849FE7CDEE9C334CD275FDF96470A794DC3524",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/suzuki-shunsuke/tfprovidercheck/v1.0.7/tfprovidercheck_linux_arm64.tar.gz",
-      "checksum": "809DA89AB4AC255DEA24A1F8DC929B6CD4FD27D61559DBF1969690F9FCA45DFE",
+      "id": "github_release/github.com/suzuki-shunsuke/tfprovidercheck/v1.0.8/tfprovidercheck_linux_arm64.tar.gz",
+      "checksum": "5F739391805ECE040787186CC0E7DB59737D2CE6289DC9EF4099514294C8734B",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/suzuki-shunsuke/tfprovidercheck/v1.0.7/tfprovidercheck_windows_amd64.zip",
-      "checksum": "25669F68FC1741176EF2D1F4A4EAFE71DA72E3E93F4A1850BAE969E642348BEF",
+      "id": "github_release/github.com/suzuki-shunsuke/tfprovidercheck/v1.0.8/tfprovidercheck_windows_amd64.zip",
+      "checksum": "49A633912EF19DD3A6F2AADD32694D8EAB81BA191AEB16A8958DFD2F637AB4DE",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/suzuki-shunsuke/tfprovidercheck/v1.0.7/tfprovidercheck_windows_arm64.zip",
-      "checksum": "B42850199F3E5D4087A77928326F24C75D74370BBE771AE03CEAE178805E80E5",
+      "id": "github_release/github.com/suzuki-shunsuke/tfprovidercheck/v1.0.8/tfprovidercheck_windows_arm64.zip",
+      "checksum": "02C1A510EFB3B342F59A97DB3785425744D89995CFE806238A64323E48C194EA",
       "algorithm": "sha256"
     },
     {
-      "id": "registries/github_content/github.com/aquaproj/aqua-registry/3546ea19be0d0f225b5e97719e82a6cb802bd2b1/registry.yaml",
-      "checksum": "0D871FBC8E8F9BFD9564320BA840D1F04D0F4CCBDF9E2067769921B9C9AF5677",
+      "id": "registries/github_content/github.com/aquaproj/aqua-registry/v4.583.0/registry.yaml",
+      "checksum": "4DF93DAEA98288B1C20AFA5AA9559CD09E6311C82D5FEBB6081B0D7F5F57A3EF",
       "algorithm": "sha256"
     }
   ]

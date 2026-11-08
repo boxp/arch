@@ -104,7 +104,7 @@ Task Board runner（`docker/codex-workspace/task-board/task_board_runner.bb`）�
 | --- | --- | --- |
 | `CODEX_TASK_BOARD_WORKSPACE_PRUNE` | 有効 | `0` / `false` / `no` / `off` で loop 中の自動 prune を止める。手動の `prune-workspaces` には効かない |
 | `CODEX_TASK_BOARD_WORKSPACE_RETENTION_DAYS` | `3` | done から削除までの保持日数。0 以上の整数 |
-| `CODEX_TASK_BOARD_WORKSPACE_PRUNE_INTERVAL_SECONDS` | `21600` | loop 中の実行間隔（秒）。1 以上の整数 |
+| `CODEX_TASK_BOARD_WORKSPACE_PRUNE_INTERVAL_SECONDS` | `3600` | loop 中の実行間隔（秒）。1 以上の整数 |
 
 不正な値のときは既定値を使い、`prune: warning invalid <変数>="<値>", using default <既定値>` を
 値ごとに 1 回だけ出す。既定値のまま動くので `boxp/lolice` の manifest 変更は不要。
@@ -187,3 +187,18 @@ prune: summary deleted=N held=M skipped=K recent-runs=R branches=B empty-dirs=E 
 `boxp/arch` の image 更新だけで反映される（image は `:latest` + `imagePullPolicy: Always` なので、
 Pod の再起動が必要）。反映後、sidecar ログに `workspace prune enabled, …` と `prune: summary …` が
 出ることを確認する。
+
+
+### BOXP-453: stale run と容量ガード
+
+Done の保持期間中、および未完了の票では、ロックされていない票の古い run を検査する。最新の run と判定できない run を保護し、GitHub の commit、未保存変更、ignored ファイル、mount、プロセスの cwd を確認してから削除する。mountinfo を読めない・解析できない場合、`/proc` を列挙できない場合、生存プロセスの cwd を解決できない場合は、いずれも安全側に倒して run を保持する（fail-closed）。procfs のファイルはサイズ 0 と報告されるため、mountinfo は babashka の `slurp` ではなくバイト列として直接読む。
+
+| 設定 | 既定値 | 内容 |
+| --- | --- | --- |
+| `CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE` | `true` | stale run の回収を有効にする |
+| `CODEX_TASK_BOARD_WORKSPACE_STALE_RUN_RETENTION_HOURS` | `12` | stale run の最低保持時間（1 以上） |
+| `CODEX_TASK_BOARD_WORKSPACE_KEEP_LATEST_RUNS` | `2` | 票ごとに保持する最新 run 数（1 以上） |
+| `CODEX_TASK_BOARD_MIN_FREE_BYTES` | `8589934592` | 新規 run 開始に必要な空きバイト数 |
+| `CODEX_TASK_BOARD_MIN_FREE_INODE_PERCENT` | `3` | 新規 run 開始に必要な空き inode の割合 |
+
+容量が閾値未満のときは新規 run を開始せず、間隔を待たず prune を要求する。inode の取得失敗時は inode 判定を省略し、両方の取得に失敗した場合はログを出して開始を許可する。詳細は [BOXP-453 の設計](../BOXP-453/plan.md) を参照。

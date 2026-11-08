@@ -779,8 +779,54 @@
 
 (defn card-rev [card] (when-let [line (:line card)] (attr-value line "rev")))
 
-(defn rev-mismatch? [card fm]
-  (and (card-rev card) (not= (card-rev card) (:board_rev fm))))
+
+(defn superseded-card-lines-path [ticket-id]
+  (fs/path (root) "superseded-card-lines" (str ticket-id ".edn")))
+
+(defn superseded-card-lines
+  "Exact [lane line] pairs of rev-less cards this runner itself replaced on
+  the Board."
+  [ticket-id]
+  (try (let [path (superseded-card-lines-path ticket-id)]
+         (if (fs/exists? path) (set (filter vector? (edn/read-string (slurp (str path))))) #{}))
+       (catch Exception _ #{})))
+
+(defn record-superseded-card-line!
+  "Remember the lane and rev-less line of a card the runner is about to
+  replace, so a Board copy restored from before the replacement can be
+  recognised (see rev-mismatch?)."
+  [ticket-id old-card new-line]
+  (when (and (:line old-card) (not= (:line old-card) new-line) (not (attr-value (:line old-card) "rev")))
+    (try
+      (let [path (superseded-card-lines-path ticket-id)
+            current (if (fs/exists? path) (vec (filter vector? (edn/read-string (slurp (str path))))) [])
+            entry [(:lane old-card) (:line old-card)]]
+        (when-not (some #{entry} current)
+          (fs/create-dirs (fs/parent path))
+          (spit (str path) (str (pr-str (vec (take-last 32 (conj current entry)))) "\n"))))
+      (catch Exception _ nil))))
+
+(defn rev-mismatch?
+  "A card whose rev:: differs from the ticket's board_rev. A card without rev::
+  is legacy and normally follows its ticket, except when the ticket was moved
+  to a terminal state (done / blocked) with a revision and the card is exactly
+  a rev-less line this runner already replaced, still in the lane it had when
+  it was replaced, while the ticket still holds the terminal transition's
+  Owner assignment: nothing about that card differs from the pre-transition
+  Board, so it may be an older Board copy restored by a last-writer-wins sync
+  and must not be projected back (sync-revision! holds it without rewriting
+  either side). A re-request that changes the card -- moved to another lane
+  (e.g. Ready) or its text / assignee edited -- is followed like any other
+  rev-less edit."
+  [card fm]
+  (let [cr (card-rev card)]
+    (if cr
+      (not= cr (:board_rev fm))
+      (boolean (and (not (str/blank? (:board_rev fm)))
+                    (#{"done" "blocked"} (:status fm))
+                    (not= (:status fm) (:status card))
+                    (= "boxp" (:assignee fm))
+                    (contains? (superseded-card-lines (:ticket-id card)) [(:lane card) (:line card)]))))))
 
 (def revision-mismatches (atom {}))
 
@@ -828,7 +874,23 @@
             expired? (> (.toNanos (java.time.Duration/between (:first-seen entry) (now)))
                         (* 1000000000 (rev-mismatch-warn-seconds)))]
         (cond
-          (and expired? card-at ticket-at (> ticket-at card-at) ticket-lane)
+          ;; A rev-less card identical to the line this runner replaced (lane
+          ;; and text) is either an older Board copy restored by sync or a user
+          ;; who rebuilt exactly that line by hand; the two cannot be told
+          ;; apart. Neither side is overwritten: projection and dispatch stay
+          ;; held and the card is left as written. Any edit that makes the card
+          ;; differ (another lane such as Ready, another assignee, or a helper
+          ;; update that stamps rev::) is followed normally.
+          (nil? card-rev')
+          (do (when (and expired? (not (:warned? entry)))
+                (swap! revision-mismatches assoc-in [id :warned?] true)
+                (log! (str "WARN: " id " card equals the pre-transition rev-less line in " (:lane card)
+                           " while the ticket is " (:status fm) " rev=" ticket-rev
+                           "; holding projection and dispatch without rewriting the card. Move the card to Ready"
+                           " or update it with the helper to re-request, or set it to the ticket's state.")))
+              true)
+
+          (and expired? ticket-at card-at (> ticket-at card-at) ticket-lane)
           (do (log! (str "WARN: assignment revision mismatch persisted for " id "; the card write was lost, repairing the card from ticket rev=" ticket-rev
                          " (card rev=" card-rev' ")"))
               (swap! revision-mismatches dissoc id)
@@ -900,23 +962,45 @@
 (defn remove-index [lines idx]
   (vec (concat (subvec lines 0 idx) (subvec lines (inc idx)))))
 
+(def ^:dynamic *run-revisions* nil)
+(defn new-rev []
+  (let [rev (str (Long/toString (System/currentTimeMillis) 36) "-" (format "%04x" (rand-int 65536)))]
+    (when *run-revisions* (swap! *run-revisions* conj rev))
+    rev))
+
+(def duplicate-warnings (atom {}))
+(defn duplicate-ids! [cards]
+  (let [groups (group-by :ticket-id cards)
+        duplicates (into {} (for [[id cs] groups :when (> (count cs) 1)]
+                              [id (set (map (juxt :lane card-rev) cs))]))]
+    (doseq [[id signature] duplicates :when (not= signature (get @duplicate-warnings id))]
+      (log! (str "WARN duplicate board cards for " id ": " (pr-str signature))))
+    (reset! duplicate-warnings duplicates)
+    (set (keys duplicates))))
+
 (defn move-card!
   ([ticket-id target-status] (move-card! ticket-id target-status nil))
-  ([ticket-id target-status assignee]
+  ([ticket-id target-status assignee] (move-card! ticket-id target-status assignee nil))
+  ([ticket-id target-status assignee rev]
   (locking board-mutex
     (with-vault-writer-lock
      (fn []
        (let [path (board-path)
              lines (vec (read-lines path))
-             card (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines)))
+             cards (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines))
+             _ (when (> (count cards) 1) (fail (str "duplicate board cards for " ticket-id "; cannot move")))
+             card (first cards)
              target-lane (or (status->lane target-status)
                              (fail (str "invalid target status: " target-status)))]
          (when-not card
            (fail (str "ticket card not found: " ticket-id)))
          (let [new-line (cond-> (normalize-card-line (:line card) target-status)
-                          assignee (replace-or-add-attr "assignee" assignee))
+                          assignee (replace-or-add-attr "assignee" assignee)
+                          (= ::remove-rev rev) (remove-attr "rev")
+                          (string? rev) (replace-or-add-attr "rev" rev))
                without (remove-index lines (:idx card))
                moved (insert-after-heading without target-lane new-line)]
+           (record-superseded-card-line! ticket-id card new-line)
            (write-lines! path moved))))))))
 
 (defn repair-card-revision!
@@ -929,13 +1013,16 @@
      (fn []
        (let [path (board-path)
              lines (vec (read-lines path))
-             card (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines)))]
+             cards (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines))
+             _ (when (> (count cards) 1) (log! (str "WARN duplicate board cards for " ticket-id "; skipping repair")))
+             card (when (= 1 (count cards)) (first cards))]
          (when (and card
                     (= expected-card-rev (card-rev card))
                     (= rev (:board_rev (ticket-frontmatter ticket-id))))
            (let [new-line (cond-> (-> (normalize-card-line (:line card) target-status)
                                       (replace-or-add-attr "rev" rev))
                             assignee (replace-or-add-attr "assignee" assignee))]
+             (record-superseded-card-line! ticket-id card new-line)
              (write-lines! path (insert-after-heading (remove-index lines (:idx card))
                                                       (status->lane target-status) new-line)))))))))
 
@@ -947,9 +1034,11 @@
   (locking (ticket-mutex ticket-id)
     (with-vault-writer-lock
      (fn []
-       (let [card (first (filter #(= ticket-id (:ticket-id %))
-                                 (parse-board-cards (vec (read-lines (board-path))))))]
-         (when (and (= board_rev (card-rev card))
+       (let [cards (filter #(= ticket-id (:ticket-id %))
+                           (parse-board-cards (vec (read-lines (board-path)))))
+             _ (when (> (count cards) 1) (log! (str "WARN duplicate board cards for " ticket-id "; skipping repair")))
+             card (when (= 1 (count cards)) (first cards))]
+         (when (and card (= board_rev (card-rev card))
                     (= expected-ticket-rev (:board_rev (ticket-frontmatter ticket-id))))
            (update-frontmatter! ticket-id updates)))))))
 
@@ -1088,8 +1177,11 @@
                                    (= "done" status) (assoc :closed (or done (today))))))
 
 (defn sync-ticket-statuses! []
-  (let [lines (vec (read-lines (board-path)))]
-    (doseq [{:keys [ticket-id] :as card} (parse-board-cards lines)
+  (let [lines (vec (read-lines (board-path)))
+        cards (parse-board-cards lines)
+        duplicates (duplicate-ids! cards)]
+    (doseq [{:keys [ticket-id] :as card} cards
+            :when (not (duplicates ticket-id))
             :when (synced-card? card)
             :let [path (ticket-path ticket-id)]
             :when (fs/exists? path)]
@@ -1100,8 +1192,9 @@
         (let [held (locking (ticket-mutex ticket-id)
                      (with-vault-writer-lock
                       (fn []
-                        (when-let [current (first (filter #(= ticket-id (:ticket-id %))
-                                                          (parse-board-cards (vec (read-lines (board-path))))))]
+                        (when-let [current (let [matches (filter #(= ticket-id (:ticket-id %))
+                                                          (parse-board-cards (vec (read-lines (board-path)))))]
+                                             (when (= 1 (count matches)) (first matches)))]
                           (when (fs/exists? path)
                             (let [held (sync-revision! current (ticket-frontmatter ticket-id))]
                               (when-not held
@@ -1200,7 +1293,7 @@
         ;; `:shutdown` is written by the terminating runner itself; keep it when
         ;; the next owner re-marks the same run as interrupted.
         previous-agent (try
-                         (select-keys (read-edn-file path {}) [:agent :shutdown :todo])
+                         (select-keys (read-edn-file path {}) [:agent :shutdown :todo :progress])
                          (catch Exception _ {}))
         summary (merge previous-agent
                        {:ticket ticket-id
@@ -1269,8 +1362,9 @@
               ticket-exists? (fs/exists? (ticket-path ticket-id))
               complete! (fn []
                           (when ticket-exists?
-                            (move-card! ticket-id next-status "boxp")
-                            (update-frontmatter! ticket-id {:status next-status :assignee "boxp"})
+                            (let [rev (new-rev)]
+                              (move-card! ticket-id next-status "boxp" rev)
+                              (update-frontmatter! ticket-id {:status next-status :assignee "boxp" :board_rev rev}))
                             (record-localllm-commit! ticket-id run-id :committed next-status))
                           {:completed next-status})
               ;; Hash check + transition under the localllm write lock.
@@ -1293,8 +1387,9 @@
               (log! (str "run " run-id " for " ticket-id ": did not complete the interrupted localllm transition, the written notes changed since the write: " reason))
               (record-localllm-commit! ticket-id run-id :conflict nil)
               (when ticket-exists?
-                (move-card! ticket-id "blocked" "boxp")
-                (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
+                (let [rev (new-rev)]
+                  (move-card! ticket-id "blocked" "boxp" rev)
+                  (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp" :board_rev rev}))
                 (append-note! ticket-id (str "localllm docs run " run-id
                                              " は文書を更新した後の lane / frontmatter 遷移の途中で終了し、その後に対象文書が run の書込み内容から変わっていたため、遷移を完了せず Blocked にしました（文書は現在の内容のまま。backup からの復元もしていません。確認後に手動で Done / 再実行を判断してください）: "
                                              reason)))
@@ -2418,6 +2513,150 @@
       (log! (str "provider rate limit read failed: " (.getMessage e)))
       nil)))
 
+;; BOXP-468: short progress record and one independent Fable review when a
+;; ticket stagnates. The agent judges stagnation from the progress lines of the
+;; previous runs; the runner only extracts that line, links review tickets to
+;; their original through a plain `stagnation-review-of:: ID` line, and keeps
+;; the original from starting while its review is open (no new engine or cron).
+(def stagnation-review-assignee "claude-fable")
+(def progress-max-chars 600)
+
+(defn progress-marker
+  "The single `TASK_BOARD_PROGRESS:` line of a final message, trimmed and capped."
+  [text]
+  (when-let [[_ wrapper key-close colon-close value] (re-find #"(?im)^[ \t]*(?:[-*+][ \t]+)?(\*\*|__|`)?TASK_BOARD_PROGRESS(\*\*|__|`)?:(\*\*|__|`)?[ \t]*(\S[^\r\n]*)$" (or text ""))]
+    (let [value (str/trim value)
+          value (if (and wrapper (not= wrapper key-close) (not= wrapper colon-close)
+                         (str/ends-with? value wrapper))
+                  (str/trim (subs value 0 (- (count value) (count wrapper))))
+                  value)]
+      (when (seq value)
+        (if (> (count value) progress-max-chars)
+          (str (subs value 0 progress-max-chars) "…")
+          value)))))
+
+(defn stagnation-review-pattern [id-pattern]
+  (re-pattern (str "(?m)^[ \t]*(?:[-*+][ \t]+)?(?:\\*\\*|__|`)?stagnation-review-of::(?:\\*\\*|__|`)?[ \t]*(?:\\*\\*|__|`)?"
+                   id-pattern "(?=$|[ \t\\r\\n(]|\\*\\*|__|`)")))
+
+(defn stagnation-review-of
+  "The original ticket id when this ticket text is a stagnation review ticket."
+  [ticket-text]
+  (second (re-find (stagnation-review-pattern "([A-Z][A-Z0-9]*-\\d+)") (or ticket-text ""))))
+
+(defn stagnation-reviews-for
+  "Review tickets linked to `ticket-id`, oldest first: [{:id :status}]."
+  [ticket-id]
+  (let [dir (tickets-dir)
+        pattern (stagnation-review-pattern (java.util.regex.Pattern/quote ticket-id))]
+    (when (fs/exists? dir)
+      (->> (fs/list-dir dir)
+           (filter #(str/ends-with? (str (fs/file-name %)) ".md"))
+           (keep (fn [path]
+                   (try
+                     (let [text (slurp (str path))]
+                       (when (re-find pattern text)
+                         (let [id (str/replace (str (fs/file-name path)) #"\.md$" "")]
+                           (when-not (= id ticket-id)
+                             {:id id
+                              :status (:status (frontmatter-map (vec (str/split-lines text))))}))))
+                     (catch Exception _ nil))))
+           (sort-by (fn [{:keys [id]}] [(count id) id]))
+           vec))))
+
+(defn stagnation-review-open? [{:keys [status]}]
+  (contains? #{"ready" "in-progress"} status))
+
+(defn stagnation-review-received?
+  [ticket-text review-id]
+  (boolean (re-find (re-pattern (str "停滞レビュー受領:\\s*" (java.util.regex.Pattern/quote review-id) "\\b"))
+                    (or ticket-text ""))))
+
+(defn stagnation-review-status-line
+  "One line about the linked reviews, for the original ticket's prompt."
+  [ticket-text reviews]
+  (if (empty? reviews)
+    "Linked stagnation reviews: none.\n"
+    (str "Linked stagnation reviews: "
+         (str/join ", " (map (fn [{:keys [id status]}]
+                               (str id " status=" (or status "unknown")
+                                    (when (= "done" status)
+                                      (if (stagnation-review-received? ticket-text id) " received" " NOT-YET-RECEIVED"))))
+                             reviews))
+         ".\n")))
+
+(defn fable-review-quota-line
+  "The review route's limit state; unknown is never read as available."
+  [status]
+  (case (:decision status)
+    :hold (str "Review route " stagnation-review-assignee " quota: rejected until its reset"
+               (when-let [r (:resets-at status)] (str " (reset epoch " r ")"))
+               ". Do not request a review now; name it as the next step in your progress line.\n")
+    nil (str "Review route " stagnation-review-assignee " quota: unknown (not read as available). A review ticket may still be created; the runner holds its start while the limit is rejected.\n")
+    (str "Review route " stagnation-review-assignee " quota: last observation does not reject it (not a promise of capacity).\n")))
+
+(def progress-record-contract
+  (str "Progress record (進展記録): put exactly one line in your final message, in short Japanese:\n"
+       "  TASK_BOARD_PROGRESS: 段階=<作成|検証|配備|本人受入>; 進展=<受入条件に対して今回進んだ点>; 根拠=<現物・再現・比較の証拠>; 次=<残る問題と次に変える仮説>\n"
+       "The runner copies this line into Notes and the run summary, and shows it to the next run under Previous run summaries (:progress). Do not repeat it as a long note. "
+       "PR count, changed lines, run count or green CI alone is not progress; progress means the acceptance criteria are closer, shown by an artifact, a reproduction or a comparison.\n"))
+
+(defn stagnation-requester-prompt [ticket-id ticket-text reviews quota-status]
+  (let [helper "~/.claude/skills/obsidian-task-board/bin/task-board.bb"
+        open (filter stagnation-review-open? reviews)
+        unreceived (filter #(and (= "done" (:status %)) (not (stagnation-review-received? ticket-text (:id %)))) reviews)
+        stopped (filter #(not (contains? #{"ready" "in-progress" "done"} (:status %))) reviews)]
+    (str progress-record-contract
+         "Stagnation check (停滞確認, judged by you from the :progress lines above and the Notes): a stagnation candidate is the same unresolved problem with no comparative improvement, repeated rejection without an updated usable artifact, the same hypothesis retried with small tweaks, or a local metric improving while the goal does not get closer. "
+         "It is NOT stagnation when an independent stage is progressing, when waiting for the Owner or an external system, on a real quota/permission/cost shortage, for a legitimate CI re-run, or merely because of the run count or the continuation limit.\n"
+         (stagnation-review-status-line ticket-text reviews)
+         (fable-review-quota-line quota-status)
+         (cond
+           (seq open)
+           (str "A stagnation review (" (str/join ", " (map :id open)) ") is open for this ticket: do not request another one and do not run method changes or implementation that would compete with it. Finish only independent, non-conflicting work, then return continue; the runner keeps this card in Ready with the same assignee until the review leaves Ready/In Progress.\n")
+
+           (seq unreceived)
+           (str "A finished stagnation review is not yet received: read its result (its Notes and the Project document it names) before anything else, then run: bb " helper " append-note " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --source <you> --note \"停滞レビュー受領: <REVIEW-ID> — 反映: <採る案と次の最小試験>\" for each of " (str/join ", " (map :id unreceived)) ". "
+                "Apply its recommendation only inside the already approved scope; anything that needs a new decision goes to the Owner as one short choice.\n")
+
+           (seq stopped)
+           (str "A stagnation review (" (str/join ", " (map :id stopped)) ") is stopped (status not finished) for this ticket: do not request another review for the same problem and do not work around it. Continue only independent, non-conflicting work inside the approved scope; if the original problem cannot progress without that review, return blocked with TASK_BOARD_WAIT_REASON: owner-decision and say which review is waiting.\n")
+
+           :else
+           (str "If this run is a stagnation candidate and no review exists for the same unresolved problem, request one independent review instead of the next inertial retry (no Owner permission needed for this limited review): "
+                "write a short Japanese summary file whose first line is `stagnation-review-of:: " ticket-id "`, followed by the goal, the fixed version under review (commit/PR head/artifact path), the hypotheses tried, the comparison evidence, the unresolved points and the current approval scope; then run "
+                "bb " helper " create --vault \"$CODEX_TASK_BOARD_VAULT\" --lane Ready --assignee " stagnation-review-assignee " --priority <this ticket's priority> --repo <this ticket's repo> --title \"停滞レビュー: " ticket-id " <問題>\" --summary-file <that file>, "
+                "append-note to " ticket-id " \"停滞レビュー依頼: <REVIEW-ID> (問題: ...)\", stop work that would compete with the review, and return continue. "
+                "A second review for the same problem needs new evidence or a different problem, stated in its summary. Do not change this ticket's assignee or lane.\n"))
+         "A review approves no extra billing, paid API, image generation, new permission, unapproved method replacement, production operation or budget/retry reset.\n")))
+
+(defn stagnation-reviewer-prompt [ticket-id original-id]
+  (let [helper "~/.claude/skills/obsidian-task-board/bin/task-board.bb"]
+    (str "Stagnation reviewer contract (停滞レビュー): this ticket is an independent review of " original-id ". You are the reviewer; the original assignee keeps the work.\n"
+         "- Read the original ticket, its Notes and progress lines, its Project document and the fixed version named here. Use read-only inspection and at most small isolated reproductions inside this run workspace. When images or motion matter, look at the actual image bytes or timestamped frames; a path is not a viewed artifact.\n"
+         "- Do not edit, commit or push the original repositories or PRs, do not change " original-id "'s assignee, lane or claim, and do not stop its workers. Do not create tickets and do not request another review (no recursion). You may delegate fact gathering, but make the comparison and the recommendation yourself (if nothing is delegated, record the final-judgment exemption).\n"
+         "- Compare a few strong options, including continuing the current approach. Write in Japanese: 推奨 / 理由 / 再利用できる範囲 / 次の最小試験 / Ownerに必要な判断 (if any). Save it in the original's Project document when one is named, otherwise in this ticket's Notes.\n"
+         "- Return it to the original: bb " helper " append-note " original-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --source " stagnation-review-assignee " --note \"停滞レビュー結果 " ticket-id ": <推奨の要約>; 詳細: <path or this ticket>\". The original assignee records 停滞レビュー受領 on its next run.\n"
+         "- The review approves no extra billing, paid API, image generation, new permission, unapproved method replacement, production operation or budget/retry reset. No repository change is expected: include TASK_BOARD_REVIEW_PR: none and return done once the result is on the original ticket.\n")))
+
+(defn stagnation-prompt
+  "Progress record and stagnation review section for implement-type runs."
+  ([action ticket-id ticket-text]
+   (when (#{:implement :review-fix :blocked-retry} action)
+     (if-let [original (stagnation-review-of ticket-text)]
+       (stagnation-reviewer-prompt ticket-id original)
+       (stagnation-prompt action ticket-id ticket-text
+                          (try (stagnation-reviews-for ticket-id)
+                               (catch Exception e
+                                 (log! (str "stagnation review scan failed: " (.getMessage e)))
+                                 []))
+                          (provider-quota-status stagnation-review-assignee)))))
+  ([action ticket-id ticket-text reviews quota-status]
+   (when (#{:implement :review-fix :blocked-retry} action)
+     (if-let [original (stagnation-review-of ticket-text)]
+       (stagnation-reviewer-prompt ticket-id original)
+       (stagnation-requester-prompt ticket-id ticket-text reviews quota-status)))))
+
 (defn prompt-for
   ([action ticket-id lane workspace agent]
    (prompt-for action ticket-id lane workspace agent (fetch-ai-ops-alerts)))
@@ -2449,6 +2688,7 @@
                              "Before merge/deploy and before your final result run: bb " todo-module-path " status " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --json, then, using the rev it reports: bb " todo-module-path " ack " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --rev REV --run \"$CODEX_TASK_BOARD_RUN_ID\" --source " agent ". A stale REV is refused and prints the difference. A result from an older revision will not be applied.\n"
                              (when (= :v1 (:mode view)) (str "After doing a TD item run: bb " todo-module-path " done " ticket-id " TD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --evidence TEXT. An optional item you will not do: skip " ticket-id " TD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --reason TEXT. Required items cannot be skipped: return blocked for an Owner decision. A checked box alone does not complete an item. Lines without a TD id are your own steps; do not add TD lines for them. TODOs grant no permission.\n"))
                              (when (some #(= "held" (get-in % [:todo :gate])) previous) "The previous result was held: read back merges and external operations before proceeding; do not repeat them.\n"))))
+                    (stagnation-prompt action ticket-id ticket-text)
                     "Ticket contents:\n\n" ticket-text "\n\n")
         review-contract (str "The codex review gate blocks only on P0/P1 findings; P2/P3/nit feedback is non-blocking and is not a reason to loop.\n"
                              "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: continue.\n"
@@ -3376,6 +3616,8 @@
                              :delegation-ok? delegation-ok?
                              :result marker
                              :finished-at (now-str)}
+                            (when-let [progress (progress-marker last-message)]
+                              {:progress progress})
                             ai-ops-fields))))
       {:exit exit
        :result marker
@@ -4311,11 +4553,12 @@
       ;; have been updated.  A later card/frontmatter failure is recovered to
       ;; the prior lane by process-card!, so recording :blocked beforehand
       ;; would leave summary.edn contradicting the restored ticket state.
-      (move-card! ticket-id "blocked" "boxp")
-      ;; Deterministic black-box failure hook; unset in deployment.
-      (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE"))
-        (throw (ex-info "forced blocked state update failure" {})))
-      (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
+      (let [rev (new-rev)]
+        (move-card! ticket-id "blocked" "boxp" rev)
+        ;; Deterministic black-box failure hook; unset in deployment.
+        (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE"))
+          (throw (ex-info "forced blocked state update failure" {})))
+        (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp" :board_rev rev}))
       ;; run-agent! records a zero-exit agent as succeeded before its result is
       ;; interpreted. Correct that provisional status only after the Blocked
       ;; transition itself has succeeded.
@@ -4349,8 +4592,15 @@
 (defn restore-card-state! [ticket-id status assignee]
   ;; A legacy Review card that failed to start has no lane to return to; Ready
   ;; keeps it runnable with the same assignee and does not re-create Review.
-  (let [status (if (= "review" status) "ready" status)]
-    (move-card! ticket-id status assignee)
+  ;; A failed terminal transition may already have stamped a fresh rev on the
+  ;; card; realign the card with the ticket's revision so the restored card is
+  ;; not later treated as a revision mismatch (and skipped as a candidate).
+  (let [status (if (= "review" status) "ready" status)
+        ticket-rev (try {:rev (:board_rev (ticket-frontmatter ticket-id))}
+                        (catch Exception _ nil))]
+    (move-card! ticket-id status assignee
+                (when ticket-rev
+                  (if (str/blank? (:rev ticket-rev)) ::remove-rev (:rev ticket-rev))))
     (update-frontmatter! ticket-id {:status status :assignee assignee})))
 
 (defn ensure-not-shutting-down!
@@ -4387,8 +4637,11 @@
           card (when (fs/exists? (board-path))
                  (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards (vec (read-lines (board-path)))))))
           cr (card-rev card)]
-      (when (or (not= ticket-rev start-rev) (and cr (not= cr start-rev)))
-        {:rev (if (not= ticket-rev start-rev) ticket-rev cr) :consistent? (= ticket-rev cr)}))
+      (let [external? #(and (not= % start-rev) (not (contains? (or (some-> *run-revisions* deref) #{}) %)))
+            ticket-changed? (external? ticket-rev)
+            card-changed? (and cr (external? cr))]
+        (when (or ticket-changed? card-changed?)
+          {:rev (if ticket-changed? ticket-rev cr) :consistent? (= ticket-rev cr)})))
     (catch Exception e
       (log! (str "superseded check failed for " ticket-id ": " (.getMessage e)))
       nil)))
@@ -4469,8 +4722,9 @@
                                     "; category=gate-failure-budget-exhausted"
                                     "; reason=" (sanitize-blocker-reason report)))
                  (try
-                   (move-card! ticket-id "blocked" "boxp")
-                   (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
+                   (let [rev (new-rev)]
+                  (move-card! ticket-id "blocked" "boxp" rev)
+                  (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp" :board_rev rev}))
                    (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
                    (log! (str "gate failure budget exhausted; " ticket-id
                               (if (= "blocked" status)
@@ -4513,7 +4767,41 @@
               (log! (str "could not note quota hold for " ticket-id ": " (.getMessage e)))))))
       true)))
 
-(defn process-card! [{:keys [ticket-id lane status] :as card}]
+;; BOXP-468: an original ticket does not start while its stagnation review is
+;; open, so no competing change runs beside the review. Like the quota hold the
+;; card, assignee, claim and budgets stay unchanged; it starts on a later tick
+;; once the review leaves Ready/In Progress. An Owner resume (blocked-retry) and
+;; the review ticket itself are never held.
+(def stagnation-review-hold-actions #{:implement :review-fix})
+(def stagnation-review-hold-logged (atom #{}))
+
+(defn stagnation-review-hold!
+  ([ticket-id action]
+   (when (stagnation-review-hold-actions action)
+     (let [text (try (slurp (str (ticket-path ticket-id))) (catch Exception _ nil))]
+       (when (and text (not (stagnation-review-of text)))
+         (stagnation-review-hold! ticket-id action
+                                  (try (stagnation-reviews-for ticket-id)
+                                       (catch Exception e
+                                         (log! (str "stagnation review scan failed: " (.getMessage e)))
+                                         [])))))))
+  ([ticket-id action reviews]
+   (when (stagnation-review-hold-actions action)
+     (when-let [open (seq (filter stagnation-review-open? reviews))]
+       (let [ids (str/join "," (map :id open))
+             marker (str "stagnation-review-hold=" ticket-id "/" ids)]
+         (when-not (contains? @stagnation-review-hold-logged marker)
+           (swap! stagnation-review-hold-logged conj marker)
+           (log! (str "not starting " ticket-id ": stagnation review " ids " is open"))
+           (try
+             (when-not (str/includes? (slurp (str (ticket-path ticket-id))) marker)
+               (append-note! ticket-id (str "Run not started: 停滞レビュー " ids " が進行中; " marker
+                                            "; the card, assignee and budgets are unchanged; it starts after the review leaves Ready/In Progress.")))
+             (catch Exception e
+               (log! (str "could not note stagnation review hold for " ticket-id ": " (.getMessage e))))))
+         true)))))
+
+(defn process-card-inner! [{:keys [ticket-id lane status] :as card}]
   (let [fm (ticket-frontmatter ticket-id)
         assignee (:assignee fm)
         start-rev (:board_rev fm)
@@ -4534,7 +4822,8 @@
                      (stop-exhausted-ticket! ticket-id candidate status assignee lane ticket-text)
                      nil)
                  candidate)
-        action (when-not (provider-quota-hold! ticket-id action assignee) action)]
+        action (when-not (provider-quota-hold! ticket-id action assignee) action)
+        action (when-not (stagnation-review-hold! ticket-id action) action)]
     (when action
       (let [effective-lane (if (#{"ready" "review" "blocked"} status) "In Progress" lane)
             lock (when-let [lock (acquire-lock! ticket-id action effective-lane)]
@@ -4719,6 +5008,8 @@
                               todo {:rev (:rev latest) :mode (:mode latest) :unreceived (get states :unreceived 0)
                                     :open (get states :received 0) :gate "held"}
                               summary (dissoc (read-edn-file (fs/path dir "summary.edn") {}) :status)]
+                          ;; A held result is not a terminal transition: the
+                          ;; assignment (and its revision) stays as it was.
                           (when-not exhausted?
                             (move-card! ticket-id "ready" assignee)
                             (update-frontmatter! ticket-id {:status "ready" :assignee assignee}))
@@ -4741,19 +5032,25 @@
                   (let [;; A continuation stays with its worker; a groom or a
                         ;; result waiting for the Owner goes to the Owner.
                         continuing? (and (= "ready" next-status) (= "continue" intended))
-                        next-assignee (if (or continuing? (= "in-progress" next-status)) assignee "boxp")]
+                        next-assignee (if (or continuing? (= "in-progress" next-status)) assignee "boxp")
+                        ;; Terminal (done / blocked) transitions issue a fresh
+                        ;; revision so a stale synced Board copy cannot project
+                        ;; the earlier lane back. A continuation keeps the
+                        ;; assignment and its revision.
+                        rev (when (#{"done" "blocked"} next-status) (new-rev))]
                     ;; localllm docs-edit: journal the transition before it
                     ;; starts so a crash in the middle is completed (not rolled
                     ;; back) by `recover-localllm-write!`.
                     (when @docs-applied?
                       (record-localllm-commit! ticket-id run-id :committing next-status))
-                    (move-card! ticket-id next-status next-assignee)
+                    (move-card! ticket-id next-status next-assignee rev)
                     (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FORCE_POST_COMMIT_EXCEPTION"))
                       ;; Deterministic black-box failure hook after the document
                       ;; write and the lane move; unset in deployment.
                       (throw (ex-info "forced failure after the lane move" {})))
                     (update-frontmatter! ticket-id (cond-> {:status next-status
                                                              :assignee next-assignee}
+                                                      rev (assoc :board_rev rev)
                                                       (= "done" next-status) (assoc :closed (today))))
                     (todo-recheck-rendezvous!)
                     ;; Re-read after the move; a concurrent addition must also consume
@@ -4773,8 +5070,11 @@
                                     (if (block-ticket! ticket-id run-id action "continue" exit gate nil last-message)
                                       (update-frontmatter! ticket-id {:closed ""})
                                       (throw (ex-info "could not record TODO gate block" {})))
-                                    (do (move-card! ticket-id final assignee)
-                                        (update-frontmatter! ticket-id {:status final :assignee assignee :closed ""})))
+                                    ;; The Done stamp is withdrawn: the held result keeps
+                                    ;; the run's starting assignment revision.
+                                    (let [rev (if (str/blank? start-rev) (new-rev) start-rev)]
+                                      (move-card! ticket-id final assignee rev)
+                                      (update-frontmatter! ticket-id {:status final :assignee assignee :closed "" :board_rev rev})))
                                   (mark-run! ticket-id run-id (if exhausted? :blocked :succeeded)
                                              (merge (dissoc (read-edn-file (fs/path dir "summary.edn") {}) :status)
                                                     {:result "continue" :todo {:rev (:rev latest) :mode (:mode latest)
@@ -4791,6 +5091,8 @@
                     (when @docs-applied?
                       (record-localllm-commit! ticket-id run-id :committed next-status))
                     (append-note! ticket-id (str (final-note run-id next-status result last-message review-gate idle-timeout?)
+                                                 (when-let [progress (when-not idle-timeout? (progress-marker last-message))]
+                                                   (str " 進展記録: " progress))
                                                  (when continuing?
                                                    (str " Ready継続: 担当 " assignee " のまま次 run へ（自動継続 "
                                                         (:continuation-count review-gate) "/" (continuation-limit)
@@ -4872,11 +5174,16 @@
   ;; claimed by the ad-hoc process. The `loop` never sets it.
   (atom nil))
 
+(defn process-card! [card]
+  (binding [*run-revisions* (atom #{})]
+    (process-card-inner! card)))
+
 (defn candidate-cards []
-  (let [cards (parse-board-cards (vec (read-lines (board-path))))]
+  (let [cards (parse-board-cards (vec (read-lines (board-path))))
+        duplicates (duplicate-ids! cards)]
     (->> cards
          (filter (fn [{:keys [ticket-id] :as card}]
-                   (and (or (nil? @only-ticket) (= @only-ticket ticket-id))
+                   (and (not (duplicates ticket-id)) (or (nil? @only-ticket) (= @only-ticket ticket-id))
                         (let [assignee (ticket-assignee ticket-id)]
                           (and assignee (not (rev-mismatch? card (ticket-frontmatter ticket-id)))
                                (some? (candidate-action card assignee)))))))
@@ -4894,7 +5201,7 @@
 ;; ---------------------------------------------------------------------------
 
 (def default-workspace-retention-days 3)
-(def default-workspace-prune-interval-seconds 21600)
+(def default-workspace-prune-interval-seconds 3600)
 (def max-unpushed-commits-per-checkout 200)
 
 (defn parse-prune-enabled [value]
@@ -4938,6 +5245,13 @@
   (prune-setting "CODEX_TASK_BOARD_WORKSPACE_PRUNE_INTERVAL_SECONDS"
                  #(parse-bounded-long % default-workspace-prune-interval-seconds 1)))
 
+(defn stale-prune-enabled? []
+  (prune-setting "CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE" parse-prune-enabled))
+(defn stale-retention-hours []
+  (prune-setting "CODEX_TASK_BOARD_WORKSPACE_STALE_RUN_RETENTION_HOURS" #(parse-bounded-long % 12 1)))
+(defn keep-latest-runs []
+  (prune-setting "CODEX_TASK_BOARD_WORKSPACE_KEEP_LATEST_RUNS" #(parse-bounded-long % 2 1)))
+
 (defn workspaces-dir []
   (fs/path (root) "workspaces"))
 
@@ -4951,6 +5265,94 @@
       (.toInstant (java.time.LocalDateTime/parse timestamp run-id-timestamp-formatter)
                   java.time.ZoneOffset/UTC)
       (catch Exception _ nil))))
+
+(defn stale-run-decision [run-id run-ids now-instant hours keep-latest]
+  (let [started (run-id-instant run-id)
+        ;; Unparseable run ids are always held separately, so they never consume
+        ;; the keep-latest slots of known runs.
+        protected (set (take (max 1 keep-latest)
+                             (sort-by (juxt run-id-instant str) #(compare %2 %1)
+                                      (filter run-id-instant run-ids))))]
+    (cond
+      (nil? started) {:eligible? false :reason "run-id-timestamp-unparseable"}
+      (contains? protected run-id) {:eligible? false :reason "latest-run"}
+      (not (.isBefore started (.minus now-instant (java.time.Duration/ofHours hours))))
+      {:eligible? false :reason "within-stale-retention"}
+      :else {:eligible? true})))
+
+(declare command-result one-line child-directories)
+
+(def regenerable-components
+  #{"node_modules" ".terraform" ".cpcache" "__pycache__" ".pytest_cache"
+    ".mypy_cache" ".ruff_cache" ".venv" ".next" ".turbo" ".gradle"
+    "target" ".shadow-cljs" ".eslintcache"})
+(defn ignored-allowed? [path]
+  (let [parts (str/split path #"/")]
+    (or (some regenerable-components parts)
+        (some #{[".clj-kondo" ".cache"] [".lsp" ".cache"]} (partition 2 1 parts)))))
+
+(defn inspect-ignored [checkout]
+  ;; NUL output avoids ambiguity from quoted names and embedded newlines.
+  (let [result (command-result ["git" "-C" (str checkout) "status" "--porcelain" "-z" "--ignored=matching"])]
+    (if-not (zero? (:exit result))
+      "git-error"
+      (some (fn [entry]
+              (when (str/starts-with? entry "!! ")
+                (let [path (subs entry 3)]
+                  (when-not (ignored-allowed? path) (str "ignored-unknown path=" (one-line path))))))
+            (str/split (:out result) #"\u0000")))))
+
+(defn outside-checkout-hold
+  "First file, symlink or special entry in the run directory that does not
+  belong to any checkout. Agents sometimes leave notes or outputs next to the
+  checkouts; git cannot vouch for them, so a stale run holding one is kept."
+  [run-path checkout-paths]
+  (let [checkouts (set (map str checkout-paths))]
+    (letfn [(visit [dir]
+              (some (fn [entry]
+                      (cond
+                        (contains? checkouts (str entry)) nil
+                        (fs/directory? entry {:nofollow-links true}) (visit entry)
+                        :else (str "outside-checkout path=" (one-line (str (fs/relativize run-path entry))))))
+                    (sort-by str (fs/list-dir dir))))]
+      (try (visit run-path)
+           (catch Exception e (str "outside-checkout-scan-failed " (one-line (.getMessage e))))))))
+
+(defn stale-process-hold
+  ;; Fail closed: when mountinfo or the process table cannot be read, or a
+  ;; live process cwd cannot be resolved, hold the run instead of deleting.
+  ;; CODEX_TASK_BOARD_PRUNE_PROC_ROOT / _MOUNTINFO only redirect the scan for
+  ;; fixture tests; the decision logic and fail-closed rules are unchanged.
+  ([run-real] (stale-process-hold run-real
+                                  (or (not-empty (System/getenv "CODEX_TASK_BOARD_PRUNE_MOUNTINFO")) "/proc/self/mountinfo")
+                                  (or (not-empty (System/getenv "CODEX_TASK_BOARD_PRUNE_PROC_ROOT")) "/proc")))
+  ([run-real mountinfo-path proc-root]
+   (let [inside? (fn [path] (try (fs/starts-with? (fs/path path) run-real) (catch Exception _ false)))
+         unescape (fn [s] (str/replace s #"\\([0-7]{3})" (fn [[_ oct]] (str (char (Integer/parseInt oct 8))))))
+         ;; procfs reports size 0; bb slurp fails on it with "Invalid argument",
+         ;; so read the bytes directly.
+         mountinfo (try (String. (java.nio.file.Files/readAllBytes (fs/path mountinfo-path)) "UTF-8")
+                        (catch Exception _ nil))
+         mounts (when mountinfo
+                  (map #(nth (str/split % #" ") 4 nil) (str/split-lines mountinfo)))
+         procs (try (doall (filter #(re-matches #"[0-9]+" (fs/file-name %)) (fs/list-dir proc-root)))
+                    (catch Exception _ nil))
+         proc-state (fn [entry]
+                      (try (if (inside? (str (fs/real-path (fs/path entry "cwd")))) :inside :outside)
+                           (catch java.nio.file.NoSuchFileException _
+                             ;; Process exited, or its cwd was deleted.
+                             (if (fs/exists? entry) :outside :gone))
+                           (catch Exception _ :unknown)))]
+     (cond
+       (or (nil? mountinfo) (str/blank? mountinfo)) "mount-info-unavailable"
+       (some nil? mounts) "mount-info-unparseable"
+       (some #(inside? (unescape %)) mounts) "mount-present"
+       (or (nil? procs) (empty? procs)) "process-scan-unavailable"
+       :else (let [states (map proc-state procs)]
+               (cond
+                 (some #{:inside} states) "process-active"
+                 (some #{:unknown} states) "process-cwd-unreadable"
+                 :else nil))))))
 
 (defn parse-closed-date [value]
   (try
@@ -5203,29 +5605,65 @@
                           lines)))))
     (catch Exception _ nil)))
 
+(def stale-ticket-reasons #{"not-done" "within-retention" "locked-active"})
+
+(defn lock-prune-info [lock ticket-id]
+  (if (and (map? lock)
+           (string? (:run-id lock))
+           (not (str/blank? (:run-id lock)))
+           (or (not (contains? lock :ticket)) (= ticket-id (:ticket lock))))
+    {:reason "locked-active" :active-run-id (:run-id lock)}
+    {:reason "locked"}))
+
 (defn prune-ticket-status [{:keys [today-date retention-days]} ticket-id]
-  (let [card-lanes (board-card-lanes ticket-id)]
+  (let [lock-info (when (fs/exists? (lock-path ticket-id))
+                    (if (stale-prune-enabled?)
+                      (try (lock-prune-info (read-edn-file (lock-path ticket-id) nil) ticket-id)
+                           (catch Exception _ {:reason "locked"}))
+                      {:reason "locked"}))
+        card-lanes (board-card-lanes ticket-id)]
     (cond
-      (fs/exists? (lock-path ticket-id)) {:eligible? false :reason "locked"}
+      (= "locked" (:reason lock-info)) (assoc lock-info :eligible? false)
       (nil? card-lanes) {:eligible? false :reason "board-unreadable"}
       ;; The board lane is the source of truth and frontmatter only follows at
       ;; the next sync, so a card moved out of Done wins over `status: done`.
       ;; Tickets without a card are judged by frontmatter alone.
+      (nil? (ticket-frontmatter-or-nil ticket-id)) {:eligible? false :reason "ticket-missing"}
+      lock-info (assoc lock-info :eligible? false)
       (some #(not= "Done" %) card-lanes) {:eligible? false :reason "not-done"}
       :else (prune-ticket-decision (ticket-frontmatter-or-nil ticket-id) today-date retention-days))))
 
 (defn prune-run-under-guard!
   "Must run inside with-ticket-lock-guard so no run of the ticket can start
-  between the lock check and the deletion. Returns {:result ...}."
-  [{:keys [dry-run? now-instant retention-days gh-cache planned] :as ctx} ticket-id run-id]
+  between the lock check and the deletion. Returns {:result ...}.
+
+  With :locked-unguarded? the caller holds no guard: the ticket is locked by a
+  live run whose heartbeat needs the guard every second, so GitHub lookups and
+  worktree removal (up to 600s) must not hold it. Only the final recheck takes
+  the guard briefly; the lock blocks new claims meanwhile, a later run always
+  gets a newer run-id, and an old run that is neither the active run nor among
+  the newest kept runs cannot become one again."
+  [{:keys [dry-run? now-instant retention-days gh-cache planned locked-unguarded?] :as ctx} ticket-id run-id]
   (let [run-path (run-workspace-dir ticket-id run-id)
         ticket (prune-ticket-status ctx ticket-id)
-        run (prune-run-decision run-id now-instant retention-days)
+        mode (if (:eligible? ticket) :done :stale)
+        stale? (and (stale-prune-enabled?) (contains? stale-ticket-reasons (:reason ticket)))
+        run-ids (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))
+        run (if (= mode :done) (prune-run-decision run-id now-instant retention-days)
+                (stale-run-decision run-id run-ids now-instant (stale-retention-hours) (keep-latest-runs)))
         hold (fn [reason] {:result :held :reason reason})]
     (cond
       (not (fs/exists? run-path {:nofollow-links true})) {:result :gone}
-      (not (:eligible? ticket)) {:result :ticket-skipped :reason (:reason ticket)}
-      (= "within-retention" (:reason run)) {:result :recent}
+      ;; The lock went away or became unreadable since the caller looked; the
+      ;; next pass handles the ticket under the regular guard.
+      (and locked-unguarded? (not= "locked-active" (:reason ticket))) {:result :ticket-skipped :reason (:reason ticket)}
+      ;; A run claimed the ticket after the caller's unguarded pre-check: never
+      ;; inspect or delete under the guard while a live run needs it for its
+      ;; heartbeat. The next pass takes the unguarded locked-active path.
+      (and (not locked-unguarded?) (= "locked-active" (:reason ticket))) {:result :ticket-skipped :reason "locked"}
+      (and (not (:eligible? ticket)) (not stale?)) {:result :ticket-skipped :reason (:reason ticket)}
+      (and (= "locked-active" (:reason ticket)) (= run-id (:active-run-id ticket))) {:result :recent}
+      (contains? #{"within-retention" "within-stale-retention" "latest-run"} (:reason run)) {:result :recent}
       (not (:eligible? run)) (hold (:reason run))
       (not (safe-run-workspace-path? ticket-id run-id run-path)) (hold "unsafe-path")
       :else
@@ -5234,6 +5672,10 @@
                               (assoc (inspect-checkout run-real checkout gh-cache) :path checkout))
                             (find-checkouts run-path))
             held (first (filter :hold checkouts))
+            stale-hold (when (= mode :stale)
+                         (or (stale-process-hold run-real)
+                             (outside-checkout-hold run-path (map :path checkouts))
+                             (some #(inspect-ignored (:path %)) checkouts)))
             branch (ticket-worktree-branch ticket-id run-id)
             branch-repos (distinct (keep (fn [{:keys [external-common-dir repo]}]
                                            (when external-common-dir
@@ -5241,10 +5683,14 @@
                                          checkouts))
             ;; Inspection can take a while (GitHub lookups); look once more
             ;; for a reopened ticket right before anything is removed.
-            recheck (delay (prune-ticket-status ctx ticket-id))]
+            recheck (delay (if locked-unguarded?
+                             (with-ticket-lock-guard ticket-id #(prune-ticket-status ctx ticket-id))
+                             (prune-ticket-status ctx ticket-id)))]
         (cond
           held
           (hold (str (:hold held) " checkout=" (fs/relativize run-path (:path held))))
+
+          stale-hold (hold stale-hold)
 
           dry-run?
           (do
@@ -5252,9 +5698,17 @@
             (log! (str "prune: delete " run-path " (dry-run)"))
             (doseq [[common-dir repo] branch-repos]
               (prune-run-branch! ctx common-dir repo branch))
-            {:result :deleted})
+            {:result :deleted :mode mode})
 
-          (not (:eligible? @recheck))
+          (or (and (= mode :done) (not (:eligible? @recheck)))
+              (and (= mode :stale)
+                   (or (not (contains? stale-ticket-reasons (:reason @recheck)))
+                       (and locked-unguarded? (not= "locked-active" (:reason @recheck)))
+                       (and (= "locked-active" (:reason @recheck))
+                            (= run-id (:active-run-id @recheck)))
+                       (not (:eligible? (stale-run-decision run-id
+                              (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))
+                              (now) (stale-retention-hours) (keep-latest-runs)))))))
           {:result :ticket-skipped :reason (:reason @recheck)}
 
           :else
@@ -5264,7 +5718,7 @@
               (log! (str "prune: delete " run-path))
               (doseq [[common-dir repo] branch-repos]
                 (prune-run-branch! ctx common-dir repo branch))
-              {:result :deleted})))))))
+              {:result :deleted :mode mode})))))))
 
 (defn child-directories [dir]
   (if (fs/directory? dir)
@@ -5281,20 +5735,26 @@
         run-ids (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))]
     (cond
       (empty? run-ids) nil
-      (not (:eligible? pre)) (skip-ticket! (:reason pre))
+      (and (not (:eligible? pre))
+           (not (and (stale-prune-enabled?) (contains? stale-ticket-reasons (:reason pre))))) (skip-ticket! (:reason pre))
       :else
       (loop [[run-id & more] run-ids]
         (when (and run-id (not (stop?)))
           (let [run-path (run-workspace-dir ticket-id run-id)
-                {:keys [result reason]}
+                {:keys [result reason mode]}
                 (try
-                  (with-ticket-lock-guard
-                   ticket-id
-                   #(prune-run-under-guard! ctx ticket-id run-id))
+                  (if (= "locked-active" (:reason pre))
+                    ;; Holding the guard here would stall the live run's
+                    ;; heartbeat and let another runner reclaim its lock.
+                    (prune-run-under-guard! (assoc ctx :locked-unguarded? true) ticket-id run-id)
+                    (with-ticket-lock-guard
+                     ticket-id
+                     #(prune-run-under-guard! ctx ticket-id run-id)))
                   (catch Exception e
                     {:result :held :reason (str "error " (one-line (.getMessage e)))}))]
             (case result
-              :deleted (swap! stats update :deleted inc)
+              :deleted (do (swap! stats update :deleted inc)
+                           (when (= mode :stale) (swap! stats update :stale-deleted inc)))
               :recent (swap! stats update :recent inc)
               :held (do
                       (swap! stats update :held inc)
@@ -5339,7 +5799,7 @@
               :gh-cache (atom {})
               :affected-repos (atom #{})
               :planned (atom #{})
-              :stats (atom {:deleted 0 :held 0 :recent 0 :branches 0 :empty-dirs 0 :skipped {}})}
+              :stats (atom {:stale-deleted 0 :deleted 0 :held 0 :recent 0 :branches 0 :empty-dirs 0 :skipped {}})}
          guarded (fn [label path f]
                    (try
                      (f)
@@ -5360,8 +5820,9 @@
            (log! (str "prune: error worktree-prune " common-dir " " (one-line (:err pruned)))))))
      (when (stop?)
        (log! "prune: stopped early because the runner is draining"))
-     (let [{:keys [deleted held recent branches empty-dirs skipped]} @(:stats ctx)]
+     (let [{:keys [deleted stale-deleted held recent branches empty-dirs skipped]} @(:stats ctx)]
        (log! (str "prune: summary deleted=" deleted
+                  " stale-deleted=" stale-deleted
                   " held=" held
                   " skipped=" (reduce + 0 (vals skipped))
                   " recent-runs=" recent
@@ -5384,18 +5845,21 @@
        (or (nil? last-started-nanos)
            (>= (- now-nanos last-started-nanos) (* interval-seconds 1000000000)))))
 
-(defn maybe-start-workspace-prune! []
-  (when (and (workspace-prune-enabled?)
-             (workspace-prune-due? @workspace-prune-run (System/nanoTime)
-                                   (workspace-prune-interval-seconds))
-             (not (draining?)))
-    (reset! workspace-prune-run
-            {:last-started-nanos (System/nanoTime)
-             :future (future
-                       (try
-                         (prune-workspaces! {:stop? draining?})
-                         (catch Throwable t
-                           (log! (str "prune: failed: " (.getMessage t))))))})))
+(defn maybe-start-workspace-prune!
+  ([] (maybe-start-workspace-prune! false))
+  ([force?]
+   (locking workspace-prune-run
+     (when (and (workspace-prune-enabled?)
+                (workspace-prune-due? @workspace-prune-run (System/nanoTime)
+                                      (if force? 0 (workspace-prune-interval-seconds)))
+                (not (draining?)))
+       (reset! workspace-prune-run
+               {:last-started-nanos (System/nanoTime)
+                :future (future
+                          (try
+                            (prune-workspaces! {:stop? draining?})
+                            (catch Throwable t
+                              (log! (str "prune: failed: " (.getMessage t))))))})))))
 
 ;; Map of ticket-id -> future for currently running process-card! calls.
 ;; Persists across tick! invocations so the loop can detect new candidates
@@ -5414,6 +5878,30 @@
       (swap! in-flight-futures #(apply dissoc % completed-ids)))
     completed-ids))
 
+(defn disk-low? [free-bytes free-inode-percent min-bytes min-inode-percent]
+  (or (and (some? free-bytes) (< free-bytes min-bytes))
+      (and (some? free-inode-percent) (< free-inode-percent min-inode-percent))))
+
+(defn disk-guard-measure []
+  (let [bytes (try (let [file (java.io.File. (str (root)))]
+                     (when (pos? (.getTotalSpace file)) (.getUsableSpace file)))
+                   (catch Exception _ nil))
+        df (command-result ["df" "-Pi" (str (root))])
+        fields (when (and (zero? (:exit df)) (seq (str/split-lines (:out df))))
+                 (str/split (str/trim (last (str/split-lines (:out df)))) #"\s+"))
+        inode (try (when (>= (count fields) 6)
+                     (- 100 (Long/parseLong (str/replace (nth fields (- (count fields) 2)) "%" ""))))
+                   (catch Exception _ nil))]
+    {:free-bytes bytes :free-inode-percent inode}))
+
+(defn disk-guard []
+  (let [{:keys [free-bytes free-inode-percent] :as measured} (disk-guard-measure)
+        min-bytes (prune-setting "CODEX_TASK_BOARD_MIN_FREE_BYTES" #(parse-bounded-long % 8589934592 0))
+        min-inode (prune-setting "CODEX_TASK_BOARD_MIN_FREE_INODE_PERCENT" #(parse-bounded-long % 3 0))]
+    (when (and (nil? free-bytes) (nil? free-inode-percent))
+      (log! "disk-guard: measurement failed; allowing new runs"))
+    (assoc measured :low? (disk-low? free-bytes free-inode-percent min-bytes min-inode))))
+
 (defn tick! []
   (recover-locks!)
   (if (draining?)
@@ -5423,7 +5911,13 @@
       (let [done (collect-completed-futures!)
             in-flight-ids (set (keys @in-flight-futures))
             candidates (candidate-cards)
-            new-candidates (remove #(contains? in-flight-ids (:ticket-id %)) candidates)]
+            new-candidates (vec (remove #(contains? in-flight-ids (:ticket-id %)) candidates))
+            {:keys [low? free-bytes free-inode-percent]} (when (seq new-candidates) (disk-guard))
+            _ (when low?
+                (log! (str "disk-guard: low free space free-bytes=" free-bytes
+                           " free-inode-percent=" free-inode-percent " ; not starting " (count new-candidates) " candidate(s)"))
+                (maybe-start-workspace-prune! true))
+            new-candidates (if low? [] new-candidates)]
         (doseq [card new-candidates]
           (let [f (future
                     (log! (str "processing " (:ticket-id card) " from " (:lane card)))
@@ -5492,7 +5986,8 @@
   ;; BOXP-270: the lifecycle self-tests below drive the real finish path, whose
   ;; outbox hook would otherwise write TEST-* events into the operator's live
   ;; CODEX_TASK_BOARD_ROOT when the suite runs on a host. Keep the suite pure.
-  (with-redefs [record-task-board-event! (fn [& _] nil)
+  (with-redefs [vault (let [dir (str (fs/create-temp-dir))] (constantly dir))
+                record-task-board-event! (fn [& _] nil)
                 record-ai-ops-event! (fn [& _] nil)
                 record-ai-ops-gate! (fn [& _] nil)
                 ;; The live quota snapshot must not decide whether self-test cards start.
@@ -5999,6 +6494,80 @@
             (println (str "FAIL: " label " expected=" (pr-str expected) " actual=" (pr-str actual)))
             (swap! failures conj label)))))
 
+    (let [tmp (fs/create-temp-dir {:prefix "stale-proc-hold"})
+          run-real (fs/real-path (fs/create-dirs (fs/path tmp "run")))
+          outside (fs/create-dirs (fs/path tmp "elsewhere"))
+          mi (fs/path tmp "mountinfo")
+          mi-inside (fs/path tmp "mountinfo-inside")
+          proc-ok (fs/create-dirs (fs/path tmp "proc-ok"))
+          proc-in (fs/create-dirs (fs/path tmp "proc-in"))
+          proc-empty (fs/create-dirs (fs/path tmp "proc-empty"))
+          proc-bad (fs/create-dirs (fs/path tmp "proc-bad"))]
+      (try
+        (spit (str mi) "22 1 0:1 / / rw - overlay overlay rw\n")
+        (spit (str mi-inside) (str "22 1 0:1 / / rw - overlay overlay rw\n"
+                                   "23 22 0:2 / " (str run-real) "/m rw - tmpfs tmpfs rw\n"))
+        (fs/create-dirs (fs/path proc-ok "1"))
+        (fs/create-sym-link (fs/path proc-ok "1" "cwd") outside)
+        (fs/create-dirs (fs/path proc-in "1"))
+        (fs/create-sym-link (fs/path proc-in "1" "cwd") run-real)
+        (fs/create-dirs (fs/path proc-bad "1"))
+        (fs/create-sym-link (fs/path proc-bad "1" "cwd") (fs/path proc-bad "1" "cwd"))
+        (doseq [[label actual expected]
+                [["proc hold clean" (stale-process-hold run-real (str mi) (str proc-ok)) nil]
+                 ["proc hold mountinfo missing" (stale-process-hold run-real (str (fs/path tmp "nope")) (str proc-ok)) "mount-info-unavailable"]
+                 ["proc hold mountinfo empty" (stale-process-hold run-real (str proc-empty) (str proc-ok)) "mount-info-unavailable"]
+                 ["proc hold mount inside" (stale-process-hold run-real (str mi-inside) (str proc-ok)) "mount-present"]
+                 ["proc hold proc missing" (stale-process-hold run-real (str mi) (str (fs/path tmp "noproc"))) "process-scan-unavailable"]
+                 ["proc hold proc empty" (stale-process-hold run-real (str mi) (str proc-empty)) "process-scan-unavailable"]
+                 ["proc hold cwd inside" (stale-process-hold run-real (str mi) (str proc-in)) "process-active"]
+                 ["proc hold cwd unreadable" (stale-process-hold run-real (str mi) (str proc-bad)) "process-cwd-unreadable"]
+                 ;; Real procfs mountinfo must be readable (bb slurp fails on it).
+                 ["proc hold real procfs mountinfo"
+                  (when (fs/exists? "/proc/self/mountinfo")
+                    (stale-process-hold run-real "/proc/self/mountinfo" (str proc-ok)))
+                  nil]]]
+          (if (= actual expected) (println (str "PASS: " label))
+              (do (println (str "FAIL: " label " actual=" (pr-str actual))) (swap! failures conj label))))
+        (finally (fs/delete-tree tmp))))
+
+    (let [ids ["20260928T000000Z" "20260929T000000Z" "20260930T000000Z" "bad"]
+          instant (java.time.Instant/parse "2026-10-01T12:00:00Z")
+          cases [["valid lock" (lock-prune-info {:ticket "BOXP-1" :run-id "run"} "BOXP-1") {:reason "locked-active" :active-run-id "run"}]
+                 ["lock without ticket" (lock-prune-info {:run-id "run"} "BOXP-1") {:reason "locked-active" :active-run-id "run"}]
+                 ["nil lock" (lock-prune-info nil "BOXP-1") {:reason "locked"}]
+                 ["blank lock run" (lock-prune-info {:run-id " "} "BOXP-1") {:reason "locked"}]
+                 ["missing lock run" (lock-prune-info {} "BOXP-1") {:reason "locked"}]
+                 ["non-string lock run" (lock-prune-info {:run-id 1} "BOXP-1") {:reason "locked"}]
+                 ["mismatched lock ticket" (lock-prune-info {:ticket "BOXP-2" :run-id "run"} "BOXP-1") {:reason "locked"}]
+                 ["stale old" (:eligible? (stale-run-decision (first ids) ids instant 12 2)) true]
+                 ["stale latest" (:reason (stale-run-decision (nth ids 2) ids instant 12 2)) "latest-run"]
+                 ["stale unknown" (:reason (stale-run-decision "bad" ids instant 12 2)) "run-id-timestamp-unparseable"]
+                 ["unknown does not consume slot" (:reason (stale-run-decision (nth ids 1) ids instant 12 2)) "latest-run"]
+                 ["latest survives unknowns" (:reason (stale-run-decision (nth ids 2) (concat ids ["bad2"]) instant 12 2)) "latest-run"]
+                 ["second latest survives unknowns" (:reason (stale-run-decision (nth ids 1) (concat ids ["bad2"]) instant 12 2)) "latest-run"]
+                 ["stale hours" (:reason (stale-run-decision (first ids) ids instant 100 1)) "within-stale-retention"]
+                 ["ignored cache" (boolean (ignored-allowed? "x/.clj-kondo/.cache/a")) true]
+                 ["ignored node" (boolean (ignored-allowed? "x/node_modules/a")) true]
+                 ["disk low bytes" (boolean (disk-low? 9 50 10 3)) true]
+                 ["disk low inodes" (boolean (disk-low? 10 2 10 3)) true]
+                 ["disk equal" (boolean (disk-low? 10 3 10 3)) false]
+                 ["stale default hours" (parse-bounded-long nil 12 1) {:value 12}]
+                 ["stale invalid keep" (parse-bounded-long "0" 2 1) {:value 2 :invalid? true}]]]
+      (doseq [[label actual expected] (concat cases (map #(vector (str "ignored " %) (boolean (ignored-allowed? %)) false)
+                                                          ["dist/" "out.csv" ".env" "results/" ".lsp/other"]))]
+        (if (= actual expected) (println (str "PASS: " label))
+            (do (println (str "FAIL: " label)) (swap! failures conj label)))))
+    (let [started (atom []) pruned (atom false)]
+      (with-redefs [candidate-cards (fn [] [{:ticket-id "TEST-DISK" :lane "Ready"}])
+                    recover-locks! (fn [] nil) draining? (fn [] false) sync-all! (fn [] nil)
+                    disk-guard (fn [] {:low? true :free-bytes 1 :free-inode-percent 1})
+                    maybe-start-workspace-prune! (fn [& _] (reset! pruned true))
+                    process-card! (fn [card] (swap! started conj card))]
+        (tick!))
+      (if (and (empty? @started) @pruned) (println "PASS: disk guard blocks tick")
+          (swap! failures conj "disk guard blocks tick")))
+
     ;; Shutdown race: an agent registered while `stop-in-flight-agents!` is
     ;; waiting, and one registered after it finished, must both be killed.
     (let [wait-for-file! (fn [path]
@@ -6275,6 +6844,112 @@
               ["wait reason values" (mapv #(wait-reason-marker (str "TASK_BOARD_WAIT_REASON: " %)) ["owner-decision" "external-hold" "new-scope" "AGENT-RECOVERABLE"]) ["owner-decision" "external-hold" "new-scope" "agent-recoverable"]]
               ["invalid wait reason" (wait-reason-marker "TASK_BOARD_WAIT_REASON: private") nil]
               ["absent wait reason" (wait-reason-marker "nothing") nil]
+              ;; BOXP-468: progress and independent stagnation review contracts.
+              ["stagnation requester progress and review contract"
+               (let [p (stagnation-prompt :implement "BOXP-1" "original" [] {:decision :clear})]
+                 (every? #(str/includes? p %) ["TASK_BOARD_PROGRESS:" "request one independent review" "stagnation-review-of:: BOXP-1" "--assignee claude-fable" "waiting for the Owner or an external system" "run count"])) true]
+              ["stagnation requester no open hold"
+               (let [p (stagnation-prompt :implement "BOXP-1" "original" [] {:decision :clear})]
+                 (not (str/includes? p "is open for this ticket"))) true]
+              ["stopped reviews prevent duplicate requests"
+               (mapv (fn [status]
+                       (let [p (stagnation-requester-prompt "BOXP-1" "original" [{:id "BOXP-2" :status status}] nil)]
+                         (and (str/includes? p "is stopped") (str/includes? p "BOXP-2")
+                              (str/includes? p "TASK_BOARD_WAIT_REASON: owner-decision")
+                              (not (str/includes? p "request one independent review"))
+                              (not (str/includes? p "is open for this ticket")))))
+                     ["blocked" "backlog" nil]) [true true true]]
+              ["open review takes precedence over stopped review"
+               (str/includes? (stagnation-requester-prompt "BOXP-1" "original"
+                                [{:id "BOXP-2" :status "blocked"} {:id "BOXP-3" :status "ready"}] nil)
+                              "is open for this ticket") true]
+              ["decorated stagnation review links"
+               (mapv stagnation-review-of
+                     ["- stagnation-review-of:: BOXP-468" "* stagnation-review-of:: BOXP-468"
+                      "**stagnation-review-of::** BOXP-468" "**stagnation-review-of:: BOXP-468**"
+                      "`stagnation-review-of:: BOXP-468`" "stagnation-review-of:: BOXP-468 (問題: x)"
+                      "  + __stagnation-review-of::__ __BOXP-468__"
+                      "stagnation-review-of:: BOXP-4680" "stagnation-review-of:: BOXP-4680x"
+                      "see stagnation-review-of:: BOXP-1 in text"])
+               ["BOXP-468" "BOXP-468" "BOXP-468" "BOXP-468" "BOXP-468" "BOXP-468" "BOXP-468" "BOXP-4680" nil nil]]
+              ["decorated linked reviews match whole id"
+               (let [dir (fs/create-temp-dir)
+                     lines ["- stagnation-review-of:: BOXP-468" "* stagnation-review-of:: BOXP-468"
+                            "**stagnation-review-of::** BOXP-468" "**stagnation-review-of:: BOXP-468**"
+                            "`stagnation-review-of:: BOXP-468`" "stagnation-review-of:: BOXP-468 (問題: x)"
+                            "stagnation-review-of:: BOXP-4680"]]
+                 (doseq [[i line] (map-indexed vector lines)]
+                   (spit (str (fs/path dir (str "BOXP-" (inc i) ".md"))) (str "---\nstatus: ready\n---\n" line "\n")))
+                 (with-redefs [tickets-dir (constantly dir)]
+                   (mapv :id (stagnation-reviews-for "BOXP-468"))))
+               ["BOXP-1" "BOXP-2" "BOXP-3" "BOXP-4" "BOXP-5" "BOXP-6"]]
+              ["decorated progress markers"
+               (mapv progress-marker ["- TASK_BOARD_PROGRESS: evidence" "**TASK_BOARD_PROGRESS:** evidence"
+                                      "**TASK_BOARD_PROGRESS**: evidence" "`TASK_BOARD_PROGRESS: evidence`"
+                                      "  + **TASK_BOARD_PROGRESS: evidence**" "__TASK_BOARD_PROGRESS: evidence__"
+                                      "__TASK_BOARD_PROGRESS:__ evidence" "- __TASK_BOARD_PROGRESS__: evidence"])
+               ["evidence" "evidence" "evidence" "evidence" "evidence" "evidence" "evidence" "evidence"]]
+              ["progress marker trim cap and absence"
+               [(progress-marker "other\nTASK_BOARD_PROGRESS:   進展あり  \n")
+                (progress-marker (str "TASK_BOARD_PROGRESS: " (apply str (repeat 601 "x"))))
+                (progress-marker "no marker")]
+               ["進展あり" (str (apply str (repeat 600 "x")) "…") nil]]
+              ["progress survives run summary transitions"
+               (let [dir (str (fs/create-temp-dir))]
+                 (with-redefs [root (constantly dir)]
+                   (mark-run! "BOXP-1" "run-1" :running {:progress (progress-marker "TASK_BOARD_PROGRESS: evidence")})
+                   (mark-run! "BOXP-1" "run-1" :succeeded {})
+                   (:progress (read-edn-file (fs/path (run-dir "BOXP-1" "run-1") "summary.edn") {})))) "evidence"]
+              ["stagnation quota hold and unknown"
+               [(str/includes? (fable-review-quota-line {:decision :hold}) "Do not request a review now")
+                (str/includes? (fable-review-quota-line nil) "unknown (not read as available)")] [true true]]
+              ["stagnation open review prevents duplicate for both statuses"
+               (mapv (fn [status]
+                       (let [reviews [{:id "BOXP-2" :status status}]
+                             p (stagnation-prompt :implement "BOXP-1" "original" reviews nil)]
+                         [(str/includes? p "do not request another one")
+                          (with-redefs [log! (fn [& _]) append-note! (fn [& _]) ticket-path (constantly "/nonexistent")]
+                            (reset! stagnation-review-hold-logged #{})
+                            [(stagnation-review-hold! "BOXP-1" :implement reviews)
+                             (stagnation-review-hold! "BOXP-1" :review-fix reviews)
+                             (stagnation-review-hold! "BOXP-1" :blocked-retry reviews)])]))
+                     ["ready" "in-progress"]) [[true [true true nil]] [true [true true nil]]]]
+              ["stagnation reviewer contract and no recursive hold"
+               (let [dir (fs/create-temp-dir) text "stagnation-review-of:: BOXP-1\n"
+                     _ (spit (str (fs/path dir "BOXP-2.md")) text)
+                     _ (spit (str (fs/path dir "BOXP-3.md")) "---\nstatus: ready\n---\nstagnation-review-of:: BOXP-2\n")
+                     p (stagnation-prompt :implement "BOXP-2" text)]
+                 (with-redefs [tickets-dir (constantly dir)]
+                   [(str/includes? p "Do not create tickets and do not request another review")
+                    (stagnation-review-hold! "BOXP-2" :implement)])) [true nil]]
+              ["stagnation linked reviews exact id and exclude self"
+               (let [dir (fs/create-temp-dir)]
+                 (doseq [[id text] [["BOXP-1" "BOXP-1"] ["BOXP-2" "BOXP-1"] ["BOXP-3" "BOXP-10"]]]
+                   (spit (str (fs/path dir (str id ".md"))) (str "---\nstatus: ready\n---\nstagnation-review-of:: " text "\n")))
+                 (with-redefs [tickets-dir (constantly dir)] (stagnation-reviews-for "BOXP-1"))) [{:id "BOXP-2" :status "ready"}]]
+              ["stagnation review receipt before and after"
+               (let [reviews [{:id "BOXP-2" :status "done"}]
+                     before (stagnation-prompt :implement "BOXP-1" "original" reviews nil)
+                     after (stagnation-prompt :implement "BOXP-1" "停滞レビュー受領: BOXP-2" reviews nil)]
+                 [(str/includes? before "NOT-YET-RECEIVED") (str/includes? before "--note \"停滞レビュー受領:")
+                  (str/includes? after "BOXP-2 status=done received") (str/includes? after "--note \"停滞レビュー受領:")]) [true true true false]]
+              ["stagnation hold preserves card and budgets and notes once per marker"
+               (let [dir (fs/create-temp-dir) notes (atom []) calls (atom [])
+                     path (fs/path dir "BOXP-1.md")
+                     reviews [{:id "BOXP-2" :status "ready"}]
+                     forbidden (fn [& args] (swap! calls conj args))]
+                 (spit (str path) "---\nstatus: ready\nassignee: codex\n---\n")
+                 (with-redefs [tickets-dir (constantly dir) log! (fn [& _])
+                               move-card! forbidden update-frontmatter! forbidden
+                               consume-continuation! forbidden clear-continuation-budget! forbidden
+                               record-gate-failure-budget! forbidden
+                               append-note! (fn [_ note] (swap! notes conj note) (spit (str path) (str "\n" note) :append true))]
+                   (reset! stagnation-review-hold-logged #{})
+                   (stagnation-review-hold! "BOXP-1" :implement reviews)
+                   (stagnation-review-hold! "BOXP-1" :review-fix reviews)
+                   (reset! stagnation-review-hold-logged #{})
+                   (stagnation-review-hold! "BOXP-1" :implement reviews)
+                   [(count @notes) @calls (str/includes? (slurp (str path)) "assignee: codex")])) [1 [] true]]
               ;; BOXP-405 AIOPS-QUOTA: unknown is not available and fails open.
               ["provider quota prompt is omitted for other runtimes" (provider-quota-prompt "codex" {:state "no_snapshot"} 0) nil]
               ["provider quota prompt says unknown without a snapshot"

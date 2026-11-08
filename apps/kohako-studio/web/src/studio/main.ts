@@ -1,6 +1,7 @@
 import './style.css'
 import { interpretRequest, newOutgoing, pcm16, resolveUnconfirmed, sendOutcomeUnknown, type Outgoing, presentation, rigStateOf, silentSpeechSeconds, studioRigModelId, wantsRig, type State } from './model'
-import { modelFor, mouthLevel, speechMouth } from '../live2d/model'
+import { modelFor, modelStatus, mouthLevel, speechMouth } from '../live2d/model'
+import { setupSelector } from '../live2d/selector'
 import { applyPose, loadRig, type Player } from '../live2d/rig'
 
 const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
@@ -15,8 +16,10 @@ const synthesis = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in w
 speech.disabled = !synthesis
 speech.addEventListener('change', () => { if (!speech.checked && synthesis) { window.speechSynthesis.cancel(); if (state === 'speaking') show('done') } })
 el('speech-help').textContent = synthesis ? 'ブラウザ内蔵の音声で再生します（オフでも応答中はリグが口パクします）。' : 'このブラウザでは読み上げを利用できません（応答中はリグが口パクします）。'
-// Web リグ（既定はコハコ最小本人モデル v0。PSD2Live 独自 runtime）。読めなければ従来の静止表情に戻る。
+// Web リグ（既定は最新の本人モデル。PSD2Live 独自 runtime）。読めなければ従来の静止表情に戻る。
 const rigModel = modelFor(`?model=${studioRigModelId(location.search)}`), rigCanvas = el<HTMLCanvasElement>('rig')
+const lost = setupSelector(el('prototype-selector'), false)
+if (lost) { face.hidden = true; el('face-mode').textContent = '消失した試作の比較画像を表示中' }
 let rig: Player | null = null, speakingSince = 0, mouthTimer = 0
 const rigReport: Record<string, unknown> = { loaded: false, errors: [] as string[] }
 function show(next: State) {
@@ -190,8 +193,8 @@ async function startRig() {
     const loaded = await loadRig(rigCanvas, rigModel, './kohako/live2d/sample/')
     rig = loaded.player; rig.start()
     face.hidden = true; rigCanvas.hidden = false; rigCanvas.parentElement?.classList.add('rig')
-    el('face-mode').textContent = `${rigModel.name}（独自 runtime・公式 Live2D ではありません）`
-    Object.assign(rigReport, { loaded: true, totalMs: loaded.totalMs, rigBytes: loaded.rigBytes })
+    el('face-mode').textContent = `${rigModel.name}・${modelStatus(rigModel)}（独自 runtime・公式 Live2D ではありません）`
+    Object.assign(rigReport, { loaded: true, model: rigModel.id, rig: rigModel.rig, totalMs: loaded.totalMs, rigBytes: loaded.rigBytes })
     log(`リグ読込: ${loaded.totalMs.toFixed(0)} ms`)
     show(state); requestAnimationFrame(rigTick)
   } catch (e) {
@@ -202,4 +205,4 @@ async function startRig() {
 // 自動計測用（同一ページの状態を読むだけ）。
 Object.assign(window, { __studioRig: { report: rigReport, get player() { return rig }, get state() { return state }, show } })
 void initialize()
-void startRig()
+if (!lost) void startRig()
