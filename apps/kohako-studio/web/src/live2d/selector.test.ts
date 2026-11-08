@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setupSelector } from './selector'
@@ -44,5 +44,11 @@ describe('試作の比較リンク', () => {
       expect(href).toContain('/compare/kohako-full-v11k-')
       expect(existsSync(resolve(__dirname, '../../public', href)), href).toBe(true)
     }
+  })
+
+  it('studio.html の固定文言に最新版の番号を書かない', () => {
+    const footer = readFileSync(resolve(__dirname, '../../studio.html'), 'utf8').match(/<footer>.*<\/footer>/)?.[0]
+    expect(footer).toBeDefined()
+    expect(footer).not.toMatch(/全身 v\d+/)
   })
 })
