@@ -228,3 +228,8 @@ it('limits upper framing to full-body models', () => {
   expect(frameFor(full, '?frame=invalid')).toBe('full')
   expect(frameFor(modelFor(''), '?frame=upper')).toBe('full')
 })
+
+it('selects full-v9 while retaining the default', () => {
+  expect(modelFor('?model=kohako-full-v9').status).toBe('rejected')
+  expect(LATEST_MODEL_ID).toBe('kohako-v45')
+})
