@@ -16,6 +16,7 @@ export type RigLoad = { player: Player; fetchMs: number; instantiateMs: number; 
 
 /** runtime（p2l.js / p2l_runtime.wasm）は [runtimeDir] から、モデルは model.rig（runtimeDir 相対）から読む。 */
 export async function loadRig(canvas: HTMLCanvasElement, model: RigModel, runtimeDir: string): Promise<RigLoad> {
+  canvas.dataset.fullModel = String(model.id.startsWith('kohako-full-'))
   const t0 = performance.now()
   const base = new URL(runtimeDir, location.href)
   const [mod, wasm, rig] = await Promise.all([
