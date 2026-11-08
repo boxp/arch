@@ -1,6 +1,6 @@
 # BOXP-441 TD-41: full-v11h
 
-未受入の比較候補。最終判定は Opus。LATEST は kohako-v45。画像生成、Gemini、外部画像 API、Core 取得は行っていない。土台は v11g と同じ full-v10h layout / head-kit。髪・体・口の入力、髪の描画順・物理と頭追従の binding は変更していない。
+担当評価は不採用（比較用に掲載。v11g からの改善が小さく、虹彩とまつ毛は原画より大きい部分がある）。LATEST は kohako-v45。画像生成、Gemini、外部画像 API、Core 取得は行っていない。土台は v11g と同じ full-v10h layout / head-kit。髪・体・口の入力、髪の描画順・物理と頭追従の binding は変更していない。
 
 ## 実測と変更
 
