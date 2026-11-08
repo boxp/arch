@@ -234,3 +234,9 @@ it('selects full-v9 while retaining the default', () => {
   expect(modelFor('?model=kohako-full-v9').status).toBe('rejected')
   expect(LATEST_MODEL_ID).toBe('kohako-v45')
 })
+
+it('full-v11j keeps eyes open by not applying expressions, other models unchanged', () => {
+  expect(modelFor('?model=kohako-full-v11j').noExpressions).toBe(true)
+  expect(modelFor('?model=kohako-full-v11g').noExpressions).toBeUndefined()
+  expect(LATEST_MODEL_ID).toBe('kohako-v45')
+})

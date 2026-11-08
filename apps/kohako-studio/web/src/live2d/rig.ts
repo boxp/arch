@@ -55,6 +55,6 @@ export async function loadRig(canvas: HTMLCanvasElement, model: RigModel, runtim
 export function applyPose(player: Player, model: RigModel, state: RigState): Pose {
   const ids = player.clips
   const pose = poseFor(state, player.expressions, ids.map(id => clipName(model, id)))
-  player.expression(pose.expression); player.play(clipIdFor(model, ids, pose.clip)); player.lookAt(...lookFor(model, ...pose.look))
+  player.expression(model.noExpressions ? null : pose.expression); player.play(clipIdFor(model, ids, pose.clip)); player.lookAt(...lookFor(model, ...pose.look))
   return pose
 }
