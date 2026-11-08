@@ -1293,7 +1293,7 @@
         ;; `:shutdown` is written by the terminating runner itself; keep it when
         ;; the next owner re-marks the same run as interrupted.
         previous-agent (try
-                         (select-keys (read-edn-file path {}) [:agent :shutdown :todo])
+                         (select-keys (read-edn-file path {}) [:agent :shutdown :todo :progress])
                          (catch Exception _ {}))
         summary (merge previous-agent
                        {:ticket ticket-id
@@ -2513,6 +2513,137 @@
       (log! (str "provider rate limit read failed: " (.getMessage e)))
       nil)))
 
+;; BOXP-468: short progress record and one independent Fable review when a
+;; ticket stagnates. The agent judges stagnation from the progress lines of the
+;; previous runs; the runner only extracts that line, links review tickets to
+;; their original through a plain `stagnation-review-of:: ID` line, and keeps
+;; the original from starting while its review is open (no new engine or cron).
+(def stagnation-review-assignee "claude-fable")
+(def progress-max-chars 600)
+
+(defn progress-marker
+  "The single `TASK_BOARD_PROGRESS:` line of a final message, trimmed and capped."
+  [text]
+  (when-let [[_ value] (re-find #"(?im)^TASK_BOARD_PROGRESS:[ \t]*(\S[^\r\n]*)$" (or text ""))]
+    (let [value (str/trim value)]
+      (if (> (count value) progress-max-chars)
+        (str (subs value 0 progress-max-chars) "…")
+        value))))
+
+(defn stagnation-review-of
+  "The original ticket id when this ticket text is a stagnation review ticket."
+  [ticket-text]
+  (second (re-find #"(?m)^stagnation-review-of::[ \t]*([A-Z][A-Z0-9]*-\d+)[ \t]*$" (or ticket-text ""))))
+
+(defn stagnation-reviews-for
+  "Review tickets linked to `ticket-id`, oldest first: [{:id :status}]."
+  [ticket-id]
+  (let [dir (tickets-dir)
+        pattern (re-pattern (str "(?m)^stagnation-review-of::[ \\t]*" (java.util.regex.Pattern/quote ticket-id) "[ \\t]*$"))]
+    (when (fs/exists? dir)
+      (->> (fs/list-dir dir)
+           (filter #(str/ends-with? (str (fs/file-name %)) ".md"))
+           (keep (fn [path]
+                   (try
+                     (let [text (slurp (str path))]
+                       (when (re-find pattern text)
+                         (let [id (str/replace (str (fs/file-name path)) #"\.md$" "")]
+                           (when-not (= id ticket-id)
+                             {:id id
+                              :status (:status (frontmatter-map (vec (str/split-lines text))))}))))
+                     (catch Exception _ nil))))
+           (sort-by (fn [{:keys [id]}] [(count id) id]))
+           vec))))
+
+(defn stagnation-review-open? [{:keys [status]}]
+  (contains? #{"ready" "in-progress"} status))
+
+(defn stagnation-review-received?
+  [ticket-text review-id]
+  (boolean (re-find (re-pattern (str "停滞レビュー受領:\\s*" (java.util.regex.Pattern/quote review-id) "\\b"))
+                    (or ticket-text ""))))
+
+(defn stagnation-review-status-line
+  "One line about the linked reviews, for the original ticket's prompt."
+  [ticket-text reviews]
+  (if (empty? reviews)
+    "Linked stagnation reviews: none.\n"
+    (str "Linked stagnation reviews: "
+         (str/join ", " (map (fn [{:keys [id status]}]
+                               (str id " status=" (or status "unknown")
+                                    (when (= "done" status)
+                                      (if (stagnation-review-received? ticket-text id) " received" " NOT-YET-RECEIVED"))))
+                             reviews))
+         ".\n")))
+
+(defn fable-review-quota-line
+  "The review route's limit state; unknown is never read as available."
+  [status]
+  (case (:decision status)
+    :hold (str "Review route " stagnation-review-assignee " quota: rejected until its reset"
+               (when-let [r (:resets-at status)] (str " (reset epoch " r ")"))
+               ". Do not request a review now; name it as the next step in your progress line.\n")
+    nil (str "Review route " stagnation-review-assignee " quota: unknown (not read as available). A review ticket may still be created; the runner holds its start while the limit is rejected.\n")
+    (str "Review route " stagnation-review-assignee " quota: last observation does not reject it (not a promise of capacity).\n")))
+
+(def progress-record-contract
+  (str "Progress record (進展記録): put exactly one line in your final message, in short Japanese:\n"
+       "  TASK_BOARD_PROGRESS: 段階=<作成|検証|配備|本人受入>; 進展=<受入条件に対して今回進んだ点>; 根拠=<現物・再現・比較の証拠>; 次=<残る問題と次に変える仮説>\n"
+       "The runner copies this line into Notes and the run summary, and shows it to the next run under Previous run summaries (:progress). Do not repeat it as a long note. "
+       "PR count, changed lines, run count or green CI alone is not progress; progress means the acceptance criteria are closer, shown by an artifact, a reproduction or a comparison.\n"))
+
+(defn stagnation-requester-prompt [ticket-id ticket-text reviews quota-status]
+  (let [helper "~/.claude/skills/obsidian-task-board/bin/task-board.bb"
+        open (filter stagnation-review-open? reviews)
+        unreceived (filter #(and (= "done" (:status %)) (not (stagnation-review-received? ticket-text (:id %)))) reviews)]
+    (str progress-record-contract
+         "Stagnation check (停滞確認, judged by you from the :progress lines above and the Notes): a stagnation candidate is the same unresolved problem with no comparative improvement, repeated rejection without an updated usable artifact, the same hypothesis retried with small tweaks, or a local metric improving while the goal does not get closer. "
+         "It is NOT stagnation when an independent stage is progressing, when waiting for the Owner or an external system, on a real quota/permission/cost shortage, for a legitimate CI re-run, or merely because of the run count or the continuation limit.\n"
+         (stagnation-review-status-line ticket-text reviews)
+         (fable-review-quota-line quota-status)
+         (cond
+           (seq open)
+           (str "A stagnation review (" (str/join ", " (map :id open)) ") is open for this ticket: do not request another one and do not run method changes or implementation that would compete with it. Finish only independent, non-conflicting work, then return continue; the runner keeps this card in Ready with the same assignee until the review leaves Ready/In Progress.\n")
+
+           (seq unreceived)
+           (str "A finished stagnation review is not yet received: read its result (its Notes and the Project document it names) before anything else, then run: bb " helper " append-note " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --source <you> --note \"停滞レビュー受領: <REVIEW-ID> — 反映: <採る案と次の最小試験>\" for each of " (str/join ", " (map :id unreceived)) ". "
+                "Apply its recommendation only inside the already approved scope; anything that needs a new decision goes to the Owner as one short choice.\n")
+
+           :else
+           (str "If this run is a stagnation candidate and no review exists for the same unresolved problem, request one independent review instead of the next inertial retry (no Owner permission needed for this limited review): "
+                "write a short Japanese summary file whose first line is `stagnation-review-of:: " ticket-id "`, followed by the goal, the fixed version under review (commit/PR head/artifact path), the hypotheses tried, the comparison evidence, the unresolved points and the current approval scope; then run "
+                "bb " helper " create --vault \"$CODEX_TASK_BOARD_VAULT\" --lane Ready --assignee " stagnation-review-assignee " --priority <this ticket's priority> --repo <this ticket's repo> --title \"停滞レビュー: " ticket-id " <問題>\" --summary-file <that file>, "
+                "append-note to " ticket-id " \"停滞レビュー依頼: <REVIEW-ID> (問題: ...)\", stop work that would compete with the review, and return continue. "
+                "A second review for the same problem needs new evidence or a different problem, stated in its summary. Do not change this ticket's assignee or lane.\n"))
+         "A review approves no extra billing, paid API, image generation, new permission, unapproved method replacement, production operation or budget/retry reset.\n")))
+
+(defn stagnation-reviewer-prompt [ticket-id original-id]
+  (let [helper "~/.claude/skills/obsidian-task-board/bin/task-board.bb"]
+    (str "Stagnation reviewer contract (停滞レビュー): this ticket is an independent review of " original-id ". You are the reviewer; the original assignee keeps the work.\n"
+         "- Read the original ticket, its Notes and progress lines, its Project document and the fixed version named here. Use read-only inspection and at most small isolated reproductions inside this run workspace. When images or motion matter, look at the actual image bytes or timestamped frames; a path is not a viewed artifact.\n"
+         "- Do not edit, commit or push the original repositories or PRs, do not change " original-id "'s assignee, lane or claim, and do not stop its workers. Do not create tickets and do not request another review (no recursion). You may delegate fact gathering, but make the comparison and the recommendation yourself (if nothing is delegated, record the final-judgment exemption).\n"
+         "- Compare a few strong options, including continuing the current approach. Write in Japanese: 推奨 / 理由 / 再利用できる範囲 / 次の最小試験 / Ownerに必要な判断 (if any). Save it in the original's Project document when one is named, otherwise in this ticket's Notes.\n"
+         "- Return it to the original: bb " helper " append-note " original-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --source " stagnation-review-assignee " --note \"停滞レビュー結果 " ticket-id ": <推奨の要約>; 詳細: <path or this ticket>\". The original assignee records 停滞レビュー受領 on its next run.\n"
+         "- The review approves no extra billing, paid API, image generation, new permission, unapproved method replacement, production operation or budget/retry reset. No repository change is expected: include TASK_BOARD_REVIEW_PR: none and return done once the result is on the original ticket.\n")))
+
+(defn stagnation-prompt
+  "Progress record and stagnation review section for implement-type runs."
+  ([action ticket-id ticket-text]
+   (when (#{:implement :review-fix :blocked-retry} action)
+     (if-let [original (stagnation-review-of ticket-text)]
+       (stagnation-reviewer-prompt ticket-id original)
+       (stagnation-prompt action ticket-id ticket-text
+                          (try (stagnation-reviews-for ticket-id)
+                               (catch Exception e
+                                 (log! (str "stagnation review scan failed: " (.getMessage e)))
+                                 []))
+                          (provider-quota-status stagnation-review-assignee)))))
+  ([action ticket-id ticket-text reviews quota-status]
+   (when (#{:implement :review-fix :blocked-retry} action)
+     (if-let [original (stagnation-review-of ticket-text)]
+       (stagnation-reviewer-prompt ticket-id original)
+       (stagnation-requester-prompt ticket-id ticket-text reviews quota-status)))))
+
 (defn prompt-for
   ([action ticket-id lane workspace agent]
    (prompt-for action ticket-id lane workspace agent (fetch-ai-ops-alerts)))
@@ -2544,6 +2675,7 @@
                              "Before merge/deploy and before your final result run: bb " todo-module-path " status " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --json, then, using the rev it reports: bb " todo-module-path " ack " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --rev REV --run \"$CODEX_TASK_BOARD_RUN_ID\" --source " agent ". A stale REV is refused and prints the difference. A result from an older revision will not be applied.\n"
                              (when (= :v1 (:mode view)) (str "After doing a TD item run: bb " todo-module-path " done " ticket-id " TD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --evidence TEXT. An optional item you will not do: skip " ticket-id " TD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --reason TEXT. Required items cannot be skipped: return blocked for an Owner decision. A checked box alone does not complete an item. Lines without a TD id are your own steps; do not add TD lines for them. TODOs grant no permission.\n"))
                              (when (some #(= "held" (get-in % [:todo :gate])) previous) "The previous result was held: read back merges and external operations before proceeding; do not repeat them.\n"))))
+                    (stagnation-prompt action ticket-id ticket-text)
                     "Ticket contents:\n\n" ticket-text "\n\n")
         review-contract (str "The codex review gate blocks only on P0/P1 findings; P2/P3/nit feedback is non-blocking and is not a reason to loop.\n"
                              "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: continue.\n"
@@ -3471,6 +3603,8 @@
                              :delegation-ok? delegation-ok?
                              :result marker
                              :finished-at (now-str)}
+                            (when-let [progress (progress-marker last-message)]
+                              {:progress progress})
                             ai-ops-fields))))
       {:exit exit
        :result marker
@@ -4620,6 +4754,40 @@
               (log! (str "could not note quota hold for " ticket-id ": " (.getMessage e)))))))
       true)))
 
+;; BOXP-468: an original ticket does not start while its stagnation review is
+;; open, so no competing change runs beside the review. Like the quota hold the
+;; card, assignee, claim and budgets stay unchanged; it starts on a later tick
+;; once the review leaves Ready/In Progress. An Owner resume (blocked-retry) and
+;; the review ticket itself are never held.
+(def stagnation-review-hold-actions #{:implement :review-fix})
+(def stagnation-review-hold-logged (atom #{}))
+
+(defn stagnation-review-hold!
+  ([ticket-id action]
+   (when (stagnation-review-hold-actions action)
+     (let [text (try (slurp (str (ticket-path ticket-id))) (catch Exception _ nil))]
+       (when (and text (not (stagnation-review-of text)))
+         (stagnation-review-hold! ticket-id action
+                                  (try (stagnation-reviews-for ticket-id)
+                                       (catch Exception e
+                                         (log! (str "stagnation review scan failed: " (.getMessage e)))
+                                         [])))))))
+  ([ticket-id action reviews]
+   (when (stagnation-review-hold-actions action)
+     (when-let [open (seq (filter stagnation-review-open? reviews))]
+       (let [ids (str/join "," (map :id open))
+             marker (str "stagnation-review-hold=" ticket-id "/" ids)]
+         (when-not (contains? @stagnation-review-hold-logged marker)
+           (swap! stagnation-review-hold-logged conj marker)
+           (log! (str "not starting " ticket-id ": stagnation review " ids " is open"))
+           (try
+             (when-not (str/includes? (slurp (str (ticket-path ticket-id))) marker)
+               (append-note! ticket-id (str "Run not started: 停滞レビュー " ids " が進行中; " marker
+                                            "; the card, assignee and budgets are unchanged; it starts after the review leaves Ready/In Progress.")))
+             (catch Exception e
+               (log! (str "could not note stagnation review hold for " ticket-id ": " (.getMessage e))))))
+         true)))))
+
 (defn process-card-inner! [{:keys [ticket-id lane status] :as card}]
   (let [fm (ticket-frontmatter ticket-id)
         assignee (:assignee fm)
@@ -4641,7 +4809,8 @@
                      (stop-exhausted-ticket! ticket-id candidate status assignee lane ticket-text)
                      nil)
                  candidate)
-        action (when-not (provider-quota-hold! ticket-id action assignee) action)]
+        action (when-not (provider-quota-hold! ticket-id action assignee) action)
+        action (when-not (stagnation-review-hold! ticket-id action) action)]
     (when action
       (let [effective-lane (if (#{"ready" "review" "blocked"} status) "In Progress" lane)
             lock (when-let [lock (acquire-lock! ticket-id action effective-lane)]
@@ -4909,6 +5078,8 @@
                     (when @docs-applied?
                       (record-localllm-commit! ticket-id run-id :committed next-status))
                     (append-note! ticket-id (str (final-note run-id next-status result last-message review-gate idle-timeout?)
+                                                 (when-let [progress (when-not idle-timeout? (progress-marker last-message))]
+                                                   (str " 進展記録: " progress))
                                                  (when continuing?
                                                    (str " Ready継続: 担当 " assignee " のまま次 run へ（自動継続 "
                                                         (:continuation-count review-gate) "/" (continuation-limit)
@@ -5802,7 +5973,8 @@
   ;; BOXP-270: the lifecycle self-tests below drive the real finish path, whose
   ;; outbox hook would otherwise write TEST-* events into the operator's live
   ;; CODEX_TASK_BOARD_ROOT when the suite runs on a host. Keep the suite pure.
-  (with-redefs [record-task-board-event! (fn [& _] nil)
+  (with-redefs [vault (let [dir (str (fs/create-temp-dir))] (constantly dir))
+                record-task-board-event! (fn [& _] nil)
                 record-ai-ops-event! (fn [& _] nil)
                 record-ai-ops-gate! (fn [& _] nil)
                 ;; The live quota snapshot must not decide whether self-test cards start.
@@ -6659,6 +6831,74 @@
               ["wait reason values" (mapv #(wait-reason-marker (str "TASK_BOARD_WAIT_REASON: " %)) ["owner-decision" "external-hold" "new-scope" "AGENT-RECOVERABLE"]) ["owner-decision" "external-hold" "new-scope" "agent-recoverable"]]
               ["invalid wait reason" (wait-reason-marker "TASK_BOARD_WAIT_REASON: private") nil]
               ["absent wait reason" (wait-reason-marker "nothing") nil]
+              ;; BOXP-468: progress and independent stagnation review contracts.
+              ["stagnation requester progress and review contract"
+               (let [p (stagnation-prompt :implement "BOXP-1" "original" [] {:decision :clear})]
+                 (every? #(str/includes? p %) ["TASK_BOARD_PROGRESS:" "request one independent review" "stagnation-review-of:: BOXP-1" "--assignee claude-fable" "waiting for the Owner or an external system" "run count"])) true]
+              ["stagnation requester no open hold"
+               (let [p (stagnation-prompt :implement "BOXP-1" "original" [] {:decision :clear})]
+                 (not (str/includes? p "is open for this ticket"))) true]
+              ["progress marker trim cap and absence"
+               [(progress-marker "other\nTASK_BOARD_PROGRESS:   進展あり  \n")
+                (progress-marker (str "TASK_BOARD_PROGRESS: " (apply str (repeat 601 "x"))))
+                (progress-marker "no marker")]
+               ["進展あり" (str (apply str (repeat 600 "x")) "…") nil]]
+              ["progress survives run summary transitions"
+               (let [dir (str (fs/create-temp-dir))]
+                 (with-redefs [root (constantly dir)]
+                   (mark-run! "BOXP-1" "run-1" :running {:progress (progress-marker "TASK_BOARD_PROGRESS: evidence")})
+                   (mark-run! "BOXP-1" "run-1" :succeeded {})
+                   (:progress (read-edn-file (fs/path (run-dir "BOXP-1" "run-1") "summary.edn") {})))) "evidence"]
+              ["stagnation quota hold and unknown"
+               [(str/includes? (fable-review-quota-line {:decision :hold}) "Do not request a review now")
+                (str/includes? (fable-review-quota-line nil) "unknown (not read as available)")] [true true]]
+              ["stagnation open review prevents duplicate for both statuses"
+               (mapv (fn [status]
+                       (let [reviews [{:id "BOXP-2" :status status}]
+                             p (stagnation-prompt :implement "BOXP-1" "original" reviews nil)]
+                         [(str/includes? p "do not request another one")
+                          (with-redefs [log! (fn [& _]) append-note! (fn [& _]) ticket-path (constantly "/nonexistent")]
+                            (reset! stagnation-review-hold-logged #{})
+                            [(stagnation-review-hold! "BOXP-1" :implement reviews)
+                             (stagnation-review-hold! "BOXP-1" :review-fix reviews)
+                             (stagnation-review-hold! "BOXP-1" :blocked-retry reviews)])]))
+                     ["ready" "in-progress"]) [[true [true true nil]] [true [true true nil]]]]
+              ["stagnation reviewer contract and no recursive hold"
+               (let [dir (fs/create-temp-dir) text "stagnation-review-of:: BOXP-1\n"
+                     _ (spit (str (fs/path dir "BOXP-2.md")) text)
+                     _ (spit (str (fs/path dir "BOXP-3.md")) "---\nstatus: ready\n---\nstagnation-review-of:: BOXP-2\n")
+                     p (stagnation-prompt :implement "BOXP-2" text)]
+                 (with-redefs [tickets-dir (constantly dir)]
+                   [(str/includes? p "Do not create tickets and do not request another review")
+                    (stagnation-review-hold! "BOXP-2" :implement)])) [true nil]]
+              ["stagnation linked reviews exact id and exclude self"
+               (let [dir (fs/create-temp-dir)]
+                 (doseq [[id text] [["BOXP-1" "BOXP-1"] ["BOXP-2" "BOXP-1"] ["BOXP-3" "BOXP-10"]]]
+                   (spit (str (fs/path dir (str id ".md"))) (str "---\nstatus: ready\n---\nstagnation-review-of:: " text "\n")))
+                 (with-redefs [tickets-dir (constantly dir)] (stagnation-reviews-for "BOXP-1"))) [{:id "BOXP-2" :status "ready"}]]
+              ["stagnation review receipt before and after"
+               (let [reviews [{:id "BOXP-2" :status "done"}]
+                     before (stagnation-prompt :implement "BOXP-1" "original" reviews nil)
+                     after (stagnation-prompt :implement "BOXP-1" "停滞レビュー受領: BOXP-2" reviews nil)]
+                 [(str/includes? before "NOT-YET-RECEIVED") (str/includes? before "--note \"停滞レビュー受領:")
+                  (str/includes? after "BOXP-2 status=done received") (str/includes? after "--note \"停滞レビュー受領:")]) [true true true false]]
+              ["stagnation hold preserves card and budgets and notes once per marker"
+               (let [dir (fs/create-temp-dir) notes (atom []) calls (atom [])
+                     path (fs/path dir "BOXP-1.md")
+                     reviews [{:id "BOXP-2" :status "ready"}]
+                     forbidden (fn [& args] (swap! calls conj args))]
+                 (spit (str path) "---\nstatus: ready\nassignee: codex\n---\n")
+                 (with-redefs [tickets-dir (constantly dir) log! (fn [& _])
+                               move-card! forbidden update-frontmatter! forbidden
+                               consume-continuation! forbidden clear-continuation-budget! forbidden
+                               record-gate-failure-budget! forbidden
+                               append-note! (fn [_ note] (swap! notes conj note) (spit (str path) (str "\n" note) :append true))]
+                   (reset! stagnation-review-hold-logged #{})
+                   (stagnation-review-hold! "BOXP-1" :implement reviews)
+                   (stagnation-review-hold! "BOXP-1" :review-fix reviews)
+                   (reset! stagnation-review-hold-logged #{})
+                   (stagnation-review-hold! "BOXP-1" :implement reviews)
+                   [(count @notes) @calls (str/includes? (slurp (str path)) "assignee: codex")])) [1 [] true]]
               ;; BOXP-405 AIOPS-QUOTA: unknown is not available and fails open.
               ["provider quota prompt is omitted for other runtimes" (provider-quota-prompt "codex" {:state "no_snapshot"} 0) nil]
               ["provider quota prompt says unknown without a snapshot"
