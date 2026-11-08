@@ -5,6 +5,7 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   const id = normalizeModelId(params.get('model'))
   const lost = lostPrototypes.find(p => p.id === id)
   const model = modelFor(location.search)
+  document.body.classList.toggle('full-model', model.id === 'kohako-full-v1' && !lost)
   const select = document.createElement('select'); select.id = 'model-select'
   const label = document.createElement('label'); label.htmlFor = select.id; label.textContent = '試作の選択 '
   const all = [...rigModels.filter(m => includeSample || m.id !== 'sample'), ...lostPrototypes]
@@ -29,6 +30,9 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   const selected = lost ?? (includeSample || model.id !== 'sample' ? model : modelFor(''))
   details.textContent = `${select.selectedOptions[0]?.textContent} — ${selected.evaluation}。問題: ${selected.problems} 最新の試作は ${LATEST_MODEL_ID.replace('kohako-', '')}（担当評価は選択欄を参照）です。`
   container.append(label, select, details)
+  if (model.id === 'kohako-full-v1' && !lost) {
+    const link = document.createElement('a'); link.href = './kohako/live2d/compare/kohako-full-v1-compare.jpg'; link.textContent = '原画・静止ポーズの比較'; container.append(link)
+  }
   if (model.id === LATEST_MODEL_ID && !lost) {
     // TD-23: 配備版を実ブラウザで録画し、同じ動きの旧新を横に並べた動画（時刻・角度を焼き込み）。髪の肩線の段差・折れが動作中にどう見えるか。
     // v27: 配備ページで v25 と同じ自然動作を録画し横並び（未配備候補は OVERRIDE_P2LRT で差し替えて同位相にした）。
