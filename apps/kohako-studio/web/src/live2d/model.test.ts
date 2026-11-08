@@ -206,3 +206,11 @@ it('selects full-v6 without changing the default model', () => {
   expect(modelFor('?model=kohako-full-v6').id).toBe('kohako-full-v6')
   expect(LATEST_MODEL_ID).toBe('kohako-v45')
 })
+
+it('selects full-v7 without changing the default model', () => {
+  const v7 = modelFor('?model=kohako-full-v7')
+  expect(v7.id).toBe('kohako-full-v7')
+  expect(v7.status).toBe('rejected')
+  expect(clipName(v7, 'modifier:m18:6d6f74696f6e')).toBe('Blink')
+  expect(LATEST_MODEL_ID).toBe('kohako-v45')
+})
