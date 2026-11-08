@@ -2,6 +2,8 @@
 
 **担当自己評価: 不採用・比較用。Owner の受入判定ではない。** 三つ編み上部の頭追従で v10h の幾何の隙間は多くの姿勢で減ったが、AngleZ −10 では左右に新たな隙間が生じ、肩下も完全には体に留まらない。結び目を含む全動作の受入条件を満たさない。
 
+> 担当(Opus)の最終判定: 上の Codex 自己評価は「不採用」だが、比較シートと表のとおり y<400 の G 画素は BodyAngleX+10 で 619→64、idle10 で 208→51 と大きく減っており、改善そのものは採る。ただし AngleZ −10 の新規隙間（計 63 画素）と肩下の追従が残るため未受入の比較候補とする（既定 v45 不変）。
+
 ## 変更と再現
 
 psd2live 6fe868a の `RigBuilder.kt` のペア deformer 生成、頭コンテナ、回転、`warpGrid` を確認。`DeformPair_Braid` を `DeformHeadContainer` 配下に置き、顎から y=455 の肩へ smoothstep で下部ほど AngleX/Y の頭シェル移動と AngleZ 回転を相殺する 12 行ワープに変更した。素材変更や案2の被覆追加は行っていない。`braid-anchor.patch` は v10g の後ろ髪パッチも含む。クリーンな指定コミットに適用し、`build.sh` に v10h 最終 layout、source、P2L、Gradle cache、OUT を指定する。`P2L_BRAID_ANCHOR=1` と既存後ろ髪設定を MCP と export の双方に渡す。MCP は `--log-driver none`。
