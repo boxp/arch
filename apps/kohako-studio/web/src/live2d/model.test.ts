@@ -1,3 +1,4 @@
+import { frameFor } from './rig'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -213,4 +214,17 @@ it('selects full-v7 without changing the default model', () => {
   expect(v7.status).toBe('rejected')
   expect(clipName(v7, 'modifier:m18:6d6f74696f6e')).toBe('Blink')
   expect(LATEST_MODEL_ID).toBe('kohako-v45')
+})
+
+it('selects full-v8 while retaining the default', () => {
+  expect(modelFor('?model=kohako-full-v8').status).toBe('rejected')
+  expect(modelFor('').id).toBe('kohako-v45')
+})
+
+it('limits upper framing to full-body models', () => {
+  const full = modelFor('?model=kohako-full-v8')
+  expect(frameFor(full, '')).toBe('full')
+  expect(frameFor(full, '?frame=upper')).toBe('upper')
+  expect(frameFor(full, '?frame=invalid')).toBe('full')
+  expect(frameFor(modelFor(''), '?frame=upper')).toBe('full')
 })
