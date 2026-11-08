@@ -1,0 +1,761 @@
+{
+  "project_id": "dd12b85b-ff5e-4ab6-afbd-6b7bd324dbab",
+  "state": "1ee1be35-46e1-4b71-86e7-2185d0e8ec98:1:0",
+  "history_node_id": "history-e69ba2a7-263e-41a7-9197-93ef5bef3fbc",
+  "loaded": true,
+  "canvas": [
+    1143,
+    2048
+  ],
+  "parameters": {
+    "total": 25,
+    "items": [
+      {
+        "id": "ParamMouthOpenY",
+        "name": "Mouth Open",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamEyeROpen",
+        "name": "Right Eye Open",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 1.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamEyeLOpen",
+        "name": "Left Eye Open",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 1.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamBodyAngleX",
+        "name": "Body Angle X",
+        "min": -10.0,
+        "max": 10.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamBodyAngleY",
+        "name": "Body Angle Y",
+        "min": -10.0,
+        "max": 10.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamBodyAngleZ",
+        "name": "Body Angle Z",
+        "min": -10.0,
+        "max": 10.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamBodyLean",
+        "name": "Body Lean",
+        "min": -10.0,
+        "max": 10.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamProportion",
+        "name": "Proportion (Chibi)",
+        "min": -10.0,
+        "max": 10.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamBreath",
+        "name": "Breath",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamAngleX",
+        "name": "Angle X",
+        "min": -45.0,
+        "max": 45.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamAngleY",
+        "name": "Angle Y",
+        "min": -30.0,
+        "max": 30.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamAngleZ",
+        "name": "Angle Z",
+        "min": -30.0,
+        "max": 30.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamEyeBallX",
+        "name": "EyeBall X",
+        "min": -1.0,
+        "max": 1.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamEyeBallY",
+        "name": "EyeBall Y",
+        "min": -1.0,
+        "max": 1.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamEyeBallForm",
+        "name": "Eye Jelly",
+        "min": -1.0,
+        "max": 1.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamBrowLY",
+        "name": "Left Brow Y",
+        "min": -1.0,
+        "max": 1.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamBrowRY",
+        "name": "Right Brow Y",
+        "min": -1.0,
+        "max": 1.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamMouthForm",
+        "name": "Mouth Form",
+        "min": -1.0,
+        "max": 1.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamHairFront",
+        "name": "Front Hair Sway",
+        "min": -1.0,
+        "max": 1.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamHairBack",
+        "name": "Back Hair Sway",
+        "min": -1.0,
+        "max": 1.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamCheek",
+        "name": "Cheek",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamBustY",
+        "name": "Chest Y",
+        "min": -1.0,
+        "max": 1.0,
+        "default": 0.0,
+        "kind": "blend_shape",
+        "repeat": false
+      },
+      {
+        "id": "ParamBustX",
+        "name": "Chest X",
+        "min": -1.0,
+        "max": 1.0,
+        "default": 0.0,
+        "kind": "blend_shape",
+        "repeat": false
+      },
+      {
+        "id": "ParamArmLSwing",
+        "name": "Arm L Swing",
+        "min": -1.0,
+        "max": 1.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      },
+      {
+        "id": "ParamArmRSwing",
+        "name": "Arm R Swing",
+        "min": -1.0,
+        "max": 1.0,
+        "default": 0.0,
+        "kind": "normal",
+        "repeat": false
+      }
+    ]
+  },
+  "layers": {
+    "total": 31,
+    "items": [
+      {
+        "id": "back_hair",
+        "name": "back_hair",
+        "role": "back_hair",
+        "side": "none",
+        "visible": true
+      },
+      {
+        "id": "leg_right",
+        "name": "leg_right",
+        "role": "legwear",
+        "side": "right",
+        "visible": true
+      },
+      {
+        "id": "leg_left",
+        "name": "leg_left",
+        "role": "legwear",
+        "side": "left",
+        "visible": true
+      },
+      {
+        "id": "foot_right",
+        "name": "foot_right",
+        "role": "footwear",
+        "side": "right",
+        "visible": true
+      },
+      {
+        "id": "foot_left",
+        "name": "foot_left",
+        "role": "footwear",
+        "side": "left",
+        "visible": true
+      },
+      {
+        "id": "body",
+        "name": "body",
+        "role": "topwear",
+        "side": "none",
+        "visible": true
+      },
+      {
+        "id": "panel_right",
+        "name": "panel_right",
+        "role": "bottomwear",
+        "side": "right",
+        "visible": true
+      },
+      {
+        "id": "panel_left",
+        "name": "panel_left",
+        "role": "bottomwear",
+        "side": "left",
+        "visible": true
+      },
+      {
+        "id": "arm_right",
+        "name": "arm_right",
+        "role": "handwear",
+        "side": "right",
+        "visible": true
+      },
+      {
+        "id": "arm_left",
+        "name": "arm_left",
+        "role": "handwear",
+        "side": "left",
+        "visible": true
+      },
+      {
+        "id": "hand_right",
+        "name": "hand_right",
+        "role": "handwear",
+        "side": "right",
+        "visible": true
+      },
+      {
+        "id": "hand_left",
+        "name": "hand_left",
+        "role": "handwear",
+        "side": "left",
+        "visible": true
+      },
+      {
+        "id": "neck",
+        "name": "neck",
+        "role": "neck",
+        "side": "none",
+        "visible": true
+      },
+      {
+        "id": "face",
+        "name": "face",
+        "role": "face",
+        "side": "none",
+        "visible": true
+      },
+      {
+        "id": "braid_right",
+        "name": "braid_right",
+        "role": "unknown",
+        "side": "right",
+        "visible": true
+      },
+      {
+        "id": "braid_left",
+        "name": "braid_left",
+        "role": "unknown",
+        "side": "left",
+        "visible": true
+      },
+      {
+        "id": "eye_right_white",
+        "name": "eye right white",
+        "role": "eyewhite",
+        "side": "right",
+        "visible": true
+      },
+      {
+        "id": "eye_right_iris",
+        "name": "eye right iris",
+        "role": "irides",
+        "side": "right",
+        "visible": true
+      },
+      {
+        "id": "eye_right_lash",
+        "name": "eye right lash",
+        "role": "eyelash",
+        "side": "right",
+        "visible": true
+      },
+      {
+        "id": "eye_left_white",
+        "name": "eye left white",
+        "role": "eyewhite",
+        "side": "left",
+        "visible": true
+      },
+      {
+        "id": "eye_left_iris",
+        "name": "eye left iris",
+        "role": "irides",
+        "side": "left",
+        "visible": true
+      },
+      {
+        "id": "eye_left_lash",
+        "name": "eye left lash",
+        "role": "eyelash",
+        "side": "left",
+        "visible": true
+      },
+      {
+        "id": "mouth_open",
+        "name": "mouth open",
+        "role": "mouth_open",
+        "side": "none",
+        "visible": true
+      },
+      {
+        "id": "eye_closed_right",
+        "name": "eye closed right",
+        "role": "eye_close",
+        "side": "right",
+        "visible": true
+      },
+      {
+        "id": "eye_closed_left",
+        "name": "eye closed left",
+        "role": "eye_close",
+        "side": "left",
+        "visible": true
+      },
+      {
+        "id": "eye_mid_right_v44",
+        "name": "eye mid right v44",
+        "role": "face_detail",
+        "side": "none",
+        "visible": true
+      },
+      {
+        "id": "eye_mid_left_v44",
+        "name": "eye mid left v44",
+        "role": "face_detail",
+        "side": "none",
+        "visible": true
+      },
+      {
+        "id": "face_smile",
+        "name": "face smile",
+        "role": "face_detail",
+        "side": "none",
+        "visible": true
+      },
+      {
+        "id": "hair_side_right",
+        "name": "hair side right",
+        "role": "front_hair",
+        "side": "right",
+        "visible": true
+      },
+      {
+        "id": "hair_side_left",
+        "name": "hair side left",
+        "role": "front_hair",
+        "side": "left",
+        "visible": true
+      },
+      {
+        "id": "hair_front",
+        "name": "hair front",
+        "role": "front_hair",
+        "side": "none",
+        "visible": true
+      }
+    ]
+  },
+  "meshes": 31,
+  "deformers": {
+    "total": 27,
+    "items": [
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64795859",
+        "name": "Body XY",
+        "parent": null,
+        "children": 1
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64794c65616e",
+        "name": "Body Lean / Proportion",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64795859",
+        "children": 1
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64795a427265617468",
+        "name": "Body Z / Breath",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64794c65616e",
+        "children": 7
+      },
+      {
+        "target": "rotation:modifier:m1:7368617265642f6465666f726d65723a4465666f726d48656164526f746174696f6e",
+        "name": "Head Z Rotation",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64795a427265617468",
+        "children": 1
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d48656164436f6e7461696e6572",
+        "name": "Head Container",
+        "parent": "rotation:modifier:m1:7368617265642f6465666f726d65723a4465666f726d48656164526f746174696f6e",
+        "children": 3
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d4861697246726f6e74466f6c6c6f77",
+        "name": "Front Hair Follow",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d48656164436f6e7461696e6572",
+        "children": 1
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d4861697246726f6e7450687973696373",
+        "name": "Front Hair Physics",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d4861697246726f6e74466f6c6c6f77",
+        "children": 2
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f4861697253696465",
+        "name": "hair side Pair",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d4861697246726f6e7450687973696373",
+        "children": 2
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d466163654e696e65506f7365",
+        "name": "Face Warp Deformer",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d48656164436f6e7461696e6572",
+        "children": 4
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796573",
+        "name": "Eyes",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d466163654e696e65506f7365",
+        "children": 2
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796553686170654c",
+        "name": "Left Eye Deformer",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796573",
+        "children": 5
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d457965536861706552",
+        "name": "Right Eye Deformer",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796573",
+        "children": 5
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d4d6f7574685368617065426f7468",
+        "name": "Mouth Deformer",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d466163654e696e65506f7365",
+        "children": 1
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d4972697350726573657276654c",
+        "name": "Left Iris 2D Retention",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796553686170654c",
+        "children": 1
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796547617a654c",
+        "name": "Left Gaze",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d4972697350726573657276654c",
+        "children": 1
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d49726973507265736572766552",
+        "name": "Right Iris 2D Retention",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d457965536861706552",
+        "children": 1
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796547617a6552",
+        "name": "Right Gaze",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d49726973507265736572766552",
+        "children": 1
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f4272616964",
+        "name": "braid Pair",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64795a427265617468",
+        "children": 2
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d46616365436f6e746f7572",
+        "name": "Face Deformer",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d466163654e696e65506f7365",
+        "children": 1
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f48616e64",
+        "name": "hand Pair",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64795a427265617468",
+        "children": 2
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f41726d",
+        "name": "arm Pair",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64795a427265617468",
+        "children": 2
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f50616e656c",
+        "name": "panel Pair",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64795a427265617468",
+        "children": 2
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d4c656773",
+        "name": "Legs",
+        "parent": null,
+        "children": 2
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f466f6f74",
+        "name": "foot Pair",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d4c656773",
+        "children": 2
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f4c6567",
+        "name": "leg Pair",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d4c656773",
+        "children": 2
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d486169724261636b466f6c6c6f77",
+        "name": "Back Hair Follow",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d48656164436f6e7461696e6572",
+        "children": 1
+      },
+      {
+        "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d486169724261636b50687973696373",
+        "name": "Back Hair Physics",
+        "parent": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d486169724261636b466f6c6c6f77",
+        "children": 1
+      }
+    ]
+  },
+  "physics": {
+    "total": 6,
+    "items": [
+      {
+        "id": "modifier:m12:706879736963733a506879736963734275737459",
+        "name": "Chest Y",
+        "origin": "modifier",
+        "enabled": true,
+        "inputs": [
+          "ParamBodyAngleY",
+          "ParamAngleY",
+          "ParamBreath"
+        ],
+        "outputs": [
+          "ParamBustY"
+        ]
+      },
+      {
+        "id": "modifier:m12:706879736963733a506879736963734275737458",
+        "name": "Chest X",
+        "origin": "modifier",
+        "enabled": true,
+        "inputs": [
+          "ParamBodyAngleX",
+          "ParamBodyAngleZ"
+        ],
+        "outputs": [
+          "ParamBustX"
+        ]
+      },
+      {
+        "id": "modifier:m13:706879736963733a5068797369637341726d4c5377696e67",
+        "name": "Arm swing L",
+        "origin": "modifier",
+        "enabled": true,
+        "inputs": [
+          "ParamBodyAngleX",
+          "ParamBodyAngleZ",
+          "ParamAngleX"
+        ],
+        "outputs": [
+          "ParamArmLSwing"
+        ]
+      },
+      {
+        "id": "modifier:m13:706879736963733a5068797369637341726d525377696e67",
+        "name": "Arm swing R",
+        "origin": "modifier",
+        "enabled": true,
+        "inputs": [
+          "ParamBodyAngleX",
+          "ParamBodyAngleZ",
+          "ParamAngleX"
+        ],
+        "outputs": [
+          "ParamArmRSwing"
+        ]
+      },
+      {
+        "id": "modifier:m14:70687973696373",
+        "name": "Front Hair Sway",
+        "origin": "modifier",
+        "enabled": true,
+        "inputs": [
+          "ParamAngleX",
+          "ParamAngleZ",
+          "ParamBodyAngleX",
+          "ParamBodyAngleZ"
+        ],
+        "outputs": [
+          "ParamHairFront"
+        ]
+      },
+      {
+        "id": "modifier:m15:70687973696373",
+        "name": "Back Hair Sway",
+        "origin": "modifier",
+        "enabled": true,
+        "inputs": [
+          "ParamAngleX",
+          "ParamAngleZ",
+          "ParamBodyAngleX",
+          "ParamBodyAngleZ"
+        ],
+        "outputs": [
+          "ParamHairBack"
+        ]
+      }
+    ]
+  },
+  "motions": {
+    "total": 6,
+    "items": [
+      {
+        "id": "motion_1",
+        "name": "Shake",
+        "duration": 1.67,
+        "loop": false
+      },
+      {
+        "id": "motion_2",
+        "name": "Blink",
+        "duration": 1.2,
+        "loop": false
+      },
+      {
+        "id": "modifier:m16:6d6f74696f6e",
+        "name": "Shake",
+        "duration": 1.67,
+        "loop": false
+      },
+      {
+        "id": "modifier:m17:6d6f74696f6e",
+        "name": "Idle",
+        "duration": 12.0,
+        "loop": true
+      },
+      {
+        "id": "modifier:m18:6d6f74696f6e",
+        "name": "Blink",
+        "duration": 1.2,
+        "loop": false
+      },
+      {
+        "id": "modifier:m19:6d6f74696f6e",
+        "name": "Talk",
+        "duration": 6.0399995,
+        "loop": false
+      }
+    ]
+  }
+}
