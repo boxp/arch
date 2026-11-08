@@ -71,3 +71,5 @@ v10i p2lrt SHA-256 `73246295a0d10ba773a734b7bc13e5b76c67442f086c01e5275689b24231
 Web の typecheck、test（4 files / 30 tests）、build は成功。実 Chromium で v10i の読み込みと比較リンク 9 件を確認した。LATEST は kohako-v45 のまま。
 
 残件: 反対側に新たな穴を作らない局所橋渡しまたは変形境界の再設計、首・桜飾り下の詳細、実 GPU と Owner の目視確認。画像生成、外部画像 API、Core 取得、push、PR、merge、配備は行っていない。
+
+（補足）全成分の生データ `lines.json` / `lines-v10i.json`（各約 3MB）は repo に含めず、作業領域 `/home/boxp/b441work/full10i/` に保存している。集計は `lines-compare.json` を参照。
