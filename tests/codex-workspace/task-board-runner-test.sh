@@ -5221,6 +5221,222 @@ test_terminal_revision_lww_and_duplicates() {
   assert_file_contains "${tmp}/move" 'duplicate board cards for BOXP-992'
 }
 
+test_workspace_reuse() {
+  local tmp source state bin old new known
+  tmp="$(mktemp -d)"; source="$tmp/source"; state="$tmp/state"; bin="$tmp/bin"; known="$tmp/known"
+  mkdir -p "$bin" "$state/locks" "$tmp/proc/100"
+  ln -s / "$tmp/proc/100/cwd"
+  echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+  make_fake_gh "$bin"; make_prune_source_repo "$source"
+  git -C "$source" rev-parse HEAD >"$known"
+  old="$(add_prune_run "$state" "$source" BOXP-999 20200101T000000Z)"
+  echo 'node_modules/' >>"$(git -C "$old" rev-parse --git-path info/exclude)"
+  mkdir -p "$old/node_modules"; echo keep >"$old/node_modules/data"
+  local inode; inode="$(stat -c %i "$old/node_modules/data")"
+  echo note >"$state/workspaces/BOXP-999/20200101T000000Z/note.txt"
+  printf '{:run-id "20200102T000000Z"}\n' >"$state/locks/BOXP-999.edn"
+  new="$state/workspaces/BOXP-999/20200102T000000Z/ghq/github.com/boxp/example"
+  PATH="$bin:$PATH" GH_FAKE_KNOWN_SHAS="$known" CODEX_TASK_BOARD_ROOT="$state" CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo" TEST_RUNNER="$RUNNER" TEST_SOURCE="$source" bb -e '
+    (System/setProperty "babashka.file" "/tmp/load-runner.bb")
+    (load-file (System/getenv "TEST_RUNNER"))
+    (alter-var-root (var local-repo-path) (constantly (fn [_] (System/getenv "TEST_SOURCE"))))
+    (alter-var-root (var ticket-repos) (constantly (fn [_] ["boxp/example"])))
+    (let [r (first (:repo-worktrees (prepare-run-workspace! "BOXP-999" "20200102T000000Z")))]
+      (assert (= "20200101T000000Z" (:reused-from r))))'
+  assert_file_contains "$state/runs/BOXP-999/20200102T000000Z/workspace-reuse.edn" ":reused-from \"20200101T000000Z\""
+  [[ ! -e "$old" && "$(stat -c %i "$new/node_modules/data")" == "$inode" ]] || fail 'worktree was not moved'
+  [[ "$(git -C "$new" rev-parse HEAD)" == "$(git -C "$source" rev-parse HEAD)" ]] || fail 'wrong HEAD'
+  [[ "$(git -C "$new" branch --show-current)" == codex-task-board/BOXP-999-20200102T000000Z ]] || fail 'wrong branch'
+  [[ -f "$state/workspaces/BOXP-999/20200101T000000Z/note.txt" ]] || fail 'old note lost'
+  ! git -C "$source" show-ref --verify --quiet refs/heads/codex-task-board/BOXP-999-20200101T000000Z || fail 'old branch retained'
+  printf '{:run-id "20200103T000000Z"}\n' >"$state/locks/BOXP-999.edn"
+  PATH="$bin:$PATH" GH_FAKE_KNOWN_SHAS="$known" CODEX_TASK_BOARD_ROOT="$state" CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo" TEST_RUNNER="$RUNNER" TEST_SOURCE="$source" bb -e '
+    (System/setProperty "babashka.file" "/tmp/load-runner.bb")
+    (load-file (System/getenv "TEST_RUNNER"))
+    (alter-var-root (var local-repo-path) (constantly (fn [_] (System/getenv "TEST_SOURCE"))))
+    (let [r (prepare-repo-worktree! (run-workspace-dir "BOXP-999" "20200103T000000Z") "BOXP-999" "20200103T000000Z" "boxp/example")]
+      (assert (= "20200102T000000Z" (:reused-from r)))
+      (assert (nil? (:hold (inspect-checkout (fs/real-path (run-workspace-dir "BOXP-999" "20200103T000000Z")) (:path r) (atom {}))))))'
+  local third="$state/workspaces/BOXP-999/20200103T000000Z/ghq/github.com/boxp/example"
+  [[ "$(stat -c %i "$third/node_modules/data")" == "$inode" ]] || fail 'chain copied ignored output'
+  [[ "$(git -C "$third" reflog show HEAD | wc -l)" -le 1 ]] || fail 'reflog grew across reuse'
+}
+
+test_workspace_reuse_fallbacks() {
+  local mode tmp source state bin old known reason before
+  for mode in dirty untracked unpushed ignored venv nested process mount gh lock missing-lock disabled low switch; do
+    tmp="$(mktemp -d)"; source="$tmp/source"; state="$tmp/state"; bin="$tmp/bin"; known="$tmp/known"
+    mkdir -p "$bin" "$state/locks" "$tmp/proc/100"
+    ln -s / "$tmp/proc/100/cwd"
+    echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+    make_fake_gh "$bin"; make_prune_source_repo "$source"
+    echo tracked >"$source/tracked"; git -C "$source" add tracked; prune_git -C "$source" commit -qm tracked
+    git -C "$source" rev-parse HEAD >"$known"
+    old="$(add_prune_run "$state" "$source" BOXP-999 20200101T000000Z)"
+    printf '{:run-id "20200102T000000Z"}\n' >"$state/locks/BOXP-999.edn"
+    case "$mode" in
+      dirty) echo dirty >>"$old/tracked"; reason=uncommitted-changes ;;
+      untracked) echo x >"$old/untracked"; reason=uncommitted-changes ;;
+      unpushed) prune_commit "$old" unpushed >/dev/null; reason=commit-not-on-github ;;
+      ignored|venv) echo "$([[ "$mode" == venv ]] && echo .venv || echo unknown)/" >>"$(git -C "$old" rev-parse --git-path info/exclude)"; mkdir -p "$old/$([[ "$mode" == venv ]] && echo .venv || echo unknown)"; reason="$([[ "$mode" == venv ]] && echo path-bound-ignored || echo ignored-unknown)" ;;
+      nested) git init -q "$old/nested"; reason=nested-checkout ;;
+      process) ln -s "$old" "$tmp/proc/101"; rm "$tmp/proc/101"; mkdir "$tmp/proc/101"; ln -s "$old" "$tmp/proc/101/cwd"; reason=process-active ;;
+      mount) echo "23 22 0:22 / $old rw - ext4 /dev/root rw" >>"$tmp/mountinfo"; reason=mount-present ;;
+      gh) reason=github-check-failed ;;
+      lock) echo '{:run-id "other"}' >"$state/locks/BOXP-999.edn"; reason=lock-not-owned ;;
+      missing-lock) rm "$state/locks/BOXP-999.edn"; reason=lock-not-owned ;;
+      disabled) reason=disabled ;;
+      low) reason=keep-latest-too-low ;;
+      switch) reason=switch-failed ;;
+    esac
+    before="$(git -C "$old" rev-parse HEAD) $(git -C "$old" branch --show-current) $(git -C "$old" status --porcelain)"
+    PATH="$bin:$PATH" GH_FAKE_KNOWN_SHAS="$known" GH_FAKE_FAIL="$([[ "$mode" == gh ]] && echo true || echo false)" CODEX_TASK_BOARD_ROOT="$state" CODEX_TASK_BOARD_WORKSPACE_REUSE="$([[ "$mode" == disabled ]] && echo false || echo true)" CODEX_TASK_BOARD_WORKSPACE_KEEP_LATEST_RUNS="$([[ "$mode" == low ]] && echo 1 || echo 2)" CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo" TEST_RUNNER="$RUNNER" TEST_SOURCE="$source" TEST_REASON="$reason" TEST_MODE="$mode" bb -e '
+      (System/setProperty "babashka.file" "/tmp/load-runner.bb")
+      (load-file (System/getenv "TEST_RUNNER"))
+      (alter-var-root (var local-repo-path) (constantly (fn [_] (System/getenv "TEST_SOURCE"))))
+      (let [original command-result
+            wrapped (fn [args & options]
+                      (if (and (= "switch" (nth args 3 nil)) (= "switch" (System/getenv "TEST_MODE")))
+                        {:exit 1 :out "" :err "simulated switch failure"}
+                        (apply original args options)))]
+        (with-redefs [command-result wrapped]
+          (let [r (prepare-repo-worktree! (run-workspace-dir "BOXP-999" "20200102T000000Z") "BOXP-999" "20200102T000000Z" "boxp/example")]
+            (assert (:path r)) (assert (clojure.string/starts-with? (:reuse-fallback r) (System/getenv "TEST_REASON"))))))'
+    [[ "$before" == "$(git -C "$old" rev-parse HEAD) $(git -C "$old" branch --show-current) $(git -C "$old" status --porcelain)" ]] || fail "old checkout changed: $mode"
+  done
+}
+
+# Runs prepare-run-workspace! for one run against fixture repositories.
+reuse_prepare() {
+  local tmp="$1" ticket="$2" run="$3" repos="${4:-boxp/example}"
+  PATH="$tmp/bin:$PATH" GH_FAKE_KNOWN_SHAS="$tmp/known" CODEX_TASK_BOARD_ROOT="$tmp/state" \
+    CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo" \
+    TEST_RUNNER="$RUNNER" TEST_SOURCE="$tmp/source" TEST_OTHER="$tmp/other" TEST_REPOS="$repos" \
+    TEST_TICKET="$ticket" TEST_RUN="$run" bb -e '
+      (System/setProperty "babashka.file" "/tmp/load-runner.bb")
+      (load-file (System/getenv "TEST_RUNNER"))
+      (alter-var-root (var local-repo-path)
+                      (constantly (fn [r] (if (= r "boxp/other") (System/getenv "TEST_OTHER") (System/getenv "TEST_SOURCE")))))
+      (alter-var-root (var ticket-repos)
+                      (constantly (fn [_] (clojure.string/split (System/getenv "TEST_REPOS") #","))))
+      (when-let [other-lock (System/getenv "TEST_LOCK_SWAP")]
+        (alter-var-root (var stale-process-hold)
+                        (fn [original]
+                          (fn [& args]
+                            (spit (str (lock-path (System/getenv "TEST_TICKET"))) other-lock)
+                            (apply original args)))))
+      (prn (:repo-worktrees (prepare-run-workspace! (System/getenv "TEST_TICKET") (System/getenv "TEST_RUN"))))'
+}
+
+reuse_fixture() {
+  local tmp="$1"
+  mkdir -p "$tmp/bin" "$tmp/state/locks" "$tmp/proc/100"
+  ln -s / "$tmp/proc/100/cwd"
+  echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+  make_fake_gh "$tmp/bin"; make_prune_source_repo "$tmp/source"
+  git -C "$tmp/source" rev-list HEAD >"$tmp/known"
+}
+
+reuse_lock() { printf '{:ticket "%s" :run-id "%s"}\n' "$2" "$3" >"$1/state/locks/$2.edn"; }
+
+test_workspace_reuse_interplay() {
+  local tmp ws old new dist out
+  # Another ticket and another repository are never adopted; decisions are per repo.
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"
+  make_prune_source_repo "$tmp/other"; git -C "$tmp/other" remote set-url origin https://github.com/boxp/other.git
+  git -C "$tmp/other" rev-list HEAD >>"$tmp/known"
+  old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z)"
+  reuse_lock "$tmp" BOXP-902 20200102T000000Z
+  reuse_prepare "$tmp" BOXP-902 20200102T000000Z >"$tmp/o1"
+  assert_file_contains "$tmp/o1" ':reuse-fallback "no-previous-run"'
+  [[ -e "$old/.git" ]] || fail 'another ticket adopted the worktree'
+  reuse_lock "$tmp" BOXP-901 20200103T000000Z
+  reuse_prepare "$tmp" BOXP-901 20200103T000000Z 'boxp/example,boxp/other' >"$tmp/o2"
+  assert_file_contains "$tmp/o2" ':reused-from "20200101T000000Z"'
+  assert_file_contains "$tmp/o2" ':repo "boxp/other", :reuse-fallback "no-previous-checkout"'
+  [[ -e "$ws/BOXP-901/20200103T000000Z/ghq/github.com/boxp/other/.git" ]] || fail 'other repo not created fresh'
+
+  # A claim that changes the lock before the move leaves the old run alone.
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-903 20200101T000000Z)"
+  reuse_lock "$tmp" BOXP-903 20200102T000000Z
+  TEST_LOCK_SWAP='{:ticket "BOXP-903" :run-id "20200103T000000Z"}' reuse_prepare "$tmp" BOXP-903 20200102T000000Z >"$tmp/o"
+  assert_file_contains "$tmp/o" ':reuse-fallback "lock-not-owned"'
+  [[ "$(git -C "$old" branch --show-current)" == codex-task-board/BOXP-903-20200101T000000Z ]] || fail 'race changed the old run'
+
+  # A symlinked previous checkout is not followed into another run.
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"
+  old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-904 20200101T000000Z)"
+  mkdir -p "$ws/BOXP-905/20200101T000000Z/ghq/github.com/boxp"
+  ln -s "$old" "$ws/BOXP-905/20200101T000000Z/ghq/github.com/boxp/example"
+  reuse_lock "$tmp" BOXP-905 20200102T000000Z
+  reuse_prepare "$tmp" BOXP-905 20200102T000000Z >"$tmp/o"
+  assert_file_contains "$tmp/o" ':reuse-fallback "unsafe-path"'
+  [[ "$(git -C "$old" branch --show-current)" == codex-task-board/BOXP-904-20200101T000000Z ]] || fail 'symlink followed'
+
+  # Crash after the move and before the switch: the next run adopts it normally.
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"
+  old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-906 20200101T000000Z)"
+  new="$ws/BOXP-906/20200102T000000Z/ghq/github.com/boxp/example"
+  mkdir -p "$(dirname "$new")"; git -C "$tmp/source" worktree move "$old" "$new"
+  reuse_lock "$tmp" BOXP-906 20200103T000000Z
+  reuse_prepare "$tmp" BOXP-906 20200103T000000Z >"$tmp/o"
+  assert_file_contains "$tmp/o" ':reused-from "20200102T000000Z"'
+  new="$ws/BOXP-906/20200103T000000Z/ghq/github.com/boxp/example"
+  [[ "$(git -C "$new" branch --show-current)" == codex-task-board/BOXP-906-20200103T000000Z ]] || fail 'crash recovery branch'
+
+  # Prune: a prior run stays protected before the reuse, and deleting it after
+  # the reuse does not touch the worktree now owned by the active run.
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"
+  write_board "$tmp/vault" ''; write_prune_ticket "$tmp/vault" BOXP-907 blocked 2020-01-01
+  old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-907 20200101T000000Z)"
+  mkdir -p "$ws/BOXP-907/20200102T000000Z"
+  reuse_lock "$tmp" BOXP-907 20200102T000000Z
+  PATH="$tmp/bin:$PATH" GH_FAKE_KNOWN_SHAS="$tmp/known" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true \
+    CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo" \
+    run_prune "$tmp/vault" "$tmp/state" >"$tmp/p1"
+  [[ -e "$old/.git" ]] || fail 'prune removed the run about to be reused'
+  reuse_prepare "$tmp" BOXP-907 20200102T000000Z >"$tmp/o"
+  assert_file_contains "$tmp/o" ':reused-from "20200101T000000Z"'
+  new="$ws/BOXP-907/20200102T000000Z/ghq/github.com/boxp/example"
+  mkdir -p "$ws/BOXP-907/20200103T000000Z"
+  PATH="$tmp/bin:$PATH" GH_FAKE_KNOWN_SHAS="$tmp/known" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true \
+    CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo" \
+    run_prune "$tmp/vault" "$tmp/state" >"$tmp/p2"
+  [[ ! -e "$ws/BOXP-907/20200101T000000Z" ]] || fail 'emptied old run was not reclaimed'
+  [[ "$(git -C "$new" rev-parse HEAD)" == "$(git -C "$tmp/source" rev-parse HEAD)" ]] || fail 'prune damaged the reused worktree'
+  git -C "$tmp/source" worktree list --porcelain | grep -Fq "$new" || fail 'worktree entry lost'
+
+  # A verified studio dist moves with the worktree only while it still matches public.
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"
+  git -C "$tmp/source" remote set-url origin https://github.com/boxp/arch.git
+  mkdir -p "$tmp/source/apps/kohako-studio/web/public"
+  printf 'dist/\n' >"$tmp/source/.gitignore"
+  printf 'abcd' >"$tmp/source/apps/kohako-studio/web/public/copied.txt"
+  touch "$tmp/source/apps/kohako-studio/web/"{package.json,package-lock.json,vite.config.ts}
+  git -C "$tmp/source" add .; prune_git -C "$tmp/source" commit -q -m fixture
+  git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD
+  git -C "$tmp/source" rev-list HEAD >"$tmp/known"
+  old="$ws/BOXP-908/20200101T000000Z/ghq/github.com/boxp/arch"
+  mkdir -p "$(dirname "$old")"
+  git -C "$tmp/source" worktree add -q -b codex-task-board/BOXP-908-20200101T000000Z "$old" HEAD
+  dist="$old/apps/kohako-studio/web/dist"; mkdir -p "$dist/assets"
+  printf html >"$dist/index.html"; printf asset >"$dist/assets/main-Abc_1234.js"; printf abcd >"$dist/copied.txt"
+  reuse_lock "$tmp" BOXP-908 20200102T000000Z
+  reuse_prepare "$tmp" BOXP-908 20200102T000000Z boxp/arch >"$tmp/o"
+  assert_file_contains "$tmp/o" ':reused-from "20200101T000000Z"'
+  old="$ws/BOXP-908/20200102T000000Z/ghq/github.com/boxp/arch"
+  [[ -f "$old/apps/kohako-studio/web/dist/copied.txt" ]] || fail 'verified dist was not carried over'
+  printf 'efgh' >"$tmp/source/apps/kohako-studio/web/public/copied.txt"
+  git -C "$tmp/source" add .; prune_git -C "$tmp/source" commit -q -m public
+  git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD
+  git -C "$tmp/source" rev-list HEAD >"$tmp/known"
+  reuse_lock "$tmp" BOXP-908 20200103T000000Z
+  reuse_prepare "$tmp" BOXP-908 20200103T000000Z boxp/arch >"$tmp/o"
+  assert_file_contains "$tmp/o" ':reuse-fallback "studio-dist-public-diff"'
+  [[ -f "$old/apps/kohako-studio/web/dist/copied.txt" ]] || fail 'run with stale dist changed'
+}
+
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a
 # deterministic subset in its own job, so vaults, processes and locks are isolated.
 mapfile -t cases < "${ROOT_DIR}/tests/codex-workspace/task-board-runner-cases.txt"

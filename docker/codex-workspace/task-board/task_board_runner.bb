@@ -2207,6 +2207,8 @@
           path
           (str (fs/path repo-path path)))))))
 
+(declare try-reuse-repo-worktree!)
+
 (defn prepare-repo-worktree! [workspace-dir ticket-id run-id repo]
   (let [source (local-repo-path repo)
         target (fs/path workspace-dir "ghq/github.com" repo)
@@ -2214,29 +2216,40 @@
     (if-not (and source (fs/exists? source))
       {:repo repo
        :missing true
+       :reuse-fallback "source-missing"
        :message (str "Local checkout was not found at " source ". Clone or prepare this repository inside the run workspace if needed.")}
-      (do
+      (let [fallback (atom nil)
+            reused (try-reuse-repo-worktree! source target ticket-id run-id repo branch fallback)]
+        (or reused
+        (do
         (fs/create-dirs (fs/parent target))
         (let [proc @(p/process ["git" "-C" (str source) "worktree" "add" "-b" branch (str target) "HEAD"]
                                {:out :string :err :string})]
           (if (zero? (:exit proc))
             {:repo repo
+             :reuse-fallback @fallback
              :path (str target)
              :branch branch
              :git-dirs (vec (distinct (remove str/blank?
                                                [(git-path target "--git-dir")
                                                 (git-path target "--git-common-dir")])))}
             {:repo repo
+             :reuse-fallback @fallback
              :worktree-failed true
              :message (str "Could not create a per-run worktree: " (:err proc)
-                           " Clone or prepare this repository inside the run workspace if needed.")}))))))
+                           " Clone or prepare this repository inside the run workspace if needed.")}))))))))
 
 (defn prepare-run-workspace! [ticket-id run-id]
   (let [workspace-dir (run-workspace-dir ticket-id run-id)
         repos (ticket-repos ticket-id)]
     (fs/create-dirs workspace-dir)
-    {:workspace-dir (str workspace-dir)
-     :repo-worktrees (mapv #(prepare-repo-worktree! workspace-dir ticket-id run-id %) repos)}))
+    (let [worktrees (mapv #(prepare-repo-worktree! workspace-dir ticket-id run-id %) repos)]
+      (try
+        (fs/create-dirs (run-dir ticket-id run-id))
+        (spit (str (fs/path (run-dir ticket-id run-id) "workspace-reuse.edn"))
+              (pr-str (mapv #(select-keys % [:repo :reused-from :reuse-fallback :worktree-failed]) worktrees)))
+        (catch Exception e (log! (str "workspace-reuse: audit-write-failed " (.getMessage e)))))
+      {:workspace-dir (str workspace-dir) :repo-worktrees worktrees})))
 
 (defn workspace-prompt [workspace]
   (let [repo-worktrees (:repo-worktrees workspace)
@@ -2245,8 +2258,9 @@
     (str "Ticket run workspace: " (:workspace-dir workspace) "\n"
          (if (seq prepared)
            (str "Repository worktrees for this run:\n"
-                (str/join "" (map (fn [{:keys [repo path branch]}]
-                                    (str "- " repo " -> " path " (branch " branch ")\n"))
+                (str/join "" (map (fn [{:keys [repo path branch reused-from]}]
+                                    (str "- " repo " -> " path " (branch " branch ")\n"
+                                         (when reused-from (str "  Reused from previous run " reused-from "; tracked files and branch match a fresh worktree of source HEAD. Regenerable ignored outputs (node_modules, dist, ...) may remain; reinstall or rebuild when relevant.\n"))))
                                   prepared))
                 "Use these per-run worktrees for repository changes. Do not edit shared checkouts under /home/boxp/ghq for this task.\n")
            "No repository worktree was prepared for this ticket.\n")
@@ -5192,9 +5206,8 @@
 ;; ---------------------------------------------------------------------------
 ;; Run workspace pruning (BOXP-209)
 ;;
-;; Every run leaves `workspaces/<ticket>/<run-id>/` plus a worktree and a
-;; `codex-task-board/<ticket>-<run-id>` branch in the source repository. Nothing
-;; else removes them, so the loop periodically prunes the run workspaces of
+;; Runs leave workspace directories and may reuse a previous run worktree.
+;; The loop periodically prunes the run workspaces of
 ;; tickets that have been done for longer than the retention period. A run is
 ;; only deleted when every checkout in it is clean and all of its local commits
 ;; exist on GitHub; anything that cannot be verified is kept and logged.
@@ -5882,6 +5895,108 @@
                          (str/join "," (map (fn [[reason n]] (str reason ":" n))
                                             (sort-by key skipped)))))))
        @(:stats ctx)))))
+
+(defn workspace-reuse-enabled? []
+  (prune-setting "CODEX_TASK_BOARD_WORKSPACE_REUSE" parse-prune-enabled))
+
+(defn try-reuse-repo-worktree! [source target ticket-id run-id repo branch fallback]
+  (let [moved? (atom false)
+        reject (fn [reason]
+                 (reset! fallback (one-line reason))
+                 (log! (str "workspace-reuse: fallback ticket=" ticket-id " repo=" repo " reason=" @fallback))
+                 nil)
+        failed (fn [message]
+                 (log! (str "workspace-reuse: fallback ticket=" ticket-id " repo=" repo " reason=" (one-line message)))
+                 {:repo repo :worktree-failed true :message message})]
+    (try
+      (let [current (run-id-instant run-id)
+            previous (when current
+                       (first (sort-by (juxt run-id-instant str) #(compare %2 %1)
+                                       (filter #(and (not= run-id %) (run-id-instant %)
+                                                     (.isBefore (run-id-instant %) current))
+                                               (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))))))
+            old-run (when previous (run-workspace-dir ticket-id previous))
+            old (when old-run (fs/path old-run "ghq/github.com" repo))]
+        (cond
+          (not (workspace-reuse-enabled?)) (reject "disabled")
+          (< (keep-latest-runs) 2) (reject "keep-latest-too-low")
+          (nil? previous) (reject "no-previous-run")
+          (not (and (fs/directory? old) (fs/exists? (fs/path old ".git")))) (reject "no-previous-checkout")
+          (not (safe-run-workspace-path? ticket-id previous old-run)) (reject "unsafe-path")
+          (not (and (fs/directory? old {:nofollow-links true})
+                    (= (fs/real-path old) (fs/path (fs/real-path old-run) "ghq/github.com" repo)))) (reject "unsafe-path")
+          (fs/exists? target {:nofollow-links true}) (reject "target-exists")
+          (not= [(str old)] (mapv str (find-checkouts old))) (reject "nested-checkout")
+          :else
+          (let [real-run (fs/real-path old-run)
+                ignored (inspect-ignored old repo)
+                ignored-status (command-result ["git" "-C" (str old) "status" "--porcelain" "-z" "--ignored=matching"])
+                ignored-files (command-result ["git" "-C" (str old) "ls-files" "--others" "--ignored" "--exclude-standard" "-z"])
+                venv? (some #(some #{".venv"} (str/split % #"/"))
+                            (concat (map #(subs % 3) (filter #(str/starts-with? % "!! ") (str/split (:out ignored-status) #"\u0000")))
+                                    (str/split (:out ignored-files) #"\u0000")))
+                hold (when (and (nil? ignored) (not venv?)) (stale-process-hold real-run))
+                cache (atom {})]
+            (cond
+              ignored (reject ignored)
+              (or (not (zero? (:exit ignored-status))) (not (zero? (:exit ignored-files)))) (reject "git-error")
+              venv? (reject "path-bound-ignored")
+              hold (reject hold)
+              :else
+              (let [inspection (inspect-checkout real-run old cache)
+                    common (some-> (git-path source "--git-common-dir") fs/real-path str)
+                    base-result (command-result ["git" "-C" (str source) "rev-parse" "HEAD"])
+                    base (str/trim (:out base-result))]
+                (cond
+                  (:hold inspection) (reject (:hold inspection))
+                  (not= repo (:repo inspection)) (reject "repo-mismatch")
+                  (or (nil? common) (not= common (:external-common-dir inspection))) (reject "common-dir-mismatch")
+                  (or (not (zero? (:exit base-result))) (str/blank? base)) (reject "git-error")
+                  ;; A kept dist copies tracked public files. If the switch changes them
+                  ;; the dist stops matching and the run would be held forever, so a run
+                  ;; with a dist that would go stale is left where it is.
+                  (and (fs/exists? (fs/path old studio-dist) {:nofollow-links true})
+                       (not (zero? (:exit (command-result ["git" "-C" (str old) "diff" "--quiet" "HEAD" base "--" studio-public])))))
+                  (reject "studio-dist-public-diff")
+                  :else
+                  (do
+                    (fs/create-dirs (fs/parent target))
+                    (let [move (with-ticket-lock-guard ticket-id
+                                 #(cond
+                                    (not= run-id (:run-id (try (read-edn-file (lock-path ticket-id) nil) (catch Exception _ nil)))) {:reason "lock-not-owned"}
+                                    (fs/exists? target {:nofollow-links true}) {:reason "target-exists"}
+                                    :else (let [r (command-result ["git" "--git-dir" common "worktree" "move" (str old) (str target)] {:timeout-seconds 30})]
+                                            (if (zero? (:exit r)) {:moved true} {:reason (str "move-failed " (:err r))}))))]
+                      (if-not (:moved move)
+                        (reject (:reason move))
+                        (do
+                          (reset! moved? true)
+                          (let [old-branch (str/trim (:out (command-result ["git" "-C" (str target) "symbolic-ref" "--short" "-q" "HEAD"])))
+                                switch (command-result ["git" "-C" (str target) "switch" "-c" branch base] {:timeout-seconds 300})]
+                            (if-not (zero? (:exit switch))
+                              (let [back (with-ticket-lock-guard ticket-id #(command-result ["git" "--git-dir" common "worktree" "move" (str target) (str old)] {:timeout-seconds 30}))]
+                                (if (zero? (:exit back))
+                                  (do (reset! moved? false) (reject (str "switch-failed " (:err switch))))
+                                  (failed (str "Could not roll back worktree move: " (:err back)))))
+                              (let [head (command-result ["git" "-C" (str target) "rev-parse" "HEAD"])
+                                    status (command-result ["git" "-C" (str target) "status" "--porcelain"])]
+                                (if-not (and (zero? (:exit head)) (= base (str/trim (:out head)))
+                                             (zero? (:exit status)) (str/blank? (:out status)))
+                                  (failed "Reused worktree verification failed")
+                                  (do
+                                    (let [expire (command-result ["git" "-C" (str target) "reflog" "expire" "--expire=all" "HEAD"])]
+                                      (when-not (zero? (:exit expire)) (log! (str "workspace-reuse: reflog-expire-failed " (one-line (:err expire))))))
+                                    (let [prefix (str "codex-task-board/" ticket-id "-")]
+                                      (when (and (str/starts-with? old-branch prefix) (not= branch old-branch)
+                                                 (run-id-instant (subs old-branch (count prefix))))
+                                        (prune-run-branch! {:dry-run? false :gh-cache cache :stats (atom {:branches 0})} common repo old-branch)))
+                                    (log! (str "workspace-reuse: reuse ticket=" ticket-id " repo=" repo " from=" previous " to=" run-id))
+                                    {:repo repo :path (str target) :branch branch :reused-from previous
+                                     :git-dirs (vec (distinct (remove str/blank? [(git-path target "--git-dir") (git-path target "--git-common-dir")]))) })))))))))))))))
+      (catch Exception e
+        (if @moved?
+          (failed (str "Worktree reuse failed after move: " (one-line (.getMessage e))))
+          (reject (str "exception " (.getMessage e))))))))
 
 ;; Background prune started by `loop!`. The last start time lives only in this
 ;; JVM: state.edn is shared with pr-gate-retries and is not written atomically,
