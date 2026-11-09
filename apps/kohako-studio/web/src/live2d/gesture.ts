@@ -208,13 +208,14 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const synth = new Map<number, Synth>(), sway = new Map<number, Vec>()
   let parts: { right: Side; left: Side; art: Partial<Record<HandArt, number>>; cuff: number } | null = null, partsStatus: Record<string, unknown> = { ready: false }
   const armOf = (b: Bone) => b === RIGHT ? pose.right : pose.left
-  const handArt = () => pose.right.art && armBlend > 0.001 ? { kind: pose.right.art, w: pose.right.artW ?? 0 } : { kind: undefined, w: 0 }
+  const artLoaded: Partial<Record<HandArt, boolean>> = {} // 素材が届くまでは元の手のまま（読込失敗時も同じ）
+  const handArt = () => pose.right.art && armBlend > 0.001 && artLoaded[pose.right.art] ? { kind: pose.right.art, w: pose.right.artW ?? 0 } : { kind: undefined, w: 0 }
   const separatedPose = (a: ArmPose) => armBlend > 0.001 && (Math.abs(a.fo) > SEPARATE_AT || (!!a.elbowTo && (a.elbowW ?? 0) > SEPARATE_AT))
   const swayOf = (m: number): Vec => sway.get(m) ?? [0, 0]
   try {
     const pp = p as unknown as PartsPlayer, alloc = rt as unknown as { p2l_alloc(n: number): number; p2l_dealloc(a: number, n: number): void }, cp = p as unknown as { commandsPointer: number; commandCapacity: number }
     const loads: Promise<void>[] = []
-    const later = (file: string) => { const index = addTexture(pp); loads.push(loadTexture(gl, partURL(file)).then(t => { pp.textures[index] = t })); return index }
+    const later = (file: string, loaded?: () => void) => { const index = addTexture(pp); loads.push(loadTexture(gl, partURL(file)).then(t => { pp.textures[index] = t; loaded?.() })); return index }
     const fillTexture = later(UPPER_ART.file)
     const makeSide = (bone: Bone): Side => {
       const poly = bone.mirror ? mirrorPolygon(FOREARM_POLY, CX) : FOREARM_POLY, split = splitMesh(pp, bone.arm, poly, (x, y, sample) => paintCapeCorner(bone.mirror ? 2 * CX - x : x, y, sample(bone.mirror ? 2 * CX - 800 : 800, 696))), mesh = pp.meshes[bone.arm] as PartsPlayer['meshes'][number]
@@ -245,7 +246,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     for (const kind of Object.keys(ART) as HandArt[]) {
       const spec = ART[kind], local = ([x, y]: Vec) => rot(scaleV(sub([x, y], spec.anchor), spec.scale), spec.tilt), hold = spec.hold.fo + spec.hold.ha
       const corners = ([[0, 0], [spec.w, 0], [spec.w, spec.h], [0, spec.h]] as Vec[]).map(c => add(RIGHT.W, rot(scaleV(local(c), 1 / spec.hold.haS), -hold)))
-      const quad = addQuad(pp, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), later(spec.file))
+      const quad = addQuad(pp, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), later(spec.file, () => { artLoaded[kind] = true }))
       art[kind] = quad.index
       synth.set(quad.index, { base: RIGHT.hand, pointer: quad.pointer, opacity: () => { const h = handArt(); return h.kind === kind ? smooth(0.1, 0.6, h.w) : 0 }, write(out) { const [dx, dy] = swayOf(RIGHT.hand); corners.forEach((c, i) => { const q = deformHand(RIGHT, pose.right, c[0] + dx, c[1] + dy); out[2 * i] = q[0]; out[2 * i + 1] = q[1] }) } })
     }
