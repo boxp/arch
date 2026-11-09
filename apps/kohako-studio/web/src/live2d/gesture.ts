@@ -24,6 +24,7 @@ const MOUTH_C: Vec = [574, 352]
 const EYE_L: Vec = [517.5, 276]
 const EYE_R: Vec = [631.5, 278]
 
+const CROSSFADE_SECONDS = 0.5
 const REST: ArmPose = { up: 0, upS: 1, fo: 0, foS: 1, ha: 0, haS: 1 }
 const NO_BODY: BodyPose = { headX: 0, headY: 0, headZ: 0, bodyX: 0, bodyZ: 0, lean: 0, eyeX: 0, eyeY: 0 }
 
@@ -80,6 +81,11 @@ export function sample(clip: Clip, time: number): { right: ArmPose; left: ArmPos
   for (const k of Object.keys(NO_BODY) as (keyof BodyPose)[]) body[k] = lerp(a.body?.[k] ?? 0, b.body?.[k] ?? 0, t)
   return { right: lerpArm(a.right ?? REST, b.right ?? REST, t), left: lerpArm(a.left ?? REST, b.left ?? REST, t), body }
 }
+/** 再生中の動作を次の動作へ切り替えるとき、腕を前の姿勢から滑らかに移す（x: 0〜1）。体は呼び出し側の平滑化に任せる。 */
+export function crossfadeArms<T extends { right: ArmPose; left: ArmPose }>(from: Pick<T, 'right' | 'left'>, to: T, x: number): T {
+  const t = ease(Math.min(1, Math.max(0, x)))
+  return { ...to, right: lerpArm(from.right, to.right, t), left: lerpArm(from.left, to.left, t) }
+}
 /** 手首・肘が目標へ届くか確認する検算用の順運動学。 */
 export function solveArm(bone: Pick<Bone, 'S' | 'E' | 'W'>, pose: ArmPose): { elbow: Vec; wrist: Vec } {
   const ud = norm(sub(bone.E, bone.S)), fd = norm(sub(bone.W, bone.E)), upperLength = Math.hypot(...sub(bone.E, bone.S)), foreLength = Math.hypot(...sub(bone.W, bone.E))
@@ -123,6 +129,9 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   let generation = 0, target = faces.neutral, face = { ...faces.neutral }, clip: Clip | null = null, clipName: Gesture = 'none', clipTime = 0, emotion: Emotion = 'neutral'
   let pose: ReturnType<typeof sample> = { right: REST, left: REST, body: NO_BODY }, armBlend = 0
   const headCurrent = { ...NO_BODY }
+  let fadeFrom: { right: ArmPose; left: ArmPose } | null = null, fadeTime = 0
+  // 腕の表示は常に pose そのもの。解除も関節の補間で戻すので、どの時点で次の動作が来ても pose から正確につなげる。
+  const startFade = () => { fadeFrom = { right: pose.right, left: pose.left }; fadeTime = 0 }
   const frontMeshes = (): number[] => [pose.right.front && armBlend > 0.3 ? RIGHT.hand : -1, pose.left.front && armBlend > 0.3 ? LEFT.hand : -1].filter(i => i >= 0)
 
   const apply = (mesh: number, pointer: number, count: number) => {
@@ -158,12 +167,19 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const baseUpdate = p.update.bind(p)
   p.update = (dt: number) => {
     generation++
-    if (clip) { clipTime += dt; if (clipTime >= clip.duration) { clip = null; clipName = 'none' } }
+    if (clip) { clipTime += dt; if (clipTime >= clip.duration) { clip = null; clipName = 'none'; startFade() } }
     const sampled = clip ? sample(clip, clipTime) : null
+    const goal = sampled ?? (fadeFrom ? { right: REST, left: REST, body: NO_BODY } : null)
+    let shown = goal
+    if (goal && fadeFrom) {
+      fadeTime += dt
+      if (fadeTime >= CROSSFADE_SECONDS) fadeFrom = null
+      else shown = crossfadeArms(fadeFrom, goal, fadeTime / CROSSFADE_SECONDS)
+    }
     const k = 1 - Math.exp(-dt * 7)
     for (const key of Object.keys(face) as (keyof Face)[]) if (typeof face[key] === 'number' && typeof target[key] === 'number') (face[key] as number) = lerp(face[key] as number, target[key] as number, k)
-    if (sampled) pose = sampled
-    armBlend = sampled ? 1 : Math.max(0, armBlend - dt * 2.5)
+    if (shown) pose = shown
+    armBlend = shown ? 1 : 0
     for (const key of Object.keys(NO_BODY) as (keyof BodyPose)[]) {
       const want = (sampled?.body[key] ?? 0) + (target.head[key] ?? 0)
       headCurrent[key] = lerp(headCurrent[key], want, k)
@@ -174,8 +190,13 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   }
   return {
     setEmotion(next) { emotion = next; target = faces[next]; player.expression(target.expression && player.expressions.includes(target.expression) ? target.expression : null) },
-    playGesture(next) { if (next === 'none') return; clip = clips[next]; clipName = next; clipTime = 0; armBlend = 1 },
-    reset() { emotion = 'neutral'; target = faces.neutral; player.expression(null); clip = null; clipName = 'none' },
+    playGesture(next) {
+      if (next === 'none') return
+      // 前の動作の途中や解除後の戻りの途中でも、その時点の腕の見た目から次の動作へつなぐ。
+      startFade()
+      clip = clips[next]; clipName = next; clipTime = 0; armBlend = 1
+    },
+    reset() { emotion = 'neutral'; target = faces.neutral; player.expression(null); if (clip) startFade(); clip = null; clipName = 'none' },
     report: () => ({ supported: true, emotion, gesture: clipName, armBlend, clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
   }
 }
