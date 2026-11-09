@@ -5435,6 +5435,34 @@ test_workspace_reuse_interplay() {
   reuse_prepare "$tmp" BOXP-908 20200103T000000Z boxp/arch >"$tmp/o"
   assert_file_contains "$tmp/o" ':reuse-fallback "studio-dist-public-diff"'
   [[ -f "$old/apps/kohako-studio/web/dist/copied.txt" ]] || fail 'run with stale dist changed'
+
+  # The shared source checkout can sit far behind main. Rewinding a reused
+  # worktree to it would delete tracked assets that the run then re-expands.
+  local main file inode case_name ticket
+  for case_name in stale-source unmerged-head source-newer diverged-source; do
+    tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"; ticket=BOXP-909
+    old="$(add_prune_run "$tmp/state" "$tmp/source" "$ticket" 20200101T000000Z)"
+    main="$(prune_commit "$old" asset)"
+    git -C "$tmp/source" update-ref refs/remotes/origin/main "$main"
+    file="$old/asset"; inode="$(stat -c %i "$file")"
+    case "$case_name" in
+      unmerged-head) prune_commit "$old" feature >/dev/null ;;
+      source-newer) git -C "$tmp/source" merge -q --ff-only "$main"; main="$(prune_commit "$tmp/source" newer)"; git -C "$tmp/source" update-ref refs/remotes/origin/main "$main" ;;
+      diverged-source) main="$(prune_commit "$tmp/source" local-only)" ;;
+    esac
+    git -C "$tmp/source" rev-list --all >"$tmp/known"
+    reuse_lock "$tmp" "$ticket" 20200102T000000Z
+    reuse_prepare "$tmp" "$ticket" 20200102T000000Z >"$tmp/o"
+    assert_file_contains "$tmp/o" ':reused-from "20200101T000000Z"'
+    new="$ws/$ticket/20200102T000000Z/ghq/github.com/boxp/example"
+    [[ "$(git -C "$new" rev-parse HEAD)" == "$main" ]] || fail "wrong reuse base: $case_name"
+    [[ -z "$(git -C "$new" status --porcelain)" ]] || fail "reused worktree dirty: $case_name"
+    if [[ "$case_name" == diverged-source ]]; then
+      [[ ! -e "$new/asset" ]] || fail 'diverged source kept the run base'
+    else
+      [[ "$(stat -c %i "$new/asset")" == "$inode" ]] || fail "tracked asset was re-expanded: $case_name"
+    fi
+  done
 }
 
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a
