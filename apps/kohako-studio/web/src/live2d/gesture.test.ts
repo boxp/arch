@@ -70,6 +70,11 @@ describe('腕の変形', () => {
     const shy = sample(clips.shyHand, 2).right
     expect(solveArm(bone, shy).wrist[1]).toBeLessThan(560)
   })
+  it('照れの保持は肘が肩の下に残り、前腕が胸の前を斜めに渡る（肘を胸の中央へ寄せて上腕を隠さない）', () => {
+    const { elbow, wrist } = solveArm(bone, sample(clips.shyHand, 2).right)
+    expect(Math.abs(elbow[0] - bone.S[0])).toBeLessThanOrEqual(40)
+    expect(elbow[0] - wrist[0]).toBeGreaterThanOrEqual(60)
+  })
   it('照れの動作は開始と終了で肘と手首が跳ばない', () => {
     const clip = clips.shyHand, restPos = solveArm(bone, rest), step = 1 / 60
     for (const time of [0, clip.duration]) {
