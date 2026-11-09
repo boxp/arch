@@ -11,6 +11,7 @@ from pathlib import Path
 import sys
 import tempfile
 import urllib.parse
+import urllib.error
 import urllib.request
 from html.parser import HTMLParser
 
@@ -33,6 +34,58 @@ ROOMS = {
     "4110062": ("サンライズツイン", "B寝台", "禁煙個室"),
     "4120062": ("サンライズツイン", "B寝台", "喫煙個室"),
 }
+
+
+TWIN_ROOMS = ("4110062", "4120062")
+TWIN_CONFIG_NAME = "特急サンライズ出雲（サンライズツイン）"
+TWIN_OFFICIAL_NAME = "特急サンライズ出雲（サツイン）"
+TWIN_KANA = "ｻｲｽﾓｻ000"
+
+
+class ParseFailure(ValueError):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
+REASONS = {
+    "congestion": "公式サイトが混雑しています（20100946）",
+    "timeout": "取得がタイムアウトしました",
+    "http": "HTTP取得に失敗しました",
+    "conditions_missing": "検索条件を確認できません",
+    "route_mismatch": "日付・経路または列車を確認できません",
+    "equipment_unknown": "設備情報を確認できません",
+    "deadline": "確認時間の上限に達しました",
+    "other": "検索結果を確認できません",
+}
+
+
+def train_matches(name, leg, query):
+    if name == query["train"]:
+        return True
+    if (name, query["train"], tuple(query["rooms"])) != (
+        TWIN_OFFICIAL_NAME, TWIN_CONFIG_NAME, TWIN_ROOMS
+    ):
+        return False
+    try:
+        params = valid_url(query["url"], leg["date"])
+    except (ValueError, KeyError, UnicodeError):
+        return False
+    return (params.get("inputSpecificBriefTrainKana1") == [TWIN_KANA]
+            and params.get("inputSpecificTrainType1") == ["2"]
+            and params.get("inputTransferTrainType1") == ["0001"])
+
+
+def failure_code(exc):
+    if isinstance(exc, ParseFailure):
+        return exc.code
+    if isinstance(exc, (TimeoutError,)):
+        return "timeout"
+    if isinstance(exc, urllib.error.HTTPError):
+        return "http"
+    if isinstance(exc, urllib.error.URLError):
+        return "timeout" if isinstance(exc.reason, TimeoutError) else "http"
+    return "other"
 
 
 class Node:
@@ -112,6 +165,8 @@ def valid_url(url, date):
 
 def parse(html, leg, query):
     """Return known cells only; ambiguous or missing cells remain unknown."""
+    if "20100946" in html:
+        raise ParseFailure("congestion")
     p = Parser()
     p.feed(html)
     root = p.root
@@ -119,7 +174,7 @@ def parse(html, leg, query):
         root, lambda n: n.tag == "table" and n.cls("condition-table--4cols-4")
     )
     if len(conditions) != 1:
-        raise ValueError("検索条件欠損")
+        raise ParseFailure("conditions_missing")
     c = conditions[0]
     date = dt.date.fromisoformat(leg["date"])
     # Match the date cell itself: January 2 must not match November 2.
@@ -139,26 +194,26 @@ def parse(html, leg, query):
         or starts[0].text().strip() != leg["from"]
         or ends[0].text().strip() != leg["to"]
     ):
-        raise ValueError("日付または方向不一致")
+        raise ParseFailure("route_mismatch")
     routes = select(root, lambda n: n.cls("route-train-list"))
     if len(routes) != 1:
-        raise ValueError("列車欠損")
+        raise ParseFailure("route_mismatch")
     route = routes[0]
     names = select(route, lambda n: n.cls("route-train-list__train-name"))
     stations = select(route, lambda n: n.cls("route-train-list__heading"))
     times = select(route, lambda n: n.cls("route-train-list__time"))
     if (
         len(names) != 1
-        or names[0].text().strip() != query["train"]
+        or not train_matches(names[0].text().strip(), leg, query)
         or len(stations) != 2
         or [s.text().strip() for s in stations] != [leg["from"], leg["to"]]
         or len(times) != 2
         or times[0].text().strip() != leg["departure"] + " 発"
     ):
-        raise ValueError("列車または経路不一致")
+        raise ParseFailure("route_mismatch")
     tables = select(route, lambda n: n.tag == "table" and n.cls("seat-facility"))
     if len(tables) != 1:
-        raise ValueError("設備欠損")
+        raise ParseFailure("equipment_unknown")
     table = tables[0]
     result = {}
     for room in query["rooms"]:
@@ -361,24 +416,26 @@ def run(cfg, state, now, getter=fetch):
         active = True
         for index, q in enumerate(leg["queries"]):
             found = {}
-            reason = None
+            code = None
             try:
                 if expired:
                     raise DeadlineExceeded()
                 found = parse(getter(q["url"]), leg, q)
                 if len(found) != len(q["rooms"]):
-                    reason = "設備情報を確認できません"
+                    code = "equipment_unknown"
             except DeadlineExceeded:
                 expired = True
-                reason = "確認時間の上限に達しました"
-            except Exception:
-                reason = "検索結果を確認できません"
+                code = "deadline"
+            except Exception as exc:
+                code = failure_code(exc)
+            reason = REASONS.get(code)
             observations.append(
                 {
                     "direction": direction,
                     "query_index": index,
                     "cells": {r: found.get(r, "unknown") for r in q["rooms"]},
                     "reason": reason,
+                    "reason_code": code,
                     "observed_at": now.isoformat(),
                 }
             )
@@ -397,13 +454,15 @@ def run(cfg, state, now, getter=fetch):
                     last is None or now - last >= dt.timedelta(hours=6)
                 ):
                     messages.append(
-                        f"【監視障害】{leg['date']} {leg['from']}→{leg['to']} {q['train']}\n{reason}。3回以上連続で確認できていません。前回の正常結果を保持しています。\n観測: {now.astimezone(JST):%Y-%m-%d %H:%M} JST\n{q['url']}"
+                        f"【監視障害】{leg['date']} {leg['from']}→{leg['to']} {q['train']}\n{reason}。3回以上連続で確認できていません。前回の正常結果を保持しています。\n観測: {now.astimezone(JST):%Y-%m-%d %H:%M} JST"
                     )
                     item["last_alert"] = now.isoformat()
                 item["reason"] = reason
+                item["reason_code"] = code
             else:
                 item["count"] = 0
                 item["reason"] = None
+                item["reason_code"] = None
             for room, value in found.items():
                 key = direction + ":" + room
                 previous = state["rooms"].get(key)
@@ -463,6 +522,6 @@ if __name__ == "__main__":
     except DeadlineExceeded:
         print("sunrise monitor: deadline exceeded", file=sys.stderr)
         sys.exit(1)
-    except Exception as exc:
-        print(f"sunrise monitor: {type(exc).__name__}: {exc}", file=sys.stderr)
+    except Exception:
+        print("sunrise monitor: 処理に失敗しました", file=sys.stderr)
         sys.exit(1)
