@@ -13,9 +13,8 @@ INPUT_LAYOUT=$(realpath -e "$INPUT_LAYOUT"); LAYOUT_OUT=$(realpath -m "$OUT/layo
 inside() { case "$1/" in "$2"/*) return 0;; *) return 1;; esac; }
 for target in "$LAYOUT_OUT" "$OUT_OUT"; do
   for input in "$INPUT_LAYOUT" "$SOURCE" "$P2L" "$GRADLE_CACHE" "$RIG" "$PATCH"; do
-    if inside "$input" "$target"; then echo "input $input overlaps output $target" >&2; exit 1; fi
+    if inside "$input" "$target" || inside "$target" "$input"; then echo "input $input overlaps output $target" >&2; exit 1; fi
   done
-  if inside "$target" "$INPUT_LAYOUT"; then echo "output $target is inside INPUT_LAYOUT $INPUT_LAYOUT" >&2; exit 1; fi
 done
 # anchor.patch は v10g の後ろ髪パッチも含むため、未適用の v10g ツリーでは v10j を出力しない。
 git -C "$P2L" apply --reverse --check "$PATCH" || { echo "braid anchor patch (includes v10g back hair anchor) is not applied" >&2; exit 1; }
