@@ -33,7 +33,7 @@ const EYE_L: Vec = [517.5, 276]
 const EYE_R: Vec = [631.5, 278]
 
 const CROSSFADE_SECONDS = 0.55
-const FORESHORTEN_AT = 2.1, FORESHORTEN_WIDTH = 1.05, FORESHORTEN_DEPTH = 0.68, FORESHORTEN_FADE = 0.5
+const FORESHORTEN_AT = 2.1, FORESHORTEN_WIDTH = 1.05, FORESHORTEN_DEPTH = 0.8, FORESHORTEN_FADE = 0.5
 // 肘を外へ上げるとき、肩の広い袖（ケープ）を上腕の回転の一部だけ一緒に持ち上げる。肩口は動かさず、袖口ほど大きく回す。
 const SLEEVE_FOLLOW = 0.55, SLEEVE_FROM = 15, SLEEVE_TO = 130
 const REST: ArmPose = { up: 0, upS: 1, fo: 0, foS: 1, ha: 0, haS: 1 }
@@ -55,7 +55,7 @@ const HALT: ArmPose = { up: 0, upS: 1, fo: -2.5, foS: 1, ha: 0.1, haS: 1.1, elbo
 const HALT_RISE: ArmPose = { up: 0, upS: 1, fo: -1.1, foS: 1, ha: 0.2, haS: 1.05, elbowTo: [815, 700], front: true, art: 'palm', artW: 0 }
 // 照れ: 体の前を通って手を口元へ運ぶ（外へ大回りしない）。終端の向きは従来と同じ。
 const SHY: ArmPose = { up: 0, upS: 1, fo: 3.41, foS: 1.02, ha: 0.02, haS: 0.95, elbowTo: [635, 720], front: true, art: 'cover', artW: 1 }
-const SHY_RISE: ArmPose = { up: 0, upS: 1, fo: 2.1, foS: 1, ha: 0.1, haS: 0.98, elbowTo: [695, 715], front: true, art: 'cover', artW: 0 }
+const SHY_RISE: ArmPose = { up: 0, upS: 1, fo: 2.05, foS: 1, ha: 1.1, haS: 0.98, elbowTo: [665, 700], front: true, art: 'cover', artW: 0 }
 const JOY: ArmPose = { up: 0, upS: 1, fo: -1.85, foS: 1, ha: 0.25, haS: 1, elbowTo: [815, 700] }
 
 export const clips: Record<Exclude<Gesture, 'none'>, Clip> = {
@@ -175,7 +175,7 @@ const ART: Record<HandArt, { file: string; w: number; h: number; anchor: Vec; sc
 /** マントの下に隠れていた上腕（生成素材）の配置。下端は肘に付いて動く。 */
 const UPPER_ART = { file: 'upper.png', top: [750, 640] as Vec, bottom: [761, 764] as Vec, halfWidth: 39 }
 const UPPER_ART_REACH = 114 // 肩の関節から素材の上端までの距離（休止時の top と同じ）
-const UPPER_ART_INTO_CUFF = -10 // 曲げたときの袖の下端の位置（負は肘より手と反対側）。小手の V 字の開口から袖が見え、先端は開口の外へ出ない
+const UPPER_ART_INTO_CUFF = 30 // 上腕の下端の位置（正は肘より手の側）。下端の丸みを小手の裏へ入れ、途中のコマでも上腕が開口の手前で止まって見えないようにする（休止の絵の位置と同じ）
 const SEPARATE_AT = 0.02
 const partURL = (file: string) => new URL(`kohako/live2d/acting/${file}`, location.href).href
 
@@ -247,7 +247,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
         const a = armOf(bone), m = bone.mirror ? { ...a, up: -a.up, fo: -a.fo, ha: -a.ha, elbowTo: a.elbowTo ? mirrorX(a.elbowTo) : undefined } : a, [dx, dy] = swayOf(bone.arm), e = sub(solveArm(bone, m).elbow, bone.E)
         // 上腕は肩から肘へ向かう棒として張る（親子変形）。下端の丸みが肘の先になる。
         // 上端は肩の関節から肘へ向かう線の上に置く（肩の装甲の裏に隠れる）。肘がどちらへ動いても肩から生えて見える。
-        const elbow = solveArm(bone, m), intoCuff = add(elbow.elbow, scaleV(norm(sub(elbow.wrist, elbow.elbow)), UPPER_ART_INTO_CUFF)), b: Vec = (() => { const rest = add(place(UPPER_ART.bottom), e), w = smooth(0.1, 0.8, Math.abs(m.fo)); return [lerp(rest[0], intoCuff[0], w), lerp(rest[1], intoCuff[1], w)] })(), t = add(bone.S, scaleV(norm(sub(b, bone.S)), UPPER_ART_REACH)), along = norm(sub(b, t)), across: Vec = scaleV([-along[1] * side, along[0] * side], UPPER_ART.halfWidth)
+        const elbow = solveArm(bone, m), intoCuff = add(elbow.elbow, scaleV(norm(sub(elbow.wrist, elbow.elbow)), UPPER_ART_INTO_CUFF)), b: Vec = (() => { const rest = add(place(UPPER_ART.bottom), e), w = smooth(0.05, 0.4, Math.abs(m.fo)); return [lerp(rest[0], intoCuff[0], w), lerp(rest[1], intoCuff[1], w)] })(), t = add(bone.S, scaleV(norm(sub(b, bone.S)), UPPER_ART_REACH)), along = norm(sub(b, t)), across: Vec = scaleV([-along[1] * side, along[0] * side], UPPER_ART.halfWidth)
         ;[add(t, across), sub(t, across), sub(b, across), add(b, across)].forEach((c, i) => { out[2 * i] = c[0] + dx; out[2 * i + 1] = c[1] + dy })
       } })
       // 動き始めは元の上腕の絵を重ねて見せ、曲げるにつれて生成の上腕へ移す（絵の切り替わりで一瞬光らないように）。

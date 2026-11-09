@@ -130,7 +130,7 @@ describe('腕の変形', () => {
   })
   it('体の前を通る前腕は水平付近で短く描き、始点と終点の長さは変えない', () => {
     const pose = { up: 0, upS: 1, fo: 2.1, foS: 1, ha: 0, haS: 1 }
-    expect(foreScale({ ...pose, fo: 2.1, front: true })).toBeCloseTo(0.32)
+    expect(foreScale({ ...pose, fo: 2.1, front: true })).toBeCloseTo(0.2)
     expect(foreScale(pose)).toBe(1) // 外へ出す動作は短縮しない
     expect(foreScale({ ...pose, fo: 0, front: true })).toBeGreaterThan(0.99)
     expect(foreScale({ ...pose, fo: 3.45, front: true })).toBeGreaterThan(0.99)
