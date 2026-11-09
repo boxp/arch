@@ -14,7 +14,7 @@ type Wish = { expression: string[]; clip: string[]; look: [number, number] }
 const wishes: Record<RigState, Wish> = {
   idle: { expression: [], clip: ['idle'], look: [0, 0] },
   listening: { expression: ['smile'], clip: ['nod', 'idle'], look: [0, 0.1] },
-  thinking: { expression: ['sleepy', 'gloom'], clip: ['idle'], look: [0.6, 0.5] },
+  thinking: { expression: ['think', 'sleepy', 'gloom'], clip: ['idle'], look: [0.6, 0.5] },
   speaking: { expression: ['smile'], clip: ['idle'], look: [0, 0] },
   approval: { expression: ['surprised'], clip: ['idle'], look: [0, 0] },
   failed: { expression: ['sad'], clip: ['shake', 'idle'], look: [0, -0.3] },
@@ -68,7 +68,7 @@ export class FrameMeter {
   }
 }
 
-export type RigModelId = 'kohako-full-v11l' | 'kohako-full-v11k' | 'kohako-full-v11j' | 'kohako-full-v11i' | 'kohako-full-v11h' | 'kohako-full-v11g' | 'kohako-full-v11f' | 'kohako-full-v11e' | 'kohako-full-v11d' | 'kohako-full-v11c' | 'kohako-full-v11b' | 'kohako-full-v11a' | 'kohako-full-v10l' | 'kohako-full-v10k' | 'kohako-full-v10j' | 'kohako-full-v10i' | 'kohako-full-v10h' | 'kohako-full-v10g' | 'kohako-full-v10f' | 'kohako-full-v10e' | 'kohako-full-v10d' | 'kohako-full-v10c' | 'kohako-full-v10b' | 'kohako-full-v10a' | 'kohako-full-v9' | 'kohako-full-v8' | 'kohako-full-v7' | 'kohako-full-v6' | 'kohako-full-v5' | 'kohako-full-v4' | 'kohako-full-v3' | 'kohako-full-v2' | 'kohako-full-v1' | 'kohako' | 'kohako-v1' | 'kohako-v2' | 'kohako-v3' | 'kohako-v5' | 'kohako-v6' | 'kohako-v11' | 'kohako-v12' | 'kohako-v13' | 'kohako-v14' | 'kohako-v14b' | 'kohako-v15' | 'kohako-v15b' | 'kohako-v15c' | 'kohako-v15e' | 'kohako-v16' | 'kohako-v17' | 'kohako-v23' | 'kohako-v24' | 'kohako-v25' | 'kohako-v27' | 'kohako-v29' | 'kohako-v30' | 'kohako-v35' | 'kohako-v36' | 'kohako-v37' | 'kohako-v38' | 'kohako-v45' | 'kohako-v46' | 'sample'
+export type RigModelId = 'kohako-full-v11m' | 'kohako-full-v11l' | 'kohako-full-v11k' | 'kohako-full-v11j' | 'kohako-full-v11i' | 'kohako-full-v11h' | 'kohako-full-v11g' | 'kohako-full-v11f' | 'kohako-full-v11e' | 'kohako-full-v11d' | 'kohako-full-v11c' | 'kohako-full-v11b' | 'kohako-full-v11a' | 'kohako-full-v10l' | 'kohako-full-v10k' | 'kohako-full-v10j' | 'kohako-full-v10i' | 'kohako-full-v10h' | 'kohako-full-v10g' | 'kohako-full-v10f' | 'kohako-full-v10e' | 'kohako-full-v10d' | 'kohako-full-v10c' | 'kohako-full-v10b' | 'kohako-full-v10a' | 'kohako-full-v9' | 'kohako-full-v8' | 'kohako-full-v7' | 'kohako-full-v6' | 'kohako-full-v5' | 'kohako-full-v4' | 'kohako-full-v3' | 'kohako-full-v2' | 'kohako-full-v1' | 'kohako' | 'kohako-v1' | 'kohako-v2' | 'kohako-v3' | 'kohako-v5' | 'kohako-v6' | 'kohako-v11' | 'kohako-v12' | 'kohako-v13' | 'kohako-v14' | 'kohako-v14b' | 'kohako-v15' | 'kohako-v15b' | 'kohako-v15c' | 'kohako-v15e' | 'kohako-v16' | 'kohako-v17' | 'kohako-v23' | 'kohako-v24' | 'kohako-v25' | 'kohako-v27' | 'kohako-v29' | 'kohako-v30' | 'kohako-v35' | 'kohako-v36' | 'kohako-v37' | 'kohako-v38' | 'kohako-v45' | 'kohako-v46' | 'sample'
 // v25 以降のビルドは物理モディファイアが 1 つ増え、モーションの ID が m14〜m17 にずれている（v24 までは m13〜m16）。
 // v35 までこの表が m13〜m16 のままで、待機に Shake（首振り）が再生され失敗時の Shake が無かった（BOXP-441 TD-26 で修正）。
 const CLIPS_M14: Readonly<Record<string, string>> = { 'modifier:m14:6d6f74696f6e': 'Shake', 'modifier:m15:6d6f74696f6e': 'Idle', 'modifier:m16:6d6f74696f6e': 'Blink', 'modifier:m17:6d6f74696f6e': 'Talk' }
@@ -76,7 +76,8 @@ export type RigModel = { id: RigModelId; label: string; name: string; rig: strin
 
 export const rigModels: readonly RigModel[] = [
   { id: 'kohako-full-v11f', label: '全身 v11f', name: '全身 v11f', rig: '../kohako/kohako-full-v11f.p2lrt', status: 'rejected', evaluation: 'まつ毛の下端を調査・未受入の比較候補', problems: 'まつ毛層の下端を除去すると点線が軽減しますが、開眼時の下まぶたの線も薄くなる退行があります。9姿勢の画素検査では少数の新規マゼンタ画素が出ており原因は未確定です。0.60 の灰色の重なり、0.15 から 0.10 の急な変化、開口の小ささ、髪脇の背景露出も残ります。', notice: '既存素材を使用した検証用試作です。', credits: 'コハコ: Owner のオリジナルキャラクター。', clipNames: { 'modifier:m16:6d6f74696f6e': 'Shake', 'modifier:m17:6d6f74696f6e': 'Idle', 'modifier:m18:6d6f74696f6e': 'Blink', 'modifier:m19:6d6f74696f6e': 'Talk' } },
-  { id: 'kohako-full-v11l', label: '全身 v11l', name: '全身 v11l', rig: '../kohako/kohako-full-v11l.p2lrt', status: 'latest', noExpressions: true, evaluation: '最新の試作（全身）・口を全身化前の v45 の素材に戻し、前髪と手の後ろのゴミを除去。顔配置は本人受入済みの v11g を保持、全身の美術受入前', problems: '口は本人が高評価した v45 の素材と開閉の仕組みに戻しました。前髪の点線、頬横の点線、手の後ろに髪の層へ残っていた手袋の断片と途切れた毛束を除きました。体を大きく回すと手首の周りに細い隙間が残ります。閉眼途中と全開の切替の段差も残ります。', notice: '既存素材を使用した検証用試作です。', credits: 'コハコ: Owner のオリジナルキャラクター。', clipNames: { 'modifier:m16:6d6f74696f6e': 'Shake', 'modifier:m17:6d6f74696f6e': 'Idle', 'modifier:m18:6d6f74696f6e': 'Blink', 'modifier:m19:6d6f74696f6e': 'Talk' } },
+  { id: 'kohako-full-v11m', label: '全身 v11m', name: '全身 v11m', rig: '../kohako/kohako-full-v11m.p2lrt', status: 'latest', evaluation: '最新の試作（全身）・手首の隙間を修正し、状態ごとの表情を目を変えない形で戻した版。顔配置 v11g・髪の動き v37・口 v45 は保持、全身の美術受入前', problems: '手の層の手首部分の切り抜きを原画で埋め、後ろ髪の層に焼き込まれていた手首の穴埋めの塊を除きました。表情は眉・口の形・視線だけで作り、目の開きと頬は変えません（発話中の半眼と口元の白い斑を避けるため）。実機 GPU での見え方は未確認です。', notice: '既存素材を使用した検証用試作です。', credits: 'コハコ: Owner のオリジナルキャラクター。', clipNames: { 'modifier:m16:6d6f74696f6e': 'Shake', 'modifier:m17:6d6f74696f6e': 'Idle', 'modifier:m18:6d6f74696f6e': 'Blink', 'modifier:m19:6d6f74696f6e': 'Talk' } },
+  { id: 'kohako-full-v11l', label: '全身 v11l', name: '全身 v11l', rig: '../kohako/kohako-full-v11l.p2lrt', status: 'previous-latest', noExpressions: true, evaluation: '最新の試作（全身）・口を全身化前の v45 の素材に戻し、前髪と手の後ろのゴミを除去。顔配置は本人受入済みの v11g を保持、全身の美術受入前', problems: '口は本人が高評価した v45 の素材と開閉の仕組みに戻しました。前髪の点線、頬横の点線、手の後ろに髪の層へ残っていた手袋の断片と途切れた毛束を除きました。体を大きく回すと手首の周りに細い隙間が残ります。閉眼途中と全開の切替の段差も残ります。', notice: '既存素材を使用した検証用試作です。', credits: 'コハコ: Owner のオリジナルキャラクター。', clipNames: { 'modifier:m16:6d6f74696f6e': 'Shake', 'modifier:m17:6d6f74696f6e': 'Idle', 'modifier:m18:6d6f74696f6e': 'Blink', 'modifier:m19:6d6f74696f6e': 'Talk' } },
   { id: 'kohako-full-v11k', label: '全身 v11k', name: '全身 v11k', rig: '../kohako/kohako-full-v11k.p2lrt', status: 'previous-latest', noExpressions: true, evaluation: '最新の試作（全身）・本人指摘 4 点の修正版。顔配置は本人受入済みの v11g を保持、全身の美術受入前', problems: '受入原画の画素でキャラ左の頬横の房を作り直し、頭頂と長髪の欠けを戻しました。白い切れ目は、白縁の除去と下層の重ね込みで減らしましたが、体を ±5 度以上回すと袖の周りに細い隙間が少し残ります。まばたきの全開→半眼はほぼ全開の位置で切り替え、二重像は出ません（段階の切替は残ります）。口は歯に見えた淡い塊を除きました。', notice: '既存素材を使用した検証用試作です。', credits: 'コハコ: Owner のオリジナルキャラクター。', clipNames: { 'modifier:m16:6d6f74696f6e': 'Shake', 'modifier:m17:6d6f74696f6e': 'Idle', 'modifier:m18:6d6f74696f6e': 'Blink', 'modifier:m19:6d6f74696f6e': 'Talk' } },
   { id: 'kohako-full-v11j', label: '全身 v11j', name: '全身 v11j', rig: '../kohako/kohako-full-v11j.p2lrt', status: 'previous-latest', noExpressions: true, evaluation: '最新の試作（全身）・顔は本人受入済みの v11g を保持、全身の美術受入前', problems: '目尻のまつ毛が見えるようになり、暗い三角は消えました。開閉途中の四角い線も消えましたが、開度 0.90 の切替の瞬間に薄い重なりが残ります。手の周りの欠片は除去しましたが、体を ±10 度回すと袖の周りの細い隙間は残ります（通常の動きは ±5 度以内）。髪の境界の細い線も残ります。', notice: '既存素材を使用した検証用試作です。', credits: 'コハコ: Owner のオリジナルキャラクター。', clipNames: { 'modifier:m16:6d6f74696f6e': 'Shake', 'modifier:m17:6d6f74696f6e': 'Idle', 'modifier:m18:6d6f74696f6e': 'Blink', 'modifier:m19:6d6f74696f6e': 'Talk' } },
   { id: 'kohako-full-v11i', label: '全身 v11i', name: '全身 v11i', rig: '../kohako/kohako-full-v11i.p2lrt', status: 'rejected', evaluation: '比較用試作（最終判定は Opus）', problems: '前髪の上に目尻のまつ毛を重ねましたが改善は小さく、被りは残ります。まばたき中の下線、0.60 の灰色の重なり、閉眼への段差、体を回したときの腕と長髪の裂けも残ります。', notice: '既存素材を使用した検証用試作です。', credits: 'コハコ: Owner のオリジナルキャラクター。', clipNames: { 'modifier:m16:6d6f74696f6e': 'Shake', 'modifier:m17:6d6f74696f6e': 'Idle', 'modifier:m18:6d6f74696f6e': 'Blink', 'modifier:m19:6d6f74696f6e': 'Talk' } },
@@ -171,10 +172,10 @@ export const rigModels: readonly RigModel[] = [
 ]
 
 /**
- * クエリ無しの URL で表示する「最新の配備済み本人モデル」（現在は全身 v11k）。新しい版を配備したらここを更新する。
+ * クエリ無しの URL で表示する「最新の配備済み本人モデル」（現在は全身 v11m）。新しい版を配備したらここを更新する。
  * 本人の美術受入とは別で、検証版として表示する（受入済みの意味ではない）。
  */
-export const LATEST_MODEL_ID: RigModelId = 'kohako-full-v11l'
+export const LATEST_MODEL_ID: RigModelId = 'kohako-full-v11m'
 
 /**
  * 本人モデルの視線（= 首振り）の倍率。BOXP-441 TD-18: 「考え中」の視線 (0.6, 0.5) と待機モーションが重なると
