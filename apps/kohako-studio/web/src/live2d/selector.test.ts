@@ -37,6 +37,15 @@ const render = (search: string): string[] => {
 describe('試作の比較リンク', () => {
   afterEach(() => vi.unstubAllGlobals())
 
+  it('全身 v11l のリンクは v11l の配信ファイルだけを指す', () => {
+    const links = render('?model=kohako-full-v11l').filter(href => href.includes('/compare/'))
+    expect(links.length).toBeGreaterThan(0)
+    for (const href of links) {
+      expect(href).toContain('/compare/kohako-full-v11l-')
+      expect(existsSync(resolve(__dirname, '../../public', href)), href).toBe(true)
+    }
+  })
+
   it('全身 v11k のリンクは v11k の配信ファイルだけを指す', () => {
     const links = render('?model=kohako-full-v11k').filter(href => href.includes('/compare/'))
     expect(links.length).toBeGreaterThan(0)
