@@ -74,3 +74,7 @@ export function resolveUnconfirmed(unconfirmed: Outgoing, lookupStatus: number |
 export function sendOutcomeUnknown(status: number | null): boolean {
   return status === null || status >= 500
 }
+
+export function wantsActing(search: string): boolean {
+  return new URLSearchParams(search).get('acting') === '1'
+}

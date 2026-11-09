@@ -3,6 +3,8 @@ import './style.css'
 import { FrameMeter, clipName, lookFor, micMouth, modelFor, modelStatus, mouthLevel, rigStates, speechMouth, stateLabels, type RigState } from './model'
 import { setupSelector } from './selector'
 import { applyPose, loadRig, type Player } from './rig'
+import { emotions, gestures, type ActingStage, type Emotion, type Gesture } from './acting'
+import { createActingStage } from './gesture'
 
 // runtime（p2l.js / p2l_runtime.wasm）は sample 配下を共用し、モデルの .p2lrt だけを切り替える。
 const runtimeDir = './kohako/live2d/sample/'
@@ -79,7 +81,25 @@ async function load() {
   canvas.addEventListener('pointermove', e => { const r = canvas.getBoundingClientRect(); p.lookAt(...lookFor(model, ((e.clientX - r.left) / r.width) * 2 - 1, 1 - ((e.clientY - r.top) / r.height) * 2)) })
   canvas.addEventListener('pointerleave', () => apply(state))
   apply('idle')
+  if (new URLSearchParams(location.search).get('acting') === '1') setupActing(p)
   requestAnimationFrame(tick)
+}
+
+// BOXP-476: `?acting=1` のときだけ、表情と動作を手動で比較するボタンを出す。通常表示は変えない。
+const emotionLabels: Record<Emotion, string> = { neutral: '通常', smile: '笑顔', shy: '照れ', troubled: '困り', surprised: '驚き', serious: '真剣' }
+const gestureLabels: Record<Gesture, string> = { none: '動作なし', nod: '頷き', tilt: '首かしげ', joy: '喜び', greet: '挨拶（手を振る）', guide: '案内（UI を示す）', shyHand: '照れ（口元を隠す）', halt: '制止' }
+function setupActing(p: Player) {
+  const stage: ActingStage & { report(): Record<string, unknown> } = createActingStage(p, model)
+  const panel = document.createElement('section'); panel.id = 'acting'
+  const heading = document.createElement('h2'); heading.textContent = '表情・動作の比較（試作）'
+  const row = (label: string) => { const r = document.createElement('div'); r.className = 'actions'; r.setAttribute('aria-label', label); panel.append(r); return r }
+  panel.append(heading)
+  const face = row('表情'), gesture = row('動作')
+  for (const e of emotions) { const b = document.createElement('button'); b.type = 'button'; b.className = 'secondary'; b.dataset.emotion = e; b.textContent = emotionLabels[e]; b.addEventListener('click', () => { stage.setEmotion(e); report.acting = stage.report() }); face.append(b) }
+  for (const g of gestures) { if (g === 'none') continue; const b = document.createElement('button'); b.type = 'button'; b.className = 'secondary'; b.dataset.gesture = g; b.textContent = gestureLabels[g]; b.addEventListener('click', () => { stage.playGesture(g); report.acting = stage.report() }); gesture.append(b) }
+  const clear = document.createElement('button'); clear.type = 'button'; clear.className = 'secondary'; clear.dataset.reset = '1'; clear.textContent = '解除'; clear.addEventListener('click', () => { stage.reset(); report.acting = stage.report() }); gesture.append(clear)
+  el('states').after(panel)
+  report.actingStage = stage
 }
 
 el<HTMLInputElement>('mouth').addEventListener('input', e => { manual = Number((e.target as HTMLInputElement).value) })
