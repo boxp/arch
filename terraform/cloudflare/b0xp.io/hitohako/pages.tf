@@ -6,6 +6,7 @@ locals {
   stage_project_name      = "boxp-hitohako-stage"
   stage_domain            = "hitohako-stage.b0xp.io"
   production_project_name = "boxp-hitohako"
+  production_domain       = "hitohako.b0xp.io"
 }
 
 resource "cloudflare_pages_project" "hitohako_stage" {
@@ -24,4 +25,10 @@ resource "cloudflare_pages_project" "hitohako" {
   account_id        = var.account_id
   name              = local.production_project_name
   production_branch = "main"
+}
+
+resource "cloudflare_pages_domain" "hitohako" {
+  account_id   = var.account_id
+  project_name = cloudflare_pages_project.hitohako.name
+  name         = local.production_domain
 }

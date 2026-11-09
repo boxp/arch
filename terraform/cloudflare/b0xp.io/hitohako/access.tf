@@ -7,7 +7,7 @@
 #   BOXP-275 の portfolio-stage.b0xp.io（terraform/cloudflare/b0xp.io/portfolio/access.tf）と同じ方式。
 # - noindex（meta / X-Robots-Tag）は併用するがアクセス制御の代替ではない。
 #   ソースと画像は公開リポジトリ（boxp/arch apps/hitohako）にあるため、機微情報は引き続き置かない。
-# - 本番（hitohako.b0xp.io は未作成）と既存他アプリの Access policy は変更しない。
+# - 本番（hitohako.b0xp.io）は公開サイトなので Access を付けない。既存他アプリの Access policy は変更しない。
 # - pages.dev 直 URL / preview の迂回経路にも同じ policy を適用する（下の hitohako_stage_pages_dev）。
 
 data "cloudflare_zero_trust_access_identity_providers" "all" {
