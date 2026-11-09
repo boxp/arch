@@ -1,6 +1,6 @@
 # apps/hitohako
 
-ひとはこさん（変身ヒロインVTuber）の公式ポートフォリオサイト。プロフィール、配信アーカイブ、1CCの記録、公式リンクを紹介する。桜色を基調に、明るい余白と明朝体を組み合わせた静かなデザイン。
+ひとはこさん（変身ヒロインVTuber）の公式サイト。プロフィール、配信アーカイブ、1CCの記録、公式リンクを紹介する。桜色を基調に、明るい余白と明朝体を組み合わせた静かなデザイン。
 
 - stage: <https://hitohako-stage.b0xp.io>（noindex と STAGE バナー）
 - 本番（`hitohako.b0xp.io`）は後続フェーズで追加予定
@@ -37,7 +37,7 @@
 - `src/data/stg.json` … 1CC 記録・挑戦中
 - `src/data/links.json` … 公式リンク
 - `src/data/archives.json` … YouTube の動画 ID・タイトル・日付。追加時は公開・埋込可を確認する
-- `public/illust/` … キャラクターイラスト。hero は原本と同一バイトの `hitohako-hero-<hash>.jpg` と 960 / 1440 / 2560 幅の WebP を使用し、ハッシュは JPEG の SHA-256 先頭10桁。`scripts/make-hero.py` で差し替えられる。
+- `public/illust/` … キャラクターイラスト。hero は原本と同一バイトの `hitohako-hero-<hash>.jpg` と 960 / 1440 / 2560 幅の WebP を使用し、ハッシュは JPEG の SHA-256 先頭10桁。`scripts/make-hero.py` で差し替えられる。プロフィールの顔 `hitohako-profile-<hash>.jpg` は同じ hero の等倍切り抜きで、`scripts/make-profile-crop.py` で作る（hero を差し替えたら切り抜き位置も選び直す）。
 
 `src/lib/hero.ts` は hero の寸法とファイル名を解決し、`HERO_SIZES` を Hero の picture と Layout の preload で共有する。大画面では右側の絵を上端に合わせて下側をクロップし、左と下の縁をフェードする。小画面では正方形、幅640px以上では4:3の枠で表示する。
 

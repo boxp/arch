@@ -147,9 +147,6 @@ section[id] {
   height: 1rem;
   fill: var(--color-sakura);
 }
-.hero-copy .eyebrow {
-  justify-content: center;
-}
 .hero h1 {
   font: 700 clamp(2.75rem, 5.4vw, 5.5rem)/1.3 var(--font-heading);
   letter-spacing: 0.04em;
@@ -242,6 +239,7 @@ section[id] {
 .profile-image img {
   width: 100%;
   height: auto;
+  border-radius: 45% 45% 0.5rem 0.5rem;
 }
 .profile-copy {
   margin-top: 1.5rem;
@@ -617,7 +615,6 @@ footer {
     padding: 0 0 0 clamp(2rem, 6vw, 6rem);
     text-align: left;
   }
-  .hero-copy .eyebrow,
   .hero-actions,
   .social-links {
     justify-content: flex-start;
