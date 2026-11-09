@@ -60,11 +60,45 @@ def html(
     return f'''<img alt="空席あり"><table class="condition-table--4cols-4"><tr><td>{date}</td><td><span class="route-station__station1">{start}</span><span class="route-station__station2">{end}</span></td></tr></table><div class="route-train-list"><p class="route-train-list__time">21:00 発</p><h4 class="route-train-list__heading">{start}</h4><div class="route-train-list__train-name">{train}</div><table class="seat-facility"><th data-search-id="{room}"><img alt="B寝台"><img alt="禁煙個室"></th><td data-search-id="{room}"><img alt="{alt}"></td></table><p class="route-train-list__time">07:00 着</p><h4 class="route-train-list__heading">{end}</h4></div>'''
 
 
+def twin_query():
+    from urllib.parse import parse_qs, urlsplit, urlunsplit
+    u = urlsplit(URL)
+    params = {k: v[0] for k, v in parse_qs(u.query, encoding="shift_jis").items()}
+    params["inputSpecificBriefTrainKana1"] = w.TWIN_KANA
+    return {"url": urlunsplit((u.scheme, u.netloc, u.path, urlencode(params, encoding="shift_jis"), "")),
+            "train": w.TWIN_CONFIG_NAME, "rooms": list(w.TWIN_ROOMS)}
+
+
+def twin_html(alt="残席なし", start="A", end="B"):
+    h = html(alt, "4110062", start=start, end=end, train=w.TWIN_OFFICIAL_NAME)
+    return h.replace('</table><p', '<th data-search-id="4120062"><img alt="B寝台"><img alt="喫煙個室"></th><td data-search-id="4120062"><img alt="' + alt + '"></td></table><p')
+
+
 def cfg():
     return {"legs": {"往路": dict(LEG, queries=[QUERY])}}
 
 
 class WatchTest(unittest.TestCase):
+    def test_synthesized_official_dom(self):
+        fixture = (Path(__file__).parent / "fixtures/twin-official-synthetic.html").read_text()
+        q = twin_query()
+        for reverse in (False, True):
+            leg = dict(LEG)
+            h = fixture
+            if reverse:
+                leg.update({"from": "B", "to": "A"})
+                h = h.replace(">A<", ">TEMP<").replace(">B<", ">A<").replace(">TEMP<", ">B<")
+            for alt, expected in [("残席なし", "full"), ("空席あり", "available"), ("空席残りわずか", "available")]:
+                self.assertEqual(w.parse(h.replace("残席なし", alt), leg, q),
+                                 {r: expected for r in w.TWIN_ROOMS})
+            for invalid in [h.replace("1月2日", "1月3日"),
+                            h.replace(w.TWIN_OFFICIAL_NAME, "特急サンライズ出雲（シングル）"),
+                            h.replace("21:00 発", "20:00 発")]:
+                with self.assertRaises(w.ParseFailure):
+                    w.parse(invalid, leg, q)
+        self.assertEqual(w.parse(fixture.replace(w.TWIN_OFFICIAL_NAME, w.TWIN_CONFIG_NAME), LEG, q),
+                         {r: "full" for r in w.TWIN_ROOMS})
+
     def test_parser_and_unknown(self):
         self.assertEqual(w.parse(html(), LEG, QUERY), {"4110040": "full"})
         self.assertEqual(
@@ -165,12 +199,76 @@ class WatchTest(unittest.TestCase):
                 self.assertEqual(result.stdout, b"")
 
     def test_twin(self):
-        q = dict(QUERY, rooms=["4110062"])
+        q = dict(twin_query(), rooms=["4110062", "4120062"])
         c = cfg()
         c["legs"]["往路"]["queries"] = [q]
         state = {"rooms": {"往路:4110062": "full"}}
-        msg = w.run(c, state, NOW, lambda _: html("空席あり", room="4110062"))[0][0]
+        msg = w.run(c, state, NOW, lambda _: html("空席あり", room="4110062", train=w.TWIN_OFFICIAL_NAME))[0][0]
         self.assertIn("2名分", msg)
+
+    def test_twin_alias_both_directions_and_fail_closed(self):
+        q = twin_query()
+        w.validate({"legs": {"往路": dict(LEG, queries=[q])}})
+        for start, end in [("A", "B"), ("B", "A")]:
+            leg = dict(LEG, **{"from": start, "to": end})
+            for alt, expected in [("空席あり", "available"), ("空席残りわずか", "available"), ("残席なし", "full")]:
+                h = twin_html(alt, start, end)
+                self.assertEqual(w.parse(h, leg, q), {r: expected for r in w.TWIN_ROOMS})
+            for h in [twin_html(start=start, end=end).replace("1月2日", "1月3日"),
+                      twin_html(start=end, end=start),
+                      twin_html(start=start, end=end).replace(w.TWIN_OFFICIAL_NAME, "特急サンライズ瀬戸（サツイン）"),
+                      twin_html(start=start, end=end).replace("21:00 発", "20:00 発")]:
+                with self.assertRaises(w.ParseFailure):
+                    w.parse(h, leg, q)
+            bad = dict(q, url=q["url"].replace(urlencode({"x": w.TWIN_KANA}, encoding="shift_jis").split("=")[1], "wrong"))
+            with self.assertRaises(w.ParseFailure):
+                w.parse(twin_html(start=start, end=end), leg, bad)
+            bad_type = dict(q, url=q["url"].replace("inputSpecificTrainType1=2", "inputSpecificTrainType1=3"))
+            with self.assertRaises(w.ParseFailure):
+                w.parse(twin_html(start=start, end=end), leg, bad_type)
+            for bad in [dict(q, rooms=["4110062"]), dict(q, rooms=["4110040", "4120062"])]:
+                with self.assertRaises(w.ParseFailure):
+                    w.parse(twin_html(start=start, end=end), leg, bad)
+        self.assertEqual(w.parse(twin_html().replace("喫煙個室", "禁煙席"), LEG, q), {"4110062": "full"})
+        self.assertEqual(w.parse(twin_html().replace("4110062", "3010000").replace("4120062", "3010000"), LEG, q), {})
+        with self.assertRaises(w.ParseFailure):
+            w.parse(twin_html() + twin_html(), LEG, q)
+
+    def test_safe_failure_codes_and_retention(self):
+        import urllib.error
+        cases = [(lambda: "混雑 20100946 secret", "congestion"),
+                 (lambda: "<html>secret</html>", "conditions_missing"),
+                 (lambda: html(train="wrong"), "route_mismatch"),
+                 (lambda: html("unknown"), "equipment_unknown")]
+        def raises(exc):
+            def fail():
+                raise exc
+            return fail
+        cases += [(raises(TimeoutError("secret")), "timeout"),
+                  (raises(urllib.error.URLError(TimeoutError("secret"))), "timeout"),
+                  (raises(urllib.error.HTTPError("https://secret", 500, "secret", {}, None)), "http"),
+                  (raises(RuntimeError("secret")), "other")]
+        for getter, code in cases:
+            state = {"rooms": {"往路:4110040": "full"}}
+            for i in range(3):
+                messages, _ = w.run(cfg(), state, NOW, lambda _: getter())
+            self.assertEqual(state["rooms"]["往路:4110040"], "full")
+            self.assertEqual(state["observations"][0]["reason_code"], code)
+            self.assertEqual(state["errors"]["往路:0"]["reason_code"], code)
+            self.assertEqual(len(messages), 1)
+            self.assertNotIn("secret", str(state))
+            self.assertNotIn("https://", messages[0])
+            self.assertFalse(w.run(cfg(), state, NOW + dt.timedelta(hours=1), lambda _: getter())[0])
+            self.assertEqual(len(w.run(cfg(), state, NOW + dt.timedelta(hours=6), lambda _: getter())[0]), 1)
+
+    def test_partial_twin_retains_unknown_room(self):
+        q = twin_query()
+        c = {"legs": {"往路": dict(LEG, queries=[q])}}
+        state = {"rooms": {"往路:4110062": "full", "往路:4120062": "available"}}
+        w.run(c, state, NOW, lambda _: twin_html().replace("喫煙個室", "不明"))
+        self.assertEqual(state["rooms"]["往路:4120062"], "available")
+        self.assertEqual(state["observations"][0]["cells"]["4120062"], "unknown")
+        self.assertEqual(state["observations"][0]["reason_code"], "equipment_unknown")
 
     def test_equipment_header_and_duplicate_cells(self):
         for h in [
