@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clips, createActingStage, crossfadeArms, deformArm, deformHand, faces, sample, solveArm } from './gesture'
+import { clips, createActingStage, crossfadeArms, deformArm, deformHand, faces, isForearm, sample, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -63,6 +63,16 @@ describe('腕の変形', () => {
     const { elbow, wrist } = solveArm(bone, sample(clips.guide, 1.5).right)
     expect(wrist[1]).toBeLessThan(elbow[1])
     expect(bone.W[1] - wrist[1]).toBeGreaterThan(250)
+  })
+  it('肩の装甲と裏地は前腕の回転に付いていかない', () => {
+    expect(isForearm(bone, 800, 850)).toBe(true) // 前腕
+    expect(isForearm(bone, 720, 600)).toBe(false) // 肩の装甲
+    expect(isForearm(bone, 842, 690)).toBe(false) // 裏地の先端
+  })
+  it('照れも制止も、手首は体の内側を通って上がる（外へ大回りしない）', () => {
+    for (const clip of [clips.shyHand, clips.halt]) {
+      for (let time = 0; time <= 1.2; time += 1 / 30) expect(solveArm(bone, sample(clip, time).right).wrist[0]).toBeLessThanOrEqual(bone.W[0] + 1)
+    }
   })
   it('肘より肩側の頂点は肘の目標移動の影響を受けない', () => {
     const shy = sample(clips.shyHand, 2).right

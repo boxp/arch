@@ -4,19 +4,23 @@
 import type { ActingStage, Emotion, Gesture } from './acting'
 import type { Player } from './rig'
 import type { RigModel } from './model'
+import { patchFaceTexture } from './face-texture'
 
 type Vec = readonly [number, number]
-export type ArmPose = { up: number; upS: number; fo: number; foS: number; ha: number; haS: number; elbowTo?: Vec; elbowW?: number; bandShift?: number; arc?: boolean; front?: boolean }
+export type ArmPose = { up: number; upS: number; fo: number; foS: number; ha: number; haS: number; elbowTo?: Vec; elbowW?: number; front?: boolean }
 export type BodyPose = { headX: number; headY: number; headZ: number; bodyX: number; bodyZ: number; lean: number; eyeX: number; eyeY: number }
 type Key = { t: number; right?: ArmPose; left?: ArmPose; body?: Partial<BodyPose> }
 export type Clip = { duration: number; keys: Key[] }
 type Face = { browOuter: number; browInner: number; browY: number; eyeSX: number; eyeSY: number; mouth: number; mouthCorner: number; mouthWidth: number; head: Partial<BodyPose>; expression: string | null }
 
 const CX = 572
-type Bone = { S: Vec; E: Vec; W: Vec; band: number; arm: number; hand: number; mirror: boolean }
-const RIGHT: Bone = { S: [710, 533], E: [758, 757], W: [844, 928], band: 34, arm: 22, hand: 20, mirror: false }
+// 前腕の金の縁（モデル座標）。ここより手先だけを肘で回し、肩の装甲・裏地・内側の黒は上腕に残す。
+// メッシュは 1 枚なので、境界をまたぐ三角形は曲げの間だけ外す（下の applyCut）。
+const CUFF_A: Vec = [727, 760], CUFF_B: Vec = [795, 700], CUFF_REACH = 95, CUFF_MARGIN = 14, STUB_GAP = 45, BENT = 0.3
+type Bone = { S: Vec; E: Vec; W: Vec; arm: number; hand: number; mirror: boolean }
+const RIGHT: Bone = { S: [710, 533], E: [758, 757], W: [844, 928], arm: 22, hand: 20, mirror: false }
 const mirrorX = (v: Vec): Vec => [2 * CX - v[0], v[1]]
-const LEFT: Bone = { S: mirrorX(RIGHT.S), E: mirrorX(RIGHT.E), W: mirrorX(RIGHT.W), band: 34, arm: 23, hand: 21, mirror: true }
+const LEFT: Bone = { S: mirrorX(RIGHT.S), E: mirrorX(RIGHT.E), W: mirrorX(RIGHT.W), arm: 23, hand: 21, mirror: true }
 const BROW = 1
 const EYES = new Set([5, 6, 7, 8, 10, 11, 12, 13, 14, 15])
 const MOUTH = 4
@@ -24,7 +28,7 @@ const MOUTH_C: Vec = [574, 352]
 const EYE_L: Vec = [517.5, 276]
 const EYE_R: Vec = [631.5, 278]
 
-const CROSSFADE_SECONDS = 0.5
+const CROSSFADE_SECONDS = 0.55
 const REST: ArmPose = { up: 0, upS: 1, fo: 0, foS: 1, ha: 0, haS: 1 }
 const NO_BODY: BodyPose = { headX: 0, headY: 0, headZ: 0, bodyX: 0, bodyZ: 0, lean: 0, eyeX: 0, eyeY: 0 }
 
@@ -37,11 +41,15 @@ export const faces: Record<Emotion, Face> = {
   serious: { browOuter: -3, browInner: 11, browY: 3, eyeSX: 1, eyeSY: 0.91, mouth: -0.35, mouthCorner: 12, mouthWidth: 0.92, head: { headY: -3 }, expression: null },
 }
 
-const wave = (t: number, fo: number): Key => ({ t, right: { up: -0.35, upS: 0.95, fo, foS: 1, ha: fo < -2 ? 0.35 : -0.3, haS: 1, arc: true } })
-const GUIDE: ArmPose = { up: -0.2, upS: 0.95, fo: -1.92, foS: 1, ha: 0.15, haS: 1, arc: true }
-const HALT: ArmPose = { up: -0.12, upS: 0.96, fo: -1.28, foS: 1.02, ha: -0.2, haS: 1.05, arc: true }
-const SHY: ArmPose = { up: 0, upS: 1, fo: -2.88, foS: 1.2, ha: -0.12, haS: 0.95, elbowTo: [678, 700], bandShift: -30, front: true }
-const JOY: ArmPose = { up: -0.08, upS: 0.98, fo: -0.42, foS: 1, ha: 0.25, haS: 1, arc: true }
+const wave = (t: number, fo: number): Key => ({ t, right: { up: 0, upS: 1, fo, foS: 1, ha: fo < -2 ? 0.35 : -0.3, haS: 1 } })
+const GUIDE: ArmPose = { up: 0, upS: 1, fo: -1.92, foS: 1, ha: 0.15, haS: 1 }
+// 制止: 肘を体の脇に置いたまま前腕を内側から立て、胸の前で掌を相手へ向ける。
+const HALT: ArmPose = { up: 0, upS: 1, fo: 3.45, foS: 0.95, ha: 0.1, haS: 1.1, elbowTo: [738, 745], front: true }
+const HALT_RISE: ArmPose = { up: 0, upS: 1, fo: 1.85, foS: 0.92, ha: 0.2, haS: 1.05, elbowTo: [748, 750], front: true }
+// 照れ: 体の前を通って手を口元へ運ぶ（外へ大回りしない）。終端の向きは従来と同じ。
+const SHY: ArmPose = { up: 0, upS: 1, fo: 3.2, foS: 1.32, ha: 0.02, haS: 0.95, elbowTo: [712, 730], front: true }
+const SHY_RISE: ArmPose = { up: 0, upS: 1, fo: 1.95, foS: 1.1, ha: 0.1, haS: 0.98, elbowTo: [735, 745], front: true }
+const JOY: ArmPose = { up: 0, upS: 1, fo: -0.42, foS: 1, ha: 0.25, haS: 1 }
 
 export const clips: Record<Exclude<Gesture, 'none'>, Clip> = {
   nod: { duration: 1.1, keys: [{ t: 0, body: {} }, { t: 0.28, body: { headY: -12, lean: 1.2 } }, { t: 0.55, body: {} }, { t: 0.8, body: { headY: -8, lean: 0.8 } }, { t: 1.1, body: {} }] },
@@ -49,8 +57,8 @@ export const clips: Record<Exclude<Gesture, 'none'>, Clip> = {
   joy: { duration: 1.8, keys: [{ t: 0, right: REST, left: REST, body: {} }, { t: 0.4, right: JOY, left: JOY, body: { bodyZ: 5, headZ: 6, lean: 3, headY: 5 } }, { t: 0.75, right: JOY, left: JOY, body: { bodyZ: -5, headZ: -6, lean: 3, headY: 5 } }, { t: 1.1, right: JOY, left: JOY, body: { bodyZ: 5, headZ: 6, lean: 3, headY: 5 } }, { t: 1.8, right: REST, left: REST, body: {} }] },
   greet: { duration: 2.6, keys: [{ t: 0, right: REST, body: {} }, { ...wave(0.55, -2.15), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { ...wave(0.85, -1.75), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { ...wave(1.15, -2.15), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { ...wave(1.45, -1.75), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { t: 2.1, right: REST, body: {} }, { t: 2.6, right: REST, body: {} }] },
   guide: { duration: 3.2, keys: [{ t: 0, right: REST, body: {} }, { t: 0.7, right: GUIDE, body: { bodyZ: -3, headX: 12, headZ: 3, eyeX: 0.7, eyeY: 0.2 } }, { t: 2.6, right: GUIDE, body: { bodyZ: -3, headX: 12, headZ: 3, eyeX: 0.7, eyeY: 0.2 } }, { t: 3.2, right: REST, body: {} }] },
-  shyHand: { duration: 3.6, keys: [{ t: 0, right: REST, body: {} }, { t: 0.8, right: SHY, body: { bodyZ: 2, lean: 2 } }, { t: 3, right: SHY, body: { bodyZ: 2, lean: 2 } }, { t: 3.6, right: REST, body: {} }] },
-  halt: { duration: 2.6, keys: [{ t: 0, right: REST, body: {} }, { t: 0.45, right: HALT, body: { bodyZ: -2, lean: 2, headY: -2 } }, { t: 2.1, right: HALT, body: { bodyZ: -2, lean: 2, headY: -2 } }, { t: 2.6, right: REST, body: {} }] },
+  shyHand: { duration: 3.9, keys: [{ t: 0, right: REST, body: {} }, { t: 0.6, right: SHY_RISE, body: { bodyZ: 1, lean: 1 } }, { t: 1.2, right: SHY, body: { bodyZ: 2, lean: 2 } }, { t: 3, right: SHY, body: { bodyZ: 2, lean: 2 } }, { t: 3.45, right: SHY_RISE, body: { bodyZ: 1, lean: 1 } }, { t: 3.9, right: REST, body: {} }] },
+  halt: { duration: 2.9, keys: [{ t: 0, right: REST, body: {} }, { t: 0.3, right: HALT_RISE, body: { bodyZ: -1, lean: 1 } }, { t: 0.6, right: HALT, body: { bodyZ: -2, lean: 2, headY: -2 } }, { t: 2.2, right: HALT, body: { bodyZ: -2, lean: 2, headY: -2 } }, { t: 2.55, right: HALT_RISE, body: { bodyZ: -1, lean: 1 } }, { t: 2.9, right: REST, body: {} }] },
 }
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t
@@ -64,11 +72,10 @@ const norm = (v: Vec): Vec => { const l = Math.hypot(v[0], v[1]) || 1; return [v
 const scaleV = (v: Vec, k: number): Vec => [v[0] * k, v[1] * k]
 
 function lerpArm(a: ArmPose, b: ArmPose, t: number): ArmPose {
-  const arc = t < 0.5 ? a.arc : b.arc
   // elbowTo の有無が変わる区間は、指定なし側の自然な肘位置との混合率で補間して跳びを防ぐ。
   const elbowTo = a.elbowTo && b.elbowTo ? [lerp(a.elbowTo[0], b.elbowTo[0], t), lerp(a.elbowTo[1], b.elbowTo[1], t)] as const : b.elbowTo ?? a.elbowTo
   const elbowW = lerp(a.elbowTo ? a.elbowW ?? 1 : 0, b.elbowTo ? b.elbowW ?? 1 : 0, t)
-  return { up: lerp(a.up, b.up, t), upS: lerp(a.upS, b.upS, t), fo: lerp(a.fo, b.fo, t), foS: lerp(a.foS, b.foS, t), ha: lerp(a.ha, b.ha, t), haS: lerp(a.haS, b.haS, t), elbowTo, elbowW, bandShift: lerp(a.bandShift ?? 0, b.bandShift ?? 0, t), arc, front: b.front ?? a.front }
+  return { up: lerp(a.up, b.up, t), upS: lerp(a.upS, b.upS, t), fo: lerp(a.fo, b.fo, t), foS: lerp(a.foS, b.foS, t), ha: lerp(a.ha, b.ha, t), haS: lerp(a.haS, b.haS, t), elbowTo, elbowW, front: b.front ?? a.front }
 }
 /** 時刻 t のキー補間。腕や体の指定が無いキーは休止姿勢として扱う。 */
 export function sample(clip: Clip, time: number): { right: ArmPose; left: ArmPose; body: BodyPose } {
@@ -94,22 +101,29 @@ export function solveArm(bone: Pick<Bone, 'S' | 'E' | 'W'>, pose: ArmPose): { el
   return { elbow, wrist: add(elbow, scaleV(rot(fd, pose.fo), foreLength * pose.foS)) }
 }
 
+/** 前腕の金の縁より手先の頂点か（上腕・肩の装甲・裏地は false）。 */
+function cuffCoords(bone: Pick<Bone, "mirror">, rx: number, ry: number): { d: number; t: number } {
+  const rest: Vec = bone.mirror ? mirrorX([rx, ry]) : [rx, ry], line = norm(sub(CUFF_B, CUFF_A)), r = sub(rest, CUFF_A)
+  return { d: dot(r, [-line[1], line[0]]), t: dot(r, line) }
+}
+export function isForearm(bone: Pick<Bone, "mirror">, rx: number, ry: number): boolean {
+  const { d, t } = cuffCoords(bone, rx, ry)
+  return d > -CUFF_MARGIN && t <= CUFF_REACH
+}
+/** 前腕の継ぎ目のすぐ上（内側の黒い部分）か。曲げの間は描かない。 */
+function isStubEnd(bone: Pick<Bone, "mirror">, rx: number, ry: number): boolean {
+  const { d, t } = cuffCoords(bone, rx, ry)
+  return d <= -CUFF_MARGIN && d > -CUFF_MARGIN - STUB_GAP && t <= CUFF_REACH
+}
 export function deformArm(bone: Bone, pose: ArmPose, vx: number, vy: number, rx: number, ry: number): Vec {
   const mirrorPose = bone.mirror ? { ...pose, up: -pose.up, fo: -pose.fo, ha: -pose.ha, elbowTo: pose.elbowTo ? mirrorX(pose.elbowTo) : undefined } : pose
-  const { up, upS, fo, foS, elbowTo, bandShift = 0, arc } = mirrorPose
+  const { up, upS, fo, foS } = mirrorPose
   const ud = norm(sub(bone.E, bone.S)), fd = norm(sub(bone.W, bone.E))
-  const newE = solveArm(bone, mirrorPose).elbow, Eup = add(bone.S, scaleV(rot(sub(bone.E, bone.S), up), upS))
-  const axis = norm(add(ud, fd)), w = smooth(bandShift - bone.band, bandShift + bone.band, dot(sub([rx, ry], bone.E), axis))
-  void elbowTo
-  if (arc) {
-    const piv: Vec = [lerp(Eup[0], newE[0], w), lerp(Eup[1], newE[1], w)]
-    const a = lerp(up, fo, w), sc = lerp(upS, foS, w), ad = norm([ud[0] * (1 - w) + fd[0] * w, ud[1] * (1 - w) + fd[1] * w])
-    const f = sub([vx, vy], bone.E), fa = dot(f, ad)
-    return add(piv, rot(add(scaleV(ad, fa * sc), sub(f, scaleV(ad, fa))), a))
-  }
-  const u = sub([vx, vy], bone.S), ua = dot(u, ud), U = add(bone.S, rot(add(scaleV(ud, ua * upS), sub(u, scaleV(ud, ua))), up))
-  const f = sub([vx, vy], bone.E), fa = dot(f, fd), L = add(newE, rot(add(scaleV(fd, fa * foS), sub(f, scaleV(fd, fa))), fo))
-  return [lerp(U[0], L[0], w), lerp(U[1], L[1], w)]
+  const newE = solveArm(bone, mirrorPose).elbow
+  const forearm = isForearm(bone, rx, ry)
+  if (forearm) { const f = sub([vx, vy], bone.E), fa = dot(f, fd); return add(newE, rot(add(scaleV(fd, fa * foS), sub(f, scaleV(fd, fa))), fo)) }
+  const u = sub([vx, vy], bone.S), ua = dot(u, ud)
+  return add(bone.S, rot(add(scaleV(ud, ua * upS), sub(u, scaleV(ud, ua))), up))
 }
 export function deformHand(bone: Bone, pose: ArmPose, vx: number, vy: number): Vec {
   const m = bone.mirror ? { ...pose, up: -pose.up, fo: -pose.fo, ha: -pose.ha, elbowTo: pose.elbowTo ? mirrorX(pose.elbowTo) : undefined } : pose
@@ -126,12 +140,37 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     return { setEmotion(e) { player.expression(names[e] && player.expressions.includes(names[e]) ? names[e] : null) }, playGesture() {}, reset() { player.expression(null) }, report: () => ({ supported: false }) }
   }
   const p = player as Internal, rt = p.rt, rests = new Map<number, Float32Array>(), done = new Map<number, number>()
+  let facePatch: Record<string, unknown>
+  try { facePatch = patchFaceTexture(p as unknown as Parameters<typeof patchFaceTexture>[0]) } catch (e) { facePatch = { patched: false, error: e instanceof Error ? e.message : String(e) } }
   let generation = 0, target = faces.neutral, face = { ...faces.neutral }, clip: Clip | null = null, clipName: Gesture = 'none', clipTime = 0, emotion: Emotion = 'neutral'
   let pose: ReturnType<typeof sample> = { right: REST, left: REST, body: NO_BODY }, armBlend = 0
   const headCurrent = { ...NO_BODY }
-  let fadeFrom: { right: ArmPose; left: ArmPose } | null = null, fadeTime = 0
+  let fadeFrom: { right: ArmPose; left: ArmPose } | null = null, fadeTime = 0, fadeSeconds = CROSSFADE_SECONDS
   // 腕の表示は常に pose そのもの。解除も関節の補間で戻すので、どの時点で次の動作が来ても pose から正確につなげる。
-  const startFade = () => { fadeFrom = { right: pose.right, left: pose.left }; fadeTime = 0 }
+  const startFade = (seconds = CROSSFADE_SECONDS) => { fadeFrom = { right: pose.right, left: pose.left }; fadeTime = 0; fadeSeconds = seconds }
+  // 前腕の回転量が大きい切替（内回りの照れ→外回りの挨拶など）は、回す角度に応じて時間をかける。
+  const fadeFor = (next: Clip) => CROSSFADE_SECONDS * Math.max(1, Math.max(...next.keys.flatMap(k => [Math.abs((k.right?.fo ?? 0) - pose.right.fo), Math.abs((k.left?.fo ?? 0) - pose.left.fo)])) / 2.4)
+  // 肘を曲げている間だけ、前腕と上腕をまたぐ三角形を描かない（引き伸ばしの裂けを出さない）。
+  type IndexArray = Uint16Array | Uint32Array
+  const cuts = new Map<number, { full: IndexArray; cut: IndexArray; bent: boolean }>()
+  const gl = player.gl
+  const armMesh = (m: number) => p.meshes[m] as { indices: IndexArray; indexBuffer: WebGLBuffer; vertices: number }
+  const prepareCut = (bone: Bone) => {
+    const mesh = armMesh(bone.arm), v = new Float32Array(rt.memory.buffer, rt.p2l_mesh_vertices(p.rig, bone.arm), mesh.vertices * 2), full = mesh.indices, kept: number[] = [], forearm: number[] = []
+    if (!full?.length) return
+    for (let i = 0; i + 2 < full.length; i += 3) { const tri = [full[i] as number, full[i + 1] as number, full[i + 2] as number], at = (n: number) => [v[2 * n] as number, v[2 * n + 1] as number] as const, fore = tri.map(n => isForearm(bone, ...at(n))), stubEnd = tri.some(n => isStubEnd(bone, ...at(n))); if (fore.every(Boolean)) forearm.push(...tri); else if (!fore.some(Boolean) && !stubEnd) kept.push(...tri) }
+    cuts.set(bone.arm, { full, cut: new (full.constructor as new (a: number[]) => IndexArray)([...kept, ...forearm]), bent: false })
+  }
+  const applyCut = (bone: Bone, armPose: ArmPose) => {
+    const entry = cuts.get(bone.arm); if (!entry) return
+    const bent = armBlend > 0.001 && (Math.abs(armPose.fo) > BENT || !!armPose.elbowTo && (armPose.elbowW ?? 0) > 0.05)
+    if (bent === entry.bent) return
+    entry.bent = bent
+    const mesh = armMesh(bone.arm), indices = bent ? entry.cut : entry.full
+    mesh.indices = indices
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.indexBuffer); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW)
+  }
+  prepareCut(RIGHT); prepareCut(LEFT)
   const frontMeshes = (): number[] => [pose.right.front && armBlend > 0.3 ? RIGHT.hand : -1, pose.left.front && armBlend > 0.3 ? LEFT.hand : -1].filter(i => i >= 0)
 
   const apply = (mesh: number, pointer: number, count: number) => {
@@ -173,13 +212,14 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     let shown = goal
     if (goal && fadeFrom) {
       fadeTime += dt
-      if (fadeTime >= CROSSFADE_SECONDS) fadeFrom = null
-      else shown = crossfadeArms(fadeFrom, goal, fadeTime / CROSSFADE_SECONDS)
+      if (fadeTime >= fadeSeconds) fadeFrom = null
+      else shown = crossfadeArms(fadeFrom, goal, fadeTime / fadeSeconds)
     }
     const k = 1 - Math.exp(-dt * 7)
     for (const key of Object.keys(face) as (keyof Face)[]) if (typeof face[key] === 'number' && typeof target[key] === 'number') (face[key] as number) = lerp(face[key] as number, target[key] as number, k)
     if (shown) pose = shown
     armBlend = shown ? 1 : 0
+    applyCut(RIGHT, pose.right); applyCut(LEFT, pose.left)
     for (const key of Object.keys(NO_BODY) as (keyof BodyPose)[]) {
       const want = (sampled?.body[key] ?? 0) + (target.head[key] ?? 0)
       headCurrent[key] = lerp(headCurrent[key], want, k)
@@ -193,10 +233,10 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     playGesture(next) {
       if (next === 'none') return
       // 前の動作の途中や解除後の戻りの途中でも、その時点の腕の見た目から次の動作へつなぐ。
-      startFade()
+      startFade(fadeFor(clips[next]))
       clip = clips[next]; clipName = next; clipTime = 0; armBlend = 1
     },
     reset() { emotion = 'neutral'; target = faces.neutral; player.expression(null); if (clip) startFade(); clip = null; clipName = 'none' },
-    report: () => ({ supported: true, emotion, gesture: clipName, armBlend, clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
+    report: () => ({ supported: true, facePatch, emotion, gesture: clipName, armBlend, clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
   }
 }
