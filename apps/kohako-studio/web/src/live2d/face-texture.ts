@@ -81,6 +81,9 @@ export function rebakeEye(source: Atlas, target: Atlas, spec: EyeSpec, lash: Lay
     if (y < spec.strip + 1 || y > spec.bottom || x < arcX(spec.left, y) - 4 || x > arcX(spec.right, y) + 4) return
     // 輪郭線の抜きの上端（まつ毛の陰）は側方が見えないので白目色で埋める。
     if (y < spec.top && source.get(u, v)[3] < 128 && Math.min(Math.abs(x - arcX(spec.left, y)), Math.abs(x - arcX(spec.right, y))) <= 3) { target.set(u, v, SCLERA); count.filled++; return }
+    // 白目の元の色（ハイライトの下の白や上の淡い影）は残し、抜きと虹彩下部の青い焼き込みだけを埋める。
+    const original = source.get(u, v)
+    if (original[3] >= 200 && (original[2] - original[0]) * 255 / original[3] <= 12) return
     const a = readWhite(arcX(spec.left, y) - 5, y), b = readWhite(arcX(spec.right, y) + 5, y)
     if (a[3] < 200 && b[3] < 200) return
     const t = (x - arcX(spec.left, y) + 4) / (arcX(spec.right, y) - arcX(spec.left, y) + 8)
@@ -90,12 +93,10 @@ export function rebakeEye(source: Atlas, target: Atlas, spec: EyeSpec, lash: Lay
     const ring = onRing(x, y) ? readLash(x, y) : null
     if (inside(x, y)) {
       const own = readIris(x, y)
-      // 虹彩の上の角（丸みの外）は透明のまま。ハイライトと下部の抜きだけを埋める。
+      // ハイライトは虹彩のメッシュの穴なので触らない。虹彩の上の角も透明のまま、下部の抜きだけ白目の色で埋める。
       if (own[3] < 128 && y < spec.top + 5 && Math.min(x - arcX(spec.left, y), arcX(spec.right, y) - x) < 4 && !ring) return
       let body = over(own, readWhite(x, y))
-      // 虹彩の上部の抜きはハイライト。元の描画と同じ純白にする（下部の抜きは白目の淡い色のまま）。
-      if (y < spec.top + 7) body = over(own, [255, 255, 255, 255])
-      else if (body[3] < 200) body = over(body, [255, 255, 255, 255])
+      if (body[3] < 200) body = over(body, [255, 255, 255, 255])
       target.set(u, v, ring ? over(ring, body) : body)
     } else if (ring && ring[3] > 0) target.set(u, v, over(ring, readIris(x, y)))
   })
