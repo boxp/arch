@@ -32,3 +32,6 @@ RUN chmod 0644 /opt/boxp/hermes-agent/skills/obsidian-task-board/SKILL.md \
 # Without this, a blocked-IPv6-egress failure is misreported to the operator
 # as "provider timeout" (BOXP-137).
 RUN python3 /opt/boxp/hermes-agent/patches/fix-scheduler-network-unreachable.py
+
+COPY sunrise/ /opt/boxp/hermes-agent/sunrise/
+RUN chmod 0755 /opt/boxp/hermes-agent/sunrise/sunrise-watch.sh /opt/boxp/hermes-agent/sunrise/watch.py
