@@ -7,11 +7,11 @@ interface Props {
 }
 const {
   title = "ひとはこ | 変身ヒロインVTuber",
-  description = "ひとはこ（変身ヒロインVTuber）の公式ポートフォリオ。シューティングゲームの1CC配信を中心に、プロフィール・配信アーカイブ・公式リンクをまとめています。",
+  description = "ひとはこ（変身ヒロインVTuber）の公式サイト。シューティングゲームの1CC配信を中心に、プロフィール・配信アーカイブ・公式リンクをまとめています。",
 } = Astro.props;
 const siteUrl = Astro.site?.toString() ?? "https://hitohako-stage.b0xp.io/";
 const isStage = import.meta.env.PUBLIC_SITE_STAGE !== "false";
-const ogImage = new URL("/illust/hitohako-face.png", siteUrl).toString();
+const ogImage = new URL("/illust/hitohako-profile-570eabbe64.jpg", siteUrl).toString();
 const hero = heroImage();
 ---
 
