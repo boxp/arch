@@ -523,6 +523,9 @@ footer {
   grid-template-columns: 8rem 1fr;
   gap: 1rem;
 }
+.ai-note {
+  margin-top: 1.6rem;
+}
 .footer-bottom {
   display: flex;
   justify-content: space-between;
