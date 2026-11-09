@@ -205,6 +205,13 @@ describe('motion ids of the v25+ builds', () => {
   })
 })
 
+it('全身 v11p を比較候補として選択でき、既定は v11o のまま', () => {
+  const candidate = modelFor('?model=kohako-full-v11p')
+  expect(candidate.id).toBe('kohako-full-v11p')
+  expect(candidate.status).toBe('candidate')
+  expect(modelFor('').id).toBe('kohako-full-v11o')
+})
+
 it('全身試作を明示選択でき、既定は全身 v11o', () => {
   expect(modelFor('?model=kohako-full-v5').id).toBe('kohako-full-v5')
   expect(modelFor('?model=kohako-v45').rig).toBe('../kohako/kohako-v45.p2lrt')
