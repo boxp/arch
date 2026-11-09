@@ -33,7 +33,9 @@ const EYE_L: Vec = [517.5, 276]
 const EYE_R: Vec = [631.5, 278]
 
 const CROSSFADE_SECONDS = 0.55
-const FORESHORTEN_AT = 1.75, FORESHORTEN_WIDTH = 0.85, FORESHORTEN_DEPTH = 0.5, FORESHORTEN_FADE = 0.5
+const FORESHORTEN_AT = 2.1, FORESHORTEN_WIDTH = 1.05, FORESHORTEN_DEPTH = 0.68, FORESHORTEN_FADE = 0.5
+// 肘を外へ上げるとき、肩の広い袖（ケープ）を上腕の回転の一部だけ一緒に持ち上げる。肩口は動かさず、袖口ほど大きく回す。
+const SLEEVE_FOLLOW = 0.55, SLEEVE_FROM = 15, SLEEVE_TO = 130
 const REST: ArmPose = { up: 0, upS: 1, fo: 0, foS: 1, ha: 0, haS: 1 }
 const NO_BODY: BodyPose = { headX: 0, headY: 0, headZ: 0, bodyX: 0, bodyZ: 0, lean: 0, eyeX: 0, eyeY: 0 }
 
@@ -46,15 +48,15 @@ export const faces: Record<Emotion, Face> = {
   serious: { browOuter: -3, browInner: 11, browY: 3, eyeSX: 1, eyeSY: 0.91, mouth: -0.35, mouthCorner: 12, mouthWidth: 0.92, head: { headY: -3 }, expression: null },
 }
 
-const wave = (t: number, fo: number): Key => ({ t, right: { up: 0, upS: 1, fo, foS: 1, ha: fo < -2 ? 0.35 : -0.3, haS: 1 } })
-const GUIDE: ArmPose = { up: 0, upS: 1, fo: -1.92, foS: 1, ha: 0.15, haS: 1 }
+const wave = (t: number, fo: number): Key => ({ t, right: { up: 0, upS: 1, fo, foS: 1, ha: fo < -2 ? 0.35 : -0.3, haS: 1, elbowTo: [842, 691] } })
+const GUIDE: ArmPose = { up: 0, upS: 1, fo: -1.92, foS: 1, ha: 0.15, haS: 1, elbowTo: [820, 700] }
 // 制止: 肘を体の脇に置いたまま前腕を内側から立て、胸の前で掌を相手へ向ける。
-const HALT: ArmPose = { up: 0, upS: 1, fo: 3.45, foS: 0.95, ha: 0.1, haS: 1.1, elbowTo: [729.3, 765.9], front: true, art: 'palm', artW: 1 }
-const HALT_RISE: ArmPose = { up: 0, upS: 1, fo: 1.85, foS: 0.92, ha: 0.2, haS: 1.05, elbowTo: [758.5, 754], front: true, art: 'palm', artW: 0 }
+const HALT: ArmPose = { up: 0, upS: 1, fo: -2.5, foS: 1, ha: 0.1, haS: 1.1, elbowTo: [857, 677], front: true, art: 'palm', artW: 1 }
+const HALT_RISE: ArmPose = { up: 0, upS: 1, fo: -1.1, foS: 1, ha: 0.2, haS: 1.05, elbowTo: [815, 700], front: true, art: 'palm', artW: 0 }
 // 照れ: 体の前を通って手を口元へ運ぶ（外へ大回りしない）。終端の向きは従来と同じ。
-const SHY: ArmPose = { up: 0, upS: 1, fo: 3.2, foS: 1.32, ha: 0.02, haS: 0.95, elbowTo: [707.6, 746.6], front: true, art: 'cover', artW: 1 }
-const SHY_RISE: ArmPose = { up: 0, upS: 1, fo: 1.95, foS: 1.1, ha: 0.1, haS: 0.98, elbowTo: [747.5, 751.2], front: true, art: 'cover', artW: 0 }
-const JOY: ArmPose = { up: 0, upS: 1, fo: -0.42, foS: 1, ha: 0.25, haS: 1 }
+const SHY: ArmPose = { up: 0, upS: 1, fo: 3.41, foS: 1.02, ha: 0.02, haS: 0.95, elbowTo: [635, 720], front: true, art: 'cover', artW: 1 }
+const SHY_RISE: ArmPose = { up: 0, upS: 1, fo: 2.1, foS: 1, ha: 0.1, haS: 0.98, elbowTo: [695, 715], front: true, art: 'cover', artW: 0 }
+const JOY: ArmPose = { up: 0, upS: 1, fo: -1.85, foS: 1, ha: 0.25, haS: 1, elbowTo: [815, 700] }
 
 export const clips: Record<Exclude<Gesture, 'none'>, Clip> = {
   nod: { duration: 1.1, keys: [{ t: 0, body: {} }, { t: 0.28, body: { headY: -12, lean: 1.2 } }, { t: 0.55, body: {} }, { t: 0.8, body: { headY: -8, lean: 0.8 } }, { t: 1.1, body: {} }] },
@@ -107,7 +109,7 @@ export function crossfadeArms<T extends { right: ArmPose; left: ArmPose }>(from:
 export function foreScale(pose: Pick<ArmPose, 'fo' | 'foS' | 'front'>): number {
   if (!pose.front) return pose.foS
   const off = (pose.fo - FORESHORTEN_AT) / FORESHORTEN_WIDTH // 内回り（正の角度）だけ。外回りの挨拶などへの切替では 0 を通るので跳ばない
-  return pose.foS * (1 - FORESHORTEN_DEPTH * smooth(0, FORESHORTEN_FADE, pose.fo) * Math.exp(-off * off)) // 角度 0 で完全に 0 にして動作の始点終点をずらさない
+  return pose.foS * (1 - FORESHORTEN_DEPTH * smooth(0, FORESHORTEN_FADE, pose.fo) * (1 - smooth(2.8, 3.35, pose.fo)) * Math.exp(-off * off)) // 始点(角度 0)と保持(手前を向き切った後)では完全に 0 にして長さをずらさない
 }
 /** 手首・肘が目標へ届くか確認する検算用の順運動学。 */
 export function solveArm(bone: Pick<Bone, 'S' | 'E' | 'W'>, pose: ArmPose): { elbow: Vec; wrist: Vec } {
@@ -115,6 +117,19 @@ export function solveArm(bone: Pick<Bone, 'S' | 'E' | 'W'>, pose: ArmPose): { el
   const natural = add(bone.S, scaleV(rot(ud, pose.up), upperLength * pose.upS)), w = pose.elbowW ?? 1
   const elbow: Vec = pose.elbowTo ? [lerp(natural[0], pose.elbowTo[0], w), lerp(natural[1], pose.elbowTo[1], w)] : natural
   return { elbow, wrist: add(elbow, scaleV(rot(fd, pose.fo), foreLength * foreScale(pose))) }
+}
+
+const mirrored = (bone: Pick<Bone, 'mirror'>, pose: ArmPose): ArmPose => bone.mirror ? { ...pose, up: -pose.up, fo: -pose.fo, ha: -pose.ha, elbowTo: pose.elbowTo ? mirrorX(pose.elbowTo) : undefined } : pose
+const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a))
+/** 肘が外へ上がった分だけ袖を回す角度（画面の角度。内側へ寄せる動作では 0）。 */
+export function sleeveAngle(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose: ArmPose): number {
+  const elbow = solveArm(bone, mirrored(bone, pose)).elbow, delta = wrapAngle(Math.atan2(elbow[1] - bone.S[1], elbow[0] - bone.S[0]) - Math.atan2(bone.E[1] - bone.S[1], bone.E[0] - bone.S[0]))
+  return (bone.mirror ? Math.max(delta, 0) : Math.min(delta, 0)) * SLEEVE_FOLLOW
+}
+/** 肩の袖の頂点を、肩口を固定したまま袖口ほど大きく回す。 */
+export function deformSleeve(bone: Pick<Bone, 'S' | 'E' | 'mirror'>, angle: number, vx: number, vy: number, rx: number, ry: number): Vec {
+  const along = dot(sub([rx, ry], bone.S), norm(sub(bone.E, bone.S)))
+  return add(bone.S, rot(sub([vx, vy], bone.S), angle * smooth(SLEEVE_FROM, SLEEVE_TO, along)))
 }
 
 /** 前腕の金の縁より手先の頂点か（上腕・肩の装甲・裏地は false）。 */
@@ -132,7 +147,7 @@ function isStubEnd(bone: Pick<Bone, "mirror">, rx: number, ry: number): boolean 
   return d <= -CUFF_MARGIN && d > -CUFF_MARGIN - STUB_GAP && t <= CUFF_REACH
 }
 export function deformArm(bone: Bone, pose: ArmPose, vx: number, vy: number, rx: number, ry: number): Vec {
-  const mirrorPose = bone.mirror ? { ...pose, up: -pose.up, fo: -pose.fo, ha: -pose.ha, elbowTo: pose.elbowTo ? mirrorX(pose.elbowTo) : undefined } : pose
+  const mirrorPose = mirrored(bone, pose)
   const { up, upS, fo } = mirrorPose, foS = foreScale(mirrorPose)
   const ud = norm(sub(bone.E, bone.S)), fd = norm(sub(bone.W, bone.E))
   const newE = solveArm(bone, mirrorPose).elbow
@@ -143,12 +158,12 @@ export function deformArm(bone: Bone, pose: ArmPose, vx: number, vy: number, rx:
 }
 /** 前腕の絵を肘で回す（分離した前腕のパーツ用。deformArm の前腕の枝と同じ式）。 */
 export function deformFore(bone: Bone, pose: ArmPose, vx: number, vy: number): Vec {
-  const m = bone.mirror ? { ...pose, up: -pose.up, fo: -pose.fo, ha: -pose.ha, elbowTo: pose.elbowTo ? mirrorX(pose.elbowTo) : undefined } : pose
+  const m = mirrored(bone, pose)
   const fd = norm(sub(bone.W, bone.E)), newE = solveArm(bone, m).elbow, f = sub([vx, vy], bone.E), fa = dot(f, fd)
   return add(newE, rot(add(scaleV(fd, fa * foreScale(m)), sub(f, scaleV(fd, fa))), m.fo))
 }
 export function deformHand(bone: Bone, pose: ArmPose, vx: number, vy: number): Vec {
-  const m = bone.mirror ? { ...pose, up: -pose.up, fo: -pose.fo, ha: -pose.ha, elbowTo: pose.elbowTo ? mirrorX(pose.elbowTo) : undefined } : pose
+  const m = mirrored(bone, pose)
   return add(solveArm(bone, m).wrist, rot(scaleV(sub([vx, vy], bone.W), m.haS), m.fo + m.ha))
 }
 
@@ -159,6 +174,8 @@ const ART: Record<HandArt, { file: string; w: number; h: number; anchor: Vec; sc
 }
 /** マントの下に隠れていた上腕（生成素材）の配置。下端は肘に付いて動く。 */
 const UPPER_ART = { file: 'upper.png', top: [750, 640] as Vec, bottom: [761, 764] as Vec, halfWidth: 39 }
+const UPPER_ART_REACH = 114 // 肩の関節から素材の上端までの距離（休止時の top と同じ）
+const UPPER_ART_INTO_CUFF = -10 // 曲げたときの袖の下端の位置（負は肘より手と反対側）。小手の V 字の開口から袖が見え、先端は開口の外へ出ない
 const SEPARATE_AT = 0.02
 const partURL = (file: string) => new URL(`kohako/live2d/acting/${file}`, location.href).href
 
@@ -229,7 +246,8 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       synth.set(fill.index, { base: bone.arm, pointer: fill.pointer, opacity: () => separatedPose(armOf(bone)) ? 1 : 0, write(out) {
         const a = armOf(bone), m = bone.mirror ? { ...a, up: -a.up, fo: -a.fo, ha: -a.ha, elbowTo: a.elbowTo ? mirrorX(a.elbowTo) : undefined } : a, [dx, dy] = swayOf(bone.arm), e = sub(solveArm(bone, m).elbow, bone.E)
         // 上腕は肩から肘へ向かう棒として張る（親子変形）。下端の丸みが肘の先になる。
-        const t = place(UPPER_ART.top), b = add(place(UPPER_ART.bottom), e), along = norm(sub(b, t)), across: Vec = scaleV([-along[1] * side, along[0] * side], UPPER_ART.halfWidth)
+        // 上端は肩の関節から肘へ向かう線の上に置く（肩の装甲の裏に隠れる）。肘がどちらへ動いても肩から生えて見える。
+        const elbow = solveArm(bone, m), intoCuff = add(elbow.elbow, scaleV(norm(sub(elbow.wrist, elbow.elbow)), UPPER_ART_INTO_CUFF)), b: Vec = (() => { const rest = add(place(UPPER_ART.bottom), e), w = smooth(0.1, 0.8, Math.abs(m.fo)); return [lerp(rest[0], intoCuff[0], w), lerp(rest[1], intoCuff[1], w)] })(), t = add(bone.S, scaleV(norm(sub(b, bone.S)), UPPER_ART_REACH)), along = norm(sub(b, t)), across: Vec = scaleV([-along[1] * side, along[0] * side], UPPER_ART.halfWidth)
         ;[add(t, across), sub(t, across), sub(b, across), add(b, across)].forEach((c, i) => { out[2 * i] = c[0] + dx; out[2 * i + 1] = c[1] + dy })
       } })
       // 動き始めは元の上腕の絵を重ねて見せ、曲げるにつれて生成の上腕へ移す（絵の切り替わりで一瞬光らないように）。
@@ -277,7 +295,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     for (let i = 0; i < count; i++) {
       const x = v[2 * i] as number, y = v[2 * i + 1] as number, rx = rest[2 * i] as number, ry = rest[2 * i + 1] as number
       let out: Vec = [x, y]
-      if (armBlend > 0.001 && (mesh === RIGHT.arm || mesh === LEFT.arm)) { const b = mesh === RIGHT.arm ? RIGHT : LEFT; if (!(parts && (b === RIGHT ? parts.right.on : parts.left.on))) { const d = deformArm(b, mesh === RIGHT.arm ? pose.right : pose.left, x, y, rx, ry); out = [lerp(x, d[0], armBlend), lerp(y, d[1], armBlend)] } }
+      if (armBlend > 0.001 && (mesh === RIGHT.arm || mesh === LEFT.arm)) { const b = mesh === RIGHT.arm ? RIGHT : LEFT; const armPose = mesh === RIGHT.arm ? pose.right : pose.left; if (parts && (b === RIGHT ? parts.right.on : parts.left.on)) out = deformSleeve(b, sleeveAngle(b, armPose), x, y, rx, ry); else { const d = deformArm(b, armPose, x, y, rx, ry); out = [lerp(x, d[0], armBlend), lerp(y, d[1], armBlend)] } }
       else if (armBlend > 0.001 && (mesh === RIGHT.hand || mesh === LEFT.hand)) { const b = mesh === RIGHT.hand ? RIGHT : LEFT; const d = deformHand(b, mesh === RIGHT.hand ? pose.right : pose.left, x, y); out = [lerp(x, d[0], armBlend), lerp(y, d[1], armBlend)] }
       else if (mesh === BROW) { const outer = Math.min(1, Math.abs(rx - CX) / 75); out = [x, y + (face.browY + lerp(face.browInner, face.browOuter, smooth(0.15, 0.95, outer))) * browPin(outer)] }
       else if (mesh === MOUTH) { const u = Math.min(1, Math.abs(rx - MOUTH_C[0]) / 30); out = [MOUTH_C[0] + (x - MOUTH_C[0]) * face.mouthWidth, y + face.mouthCorner * (u * u - 0.35)] }

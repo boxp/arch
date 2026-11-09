@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { browPin, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, faces, foreScale, isForearm, sample, solveArm } from './gesture'
+import { browPin, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -92,10 +92,28 @@ describe('腕の変形', () => {
     expect(isForearm(bone, 720, 600)).toBe(false) // 肩の装甲
     expect(isForearm(bone, 842, 690)).toBe(false) // 裏地の先端
   })
-  it('照れも制止も、手首は体の内側を通って上がる（外へ大回りしない）', () => {
-    for (const clip of [clips.shyHand, clips.halt]) {
-      for (let time = 0; time <= 1.2; time += 1 / 30) expect(solveArm(bone, sample(clip, time).right).wrist[0]).toBeLessThanOrEqual(bone.W[0] + 1)
-    }
+  // 関節に見えるかの必要条件（最終判断は実描画の連続コマ）。上腕と前腕が別の線分として開き、前腕の長さが保たれ、肘が動くこと。
+  it.each([['制止', 'halt', 1.5], ['照れ', 'shyHand', 2], ['挨拶', 'greet', 0.55], ['案内', 'guide', 1.5], ['喜び', 'joy', 0.75]] as const)('%s の保持は肘が開いて見える', (_name, gesture, time) => {
+    const pose = sample(clips[gesture], time).right, { elbow, wrist } = solveArm(bone, pose)
+    const toShoulder = [bone.S[0] - elbow[0], bone.S[1] - elbow[1]] as const, toWrist = [wrist[0] - elbow[0], wrist[1] - elbow[1]] as const
+    const inner = Math.acos((toShoulder[0] * toWrist[0] + toShoulder[1] * toWrist[1]) / (Math.hypot(...toShoulder) * Math.hypot(...toWrist))) * 180 / Math.PI
+    expect(inner).toBeGreaterThanOrEqual(29)
+    expect(inner).toBeLessThanOrEqual(145)
+    const restLength = Math.hypot(bone.W[0] - bone.E[0], bone.W[1] - bone.E[1])
+    expect(Math.hypot(...toWrist) / restLength).toBeGreaterThanOrEqual(0.9)
+    expect(Math.hypot(...toWrist) / restLength).toBeLessThanOrEqual(1.1)
+    expect(Math.hypot(...toShoulder)).toBeLessThanOrEqual(Math.hypot(bone.E[0] - bone.S[0], bone.E[1] - bone.S[1]) + 1)
+    expect(Math.hypot(elbow[0] - bone.E[0], elbow[1] - bone.E[1])).toBeGreaterThanOrEqual(60)
+    expect(elbow[1]).toBeLessThanOrEqual(bone.E[1]) // 腰より下へ下げない
+  })
+  it('肘を外へ上げると袖が肩口を固定したまま持ち上がり、休止と内側への動作では動かない', () => {
+    expect(sleeveAngle(bone, rest)).toBeCloseTo(0)
+    expect(sleeveAngle(bone, sample(clips.shyHand, 2).right)).toBe(0)
+    const angle = sleeveAngle(bone, sample(clips.halt, 1.5).right)
+    expect(angle).toBeLessThan(-0.1)
+    const shoulder = deformSleeve(bone, angle, bone.S[0], bone.S[1] + 5, bone.S[0], bone.S[1] + 5), tip = deformSleeve(bone, angle, 845, 695, 845, 695)
+    expect(shoulder[1]).toBeCloseTo(bone.S[1] + 5)
+    expect(tip[1]).toBeLessThan(695 - 20)
   })
   it('眉の外端は動かさず、内側だけ動かす', () => {
     expect(browPin(0.3)).toBe(1)
@@ -105,8 +123,8 @@ describe('腕の変形', () => {
     expect(browPin(0.66)).toBeLessThan(0.7)
   })
   it('体の前を通る前腕は水平付近で短く描き、始点と終点の長さは変えない', () => {
-    const pose = { up: 0, upS: 1, fo: 1.75, foS: 1, ha: 0, haS: 1 }
-    expect(foreScale({ ...pose, front: true })).toBeCloseTo(0.5)
+    const pose = { up: 0, upS: 1, fo: 2.1, foS: 1, ha: 0, haS: 1 }
+    expect(foreScale({ ...pose, fo: 2.1, front: true })).toBeCloseTo(0.32)
     expect(foreScale(pose)).toBe(1) // 外へ出す動作は短縮しない
     expect(foreScale({ ...pose, fo: 0, front: true })).toBeGreaterThan(0.99)
     expect(foreScale({ ...pose, fo: 3.45, front: true })).toBeGreaterThan(0.99)
