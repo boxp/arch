@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { clips, crossfadeArms, deformArm, deformHand, faces, sample, solveArm } from './gesture'
+import { clips, createActingStage, crossfadeArms, deformArm, deformHand, faces, sample, solveArm } from './gesture'
+import type { Player } from './rig'
+import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
 
 const bone = { S: [710, 533], E: [758, 757], W: [844, 928], band: 34, arm: 22, hand: 20, mirror: false } as const
@@ -85,5 +87,60 @@ describe('動作の切り替え', () => {
       const a = wrist(i / steps), b = wrist((i + 1) / steps)
       expect(Math.hypot(a[0] - b[0], a[1] - b[1])).toBeLessThan(whole * 0.1)
     }
+  })
+})
+
+describe('実行時の動作の割り込み', () => {
+  const HAND = 20, ARM = 22
+  // p2l の WASM 出力の代わりに、毎回休止位置の頂点を返す最小の実行環境。手のメッシュの 1 頂点は手首に置く。
+  function setup() {
+    const memory = new WebAssembly.Memory({ initial: 1 }), points: Record<number, readonly number[]> = { [HAND]: bone.W, [ARM]: bone.E }
+    const player = {
+      rig: 0, expressions: [], meshes: Array.from({ length: 33 }, (_, i) => ({ vertices: points[i] ? 1 : 0 })),
+      expression() {}, setParameter() {}, update(_dt: number) {},
+      rt: {
+        memory, p2l_render_commands: () => 0,
+        p2l_mesh_vertices(_rig: number, mesh: number) { new Float32Array(memory.buffer, mesh * 16, 2).set(points[mesh] ?? []); return mesh * 16 },
+      },
+    }
+    const stage = createActingStage(player as unknown as Player, { id: 'kohako-full-v11r' } as RigModel)
+    const frame = () => {
+      player.update(1 / 60)
+      player.rt.p2l_mesh_vertices(0, ARM)
+      const pointer = player.rt.p2l_mesh_vertices(0, HAND), v = new Float32Array(memory.buffer, pointer, 2)
+      return [v[0] as number, v[1] as number] as const
+    }
+    return { stage, frame }
+  }
+  const run = (frame: () => readonly [number, number], seconds: number) => { let last = frame(); for (let i = 1; i < Math.round(seconds * 60); i++) last = frame(); return last }
+  const distance = (a: readonly [number, number], b: readonly [number, number]) => Math.hypot(a[0] - b[0], a[1] - b[1])
+
+  it('解除で戻る途中に次の動作が来ても手首が跳ばない', () => {
+    for (const released of [0.05, 0.1, 0.2, 0.3, 0.4]) {
+      const { stage, frame } = setup()
+      stage.playGesture('shyHand'); run(frame, 1.5)
+      stage.reset()
+      let previous = run(frame, released)
+      stage.playGesture('greet')
+      const first = frame()
+      expect(distance(first, previous)).toBeLessThan(45)
+      previous = first
+      for (let i = 0; i < 40; i++) { const current = frame(); expect(distance(current, previous)).toBeLessThan(45); previous = current }
+    }
+  })
+  it('解除後は腕の変形が外れて休止位置へ戻る', () => {
+    const { stage, frame } = setup()
+    stage.playGesture('shyHand'); run(frame, 1.5)
+    stage.reset()
+    const wrist = run(frame, 0.7)
+    expect(distance(wrist, bone.W)).toBeLessThan(0.01)
+    expect((stage as ReturnType<typeof createActingStage>).report().armBlend).toBe(0)
+  })
+  it('解除の途中で再度止めても戻り切る', () => {
+    const { stage, frame } = setup()
+    stage.playGesture('halt'); run(frame, 1)
+    stage.reset()
+    for (let i = 0; i < 60; i++) { frame(); stage.reset() }
+    expect((stage as ReturnType<typeof createActingStage>).report().armBlend).toBe(0)
   })
 })

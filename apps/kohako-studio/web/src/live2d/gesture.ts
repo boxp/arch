@@ -130,6 +130,8 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   let pose: ReturnType<typeof sample> = { right: REST, left: REST, body: NO_BODY }, armBlend = 0
   const headCurrent = { ...NO_BODY }
   let fadeFrom: { right: ArmPose; left: ArmPose } | null = null, fadeTime = 0
+  // 腕の表示は常に pose そのもの。解除も関節の補間で戻すので、どの時点で次の動作が来ても pose から正確につなげる。
+  const startFade = () => { fadeFrom = { right: pose.right, left: pose.left }; fadeTime = 0 }
   const frontMeshes = (): number[] => [pose.right.front && armBlend > 0.3 ? RIGHT.hand : -1, pose.left.front && armBlend > 0.3 ? LEFT.hand : -1].filter(i => i >= 0)
 
   const apply = (mesh: number, pointer: number, count: number) => {
@@ -165,17 +167,19 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const baseUpdate = p.update.bind(p)
   p.update = (dt: number) => {
     generation++
-    if (clip) { clipTime += dt; if (clipTime >= clip.duration) { clip = null; clipName = 'none' } }
-    let sampled = clip ? sample(clip, clipTime) : null
-    if (sampled && fadeFrom) {
+    if (clip) { clipTime += dt; if (clipTime >= clip.duration) { clip = null; clipName = 'none'; startFade() } }
+    const sampled = clip ? sample(clip, clipTime) : null
+    const goal = sampled ?? (fadeFrom ? { right: REST, left: REST, body: NO_BODY } : null)
+    let shown = goal
+    if (goal && fadeFrom) {
       fadeTime += dt
       if (fadeTime >= CROSSFADE_SECONDS) fadeFrom = null
-      else sampled = crossfadeArms(fadeFrom, sampled, fadeTime / CROSSFADE_SECONDS)
+      else shown = crossfadeArms(fadeFrom, goal, fadeTime / CROSSFADE_SECONDS)
     }
     const k = 1 - Math.exp(-dt * 7)
     for (const key of Object.keys(face) as (keyof Face)[]) if (typeof face[key] === 'number' && typeof target[key] === 'number') (face[key] as number) = lerp(face[key] as number, target[key] as number, k)
-    if (sampled) pose = sampled
-    armBlend = sampled ? 1 : Math.max(0, armBlend - dt * 2.5)
+    if (shown) pose = shown
+    armBlend = shown ? 1 : 0
     for (const key of Object.keys(NO_BODY) as (keyof BodyPose)[]) {
       const want = (sampled?.body[key] ?? 0) + (target.head[key] ?? 0)
       headCurrent[key] = lerp(headCurrent[key], want, k)
@@ -189,10 +193,10 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     playGesture(next) {
       if (next === 'none') return
       // 前の動作の途中や解除後の戻りの途中でも、その時点の腕の見た目から次の動作へつなぐ。
-      fadeFrom = { right: lerpArm(REST, pose.right, armBlend), left: lerpArm(REST, pose.left, armBlend) }; fadeTime = 0
+      startFade()
       clip = clips[next]; clipName = next; clipTime = 0; armBlend = 1
     },
-    reset() { emotion = 'neutral'; target = faces.neutral; player.expression(null); clip = null; clipName = 'none'; fadeFrom = null },
+    reset() { emotion = 'neutral'; target = faces.neutral; player.expression(null); if (clip) startFade(); clip = null; clipName = 'none' },
     report: () => ({ supported: true, emotion, gesture: clipName, armBlend, clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
   }
 }
