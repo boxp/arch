@@ -34,8 +34,9 @@ const EYE_R: Vec = [631.5, 278]
 
 const CROSSFADE_SECONDS = 0.55
 const FORESHORTEN_AT = 2.1, FORESHORTEN_WIDTH = 0.75, FORESHORTEN_DEPTH = 0.5, FORESHORTEN_FADE = 0.5
-// 肘を外へ上げるとき、肩の広い袖（ケープ）はわずかに持ち上げるだけで垂らす（正本シートの上げた腕と同じ）。袖が上腕と同じだけ回ると上腕が袖の裏に隠れ続ける。肩口は動かさず、袖口ほど大きく回す。
+// 肘を外へ上げるとき、肩の広い袖（ケープ）は肩口を動かさず垂らす（正本シートの上げた腕と同じ）。ただし裾の外側は腕に合わせて持ち上げ、袖の下縁より下に上腕が見える区間を作る（BOXP-485。垂らしたままだと見える区間が約 23px しかなく筒に見えない）。
 const SLEEVE_FOLLOW = 0.25, SLEEVE_FROM = 15, SLEEVE_TO = 130
+const SLEEVE_HEM_LIFT = 2, SLEEVE_HEM_FROM = 20, SLEEVE_HEM_TO = 90 // 裾の外側での追加の回転（SLEEVE_FOLLOW に対する倍率）。腕の軸からの外向きの距離で効かせる
 const REST: ArmPose = { up: 0, upS: 1, fo: 0, foS: 1, ha: 0, haS: 1 }
 const NO_BODY: BodyPose = { headX: 0, headY: 0, headZ: 0, bodyX: 0, bodyZ: 0, lean: 0, eyeX: 0, eyeY: 0 }
 
@@ -48,12 +49,12 @@ export const faces: Record<Emotion, Face> = {
   serious: { browOuter: -3, browInner: 11, browY: 3, eyeSX: 1, eyeSY: 0.91, mouth: -0.35, mouthCorner: 12, mouthWidth: 0.92, head: { headY: -3 }, expression: null },
 }
 
-// 外へ上げる肘の位置。袖の下縁（(771,663)〜(841,691)）と裏地の下端より下へ出し、黒い上腕が茶色の裏地の手前を横切って見えるようにする（背景の黒髪の上では読み取れない）。これより水平に上げると上腕が袖の下縁の裏に隠れ、開口の下に裏地が小片で残る。
-const ELBOW_OUT: Vec = [826, 730]
+// 外へ上げる肘の位置。袖の裾を持ち上げた下に上腕が見える高さで、肩〜肘の総長は休止の 1.14 倍以内に収める。これより上げると小手の開口が袖の裾に重なって上腕が隠れる（BOXP-485）。
+const ELBOW_OUT: Vec = [828, 736]
 const wave = (t: number, fo: number): Key => ({ t, right: { up: 0, upS: 1, fo, foS: 1, ha: fo < -2 ? 0.35 : -0.3, haS: 1, elbowTo: ELBOW_OUT } })
 const GUIDE: ArmPose = { up: 0, upS: 1, fo: -1.92, foS: 1, ha: 0.15, haS: 1, elbowTo: ELBOW_OUT }
-// 制止: 肘を外へ上げ、体の外側（肩の外、正本シートの掌を見せる構図）で前腕を立てて掌を相手へ向ける。手首を胸の前へ運ぶと前腕が上腕に折り重なって関節が見えないため、体の前は通さない（BOXP-482）。
-const HALT: ArmPose = { up: 0, upS: 1, fo: -2.4, foS: 1, ha: 0.1, haS: 1.1, elbowTo: ELBOW_OUT, front: true, art: 'palm', artW: 1 }
+// 制止: 肘を外へ上げ、体の外側で前腕を斜めに立てて掌を相手へ向ける。前腕を真上まで立てると上腕に重なって上腕が隠れるため、内角を開いた角度で止める（BOXP-482/485）。
+const HALT: ArmPose = { up: 0, upS: 1, fo: -2.05, foS: 1, ha: 0.1, haS: 1.1, elbowTo: ELBOW_OUT, front: true, art: 'palm', artW: 1 }
 const HALT_RISE: ArmPose = { up: 0, upS: 1, fo: -1.1, foS: 1, ha: 0.2, haS: 1.05, elbowTo: [805, 725], front: true, art: 'palm', artW: 0 }
 // 照れ: 体の前を通って手を口元へ運ぶ（外へ大回りしない）。終端の向きは従来と同じ。
 const SHY: ArmPose = { up: 0, upS: 1, fo: 3.41, foS: 1.02, ha: 0.02, haS: 0.95, elbowTo: [635, 720], front: true, art: 'cover', artW: 1 }
@@ -130,8 +131,9 @@ export function sleeveAngle(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose: 
 }
 /** 肩の袖の頂点を、肩口を固定したまま袖口ほど大きく回す。 */
 export function deformSleeve(bone: Pick<Bone, 'S' | 'E' | 'mirror'>, angle: number, vx: number, vy: number, rx: number, ry: number): Vec {
-  const along = dot(sub([rx, ry], bone.S), norm(sub(bone.E, bone.S)))
-  return add(bone.S, rot(sub([vx, vy], bone.S), angle * smooth(SLEEVE_FROM, SLEEVE_TO, along)))
+  const axis = norm(sub(bone.E, bone.S)), offset = sub([rx, ry], bone.S), outward: Vec = bone.mirror ? [-axis[1], axis[0]] : [axis[1], -axis[0]]
+  const hem = 1 + SLEEVE_HEM_LIFT * smooth(SLEEVE_HEM_FROM, SLEEVE_HEM_TO, dot(offset, outward))
+  return add(bone.S, rot(sub([vx, vy], bone.S), angle * hem * smooth(SLEEVE_FROM, SLEEVE_TO, dot(offset, axis))))
 }
 
 /** 前腕の金の縁より手先の頂点か（上腕・肩の装甲・裏地は false）。 */

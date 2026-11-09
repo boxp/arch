@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { browPin, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
 
 const bone = { S: [710, 533], E: [760, 733], W: [844, 928], band: 34, arm: 22, hand: 20, mirror: false } as const
+const HEM = [[771, 663], [841, 691]] as const // 紫の袖の下縁
+const CUFF_EDGE = [[729, 758.5], [745, 761.5], [760, 759.5], [769, 753], [773, 746], [777, 733], [781, 713], [784, 702], [787, 697.5]] as const // 小手の金の開口（FOREARM_POLY の上辺）
 const rest = { up: 0, upS: 1, fo: 0, foS: 1, ha: 0, haS: 1 }
 
 describe('生成素材の手と前腕の分離', () => {
@@ -105,18 +107,43 @@ describe('腕の変形', () => {
     // 肩から肘の長さは、袖に隠れる上端を含めて休止の 1.14 倍まで。袖の下に見えている区間は休止より長くしない。
     expect(Math.hypot(...toShoulder)).toBeLessThanOrEqual(Math.hypot(bone.E[0] - bone.S[0], bone.E[1] - bone.S[1]) * 1.14)
     expect(Math.hypot(elbow[0] - bone.E[0], elbow[1] - bone.E[1])).toBeGreaterThanOrEqual(60)
-    expect(elbow[1]).toBeLessThanOrEqual(bone.E[1]) // 腰より下へ下げない
+    expect(elbow[1]).toBeLessThanOrEqual(bone.E[1] + 5) // 腰より下へは大きく下げない（袖の下に上腕を見せる分だけ休止より少し下げてよい。BOXP-485）
   })
   it.each([['制止', 'halt', 1.5], ['挨拶', 'greet', 0.55], ['案内', 'guide', 1.5], ['喜び', 'joy', 0.75]] as const)('%s の保持は肘が袖の下縁より下に出て上腕が見える', (_name, gesture, time) => {
     const { elbow } = solveArm(bone, sample(clips[gesture], time).right)
     const hemY = 663 + (elbow[0] - 771) * (691 - 663) / (841 - 771)
     expect(elbow[1] - hemY).toBeGreaterThanOrEqual(20)
   })
+  // 袖の下縁から小手の開口まで、肩→肘の中心線が見える長さ。袖と小手を実際の変形で動かして測る（BOXP-485 の条件 1 と 3）。
+  const visibleUpper = (pose: ArmPose) => {
+    const m = pose, { elbow, wrist } = solveArm(bone, m), length = (v: readonly [number, number]) => Math.hypot(v[0], v[1])
+    const toCuff = [wrist[0] - elbow[0], wrist[1] - elbow[1]] as const, b = [elbow[0] + toCuff[0] / length(toCuff) * 30, elbow[1] + toCuff[1] / length(toCuff) * 30] as const
+    const angle = sleeveAngle(bone, m), hem = HEM.map(p => deformSleeve(bone, angle, p[0], p[1], p[0], p[1])), cuff = CUFF_EDGE.map(p => deformFore(bone, m, p[0], p[1]))
+    const hit = (line: readonly (readonly [number, number])[], pick: (a: number, b: number) => number) => {
+      let found = NaN
+      for (let i = 0; i + 1 < line.length; i++) {
+        const p = line[i] as readonly [number, number], q = line[i + 1] as readonly [number, number], dx = b[0] - bone.S[0], dy = b[1] - bone.S[1], ex = q[0] - p[0], ey = q[1] - p[1], d = dx * ey - dy * ex
+        if (Math.abs(d) < 1e-9) continue
+        const s = ((p[0] - bone.S[0]) * ey - (p[1] - bone.S[1]) * ex) / d, u = ((p[0] - bone.S[0]) * dy - (p[1] - bone.S[1]) * dx) / d
+        if (u < 0 || u > 1) continue
+        found = Number.isNaN(found) ? s : pick(found, s)
+      }
+      return found
+    }
+    const total = Math.hypot(b[0] - bone.S[0], b[1] - bone.S[1])
+    const end = hit(cuff, Math.min) // 開口の金の縁をかすめて届かないときは、上腕の下端までを見える区間とする
+    return (Math.min(Number.isNaN(end) ? 1 : end, 1) - hit(hem, Math.max)) * total
+  }
+  it.each([['制止', 'halt', 1.5], ['挨拶', 'greet', 0.55], ['案内', 'guide', 1.5], ['喜び', 'joy', 0.75]] as const)('%s の保持は袖の下縁から小手まで上腕が 50px 以上見え、休止より長くは見えない', (_name, gesture, time) => {
+    const visible = visibleUpper(sample(clips[gesture], time).right)
+    expect(visible).toBeGreaterThanOrEqual(50)
+    expect(visible).toBeLessThanOrEqual(74)
+  })
   it('制止の保持は体の外側で手を肩より高く上げる（胸の前へ折り畳まない）', () => {
     const { elbow, wrist } = solveArm(bone, sample(clips.halt, 1.5).right)
     expect(elbow[0]).toBeGreaterThan(bone.E[0])
     expect(wrist[0]).toBeGreaterThan(bone.W[0])
-    expect(wrist[1]).toBeLessThan(bone.S[1])
+    expect(wrist[1]).toBeLessThan(bone.S[1] + 50) // 掌は手首より約 170px 上まで届き、顔の高さへ出る
   })
   it('肘を外へ上げると袖が肩口を固定したまま持ち上がり、休止と内側への動作では動かない', () => {
     expect(sleeveAngle(bone, rest)).toBeCloseTo(0)
