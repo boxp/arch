@@ -6,7 +6,7 @@ import type { Player } from './rig'
 import type { RigModel } from './model'
 
 type Vec = readonly [number, number]
-export type ArmPose = { up: number; upS: number; fo: number; foS: number; ha: number; haS: number; elbowTo?: Vec; bandShift?: number; arc?: boolean; front?: boolean }
+export type ArmPose = { up: number; upS: number; fo: number; foS: number; ha: number; haS: number; elbowTo?: Vec; elbowW?: number; bandShift?: number; arc?: boolean; front?: boolean }
 export type BodyPose = { headX: number; headY: number; headZ: number; bodyX: number; bodyZ: number; lean: number; eyeX: number; eyeY: number }
 type Key = { t: number; right?: ArmPose; left?: ArmPose; body?: Partial<BodyPose> }
 export type Clip = { duration: number; keys: Key[] }
@@ -64,8 +64,10 @@ const scaleV = (v: Vec, k: number): Vec => [v[0] * k, v[1] * k]
 
 function lerpArm(a: ArmPose, b: ArmPose, t: number): ArmPose {
   const arc = t < 0.5 ? a.arc : b.arc
-  const elbowTo = a.elbowTo && b.elbowTo ? [lerp(a.elbowTo[0], b.elbowTo[0], t), lerp(a.elbowTo[1], b.elbowTo[1], t)] as const : t > 0.01 ? b.elbowTo : a.elbowTo
-  return { up: lerp(a.up, b.up, t), upS: lerp(a.upS, b.upS, t), fo: lerp(a.fo, b.fo, t), foS: lerp(a.foS, b.foS, t), ha: lerp(a.ha, b.ha, t), haS: lerp(a.haS, b.haS, t), elbowTo, bandShift: lerp(a.bandShift ?? 0, b.bandShift ?? 0, t), arc, front: b.front ?? a.front }
+  // elbowTo の有無が変わる区間は、指定なし側の自然な肘位置との混合率で補間して跳びを防ぐ。
+  const elbowTo = a.elbowTo && b.elbowTo ? [lerp(a.elbowTo[0], b.elbowTo[0], t), lerp(a.elbowTo[1], b.elbowTo[1], t)] as const : b.elbowTo ?? a.elbowTo
+  const elbowW = lerp(a.elbowTo ? a.elbowW ?? 1 : 0, b.elbowTo ? b.elbowW ?? 1 : 0, t)
+  return { up: lerp(a.up, b.up, t), upS: lerp(a.upS, b.upS, t), fo: lerp(a.fo, b.fo, t), foS: lerp(a.foS, b.foS, t), ha: lerp(a.ha, b.ha, t), haS: lerp(a.haS, b.haS, t), elbowTo, elbowW, bandShift: lerp(a.bandShift ?? 0, b.bandShift ?? 0, t), arc, front: b.front ?? a.front }
 }
 /** 時刻 t のキー補間。腕や体の指定が無いキーは休止姿勢として扱う。 */
 export function sample(clip: Clip, time: number): { right: ArmPose; left: ArmPose; body: BodyPose } {
@@ -81,7 +83,8 @@ export function sample(clip: Clip, time: number): { right: ArmPose; left: ArmPos
 /** 手首・肘が目標へ届くか確認する検算用の順運動学。 */
 export function solveArm(bone: Pick<Bone, 'S' | 'E' | 'W'>, pose: ArmPose): { elbow: Vec; wrist: Vec } {
   const ud = norm(sub(bone.E, bone.S)), fd = norm(sub(bone.W, bone.E)), upperLength = Math.hypot(...sub(bone.E, bone.S)), foreLength = Math.hypot(...sub(bone.W, bone.E))
-  const elbow = pose.elbowTo ?? add(bone.S, scaleV(rot(ud, pose.up), upperLength * pose.upS))
+  const natural = add(bone.S, scaleV(rot(ud, pose.up), upperLength * pose.upS)), w = pose.elbowW ?? 1
+  const elbow: Vec = pose.elbowTo ? [lerp(natural[0], pose.elbowTo[0], w), lerp(natural[1], pose.elbowTo[1], w)] : natural
   return { elbow, wrist: add(elbow, scaleV(rot(fd, pose.fo), foreLength * pose.foS)) }
 }
 

@@ -43,6 +43,20 @@ describe('腕の変形', () => {
     const shy = sample(clips.shyHand, 2).right
     expect(solveArm(bone, shy).wrist[1]).toBeLessThan(560)
   })
+  it('照れの動作は開始と終了で肘と手首が跳ばない', () => {
+    const clip = clips.shyHand, restPos = solveArm(bone, rest), step = 1 / 60
+    for (const time of [0, clip.duration]) {
+      const { elbow, wrist } = solveArm(bone, sample(clip, time).right)
+      expect(elbow[0]).toBeCloseTo(restPos.elbow[0]); expect(elbow[1]).toBeCloseTo(restPos.elbow[1])
+      expect(wrist[0]).toBeCloseTo(restPos.wrist[0]); expect(wrist[1]).toBeCloseTo(restPos.wrist[1])
+    }
+    let previous = solveArm(bone, sample(clip, 0).right)
+    for (let time = step; time <= clip.duration; time += step) {
+      const current = solveArm(bone, sample(clip, time).right)
+      expect(Math.hypot(current.elbow[0] - previous.elbow[0], current.elbow[1] - previous.elbow[1])).toBeLessThan(8)
+      previous = current
+    }
+  })
   it('案内の動作では手首が肘より上へ上がり、休止より大きく動く', () => {
     const { elbow, wrist } = solveArm(bone, sample(clips.guide, 1.5).right)
     expect(wrist[1]).toBeLessThan(elbow[1])
