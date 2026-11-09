@@ -16,6 +16,8 @@ export const EYE_SPECS: readonly EyeSpec[] = [
     right: [[280, 638.5], [282, 639], [284, 639.2], [286, 639.2], [288, 639.2], [290, 638.8], [292, 638], [294, 637.2], [296, 636.2], [298, 635], [300, 633]] },
 ]
 const RING = 1.7
+/** 白目の層で元の虹彩の輪郭が残る帯の幅。弧から外へ見て、この範囲は色味によらず周囲の白目で埋める。 */
+const WHITE_BAND = 6
 export const BROW_MESH = 1
 export const FACE_MESH = 18
 const BROW_BOX = { x0: 505, y0: 234, x1: 650, y1: 260 }
@@ -79,15 +81,16 @@ export function rebakeEye(source: Atlas, target: Atlas, spec: EyeSpec, lash: Lay
   const inside = (x: number, y: number) => y >= spec.top && y <= spec.bottom && x >= arcX(spec.left, y) && x <= arcX(spec.right, y)
   eachTexel(target, lash, box, (u, v, x, y) => { if (onRing(x, y) && source.get(u, v)[3] > 0) { target.set(u, v, [0, 0, 0, 0]); count.ring++ } })
   eachTexel(target, white, box, (u, v, x, y) => {
-    if (y < spec.strip + 1 || y > spec.bottom || x < arcX(spec.left, y) - 4 || x > arcX(spec.right, y) + 4) return
+    if (y < spec.strip + 1 || y > spec.bottom || x < arcX(spec.left, y) - WHITE_BAND || x > arcX(spec.right, y) + WHITE_BAND) return
     // 輪郭線の抜きの上端（まつ毛の陰）は側方が見えないので白目色で埋める。
     if (y < spec.top && source.get(u, v)[3] < 128 && Math.min(Math.abs(x - arcX(spec.left, y)), Math.abs(x - arcX(spec.right, y))) <= 3) { target.set(u, v, SCLERA); count.filled++; return }
     // 白目の元の色（ハイライトの下の白や上の淡い影）は残し、抜きと虹彩下部の青い焼き込みだけを埋める。
     const original = source.get(u, v)
-    if (original[3] >= 200 && (original[2] - original[0]) * 255 / original[3] <= 12) return
-    const a = readWhite(arcX(spec.left, y) - 5, y), b = readWhite(arcX(spec.right, y) + 5, y)
+    const inBand = y >= spec.top && Math.min(Math.abs(x - arcX(spec.left, y)), Math.abs(x - arcX(spec.right, y))) <= WHITE_BAND // 視線を動かすと見える元の輪郭
+    if (!inBand && original[3] >= 200 && (original[2] - original[0]) * 255 / original[3] <= 12) return
+    const a = readWhite(arcX(spec.left, y) - WHITE_BAND - 2, y), b = readWhite(arcX(spec.right, y) + WHITE_BAND + 2, y)
     if (a[3] < 200 && b[3] < 200) return
-    const t = (x - arcX(spec.left, y) + 4) / (arcX(spec.right, y) - arcX(spec.left, y) + 8)
+    const t = (x - arcX(spec.left, y) + WHITE_BAND) / (arcX(spec.right, y) - arcX(spec.left, y) + WHITE_BAND * 2)
     target.set(u, v, mix(a[3] < 200 ? SCLERA : a, b[3] < 200 ? SCLERA : b, t)); count.filled++
   })
   eachTexel(target, iris, box, (u, v, x, y) => {
