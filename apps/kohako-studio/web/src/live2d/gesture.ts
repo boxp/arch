@@ -5,7 +5,7 @@ import type { ActingStage, Emotion, Gesture } from './acting'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { patchFaceTexture } from './face-texture'
-import { addQuad, addShared, addTexture, CUFF_POLY, eraseAtlas, FOREARM_POLY, isStaticUpper, loadTexture, mirrorPolygon, paintCapeCorner, splitMesh, type PartsPlayer, type Polygon, type Split } from './arm-parts'
+import { addQuad, addShared, addTexture, CUFF_POLY, eraseAtlas, FOREARM_POLY, isSleeveLining, isStaticUpper, loadTexture, mirrorPolygon, paintCapeCorner, splitMesh, type PartsPlayer, type Polygon, type Split } from './arm-parts'
 
 type Vec = readonly [number, number]
 type HandArt = 'palm' | 'cover'
@@ -33,9 +33,9 @@ const EYE_L: Vec = [517.5, 276]
 const EYE_R: Vec = [631.5, 278]
 
 const CROSSFADE_SECONDS = 0.55
-const FORESHORTEN_AT = 2.1, FORESHORTEN_WIDTH = 1.05, FORESHORTEN_DEPTH = 0.8, FORESHORTEN_FADE = 0.5
-// 肘を外へ上げるとき、肩の広い袖（ケープ）を上腕と同じ角度で持ち上げる（袖は上腕の子）。追従が弱いと上腕が袖の裏へ潜り、小手が袖の端から直接生えて見える。肩口は動かさず、袖口ほど大きく回す。
-const SLEEVE_FOLLOW = 1, SLEEVE_FROM = 15, SLEEVE_TO = 130
+const FORESHORTEN_AT = 2.1, FORESHORTEN_WIDTH = 0.75, FORESHORTEN_DEPTH = 0.5, FORESHORTEN_FADE = 0.5
+// 肘を外へ上げるとき、肩の広い袖（ケープ）はわずかに持ち上げるだけで垂らす（正本シートの上げた腕と同じ）。袖が上腕と同じだけ回ると上腕が袖の裏に隠れ続ける。肩口は動かさず、袖口ほど大きく回す。
+const SLEEVE_FOLLOW = 0.25, SLEEVE_FROM = 15, SLEEVE_TO = 130
 const REST: ArmPose = { up: 0, upS: 1, fo: 0, foS: 1, ha: 0, haS: 1 }
 const NO_BODY: BodyPose = { headX: 0, headY: 0, headZ: 0, bodyX: 0, bodyZ: 0, lean: 0, eyeX: 0, eyeY: 0 }
 
@@ -48,15 +48,17 @@ export const faces: Record<Emotion, Face> = {
   serious: { browOuter: -3, browInner: 11, browY: 3, eyeSX: 1, eyeSY: 0.91, mouth: -0.35, mouthCorner: 12, mouthWidth: 0.92, head: { headY: -3 }, expression: null },
 }
 
-const wave = (t: number, fo: number): Key => ({ t, right: { up: 0, upS: 1, fo, foS: 1, ha: fo < -2 ? 0.35 : -0.3, haS: 1, elbowTo: [842, 691] } })
-const GUIDE: ArmPose = { up: 0, upS: 1, fo: -1.92, foS: 1, ha: 0.15, haS: 1, elbowTo: [820, 700] }
+// 外へ上げる肘の位置。袖の下縁（(771,663)〜(841,691)）と裏地の下端より下へ出し、黒い上腕が茶色の裏地の手前を横切って見えるようにする（背景の黒髪の上では読み取れない）。これより水平に上げると上腕が袖の下縁の裏に隠れ、開口の下に裏地が小片で残る。
+const ELBOW_OUT: Vec = [826, 730]
+const wave = (t: number, fo: number): Key => ({ t, right: { up: 0, upS: 1, fo, foS: 1, ha: fo < -2 ? 0.35 : -0.3, haS: 1, elbowTo: ELBOW_OUT } })
+const GUIDE: ArmPose = { up: 0, upS: 1, fo: -1.92, foS: 1, ha: 0.15, haS: 1, elbowTo: ELBOW_OUT }
 // 制止: 肘を外へ上げ、体の外側（肩の外、正本シートの掌を見せる構図）で前腕を立てて掌を相手へ向ける。手首を胸の前へ運ぶと前腕が上腕に折り重なって関節が見えないため、体の前は通さない（BOXP-482）。
-const HALT: ArmPose = { up: 0, upS: 1, fo: -2.5, foS: 1, ha: 0.1, haS: 1.1, elbowTo: [857, 677], front: true, art: 'palm', artW: 1 }
-const HALT_RISE: ArmPose = { up: 0, upS: 1, fo: -1.1, foS: 1, ha: 0.2, haS: 1.05, elbowTo: [815, 700], front: true, art: 'palm', artW: 0 }
+const HALT: ArmPose = { up: 0, upS: 1, fo: -2.4, foS: 1, ha: 0.1, haS: 1.1, elbowTo: ELBOW_OUT, front: true, art: 'palm', artW: 1 }
+const HALT_RISE: ArmPose = { up: 0, upS: 1, fo: -1.1, foS: 1, ha: 0.2, haS: 1.05, elbowTo: [805, 725], front: true, art: 'palm', artW: 0 }
 // 照れ: 体の前を通って手を口元へ運ぶ（外へ大回りしない）。終端の向きは従来と同じ。
 const SHY: ArmPose = { up: 0, upS: 1, fo: 3.41, foS: 1.02, ha: 0.02, haS: 0.95, elbowTo: [635, 720], front: true, art: 'cover', artW: 1 }
-const SHY_RISE: ArmPose = { up: 0, upS: 1, fo: 2.05, foS: 1, ha: 1.1, haS: 0.98, elbowTo: [665, 700], front: true, art: 'cover', artW: 0 }
-const JOY: ArmPose = { up: 0, upS: 1, fo: -1.85, foS: 1, ha: 0.25, haS: 1, elbowTo: [815, 700] }
+const SHY_RISE: ArmPose = { up: 0, upS: 1, fo: 2.75, foS: 0.95, ha: 0.7, haS: 0.98, elbowTo: [665, 700], front: true, art: 'cover', artW: 0 }
+const JOY: ArmPose = { up: 0, upS: 1, fo: -1.85, foS: 1, ha: 0.25, haS: 1, elbowTo: ELBOW_OUT }
 
 export const clips: Record<Exclude<Gesture, 'none'>, Clip> = {
   nod: { duration: 1.1, keys: [{ t: 0, body: {} }, { t: 0.28, body: { headY: -12, lean: 1.2 } }, { t: 0.55, body: {} }, { t: 0.8, body: { headY: -8, lean: 0.8 } }, { t: 1.1, body: {} }] },
@@ -222,7 +224,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   }
   prepareCut(RIGHT); prepareCut(LEFT)
   // 追加パーツ: 腕の絵を前腕と上腕に画素で分け、隠れていた上腕と手の素材を描き足す。作れない環境では従来の間引きで動く。
-  type Side = { bone: Bone; split: Split; upperTexture: number; originalTexture: number; originalUv: WebGLBuffer | null | undefined; fill: number; fore: number; stub: number; on: boolean }
+  type Side = { bone: Bone; split: Split; upperTexture: number; originalTexture: number; originalUv: WebGLBuffer | null | undefined; fill: number; fore: number; stub: number; outer: number; on: boolean }
   type Synth = { base: number; pointer: number; write(out: Float32Array): void; opacity(): number; shared?: number }
   const synth = new Map<number, Synth>(), sway = new Map<number, Vec>()
   let parts: { right: Side; left: Side; art: Partial<Record<HandArt, number>>; cuff: number } | null = null, partsStatus: Record<string, unknown> = { ready: false }
@@ -237,7 +239,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     const later = (file: string, loaded?: () => void) => { const index = addTexture(pp); loads.push(loadTexture(gl, partURL(file)).then(t => { pp.textures[index] = t; loaded?.() })); return index }
     const fillTexture = later(UPPER_ART.file)
     const makeSide = (bone: Bone): Side => {
-      const poly = bone.mirror ? mirrorPolygon(FOREARM_POLY, CX) : FOREARM_POLY, split = splitMesh(pp, bone.arm, poly, (x, y, sample, own) => { const rx = bone.mirror ? 2 * CX - x : x, cape = paintCapeCorner(rx, y, sample(bone.mirror ? 2 * CX - 800 : 800, 696)); return cape ?? (isStaticUpper(rx, y, own, (sx, sy) => sample(bone.mirror ? 2 * CX - sx : sx, sy)) ? 'erase' : null) }), mesh = pp.meshes[bone.arm] as PartsPlayer['meshes'][number]
+      const poly = bone.mirror ? mirrorPolygon(FOREARM_POLY, CX) : FOREARM_POLY, split = splitMesh(pp, bone.arm, poly, (x, y, sample, own) => { const rx = bone.mirror ? 2 * CX - x : x, cape = paintCapeCorner(rx, y, sample(bone.mirror ? 2 * CX - 800 : 800, 696)); return cape ?? (isStaticUpper(rx, y, own, (sx, sy) => sample(bone.mirror ? 2 * CX - sx : sx, sy)) ? 'erase' : null) }, (x, y) => isSleeveLining(bone.mirror ? 2 * CX - x : x, y)), mesh = pp.meshes[bone.arm] as PartsPlayer['meshes'][number]
       const upperTexture = addTexture(pp, split.outside), foreTexture = addTexture(pp, split.inside)
       const xs = poly.map(c => c[0]), ys = poly.map(c => c[1]), corners: Vec[] = [[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)], [Math.min(...xs), Math.max(...ys)]]
       const fore = addQuad(pp, new Float32Array(corners.flatMap(c => split.rectUv(c[0], c[1]))), foreTexture)
@@ -254,7 +256,10 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       // 動き始めは元の上腕の絵を重ねて見せ、曲げるにつれて生成の上腕へ移す（絵の切り替わりで一瞬光らないように）。
       const stub = addShared(pp, bone.arm, split, addTexture(pp, split.erased))
       synth.set(stub, { base: bone.arm, pointer: -1, shared: bone.arm, write() {}, opacity: () => { const a = armOf(bone), moved = Math.hypot(...sub(solveArm(bone, bone.mirror ? { ...a, up: -a.up, fo: -a.fo, ha: -a.ha, elbowTo: a.elbowTo ? mirrorX(a.elbowTo) : undefined } : a).elbow, bone.E)); return separatedPose(a) ? 1 - Math.max(smooth(0.05, 0.4, Math.abs(a.fo)), smooth(4, 18, moved)) : 0 } })
-      return { bone, split, upperTexture, originalTexture: mesh.texture, originalUv: mesh.uvBuffer, fill: fill.index, fore: fore.index, stub, on: false }
+      // 袖の紫の表地だけのコピー。上腕は裏地の手前、表地の裏を通る（描画順は hookCommands）。
+      const outer = addShared(pp, bone.arm, split, addTexture(pp, split.front as WebGLTexture))
+      synth.set(outer, { base: bone.arm, pointer: -1, shared: bone.arm, write() {}, opacity: () => separatedPose(armOf(bone)) ? 1 : 0 })
+      return { bone, split, upperTexture, originalTexture: mesh.texture, originalUv: mesh.uvBuffer, fill: fill.index, fore: fore.index, stub, outer, on: false }
     }
     // 体の層の、腕の裏に隠れていた下塗りの断片を消す（腕を上げると肘の下に残って見える）。
     const smear = (mirror: boolean): number => {
@@ -323,8 +328,8 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const hookCommands = (rig: number, pointer: number, capacity: number) => {
     const count = rt.p2l_render_commands(rig, pointer, capacity), front = frontMeshes(), art = handArt(), artMesh = parts && art.kind && art.w > 0.001 ? parts.art[art.kind] : undefined
     const expand = (c: number): number[] => {
-      if (parts && c === RIGHT.arm && parts.right.on) return [parts.right.fill, parts.right.stub, c, parts.right.fore]
-      if (parts && c === LEFT.arm && parts.left.on) return [parts.left.fill, parts.left.stub, c, parts.left.fore]
+      if (parts && c === RIGHT.arm && parts.right.on) return [parts.right.stub, c, parts.right.fill, parts.right.outer, parts.right.fore]
+      if (parts && c === LEFT.arm && parts.left.on) return [parts.left.stub, c, parts.left.fill, parts.left.outer, parts.left.fore]
       if (parts && c === RIGHT.hand && artMesh != null) return [c, artMesh, parts.cuff]
       return [c]
     }

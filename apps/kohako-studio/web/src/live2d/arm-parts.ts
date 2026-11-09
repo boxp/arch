@@ -37,7 +37,7 @@ function layerOf(p: PartsPlayer, mesh: number, width: number, height: number): L
   return fitAffine(points)
 }
 
-export type Split = { uvs: Float32Array; uvBuffer: WebGLBuffer; inside: WebGLTexture; outside: WebGLTexture; erased: WebGLTexture; rectUv(x: number, y: number): [number, number] }
+export type Split = { uvs: Float32Array; uvBuffer: WebGLBuffer; inside: WebGLTexture; outside: WebGLTexture; erased: WebGLTexture; front?: WebGLTexture; rectUv(x: number, y: number): [number, number] }
 /** 前腕の金の縁の裏（マントの右下の角）は元の絵に無い。茶の裏地で塗り、下端の線をつなぐ。右腕の座標。 */
 const CAPE_CORNER: Polygon = [[776, 693], [812, 708], [805, 724], [784, 742], [776, 733]]
 export function paintCapeCorner(x: number, y: number, lining: [number, number, number] = [118, 76, 67]): [number, number, number] | null {
@@ -45,6 +45,9 @@ export function paintCapeCorner(x: number, y: number, lining: [number, number, n
   const ax = 803, ay = 722, bx = 784, by = 741, length = Math.hypot(bx - ax, by - ay), distance = Math.abs((bx - ax) * (ay - y) - (ax - x) * (by - ay)) / length
   return distance < 1.5 ? [38, 28, 34] : lining
 }
+/** 袖の下縁より下の茶色の裏地。上腕はこの手前を通り、紫の表地の裏へ入る（正本シートの上げた腕と同じ重なり）。右腕の座標。 */
+const SLEEVE_LINING: Polygon = [[770, 665.5], [841, 692.5], [848, 702], [812, 735], [781, 742], [770, 720]]
+export const isSleeveLining = (x: number, y: number) => inPolygon(SLEEVE_LINING, x, y)
 /** 外側の絵に焼き込まれた上腕の黒い部分（マントの下）の範囲。右腕の座標。 */
 const STATIC_UPPER: Polygon = [[716, 640], [800, 640], [800, 775], [716, 775]]
 /** 動かない上腕の絵か。これを消して生成の上腕だけを肘に追従させる。マントの輪郭線（ほぼ黒）と紫・金・裏地（赤み）は残す。 */
@@ -71,7 +74,7 @@ export function triangleCoverage(uvs: Float32Array, indices: ArrayLike<number>, 
   return out
 }
 /** メッシュの絵を、多角形の内側と外側の 2 枚のテクスチャへ分ける（UV は切り出し範囲へ張り替える）。paint は外側の絵に重ねる塗り。 */
-export function splitMesh(p: PartsPlayer, mesh: number, poly: Polygon, paint?: (x: number, y: number, sample: (sx: number, sy: number) => [number, number, number], own: readonly [number, number, number, number]) => [number, number, number] | 'erase' | null): Split {
+export function splitMesh(p: PartsPlayer, mesh: number, poly: Polygon, paint?: (x: number, y: number, sample: (sx: number, sy: number) => [number, number, number], own: readonly [number, number, number, number]) => [number, number, number] | 'erase' | null, behind?: (x: number, y: number) => boolean): Split {
   const gl = p.gl, [width, height] = atlasSize(p), info = p.meshes[mesh] as Mesh, layer = layerOf(p, mesh, width, height)
   let u0 = Infinity, v0 = Infinity, u1 = -Infinity, v1 = -Infinity
   for (let i = 0; i < info.vertices; i++) { const u = (info.uvs[2 * i] as number) * width, v = (info.uvs[2 * i + 1] as number) * height; u0 = Math.min(u0, u); v0 = Math.min(v0, v); u1 = Math.max(u1, u); v1 = Math.max(v1, v) }
@@ -83,7 +86,7 @@ export function splitMesh(p: PartsPlayer, mesh: number, poly: Polygon, paint?: (
     if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('アトラスを読めません')
     gl.readPixels(x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, source)
   } finally { gl.bindFramebuffer(gl.FRAMEBUFFER, previous); gl.deleteFramebuffer(framebuffer) }
-  const inside = new Uint8Array(w * h * 4), outside = new Uint8Array(w * h * 4), erased = new Uint8Array(w * h * 4), covered = triangleCoverage(info.uvs, info.indices, width, height, x0, y0, w, h)
+  const inside = new Uint8Array(w * h * 4), outside = new Uint8Array(w * h * 4), erased = new Uint8Array(w * h * 4), covered = triangleCoverage(info.uvs, info.indices, width, height, x0, y0, w, h), front = behind ? new Uint8Array(w * h * 4) : null
   /** モデル座標の周囲 5x5 の元の色の平均（マントの裏地色の採取用）。 */
   const sample = (sx: number, sy: number): [number, number, number] => {
     const [cu, cv] = layer.forward(sx, sy), total = [0, 0, 0]; let n = 0
@@ -96,6 +99,7 @@ export function splitMesh(p: PartsPlayer, mesh: number, poly: Polygon, paint?: (
     target[i] = source[i] as number; target[i + 1] = source[i + 1] as number; target[i + 2] = source[i + 2] as number; target[i + 3] = source[i + 3] as number
     const color = paint ? paint(mx, my, sample, [source[i] as number, source[i + 1] as number, source[i + 2] as number, source[i + 3] as number]) : null // 前腕の輪郭が外側に残る分も、角の範囲は塗り直す
     if (color === 'erase') { erased[i] = outside[i] as number; erased[i + 1] = outside[i + 1] as number; erased[i + 2] = outside[i + 2] as number; erased[i + 3] = outside[i + 3] as number; outside[i] = outside[i + 1] = outside[i + 2] = outside[i + 3] = 0 } else if (color) { outside[i] = color[0]; outside[i + 1] = color[1]; outside[i + 2] = color[2]; outside[i + 3] = 255 }
+    if (front && !isInside && !behind?.(mx, my)) { front[i] = outside[i] as number; front[i + 1] = outside[i + 1] as number; front[i + 2] = outside[i + 2] as number; front[i + 3] = outside[i + 3] as number }
   }
   const upload = (pixels: Uint8Array) => {
     const texture = gl.createTexture() as WebGLTexture
@@ -108,7 +112,7 @@ export function splitMesh(p: PartsPlayer, mesh: number, poly: Polygon, paint?: (
   for (let i = 0; i < info.vertices; i++) { uvs[2 * i] = ((info.uvs[2 * i] as number) * width - x0) / w; uvs[2 * i + 1] = ((info.uvs[2 * i + 1] as number) * height - y0) / h }
   const uvBuffer = gl.createBuffer() as WebGLBuffer
   gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer); gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW)
-  return { uvs, uvBuffer, inside: upload(inside), outside: upload(outside), erased: upload(erased), rectUv: (x, y) => { const [u, v] = layer.forward(x, y); return [(u - x0) / w, (v - y0) / h] } }
+  return { uvs, uvBuffer, inside: upload(inside), outside: upload(outside), erased: upload(erased), front: front ? upload(front) : undefined, rectUv: (x, y) => { const [u, v] = layer.forward(x, y); return [(u - x0) / w, (v - y0) / h] } }
 }
 
 /** アトラスの絵のうち、述語が真の画素を透明にする（体の層に残る下塗りの断片の除去）。fill を渡すと透明の代わりにその色で不透明に塗る。 */

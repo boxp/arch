@@ -102,9 +102,15 @@ describe('腕の変形', () => {
     const restLength = Math.hypot(bone.W[0] - bone.E[0], bone.W[1] - bone.E[1])
     expect(Math.hypot(...toWrist) / restLength).toBeGreaterThanOrEqual(0.9)
     expect(Math.hypot(...toWrist) / restLength).toBeLessThanOrEqual(1.1)
-    expect(Math.hypot(...toShoulder)).toBeLessThanOrEqual(Math.hypot(bone.E[0] - bone.S[0], bone.E[1] - bone.S[1]) + 1)
+    // 肩から肘の長さは、袖に隠れる上端を含めて休止の 1.14 倍まで。袖の下に見えている区間は休止より長くしない。
+    expect(Math.hypot(...toShoulder)).toBeLessThanOrEqual(Math.hypot(bone.E[0] - bone.S[0], bone.E[1] - bone.S[1]) * 1.14)
     expect(Math.hypot(elbow[0] - bone.E[0], elbow[1] - bone.E[1])).toBeGreaterThanOrEqual(60)
     expect(elbow[1]).toBeLessThanOrEqual(bone.E[1]) // 腰より下へ下げない
+  })
+  it.each([['制止', 'halt', 1.5], ['挨拶', 'greet', 0.55], ['案内', 'guide', 1.5], ['喜び', 'joy', 0.75]] as const)('%s の保持は肘が袖の下縁より下に出て上腕が見える', (_name, gesture, time) => {
+    const { elbow } = solveArm(bone, sample(clips[gesture], time).right)
+    const hemY = 663 + (elbow[0] - 771) * (691 - 663) / (841 - 771)
+    expect(elbow[1] - hemY).toBeGreaterThanOrEqual(20)
   })
   it('制止の保持は体の外側で手を肩より高く上げる（胸の前へ折り畳まない）', () => {
     const { elbow, wrist } = solveArm(bone, sample(clips.halt, 1.5).right)
@@ -116,13 +122,13 @@ describe('腕の変形', () => {
     expect(sleeveAngle(bone, rest)).toBeCloseTo(0)
     expect(sleeveAngle(bone, sample(clips.shyHand, 2).right)).toBe(0)
     const angle = sleeveAngle(bone, sample(clips.halt, 1.5).right)
-    expect(angle).toBeLessThan(-0.1)
-    // 袖は上腕の子: 袖口の回転は上腕の回転と同じ（弱いと上腕が袖の裏へ潜って見えなくなる）
-    const pose = sample(clips.halt, 1.5).right, elbow = solveArm(bone, pose).elbow
-    expect(angle).toBeCloseTo(Math.atan2(elbow[1] - bone.S[1], elbow[0] - bone.S[0]) - Math.atan2(bone.E[1] - bone.S[1], bone.E[0] - bone.S[0]), 5)
+    expect(angle).toBeLessThan(-0.05)
+    // 袖は上腕より少なく回って垂れる（同じだけ回すと上腕が袖の裏に隠れ続ける）
+    const pose = sample(clips.halt, 1.5).right, elbow = solveArm(bone, pose).elbow, armAngle = Math.atan2(elbow[1] - bone.S[1], elbow[0] - bone.S[0]) - Math.atan2(bone.E[1] - bone.S[1], bone.E[0] - bone.S[0])
+    expect(angle).toBeGreaterThan(armAngle * 0.8)
     const shoulder = deformSleeve(bone, angle, bone.S[0], bone.S[1] + 5, bone.S[0], bone.S[1] + 5), tip = deformSleeve(bone, angle, 845, 695, 845, 695)
     expect(shoulder[1]).toBeCloseTo(bone.S[1] + 5)
-    expect(tip[1]).toBeLessThan(695 - 20)
+    expect(tip[1]).toBeLessThan(695 - 2)
   })
   it('眉の外端は動かさず、内側だけ動かす', () => {
     expect(browPin(0.3)).toBe(1)
@@ -133,7 +139,7 @@ describe('腕の変形', () => {
   })
   it('体の前を通る前腕は水平付近で短く描き、始点と終点の長さは変えない', () => {
     const pose = { up: 0, upS: 1, fo: 2.1, foS: 1, ha: 0, haS: 1 }
-    expect(foreScale({ ...pose, fo: 2.1, front: true })).toBeCloseTo(0.2)
+    expect(foreScale({ ...pose, fo: 2.1, front: true })).toBeCloseTo(0.5)
     expect(foreScale(pose)).toBe(1) // 外へ出す動作は短縮しない
     expect(foreScale({ ...pose, fo: 0, front: true })).toBeGreaterThan(0.99)
     expect(foreScale({ ...pose, fo: 3.45, front: true })).toBeGreaterThan(0.99)
