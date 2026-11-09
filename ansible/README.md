@@ -22,6 +22,14 @@ All nodes are Orange Pi Zero 3 devices running Armbian.
 
 ## Prerequisites
 
+The control environment requires **Python 3.11 or later** and **Ansible 12.2.0 or later**.
+CI uses Python 3.12; `.python-version` selects the default local Python version.
+Python 3.10 is no longer supported on the control machine: it resolves to older
+Ansible/ansible-core releases affected by GHSA-8ggh-xwr9-3373 and
+GHSA-w8p5-mx5w-cpqj. Use the committed lock to select patched releases.
+These requirements apply to the machine running Ansible, not the managed nodes;
+target Python support depends on the selected ansible-core release.
+
 1. Install uv (Python package manager):
    ```bash
    curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -30,7 +38,7 @@ All nodes are Orange Pi Zero 3 devices running Armbian.
 2. Install Python dependencies:
    ```bash
    cd ansible
-   uv sync
+   uv sync --locked
    source .venv/bin/activate
    ```
 

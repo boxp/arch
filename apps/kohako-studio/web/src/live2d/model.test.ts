@@ -1,0 +1,288 @@
+import { frameFor } from './rig'
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { describe, expect, it } from 'vitest'
+import { FrameMeter, LATEST_MODEL_ID, clipIdFor, clipName, micMouth, modelFor, modelStatus, poseFor, lostPrototypes, rigModels, rigStates, speechMouth } from './model'
+
+const expressions = ['angry', 'gloom', 'sad', 'shy', 'sleepy', 'smile', 'surprised']
+const clips = ['Blink', 'Idle', 'Nod', 'Shake', 'Talk']
+
+describe('poseFor', () => {
+  it('resolves names case-insensitively to what the model has', () => {
+    expect(poseFor('listening', expressions, clips)).toEqual({ expression: 'smile', clip: 'Nod', look: [0, 0.1] })
+    expect(poseFor('failed', expressions, clips)).toEqual({ expression: 'sad', clip: 'Shake', look: [0, -0.3] })
+    expect(poseFor('idle', expressions, clips).expression).toBeNull()
+  })
+  it('prefers think for thinking and falls back to sleepy, gloom, or null', () => {
+    expect(poseFor('thinking', ['gloom', 'sleepy', 'think'], []).expression).toBe('think')
+    expect(poseFor('thinking', ['gloom', 'sleepy'], []).expression).toBe('sleepy')
+    expect(poseFor('thinking', ['gloom'], []).expression).toBe('gloom')
+    expect(poseFor('thinking', [], []).expression).toBeNull()
+  })
+  it('falls back and leaves missing names unset', () => {
+    expect(poseFor('thinking', ['gloom'], ['Idle']).expression).toBe('gloom')
+    for (const state of rigStates) expect(poseFor(state, [], [])).toMatchObject({ expression: null, clip: null })
+  })
+})
+
+describe('mouth', () => {
+  it('keeps speech mouth within 0..1 and moving', () => {
+    const values = Array.from({ length: 60 }, (_, i) => speechMouth(i / 60))
+    expect(Math.min(...values)).toBeGreaterThanOrEqual(0)
+    expect(Math.max(...values)).toBeLessThanOrEqual(1)
+    expect(Math.max(...values) - Math.min(...values)).toBeGreaterThan(0.5)
+  })
+  it('opens on loud mic input and closes on silence', () => {
+    let level = 0
+    for (let i = 0; i < 5; i++) level = micMouth(new Float32Array(256).fill(0.2), level)
+    expect(level).toBeGreaterThan(0.9)
+    for (let i = 0; i < 20; i++) level = micMouth(new Float32Array(256), level)
+    expect(level).toBeLessThan(0.01)
+  })
+})
+
+describe('FrameMeter', () => {
+  it('counts frames per second in its window', () => {
+    const meter = new FrameMeter(1000)
+    for (let t = 0; t <= 3000; t += 20) meter.tick(t)
+    expect(meter.fps()).toBeCloseTo(50, 0)
+  })
+})
+
+describe('modelFor', () => {
+  it('defaults to the Kohako model and keeps the sample selectable', () => {
+    expect(modelFor('').id).toBe(LATEST_MODEL_ID)
+    expect(LATEST_MODEL_ID).toBe('kohako-full-v11r')
+    expect(lostPrototypes.find(p => p.id === 'kohako-v45-video')?.evaluation).toContain('比較動画')
+    for (const version of ['v45', 'v46']) for (const video of ['idle', 'blink', 'slow', 'det']) expect(existsSync(resolve('public/kohako/live2d/compare', `kohako-${version}-${video}.mp4`))).toBe(true)
+    expect(lostPrototypes.find(p => p.id === 'kohako-v39')?.evaluation).toContain('不採用')
+    expect(lostPrototypes.find(p => p.id === 'kohako-v34')?.evaluation).toContain('不採用')
+    expect(lostPrototypes.find(p => p.id === 'kohako-v33')?.evaluation).toContain('不採用')
+    expect(lostPrototypes.find(p => p.id === 'kohako-v32')?.evaluation).toContain('不採用')
+    expect(lostPrototypes.find(p => p.id === 'kohako-v31')?.evaluation).toContain('不採用')
+    expect(modelFor('?model=unknown').id).toBe(LATEST_MODEL_ID)
+    expect(modelFor('?model=sample').id).toBe('sample')
+    expect(modelFor('?model=kohako').id).toBe('kohako')
+    expect(modelFor('?model=kohako-full-v10a').status).toBe('rejected')
+    expect(modelFor('?model=kohako-v0').id).toBe('kohako')
+    expect(modelFor('?model=kohako-v1').id).toBe('kohako-v1')
+    expect(modelFor('?model=kohako-v2').id).toBe('kohako-v2')
+    expect(modelStatus(modelFor(''))).toContain('本人が通常表示への昇格を受入済み')
+    expect(modelStatus(modelFor('?model=kohako-v0'))).toContain('旧版')
+    for (const m of rigModels) expect(existsSync(resolve('public/kohako/live2d/sample', m.rig))).toBe(true)
+    for (const p of lostPrototypes) for (const image of p.images) expect(existsSync(resolve('public', image))).toBe(true)
+    expect(lostPrototypes.map(p => p.id)).toEqual(['kohako-full-art-v0', 'kohako-v46-video', 'kohako-v45-video', 'kohako-v44', 'kohako-v43', 'kohako-v42', 'kohako-v41', 'kohako-v40', 'kohako-v39', 'kohako-v34', 'kohako-v33', 'kohako-v32', 'kohako-v31', 'kohako-v28', 'kohako-v26', 'kohako-v4', 'kohako-v7', 'kohako-v8', 'kohako-v9', 'kohako-v10', 'kohako-v18', 'kohako-v19', 'kohako-v20', 'kohako-v21', 'kohako-v22'])
+  })
+})
+
+describe('clip names', () => {
+  it('maps internal clip ids of the Kohako model to names and back', () => {
+    const kohako = modelFor('?model=kohako'), ids = Object.keys(kohako.clipNames ?? {})
+    const names = ids.map(id => clipName(kohako, id))
+    expect(names).toEqual(['Idle', 'Blink', 'Nod', 'Shake', 'Talk'])
+    expect(poseFor('listening', ['smile'], names).clip).toBe('Nod')
+    expect(clipIdFor(kohako, ids, 'Nod')).toBe('modifier:m25:6d6f74696f6e')
+    expect(clipIdFor(kohako, ids, null)).toBeNull()
+  })
+  it('maps the v5 clip ids, which have no Nod clip', () => {
+    const v5 = modelFor('?model=kohako-v5'), ids = Object.keys(v5.clipNames ?? {})
+    expect(v5.rig).toBe('../kohako/kohako-v5.p2lrt')
+    expect(ids.map(id => clipName(v5, id))).toEqual(['Shake', 'Idle', 'Blink', 'Talk'])
+    expect(clipIdFor(v5, ids, 'Nod')).toBeNull()
+  })
+  it('selects v6 and its clips', () => {
+    const v6 = modelFor('?model=kohako-v6'), ids = Object.keys(v6.clipNames ?? {})
+    expect(v6.id).toBe('kohako-v6')
+    expect(v6.rig).toBe('../kohako/kohako-v6.p2lrt')
+    expect(ids.map(id => clipName(v6, id))).toEqual(['Shake', 'Idle', 'Blink', 'Talk'])
+  })
+  it('selects v17 and preserves v16 for comparison', () => {
+    const v13 = modelFor('?model=kohako-v13')
+    expect(v13.rig).toBe('../kohako/kohako-v13.p2lrt')
+    expect(v13.status).toBe('old')
+    const v14 = modelFor('?model=kohako-v14')
+    expect(v14.status).toBe('old')
+    expect(modelFor('?model=kohako-v14b').status).toBe('rejected')
+    expect(modelFor('?model=kohako-v15').status).toBe('old')
+    expect(modelFor('?model=kohako-v16').status).toBe('rejected')
+    expect(lostPrototypes.find(p => p.id === 'kohako-v19')?.images).toContain('./kohako/live2d/compare/kohako-v19-trial2-mouth.jpg')
+    expect(lostPrototypes.find(p => p.id === 'kohako-v21')?.images).toContain('./kohako/live2d/compare/kohako-v21-material.jpg')
+    expect(lostPrototypes.find(p => p.id === 'kohako-v22')?.images).toContain('./kohako/live2d/compare/kohako-v22-compare-mouth.jpg')
+    expect(lostPrototypes.find(p => p.id === 'kohako-v20')?.images).toContain('./kohako/live2d/compare/kohako-v20-material.jpg')
+    expect(modelFor('?model=kohako-v17').status).toBe('old')
+    expect(modelFor('?model=kohako-v23').status).toBe('old')
+    expect(modelFor('?model=kohako-v24').status).toBe('old')
+    expect(modelFor('?model=kohako-v25').status).toBe('old')
+    expect(modelFor('?model=kohako-v27').status).toBe('old')
+    expect(modelFor('?model=kohako-v29').status).toBe('previous-latest')
+    expect(modelFor('?model=kohako-v30').status).toBe('previous-latest')
+    expect(modelFor('?model=kohako-v35').status).toBe('previous-latest')
+    expect(modelFor('?model=kohako-v36').status).toBe('previous-latest')
+    expect(modelFor('?model=kohako-v46').rig).toBe('../kohako/kohako-v46.p2lrt')
+    expect(modelFor('?model=kohako-v45').status).toBe('previous-latest')
+    expect(modelFor('?model=kohako-full-v11p').status).toBe('previous-latest')
+    expect(modelFor('?model=kohako-full-v11o').status).toBe('previous-latest')
+    expect(modelFor('?model=kohako-full-v11n').status).toBe('previous-latest')
+    expect(modelFor('?model=kohako-full-v11m').status).toBe('previous-latest')
+    expect(modelFor('?model=kohako-full-v11l').status).toBe('previous-latest')
+    expect(modelFor('?model=kohako-full-v11k').status).toBe('previous-latest')
+    expect(modelFor('?model=kohako-full-v11j').status).toBe('previous-latest')
+    expect(modelFor('?model=kohako-v45').rig).toBe('../kohako/kohako-v45.p2lrt')
+    expect(modelFor('?model=kohako-v38').status).toBe('previous-latest')
+    expect(modelFor('?model=kohako-v38').rig).toBe('../kohako/kohako-v38.p2lrt')
+    expect(modelFor('?model=kohako-v38').clipNames?.['modifier:m15:6d6f74696f6e']).toBe('Idle')
+    expect(modelFor('?model=kohako-v37').status).toBe('previous-latest')
+    expect(modelFor('?model=kohako-v37').rig).toBe('../kohako/kohako-v37.p2lrt')
+    expect(modelFor('?model=kohako-v36').rig).toBe('../kohako/kohako-v36.p2lrt')
+    expect(modelFor('?model=kohako-v30').rig).toBe('../kohako/kohako-v30.p2lrt')
+    expect(modelFor('?model=kohako-v29').rig).toBe('../kohako/kohako-v29.p2lrt')
+    expect(modelFor('?model=kohako-v27').rig).toBe('../kohako/kohako-v27.p2lrt')
+    expect(modelFor('?model=kohako-v25').rig).toBe('../kohako/kohako-v25.p2lrt')
+    expect(modelFor('?model=kohako-v24').rig).toBe('../kohako/kohako-v24.p2lrt')
+    expect(modelFor('?model=kohako-v24').skipSmallMouth).toBeUndefined()
+    expect(modelFor('?model=kohako-v17').rig).toBe('../kohako/kohako-v17.p2lrt')
+    expect(modelFor('?model=kohako-v16').rig).toBe('../kohako/kohako-v16.p2lrt')
+    expect(modelFor('?model=kohako-v15b').status).toBe('rejected')
+    expect(modelFor('?model=kohako-v15c').status).toBe('rejected')
+    expect(modelFor('?model=kohako-v15e').status).toBe('rejected')
+    expect(modelFor('?model=kohako-v15').rig).toBe('../kohako/kohako-v15.p2lrt')
+    expect(v14.rig).toBe('../kohako/kohako-v14.p2lrt')
+    expect(v14.evaluation).toContain('担当評価: 不採用・本人確認用')
+    expect(Object.values(v14.clipNames ?? {})).toEqual(['Shake', 'Idle', 'Blink', 'Talk'])
+    expect(v13.evaluation).toContain('本人確認用')
+    expect(modelFor('?model=kohako-v12').status).toBe('rejected')
+    expect(Object.values(v13.clipNames ?? {})).toEqual(['Shake', 'Idle', 'Blink', 'Talk'])
+  })
+  it('keeps the sample clip ids as they are', () => {
+    const sample = modelFor('?model=sample')
+    expect(clipName(sample, 'Nod')).toBe('Nod')
+    expect(clipIdFor(sample, ['Idle', 'Nod'], 'Nod')).toBe('Nod')
+  })
+})
+
+describe('mouthLevel', () => {
+  it('v6 だけ小開度の二重線帯を飛ばし、閉口か 0.35 以上の開口にする', async () => {
+    const { mouthLevel, modelFor } = await import('./model')
+    expect(mouthLevel(modelFor('?model=kohako-v17'), 0.4)).toBe(0.4)
+    const v6 = modelFor('?model=kohako-v6')
+    expect(mouthLevel(v6, 0)).toBe(0)
+    expect(mouthLevel(v6, 0.1)).toBe(0)
+    expect(mouthLevel(v6, Number.NaN)).toBe(0)
+    expect(mouthLevel(v6, 0.12)).toBeCloseTo(0.428)
+    expect(mouthLevel(v6, 1)).toBe(1)
+    for (let v = 0.12; v <= 1; v += 0.01) expect(mouthLevel(v6, v)).toBeGreaterThanOrEqual(0.35)
+  })
+  it('v6 以外のモデルは細かな口開度をそのまま保つ', async () => {
+    const { mouthLevel, modelFor } = await import('./model')
+    for (const id of ['?model=kohako-v0', '?model=kohako-v5', '?model=sample']) {
+      const m = modelFor(id)
+      expect(mouthLevel(m, 0.1)).toBeCloseTo(0.1)
+      expect(mouthLevel(m, 0.12)).toBeCloseTo(0.12)
+      expect(mouthLevel(m, 1.5)).toBe(1)
+      expect(mouthLevel(m, Number.NaN)).toBe(0)
+    }
+  })
+})
+
+describe('lookFor', () => {
+  it('本人モデルは首振りを抑え、サンプルは原寸のまま', async () => {
+    const { lookFor, KOHAKO_LOOK_SCALE } = await import('./model')
+    const [x, y] = lookFor(modelFor('?model=kohako-v13'), 0.6, 0.5)
+    expect(x).toBeCloseTo(0.6 * KOHAKO_LOOK_SCALE); expect(y).toBeCloseTo(0.5 * KOHAKO_LOOK_SCALE)
+    expect(Math.abs(x)).toBeLessThan(0.25)
+    expect(lookFor(modelFor('?model=sample'), 0.6, 0.5)).toEqual([0.6, 0.5])
+  })
+})
+
+describe('motion ids of the v25+ builds', () => {
+  it('maps m14..m17 so idle plays Idle and failed plays Shake (v35 until TD-26 played Shake while idle)', () => {
+    for (const id of ['kohako-v25', 'kohako-v27', 'kohako-v29', 'kohako-v30', 'kohako-v35', 'kohako-v36', 'kohako-v37', 'kohako-v38', 'kohako-v45']) {
+      const m = modelFor(`?model=${id}`), ids = ['modifier:m14:6d6f74696f6e', 'modifier:m15:6d6f74696f6e', 'modifier:m16:6d6f74696f6e', 'modifier:m17:6d6f74696f6e']
+      expect(ids.map(i => clipName(m, i))).toEqual(['Shake', 'Idle', 'Blink', 'Talk'])
+      expect(clipIdFor(m, ids, 'Idle')).toBe('modifier:m15:6d6f74696f6e')
+    }
+    const v24 = modelFor('?model=kohako-v24')
+    expect(clipName(v24, 'modifier:m14:6d6f74696f6e')).toBe('Idle')
+  })
+})
+
+it('全身 v11r が既定で、v11q・v11p・v11o へ戻せる', () => {
+  const candidate = modelFor('?model=kohako-full-v11r')
+  expect(candidate.id).toBe('kohako-full-v11r')
+  expect(candidate.status).toBe('latest')
+  expect(candidate.rig).toBe('../kohako/kohako-full-v11r.p2lrt')
+  expect(modelFor('').id).toBe('kohako-full-v11r')
+  expect(modelFor('?model=kohako-full-v11q').id).toBe('kohako-full-v11q')
+  expect(modelFor('?model=kohako-full-v11p').id).toBe('kohako-full-v11p')
+  expect(modelFor('?model=kohako-full-v11o').id).toBe('kohako-full-v11o')
+})
+
+it('全身 v11q を比較候補として選択でき、既定は v11r', () => {
+  const candidate = modelFor('?model=kohako-full-v11q')
+  expect(candidate.id).toBe('kohako-full-v11q')
+  expect(candidate.status).toBe('candidate')
+  expect(candidate.rig).toBe('../kohako/kohako-full-v11q.p2lrt')
+  expect(modelFor('').id).toBe('kohako-full-v11r')
+  expect(modelFor('?model=kohako-full-v11o').id).toBe('kohako-full-v11o')
+})
+
+it('全身 v11p は以前の既定で、明示選択できる', () => {
+  const candidate = modelFor('?model=kohako-full-v11p')
+  expect(candidate.id).toBe('kohako-full-v11p')
+  expect(candidate.status).toBe('previous-latest')
+  expect(modelFor('').id).toBe('kohako-full-v11r')
+})
+
+it('全身試作を明示選択でき、既定は全身 v11r', () => {
+  expect(modelFor('?model=kohako-full-v5').id).toBe('kohako-full-v5')
+  expect(modelFor('?model=kohako-v45').rig).toBe('../kohako/kohako-v45.p2lrt')
+  expect(modelFor('?model=kohako-full-v1').id).toBe('kohako-full-v1')
+  expect(modelFor('?model=kohako-full-v2').id).toBe('kohako-full-v2')
+  expect(clipName(modelFor('?model=kohako-full-v2'), 'modifier:m17:6d6f74696f6e')).toBe('Idle')
+  expect(modelFor('').id).toBe('kohako-full-v11r')
+  expect(clipName(modelFor('?model=kohako-full-v1'), 'modifier:m16:6d6f74696f6e')).toBe('Idle')
+})
+
+
+it('selects full-v6 explicitly', () => {
+  expect(modelFor('?model=kohako-full-v6').id).toBe('kohako-full-v6')
+  expect(LATEST_MODEL_ID).toBe('kohako-full-v11r')
+})
+
+it('selects full-v7 explicitly', () => {
+  const v7 = modelFor('?model=kohako-full-v7')
+  expect(v7.id).toBe('kohako-full-v7')
+  expect(v7.status).toBe('rejected')
+  expect(clipName(v7, 'modifier:m18:6d6f74696f6e')).toBe('Blink')
+  expect(LATEST_MODEL_ID).toBe('kohako-full-v11r')
+})
+
+it('selects full-v8 explicitly', () => {
+  expect(modelFor('?model=kohako-full-v8').status).toBe('rejected')
+  expect(modelFor('').id).toBe('kohako-full-v11r')
+})
+
+it('limits upper framing to full-body models', () => {
+  const full = modelFor('?model=kohako-full-v8')
+  expect(frameFor(full, '')).toBe('full')
+  expect(frameFor(full, '?frame=upper')).toBe('upper')
+  expect(frameFor(full, '?frame=invalid')).toBe('full')
+  expect(frameFor(modelFor('?model=kohako-v45'), '?frame=upper')).toBe('full')
+  expect(frameFor(modelFor(''), '?frame=upper')).toBe('upper')
+})
+
+it('selects full-v9 explicitly', () => {
+  expect(modelFor('?model=kohako-full-v9').status).toBe('rejected')
+  expect(LATEST_MODEL_ID).toBe('kohako-full-v11r')
+})
+
+it('full-v11j keeps eyes open by not applying expressions, other models unchanged', () => {
+  expect(modelFor('?model=kohako-full-v11o').noExpressions).toBeUndefined()
+  expect(modelFor('?model=kohako-full-v11n').noExpressions).toBeUndefined()
+  expect(modelFor('?model=kohako-full-v11m').noExpressions).toBeUndefined()
+  expect(modelFor('?model=kohako-full-v11l').noExpressions).toBe(true)
+  expect(modelFor('?model=kohako-full-v11k').noExpressions).toBe(true)
+  expect(modelFor('?model=kohako-full-v11j').noExpressions).toBe(true)
+  expect(modelFor('?model=kohako-full-v11g').noExpressions).toBeUndefined()
+  expect(LATEST_MODEL_ID).toBe('kohako-full-v11r')
+})

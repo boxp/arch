@@ -1,0 +1,11 @@
+rest new G 0
+idle4 new G 0
+idle10 new G 1 1:[290,333,290,333]
+xminus new G 0
+xplus new G 0
+zminus new G 0
+zminus5 new G 4 3:[298,346,298,348] 1:[298,352,298,352]
+zplus5 new G 0
+zplus new G 0
+bodyminus new G 0
+bodyplus new G 0

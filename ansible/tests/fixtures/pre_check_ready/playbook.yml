@@ -1,0 +1,14 @@
+---
+# Runs only the readiness pre-check task against a mock kubectl.
+# Earlier pre_checks tasks are skipped with --start-at-task so no APT, kubelet
+# or etcd access is required.
+- name: Control-plane readiness pre-check
+  hosts: "{{ pre_check_fixture_hosts | default('cp-a') }}"
+  gather_facts: false
+  tasks:
+    - name: Run readiness pre-check
+      ansible.builtin.import_role:
+        name: kubernetes_upgrade
+        tasks_from: pre_checks.yml
+      vars:
+        node_role: "{{ pre_check_fixture_node_role | default('control_plane') }}"

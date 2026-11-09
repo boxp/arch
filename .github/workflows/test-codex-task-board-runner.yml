@@ -6,9 +6,17 @@ on:
       - docker/codex-workspace/Dockerfile
       - docker/codex-workspace/cron/**
       - docker/codex-workspace/entrypoint.sh
+      - docker/codex-workspace/qwen-eval/**
+      - tests/qwen-eval/**
       - docker/codex-workspace/task-board/**
+      - docker/codex-workspace/novel-board/**
       - docker/codex-workspace/recurring-events/**
+      - docker/codex-workspace/infra-diagram-refresh/**
+      - .github/workflows/schedule-infra-diagram-refresh.yml
+      - docker/hermes-agent/skills/obsidian-task-board/**
       - tests/codex-workspace/**
+      - tests/harness-eval/**
+      - docs/project_docs/BOXP-360/tools/**
       - .github/workflows/test-codex-task-board-runner.yml
   push:
     branches: [main]
@@ -16,9 +24,17 @@ on:
       - docker/codex-workspace/Dockerfile
       - docker/codex-workspace/cron/**
       - docker/codex-workspace/entrypoint.sh
+      - docker/codex-workspace/qwen-eval/**
+      - tests/qwen-eval/**
       - docker/codex-workspace/task-board/**
+      - docker/codex-workspace/novel-board/**
       - docker/codex-workspace/recurring-events/**
+      - docker/codex-workspace/infra-diagram-refresh/**
+      - .github/workflows/schedule-infra-diagram-refresh.yml
+      - docker/hermes-agent/skills/obsidian-task-board/**
       - tests/codex-workspace/**
+      - tests/harness-eval/**
+      - docs/project_docs/BOXP-360/tools/**
       - .github/workflows/test-codex-task-board-runner.yml
   workflow_dispatch: {}
 
@@ -26,9 +42,16 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  suites:
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        group: [runner-0, runner-1, localllm, remaining]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       BABASHKA_VERSION: 1.12.218
     steps:
@@ -44,5 +67,52 @@ jobs:
             -o "${tmp}/bb.tar.gz"
           tar -xzf "${tmp}/bb.tar.gz" -C "${tmp}"
           sudo install -m 0755 "$(find "${tmp}" -type f -name bb | head -n 1)" /usr/local/bin/bb
-      - run: tests/codex-workspace/task-board-runner-test.sh
-      - run: tests/codex-workspace/recurring-events-test.sh
+      - name: Check coverage and aggregate fixtures
+        run: python3 tests/codex-workspace/ci-partition-test.py
+      - name: Runner shard 0
+        if: matrix.group == 'runner-0'
+        run: TASK_BOARD_TEST_SHARDS=2 TASK_BOARD_TEST_SHARD=0 tests/codex-workspace/task-board-runner-test.sh
+      - name: Runner shard 1
+        if: matrix.group == 'runner-1'
+        run: TASK_BOARD_TEST_SHARDS=2 TASK_BOARD_TEST_SHARD=1 tests/codex-workspace/task-board-runner-test.sh
+      - name: Local LLM documentation
+        if: matrix.group == 'localllm'
+        run: tests/codex-workspace/localllm-docs-test.sh
+      - name: Remaining suites
+        if: matrix.group == 'remaining'
+        run: |
+          set -euo pipefail
+          time python3 tests/codex-workspace/task-board-reconcile-test.py
+          time python3 tests/codex-workspace/delegation-test.py
+          time tests/codex-workspace/task-board-events-test.sh
+          time tests/codex-workspace/ai-ops-ledger-test.sh
+          time bash tests/codex-workspace/ai-subscription-usage-test.sh
+          time bb tests/ai-observability/test_slo_snapshot.bb
+          time bb tests/ai-observability/test_outcome.bb
+          time bb tests/ai-observability/test_provider_quota.bb
+          time bb tests/harness-eval/test_harness_eval.bb
+          time docs/project_docs/BOXP-360/tools/test.sh
+          time tests/codex-workspace/localllm-source-check-test.sh
+          time bb docker/codex-workspace/novel-board/novel_board_runner.bb test
+          time tests/codex-workspace/novel-board-runner-test.sh
+          time tests/codex-workspace/recurring-events-test.sh
+          time bb tests/codex-workspace/infra-diagram-refresh-test.bb
+          time bb tests/codex-workspace/autonomy-policy-test.bb
+          time bb tests/codex-workspace/autonomy-control-test.bb
+          time bb tests/codex-workspace/vault-writer-test.bb
+          time bb tests/codex-workspace/task-board-todos-test.bb
+          time bb docker/codex-workspace/task-board/test/langfuse_exporter_test.bb
+
+  test:
+    timeout-minutes: 2
+    if: always()
+    needs: [suites]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Require every suite shard to succeed
+        env:
+          RESULT: ${{ needs.suites.result }}
+        run: |
+          test "$RESULT" = success

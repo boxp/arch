@@ -1,0 +1,27 @@
+name: Test Ansible plan aggregation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/scripts/aggregate_ansible_plan.py'
+      - '.github/workflows/plan-ansible.yml'
+      - '.github/workflows/plan-ansible-node.yml'
+      - '.github/workflows/test-plan-ansible-aggregation.yml'
+      - '.github-comment-ansible.yaml'
+      - 'tests/test_plan_ansible_aggregation.py'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Run aggregation regression tests
+        run: python3 -m unittest discover -s tests -p test_plan_ansible_aggregation.py -v

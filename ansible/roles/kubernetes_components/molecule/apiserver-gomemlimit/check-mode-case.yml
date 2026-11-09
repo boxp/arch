@@ -1,0 +1,83 @@
+---
+# verify.yml から呼ばれる。plan-ansible.yml は control-plane.yml を --check --diff で流すため、
+# env 未設定のマニフェストに対して global check mode で role を通しても失敗せず (再読込後の assert・
+# PID 変化待ち・readyz 待ちは check mode では走らない)、「変更あり」を報告するだけで
+# マニフェストは書き換えないことを確認する。有効化 PR の plan が誤って失敗しないための回帰テスト。
+- name: Save the converged manifest (check-mode)
+  ansible.builtin.copy:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+    dest: /var/tmp/kube-apiserver.yaml.converged
+    remote_src: true
+    mode: '0600'
+  become: true
+
+- name: Read the converged manifest (check-mode)
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: check_mode_converged
+  become: true
+
+# converge 済みのマニフェストから env だけを取り除き、「これから有効化する CP」の状態を作る。
+- name: Write a manifest without the GOMEMLIMIT env (check-mode)
+  ansible.builtin.copy:
+    dest: /etc/kubernetes/manifests/kube-apiserver.yaml
+    mode: '0600'
+    content: "{{ check_mode_stripped | to_nice_yaml(indent=2, width=4096) }}"
+  vars:
+    check_mode_parsed: "{{ check_mode_converged.content | b64decode | from_yaml }}"
+    check_mode_containers: >-
+      {{
+        check_mode_parsed.spec.containers
+        | map('dict2items') | map('rejectattr', 'key', 'equalto', 'env') | map('items2dict') | list
+      }}
+    check_mode_stripped: "{{ check_mode_parsed | combine({'spec': {'containers': check_mode_containers}}, recursive=True) }}"
+  become: true
+
+- name: Read the manifest before the check-mode run (check-mode)
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: check_mode_before
+  become: true
+
+- name: Assert the test manifest really lacks the env (check-mode)
+  ansible.builtin.assert:
+    that:
+      - "'GOMEMLIMIT' not in (check_mode_before.content | b64decode)"
+    fail_msg: "the check-mode test manifest still carries the env"
+
+- name: Run the GOMEMLIMIT tasks with ansible-playbook --check (check-mode)
+  ansible.builtin.command:
+    argv:
+      - ansible-playbook
+      - --check
+      - --inventory
+      - "{{ lookup('env', 'MOLECULE_INVENTORY_FILE') }}"
+      - --limit
+      - "{{ inventory_hostname }}"
+      - "{{ playbook_dir }}/check-mode-play.yml"
+  delegate_to: localhost
+  become: false
+  register: check_mode_run
+  changed_when: false
+
+- name: Read the manifest after the check-mode run (check-mode)
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: check_mode_after
+  become: true
+
+- name: Assert check mode reported a change without writing the manifest (check-mode)
+  ansible.builtin.assert:
+    that:
+      - check_mode_run.rc == 0
+      - "'failed=0' in check_mode_run.stdout"
+      - check_mode_after.content == check_mode_before.content
+    fail_msg: "check mode must report the pending manifest change without writing it: {{ check_mode_run.stdout_lines[-12:] }}"
+
+- name: Restore the converged manifest (check-mode)
+  ansible.builtin.copy:
+    src: /var/tmp/kube-apiserver.yaml.converged
+    dest: /etc/kubernetes/manifests/kube-apiserver.yaml
+    remote_src: true
+    mode: '0600'
+  become: true

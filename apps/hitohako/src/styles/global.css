@@ -1,0 +1,420 @@
+@import "tailwindcss";
+
+/*
+ * Palette: deep purple x gold x sakura pink (matches the transformed costume).
+ * Flat colors only, no gradients (the hero key visual is the one exception:
+ * static CSS gradients / masks blend the painting into the page, see below).
+ */
+@theme {
+  --font-pixel: "DotGothic16", "PixelMplus12", "Misaki Gothic", "MS Gothic", monospace;
+  --color-ink: #0b0612;
+  --color-plum: #1a0b2e;
+  --color-plum-light: #2b1251;
+  --color-plum-line: #3a1e5c;
+  --color-gold: #e3b341;
+  --color-gold-dark: #a8781e;
+  --color-sakura: #f7a8c4;
+  --color-sakura-dark: #d678a0;
+  --color-paper: #f4ecff;
+  --color-torii: #d94a2b;
+  --color-cyan: #5fe3e8;
+  --color-ice: #bfe6ff;
+  --color-blaze: #ff7a45;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  background-color: var(--color-plum);
+  color: var(--color-paper);
+  font-family: var(--font-pixel);
+  font-size: 16px;
+  line-height: 1.75;
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100dvh;
+  background-color: var(--color-plum);
+  background-image: url("/pixel/tile-seigaiha.png");
+  background-size: 64px 64px;
+  background-repeat: repeat;
+  image-rendering: pixelated;
+}
+
+/* Only pixel-art props/tiles get nearest-neighbour scaling.
+   Character illustrations (.illust) are regular drawings and must not be pixelated. */
+.pixel {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+.illust {
+  image-rendering: auto;
+  max-width: 100%;
+}
+
+::selection {
+  background: var(--color-gold);
+  color: var(--color-ink);
+}
+
+/* ---------- ADV / RPG style window (double border, square corners) ---------- */
+.rpg-window {
+  position: relative;
+  background: var(--color-plum-light);
+  border: 4px solid var(--color-gold);
+  outline: 2px solid var(--color-ink);
+  box-shadow:
+    inset 0 0 0 2px var(--color-ink),
+    inset 0 0 0 4px var(--color-gold-dark),
+    6px 6px 0 0 var(--color-ink);
+  padding: 1.5rem;
+}
+
+.rpg-window--paper {
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+.rpg-tab {
+  position: absolute;
+  top: -1.1rem;
+  left: 1rem;
+  background: var(--color-plum);
+  color: var(--color-gold);
+  border: 2px solid var(--color-gold);
+  box-shadow: 3px 3px 0 0 var(--color-ink);
+  padding: 0 0.75rem;
+  line-height: 1.6;
+  letter-spacing: 0.1em;
+  font-size: 0.875rem;
+}
+
+.rpg-window--paper .rpg-tab {
+  background: var(--color-gold);
+  color: var(--color-ink);
+  border-color: var(--color-ink);
+}
+
+/* Static ▼ cursor at the bottom-right of a message window.
+   No blinking: flashing elements are intentionally avoided site-wide. */
+.rpg-window[data-cursor]::after {
+  content: "▼";
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.25rem;
+  color: var(--color-sakura);
+}
+
+/* ---------- Pixel buttons / menu items ---------- */
+.rpg-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.75rem;
+  border: 2px solid transparent;
+  color: var(--color-paper);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.rpg-menu-item::before {
+  content: "▶";
+  color: var(--color-sakura);
+  visibility: hidden;
+}
+
+.rpg-menu-item:hover,
+.rpg-menu-item:focus-visible {
+  border-color: var(--color-gold);
+  background: var(--color-plum);
+  outline: none;
+}
+
+.rpg-menu-item:hover::before,
+.rpg-menu-item:focus-visible::before {
+  visibility: visible;
+}
+
+.pixel-link {
+  color: var(--color-sakura);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.pixel-link:hover {
+  color: var(--color-gold);
+}
+
+/* ---------- Title screen ---------- */
+.title-logo {
+  color: var(--color-paper);
+  text-shadow:
+    4px 4px 0 var(--color-ink),
+    -2px -2px 0 var(--color-gold-dark),
+    2px -2px 0 var(--color-gold-dark),
+    -2px 2px 0 var(--color-gold-dark),
+    2px 2px 0 var(--color-gold-dark);
+  letter-spacing: 0.08em;
+}
+
+.press-start {
+  border: 2px solid var(--color-gold);
+  box-shadow: 4px 4px 0 0 var(--color-ink);
+}
+
+.press-start:hover,
+.press-start:focus-visible {
+  border-color: var(--color-sakura);
+}
+
+/*
+ * No CRT overlay. The former full-screen scanline / vignette overlay and its
+ * scrolling animation caused visible flicker, so the site renders flat and
+ * static regardless of prefers-reduced-motion.
+ */
+
+/* ---------- Status bars ---------- */
+.stat-bar {
+  display: block;
+  height: 10px;
+  background: var(--color-ink);
+  border: 2px solid var(--color-gold-dark);
+}
+
+.stat-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--color-sakura);
+}
+
+/*
+ * No keyframe animations are defined on purpose (no blink / scan / float).
+ * Smooth scrolling is the only motion and is disabled for reduced-motion users.
+ */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+/* ---------- Hero key visual ----------
+   Finished landscape painting (2560x1428, background included). The file is
+   byte-identical to the original; the <img> keeps its aspect ratio and CSS only
+   frames it (object-fit) and grades it very lightly. It is never stretched.
+   Figure: centre-left, face top-centre (x 30-42%, y 5-27%), hair/obi flowing
+   right, bright sky top-right.
+
+   Layers (all static, no animation / blur / flashing):
+     .hero-art            masked at the sides and bottom so the picture melts
+                          into the seigaiha page background
+     .hero-art::before    edge vignette, transparent over the face
+     .hero-art::after     local plum gradient for the title block (desktop:
+                          top-right sky; stacked: bottom fade under the text)
+     .hero-visual         filter: slight saturation / contrast lift only
+     .hero-copy           borderless gradient panel + gold rule + text shadows */
+.hero-stage {
+  --hero-plum: 26, 11, 46; /* --color-plum as rgb() channels */
+  overflow: hidden;
+}
+
+.hero-art {
+  position: relative;
+  width: 100%;
+  line-height: 0;
+  /* sides fade into the page background; the bottom fades more (stacked layout
+     overlaps the title block here) */
+  mask-image:
+    linear-gradient(to right, transparent, #000 4%, #000 96%, transparent),
+    linear-gradient(to bottom, #000 68%, rgba(0, 0, 0, 0.55) 86%, transparent);
+  mask-composite: intersect;
+  -webkit-mask-image:
+    linear-gradient(to right, transparent, #000 4%, #000 96%, transparent),
+    linear-gradient(to bottom, #000 68%, rgba(0, 0, 0, 0.55) 86%, transparent);
+  -webkit-mask-composite: source-in;
+}
+
+.hero-art::before,
+.hero-art::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* Gentle vignette: nothing at the face / torso (centre is at the face), a soft
+   plum tint only towards the corners. */
+.hero-art::before {
+  background: radial-gradient(
+    ellipse 85% 95% at 36% 22%,
+    transparent 48%,
+    rgba(var(--hero-plum), 0.12) 72%,
+    rgba(var(--hero-plum), 0.32) 100%
+  );
+}
+
+/* Stacked layout: plum fade across the lower part so the overlapping title
+   block has contrast (the face is in the upper third and stays untouched). */
+.hero-art::after {
+  background: linear-gradient(
+    to bottom,
+    transparent 52%,
+    rgba(var(--hero-plum), 0.35) 76%,
+    rgba(var(--hero-plum), 0.78) 100%
+  );
+}
+
+.hero-visual {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: cover;
+  /* light colour grade only: keeps skin / eyes / costume colours, no blur */
+  filter: saturate(1.08) contrast(1.03);
+}
+
+/* Stage only: the fixed STAGE banner must not cover the top of the picture
+   (the face sits near the top edge). Production has no banner. */
+body:has(.stage-banner) .hero {
+  padding-top: 2.75rem;
+}
+
+@media (min-width: 640px) {
+  body:has(.stage-banner) .hero {
+    padding-top: 1.75rem;
+  }
+}
+
+/* Stacked layout (phones / small tablets): 4:3 frame anchored towards the left
+   so the whole figure and the naginata stay visible; the title block then rides
+   up over the faded bottom edge. */
+.hero-visual {
+  aspect-ratio: 4 / 3;
+  object-position: 24% 50%;
+}
+
+.hero-copy {
+  position: relative;
+  margin: -2.75rem auto 0;
+  width: calc(100% - 1.5rem);
+  max-width: 28rem;
+  padding: 1.25rem 1.25rem 1.5rem;
+  background: linear-gradient(
+    to bottom,
+    rgba(var(--hero-plum), 0) 0%,
+    rgba(var(--hero-plum), 0.72) 2.5rem,
+    rgba(var(--hero-plum), 0.72) 100%
+  );
+}
+
+/* gold rule under the name, same width as the text */
+.hero-copy::after {
+  content: "";
+  display: block;
+  position: absolute;
+  left: 1.25rem;
+  right: 1.25rem;
+  bottom: 0;
+  height: 2px;
+  background: linear-gradient(to right, transparent, var(--color-gold) 20%, var(--color-gold) 80%, transparent);
+}
+
+.hero-text-shadow {
+  text-shadow:
+    0 0 6px rgba(var(--hero-plum), 0.95),
+    0 0 14px rgba(var(--hero-plum), 0.7),
+    1px 1px 0 var(--color-ink);
+}
+
+.hero-title {
+  padding-bottom: 0.5rem;
+  border-bottom: 2px solid var(--color-gold-dark);
+}
+
+.hero-name {
+  font-size: clamp(2.75rem, 11vw, 4rem);
+}
+
+@media (min-width: 640px) {
+  /* Wide enough to show the full painting; still stacked. */
+  .hero-visual {
+    aspect-ratio: 2560 / 1428;
+    object-position: 50% 50%;
+  }
+
+  .hero-copy {
+    margin-top: -3.5rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  /* Painting-first layout: full width, cropped only at the bottom on very wide
+     screens (max-height), top anchored so the face never leaves the frame. */
+  .hero-visual {
+    aspect-ratio: 2560 / 1428;
+    max-height: 100dvh;
+    object-position: 50% 0%;
+  }
+
+  /* bottom fades less (nothing overlaps it on desktop) */
+  .hero-art {
+    mask-image:
+      linear-gradient(to right, transparent, #000 4%, #000 96%, transparent),
+      linear-gradient(to bottom, #000 80%, rgba(0, 0, 0, 0.6) 92%, transparent);
+    -webkit-mask-image:
+      linear-gradient(to right, transparent, #000 4%, #000 96%, transparent),
+      linear-gradient(to bottom, #000 80%, rgba(0, 0, 0, 0.6) 92%, transparent);
+  }
+
+  /* Local plum gradient over the bright top-right sky (x >= ~62%, y <= ~55%)
+     behind the title block. It fades out before the face (x <= 42%) and the obi
+     ribbon (y >= 50%), so only sky and the hair tips are tinted. */
+  .hero-art::after {
+    background:
+      radial-gradient(
+        ellipse 46% 62% at 88% 16%,
+        rgba(var(--hero-plum), 0.78) 0%,
+        rgba(var(--hero-plum), 0.6) 38%,
+        rgba(var(--hero-plum), 0.22) 72%,
+        transparent 100%
+      ),
+      linear-gradient(to top, rgba(var(--hero-plum), 0.55), transparent 18%);
+  }
+
+  .hero-copy {
+    position: absolute;
+    top: 7%;
+    right: 4%;
+    margin: 0;
+    width: clamp(19rem, 29vw, 30rem);
+    max-width: none;
+    padding: 1.25rem 1.5rem 1.5rem 1.75rem;
+    background: linear-gradient(
+      135deg,
+      rgba(var(--hero-plum), 0.1) 0%,
+      rgba(var(--hero-plum), 0.45) 45%,
+      rgba(var(--hero-plum), 0.6) 100%
+    );
+    border-left: 3px solid var(--color-gold);
+  }
+
+  /* on desktop the gold accent is the left rule, not a bottom line */
+  .hero-copy::after {
+    display: none;
+  }
+
+  .hero-name {
+    font-size: clamp(2.5rem, 4.4vw, 5.5rem);
+  }
+}
+
+/* ---------- YouTube click-to-play facade ---------- */
+.yt-facade__play {
+  box-shadow: 4px 4px 0 0 var(--color-ink);
+}

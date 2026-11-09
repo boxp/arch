@@ -25,3 +25,14 @@ resource "cloudflare_dns_record" "codex_task_board" {
   ttl     = 1
   proxied = true
 }
+
+# BOXP-430: the Worker in apps/lolice-lineage answers every request on this hostname, so
+# the record only has to be proxied. 100:: is Cloudflare's documented originless target.
+resource "cloudflare_dns_record" "lolice_lineage" {
+  zone_id = var.zone_id
+  name    = "lolice-lineage.b0xp.io"
+  content = "100::"
+  type    = "AAAA"
+  ttl     = 1
+  proxied = true
+}

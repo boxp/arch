@@ -1,0 +1,528 @@
+{
+  "base": "d9918e319",
+  "note": "静的なtest関数/deftest一覧。動的に生成されるassertionは各ソースの基準hashで保持を追跡する。workflowが実行する範囲より広いfixture/helperも含む。",
+  "sources": [
+    {
+      "path": "docker/codex-workspace/novel-board/novel_board_runner.bb",
+      "sha256": "63670a06072bc662a5d100e4695405032e5cd4a695a1b8f2781599829b6f4af9",
+      "static_test_names": []
+    },
+    {
+      "path": "docs/project_docs/BOXP-360/tools/ai_ops_insight.bb",
+      "sha256": "fc2ef3f073fcc7f4ad07c710b97131f8a07cf1285281c57a07e05f8b3dcd4200",
+      "static_test_names": []
+    },
+    {
+      "path": "docs/project_docs/BOXP-360/tools/ai_ops_sli.bb",
+      "sha256": "acb319e5602761a512551168a8788b41df0fb4dc820047d4a30affd88f3bac51",
+      "static_test_names": []
+    },
+    {
+      "path": "docs/project_docs/BOXP-360/tools/insight-test.sh",
+      "sha256": "34fa54785be88f586906cd3874debbcc968daefd724c4b44fed1b74125a14375",
+      "static_test_names": []
+    },
+    {
+      "path": "docs/project_docs/BOXP-360/tools/test.sh",
+      "sha256": "4dc5e8976e4b2daa5bd0375f4cfa14167b47a5dd0e515cd3e81837085f20ce3f",
+      "static_test_names": []
+    },
+    {
+      "path": "tests/codex-workspace/ai-ops-ledger-test.sh",
+      "sha256": "3a445fad89f80f66fbf0bc70369e72731476c3d70958c1a2fd4a16b925d7d16f",
+      "static_test_names": []
+    },
+    {
+      "path": "tests/codex-workspace/ai-subscription-usage-test.sh",
+      "sha256": "2d3923c6088c3af4bcaf50db9cda407ede657ff5dbbdf2750c17882386549698",
+      "static_test_names": []
+    },
+    {
+      "path": "tests/codex-workspace/autonomy-control-test.bb",
+      "sha256": "794d3d002e8f5b2ab57b2030b00063533597939a9f53a323f6f85ebeb750b511",
+      "static_test_names": [
+        "initialization-never-truncates-an-existing-log",
+        "writer-generation-is-owner-issued-and-monotonic",
+        "only-the-owner-issues-controls",
+        "non-owner-actors-cannot-widen-control",
+        "revision-cas-admits-one-concurrent-writer",
+        "runner-may-only-tighten-intent",
+        "new-objective-version-invalidates-pinned-decisions",
+        "budget-accumulates-per-epoch-not-per-revision",
+        "writes-are-fenced-by-generation-and-revision",
+        "unavailable-or-damaged-original-fails-closed",
+        "projections-never-grant",
+        "events-are-attributable-and-results-are-redacted"
+      ]
+    },
+    {
+      "path": "tests/codex-workspace/autonomy-policy-test.bb",
+      "sha256": "40ac6d75f4189966e5b721662d35939ce406189c4f50da8e557e1615b99bf319",
+      "static_test_names": [
+        "valid-issued-fixtures",
+        "every-required-field-is-enforced",
+        "string-keyed-schemas-are-bounded-and-compatible",
+        "version-route-and-probe-fail-closed",
+        "scope-objective-and-operation-boundaries",
+        "invalid-validation-is-silent",
+        "decision-issuance-expiration-placeholders-and-control-binding",
+        "retry-contract-expiration-and-control-binding",
+        "notification-bounds-and-exact-shape",
+        "public-diagnostic-is-allowlisted",
+        "caught-exceptions-cannot-publish-secret-data"
+      ]
+    },
+    {
+      "path": "tests/codex-workspace/delegation-test.py",
+      "sha256": "c8d89c74f1f0dedecbf372186e3ab34910e5ec9514f98167acfe3cf5d316569d",
+      "static_test_names": [
+        "test_success_and_model_override",
+        "test_sandbox_add_dirs",
+        "test_failure_modes",
+        "test_timeout_stops_child_and_grandchild",
+        "test_runner_group_shutdown_stops_child_and_grandchild",
+        "test_exemption"
+      ]
+    },
+    {
+      "path": "tests/codex-workspace/even-terminal-smoke-test.sh",
+      "sha256": "c1c1982818bd2cceb6b434859fb30d0f5528668f06b7dc3d79ad70d8df8ae39e",
+      "static_test_names": []
+    },
+    {
+      "path": "tests/codex-workspace/fixtures/autonomy/vault-writer-worker.bb",
+      "sha256": "8bdc6e739ec4c8d606f0797c175304208eec4733afb272e35a93c48669852b3f",
+      "static_test_names": []
+    },
+    {
+      "path": "tests/codex-workspace/localllm-docs-test.sh",
+      "sha256": "97439726531906c87a69ea6964cc43e6daf8688ded78b654bbeccf5e73adb29c",
+      "static_test_names": [
+        "test_docs_model_selects_a_served_model",
+        "test_revision_keeps_the_notes_model_or_blocks",
+        "test_unknown_docs_model_blocks_without_a_model_call",
+        "test_docs_model_outside_the_allowlist_blocks_before_any_request",
+        "test_apply_moves_to_review_without_cloud",
+        "test_stream_response_is_applied",
+        "test_missing_opt_in_blocks_without_request",
+        "test_backlog_legacy_transcribe_ticket_is_groomed_without_a_model_call",
+        "test_backlog_groom_validates_explicit_targets_before_ready",
+        "test_target_outside_allowlist_blocks",
+        "test_traversal_and_symlink_targets_block",
+        "test_needs_human_blocks_with_reason",
+        "test_invalid_outputs_block_and_leave_file",
+        "test_section_rewrite_keeps_links_outside_the_section",
+        "test_rejected_proposal_gets_one_correction_round",
+        "test_heading_without_hashes_is_matched_by_text",
+        "test_append_section_on_a_duplicated_heading_is_rejected",
+        "test_noop_proposal_is_not_applied",
+        "test_crash_right_after_the_review_note_completes_the_transition",
+        "test_http_errors_block_after_bounded_retries",
+        "test_unreachable_model_blocks_without_cloud_fallback",
+        "test_idle_timeout_blocks",
+        "test_stream_cut_blocks",
+        "test_concurrent_edit_is_detected_and_not_overwritten",
+        "test_review_lane_reruns_as_revision",
+        "test_tick_ticket_filter_claims_only_one_card",
+        "test_parallel_ticks_run_once_per_card",
+        "test_research_collects_evidence_then_applies_with_sources",
+        "test_research_sources_must_be_notes_the_model_read",
+        "test_research_without_progress_stops_and_unsourced_apply_blocks",
+        "test_research_sources_outside_read_roots_block_without_request",
+        "test_corpus_notes_over_the_byte_caps_block_before_any_read",
+        "test_oversized_target_and_reference_are_refused_before_reading",
+        "test_runaway_output_is_cut_and_blocks_without_retry",
+        "test_credential_additions_are_blocked_by_the_executor",
+        "test_research_sources_hit_only_by_search_are_rejected",
+        "test_research_finish_without_reads_auto_reads_the_hits",
+        "test_write_is_deferred_until_the_lifecycle_commit",
+        "test_failed_transition_after_the_write_is_rolled_back",
+        "test_partial_write_failure_keeps_a_file_edited_in_between",
+        "test_stale_lock_recovery_restores_an_unfinished_write",
+        "test_stale_lock_recovery_is_decided_by_the_run_commit_record",
+        "test_committing_recovery_blocks_when_the_note_changed_after_the_write",
+        "test_two_tickets_on_the_same_target_do_not_overwrite_each_other",
+        "test_prompt_over_the_cap_blocks_without_a_request",
+        "test_ticket_brief_drops_runner_notes_and_marks_the_ticket_as_non_source",
+        "test_symlink_swap_between_snapshot_and_write_is_rejected",
+        "test_edit_on_a_later_target_during_the_write_is_detected",
+        "test_correction_round_over_the_prompt_cap_blocks",
+        "test_crash_right_after_the_write_is_recovered_from_the_journal",
+        "test_absolute_paths_in_the_ticket_are_rejected",
+        "test_model_supplied_sources_outside_the_runner_reads_are_not_recorded",
+        "test_research_total_time_limit_caps_each_model_call",
+        "test_propose_appends_an_unapproved_section_and_keeps_canon",
+        "test_propose_without_declared_sources_uses_the_default_corpus",
+        "test_propose_facts_must_cite_read_notes_then_one_correction",
+        "test_propose_needs_human_and_invalid_mode_block_without_writing",
+        "test_propose_rejects_result_markers_in_the_proposal",
+        "test_propose_without_a_corpus_cites_the_target_and_verifies_against_it",
+        "test_propose_heading_only_answer_is_rejected_and_titles_stay_inside_the_section",
+        "test_create_makes_an_unapproved_note_and_revises_it",
+        "test_create_kind_comes_from_docs_kind_or_wording_or_is_asked_without_a_request",
+        "test_create_name_and_slug_collisions_get_one_correction_then_block",
+        "test_create_needs_human_and_result_markers_block_without_writing",
+        "test_create_refuses_raw_credential_values_and_redacts_wikilinked_references",
+        "test_natural_language_backlog_card_is_groomed_then_runs_revises_and_refuses_an_unchanged_review",
+        "test_natural_language_ready_card_infers_create_without_groom_and_explicit_sources_still_win",
+        "test_natural_language_propose_target_comes_from_one_wikilink_inside_the_write_roots",
+        "test_natural_language_unclear_requests_stop_with_one_question_and_no_model_call",
+        "test_vault_wide_read_root_excludes_tickets_hidden_dirs_and_proposals_and_redacts_secret_lines",
+        "test_canon_select_grooms_by_content_then_amends_and_revises_in_place",
+        "test_canon_select_multi_target_replace_is_plain_text_read_by_other_tickets",
+        "test_canon_select_asks_or_refuses_without_writing",
+        "test_canon_select_new_note_goes_to_the_chosen_folder_as_a_plain_note",
+        "test_canon_amend_stops_when_the_plan_is_stale_or_missing",
+        "test_canon_amend_rejects_changes_outside_the_planned_section_and_needs_human",
+        "test_frontmatter_keys_missing_from_the_map_are_taken_from_the_ticket_text",
+        "test_canon_amend_replace_text_accepts_a_line_id_and_refuses_headings",
+        "test_canon_amend_line_listing_shares_one_budget_across_targets",
+        "test_canon_amend_line_id_replaces_one_of_two_identical_lines",
+        "test_legacy_markers_are_migrated_once_and_safely",
+        "test_canon_amend_correction_round_refits_the_line_listing_to_the_cap",
+        "test_canon_amend_card_back_in_backlog_is_regroomed_by_content_search",
+        "test_corpus_read_accepts_the_wikilink_form_of_a_corpus_note"
+      ]
+    },
+    {
+      "path": "tests/codex-workspace/localllm-eval/corpus_fixture.bb",
+      "sha256": "d28cfd9109fec406e125e1e835e3f1ffa093839882f5f24432aab01df13cc5ee",
+      "static_test_names": []
+    },
+    {
+      "path": "tests/codex-workspace/localllm-eval/fixture.bb",
+      "sha256": "e24abb548577c43f3e32efc44c2257c70baa28f91993d29430567d529539d8ff",
+      "static_test_names": []
+    },
+    {
+      "path": "tests/codex-workspace/localllm-eval/report.bb",
+      "sha256": "0c6c0872cb22dd4988d7c0305102e67d401a57e99440072bda677803362599e0",
+      "static_test_names": []
+    },
+    {
+      "path": "tests/codex-workspace/localllm-eval/run_eval.bb",
+      "sha256": "9963002303d82df0496cbb16633119bd47edc88344f8503c93a975e165298fd7",
+      "static_test_names": []
+    },
+    {
+      "path": "tests/codex-workspace/localllm-eval/setting_fixture.bb",
+      "sha256": "feecc60ace10ea5e45048e4d73711e4dc82878ad645e3727cf086c6fc9dc71de",
+      "static_test_names": []
+    },
+    {
+      "path": "tests/codex-workspace/localllm-source-check-test.sh",
+      "sha256": "b3957545a978619514dbf06beb78bb01a47acc0c2c1525e47b9d49d15e73d63d",
+      "static_test_names": []
+    },
+    {
+      "path": "tests/codex-workspace/novel-board-regroom-e2e.sh",
+      "sha256": "19c7c53c126081db32cc730a77a76a7e3aa474a96d1b562cf90a245130a5be64",
+      "static_test_names": []
+    },
+    {
+      "path": "tests/codex-workspace/novel-board-runner-test.sh",
+      "sha256": "dc1d784b561b3dc3e2851734006f937fc908fc678b778fd887fec13778713cc9",
+      "static_test_names": []
+    },
+    {
+      "path": "tests/codex-workspace/recurring-events-test.sh",
+      "sha256": "19c7cbc90cf613d3f6459a9fcbe733c04ba2f37b3e38ab1ee1f9f912e92aac85",
+      "static_test_names": []
+    },
+    {
+      "path": "tests/codex-workspace/task-board-events-test.sh",
+      "sha256": "8041c38338a66f7fc012d35c3b69eba54bb2f636f4792fa44064f8161699915a",
+      "static_test_names": [
+        "test_signed_delivery_is_accepted",
+        "test_wrong_secret_is_rejected_and_retried_with_backoff",
+        "test_duplicate_event_id_is_reported_as_duplicate",
+        "test_receiver_down_keeps_event_until_recovery",
+        "test_server_error_moves_to_failed_after_max_attempts",
+        "test_quiet_hours_defer_and_flush_in_order",
+        "test_quiet_hours_gate_uses_jst_window",
+        "test_manual_board_edit_is_detected_once",
+        "test_runner_event_and_board_diff_collapse",
+        "test_handled_marker_completes_event",
+        "test_unhandled_event_is_redelivered_then_parked",
+        "test_non_trigger_statuses_are_ignored",
+        "test_missing_secret_never_sends",
+        "test_review_lane_migration_is_silent",
+        "test_pending_legacy_review_event_is_still_delivered"
+      ]
+    },
+    {
+      "path": "tests/codex-workspace/task-board-runner-test.sh",
+      "sha256": "cc98c5d41965266d848df57ba75cea0362f46b6ab0fd06eef35a6d9f29ec3fcb",
+      "static_test_names": [
+        "root_guard_test",
+        "test_review_lane_retirement_contract",
+        "test_parallel_codex_runs",
+        "test_fable_stream_json",
+        "test_claude_pump_drains_when_events_log_cannot_open",
+        "test_claude_result_survives_events_log_failure",
+        "test_claude_stream_progress_prevents_idle_timeout_when_log_unwritable",
+        "test_claude_events_log_omits_tool_payloads",
+        "test_claude_run_survives_subscription_snapshot_failure",
+        "test_subscription_metrics_disabled_removes_prom",
+        "test_fable_assignee_runs_via_claude",
+        "test_explicit_claude_assignees_use_fixed_models_and_pinned_binary",
+        "test_fable_model_environment_is_legacy_only",
+        "test_explicit_claude_error_and_review_markers_are_processed",
+        "test_fable_agent_idle_timeout_retries",
+        "test_fable_idle_timeout_stops_agent_children",
+        "test_invalid_idle_timeout_does_not_start_agent",
+        "test_fable_progress_prevents_idle_timeout",
+        "test_codex_sol_assignee_includes_delegation_policy",
+        "test_codex_full_assignee_includes_delegation_policy",
+        "test_unsupported_assignee_is_ignored",
+        "test_stale_lock_recovers",
+        "test_planned_shutdown_lock_recovers_immediately",
+        "test_cross_process_lock_guard_preserves_replacement_lock",
+        "test_sigterm_stops_in_flight_agent_and_keeps_lock_for_next_owner",
+        "test_sigterm_kills_term_resistant_agent_within_grace",
+        "test_expired_foreign_shutdown_marker_is_retired",
+        "test_sigterm_writes_shutdown_marker_without_prestop",
+        "test_one_shot_tick_does_not_replace_loop_owner_instance",
+        "test_current_owner_shutdown_marker_drains_without_recovery",
+        "test_same_owner_new_instance_recovers_previous_instance",
+        "test_same_owner_new_instance_retires_empty_previous_marker",
+        "test_mismatched_shutdown_marker_does_not_recover_fresh_lock",
+        "test_shutdown_marker_waits_for_late_matching_lock",
+        "test_shutdown_marker_survives_late_second_lock",
+        "test_terminated_owner_cannot_create_lock_after_marker_cleanup",
+        "test_review_without_pr_is_blocked",
+        "test_fable_reported_blocked_is_audited",
+        "test_blocker_note_failure_keeps_current_lane",
+        "test_runner_internal_error_is_audited",
+        "test_blocker_reason_redacts_github_pat_and_spaced_api_key",
+        "test_blocker_note_failure_restores_original_lane",
+        "test_blocked_state_failure_records_a_single_audit_note_and_restores_lane",
+        "test_nonretryable_pr_gate_blocked_state_failure_keeps_summary_consistent",
+        "test_review_with_pr_url_is_noted",
+        "test_review_without_repo_marker_skips_pr_gates",
+        "test_review_with_conflict_is_blocked",
+        "test_pr_gate_api_failure_is_audited",
+        "test_fable_review_gate_retry_keeps_fable_assignee",
+        "test_review_with_ci_failure_is_blocked",
+        "test_review_with_codex_review_issue_is_blocked",
+        "test_review_p1_finding_retries_and_consumes_budget",
+        "test_review_p0_finding_blocks",
+        "test_review_p2_only_passes_without_budget",
+        "test_review_mixed_findings_retry_targets_only_blocking",
+        "test_review_unknown_severity_output_stops",
+        "test_review_p2_with_unstructured_lines_stops",
+        "test_review_p1_with_unstructured_lines_stops",
+        "test_review_clean_with_unstructured_lines_stops",
+        "test_review_finding_without_severity_stops",
+        "test_review_malformed_finding_stops",
+        "test_review_conflicting_result_marker_stops",
+        "test_review_same_p1_retry_count_survives_p2_changes",
+        "test_review_with_pr_and_none_marker_checks_pr",
+        "test_review_with_multiple_pr_urls_checks_all",
+        "test_review_with_multiple_pr_urls_blocks_on_second_failure",
+        "test_review_gate_keeps_lock_heartbeat_active",
+        "test_review_gate_passes_codex_model_profile_to_review",
+        "test_review_gate_missing_usage_still_passes",
+        "test_review_with_empty_ci_rollup_times_out",
+        "test_review_with_empty_ci_rollup_passes_for_no_ci_repo",
+        "test_review_with_empty_ci_rollup_times_out_without_no_ci_opt_in",
+        "test_no_ci_repo_requires_clean_merge_state",
+        "test_canonical_path_hash_symlink_isolation",
+        "test_review_with_draft_pr_is_retried",
+        "test_review_with_behind_merge_state_times_out",
+        "test_review_with_merged_pr_skips_gates",
+        "test_review_with_none_marker_and_merged_pr_moves_review",
+        "test_review_with_open_and_merged_prs_gates_open_only",
+        "test_retryable_pr_gate_failure_does_not_persist_raw_reason_in_notes",
+        "test_review_gate_retry_limit_blocks",
+        "test_review_gate_retry_limit_is_scoped_to_failure_reason",
+        "test_review_gate_pass_after_retry_moves_review",
+        "test_groom_prompt_contains_investigation_steps",
+        "test_implement_prompt_includes_append_note",
+        "test_fable_implement_prompt_includes_append_note",
+        "test_groom_prompt_includes_append_note",
+        "test_assignee_model_routing",
+        "test_assignee_model_tick_routing",
+        "test_assignee_reasoning_tick_routing",
+        "test_invalid_reasoning_assignees_are_ignored",
+        "test_codex_astra_assignee_includes_delegation_policy",
+        "test_concurrent_append_note_no_lost_writes",
+        "test_cross_vault_lock_isolation",
+        "test_concurrent_board_update_no_lost_writes",
+        "test_task_board_pbt_properties",
+        "test_prune_workspaces",
+        "test_prune_holds_checkout_over_commit_limit",
+        "test_prune_inspects_nested_checkouts",
+        "test_prune_checks_reflog_commits",
+        "test_prune_respects_board_lane",
+        "test_prune_invalid_settings_fall_back_to_defaults",
+        "test_loop_prunes_in_background",
+        "test_loop_prune_can_be_disabled",
+        "test_ai_ops_ledger_records_run_lifecycle",
+        "test_ai_ops_ledger_groom_from_backlog_records_actual_lane",
+        "test_ai_ops_ledger_disabled_by_env",
+        "test_run_finished_records_outbox_event",
+        "test_in_progress_retry_records_no_outbox_event",
+        "test_outbox_disabled_by_env",
+        "test_gate_failure_budget_boundary_9_10_11",
+        "test_gate_failure_budget_multiple_prs_and_shared_pr",
+        "test_gate_failure_budget_concurrent_start_on_shared_pr_is_serialized",
+        "test_gate_failure_budget_grant_resume_and_no_reset_on_success",
+        "test_gate_failure_budget_stop_completes_after_interrupted_transition",
+        "test_gate_failure_budget_stop_reports_when_blocked_card_is_reassigned",
+        "test_gate_failure_budget_stop_is_written_once_under_concurrent_ticks",
+        "test_gate_failure_budget_stop_is_serialized_with_grant",
+        "test_gate_failure_budget_stricter_short_term_limit_still_applies",
+        "test_gate_failure_budget_concurrent_updates_do_not_lose_counts",
+        "test_gate_failure_budget_concurrent_ticks_do_not_lose_counts",
+        "test_delegation_gate_end_to_end",
+        "test_recoverable_delegation_failure_continues",
+        "test_helper_update_keeps_notes_copy",
+        "test_assignment_revisions",
+        "test_assignment_superseded",
+        "test_assignment_repairs"
+      ]
+    },
+    {
+      "path": "tests/codex-workspace/task_board_pbt_test.bb",
+      "sha256": "934952233694d9c84416e96036fb73d46ab27c9f6729972ab7b8138afa11fe36",
+      "static_test_names": [
+        "properties",
+        "regression-card-under-foreign-heading-belongs-to-no-lane",
+        "regression-update-keeps-card-copy-under-foreign-heading",
+        "mutant-unescaped-title-is-detected"
+      ]
+    },
+    {
+      "path": "tests/codex-workspace/vault-writer-test.bb",
+      "sha256": "e56ed7ee2b8abb1558870af45fc4838dad6811f39bd26881c01c2660989f79b2",
+      "static_test_names": [
+        "atomic-write-replaces-content-without-leftovers",
+        "vault-lock-serializes-threads-and-is-reentrant",
+        "transition-moves-card-and-projects-ticket",
+        "notes-are-appended-inside-the-notes-section",
+        "stale-expectations-and-bad-requests-write-nothing",
+        "broken-vault-state-is-reported-not-repaired",
+        "stale-generation-and-lost-lease-cannot-write",
+        "generation-change-during-a-transition",
+        "recovery-after-a-kill-between-each-write",
+        "recovery-never-replays-over-a-newer-change",
+        "journal-damage-handling",
+        "state-swaps-are-serializable",
+        "concurrent-processes-and-helper-lose-no-update",
+        "killed-process-is-recovered-by-the-next-writer",
+        "old-generation-process-cannot-write",
+        "helper-control-preview-is-accepted-by-the-control-store",
+        "helper-dry-run-does-not-create-the-shared-lock",
+        "helper-control-commands-are-dry-run-only",
+        "retired-review-lane-is-only-a-source"
+      ]
+    },
+    {
+      "path": "tests/qwen-eval/test_board_image.py",
+      "sha256": "20a02611e95419c688caf781a5149b671be2f7dc684507986b62e64933222751",
+      "static_test_names": [
+        "test_only_new_character_audit_is_accepted",
+        "test_revision_must_descend_from_the_same_new_note",
+        "test_original_images_go_to_local_vision_then_manifest",
+        "test_ambiguous_image_link_cannot_become_no_reference",
+        "test_external_absolute_and_unresolved_images_are_refused",
+        "test_text_budget_exceeded_refuses_before_model"
+      ]
+    },
+    {
+      "path": "tests/qwen-eval/test_harness.py",
+      "sha256": "7b7274b3d3ea5ea806fcc97e25262ce6a8a5ca55919a7ea762baafdcc224da2b",
+      "static_test_names": [
+        "test_parallel_and_duplicate",
+        "test_failure_and_restore",
+        "test_default_closed",
+        "test_interrupted_states_never_regenerate",
+        "test_actual_crash_does_not_regenerate",
+        "test_active_text_and_uncontrolled_users",
+        "test_generation_timeout_oom_and_bad_output_restore_without_link",
+        "test_reference_and_png",
+        "test_existing_output_is_not_overwritten",
+        "test_two_boards_one_switch_and_restore",
+        "test_metadata_write_failure_does_not_publish_incomplete_bundle",
+        "test_profile_cannot_change_or_use_wrong_adapter"
+      ]
+    },
+    {
+      "path": "tests/qwen-eval/test_kubernetes_runtime.py",
+      "sha256": "176d1d66fae6ee0c4a91a97e9bed15d5ed6fde48276bb4c453308ed45c15fa58",
+      "static_test_names": [
+        "test_all_phases_use_narrow_preconditioned_writes",
+        "test_early_cancel_can_verify_without_starting_qwen",
+        "test_resource_version_change_refuses_patch",
+        "test_restore_partial_write_remains_verify_and_pending",
+        "test_lease_and_ownership_required",
+        "test_expired_deadline_does_not_send"
+      ]
+    },
+    {
+      "path": "tests/qwen-eval/test_live.py",
+      "sha256": "7333825353f93ca9558534da94be6c9a20c04ef77dd1926912173870b42eea95",
+      "static_test_names": [
+        "test_verified_drain_checks_all_ingress_and_slots",
+        "test_unknown_gpu_owner_never_creates_switch_pr",
+        "test_busy_slots_prevent_switch",
+        "test_raw_port_bypass_prevents_switch",
+        "test_changed_pod_prevents_gemma_stop",
+        "test_unsettled_pr_prevents_gemma_restore",
+        "test_uncertain_queue_stops_qwen_but_does_not_reopen",
+        "test_lost_lease_prevents_any_switch",
+        "test_lost_lease_cancels_own_open_control_pr",
+        "test_merged_but_unconverged_phase_remains_unsettled",
+        "test_interrupt_during_create_finds_and_cancels_open_pr"
+      ]
+    },
+    {
+      "path": "tests/qwen-eval/test_node_lease.py",
+      "sha256": "bbda26b8c832b5f69d475c7577b790011b53adcd60881ac838a8eafa604b9984",
+      "static_test_names": [
+        "test_restart_and_foreign_token_fail_closed",
+        "test_reference_contract_and_unsupported_dispatch",
+        "test_limits_have_hard_ceiling",
+        "test_completed_token_is_immutable_and_archived"
+      ]
+    },
+    {
+      "path": "tests/qwen-eval/test_reference_dispatch.py",
+      "sha256": "f9fdb79f6b165db700c1a6c7080acb699fd775d2ead1766335bf425713d40616",
+      "static_test_names": [
+        "test_original_image_bytes_and_generator_ref_reach_queue"
+      ]
+    },
+    {
+      "path": "tests/qwen-eval/test_research.py",
+      "sha256": "7b54841dca671715e1417b6eb34f031ded9662cd613c8492e1ec979e8f34044f",
+      "static_test_names": [
+        "test_existing_character_and_source_change_refused",
+        "test_escaping_symlink_and_existing_output_refused",
+        "test_publication_conflict_preserves_note",
+        "test_publication_has_one_real_relative_link",
+        "test_file_transport_does_not_accept_arbitrary_kubectl"
+      ]
+    },
+    {
+      "path": "tests/qwen-eval/test_runtime.py",
+      "sha256": "cd84a6df6467d5a1aa3c13c6e0d4c02c95d9f98338a9ba23939c62618b1b8559",
+      "static_test_names": [
+        "test_unknown_generation_survives_restart_without_scaling_qwen_down",
+        "test_full_order_and_owner",
+        "test_write_uncertain_is_never_replayed_after_restart",
+        "test_applied_unknown_is_observed_not_replayed",
+        "test_failed_restore_never_reopens",
+        "test_limits_and_cancel_allow_only_restoration",
+        "test_cancel_before_qwen_starts_can_verify_and_reopen",
+        "test_dispatch_requires_live_settled_qwen",
+        "test_restart_after_restore_runs_only_fresh_probe",
+        "test_harness_restores_cancelled_completed_fence",
+        "test_adapter_restart_preserves_evidence",
+        "test_drift_and_lost_lease_block_writes",
+        "test_phase_order_and_token_persist"
+      ]
+    }
+  ]
+}

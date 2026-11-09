@@ -1,0 +1,15 @@
+[
+  { "id": "cluster-creator-kit", "title": "Cluster Creator Kitに入門してみた", "url": "https://speakerdeck.com/boxp/cluster-creator-kitniru-men-sitemita", "date": "2021-09-17", "category": "hobby" },
+  { "id": "lookingglass", "title": "LookingGlassPortraitあそんでみた", "url": "https://speakerdeck.com/boxp/lookingglassportraitasondemita", "date": "2021-06-19", "category": "hobby" },
+  { "id": "nikutai", "title": "肉体を捨てた話", "url": "https://speakerdeck.com/boxp/rou-ti-woshe-tetahua", "date": "2021-05-02", "category": "hobby" },
+  { "id": "pairing-service-en", "title": "A story about releasing a online pairing service for avatars living in virtual worlds", "url": "https://speakerdeck.com/boxp/a-story-about-releasing-a-online-pairing-service-for-avatars-living-in-virtual-worlds", "date": "2020-07-04", "category": "engineering" },
+  { "id": "vket-vroid", "title": "VketのブースにVRoid製うちのこを召喚してみた", "url": "https://speakerdeck.com/boxp/vketfalsebusunivroidzhi-utifalsekowozhao-huan-sitemita", "date": "2020-04-12", "category": "hobby" },
+  { "id": "hito-hub", "title": "Hito Hub 2.0", "url": "https://speakerdeck.com/boxp/hito-hub-2-dot-0", "date": "2020-03-26", "category": "hobby" },
+  { "id": "vket3-poster", "title": "バーチャルマーケット３に ポスターを貼ってみた件", "url": "https://speakerdeck.com/boxp/batiyarumaketuto3ni-posutawotie-tutemitajian", "date": "2019-10-03", "category": "hobby" },
+  { "id": "gke-wallet", "title": "趣味でGOOGLE KUBERNETES ENGINEを試したら 財布が薄くなったはなし", "url": "https://speakerdeck.com/boxp/qu-wei-degoogle-kubernetes-enginewoshi-sitara-cai-bu-gabo-kunatutahanasi", "date": "2019-08-22", "event": "VRC-LT #4", "category": "engineering" },
+  { "id": "matching-release", "title": "趣味でつくる アバター×アバター マッチングアプリをリリースした話", "url": "https://speakerdeck.com/boxp/qu-wei-detukuru-abataxabata-matutinguapuriworirisusitahua", "date": "2019-07-24", "event": "VRC-LT #3", "category": "engineering" },
+  { "id": "matching-performance", "title": "趣味でつくる アバター×アバター マッチングアプリ ~Performanceチューニング編~", "url": "https://speakerdeck.com/boxp/qu-wei-detukuru-abataxabata-matutinguapuri-performancetiyuningubian", "date": "2019-06-12", "event": "VRC-LT #2", "category": "engineering" },
+  { "id": "swipecard-cljs", "title": "ぬるぬる動くSwipeCard UIをClojureScriptで実装してみた", "url": "https://speakerdeck.com/boxp/nurunurudong-kuswipecard-uiwoclojurescriptdeshi-zhuang-sitemita", "date": "2019-05-30", "category": "engineering" },
+  { "id": "lisp-everything", "title": "Lisp(Clojure)で サーバーからアプリまで全てをつくるはなし", "url": "https://speakerdeck.com/boxp/lisp-clojure-de-sabakaraapurima-dequan-tewotukuruhanasi", "date": "2019-05-09", "event": "VRC-LT #1", "category": "engineering" },
+  { "id": "matching-intro", "title": "趣味でつくるアバター×アバターマッチングアプリの話", "url": "https://speakerdeck.com/boxp/qu-wei-detukuruabataxabatamatutinguapurifalsehua", "date": "2019-03-22", "event": "VRC-LT #0", "category": "engineering" }
+]

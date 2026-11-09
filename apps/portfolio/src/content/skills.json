@@ -1,0 +1,38 @@
+[
+  {
+    "id": "languages",
+    "category": "Languages",
+    "order": 1,
+    "items": [
+      { "name": "Clojure / ClojureScript", "evidence": ["boxp/vr-match", "boxp/ceeker", "boxp/ark-discord-bot", "boxp/arch"] },
+      { "name": "TypeScript", "evidence": ["boxp/even-g2-lab", "boxp/iikanji"] },
+      { "name": "Shell / Babashka", "evidence": ["boxp/lolice", "boxp/arch"] },
+      { "name": "Python", "evidence": ["boxp/palworld-ai-npc"] },
+      { "name": "C++ (GBA / butano)", "evidence": ["boxp/gba-games"] }
+    ]
+  },
+  {
+    "id": "infra",
+    "category": "Infrastructure",
+    "order": 2,
+    "items": [
+      { "name": "Kubernetes (on-premise / GKE)", "evidence": ["boxp/lolice", "boxp/sorcerer"] },
+      { "name": "Terraform / tfaction", "evidence": ["boxp/arch"] },
+      { "name": "Cloudflare (DNS / Pages / Workers)", "evidence": ["boxp/arch", "boxp/iikanji"] },
+      { "name": "Argo CD / GitOps", "evidence": ["boxp/lolice"] },
+      { "name": "Longhorn / Calico", "evidence": ["boxp/lolice"] },
+      { "name": "GitHub Actions", "evidence": ["boxp/arch", "boxp/lolice"] }
+    ]
+  },
+  {
+    "id": "domains",
+    "category": "Areas",
+    "order": 3,
+    "items": [
+      { "name": "SRE / Platform Engineering", "evidence": ["boxp/lolice", "boxp/arch"] },
+      { "name": "AI coding agents の運用・ツール開発", "evidence": ["boxp/ceeker", "boxp/palworld-ai-npc"] },
+      { "name": "Web / SPA (Clojure full-stack)", "evidence": ["boxp/vr-match", "boxp/sample-github-spa"] },
+      { "name": "Game server operations (ARK, Palworld on k8s)", "evidence": ["boxp/ark-discord-bot", "boxp/palserver"] }
+    ]
+  }
+]

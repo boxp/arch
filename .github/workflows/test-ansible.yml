@@ -71,12 +71,16 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
 
       - name: Install dependencies
         run: |
           cd "ansible"
           uv sync
+
+      - name: Test upgrade input and preflight gates
+        working-directory: ansible
+        run: uv run python -m unittest discover -s tests -p 'test_*.py' -v
 
       - name: Run ansible-lint
         run: |
@@ -88,7 +92,7 @@ jobs:
     needs: [detect-roles, lint]
     if: needs.detect-roles.outputs.has-changes == 'true'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
     env:
@@ -110,7 +114,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
 
       - name: Install dependencies
         run: |

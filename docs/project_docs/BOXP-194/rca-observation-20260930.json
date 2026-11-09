@@ -1,0 +1,306 @@
+{
+  "scope": "read-only RCA; no upgrade authorization",
+  "first_sample_utc": "2026-09-30T05:28:22.610813+00:00",
+  "second_metrics_sample_utc": "2026-09-30T05:30:14.552294+00:00",
+  "nodes_ready": 7,
+  "direct_api": [
+    {
+      "target": "CP1",
+      "exit": 0,
+      "ready": true,
+      "failed_checks": []
+    },
+    {
+      "target": "CP2",
+      "exit": 0,
+      "ready": true,
+      "failed_checks": []
+    },
+    {
+      "target": "CP3",
+      "exit": 0,
+      "ready": true,
+      "failed_checks": []
+    }
+  ],
+  "etcd_health": [
+    {
+      "node": "CP1",
+      "exit": 0,
+      "healthy": true
+    },
+    {
+      "node": "CP2",
+      "exit": 0,
+      "healthy": true
+    },
+    {
+      "node": "CP3",
+      "exit": 0,
+      "healthy": true
+    }
+  ],
+  "longhorn": {
+    "healthy": 18
+  },
+  "apiserver": [
+    {
+      "containers": [
+        {
+          "name": "kube-apiserver",
+          "ready": true,
+          "restarts": 75,
+          "lastTermination": {
+            "reason": "Error",
+            "exitCode": 137,
+            "startedAt": "2026-09-28T08:38:32Z",
+            "finishedAt": "2026-09-30T03:10:40Z"
+          }
+        }
+      ],
+      "node": "CP1"
+    },
+    {
+      "containers": [
+        {
+          "name": "kube-apiserver",
+          "ready": true,
+          "restarts": 48,
+          "lastTermination": {
+            "reason": "Error",
+            "exitCode": 137,
+            "startedAt": "2026-09-29T19:52:10Z",
+            "finishedAt": "2026-09-30T03:39:26Z"
+          }
+        }
+      ],
+      "node": "CP2"
+    },
+    {
+      "containers": [
+        {
+          "name": "kube-apiserver",
+          "ready": true,
+          "restarts": 60,
+          "lastTermination": {
+            "reason": "Error",
+            "exitCode": 137,
+            "startedAt": "2026-09-29T16:32:48Z",
+            "finishedAt": "2026-09-30T04:29:49Z"
+          }
+        }
+      ],
+      "node": "CP3"
+    }
+  ],
+  "etcd_slow_apply": [
+    {
+      "node": "CP1",
+      "exit": 0,
+      "lines": 1434,
+      "slow_apply_ms_max": 1168.340135,
+      "slow_apply_first": "2026-09-30T05:14:33.776126Z",
+      "slow_apply_last": "2026-09-30T05:28:25.022569Z"
+    },
+    {
+      "node": "CP2",
+      "exit": 0,
+      "lines": 1264,
+      "slow_apply_ms_max": 2080.190892,
+      "slow_apply_first": "2026-09-30T04:22:46.943723Z",
+      "slow_apply_last": "2026-09-30T05:26:05.651922Z"
+    },
+    {
+      "node": "CP3",
+      "exit": 0,
+      "lines": 2167,
+      "slow_apply_ms_max": 57641.900572,
+      "slow_apply_first": "2026-09-30T04:26:45.799529Z",
+      "slow_apply_last": "2026-09-30T05:25:24.263582Z"
+    }
+  ],
+  "short_interval_metrics": {
+    "CP1": {
+      "leader_change_delta": 0.0,
+      "proposals_failed_delta": 0.0,
+      "etcd_disk_backend_commit_duration_seconds": {
+        "samples": 304.0,
+        "mean_ms": 15.043,
+        "p99_bucket_upper_ms": 128.0
+      },
+      "etcd_disk_wal_fsync_duration_seconds": {
+        "samples": 559.0,
+        "mean_ms": 6.124,
+        "p99_bucket_upper_ms": 64.0
+      }
+    },
+    "CP2": {
+      "leader_change_delta": 0.0,
+      "proposals_failed_delta": 0.0,
+      "etcd_disk_backend_commit_duration_seconds": {
+        "samples": 329.0,
+        "mean_ms": 6.43,
+        "p99_bucket_upper_ms": 32.0
+      },
+      "etcd_disk_wal_fsync_duration_seconds": {
+        "samples": 581.0,
+        "mean_ms": 2.733,
+        "p99_bucket_upper_ms": 16.0
+      }
+    },
+    "CP3": {
+      "leader_change_delta": 0.0,
+      "proposals_failed_delta": 0.0,
+      "etcd_disk_backend_commit_duration_seconds": {
+        "samples": 316.0,
+        "mean_ms": 5.535,
+        "p99_bucket_upper_ms": 32.0
+      },
+      "etcd_disk_wal_fsync_duration_seconds": {
+        "samples": 560.0,
+        "mean_ms": 2.474,
+        "p99_bucket_upper_ms": 16.0
+      }
+    }
+  },
+  "second_health_sample": {
+    "utc": "2026-09-30T05:30:35.965498+00:00",
+    "direct_api": [
+      {
+        "target": "CP1",
+        "exit": 0,
+        "ready": true,
+        "failed_checks": []
+      },
+      {
+        "target": "CP2",
+        "exit": 0,
+        "ready": true,
+        "failed_checks": []
+      },
+      {
+        "target": "CP3",
+        "exit": 0,
+        "ready": true,
+        "failed_checks": []
+      }
+    ],
+    "etcd_health": [
+      {
+        "node": "CP1",
+        "exit": 0,
+        "healthy": true
+      },
+      {
+        "node": "CP2",
+        "exit": 0,
+        "healthy": true
+      },
+      {
+        "node": "CP3",
+        "exit": 0,
+        "healthy": true
+      }
+    ],
+    "nodes_ready": 7
+  },
+  "cp3_correlated_apply": [
+    {
+      "utc": "2026-09-30T04:26:48.681266Z",
+      "ms": 57641.900572
+    },
+    {
+      "utc": "2026-09-30T04:26:53.238853Z",
+      "ms": 38449.628665
+    },
+    {
+      "utc": "2026-09-30T04:29:49.103598Z",
+      "ms": 27712.026695
+    },
+    {
+      "utc": "2026-09-30T04:29:49.116736Z",
+      "ms": 24750.131392
+    },
+    {
+      "utc": "2026-09-30T04:29:49.166217Z",
+      "ms": 24682.874852
+    }
+  ],
+  "host_observations": {
+    "CP1": {
+      "available_memory_mib": 1016,
+      "root_and_etcd_same_device": true,
+      "filesystem_used_percent": 34,
+      "vmstat_recent_idle_percent_samples": [
+        21,
+        12,
+        14
+      ],
+      "kernel_last_300_lines_pattern_counts": {
+        "oom": 0,
+        "io_error": 0,
+        "stall": 0
+      },
+      "kernel_journal_window_lines": 0,
+      "psi_available": false,
+      "service_state_summary": [
+        "NRestarts=0",
+        "ExecMainStartTimestamp=Sat 2026-08-29 12:24:17 UTC",
+        "Id=kubelet.service",
+        "NRestarts=0",
+        "ExecMainStartTimestamp=Sat 2026-08-29 12:24:07 UTC",
+        "Id=crio.service"
+      ]
+    },
+    "CP2": {
+      "available_memory_mib": 964,
+      "root_and_etcd_same_device": true,
+      "filesystem_used_percent": 21,
+      "vmstat_recent_idle_percent_samples": [
+        48,
+        82,
+        75
+      ],
+      "kernel_last_300_lines_pattern_counts": {
+        "oom": 0,
+        "io_error": 0,
+        "stall": 0
+      },
+      "kernel_journal_window_lines": 0,
+      "psi_available": false,
+      "service_state_summary": [
+        "NRestarts=0",
+        "ExecMainStartTimestamp=Mon 2026-08-24 03:58:40 UTC",
+        "Id=kubelet.service",
+        "NRestarts=0",
+        "ExecMainStartTimestamp=Mon 2026-08-24 03:58:32 UTC",
+        "Id=crio.service"
+      ]
+    },
+    "CP3": {
+      "available_memory_mib": 1618,
+      "root_and_etcd_same_device": true,
+      "filesystem_used_percent": 26,
+      "vmstat_recent_idle_percent_samples": [
+        79,
+        76,
+        91
+      ],
+      "kernel_last_300_lines_pattern_counts": {
+        "oom": 0,
+        "io_error": 0,
+        "stall": 0
+      },
+      "kernel_journal_window_lines": 0,
+      "psi_available": false,
+      "service_state_summary": [
+        "NRestarts=0",
+        "ExecMainStartTimestamp=Wed 2026-08-19 02:13:52 UTC",
+        "Id=kubelet.service",
+        "NRestarts=0",
+        "ExecMainStartTimestamp=Wed 2026-08-19 02:13:44 UTC",
+        "Id=crio.service"
+      ]
+    }
+  }
+}

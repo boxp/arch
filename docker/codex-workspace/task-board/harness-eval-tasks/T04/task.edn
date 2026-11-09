@@ -1,0 +1,6 @@
+{:id "T04"
+ :title "bb 関数のバグを直してテストを通す"
+ :difficulty "easy"
+ :requirement "`window.bb` の `in-window?` は、開始時刻 `start` が `[now - window-seconds, now)` に入るかを判定する関数だが、境界の扱いが誤っており `test.bb` が失敗する。関数を直して `bb test.bb` を通す。テストは変えない。"
+ :acceptance "`bb test.bb` が成功すること。"
+ :allowed-files ["window.bb"]}

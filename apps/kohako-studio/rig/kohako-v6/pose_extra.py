@@ -1,0 +1,3 @@
+poses=[{'ParamEyeLOpen':v,'ParamEyeROpen':v} for v in [1,.5,0]]+[{'ParamMouthOpenY':v} for v in [0,.5,1]]+[{'ParamAngleY':v} for v in [30,-30]]+[{'ParamAngleX':v} for v in [30,-30]]+[{'ParamAngleX':x,'ParamAngleY':y,'ParamEyeLOpen':0,'ParamEyeROpen':0,'ParamMouthOpenY':1} for x in [-30,30] for y in [-30,30]]
+for i in range(2):
+ d,imgs=c.call('view_render_poses',{'viewport':{'mode':'canvas_rect','left':280,'top':140,'width':250,'height':190},'poses':poses[i*7:(i+1)*7],'columns':3,'target_long_edge':1800});open(out+'v6-repro-'+str(i)+'.json','w').write(json.dumps(d,ensure_ascii=False,indent=2));open(out+'v6-repro-'+str(i)+'.png','wb').write(imgs[0])

@@ -1,0 +1,115 @@
+---
+/**
+ * Stream archive section: YouTube videos from the official channel listed in
+ * `src/data/archives.json`. Each card is a click-to-play facade (thumbnail +
+ * play button); the youtube-nocookie iframe is only created after the visitor
+ * presses play, so the initial page load carries no iframes and nothing
+ * autoplays. A plain "watch on YouTube" link is always rendered as fallback.
+ */
+import Window from './Window.astro';
+import archives from '../data/archives.json';
+import links from '../data/links.json';
+
+const channel = links.find((l) => l.id === 'youtube');
+const watchUrl = (id: string) => `https://www.youtube.com/watch?v=${id}`;
+const thumbUrl = (id: string) => `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
+---
+
+<section id="archives" class="scroll-mt-28 px-2 sm:px-4 py-10 max-w-5xl mx-auto space-y-8">
+  <h2 class="title-logo text-2xl sm:text-3xl text-center">
+    配信アーカイブ <span class="text-gold text-base sm:text-lg">ARCHIVES</span>
+  </h2>
+  <p class="text-center text-sm text-paper/80">
+    過去の配信アーカイブ（YouTube）。サムネイルを押すとその場で再生できます。
+  </p>
+
+  <Window tab="REPLAY">
+    <ul class="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+      {
+        archives.map((v) => (
+          <li class="flex flex-col gap-2">
+            <div
+              class="yt-facade relative aspect-video w-full overflow-hidden border-2 border-gold-dark bg-ink"
+              data-yt-id={v.id}
+              data-yt-title={v.title}
+            >
+              <button
+                type="button"
+                class="yt-facade__btn group absolute inset-0 flex h-full w-full cursor-pointer items-center justify-center border-0 bg-transparent p-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sakura"
+                aria-label={`再生: ${v.title}`}
+              >
+                <img
+                  src={thumbUrl(v.id)}
+                  alt=""
+                  width="480"
+                  height="360"
+                  loading="lazy"
+                  decoding="async"
+                  class="illust absolute inset-0 h-full w-full object-cover"
+                />
+                <span
+                  class="yt-facade__play relative flex items-center gap-2 border-2 border-gold bg-plum px-4 py-1 text-base tracking-[0.2em] text-gold group-hover:border-sakura group-hover:text-sakura"
+                  aria-hidden="true"
+                >
+                  ▶ PLAY
+                </span>
+              </button>
+            </div>
+            <div class="text-sm leading-snug">
+              <p class="text-xs text-gold tracking-widest">
+                {v.game}
+                <span class="text-paper/60 ml-2">{v.date}</span>
+              </p>
+              <h3 class="text-sm sm:text-base leading-snug mt-1">{v.title}</h3>
+              {v.note && <p class="text-xs text-paper/60 mt-1">{v.note}</p>}
+              <a
+                href={watchUrl(v.id)}
+                class="pixel-link text-xs inline-block mt-1"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                YouTube で見る ↗
+              </a>
+            </div>
+          </li>
+        ))
+      }
+    </ul>
+    {
+      channel && (
+        <p class="mt-6 text-center text-sm">
+          <a href={channel.url} class="pixel-link" target="_blank" rel="noopener noreferrer">
+            ▶ ほかのアーカイブは YouTube チャンネルで（{channel.name}）
+          </a>
+        </p>
+      )
+    }
+  </Window>
+</section>
+
+<script>
+  // Swap the facade for the real player only when the visitor asks for it.
+  // autoplay=1 here just starts the video the visitor explicitly clicked on;
+  // nothing plays on page load.
+  const load = (box: HTMLElement) => {
+    const id = box.dataset.ytId;
+    const title = box.dataset.ytTitle ?? 'YouTube video';
+    if (!id || box.dataset.loaded) return;
+    box.dataset.loaded = 'true';
+    const iframe = document.createElement('iframe');
+    iframe.src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?autoplay=1&rel=0`;
+    iframe.title = title;
+    iframe.width = '560';
+    iframe.height = '315';
+    iframe.setAttribute('allow', 'accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share');
+    iframe.setAttribute('allowfullscreen', '');
+    iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+    iframe.className = 'absolute inset-0 h-full w-full border-0';
+    box.replaceChildren(iframe);
+    iframe.focus();
+  };
+
+  document.querySelectorAll<HTMLElement>('.yt-facade').forEach((box) => {
+    box.querySelector('.yt-facade__btn')?.addEventListener('click', () => load(box));
+  });
+</script>

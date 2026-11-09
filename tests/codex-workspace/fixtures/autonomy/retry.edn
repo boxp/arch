@@ -1,0 +1,18 @@
+{:schema_version 1
+ :ticket "BOXP-203"
+ :control_revision 1
+ :category "ci-pending"
+ :reason "Checks are still running."
+ :retry_condition {:probe "github-checks"
+                   :resource_ref "boxp/arch#203"
+                   :expected_head "0123456789abcdef0123456789abcdef01234567"
+                   :success "checks-completed"}
+ :retry_owner "runner"
+ :next_check "2026-09-30T11:00:00Z"
+ :deadline "2026-10-01T10:00:00Z"
+ :attempts 0
+ :max_attempts 3
+ :backoff_seconds [300 900 3600]
+ :resume_action "inspect-ci"
+ :scope_ref "28c3aaa276bc421debf1cdf237845260a9f18be96211b31fa5be9fcaf20ccb83"
+ :last_probe_event nil}

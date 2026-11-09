@@ -1,0 +1,16 @@
+// The page itself is not committed: scripts/deploy.sh fills public/ at deploy time.
+{
+  "name": "lolice-lineage",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "lolice-lineage.b0xp.io/*", "zone_name": "b0xp.io" }],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  }
+}

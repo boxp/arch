@@ -29,3 +29,25 @@ resource "cloudflare_dns_record" "iikanji" {
   ttl     = 1
   proxied = true
 }
+
+# b0xp.io ポートフォリオ新サイトの stage 環境 (BOXP-275)。本番 b0xp.io / www.b0xp.io の CNAME は変更しない。
+resource "cloudflare_dns_record" "portfolio_stage" {
+  zone_id = var.zone_id
+  name    = local.portfolio_stage_domain
+  content = cloudflare_pages_project.portfolio_stage.subdomain
+  type    = "CNAME"
+  ttl     = 1
+  proxied = true
+}
+
+# BOXP-435: the Worker in apps/lolice-architecture answers every request on this hostname,
+# so the record only has to be proxied. 100:: is Cloudflare's documented originless target.
+# The page is public (Owner approval, BOXP-435); the Worker serves only / and /sha256.
+resource "cloudflare_dns_record" "lolice_architecture" {
+  zone_id = var.zone_id
+  name    = local.lolice_architecture_domain
+  content = "100::"
+  type    = "AAAA"
+  ttl     = 1
+  proxied = true
+}

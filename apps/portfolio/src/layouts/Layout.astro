@@ -1,0 +1,125 @@
+---
+import '../styles/global.css';
+import { isStage } from '../lib/site';
+
+interface Props {
+  title: string;
+  description: string;
+}
+
+const { title, description } = Astro.props;
+const canonical = new URL(Astro.url.pathname, Astro.site);
+const ogImage = new URL('/og.png', Astro.site);
+---
+
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <script is:inline>
+      (() => {
+        const media = window.matchMedia?.('(prefers-color-scheme: dark)');
+        let choice = 'system';
+        try {
+          const saved = localStorage.getItem('theme');
+          if (saved === 'light' || saved === 'dark') choice = saved;
+        } catch {}
+        const apply = () => {
+          const theme = choice === 'system' ? (media?.matches ? 'dark' : 'light') : choice;
+          document.documentElement.dataset.theme = theme;
+          const meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute('content', theme === 'dark' ? '#0b0f14' : '#ffffff');
+          document.querySelectorAll('[data-theme-choice]').forEach((button) => {
+            button.setAttribute('aria-checked', String(button.getAttribute('data-theme-choice') === choice));
+            if (button.getAttribute('data-theme-choice') === 'system') {
+              button.textContent = `システム（現在: ${theme === 'dark' ? 'ダーク' : 'ライト'}）`;
+            }
+          });
+        };
+        apply();
+        media?.addEventListener?.('change', () => { if (choice === 'system') apply(); });
+        document.addEventListener('DOMContentLoaded', () => {
+          const controls = document.querySelector('[data-theme-controls]');
+          if (!controls) return;
+          const trigger = controls.querySelector('[data-theme-trigger]');
+          const menu = controls.querySelector('[data-theme-menu]');
+          const items = Array.from(controls.querySelectorAll('[data-theme-choice]'));
+          const close = (returnFocus = false) => {
+            menu.hidden = true;
+            trigger.setAttribute('aria-expanded', 'false');
+            if (returnFocus) trigger.focus();
+          };
+          const open = (last = false) => {
+            menu.hidden = false;
+            trigger.setAttribute('aria-expanded', 'true');
+            (last ? items[items.length - 1] : items.find((item) => item.getAttribute('data-theme-choice') === choice)).focus();
+          };
+          controls.hidden = false;
+          trigger.addEventListener('click', () => menu.hidden ? open() : close());
+          trigger.addEventListener('keydown', (event) => {
+            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+              event.preventDefault();
+              open(event.key === 'ArrowUp');
+            }
+          });
+          menu.addEventListener('keydown', (event) => {
+            const index = items.indexOf(document.activeElement);
+            let next;
+            if (event.key === 'ArrowDown') next = (index + 1) % items.length;
+            else if (event.key === 'ArrowUp') next = (index + items.length - 1) % items.length;
+            else if (event.key === 'Home') next = 0;
+            else if (event.key === 'End') next = items.length - 1;
+            else if (event.key === 'Escape') { event.preventDefault(); close(true); return; }
+            else if (event.key === 'Tab') { close(true); return; }
+            if (next !== undefined) { event.preventDefault(); items[next].focus(); }
+          });
+          document.addEventListener('click', (event) => {
+            if (!controls.contains(event.target)) close();
+          });
+          menu.addEventListener('click', (event) => {
+            const button = event.target.closest('[data-theme-choice]');
+            if (!button) return;
+            choice = button.getAttribute('data-theme-choice');
+            try {
+              if (choice === 'system') localStorage.removeItem('theme');
+              else localStorage.setItem('theme', choice);
+            } catch {}
+            apply();
+            close(true);
+          });
+          apply();
+        });
+      })();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    {isStage && <meta name="robots" content="noindex, nofollow" />}
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="sitemap" href="/sitemap-index.xml" />
+    <meta name="theme-color" content="#ffffff" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="b0xp.io" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:locale" content="ja_JP" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@b0xp2" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+  </head>
+  <body class="min-h-screen bg-ink font-sans text-fg antialiased">
+    {isStage && (
+      <div role="status" class="border-b border-notice-line bg-notice-bg px-5 py-2 text-center text-xs text-notice">
+        これは stage 環境（portfolio-stage.b0xp.io）です。内容は確認中で、本番の <a href="https://b0xp.io/" class="underline">b0xp.io</a> とは異なる場合があります。
+      </div>
+    )}
+    <slot />
+  </body>
+</html>

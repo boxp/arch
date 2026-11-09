@@ -9,3 +9,7 @@
 Python標準HTMLParserを採用し、実行時の追加依存とLLM呼出しはない。Hermes現物のno_agent経路はLLM import前に分岐し、空stdoutをsilent成功として処理する。ただし、これは本番切替後の実tickの証拠ではない。正規配備、既存job切替、最新state移行、実tick確認はレビュー/CI後の工程として残っている。
 
 `actionlint` と `ghalint run` は成功。全体の `trivy config` はchecks更新待ちが継続したため中断し、既存キャッシュのchecks（bundle取得日: 2026-10-16）で全体走査を完了した。既存設定には指摘があり、Hermes DockerfileではUSER未指定(HIGH)とHEALTHCHECK未指定(LOW)を報告している。今回のCOPY/chmod追加でこれらの設定は変更していない。最新checksを取得できたという意味での成功とは扱わない。
+
+## main統合時の再検証
+
+PR競合の再試行で最新mainを取り込んだ。DockerfileはmainのHermes v0.22.5、Babashka、PATH、配信パッチ、TODO helper等をすべて維持し、監視のCOPY/chmodのみ追加した。workflowもmainのbuildx/build-push action版を維持した。統合後に13試験、actionlint、ghalintが成功し、mainとの差分に空白エラーがないことを確認した。Trivyは既存checksで再走査し、最新checks取得の代わりとは扱わない。

@@ -1,0 +1,25 @@
+---
+# Local-connection inventory that mirrors the production topology shape:
+# three control planes and one worker, all executed on this machine.
+all:
+  children:
+    control_plane:
+      hosts:
+        cp-a:
+          node_ip: 10.0.0.2
+        cp-b:
+          node_ip: 10.0.0.3
+        cp-c:
+          node_ip: 10.0.0.4
+    workers:
+      hosts:
+        worker-a:
+          node_ip: 10.0.0.11
+  vars:
+    ansible_connection: local
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    ansible_become_exe: "{{ pre_check_fixture_dir }}/fake-sudo"
+    cluster_vip: 10.0.0.99
+    kubeconfig_path: /tmp/pre-check-fixture-admin.conf
+    kubernetes_upgrade_pre_check_ready_retries: 3
+    kubernetes_upgrade_pre_check_ready_delay: 1

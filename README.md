@@ -18,7 +18,7 @@ My infrastructure as code project - 複数のクラウドプロバイダー（AW
 - **ArgoCD**: GitOpsによる継続的デプロイメント
 - **Grafana & Prometheus**: メトリクス監視とダッシュボード
 - **Longhorn**: 分散ブロックストレージ
-- **HitoHub & OpenHands**: メインアプリケーション
+- **OpenHands**: メインアプリケーション
 - **External Secrets Operator**: AWS SSM Parameter Storeからのシークレット管理
 
 #### AWS サービス

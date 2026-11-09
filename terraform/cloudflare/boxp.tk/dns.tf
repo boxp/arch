@@ -16,15 +16,6 @@ resource "cloudflare_dns_record" "www" {
   proxied = true
 }
 
-resource "cloudflare_dns_record" "hitohub" {
-  zone_id = cloudflare_zone.boxp_tk.id
-  name    = "hitohub.boxp.tk"
-  type    = "CNAME"
-  content = "boxp.tk"
-  ttl     = 1
-  proxied = true
-}
-
 resource "cloudflare_ruleset" "boxp_tk_redirects" {
   zone_id = cloudflare_zone.boxp_tk.id
   name    = "boxp.tk redirects"
@@ -32,21 +23,6 @@ resource "cloudflare_ruleset" "boxp_tk_redirects" {
   phase   = "http_request_dynamic_redirect"
 
   rules = [
-    {
-      action = "redirect"
-      action_parameters = {
-        from_value = {
-          status_code = 301
-          target_url = {
-            expression = "concat(\"https://hitohub.b0xp.io\", http.request.uri.path)"
-          }
-          preserve_query_string = true
-        }
-      }
-      expression  = "(http.host eq \"hitohub.boxp.tk\")"
-      description = "Redirect hitohub.boxp.tk to hitohub.b0xp.io"
-      enabled     = true
-    },
     {
       action = "redirect"
       action_parameters = {

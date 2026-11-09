@@ -1,0 +1,15 @@
+{:schema_version 2
+ :ticket "BOXP-203"
+ :revision 1
+ :writer_generation 1
+ :objective {:id "BOXP-203-validator"
+             :ticket_version 1
+             :requirements "Implement bounded canary validator."
+             :requirements_sha256 "de39b4daf25883f8543f4a462d4114d80a0c05d5f9844045601ccb22aec64473"}
+ :intent "run"
+ :agent_route "codex"
+ :scope {:repos ["boxp/arch"]
+         :paths ["docs/project_docs/BOXP-203/"]
+         :operations ["read" "edit" "test"]}
+ :policy_version "autonomy-v1"
+ :budget {:max_steps 6 :max_wall_minutes 60}}

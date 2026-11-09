@@ -1,0 +1,6 @@
+{:id "T02"
+ :title "shell スクリプトの引用漏れを直す"
+ :difficulty "easy"
+ :requirement "`count_lines.sh <file>` はファイルの行数を `lines=N` の形式で出力する。ファイル名に空白を含む場合に失敗する引用漏れを直し、空白を含むパスでも正しく動くようにする。出力形式は変えない。"
+ :acceptance "`bash test.sh` が成功すること（空白を含むファイル名で `lines=N` が出ること、`bash -n` が通ることを検査する）。"
+ :allowed-files ["count_lines.sh"]}

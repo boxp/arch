@@ -1,0 +1,355 @@
+---
+# kube-apiserver に --goaway-chance を設定し、HTTP/2 クライアント (watch) を 3 台へ再分散させる。
+#
+# 背景 (BOXP-225、2026-10-08 実測):
+# - apiserver 3 台の同時再起動 (02:07〜02:16 UTC) 後、long-running request (ほぼ watch) が
+#   CP1 1,054 / CP2 81 / CP3 518 に偏った。7 日間の推移では毎回「最後に再起動した apiserver が最少、
+#   他が肥大」で、再起動が起きるまで偏りは解消しない (HTTP/2 接続は再接続されないため)。
+# - apiserver RSS は watch 数と相関 (r=0.65、約 0.73MiB/watch、切片約 1.15GiB)。
+#   偏った 1 台では anon が RAM 3.9GiB の約 3.0GiB を占め、ページキャッシュが 260〜800MiB まで縮む。
+# - その結果、CP1 の major fault は etcd (bbolt mmap の再読込、平均 11.7/秒・最大 88/秒) が支配的で、
+#   eMMC 読み込みが最大 15MB/秒まで跳ね、etcd の slow apply / leader change を誘発していた。
+#
+# --goaway-chance は要求の指定割合に GOAWAY を返す apiserver 組み込みのフラグで、
+# 「HTTP/2 クライアントが単一 apiserver に貼り付くのを防ぐ」ことが唯一の目的 (上流ヘルプ文)。
+# 既存の in-flight 要求は影響を受けず、クライアントは LB (kubernetes Service / kube-proxy、
+# VIP) を通して再接続する。VIP 直結クライアント (kubelet 等) は同じ VIP 保持者へ戻るだけで害はない。
+#
+# 変更は control_plane_metrics.yml と同じ二段構え:
+#   (1) 稼働中の静的 Pod マニフェストへ冪等に反映する (kubelet が apiserver を再起動する)
+#   (2) kube-system/kubeadm-config の ClusterConfiguration にも保存し、次回 kubeadm upgrade で
+#       マニフェストが再生成されても消えないようにする
+# apiserver は quorum を持たないが、3 台同時に再起動すると API が止まる。
+# 直列化の本体は playbooks/control-plane.yml の serial: 1 で、本ファイルの throttle: 1 は補助。
+
+# 値の検証は apiserver_goaway_validate.yml に分離し、tasks/main.yml では kubeadm.yml
+# (kubeadm-config.yaml.j2 の書き出し) より前にも include する。ここでの include は
+# tasks_from でこのファイルだけを呼んだ場合にも検証を通すため。
+- name: Validate the goaway chance before touching any manifest
+  ansible.builtin.include_tasks: apiserver_goaway_validate.yml
+
+- name: Check if the kube-apiserver manifest exists
+  ansible.builtin.stat:
+    path: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: apiserver_manifest
+  become: true
+  when:
+    - apiserver_goaway_chance_enabled | bool
+    - inventory_hostname in groups['control_plane'] | default([])
+
+# 以降の変更はマニフェストが存在するノードだけが対象。
+- name: Decide whether this node carries a kube-apiserver static pod
+  ansible.builtin.set_fact:
+    apiserver_goaway_applicable: >-
+      {{
+        (apiserver_goaway_chance_enabled | bool)
+        and (inventory_hostname in groups['control_plane'] | default([]))
+        and (apiserver_manifest.stat.exists | default(false))
+      }}
+
+- name: Ensure the manifest backup directory exists
+  ansible.builtin.file:
+    path: /var/backups/kubernetes-manifests
+    state: directory
+    mode: '0700'
+  become: true
+  when:
+    - apiserver_goaway_applicable | bool
+
+# 静的 Pod ディレクトリ内にバックアップを置くと kubelet がそれも Pod として読むため、外へ退避する。
+- name: Keep a pristine copy of the kube-apiserver manifest outside the static pod directory
+  ansible.builtin.copy:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+    dest: /var/backups/kubernetes-manifests/kube-apiserver.yaml.orig
+    remote_src: true
+    force: false
+    mode: '0600'
+  become: true
+  when:
+    - apiserver_goaway_applicable | bool
+
+# 静的 Pod が実際に入れ替わったかを PID の変化で判定するため、変更より先に控える。
+- name: Record the running kube-apiserver PID before touching the manifest
+  ansible.builtin.command: pgrep -x kube-apiserver
+  register: apiserver_pid_before
+  changed_when: false
+  failed_when: false
+  become: true
+  when:
+    - apiserver_goaway_applicable | bool
+
+- name: Read the kube-apiserver manifest to check for the goaway flag
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: apiserver_manifest_raw
+  become: true
+  when:
+    - apiserver_goaway_applicable | bool
+
+# フラグの判定と編集は、マニフェストを YAML として解析した kube-apiserver コンテナ (name: kube-apiserver)
+# の command に対して行い、command を差し替えたマニフェスト全体を書き戻す (構造化更新)。
+# テキスト (正規表現) 編集だと、コメント・アノテーション・sidecar / initContainer に同じ文字列や
+# "- kube-apiserver" 行があるだけで判定や編集範囲がずれ、apiserver に設定が届かない (codex-review P2)。
+# 書き戻しは to_nice_yaml (キーはアルファベット順、リストは親と同じ段) で kubeadm の出力と同じ整形になる。
+# kubeadm は静的 Pod マニフェストにコメントを書かないが、手作業で入れたコメントは残らない (原本は
+# /var/backups/kubernetes-manifests/kube-apiserver.yaml.orig に退避済み)。
+- name: Parse the kube-apiserver manifest and locate the apiserver container command
+  ansible.builtin.set_fact:
+    apiserver_goaway_manifest: "{{ apiserver_goaway_manifest_parsed }}"
+    apiserver_goaway_container_names: "{{ apiserver_goaway_manifest_parsed.spec.containers | default([]) | map(attribute='name') | list }}"
+    apiserver_goaway_command: >-
+      {{
+        apiserver_goaway_manifest_parsed.spec.containers | default([])
+        | selectattr('name', 'equalto', 'kube-apiserver') | map(attribute='command') | first | default([])
+      }}
+  vars:
+    apiserver_goaway_manifest_parsed: "{{ apiserver_manifest_raw.content | default('') | b64decode | from_yaml }}"
+  when:
+    - apiserver_goaway_applicable | bool
+
+- name: Assert the manifest has exactly one kube-apiserver container whose command starts with kube-apiserver
+  ansible.builtin.assert:
+    that:
+      - apiserver_goaway_container_names | select('equalto', 'kube-apiserver') | list | length == 1
+      - apiserver_goaway_command | length > 0
+      - apiserver_goaway_command[0] == 'kube-apiserver'
+    fail_msg: >-
+      /etc/kubernetes/manifests/kube-apiserver.yaml must have exactly one container named kube-apiserver whose
+      command starts with "kube-apiserver"; refusing to edit it. containers={{ apiserver_goaway_container_names }}
+      command={{ apiserver_goaway_command }}
+  when:
+    - apiserver_goaway_applicable | bool
+
+# 望ましい command = 既存の goaway 指定をすべて除き、--secure-port= 直後 (無ければ末尾) に宣言値を
+# 1 つ入れたもの。既存要素の順序はそのまま。除く対象は "--goaway-chance=VALUE" 形式と、pflag が受け付ける
+# 分離形式 "--goaway-chance" + 次要素 "VALUE" の両方 (後者を残すと後続の古い値が新しい指定を上書きする)。
+# 重複・値違い・空白違い・形式違いはここで 1 つに正規化される。
+# (ansible-lint の jinja[invalid] は mock 変数を文字列として評価するための偽陽性。実行時は list)
+- name: Strip every existing goaway chance flag from the kube-apiserver command
+  ansible.builtin.set_fact:
+    apiserver_goaway_command_base: >-
+      {%- set ns = namespace(out=[], skip_value=false) -%}
+      {%- for arg in apiserver_goaway_command -%}
+        {%- if ns.skip_value -%}
+          {%- set ns.skip_value = false -%}
+        {%- elif arg == '--goaway-chance' -%}
+          {%- set ns.skip_value = true -%}
+        {%- elif arg is match('^--goaway-chance=') -%}
+        {%- else -%}
+          {%- set ns.out = ns.out + [arg] -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ ns.out }}
+  when:
+    - apiserver_goaway_applicable | bool
+
+- name: Build the desired kube-apiserver command with a single goaway chance flag  # noqa: jinja[invalid]
+  ansible.builtin.set_fact:
+    apiserver_goaway_command_desired: >-
+      {{
+        (apiserver_goaway_command_base[:apiserver_goaway_command_base.index(apiserver_goaway_secure_port[0]) + 1]
+         + [apiserver_goaway_flag]
+         + apiserver_goaway_command_base[apiserver_goaway_command_base.index(apiserver_goaway_secure_port[0]) + 1:])
+        if (apiserver_goaway_secure_port | length > 0)
+        else (apiserver_goaway_command_base + [apiserver_goaway_flag])
+      }}
+  vars:
+    apiserver_goaway_flag: "--goaway-chance={{ apiserver_goaway_chance }}"
+    apiserver_goaway_secure_port: "{{ apiserver_goaway_command_base | select('match', '^--secure-port=') | list }}"
+  when:
+    - apiserver_goaway_applicable | bool
+
+# kube-apiserver コンテナの command だけを差し替え、他のコンテナ・initContainers・metadata はそのまま。
+- name: Write the kube-apiserver manifest with the updated command
+  ansible.builtin.copy:
+    dest: /etc/kubernetes/manifests/kube-apiserver.yaml
+    mode: '0600'
+    content: "{{ apiserver_goaway_manifest_desired | to_nice_yaml(indent=2, width=4096) }}"
+  vars:
+    apiserver_goaway_ci: "{{ apiserver_goaway_container_names.index('kube-apiserver') }}"
+    apiserver_goaway_containers_desired: >-
+      {{
+        apiserver_goaway_manifest.spec.containers[:apiserver_goaway_ci | int]
+        + [apiserver_goaway_manifest.spec.containers[apiserver_goaway_ci | int] | combine({'command': apiserver_goaway_command_desired})]
+        + apiserver_goaway_manifest.spec.containers[apiserver_goaway_ci | int + 1:]
+      }}
+    apiserver_goaway_manifest_desired: >-
+      {{
+        apiserver_goaway_manifest | combine({'spec': {'containers': apiserver_goaway_containers_desired}}, recursive=True)
+      }}
+  become: true
+  throttle: 1
+  register: apiserver_goaway_written
+  when:
+    - apiserver_goaway_applicable | bool
+    - apiserver_goaway_command_desired != apiserver_goaway_command
+
+- name: Note whether the kube-apiserver manifest changed
+  ansible.builtin.set_fact:
+    apiserver_manifest_edited: "{{ apiserver_goaway_written.changed | default(false) }}"
+
+# check mode (plan-ansible.yml の --check) では copy が「変更あり」を返すだけでファイルは書かれないため、
+# 再読込後の assert・PID 変化待ち・readyz 待ちは実行しない (実行すると plan が必ず失敗する)。
+# 実際の適用 (apply-ansible.yml) ではこれまでどおり全て実行する。
+# 書き戻した結果を YAML として読み直し、kube-apiserver コンテナの command にフラグが宣言値でちょうど 1 つあり、
+# 他のコンテナの command が変わっていないことを、kubelet が apiserver を入れ替える前に確かめる。
+- name: Re-read the kube-apiserver manifest after editing
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: apiserver_manifest_edited_raw
+  become: true
+  when:
+    - apiserver_goaway_applicable | bool
+    - not ansible_check_mode
+
+- name: Assert the kube-apiserver command carries exactly one goaway chance flag and other containers are untouched
+  ansible.builtin.assert:
+    that:
+      - (apiserver_goaway_command_after | select('match', '^--goaway-chance') | list) == ['--goaway-chance=' ~ apiserver_goaway_chance]
+      - apiserver_goaway_command_after == apiserver_goaway_command_desired
+      - (apiserver_goaway_manifest_after.spec.containers | rejectattr('name', 'equalto', 'kube-apiserver') | list)
+        == (apiserver_goaway_manifest.spec.containers | rejectattr('name', 'equalto', 'kube-apiserver') | list)
+      - (apiserver_goaway_manifest_after.spec.initContainers | default([])) == (apiserver_goaway_manifest.spec.initContainers | default([]))
+    fail_msg: >-
+      the kube-apiserver manifest did not end up with exactly one "--goaway-chance={{ apiserver_goaway_chance }}"
+      in the kube-apiserver container command (or another container changed). command={{ apiserver_goaway_command_after }}
+  vars:
+    apiserver_goaway_manifest_after: "{{ apiserver_manifest_edited_raw.content | default('') | b64decode | from_yaml }}"
+    apiserver_goaway_command_after: >-
+      {{
+        apiserver_goaway_manifest_after.spec.containers | default([])
+        | selectattr('name', 'equalto', 'kube-apiserver') | map(attribute='command') | first | default([])
+      }}
+  when:
+    - apiserver_goaway_applicable | bool
+    - not ansible_check_mode
+
+# kubelet がマニフェスト変更を検知して apiserver を入れ替えるのは非同期。
+# PID が変わる前に readyz を見ると「変更前の apiserver」で即成功し、次のノードへ進んでしまう。
+- name: Wait for kubelet to restart the kube-apiserver static pod  # noqa: no-handler
+  ansible.builtin.command: pgrep -x kube-apiserver
+  register: apiserver_pid_after
+  changed_when: false
+  failed_when: false
+  become: true
+  throttle: 1
+  until:
+    - apiserver_pid_after.stdout | trim | length > 0
+    - (apiserver_pid_after.stdout | trim) != (apiserver_pid_before.stdout | default('') | trim)
+  retries: 30
+  delay: 10
+  when:
+    - apiserver_manifest_edited | bool
+    - not ansible_check_mode
+    - ansible_virtualization_type | default('') != "docker"
+    - chroot_build is not defined or not chroot_build
+
+- name: Assert the kube-apiserver static pod actually restarted
+  ansible.builtin.assert:
+    that:
+      - apiserver_pid_after.stdout | trim | length > 0
+      - (apiserver_pid_after.stdout | trim) != (apiserver_pid_before.stdout | default('') | trim)
+    fail_msg: >-
+      kube-apiserver static pod did not restart after the manifest change.
+      Proceeding to the next node could leave several apiservers restarting at once.
+  when:
+    - apiserver_manifest_edited | bool
+    - not ansible_check_mode
+    - ansible_virtualization_type | default('') != "docker"
+    - chroot_build is not defined or not chroot_build
+
+# /readyz は system:public-info-viewer により未認証でも読める。
+# 証明書検証は行わない (SAN にループバックが含まれる保証がないため)。
+- name: Wait for the local kube-apiserver to report ready
+  ansible.builtin.uri:
+    url: https://127.0.0.1:6443/readyz
+    validate_certs: false
+    status_code: 200
+    return_content: false
+  register: apiserver_readyz
+  until: apiserver_readyz.status | default(0) == 200
+  retries: 60
+  delay: 5
+  throttle: 1
+  when:
+    - apiserver_manifest_edited | bool
+    - not ansible_check_mode
+    - ansible_virtualization_type | default('') != "docker"
+    - chroot_build is not defined or not chroot_build
+
+# ここまでは稼働中のマニフェストを直しただけ。kubeadm upgrade apply/node は --config なしで
+# kube-system/kubeadm-config の ClusterConfiguration からマニフェストを再生成するため、
+# ConfigMap にも保存しないと次回アップグレードでフラグが消える。
+# ⚠️ ローカルのテンプレートを upload-config に渡してはいけない (control_plane_metrics.yml 参照)。
+#    必ず「稼働中の ClusterConfiguration を読み、必要なキーだけ足して」書き戻す。
+# ゲートは admin.conf の有無だけにする (docker / chroot の除外条件を付けない)。
+# molecule の apiserver-goaway シナリオは admin.conf と kubectl / kubeadm をモックしてこの経路を通し、
+# 既存 apiServer.extraArgs の保持・goaway-chance の追加・2 回目 no-op を CI で検証する。
+- name: Check whether this node has an initialized control plane (goaway)
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: apiserver_goaway_admin_conf
+  become: true
+  run_once: true
+  when:
+    - apiserver_goaway_applicable | bool
+
+- name: Read the live kubeadm ClusterConfiguration (goaway)
+  ansible.builtin.command:
+    cmd: >-
+      kubectl --kubeconfig /etc/kubernetes/admin.conf
+      -n kube-system get cm kubeadm-config -o jsonpath={.data.ClusterConfiguration}
+  register: apiserver_goaway_live_cc
+  changed_when: false
+  become: true
+  run_once: true
+  when:
+    - apiserver_goaway_applicable | bool
+    - apiserver_goaway_admin_conf.stat.exists | default(false)
+
+# combine(recursive=True) はリストを置換するため、apiServer.extraArgs の既存要素
+# (authorization-mode 等) を残して goaway-chance だけ差し替える。
+- name: Build the merged ClusterConfiguration (goaway)
+  ansible.builtin.set_fact:
+    apiserver_goaway_cc_live: "{{ apiserver_goaway_cc_live_parsed }}"
+    apiserver_goaway_cc_merged: >-
+      {{
+        apiserver_goaway_cc_live_parsed | combine({
+          'apiServer': {'extraArgs': apiserver_goaway_cc_args}
+        }, recursive=True)
+      }}
+  vars:
+    apiserver_goaway_cc_live_parsed: "{{ apiserver_goaway_live_cc.stdout | from_yaml }}"
+    apiserver_goaway_cc_want:
+      name: goaway-chance
+      value: "{{ apiserver_goaway_chance | string }}"
+    apiserver_goaway_cc_args: >-
+      {{
+        ((apiserver_goaway_live_cc.stdout | from_yaml).apiServer | default({}, true)).extraArgs | default([], true)
+        | rejectattr('name', 'equalto', 'goaway-chance') | list + [apiserver_goaway_cc_want]
+      }}
+  run_once: true
+  when:
+    - apiserver_goaway_applicable | bool
+    - (apiserver_goaway_live_cc.stdout | default('')) | length > 0
+
+- name: Write the merged ClusterConfiguration (goaway)
+  ansible.builtin.copy:
+    dest: /etc/kubernetes/kubeadm-clusterconfig-goaway-merged.yaml
+    mode: '0600'
+    content: "{{ apiserver_goaway_cc_merged | to_nice_yaml(indent=2) }}"
+  become: true
+  run_once: true
+  when:
+    - apiserver_goaway_cc_merged is defined
+    - apiserver_goaway_cc_merged != apiserver_goaway_cc_live
+
+- name: Upload the ClusterConfiguration so kubeadm upgrade keeps the goaway flag
+  ansible.builtin.command:
+    cmd: kubeadm init phase upload-config kubeadm --config /etc/kubernetes/kubeadm-clusterconfig-goaway-merged.yaml
+  become: true
+  run_once: true
+  changed_when: true
+  when:
+    - apiserver_goaway_cc_merged is defined
+    - apiserver_goaway_cc_merged != apiserver_goaway_cc_live

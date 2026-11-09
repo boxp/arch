@@ -1,0 +1,227 @@
+{
+  "format": "psd2live-layout",
+  "version": 1,
+  "name": "kohako-min-v2",
+  "canvas": {
+    "width": 680,
+    "height": 650
+  },
+  "layers": [
+    {
+      "id": "body_base",
+      "name": "body base",
+      "image": {
+        "path": "body_base.png",
+        "width": 680,
+        "height": 650
+      },
+      "rect": {
+        "left": 0,
+        "top": 0,
+        "width": 680,
+        "height": 650
+      },
+      "tags": [
+        "body"
+      ]
+    },
+    {
+      "id": "eye_right_white",
+      "name": "eye right white",
+      "image": {
+        "path": "eye_right_white.png",
+        "width": 67,
+        "height": 40
+      },
+      "rect": {
+        "left": 325,
+        "top": 197,
+        "width": 67,
+        "height": 40
+      },
+      "tags": [
+        "eye",
+        "white",
+        "right"
+      ]
+    },
+    {
+      "id": "eye_right_iris",
+      "name": "eye right iris",
+      "image": {
+        "path": "eye_right_iris.png",
+        "width": 67,
+        "height": 40
+      },
+      "rect": {
+        "left": 325,
+        "top": 197,
+        "width": 67,
+        "height": 40
+      },
+      "tags": [
+        "eye",
+        "iris",
+        "right"
+      ]
+    },
+    {
+      "id": "eye_right_lash",
+      "name": "eye right lash",
+      "image": {
+        "path": "eye_right_lash.png",
+        "width": 67,
+        "height": 40
+      },
+      "rect": {
+        "left": 325,
+        "top": 197,
+        "width": 67,
+        "height": 40
+      },
+      "tags": [
+        "eye",
+        "lash",
+        "right"
+      ]
+    },
+    {
+      "id": "eye_left_white",
+      "name": "eye left white",
+      "image": {
+        "path": "eye_left_white.png",
+        "width": 66,
+        "height": 40
+      },
+      "rect": {
+        "left": 430,
+        "top": 206,
+        "width": 66,
+        "height": 40
+      },
+      "tags": [
+        "eye",
+        "white",
+        "left"
+      ]
+    },
+    {
+      "id": "eye_left_iris",
+      "name": "eye left iris",
+      "image": {
+        "path": "eye_left_iris.png",
+        "width": 66,
+        "height": 40
+      },
+      "rect": {
+        "left": 430,
+        "top": 206,
+        "width": 66,
+        "height": 40
+      },
+      "tags": [
+        "eye",
+        "iris",
+        "left"
+      ]
+    },
+    {
+      "id": "eye_left_lash",
+      "name": "eye left lash",
+      "image": {
+        "path": "eye_left_lash.png",
+        "width": 66,
+        "height": 40
+      },
+      "rect": {
+        "left": 430,
+        "top": 206,
+        "width": 66,
+        "height": 40
+      },
+      "tags": [
+        "eye",
+        "lash",
+        "left"
+      ]
+    },
+    {
+      "id": "mouth_open",
+      "name": "mouth open",
+      "image": {
+        "path": "mouth_open.png",
+        "width": 49,
+        "height": 20
+      },
+      "rect": {
+        "left": 382,
+        "top": 286,
+        "width": 49,
+        "height": 20
+      },
+      "tags": [
+        "mouth",
+        "open"
+      ]
+    },
+    {
+      "id": "eye_closed_right",
+      "name": "eye closed right",
+      "image": {
+        "path": "eye_closed_right.png",
+        "width": 65,
+        "height": 17
+      },
+      "rect": {
+        "left": 326,
+        "top": 211,
+        "width": 65,
+        "height": 17
+      },
+      "tags": [
+        "eye",
+        "closed",
+        "right"
+      ]
+    },
+    {
+      "id": "eye_closed_left",
+      "name": "eye closed left",
+      "image": {
+        "path": "eye_closed_left.png",
+        "width": 64,
+        "height": 17
+      },
+      "rect": {
+        "left": 431,
+        "top": 219,
+        "width": 64,
+        "height": 17
+      },
+      "tags": [
+        "eye",
+        "closed",
+        "left"
+      ]
+    },
+    {
+      "id": "mouth_closed",
+      "name": "mouth closed",
+      "image": {
+        "path": "mouth_closed.png",
+        "width": 46,
+        "height": 11
+      },
+      "rect": {
+        "left": 385,
+        "top": 288,
+        "width": 46,
+        "height": 11
+      },
+      "tags": [
+        "mouth",
+        "closed"
+      ]
+    }
+  ]
+}

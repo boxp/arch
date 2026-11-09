@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Kohako Web Rig Preview</title></head>
+<body><main class="shell">
+  <header><div><span class="eyebrow">KOHAKO / WEB RIG PREVIEW</span><h1>Web リグ プレビュー</h1></div><div id="status" class="connection">読み込み中</div></header>
+  <p class="notice"><strong>方式:</strong> PSD2Live の独自 runtime（.p2lrt + WebAssembly + WebGL）。<strong>公式 Live2D Cubism ではありません</strong>（Cubism Core 不使用）。<br><strong>モデル:</strong> <span id="model-name"></span> — <span id="model-notice"></span></p>
+  <section id="prototype-selector" class="notice" aria-label="試作の比較"></section>
+  <div class="layout"><section class="character"><canvas id="stage" aria-label="リグの描画"></canvas><p id="state" class="state" role="status">待機中</p></section>
+  <section class="panel">
+    <span class="eyebrow">STATE</span><h2>状態連動（Hermes 会話の状態を想定）</h2>
+    <div id="states" class="actions"></div>
+    <span class="eyebrow">MOUTH</span><h2>口パク</h2>
+    <form id="speak"><input id="speak-text" maxlength="200" value="こんにちは。ウェブで動くリグの口パク試験です。"><div class="actions"><button id="speak-button" type="submit">読み上げで口パク</button><button id="mic" type="button" class="secondary">マイク音量で口パク</button></div></form>
+    <label class="slider">手動 <input id="mouth" type="range" min="0" max="1" step="0.01" value="0"></label>
+    <p class="help">まばたき・呼吸・視線は runtime の自動動作。画面上をなぞると視線が追従します。</p>
+    <details><summary>パラメータ（<span id="param-count">0</span>）</summary><div id="params" class="params"></div></details>
+    <div class="log"><strong>計測</strong><ul id="metrics"></ul></div>
+    <p id="error" class="error" role="alert"></p>
+  </section></div>
+  <footer id="credits">PSD2Live web player / runtime: MIT（© PSD2Live contributors）。<span id="model-credits"></span> ライセンス全文: <a href="./kohako/live2d/sample/LICENSES.txt">LICENSES.txt</a></footer>
+</main><script type="module" src="/src/live2d/main.ts"></script></body></html>
