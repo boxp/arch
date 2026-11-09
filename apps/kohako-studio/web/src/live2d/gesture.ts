@@ -29,6 +29,7 @@ const EYE_L: Vec = [517.5, 276]
 const EYE_R: Vec = [631.5, 278]
 
 const CROSSFADE_SECONDS = 0.55
+const FORESHORTEN_AT = 1.75, FORESHORTEN_WIDTH = 0.85, FORESHORTEN_DEPTH = 0.5, FORESHORTEN_FADE = 0.5
 const REST: ArmPose = { up: 0, upS: 1, fo: 0, foS: 1, ha: 0, haS: 1 }
 const NO_BODY: BodyPose = { headX: 0, headY: 0, headZ: 0, bodyX: 0, bodyZ: 0, lean: 0, eyeX: 0, eyeY: 0 }
 
@@ -93,12 +94,18 @@ export function crossfadeArms<T extends { right: ArmPose; left: ArmPose }>(from:
   const t = ease(Math.min(1, Math.max(0, x)))
   return { ...to, right: lerpArm(from.right, to.right, t), left: lerpArm(from.left, to.left, t) }
 }
+/** 体の前を通る動作で前腕が水平付近にあるときの長さ。前腕が手前を向く短縮で描き、手が腹の前を横切らないようにする。 */
+export function foreScale(pose: Pick<ArmPose, 'fo' | 'foS' | 'front'>): number {
+  if (!pose.front) return pose.foS
+  const off = (pose.fo - FORESHORTEN_AT) / FORESHORTEN_WIDTH // 内回り（正の角度）だけ。外回りの挨拶などへの切替では 0 を通るので跳ばない
+  return pose.foS * (1 - FORESHORTEN_DEPTH * smooth(0, FORESHORTEN_FADE, pose.fo) * Math.exp(-off * off)) // 角度 0 で完全に 0 にして動作の始点終点をずらさない
+}
 /** 手首・肘が目標へ届くか確認する検算用の順運動学。 */
 export function solveArm(bone: Pick<Bone, 'S' | 'E' | 'W'>, pose: ArmPose): { elbow: Vec; wrist: Vec } {
   const ud = norm(sub(bone.E, bone.S)), fd = norm(sub(bone.W, bone.E)), upperLength = Math.hypot(...sub(bone.E, bone.S)), foreLength = Math.hypot(...sub(bone.W, bone.E))
   const natural = add(bone.S, scaleV(rot(ud, pose.up), upperLength * pose.upS)), w = pose.elbowW ?? 1
   const elbow: Vec = pose.elbowTo ? [lerp(natural[0], pose.elbowTo[0], w), lerp(natural[1], pose.elbowTo[1], w)] : natural
-  return { elbow, wrist: add(elbow, scaleV(rot(fd, pose.fo), foreLength * pose.foS)) }
+  return { elbow, wrist: add(elbow, scaleV(rot(fd, pose.fo), foreLength * foreScale(pose))) }
 }
 
 /** 前腕の金の縁より手先の頂点か（上腕・肩の装甲・裏地は false）。 */
@@ -117,7 +124,7 @@ function isStubEnd(bone: Pick<Bone, "mirror">, rx: number, ry: number): boolean 
 }
 export function deformArm(bone: Bone, pose: ArmPose, vx: number, vy: number, rx: number, ry: number): Vec {
   const mirrorPose = bone.mirror ? { ...pose, up: -pose.up, fo: -pose.fo, ha: -pose.ha, elbowTo: pose.elbowTo ? mirrorX(pose.elbowTo) : undefined } : pose
-  const { up, upS, fo, foS } = mirrorPose
+  const { up, upS, fo } = mirrorPose, foS = foreScale(mirrorPose)
   const ud = norm(sub(bone.E, bone.S)), fd = norm(sub(bone.W, bone.E))
   const newE = solveArm(bone, mirrorPose).elbow
   const forearm = isForearm(bone, rx, ry)

@@ -20,6 +20,7 @@ export const BROW_MESH = 1
 export const FACE_MESH = 18
 const BROW_BOX = { x0: 505, y0: 234, x1: 650, y1: 260 }
 const SCLERA: Rgba = [246, 246, 250, 255]
+const STRAND_LUMA = 55, EDGE_LUMA = 60, EDGE_REACH = 12
 
 export function arcX(arc: Arc, y: number): number {
   const first = arc[0] as readonly [number, number], last = arc[arc.length - 1] as readonly [number, number]
@@ -113,6 +114,19 @@ export function rebakeEye(source: Atlas, target: Atlas, spec: EyeSpec, lash: Lay
   return count
 }
 
+/** 行 y で x から最も近い明暗の切り替わり（なければ null）。 */
+function edgeNear(read: (x: number, y: number) => Rgba, x: number, y: number, threshold: number): number | null {
+  const side = luma(read(x, y)) >= threshold
+  for (let d = 0.5; d <= EDGE_REACH; d += 0.5) for (const at of [x - d, x + d]) if ((luma(read(at, y)) >= threshold) !== side) return at
+  return null
+}
+/** 眉の下の画素が、上の行の色と同じ側か（髪の縁が斜めに眉を横切る場合）。縁が見つからなければ中点で分ける。 */
+function sameSideAsUp(read: (x: number, y: number) => Rgba, x: number, up: number, down: number, t: number, threshold: number): boolean {
+  const a = edgeNear(read, x, up, threshold), b = edgeNear(read, x, down, threshold)
+  if (a === null || b === null) return t < 0.5
+  return (x >= a + (b - a) * t) === (x >= a)
+}
+
 /** 眉: 眉の層から前髪の断片を除き、顔の層に焼き込まれた眉を上下の肌で埋める。 */
 export function rebakeBrows(source: Atlas, target: Atlas, brow: Layer, face: Layer): { removed: number; erased: number } {
   const readBrow = sampler(source, brow), readFace = sampler(source, face)
@@ -127,8 +141,11 @@ export function rebakeBrows(source: Atlas, target: Atlas, brow: Layer, face: Lay
     while (near(x, up) && y - up < 12) up -= 0.5
     while (near(x, down) && down - y < 12) down += 0.5
     const a = readFace(x, up), b = readFace(x, down)
-    if (luma(a) < 150 || luma(b) < 150 || a[3] < 200 || b[3] < 200) return
-    target.set(u, v, mix(a, b, (y - up) / (down - up))); result.erased++
+    // 眉は前髪の束とも交差する。肌だけでなく髪色でも埋める（上下とも線画の濃さなら、線を消さないよう残す）。
+    if (a[3] < 200 || b[3] < 200 || (luma(a) < STRAND_LUMA && luma(b) < STRAND_LUMA)) return
+    const t = (y - up) / (down - up)
+    // 髪と肌の境目を線形に埋めると淡いにじみになる。上下の行で境界を探し、その間を斜めにつないで髪か肌のどちらかで埋める。
+    target.set(u, v, Math.abs(luma(a) - luma(b)) > EDGE_LUMA ? (sameSideAsUp(readFace, x, up, down, t, (luma(a) + luma(b)) / 2) ? a : b) : mix(a, b, t)); result.erased++
   })
   return result
 }
