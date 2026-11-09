@@ -9,3 +9,5 @@ Node 22 で `cd web && npm ci && npm run typecheck && npm test && npm run build`
 BFF は Owner 認証用に `KOHAKO_ACCESS_TEAM_DOMAIN`、`KOHAKO_ACCESS_AUD`、`KOHAKO_OWNER_EMAILS`、Hermes 接続用に `KOHAKO_HERMES_URL`、`KOHAKO_HERMES_KEY`、`KOHAKO_HERMES_TOOLSETS` を環境から読みます。音声認識には `KOHAKO_STT_URL` を任意で設定します。Verifier は `KOHAKO_VERIFIER_ENABLED=true` で有効になり、`KOHAKO_VERIFIER_USERNAME` で対象 ServiceAccount を指定できます。TokenReview の権限と専用 audience の投影 token が必要です。
 
 試作は Studio と Web リグ画面の選択欄で比較できます。クエリなしでは最新の試作 v12（担当不採用・本人確認用）を表示し、v0〜v3、v5、v6、v11 に戻せます。v4、v7〜v10 は p2lrt が消失したため比較画像と不採用理由を表示します。
+
+表情と動作の比較版は `/kohako/live2d.html?acting=1`（手動）と `/kohako/studio.html?acting=1`（会話連動）で開けます。クエリなしの表示は変わりません。文単位の感情はルールベースで判定し（`web/src/live2d/acting.ts`）、腕・表情は全身 v11r の頂点出力を描画直前に変形して足します（`web/src/live2d/gesture.ts`）。別 LLM による判定や新規素材は使っていません。

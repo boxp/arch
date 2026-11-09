@@ -89,3 +89,12 @@ describe('送信の再送', () => {
     expect(sendOutcomeUnknown(429)).toBe(false)
   })
 })
+
+describe('演技フラグ', () => {
+  it('acting=1 のときだけ有効', async () => {
+    const { wantsActing } = await import('./model')
+    expect(wantsActing('?acting=1')).toBe(true)
+    expect(wantsActing('')).toBe(false)
+    expect(wantsActing('?acting=true')).toBe(false)
+  })
+})
