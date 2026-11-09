@@ -2,6 +2,7 @@
 """Read-only Sunrise availability monitor. Configuration and state are private."""
 
 import datetime as dt
+import copy
 import fcntl
 import json
 import os
@@ -165,6 +166,8 @@ def valid_url(url, date):
 
 def parse(html, leg, query):
     """Return known cells only; ambiguous or missing cells remain unknown."""
+    if "20100941" in html:
+        raise ParseFailure("closed")
     if "20100946" in html:
         raise ParseFailure("congestion")
     p = Parser()
@@ -402,7 +405,28 @@ def migrate(legacy, cfg):
     return state
 
 
-def run(cfg, state, now, getter=fetch):
+def closed_hours(now):
+    t = now.astimezone(JST).time()
+    return dt.time(1, 50) <= t < dt.time(5, 30)
+
+
+def next_open(now):
+    local = now.astimezone(JST)
+    opening = dt.datetime.combine(local.date(), dt.time(5, 30), JST)
+    return opening if local < opening else opening + dt.timedelta(days=1)
+
+
+def run(cfg, state, now, getter=fetch, clock=None):
+    # Stage a whole tick so closure never changes existing observation/history.
+    original = state
+    if closed_hours(now):
+        return [], False
+    pause = state.get("closed_until")
+    if pause and now < dt.datetime.fromisoformat(pause):
+        return [], False
+    state = copy.deepcopy(state)
+    state.pop("closed_until", None)
+    clock = clock or (lambda: now)
     messages = []
     active = False
     expired = False
@@ -415,6 +439,9 @@ def run(cfg, state, now, getter=fetch):
             continue
         active = True
         for index, q in enumerate(leg["queries"]):
+            query_now = clock()
+            if closed_hours(query_now):
+                return [], False
             found = {}
             code = None
             try:
@@ -426,6 +453,11 @@ def run(cfg, state, now, getter=fetch):
             except DeadlineExceeded:
                 expired = True
                 code = "deadline"
+            except ParseFailure as exc:
+                if exc.code == "closed":
+                    original["closed_until"] = next_open(query_now).isoformat()
+                    return [], False
+                code = failure_code(exc)
             except Exception as exc:
                 code = failure_code(exc)
             reason = REASONS.get(code)
@@ -477,6 +509,9 @@ def run(cfg, state, now, getter=fetch):
                     messages.append(
                         f"【空席】{leg['date']} {leg['from']}→{leg['to']} {name}（{ROOMS[room][2]}）\n観測: {now.astimezone(JST):%Y-%m-%d %H:%M} JST\n{q['url']}\n料金は未確認です。予約は確保されておらず、空席は変動します。{suffix}"
                     )
+    # The final in-flight request may have crossed the closing boundary too.
+    if closed_hours(clock()):
+        return [], False
     # The scheduler cannot acknowledge delivery to this process. Retain evidence
     # for explicit reconciliation rather than claiming successful delivery.
     for message in messages:
@@ -487,6 +522,8 @@ def run(cfg, state, now, getter=fetch):
     state["observations"] = observations
     state["last_checked_at"] = now.isoformat()
     state["active"] = active
+    original.clear()
+    original.update(state)
     return messages, active
 
 
@@ -510,7 +547,8 @@ def main(getter=fetch):
         )
         if state.get("schema_version") != 1:
             raise ValueError("stateはmigrate.pyによる変換が必要です")
-        messages, _ = run(cfg, state, dt.datetime.now(dt.timezone.utc), getter)
+        clock = lambda: dt.datetime.now(dt.timezone.utc)
+        messages, _ = run(cfg, state, clock(), getter, clock)
         atomic(path, state)
         if messages:
             print("\n\n".join(messages))
