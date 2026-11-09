@@ -1,9 +1,10 @@
 ---
 import stg from "../data/stg.json";
 import SectionHeading from "./SectionHeading.astro";
-const highlights = [...stg.clears]
-  .reverse()
+// Newest first. Dates are ISO-like strings (some month-only), so plain string order works.
+const highlights = stg.clears
   .filter((c) => c.url)
+  .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
   .slice(0, 4);
 ---
 
