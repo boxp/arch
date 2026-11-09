@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BENT_ART, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { BENT_ART, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -194,6 +194,37 @@ describe('動作の切り替え', () => {
       const a = wrist(i / steps), b = wrist((i + 1) / steps)
       expect(Math.hypot(a[0] - b[0], a[1] - b[1])).toBeLessThan(whole * 0.1)
     }
+  })
+})
+
+describe('上げた腕からの反対側への割込み（BOXP-476 TD-02）', () => {
+  const held = (gesture: 'shyHand' | 'halt', time: number) => sample(clips[gesture], time)
+  const path = (from: 'shyHand' | 'halt', fromTime: number, to: 'shyHand' | 'halt') => {
+    const start = held(from, fromTime), plan = interruptPlan(start, clips[to])
+    return { plan, frames: Array.from({ length: 21 }, (_, i) => { const x = i / 20; return solveArm(bone, crossfadeArms(plan.from, sample(clips[to], plan.at + x * 0.8), x).right) }) }
+  }
+  it('照れ→制止は上を回り、手首が腹の高さへ下がらない', () => {
+    const { plan, frames } = path('shyHand', 1.2, 'halt')
+    expect(plan.at).toBeGreaterThan(0)
+    expect(Math.abs(plan.from.right.fo - clips.halt.keys[2]!.right!.fo)).toBeLessThan(Math.PI)
+    for (const { wrist, elbow } of frames) { expect(wrist[1]).toBeLessThan(elbow[1]); expect(wrist[1]).toBeLessThan(600) }
+  })
+  it('制止→照れも逆向きに同じ', () => {
+    const { frames } = path('halt', 1.2, 'shyHand')
+    for (const { wrist, elbow } of frames) { expect(wrist[1]).toBeLessThan(elbow[1]); expect(wrist[1]).toBeLessThan(600) }
+  })
+  it('上がっていない腕や同じ側への切替は経路も開始時刻も変えない', () => {
+    const low = { right: rest, left: rest }
+    expect(interruptPlan(low, clips.halt)).toEqual({ from: low, at: 0 })
+    const raised = held('halt', 1.2)
+    expect(interruptPlan(raised, clips.greet).at).toBe(0)
+  })
+  it('曲げの絵の裏返しは割込みで回る途中の 1 回だけ', () => {
+    const { plan } = path('shyHand', 1.2, 'halt'), from = plan.from.right.fo, to = clips.halt.keys[2]!.right!.fo
+    const sides = Array.from({ length: 41 }, (_, i) => bentSide({ mirror: false }, { fo: from + (to - from) * i / 40 }))
+    expect(sides[0]).toBe(bentSide({ mirror: false }, { fo: 3.41 }))
+    expect(sides.at(-1)).toBe(1)
+    expect(sides.filter((v, i) => i > 0 && v !== sides[i - 1]).length).toBe(1)
   })
 })
 

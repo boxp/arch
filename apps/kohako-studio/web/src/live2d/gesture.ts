@@ -107,11 +107,28 @@ export function crossfadeArms<T extends { right: ArmPose; left: ArmPose }>(from:
   const t = ease(Math.min(1, Math.max(0, x)))
   return { ...to, right: lerpArm(from.right, to.right, t), left: lerpArm(from.left, to.left, t) }
 }
+const TAU = 2 * Math.PI, RAISED = 1.5, FO_CUT = 3.82 // 照れの保持(3.41)と制止の保持(-2.05 = 4.23)の中間。割込みで 1 周ずらした角度を元の範囲へ戻すときの境目
+const normalizeFo = (fo: number) => fo >= FO_CUT ? fo - TAU : fo <= FO_CUT - TAU ? fo + TAU : fo
+/**
+ * 割込みの起点。腕を上げたまま反対側の上げ姿勢へ移るとき（照れ→制止など）、角度をそのまま補間すると腕が下を回って手が腹の前を横切る。
+ * そこで起点の角度を 1 周ずらして上を通る短い経路にし、次の動作の振り上げ（休止から上げる区間）を飛ばす。at は次の動作の開始時刻。
+ */
+export function interruptPlan(from: { right: ArmPose; left: ArmPose }, next: Clip): { from: { right: ArmPose; left: ArmPose }; at: number } {
+  const out = { ...from }
+  let at = 0
+  for (const side of ['right', 'left'] as const) {
+    const current = from[side], key = Math.abs(current.fo) < RAISED ? undefined : next.keys.find(k => Math.abs(k[side]?.fo ?? 0) >= RAISED), target = key?.[side]?.fo
+    if (!key || target == null || Math.abs(target - current.fo) <= Math.PI) continue
+    out[side] = { ...current, fo: current.fo + (target > current.fo ? TAU : -TAU) }
+    at = Math.max(at, key.t)
+  }
+  return { from: out, at }
+}
 /** 体の前を通る動作で前腕が水平付近にあるときの長さ。前腕が手前を向く短縮で描き、手が腹の前を横切らないようにする。 */
 export function foreScale(pose: Pick<ArmPose, 'fo' | 'foS' | 'front'>): number {
   if (!pose.front) return pose.foS
-  const off = (pose.fo - FORESHORTEN_AT) / FORESHORTEN_WIDTH // 内回り（正の角度）だけ。外回りの挨拶などへの切替では 0 を通るので跳ばない
-  return pose.foS * (1 - FORESHORTEN_DEPTH * smooth(0, FORESHORTEN_FADE, pose.fo) * (1 - smooth(2.8, 3.35, pose.fo)) * Math.exp(-off * off)) // 始点(角度 0)と保持(手前を向き切った後)では完全に 0 にして長さをずらさない
+  const fo = normalizeFo(pose.fo), off = (fo - FORESHORTEN_AT) / FORESHORTEN_WIDTH // 内回り（正の角度）だけ。外回りの挨拶などへの切替では 0 を通るので跳ばない
+  return pose.foS * (1 - FORESHORTEN_DEPTH * smooth(0, FORESHORTEN_FADE, fo) * (1 - smooth(2.8, 3.35, fo)) * Math.exp(-off * off)) // 始点(角度 0)と保持(手前を向き切った後)では完全に 0 にして長さをずらさない
 }
 /** 手首・肘が目標へ届くか確認する検算用の順運動学。 */
 export function solveArm(bone: Pick<Bone, 'S' | 'E' | 'W'>, pose: ArmPose): { elbow: Vec; wrist: Vec } {
@@ -178,7 +195,7 @@ const ART: Record<HandArt, { file: string; w: number; h: number; anchor: Vec; sc
 const UPPER_ART = { file: 'upper.png', top: [750, 640] as Vec, bottom: [761, 764] as Vec, halfWidth: 39 }
 const UPPER_ART_REACH = 114 // 肩の関節から素材の上端までの距離（休止時の top と同じ）
 const UPPER_ART_REACH_INWARD = 8 // 肘を体の前へ寄せたときの上端の距離。袖の裏まで伸ばし、棒の切り口を胴の上に見せない
-const UPPER_ART_INTO_CUFF = 30 // 上腕の下端の位置（正は肘より手の側）。下端の丸みを小手の裏へ入れ、途中のコマでも上腕が開口の手前で止まって見えないようにする（休止の絵の位置と同じ）
+const UPPER_ART_INTO_CUFF = 30 // 上腕の下端を肩→肘の延長線上で肘より先へ出す量。下端の丸みを小手の裏へ入れて止まって見えないようにしつつ、軸は肘へ向けて肘の丸みと両縁をつなげる
 const SEPARATE_AT = 0.02
 // 曲げた腕の絵。v11r の小手の肘側は V 字に切れ込んでいて、回すと先端が二股の板に見える（肘の丸みが無い）。曲げの間だけ、正本シートの上げた腕から切り出した丸い金縁の小手と、肘を包む黒い袖へ差し替える（生成なし）。anchor は素材 px の肘、scale は素材 px→モデル座標。
 export const BENT_ART = { fore: { file: 'fore-bent.png', w: 313, h: 512, anchor: [156.4, 414] as Vec, scale: 0.5 }, elbow: { file: 'elbow-upper.png', w: 294, h: 314, anchor: [147, 156.8] as Vec, scale: 0.5 } }
@@ -186,7 +203,7 @@ const BENT_FROM = 0.94, BENT_TO = 0.96
 /** 前腕の曲げ量に応じた、差し替えの絵の重み（0〜1）。 */
 export const bentWeight = (fo: number) => smooth(BENT_FROM, BENT_TO, Math.abs(fo))
 /** 絵の左右。正本は「手先へ向かって肩が左」の絵。内回り（fo>0）と左腕では裏返す。 */
-export const bentSide = (bone: Pick<Bone, 'mirror'>, pose: Pick<ArmPose, 'fo'>) => (pose.fo > 0 ? -1 : 1) * (bone.mirror ? -1 : 1)
+export const bentSide = (bone: Pick<Bone, 'mirror'>, pose: Pick<ArmPose, 'fo'>) => (normalizeFo(pose.fo) > 0 ? -1 : 1) * (bone.mirror ? -1 : 1)
 const artCorners = (art: { w: number; h: number; anchor: Vec; scale: number }): Vec[] => ([[0, 0], [art.w, 0], [art.w, art.h], [0, art.h]] as Vec[]).map(([x, y]) => [(x - art.anchor[0]) * art.scale, (art.anchor[1] - y) * art.scale])
 /** 素材の座標（横 b, 軸方向 a）を、肘を原点に軸 axis の向きへ置く。 */
 export function placeBent(elbow: Vec, axis: Vec, side: number, [b, a]: Vec): Vec { const u = norm(axis); return add(elbow, add(scaleV(u, a), scaleV([-u[1], u[0]], b * side))) }
@@ -214,9 +231,9 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const headCurrent = { ...NO_BODY }
   let fadeFrom: { right: ArmPose; left: ArmPose } | null = null, fadeTime = 0, fadeSeconds = CROSSFADE_SECONDS
   // 腕の表示は常に pose そのもの。解除も関節の補間で戻すので、どの時点で次の動作が来ても pose から正確につなげる。
-  const startFade = (seconds = CROSSFADE_SECONDS) => { fadeFrom = { right: pose.right, left: pose.left }; fadeTime = 0; fadeSeconds = seconds }
+  const startFade = (seconds = CROSSFADE_SECONDS, from: { right: ArmPose; left: ArmPose } = pose) => { fadeFrom = { right: from.right, left: from.left }; fadeTime = 0; fadeSeconds = seconds }
   // 前腕の回転量が大きい切替（内回りの照れ→外回りの挨拶など）は、回す角度に応じて時間をかける。
-  const fadeFor = (next: Clip) => CROSSFADE_SECONDS * Math.max(1, Math.max(...next.keys.flatMap(k => [Math.abs((k.right?.fo ?? 0) - pose.right.fo), Math.abs((k.left?.fo ?? 0) - pose.left.fo)])) / 2.4)
+  const fadeFor = (next: Clip, from: { right: ArmPose; left: ArmPose }, at: number) => CROSSFADE_SECONDS * Math.max(1, Math.max(...next.keys.filter(k => k.t >= at).flatMap(k => [Math.abs((k.right?.fo ?? 0) - from.right.fo), Math.abs((k.left?.fo ?? 0) - from.left.fo)])) / 2.4)
   // 肘を曲げている間だけ、前腕と上腕をまたぐ三角形を描かない（引き伸ばしの裂けを出さない）。
   type IndexArray = Uint16Array | Uint32Array
   const cuts = new Map<number, { full: IndexArray; cut: IndexArray; bent: boolean }>()
@@ -271,7 +288,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
         const a = armOf(bone), m = bone.mirror ? { ...a, up: -a.up, fo: -a.fo, ha: -a.ha, elbowTo: a.elbowTo ? mirrorX(a.elbowTo) : undefined } : a, [dx, dy] = swayOf(bone.arm), e = sub(solveArm(bone, m).elbow, bone.E)
         // 上腕は肩から肘へ向かう棒として張る（親子変形）。下端の丸みが肘の先になる。
         // 上端は肩の関節から肘へ向かう線の上に置く（肩の装甲の裏に隠れる）。肘がどちらへ動いても肩から生えて見える。
-        const elbow = solveArm(bone, m), intoCuff = add(elbow.elbow, scaleV(norm(sub(elbow.wrist, elbow.elbow)), UPPER_ART_INTO_CUFF)), b: Vec = (() => { const rest = add(place(UPPER_ART.bottom), e), w = smooth(0.05, 0.4, Math.abs(m.fo)); return [lerp(rest[0], intoCuff[0], w), lerp(rest[1], intoCuff[1], w)] })(), inward = Math.max(0, bone.mirror ? elbow.elbow[0] - bone.E[0] : bone.E[0] - elbow.elbow[0]), t = add(bone.S, scaleV(norm(sub(b, bone.S)), lerp(UPPER_ART_REACH, UPPER_ART_REACH_INWARD, smooth(0, 50, inward)))), along = norm(sub(b, t)), across: Vec = scaleV([-along[1] * side, along[0] * side], UPPER_ART.halfWidth)
+        const elbow = solveArm(bone, m), intoCuff = add(elbow.elbow, scaleV(norm(sub(elbow.elbow, bone.S)), UPPER_ART_INTO_CUFF)), b: Vec = (() => { const rest = add(place(UPPER_ART.bottom), e), w = smooth(0.05, 0.4, Math.abs(m.fo)); return [lerp(rest[0], intoCuff[0], w), lerp(rest[1], intoCuff[1], w)] })(), inward = Math.max(0, bone.mirror ? elbow.elbow[0] - bone.E[0] : bone.E[0] - elbow.elbow[0]), t = add(bone.S, scaleV(norm(sub(b, bone.S)), lerp(UPPER_ART_REACH, UPPER_ART_REACH_INWARD, smooth(0, 50, inward)))), along = norm(sub(b, t)), across: Vec = scaleV([-along[1] * side, along[0] * side], UPPER_ART.halfWidth)
         ;[add(t, across), sub(t, across), sub(b, across), add(b, across)].forEach((c, i) => { out[2 * i] = c[0] + dx; out[2 * i + 1] = c[1] + dy })
       } })
       // 動き始めは元の上腕の絵を重ねて見せ、曲げるにつれて生成の上腕へ移す（絵の切り替わりで一瞬光らないように）。
@@ -399,8 +416,9 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     playGesture(next) {
       if (next === 'none') return
       // 前の動作の途中や解除後の戻りの途中でも、その時点の腕の見た目から次の動作へつなぐ。
-      startFade(fadeFor(clips[next]))
-      clip = clips[next]; clipName = next; clipTime = 0; armBlend = 1
+      const plan = interruptPlan(pose, clips[next])
+      startFade(fadeFor(clips[next], plan.from, plan.at), plan.from)
+      clip = clips[next]; clipName = next; clipTime = plan.at; armBlend = 1
     },
     reset() { emotion = 'neutral'; target = faces.neutral; player.expression(null); if (clip) startFade(); clip = null; clipName = 'none' },
     report: () => ({ supported: true, parts: partsStatus, facePatch, emotion, gesture: clipName, armBlend, clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
