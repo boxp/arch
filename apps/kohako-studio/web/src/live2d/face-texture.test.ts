@@ -54,13 +54,21 @@ describe('眉の組み替え', () => {
     expect(target.get(530, 246)).toEqual(hair)
     expect([hair, skin]).toContainEqual(target.get(534, 246))
   })
-  it('前髪に隠れた列（上下が暗い）は埋めない', () => {
-    const source = atlas(800, 400), hair: Rgba = [40, 40, 50, 255], ink: Rgba = [20, 20, 25, 255]
-    for (let y = 236; y < 258; y++) source.set(530, y, hair)
+  it('上下とも線画の濃さの列は埋めない', () => {
+    const source = atlas(800, 400), line: Rgba = [22, 22, 30, 255], ink: Rgba = [5, 5, 8, 255]
+    for (let y = 236; y < 258; y++) source.set(530, y, y >= 245 && y <= 247 ? ink : line)
     for (let y = 245; y <= 247; y++) source.set(630, y, ink)
     const target = copy(source)
     rebakeBrows(source, target, shifted(100), identity)
-    expect(target.get(530, 246)).toEqual(hair)
+    expect(target.get(530, 246)).toEqual(ink)
+  })
+  it('左の眉の内端は前髪の層の焼き込みも消す', () => {
+    const source = atlas(1000, 400), hair: Rgba = [90, 90, 105, 255], ink: Rgba = [20, 20, 25, 255]
+    for (let y = 240; y < 256; y++) source.set(752, y, y >= 247 && y <= 249 ? ink : hair)
+    for (let y = 247; y <= 249; y++) source.set(652, y, ink)
+    const target = copy(source)
+    rebakeBrows(source, target, shifted(100), identity, shifted(200))
+    expect(target.get(752, 248)).toEqual(hair)
   })
 })
 
@@ -89,5 +97,21 @@ describe('目の組み替え', () => {
     const target = copy(source)
     rebakeEye(source, target, spec, lash, iris, white)
     expect(target.get(745, 288)).toEqual(sclera)
+  })
+  it('元の白目の形の外へは塗り広げず、弧のそばの抜きだけ埋める', () => {
+    const source = atlas(900, 400), sclera: Rgba = [250, 250, 252, 255]
+    for (let y = 279; y <= 297; y++) for (let x = 500; x <= 503; x++) source.set(x + 200, y, sclera)
+    for (let y = 279; y <= 297; y++) for (let x = 512; x <= 538; x++) source.set(x + 200, y, sclera)
+    const target = copy(source)
+    rebakeEye(source, target, spec, lash, iris, white)
+    expect(target.get(705, 288)).toEqual(clear) // 弧から 5 離れた透明はシルエットの外
+    expect(target.get(708, 288)[3]).toBe(255) // 弧から 2 の抜きは埋める
+  })
+  it('虹彩の上半分の穴（ハイライト）は白で埋めて虹彩と一緒に動かす', () => {
+    const source = atlas(900, 400), blue: Rgba = [40, 60, 200, 255], pale: Rgba = [230, 225, 240, 255]
+    for (let x = 512; x <= 538; x++) for (let y = 280; y <= 296; y++) { if (x !== 520 || y !== 283) source.set(x + 100, y, blue); source.set(x + 200, y, pale) }
+    const target = copy(source)
+    rebakeEye(source, target, spec, lash, iris, white)
+    expect(target.get(620, 283)).toEqual([255, 255, 255, 255])
   })
 })
