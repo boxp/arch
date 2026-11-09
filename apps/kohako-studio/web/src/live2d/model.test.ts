@@ -13,6 +13,12 @@ describe('poseFor', () => {
     expect(poseFor('failed', expressions, clips)).toEqual({ expression: 'sad', clip: 'Shake', look: [0, -0.3] })
     expect(poseFor('idle', expressions, clips).expression).toBeNull()
   })
+  it('prefers think for thinking and falls back to sleepy, gloom, or null', () => {
+    expect(poseFor('thinking', ['gloom', 'sleepy', 'think'], []).expression).toBe('think')
+    expect(poseFor('thinking', ['gloom', 'sleepy'], []).expression).toBe('sleepy')
+    expect(poseFor('thinking', ['gloom'], []).expression).toBe('gloom')
+    expect(poseFor('thinking', [], []).expression).toBeNull()
+  })
   it('falls back and leaves missing names unset', () => {
     expect(poseFor('thinking', ['gloom'], ['Idle']).expression).toBe('gloom')
     for (const state of rigStates) expect(poseFor(state, [], [])).toMatchObject({ expression: null, clip: null })
@@ -46,7 +52,7 @@ describe('FrameMeter', () => {
 describe('modelFor', () => {
   it('defaults to the Kohako model and keeps the sample selectable', () => {
     expect(modelFor('').id).toBe(LATEST_MODEL_ID)
-    expect(LATEST_MODEL_ID).toBe('kohako-full-v11l')
+    expect(LATEST_MODEL_ID).toBe('kohako-full-v11m')
     expect(lostPrototypes.find(p => p.id === 'kohako-v45-video')?.evaluation).toContain('比較動画')
     for (const version of ['v45', 'v46']) for (const video of ['idle', 'blink', 'slow', 'det']) expect(existsSync(resolve('public/kohako/live2d/compare', `kohako-${version}-${video}.mp4`))).toBe(true)
     expect(lostPrototypes.find(p => p.id === 'kohako-v39')?.evaluation).toContain('不採用')
@@ -114,7 +120,8 @@ describe('clip names', () => {
     expect(modelFor('?model=kohako-v36').status).toBe('previous-latest')
     expect(modelFor('?model=kohako-v46').rig).toBe('../kohako/kohako-v46.p2lrt')
     expect(modelFor('?model=kohako-v45').status).toBe('previous-latest')
-    expect(modelFor('?model=kohako-full-v11l').status).toBe('latest')
+    expect(modelFor('?model=kohako-full-v11m').status).toBe('latest')
+    expect(modelFor('?model=kohako-full-v11l').status).toBe('previous-latest')
     expect(modelFor('?model=kohako-full-v11k').status).toBe('previous-latest')
     expect(modelFor('?model=kohako-full-v11j').status).toBe('previous-latest')
     expect(modelFor('?model=kohako-v45').rig).toBe('../kohako/kohako-v45.p2lrt')
@@ -196,20 +203,20 @@ describe('motion ids of the v25+ builds', () => {
   })
 })
 
-it('全身試作を明示選択でき、既定は全身 v11l', () => {
+it('全身試作を明示選択でき、既定は全身 v11m', () => {
   expect(modelFor('?model=kohako-full-v5').id).toBe('kohako-full-v5')
   expect(modelFor('?model=kohako-v45').rig).toBe('../kohako/kohako-v45.p2lrt')
   expect(modelFor('?model=kohako-full-v1').id).toBe('kohako-full-v1')
   expect(modelFor('?model=kohako-full-v2').id).toBe('kohako-full-v2')
   expect(clipName(modelFor('?model=kohako-full-v2'), 'modifier:m17:6d6f74696f6e')).toBe('Idle')
-  expect(modelFor('').id).toBe('kohako-full-v11l')
+  expect(modelFor('').id).toBe('kohako-full-v11m')
   expect(clipName(modelFor('?model=kohako-full-v1'), 'modifier:m16:6d6f74696f6e')).toBe('Idle')
 })
 
 
 it('selects full-v6 explicitly', () => {
   expect(modelFor('?model=kohako-full-v6').id).toBe('kohako-full-v6')
-  expect(LATEST_MODEL_ID).toBe('kohako-full-v11l')
+  expect(LATEST_MODEL_ID).toBe('kohako-full-v11m')
 })
 
 it('selects full-v7 explicitly', () => {
@@ -217,12 +224,12 @@ it('selects full-v7 explicitly', () => {
   expect(v7.id).toBe('kohako-full-v7')
   expect(v7.status).toBe('rejected')
   expect(clipName(v7, 'modifier:m18:6d6f74696f6e')).toBe('Blink')
-  expect(LATEST_MODEL_ID).toBe('kohako-full-v11l')
+  expect(LATEST_MODEL_ID).toBe('kohako-full-v11m')
 })
 
 it('selects full-v8 explicitly', () => {
   expect(modelFor('?model=kohako-full-v8').status).toBe('rejected')
-  expect(modelFor('').id).toBe('kohako-full-v11l')
+  expect(modelFor('').id).toBe('kohako-full-v11m')
 })
 
 it('limits upper framing to full-body models', () => {
@@ -236,12 +243,14 @@ it('limits upper framing to full-body models', () => {
 
 it('selects full-v9 explicitly', () => {
   expect(modelFor('?model=kohako-full-v9').status).toBe('rejected')
-  expect(LATEST_MODEL_ID).toBe('kohako-full-v11l')
+  expect(LATEST_MODEL_ID).toBe('kohako-full-v11m')
 })
 
 it('full-v11j keeps eyes open by not applying expressions, other models unchanged', () => {
+  expect(modelFor('?model=kohako-full-v11m').noExpressions).toBeUndefined()
+  expect(modelFor('?model=kohako-full-v11l').noExpressions).toBe(true)
   expect(modelFor('?model=kohako-full-v11k').noExpressions).toBe(true)
   expect(modelFor('?model=kohako-full-v11j').noExpressions).toBe(true)
   expect(modelFor('?model=kohako-full-v11g').noExpressions).toBeUndefined()
-  expect(LATEST_MODEL_ID).toBe('kohako-full-v11l')
+  expect(LATEST_MODEL_ID).toBe('kohako-full-v11m')
 })
