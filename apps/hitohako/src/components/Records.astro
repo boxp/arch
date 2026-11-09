@@ -1,0 +1,73 @@
+---
+import stg from "../data/stg.json";
+import SectionHeading from "./SectionHeading.astro";
+const highlights = [...stg.clears]
+  .reverse()
+  .filter((c) => c.url)
+  .slice(0, 4);
+---
+
+<section id="records" class="section container">
+  <SectionHeading eyebrow="Records" title="1CCの記録" />
+  <p class="section-intro">
+    ノーコンティニュークリア（1CC）を達成したタイトルの記録です。日付は配信・公開時期からの目安です。
+  </p>
+  <div class="records-layout">
+    <div>
+      <p class="record-count">
+        達成 <strong>{stg.clears.length}</strong> 件
+      </p>
+      <ul class="record-list">
+        {highlights.map((c) => (
+          <li>
+            <div>
+              <h3>{c.game}</h3>
+              <p>
+                {c.mode} / {c.ship} <span>{c.date}</span>
+              </p>
+            </div>
+            <a href={c.url} target="_blank" rel="noopener noreferrer">
+              動画を見る ↗
+            </a>
+          </li>
+        ))}
+      </ul>
+      <details class="all-records">
+        <summary>すべての記録を見る（{stg.clears.length}件）</summary>
+        <ul class="record-list">
+          {stg.clears.map((c) => (
+            <li>
+              <div>
+                <h3>{c.game}</h3>
+                <p>
+                  {c.mode} / {c.ship}
+                  {c.date && ` · ${c.date}`}
+                </p>
+                {c.note && <p>{c.note}</p>}
+              </div>
+              {c.url && (
+                <a href={c.url} target="_blank" rel="noopener noreferrer">
+                  動画を見る ↗
+                </a>
+              )}
+            </li>
+          ))}
+        </ul>
+      </details>
+    </div>
+    <aside class="in-progress">
+      <h3>いま挑戦中</h3>
+      <ul>
+        {stg.inProgress.map((c) => (
+          <li>
+            <strong>{c.game}</strong>
+            <p>
+              {c.goal}
+              {c.ship && ` / ${c.ship}`}
+            </p>
+          </li>
+        ))}
+      </ul>
+    </aside>
+  </div>
+</section>

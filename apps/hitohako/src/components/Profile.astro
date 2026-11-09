@@ -1,102 +1,46 @@
 ---
-import Window from './Window.astro';
-import Illust from './Illust.astro';
-import profile from '../data/profile.json';
-
-const stats = [
-  { label: 'NAME', value: `${profile.name}（${profile.reading}）` },
-  { label: 'CLASS', value: profile.title },
-  { label: 'GUILD', value: profile.affiliation },
-  { label: 'WEAPON', value: profile.weapon },
-  { label: 'HEIGHT', value: profile.height },
-  { label: 'HAIR', value: profile.hair },
-  { label: 'EYES', value: profile.eyes },
-  { label: 'CHARM', value: profile.charm },
-];
-
-const bars = [
-  { label: 'やさしさ', pct: 100 },
-  { label: '芯の強さ', pct: 90 },
-  { label: '照れやすさ', pct: 95 },
-  { label: '避け', pct: 80 },
+import profile from "../data/profile.json";
+import SectionHeading from "./SectionHeading.astro";
+const details = [
+  ["名前", `${profile.name}（${profile.reading}）`],
+  ["肩書", profile.title],
+  ["配信", "シューティングゲームの1CC配信"],
+  ["髪", profile.hair],
+  ["瞳", profile.eyes],
+  ["身長", profile.height],
+  ["髪飾り", profile.charm],
 ];
 ---
 
-<section id="profile" class="scroll-mt-28 px-2 sm:px-4 py-10 max-w-5xl mx-auto space-y-8">
-  <h2 class="title-logo text-2xl sm:text-3xl text-center">
-    プロフィール <span class="text-gold text-base sm:text-lg">STATUS</span>
-  </h2>
-
-  <Window tab="STATUS">
-    <div class="grid gap-6 md:grid-cols-[auto_1fr]">
-      <div class="flex md:flex-col items-center gap-4">
-        <Illust
-          src="/illust/hitohako-face.png"
-          alt="変身後のひとはこさんの顔グラフィック"
-          class="border-2 border-gold bg-ink"
-        />
-        <div class="flex-1 md:w-full space-y-2 text-xs sm:text-sm">
-          {
-            bars.map((b) => (
-              <div>
-                <div class="flex justify-between">
-                  <span>{b.label}</span>
-                  <span class="text-gold">{b.pct}</span>
-                </div>
-                <span class="stat-bar" role="img" aria-label={`${b.label} ${b.pct}`}>
-                  <span style={`width:${b.pct}%`} />
-                </span>
-              </div>
-            ))
-          }
-        </div>
-      </div>
-
-      <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm sm:text-base">
-        {
-          stats.map((s) => (
-            <>
-              <dt class="text-gold tracking-widest text-xs sm:text-sm pt-1">{s.label}</dt>
-              <dd>{s.value}</dd>
-            </>
-          ))
-        }
-      </dl>
-    </div>
-  </Window>
-
-  <div class="grid gap-8 md:grid-cols-2">
-    <Window tab="ABOUT" cursor>
-      <div class="space-y-3 text-sm sm:text-base">
-        {profile.description.map((d) => <p>{d}</p>)}
-      </div>
-    </Window>
-    <Window tab="COSTUME" cursor>
-      <div class="space-y-3 text-sm sm:text-base">
-        {profile.costume.map((d) => <p>{d}</p>)}
-      </div>
-    </Window>
+<section id="profile" class="section container profile">
+  <div class="profile-image">
+    <img
+      src="/illust/hitohako-face.png"
+      alt="変身後のひとはこさんの顔グラフィック"
+      width="288"
+      height="288"
+      loading="lazy"
+      decoding="async"
+    />
   </div>
-
-  <Window tab="SKILLS">
-    <ul class="grid gap-2 sm:grid-cols-2 text-sm sm:text-base">
-      {
-        profile.skills.map((s) => (
-          <li class="flex gap-2">
-            <span class="text-sakura">◆</span>
-            <span>
-              <span class="text-gold">{s.name}</span>
-              <span class="text-paper/70"> … {s.desc}</span>
-            </span>
-          </li>
-        ))
-      }
-    </ul>
-  </Window>
-
-  <Window tab="VOICE" paper>
-    <ul class="space-y-1 text-sm sm:text-base">
-      {profile.quotes.map((q) => <li>「{q}」</li>)}
-    </ul>
-  </Window>
+  <div>
+    <SectionHeading eyebrow="Profile" title="プロフィール" />
+    <div class="profile-copy">
+      <p>
+        清楚で優しい雰囲気の変身ヒロインVTuber。ここぞという時には芯の強い一面を見せますが、自分の人気を直視するとすぐ照れてしまいます。
+      </p>
+      <p>
+        趣味でゲーム配信をしていて、YouTube と Twitch でシューティングゲームの 1CC
+        に挑む配信を中心に活動しています。
+      </p>
+    </div>
+    <dl class="profile-details">
+      {details.map(([k, v]) => (
+        <div>
+          <dt>{k}</dt>
+          <dd>{v}</dd>
+        </div>
+      ))}
+    </dl>
+  </div>
 </section>
