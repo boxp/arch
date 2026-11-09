@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clips, deformArm, deformHand, faces, sample, solveArm } from './gesture'
+import { clips, crossfadeArms, deformArm, deformHand, faces, sample, solveArm } from './gesture'
 import { emotions, gestures } from './acting'
 
 const bone = { S: [710, 533], E: [758, 757], W: [844, 928], band: 34, arm: 22, hand: 20, mirror: false } as const
@@ -66,5 +66,24 @@ describe('腕の変形', () => {
     const shy = sample(clips.shyHand, 2).right
     const out = deformArm(bone, { ...shy, up: 0, upS: 1 }, 720, 560, 720, 560)
     expect(out[0]).toBeCloseTo(720); expect(out[1]).toBeCloseTo(560)
+  })
+})
+
+describe('動作の切り替え', () => {
+  it('挨拶の途中で頷きに切り替えても手首が跳ばない', () => {
+    const from = sample(clips.greet, 1.45), to = sample(clips.nod, 0)
+    const wrist = (x: number) => solveArm(bone, crossfadeArms(from, to, x).right).wrist
+    expect(wrist(0)[0]).toBeCloseTo(solveArm(bone, from.right).wrist[0])
+    expect(wrist(0)[1]).toBeCloseTo(solveArm(bone, from.right).wrist[1])
+    expect(wrist(1)[0]).toBeCloseTo(solveArm(bone, to.right).wrist[0])
+    expect(wrist(1)[1]).toBeCloseTo(solveArm(bone, to.right).wrist[1])
+    const whole = Math.hypot(wrist(0)[0] - wrist(1)[0], wrist(0)[1] - wrist(1)[1])
+    expect(whole).toBeGreaterThan(100)
+    // 0.5 秒を 60fps で刻んだ 1 コマの移動は全体の 10% 以内に収まる。
+    const steps = 30
+    for (let i = 0; i < steps; i++) {
+      const a = wrist(i / steps), b = wrist((i + 1) / steps)
+      expect(Math.hypot(a[0] - b[0], a[1] - b[1])).toBeLessThan(whole * 0.1)
+    }
   })
 })
