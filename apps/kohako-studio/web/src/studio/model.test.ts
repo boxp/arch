@@ -25,6 +25,7 @@ describe('Studio の状態', () => {
   })
   it('?model で本人モデルの試作だけを選べ、既定と sample 指定は最新の本人モデルになる', () => {
     expect(studioRigModelId('')).toBe('kohako-full-v11o')
+    expect(studioRigModelId('?model=kohako-full-v11p')).toBe('kohako-full-v11p')
     expect(studioRigModelId('?model=kohako-full-v11o')).toBe('kohako-full-v11o')
     expect(studioRigModelId('?model=kohako-full-v11n')).toBe('kohako-full-v11n')
     expect(studioRigModelId('?model=kohako-full-v11m')).toBe('kohako-full-v11m')
