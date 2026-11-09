@@ -3,13 +3,13 @@
 ひとはこさん（変身ヒロインVTuber）の公式サイト。プロフィール、配信アーカイブ、1CCの記録、公式リンクを紹介する。桜色を基調に、明るい余白と明朝体を組み合わせた静かなデザイン。
 
 - stage: <https://hitohako-stage.b0xp.io>（noindex と STAGE バナー）
-- 本番（`hitohako.b0xp.io`）は後続フェーズで追加予定
+- 本番: <https://hitohako.b0xp.io>
 
 ## Stack
 
 - [Astro](https://astro.build) 7 + [Tailwind CSS](https://tailwindcss.com) 4
 - Node 24（Astro 7 は Node 22.23.4 以上が必要）
-- Cloudflare Pages（stage プロジェクト名 `boxp-hitohako-stage`）
+- Cloudflare Pages（stage: `boxp-hitohako-stage`、本番: `boxp-hitohako`）
 - フォント: [Shippori Mincho B1](https://fonts.google.com/specimen/Shippori+Mincho+B1)、[Zen Kaku Gothic New](https://fonts.google.com/specimen/Zen+Kaku+Gothic+New)（SIL Open Font License 1.1）
 
 ## Commands
@@ -26,6 +26,8 @@
 ## Deploy
 
 `.github/workflows/deploy-hitohako.yml` が `apps/hitohako/**` の変更で起動する。PR ではビルドのみ、`main` への push では `wrangler pages deploy dist --project-name boxp-hitohako-stage` を実行する。
+
+本番へは `.github/workflows/promote-hitohako-production.yml` を手動実行して反映する（`inspect` / `promote` / `rollback`）。受入済み commit を workflow 内で固定しており、main への push では本番は更新されない。
 
 `SITE_URL` は OGP / canonical 用のサイト URL（既定は stage URL）。`PUBLIC_SITE_STAGE` が `'false'` 以外なら noindex と STAGE バナーを表示する。Pages プロジェクトと DNS は `terraform/cloudflare/b0xp.io/hitohako/` で管理し、プロジェクト名は Terraform の `local.stage_project_name` と一致させる。`public/_headers` の `X-Robots-Tag: noindex` はアクセス制御ではない。HTML・非ハッシュ asset は再検証、`/_astro/*` とハッシュ付き hero は immutable でキャッシュする。
 
