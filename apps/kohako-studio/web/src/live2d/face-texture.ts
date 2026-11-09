@@ -18,11 +18,21 @@ export const EYE_SPECS: readonly EyeSpec[] = [
 const RING = 1.7
 /** 白目の層で元の虹彩の輪郭が残る帯の幅。弧から外へ見て、この範囲は色味によらず周囲の白目で埋める。 */
 const WHITE_BAND = 6
+/** 弧のそばで「輪郭の抜き」とみなす距離。これより遠い透明は元の白目の外なので埋めない。 */
+const RING_HOLE = 3
+/** まつ毛の層で輪郭線の淡い縁も消す距離。 */
+const RING_FRINGE = 3
+const WHITE: Rgba = [255, 255, 255, 255]
 export const BROW_MESH = 1
 export const FACE_MESH = 18
+export const BANGS_MESH = 0
 const BROW_BOX = { x0: 505, y0: 234, x1: 650, y1: 260 }
+/** 左の眉の内端だけが前髪の層にも焼き込まれている範囲。 */
+const BANGS_BROW_BOX = { x0: 546, y0: 243, x1: 560, y1: 254 }
+/** 眉の層に混ざった髪の断片（線に接しているので色では分けられない）。 */
+const BROW_FRAGMENTS = [{ x0: 601, y0: 247, x1: 607, y1: 253 }] as const
 const SCLERA: Rgba = [246, 246, 250, 255]
-const STRAND_LUMA = 55, EDGE_LUMA = 60, EDGE_REACH = 12
+const STRAND_LUMA = 30, EDGE_LUMA = 60, EDGE_REACH = 12
 
 export function arcX(arc: Arc, y: number): number {
   const first = arc[0] as readonly [number, number], last = arc[arc.length - 1] as readonly [number, number]
@@ -78,8 +88,9 @@ export function rebakeEye(source: Atlas, target: Atlas, spec: EyeSpec, lash: Lay
   const count = { ring: 0, filled: 0, strip: 0 }
   const box = { x0: Math.min(arcX(spec.left, spec.top), arcX(spec.left, spec.bottom)) - 5, y0: spec.top - 8, x1: Math.max(arcX(spec.right, spec.top), arcX(spec.right, spec.bottom)) + 5, y1: spec.bottom + 1 }
   const onRing = (x: number, y: number) => y >= spec.top && y <= spec.bottom && (Math.abs(x - arcX(spec.left, y)) <= RING || Math.abs(x - arcX(spec.right, y)) <= RING)
+  const nearRing = (x: number, y: number) => y >= spec.top && y <= spec.bottom - 1.5 && Math.min(Math.abs(x - arcX(spec.left, y)), Math.abs(x - arcX(spec.right, y))) <= RING_FRINGE
   const inside = (x: number, y: number) => y >= spec.top && y <= spec.bottom && x >= arcX(spec.left, y) && x <= arcX(spec.right, y)
-  eachTexel(target, lash, box, (u, v, x, y) => { if (onRing(x, y) && source.get(u, v)[3] > 0) { target.set(u, v, [0, 0, 0, 0]); count.ring++ } })
+  eachTexel(target, lash, box, (u, v, x, y) => { const alpha = source.get(u, v)[3]; if (alpha > 0 && (onRing(x, y) || (alpha < 200 && nearRing(x, y)))) { target.set(u, v, [0, 0, 0, 0]); count.ring++ } })
   // 帯の外側を読むので、白目の処理範囲は帯の外縁まで含める（box のままだと外縁に元の輪郭が残る）。
   eachTexel(target, white, { ...box, x0: box.x0 - WHITE_BAND - 3, x1: box.x1 + WHITE_BAND + 3 }, (u, v, x, y) => {
     if (y < spec.strip + 1 || y > spec.bottom || x < arcX(spec.left, y) - WHITE_BAND || x > arcX(spec.right, y) + WHITE_BAND) return
@@ -87,9 +98,15 @@ export function rebakeEye(source: Atlas, target: Atlas, spec: EyeSpec, lash: Lay
     if (y < spec.top && source.get(u, v)[3] < 128 && Math.min(Math.abs(x - arcX(spec.left, y)), Math.abs(x - arcX(spec.right, y))) <= 3) { target.set(u, v, SCLERA); count.filled++; return }
     // 白目の元の色（ハイライトの下の白や上の淡い影）は残し、抜きと虹彩下部の青い焼き込みだけを埋める。
     const original = source.get(u, v)
-    const inBand = y >= spec.top && Math.min(Math.abs(x - arcX(spec.left, y)), Math.abs(x - arcX(spec.right, y))) <= WHITE_BAND // 視線を動かすと見える元の輪郭
+    const arcDistance = Math.min(Math.abs(x - arcX(spec.left, y)), Math.abs(x - arcX(spec.right, y)))
+    // 元の白目の形の外は透明のまま（埋めるとまぶたの外へはみ出す）。
+    if (original[3] < 128 && arcDistance > RING_HOLE && !inside(x, y)) return
+    // 虹彩の内側は視線を動かしたときだけ見える面なので、段差が出ないよう左右の白目で通して埋める。
+    const inBand = y >= spec.top && (arcDistance <= WHITE_BAND || inside(x, y))
     if (!inBand && original[3] >= 200 && (original[2] - original[0]) * 255 / original[3] <= 12) return
-    const a = readWhite(arcX(spec.left, y) - WHITE_BAND - 2, y), b = readWhite(arcX(spec.right, y) + WHITE_BAND + 2, y)
+    // 目尻側はシルエットが内へ入るので、外から弧へ向かって最初に不透明な白目の色を取る。
+    const sideColor = (edge: number, step: number): Rgba => { for (let d = WHITE_BAND + 2; d >= RING_HOLE + 0.5; d -= 0.5) { const p = readWhite(edge + step * d, y); if (p[3] >= 200) return p } return [0, 0, 0, 0] }
+    const a = sideColor(arcX(spec.left, y), -1), b = sideColor(arcX(spec.right, y), 1)
     if (a[3] < 200 && b[3] < 200) return
     const t = (x - arcX(spec.left, y) + WHITE_BAND) / (arcX(spec.right, y) - arcX(spec.left, y) + WHITE_BAND * 2)
     target.set(u, v, mix(a[3] < 200 ? SCLERA : a, b[3] < 200 ? SCLERA : b, t)); count.filled++
@@ -100,10 +117,11 @@ export function rebakeEye(source: Atlas, target: Atlas, spec: EyeSpec, lash: Lay
       const own = readIris(x, y)
       // ハイライトは虹彩のメッシュの穴なので触らない。虹彩の上の角も透明のまま、下部の抜きだけ白目の色で埋める。
       if (own[3] < 128 && y < spec.top + 5 && Math.min(x - arcX(spec.left, y), arcX(spec.right, y) - x) < 4 && !ring) return
-      let body = over(own, readWhite(x, y))
+      // 虹彩の上半分の穴はハイライト。白目の色を透かすと濁るので白で埋め、虹彩と一緒に動かす。
+      let body = over(own, own[3] < 128 && y < (spec.top + spec.bottom) / 2 ? WHITE : readWhite(x, y))
       if (body[3] < 200) body = over(body, [255, 255, 255, 255])
       target.set(u, v, ring ? over(ring, body) : body)
-    } else if (ring && ring[3] > 0) target.set(u, v, over(ring, readIris(x, y)))
+    } else if (ring && ring[3] > 0 && (y >= spec.top + 3 || readIris(x, y)[3] >= 128)) target.set(u, v, over(ring, readIris(x, y)))
   })
   // 虹彩の外側に残る上まぶたの影は動かないので、まつ毛の層へ移す。
   const outsideArcs = (x: number, y: number) => x < arcX(spec.left, y) - RING || x > arcX(spec.right, y) + RING
@@ -132,14 +150,15 @@ function sameSideAsUp(read: (x: number, y: number) => Rgba, x: number, up: numbe
 }
 
 /** 眉: 眉の層から前髪の断片を除き、顔の層に焼き込まれた眉を上下の肌で埋める。 */
-export function rebakeBrows(source: Atlas, target: Atlas, brow: Layer, face: Layer): { removed: number; erased: number } {
-  const readBrow = sampler(source, brow), readFace = sampler(source, face)
+export function rebakeBrows(source: Atlas, target: Atlas, brow: Layer, face: Layer, bangs: Layer = face): { removed: number; erased: number } {
+  const readBrow = sampler(source, brow)
   const isInk = (x: number, y: number) => { const p = readBrow(x, y); return p[3] > 32 && luma(p) < 95 }
   // アトラスの解像度に依存しないように 0.5 刻みで近傍を見る。
   const near = (x: number, y: number) => { for (let dx = -1.5; dx <= 1.5; dx += 0.5) for (let dy = -1.5; dy <= 1.5; dy += 0.5) if (isInk(x + dx, y + dy)) return true; return false }
   const result = { removed: 0, erased: 0 }
-  eachTexel(target, brow, BROW_BOX, (u, v, x, y) => { const p = source.get(u, v); if (p[3] > 0 && !near(x, y)) { target.set(u, v, [0, 0, 0, 0]); result.removed++ } })
-  eachTexel(target, face, BROW_BOX, (u, v, x, y) => {
+  const fragment = (x: number, y: number) => BROW_FRAGMENTS.some(b => x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1)
+  eachTexel(target, brow, BROW_BOX, (u, v, x, y) => { const p = source.get(u, v); if (p[3] > 0 && (!near(x, y) || fragment(x, y))) { target.set(u, v, [0, 0, 0, 0]); result.removed++ } })
+  const erase = (layer: Layer, box: typeof BROW_BOX) => { const readFace = sampler(source, layer); eachTexel(target, layer, box, (u, v, x, y) => {
     if (!near(x, y)) return
     let up = y, down = y
     while (near(x, up) && y - up < 12) up -= 0.5
@@ -150,7 +169,9 @@ export function rebakeBrows(source: Atlas, target: Atlas, brow: Layer, face: Lay
     const t = (y - up) / (down - up)
     // 髪と肌の境目を線形に埋めると淡いにじみになる。上下の行で境界を探し、その間を斜めにつないで髪か肌のどちらかで埋める。
     target.set(u, v, Math.abs(luma(a) - luma(b)) > EDGE_LUMA ? (sameSideAsUp(readFace, x, up, down, t, (luma(a) + luma(b)) / 2) ? a : b) : mix(a, b, t)); result.erased++
-  })
+  }) }
+  erase(face, BROW_BOX)
+  if (bangs !== face) erase(bangs, BANGS_BROW_BOX)
   return result
 }
 
@@ -178,7 +199,7 @@ function layerOf(p: GlPlayer, mesh: number, width: number, height: number): Laye
 export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
   const gl = p.gl, [width, height] = atlasSize(p)
   const layers = new Map<number, Layer>()
-  for (const m of [BROW_MESH, FACE_MESH, ...EYE_SPECS.flatMap(s => [s.lash, s.iris, s.white])]) layers.set(m, layerOf(p, m, width, height))
+  for (const m of [BROW_MESH, FACE_MESH, BANGS_MESH, ...EYE_SPECS.flatMap(s => [s.lash, s.iris, s.white])]) layers.set(m, layerOf(p, m, width, height))
   const of = (m: number) => layers.get(m) as Layer
   const framebuffer = gl.createFramebuffer(), previous = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null
   gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer)
@@ -197,7 +218,7 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
       get(x, y) { if (x < x0 || y < y0 || x >= x1 || y >= y1) return [0, 0, 0, 0]; const i = ((y - y0) * w + (x - x0)) * 4; return [data[i] as number, data[i + 1] as number, data[i + 2] as number, data[i + 3] as number] },
       set(x, y, q) { if (x < x0 || y < y0 || x >= x1 || y >= y1) return; const i = ((y - y0) * w + (x - x0)) * 4; data[i] = q[0]; data[i + 1] = q[1]; data[i + 2] = q[2]; data[i + 3] = q[3] } })
     const source = view(original), target = view(output)
-    const brows = rebakeBrows(source, target, of(BROW_MESH), of(FACE_MESH))
+    const brows = rebakeBrows(source, target, of(BROW_MESH), of(FACE_MESH), of(BANGS_MESH))
     const eyes = EYE_SPECS.map(s => rebakeEye(source, target, s, of(s.lash), of(s.iris), of(s.white)))
     gl.bindTexture(gl.TEXTURE_2D, p.textures[0] as WebGLTexture)
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
