@@ -190,6 +190,11 @@ export const bentSide = (bone: Pick<Bone, 'mirror'>, pose: Pick<ArmPose, 'fo'>) 
 const artCorners = (art: { w: number; h: number; anchor: Vec; scale: number }): Vec[] => ([[0, 0], [art.w, 0], [art.w, art.h], [0, art.h]] as Vec[]).map(([x, y]) => [(x - art.anchor[0]) * art.scale, (art.anchor[1] - y) * art.scale])
 /** 素材の座標（横 b, 軸方向 a）を、肘を原点に軸 axis の向きへ置く。 */
 export function placeBent(elbow: Vec, axis: Vec, side: number, [b, a]: Vec): Vec { const u = norm(axis); return add(elbow, add(scaleV(u, a), scaleV([-u[1], u[0]], b * side))) }
+/** 曲げた前腕の絵の点。軸方向は deformFore と同じ foreScale で縮め、照れの途中の短縮でも小手の先が手首から離れないようにする。 */
+export function placeBentFore(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose: ArmPose, [b, a]: Vec): Vec {
+  const m = mirrored(bone, pose), { elbow, wrist } = solveArm(bone, m)
+  return placeBent(elbow, sub(wrist, elbow), bentSide(bone, pose), [b, a * foreScale(m)])
+}
 const partURL = (file: string) => new URL(`kohako/live2d/acting/${file}`, location.href).href
 
 type Runtime = { memory: WebAssembly.Memory; p2l_mesh_vertices(rig: number, mesh: number): number; p2l_render_commands(rig: number, pointer: number, capacity: number): number; p2l_mesh_opacity(rig: number, mesh: number): number; p2l_mesh_colors(rig: number, mesh: number, a: number, b: number): void }
@@ -255,8 +260,8 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       const upperTexture = addTexture(pp, split.outside), foreTexture = addTexture(pp, split.inside)
       const unmirror = (a: ArmPose): ArmPose => bone.mirror ? { ...a, up: -a.up, fo: -a.fo, ha: -a.ha, elbowTo: a.elbowTo ? mirrorX(a.elbowTo) : undefined } : a
       const bentWeightOf = () => { const a = armOf(bone); return separatedPose(a) && bentLoaded() ? bentWeight(a.fo) : 0 }
-      const bentQuad = (art: typeof BENT_ART.fore | typeof BENT_ART.elbow, texture: number, axisOf: (e: ReturnType<typeof solveArm>) => Vec) => { const quad = addQuad(pp, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), texture), corners = artCorners(art); synth.set(quad.index, { base: bone.arm, pointer: quad.pointer, opacity: bentWeightOf, write(out) { const a = armOf(bone), solved = solveArm(bone, unmirror(a)), [dx, dy] = swayOf(bone.arm), side = bentSide(bone, a); corners.forEach((c, i) => { const q = placeBent(solved.elbow, axisOf(solved), side, c); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } }); return quad.index }
-      const bentFore = bentQuad(BENT_ART.fore, bentForeTexture, e => sub(e.wrist, e.elbow)), bentElbow = bentQuad(BENT_ART.elbow, bentElbowTexture, e => sub(bone.S, e.elbow))
+      const bentQuad = (art: typeof BENT_ART.fore | typeof BENT_ART.elbow, texture: number, place: (a: ArmPose, c: Vec) => Vec) => { const quad = addQuad(pp, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), texture), corners = artCorners(art); synth.set(quad.index, { base: bone.arm, pointer: quad.pointer, opacity: bentWeightOf, write(out) { const a = armOf(bone), [dx, dy] = swayOf(bone.arm); corners.forEach((c, i) => { const q = place(a, c); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } }); return quad.index }
+      const bentFore = bentQuad(BENT_ART.fore, bentForeTexture, (a, c) => placeBentFore(bone, a, c)), bentElbow = bentQuad(BENT_ART.elbow, bentElbowTexture, (a, c) => { const { elbow } = solveArm(bone, unmirror(a)); return placeBent(elbow, sub(bone.S, elbow), bentSide(bone, a), c) })
       const xs = poly.map(c => c[0]), ys = poly.map(c => c[1]), corners: Vec[] = [[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)], [Math.min(...xs), Math.max(...ys)]]
       const fore = addQuad(pp, new Float32Array(corners.flatMap(c => split.rectUv(c[0], c[1]))), foreTexture)
       synth.set(fore.index, { base: bone.arm, pointer: fore.pointer, opacity: () => separatedPose(armOf(bone)) && bentWeightOf() < 0.995 ? 1 : 0, write(out) { const [dx, dy] = swayOf(bone.arm); corners.forEach((c, i) => { const q = deformFore(bone, armOf(bone), c[0] + dx, c[1] + dy); out[2 * i] = q[0]; out[2 * i + 1] = q[1] }) } })

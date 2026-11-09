@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BENT_ART, bentSide, bentWeight, placeBent, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { BENT_ART, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -273,6 +273,18 @@ describe('曲げの絵（BOXP-476 TD-02）', () => {
     near(placeBent([100, 200], [0, -1], 1, [0, 50]), [100, 150])
     near(placeBent([100, 200], [0, -1], 1, [10, 0]), [110, 200])
     near(placeBent([100, 200], [0, -1], -1, [10, 0]), [90, 200])
+  })
+  it('照れの途中で前腕が短縮しても、曲げた小手の先は手首に付いたまま縮む', () => {
+    const length = Math.hypot(bone.W[0] - bone.E[0], bone.W[1] - bone.E[1])
+    const shortened: ArmPose = { ...rest, fo: 2.1, front: true }
+    expect(foreScale(shortened)).toBeCloseTo(0.5)
+    const { elbow, wrist } = solveArm(bone, shortened), tip = placeBentFore(bone, shortened, [0, length])
+    expect(tip[0]).toBeCloseTo(wrist[0], 6); expect(tip[1]).toBeCloseTo(wrist[1], 6)
+    const origin = placeBentFore(bone, shortened, [0, 0]); expect(origin[0]).toBeCloseTo(elbow[0], 6); expect(origin[1]).toBeCloseTo(elbow[1], 6)
+    const left = { ...bone, S: [1210, 533], E: [1160, 733], W: [1076, 928], mirror: true } as const // 左腕も同じ（中心 960 で反転）
+    const mirroredPose: ArmPose = { ...shortened, fo: -2.1 }, s = solveArm(left, shortened), leftTip = placeBentFore(left, mirroredPose, [0, length])
+    expect(Math.hypot(s.wrist[0] - s.elbow[0], s.wrist[1] - s.elbow[1])).toBeCloseTo(length * 0.5, 6)
+    expect(Math.hypot(leftTip[0] - s.elbow[0], leftTip[1] - s.elbow[1])).toBeCloseTo(length * 0.5, 6)
   })
   it('素材の肘の位置は画像の範囲内にある', () => {
     for (const art of [BENT_ART.fore, BENT_ART.elbow]) { expect(art.anchor[0]).toBeGreaterThan(0); expect(art.anchor[0]).toBeLessThan(art.w); expect(art.anchor[1]).toBeGreaterThan(0); expect(art.anchor[1]).toBeLessThan(art.h) }
