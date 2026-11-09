@@ -38,7 +38,7 @@ export const faces: Record<Emotion, Face> = {
   smile: { browOuter: -3, browInner: -5, browY: -2, eyeSX: 1.01, eyeSY: 0.97, mouth: 0.75, mouthCorner: -2.5, mouthWidth: 1.14, head: { headZ: 3 }, expression: 'smile' },
   shy: { browOuter: 4, browInner: -7, browY: 0, eyeSX: 1, eyeSY: 0.95, mouth: 0.35, mouthCorner: -0.5, mouthWidth: 0.8, head: { headX: -10, headY: -7, headZ: -4, eyeX: -0.8, eyeY: -0.5 }, expression: null },
   troubled: { browOuter: 6, browInner: -11, browY: 0, eyeSX: 1, eyeSY: 0.97, mouth: -0.45, mouthCorner: 11, mouthWidth: 0.86, head: { headZ: -5, headY: -4, eyeY: -0.25 }, expression: null },
-  surprised: { browOuter: -9, browInner: -11, browY: -6, eyeSX: 1.06, eyeSY: 1.14, mouth: -0.2, mouthCorner: 7, mouthWidth: 0.62, head: { headY: 4, lean: -2 }, expression: null },
+  surprised: { browOuter: -11, browInner: -4, browY: -4, eyeSX: 1.06, eyeSY: 1.14, mouth: -0.2, mouthCorner: 7, mouthWidth: 0.62, head: { headY: 4, lean: -2 }, expression: null },
   serious: { browOuter: -3, browInner: 11, browY: 3, eyeSX: 1, eyeSY: 0.91, mouth: -0.35, mouthCorner: 12, mouthWidth: 0.92, head: { headY: -3 }, expression: null },
 }
 
@@ -64,6 +64,8 @@ export const clips: Record<Exclude<Gesture, 'none'>, Clip> = {
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t
 const smooth = (a: number, b: number, x: number) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t) }
+/** 眉の外端の尾は前髪の層に焼き込まれていて動かせない。外側ほど変位を 0 に寄せて、動く眉を尾へつなぐ。 */
+export const browPin = (outer: number) => 1 - smooth(0.45, 0.87, outer)
 const ease = (t: number) => t * t * (3 - 2 * t)
 const add = (a: Vec, b: Vec): Vec => [a[0] + b[0], a[1] + b[1]]
 const sub = (a: Vec, b: Vec): Vec => [a[0] - b[0], a[1] - b[1]]
@@ -189,7 +191,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       let out: Vec = [x, y]
       if (armBlend > 0.001 && (mesh === RIGHT.arm || mesh === LEFT.arm)) { const b = mesh === RIGHT.arm ? RIGHT : LEFT; const d = deformArm(b, mesh === RIGHT.arm ? pose.right : pose.left, x, y, rx, ry); out = [lerp(x, d[0], armBlend), lerp(y, d[1], armBlend)] }
       else if (armBlend > 0.001 && (mesh === RIGHT.hand || mesh === LEFT.hand)) { const b = mesh === RIGHT.hand ? RIGHT : LEFT; const d = deformHand(b, mesh === RIGHT.hand ? pose.right : pose.left, x, y); out = [lerp(x, d[0], armBlend), lerp(y, d[1], armBlend)] }
-      else if (mesh === BROW) { const side = rx < CX ? -1 : 1, outer = Math.min(1, Math.abs(rx - CX) / 75); out = [x, y + face.browY + lerp(face.browInner, face.browOuter, smooth(0.15, 0.95, outer)) * (side ? 1 : 1)] }
+      else if (mesh === BROW) { const outer = Math.min(1, Math.abs(rx - CX) / 75); out = [x, y + (face.browY + lerp(face.browInner, face.browOuter, smooth(0.15, 0.95, outer))) * browPin(outer)] }
       else if (mesh === MOUTH) { const u = Math.min(1, Math.abs(rx - MOUTH_C[0]) / 30); out = [MOUTH_C[0] + (x - MOUTH_C[0]) * face.mouthWidth, y + face.mouthCorner * (u * u - 0.35)] }
       else if (EYES.has(mesh)) { const c = rx < CX ? EYE_L : EYE_R; out = [c[0] + (x - c[0]) * face.eyeSX, c[1] + (y - c[1]) * face.eyeSY] }
       v[2 * i] = out[0]; v[2 * i + 1] = out[1]
