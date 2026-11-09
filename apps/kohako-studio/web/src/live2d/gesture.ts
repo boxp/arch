@@ -34,9 +34,8 @@ const EYE_R: Vec = [631.5, 278]
 
 const CROSSFADE_SECONDS = 0.55
 const FORESHORTEN_AT = 2.1, FORESHORTEN_WIDTH = 0.75, FORESHORTEN_DEPTH = 0.5, FORESHORTEN_FADE = 0.5
-// 肘を外へ上げるとき、肩の広い袖（ケープ）は肩口を動かさず垂らす（正本シートの上げた腕と同じ）。ただし裾の外側は腕に合わせて持ち上げ、袖の下縁より下に上腕が見える区間を作る（BOXP-485。垂らしたままだと見える区間が約 23px しかなく筒に見えない）。
+// 肘を外へ上げるとき、肩の広い袖（ケープ）は肩口を動かさず垂らす（正本シートの上げた腕と同じ）。上腕は曲げの絵（BENT_ART）の黒い袖で見せるので、裾は持ち上げない。
 const SLEEVE_FOLLOW = 0.25, SLEEVE_FROM = 15, SLEEVE_TO = 130
-const SLEEVE_HEM_LIFT = 2, SLEEVE_HEM_FROM = 20, SLEEVE_HEM_TO = 90 // 裾の外側での追加の回転（SLEEVE_FOLLOW に対する倍率）。腕の軸からの外向きの距離で効かせる
 const REST: ArmPose = { up: 0, upS: 1, fo: 0, foS: 1, ha: 0, haS: 1 }
 const NO_BODY: BodyPose = { headX: 0, headY: 0, headZ: 0, bodyX: 0, bodyZ: 0, lean: 0, eyeX: 0, eyeY: 0 }
 
@@ -131,9 +130,8 @@ export function sleeveAngle(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose: 
 }
 /** 肩の袖の頂点を、肩口を固定したまま袖口ほど大きく回す。 */
 export function deformSleeve(bone: Pick<Bone, 'S' | 'E' | 'mirror'>, angle: number, vx: number, vy: number, rx: number, ry: number): Vec {
-  const axis = norm(sub(bone.E, bone.S)), offset = sub([rx, ry], bone.S), outward: Vec = bone.mirror ? [-axis[1], axis[0]] : [axis[1], -axis[0]]
-  const hem = 1 + SLEEVE_HEM_LIFT * smooth(SLEEVE_HEM_FROM, SLEEVE_HEM_TO, dot(offset, outward))
-  return add(bone.S, rot(sub([vx, vy], bone.S), angle * hem * smooth(SLEEVE_FROM, SLEEVE_TO, dot(offset, axis))))
+  const axis = norm(sub(bone.E, bone.S)), offset = sub([rx, ry], bone.S)
+  return add(bone.S, rot(sub([vx, vy], bone.S), angle * smooth(SLEEVE_FROM, SLEEVE_TO, dot(offset, axis))))
 }
 
 /** 前腕の金の縁より手先の頂点か（上腕・肩の装甲・裏地は false）。 */
@@ -182,6 +180,16 @@ const UPPER_ART_REACH = 114 // 肩の関節から素材の上端までの距離�
 const UPPER_ART_REACH_INWARD = 8 // 肘を体の前へ寄せたときの上端の距離。袖の裏まで伸ばし、棒の切り口を胴の上に見せない
 const UPPER_ART_INTO_CUFF = 30 // 上腕の下端の位置（正は肘より手の側）。下端の丸みを小手の裏へ入れ、途中のコマでも上腕が開口の手前で止まって見えないようにする（休止の絵の位置と同じ）
 const SEPARATE_AT = 0.02
+// 曲げた腕の絵。v11r の小手の肘側は V 字に切れ込んでいて、回すと先端が二股の板に見える（肘の丸みが無い）。曲げの間だけ、正本シートの上げた腕から切り出した丸い金縁の小手と、肘を包む黒い袖へ差し替える（生成なし）。anchor は素材 px の肘、scale は素材 px→モデル座標。
+export const BENT_ART = { fore: { file: 'fore-bent.png', w: 313, h: 512, anchor: [156.4, 414] as Vec, scale: 0.5 }, elbow: { file: 'elbow-upper.png', w: 345, h: 368, anchor: [172.5, 184] as Vec, scale: 0.5 } }
+const BENT_FROM = 0.85, BENT_TO = 1.05
+/** 前腕の曲げ量に応じた、差し替えの絵の重み（0〜1）。 */
+export const bentWeight = (fo: number) => smooth(BENT_FROM, BENT_TO, Math.abs(fo))
+/** 絵の左右。正本は「手先へ向かって肩が左」の絵。内回り（fo>0）と左腕では裏返す。 */
+export const bentSide = (bone: Pick<Bone, 'mirror'>, pose: Pick<ArmPose, 'fo'>) => (pose.fo > 0 ? -1 : 1) * (bone.mirror ? -1 : 1)
+const artCorners = (art: { w: number; h: number; anchor: Vec; scale: number }): Vec[] => ([[0, 0], [art.w, 0], [art.w, art.h], [0, art.h]] as Vec[]).map(([x, y]) => [(x - art.anchor[0]) * art.scale, (art.anchor[1] - y) * art.scale])
+/** 素材の座標（横 b, 軸方向 a）を、肘を原点に軸 axis の向きへ置く。 */
+export function placeBent(elbow: Vec, axis: Vec, side: number, [b, a]: Vec): Vec { const u = norm(axis); return add(elbow, add(scaleV(u, a), scaleV([-u[1], u[0]], b * side))) }
 const partURL = (file: string) => new URL(`kohako/live2d/acting/${file}`, location.href).href
 
 type Runtime = { memory: WebAssembly.Memory; p2l_mesh_vertices(rig: number, mesh: number): number; p2l_render_commands(rig: number, pointer: number, capacity: number): number; p2l_mesh_opacity(rig: number, mesh: number): number; p2l_mesh_colors(rig: number, mesh: number, a: number, b: number): void }
@@ -226,7 +234,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   }
   prepareCut(RIGHT); prepareCut(LEFT)
   // 追加パーツ: 腕の絵を前腕と上腕に画素で分け、隠れていた上腕と手の素材を描き足す。作れない環境では従来の間引きで動く。
-  type Side = { bone: Bone; split: Split; upperTexture: number; originalTexture: number; originalUv: WebGLBuffer | null | undefined; fill: number; fore: number; stub: number; outer: number; on: boolean }
+  type Side = { bone: Bone; split: Split; upperTexture: number; originalTexture: number; originalUv: WebGLBuffer | null | undefined; fill: number; fore: number; stub: number; outer: number; bentFore: number; bentElbow: number; on: boolean }
   type Synth = { base: number; pointer: number; write(out: Float32Array): void; opacity(): number; shared?: number }
   const synth = new Map<number, Synth>(), sway = new Map<number, Vec>()
   let parts: { right: Side; left: Side; art: Partial<Record<HandArt, number>>; cuff: number } | null = null, partsStatus: Record<string, unknown> = { ready: false }
@@ -240,12 +248,18 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     const loads: Promise<void>[] = []
     const later = (file: string, loaded?: () => void) => { const index = addTexture(pp); loads.push(loadTexture(gl, partURL(file)).then(t => { pp.textures[index] = t; loaded?.() })); return index }
     const fillTexture = later(UPPER_ART.file)
+    const bentMark = { fore: false, elbow: false }, onBent = (k: 'fore' | 'elbow') => () => { bentMark[k] = true }, bentLoaded = () => bentMark.fore && bentMark.elbow // 片方でも読めないときは元の小手のまま
+    const bentForeTexture = later(BENT_ART.fore.file, onBent('fore')), bentElbowTexture = later(BENT_ART.elbow.file, onBent('elbow'))
     const makeSide = (bone: Bone): Side => {
       const poly = bone.mirror ? mirrorPolygon(FOREARM_POLY, CX) : FOREARM_POLY, split = splitMesh(pp, bone.arm, poly, (x, y, sample, own) => { const rx = bone.mirror ? 2 * CX - x : x, cape = paintCapeCorner(rx, y, sample(bone.mirror ? 2 * CX - 800 : 800, 696)); return cape ?? (isStaticUpper(rx, y, own, (sx, sy) => sample(bone.mirror ? 2 * CX - sx : sx, sy)) ? 'erase' : null) }, (x, y) => isSleeveLining(bone.mirror ? 2 * CX - x : x, y)), mesh = pp.meshes[bone.arm] as PartsPlayer['meshes'][number]
       const upperTexture = addTexture(pp, split.outside), foreTexture = addTexture(pp, split.inside)
+      const unmirror = (a: ArmPose): ArmPose => bone.mirror ? { ...a, up: -a.up, fo: -a.fo, ha: -a.ha, elbowTo: a.elbowTo ? mirrorX(a.elbowTo) : undefined } : a
+      const bentWeightOf = () => { const a = armOf(bone); return separatedPose(a) && bentLoaded() ? bentWeight(a.fo) : 0 }
+      const bentQuad = (art: typeof BENT_ART.fore | typeof BENT_ART.elbow, texture: number, axisOf: (e: ReturnType<typeof solveArm>) => Vec) => { const quad = addQuad(pp, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), texture), corners = artCorners(art); synth.set(quad.index, { base: bone.arm, pointer: quad.pointer, opacity: bentWeightOf, write(out) { const a = armOf(bone), solved = solveArm(bone, unmirror(a)), [dx, dy] = swayOf(bone.arm), side = bentSide(bone, a); corners.forEach((c, i) => { const q = placeBent(solved.elbow, axisOf(solved), side, c); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } }); return quad.index }
+      const bentFore = bentQuad(BENT_ART.fore, bentForeTexture, e => sub(e.wrist, e.elbow)), bentElbow = bentQuad(BENT_ART.elbow, bentElbowTexture, e => sub(bone.S, e.elbow))
       const xs = poly.map(c => c[0]), ys = poly.map(c => c[1]), corners: Vec[] = [[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)], [Math.min(...xs), Math.max(...ys)]]
       const fore = addQuad(pp, new Float32Array(corners.flatMap(c => split.rectUv(c[0], c[1]))), foreTexture)
-      synth.set(fore.index, { base: bone.arm, pointer: fore.pointer, opacity: () => separatedPose(armOf(bone)) ? 1 : 0, write(out) { const [dx, dy] = swayOf(bone.arm); corners.forEach((c, i) => { const q = deformFore(bone, armOf(bone), c[0] + dx, c[1] + dy); out[2 * i] = q[0]; out[2 * i + 1] = q[1] }) } })
+      synth.set(fore.index, { base: bone.arm, pointer: fore.pointer, opacity: () => separatedPose(armOf(bone)) && bentWeightOf() < 0.995 ? 1 : 0, write(out) { const [dx, dy] = swayOf(bone.arm); corners.forEach((c, i) => { const q = deformFore(bone, armOf(bone), c[0] + dx, c[1] + dy); out[2 * i] = q[0]; out[2 * i + 1] = q[1] }) } })
       const place = (v: Vec): Vec => bone.mirror ? mirrorX(v) : v, side = bone.mirror ? -1 : 1
       const fill = addQuad(pp, new Float32Array(bone.mirror ? [1, 0, 0, 0, 0, 1, 1, 1] : [0, 0, 1, 0, 1, 1, 0, 1]), fillTexture)
       synth.set(fill.index, { base: bone.arm, pointer: fill.pointer, opacity: () => separatedPose(armOf(bone)) ? 1 : 0, write(out) {
@@ -261,7 +275,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       // 袖の紫の表地だけのコピー。上腕は裏地の手前、表地の裏を通る（描画順は hookCommands）。
       const outer = addShared(pp, bone.arm, split, addTexture(pp, split.front as WebGLTexture))
       synth.set(outer, { base: bone.arm, pointer: -1, shared: bone.arm, write() {}, opacity: () => separatedPose(armOf(bone)) ? 1 : 0 })
-      return { bone, split, upperTexture, originalTexture: mesh.texture, originalUv: mesh.uvBuffer, fill: fill.index, fore: fore.index, stub, outer, on: false }
+      return { bone, split, upperTexture, originalTexture: mesh.texture, originalUv: mesh.uvBuffer, fill: fill.index, fore: fore.index, stub, outer, bentFore, bentElbow, on: false }
     }
     // 体の層の、腕の裏に隠れていた下塗りの断片を消す（腕を上げると肘の下に残って見える）。
     const smear = (mirror: boolean): number => {
@@ -283,7 +297,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       art[kind] = quad.index
       synth.set(quad.index, { base: RIGHT.hand, pointer: quad.pointer, opacity: () => { const h = handArt(); return h.kind === kind ? smooth(0.1, 0.6, h.w) : 0 }, write(out) { const [dx, dy] = swayOf(RIGHT.hand); corners.forEach((c, i) => { const q = deformHand(RIGHT, pose.right, c[0] + dx, c[1] + dy); out[2 * i] = q[0]; out[2 * i + 1] = q[1] }) } })
     }
-    if (cp.commandCapacity != null) { alloc.p2l_dealloc(cp.commandsPointer, cp.commandCapacity * 4 + 4); cp.commandCapacity += 16; cp.commandsPointer = alloc.p2l_alloc(cp.commandCapacity * 4 + 4) }
+    if (cp.commandCapacity != null) { alloc.p2l_dealloc(cp.commandsPointer, cp.commandCapacity * 4 + 4); cp.commandCapacity += 24; cp.commandsPointer = alloc.p2l_alloc(cp.commandCapacity * 4 + 4) }
     parts = { right, left, art, cuff }
     partsStatus = { ready: true, textures: 'loading', erased }
     Promise.all(loads).then(() => { partsStatus = { ready: true, textures: 'loaded', erased } }).catch(e => { partsStatus = { ready: true, textures: 'failed', error: e instanceof Error ? e.message : String(e) } })
@@ -330,8 +344,8 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const hookCommands = (rig: number, pointer: number, capacity: number) => {
     const count = rt.p2l_render_commands(rig, pointer, capacity), front = frontMeshes(), art = handArt(), artMesh = parts && art.kind && art.w > 0.001 ? parts.art[art.kind] : undefined
     const expand = (c: number): number[] => {
-      if (parts && c === RIGHT.arm && parts.right.on) return [parts.right.stub, c, parts.right.fill, parts.right.outer, parts.right.fore]
-      if (parts && c === LEFT.arm && parts.left.on) return [parts.left.stub, c, parts.left.fill, parts.left.outer, parts.left.fore]
+      if (parts && c === RIGHT.arm && parts.right.on) return [parts.right.stub, c, parts.right.fill, parts.right.bentElbow, parts.right.outer, parts.right.fore, parts.right.bentFore]
+      if (parts && c === LEFT.arm && parts.left.on) return [parts.left.stub, c, parts.left.fill, parts.left.bentElbow, parts.left.outer, parts.left.fore, parts.left.bentFore]
       if (parts && c === RIGHT.hand && artMesh != null) return [c, artMesh, parts.cuff]
       return [c]
     }

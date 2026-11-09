@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { BENT_ART, bentSide, bentWeight, placeBent, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -249,5 +249,32 @@ describe('実行時の動作の割り込み', () => {
     stage.reset()
     for (let i = 0; i < 60; i++) { frame(); stage.reset() }
     expect((stage as ReturnType<typeof createActingStage>).report().armBlend).toBe(0)
+  })
+})
+
+describe('曲げの絵（BOXP-476 TD-02）', () => {
+  it('前腕の曲げが小さいときは元の小手のまま、保持では差し替える', () => {
+    expect(bentWeight(0)).toBe(0)
+    expect(bentWeight(0.5)).toBe(0)
+    expect(bentWeight(-2.05)).toBe(1)
+    expect(bentWeight(3.41)).toBe(1)
+  })
+  it('切替で半透明が見える区間を前腕の角度 0.2rad 以内に抑える', () => {
+    expect(bentWeight(1.06)).toBe(1)
+    expect(bentWeight(0.84)).toBe(0)
+  })
+  it('内回りと左腕では絵を裏返す', () => {
+    expect(bentSide({ mirror: false }, { fo: -2 })).toBe(1)
+    expect(bentSide({ mirror: false }, { fo: 3.4 })).toBe(-1)
+    expect(bentSide({ mirror: true }, { fo: -1.85 })).toBe(-1)
+  })
+  it('絵は肘を原点に軸の向きへ置く', () => {
+    const near = (a: readonly [number, number], b: readonly [number, number]) => { expect(a[0]).toBeCloseTo(b[0], 6); expect(a[1]).toBeCloseTo(b[1], 6) }
+    near(placeBent([100, 200], [0, -1], 1, [0, 50]), [100, 150])
+    near(placeBent([100, 200], [0, -1], 1, [10, 0]), [110, 200])
+    near(placeBent([100, 200], [0, -1], -1, [10, 0]), [90, 200])
+  })
+  it('素材の肘の位置は画像の範囲内にある', () => {
+    for (const art of [BENT_ART.fore, BENT_ART.elbow]) { expect(art.anchor[0]).toBeGreaterThan(0); expect(art.anchor[0]).toBeLessThan(art.w); expect(art.anchor[1]).toBeGreaterThan(0); expect(art.anchor[1]).toBeLessThan(art.h) }
   })
 })
