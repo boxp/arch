@@ -2247,7 +2247,7 @@
       (try
         (fs/create-dirs (run-dir ticket-id run-id))
         (spit (str (fs/path (run-dir ticket-id run-id) "workspace-reuse.edn"))
-              (pr-str (mapv #(select-keys % [:repo :reused-from :reuse-fallback :worktree-failed]) worktrees)))
+              (pr-str (mapv #(select-keys % [:repo :reused-from :reuse-base :reuse-fallback :worktree-failed]) worktrees)))
         (catch Exception e (log! (str "workspace-reuse: audit-write-failed " (.getMessage e)))))
       {:workspace-dir (str workspace-dir) :repo-worktrees worktrees})))
 
@@ -2258,9 +2258,9 @@
     (str "Ticket run workspace: " (:workspace-dir workspace) "\n"
          (if (seq prepared)
            (str "Repository worktrees for this run:\n"
-                (str/join "" (map (fn [{:keys [repo path branch reused-from]}]
+                (str/join "" (map (fn [{:keys [repo path branch reused-from reuse-base]}]
                                     (str "- " repo " -> " path " (branch " branch ")\n"
-                                         (when reused-from (str "  Reused from previous run " reused-from "; tracked files and branch match a fresh worktree of source HEAD. Regenerable ignored outputs (node_modules, dist, ...) may remain; reinstall or rebuild when relevant.\n"))))
+                                         (when reused-from (str "  Reused from previous run " reused-from "; tracked files are clean at " reuse-base " on a new branch (source HEAD, or the previous run's default-branch base when that is newer). Regenerable ignored outputs (node_modules, dist, ...) may remain; reinstall or rebuild when relevant.\n"))))
                                   prepared))
                 "Use these per-run worktrees for repository changes. Do not edit shared checkouts under /home/boxp/ghq for this task.\n")
            "No repository worktree was prepared for this ticket.\n")
@@ -5899,6 +5899,22 @@
 (defn workspace-reuse-enabled? []
   (prune-setting "CODEX_TASK_BOARD_WORKSPACE_REUSE" parse-prune-enabled))
 
+;; The shared source checkout can sit far behind the default branch. Switching a
+;; reused worktree back to it deletes tracked files that the run re-expands when
+;; it follows the default branch, so a base the previous run already had on that
+;; branch wins when it is newer than source HEAD.
+(defn reuse-switch-base [old source-head]
+  (let [git (fn [& args] (command-result (into ["git" "-C" (str old)] args)))
+        default-ref (some #(when (zero? (:exit (git "rev-parse" "--verify" "-q" (str % "^{commit}")))) %)
+                          ["refs/remotes/origin/HEAD" "refs/remotes/origin/main" "refs/remotes/origin/master"])
+        merge-base (when default-ref (git "merge-base" "HEAD" default-ref))
+        run-base (when (and merge-base (zero? (:exit merge-base))) (str/trim (:out merge-base)))]
+    (if (and (not (str/blank? run-base))
+             (not= run-base source-head)
+             (zero? (:exit (git "merge-base" "--is-ancestor" source-head run-base))))
+      run-base
+      source-head)))
+
 (defn try-reuse-repo-worktree! [source target ticket-id run-id repo branch fallback]
   (let [moved? (atom false)
         reject (fn [reason]
@@ -5946,7 +5962,10 @@
               (let [inspection (inspect-checkout real-run old cache)
                     common (some-> (git-path source "--git-common-dir") fs/real-path str)
                     base-result (command-result ["git" "-C" (str source) "rev-parse" "HEAD"])
-                    base (str/trim (:out base-result))]
+                    source-head (str/trim (:out base-result))
+                    base (if (or (not (zero? (:exit base-result))) (str/blank? source-head))
+                           source-head
+                           (reuse-switch-base old source-head))]
                 (cond
                   (:hold inspection) (reject (:hold inspection))
                   (not= repo (:repo inspection)) (reject "repo-mismatch")
@@ -5991,7 +6010,7 @@
                                                  (run-id-instant (subs old-branch (count prefix))))
                                         (prune-run-branch! {:dry-run? false :gh-cache cache :stats (atom {:branches 0})} common repo old-branch)))
                                     (log! (str "workspace-reuse: reuse ticket=" ticket-id " repo=" repo " from=" previous " to=" run-id))
-                                    {:repo repo :path (str target) :branch branch :reused-from previous
+                                    {:repo repo :path (str target) :branch branch :reused-from previous :reuse-base base
                                      :git-dirs (vec (distinct (remove str/blank? [(git-path target "--git-dir") (git-path target "--git-common-dir")]))) })))))))))))))))
       (catch Exception e
         (if @moved?
