@@ -37,6 +37,16 @@ const render = (search: string): string[] => {
 describe('試作の比較リンク', () => {
   afterEach(() => vi.unstubAllGlobals())
 
+  it('全身 v11o のリンクは v11o の配信ファイルだけを指す', () => {
+    const links = render('?model=kohako-full-v11o').filter(href => href.includes('/compare/'))
+    expect(links).toHaveLength(6)
+    for (const file of ['pair.mp4', 'body.mp4', 'skirt.jpg', 'thigh.jpg', 'blink.jpg', 'blink-seq.jpg']) {
+      const href = `./kohako/live2d/compare/kohako-full-v11o-${file}`
+      expect(links).toContain(href)
+      expect(existsSync(resolve(__dirname, '../../public', href)), href).toBe(true)
+    }
+  })
+
   it('全身 v11n のリンクは v11n の配信ファイルだけを指す', () => {
     const links = render('?model=kohako-full-v11n').filter(href => href.includes('/compare/'))
     expect(links).toHaveLength(5)
