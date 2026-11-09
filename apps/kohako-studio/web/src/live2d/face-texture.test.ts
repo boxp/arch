@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { arcX, boundaryLoops, capLoops, fitAffine, highlightHoles, luma, over, paintHighlight, rebakeBrows, rebakeEye, type Atlas, type EyeSpec, type Rgba } from './face-texture'
+import { arcX, boundaryLoops, capLoops, fitAffine, highlightHoles, luma, over, paintHighlight, rebakeBrows, rebakeEye, stitchSlit, type Atlas, type EyeSpec, type Rgba } from './face-texture'
 
 const clear: Rgba = [0, 0, 0, 0]
 function atlas(width: number, height: number): Atlas & { data: Map<string, Rgba> } {
@@ -29,6 +29,23 @@ describe('アトラスの組み替えの部品', () => {
     expect(forward(3, 4)[0]).toBeCloseTo(map(3, 4)[0])
     const [x, y] = inverse(...forward(3, 4))
     expect(x).toBeCloseTo(3); expect(y).toBeCloseTo(4)
+  })
+})
+
+describe('白目の切れ目の縫合', () => {
+  const arc = [[280, 610], [300, 610]] as const
+  // 2 枚の帯の間に幅 1 の切れ目がある。切れ目の両岸は 1-2 と 4-7。
+  const points = [[605, 282], [610, 282], [610, 290], [605, 290], [611, 282], [616, 282], [616, 290], [611, 290]] as const
+  const at = (n: number) => points[n] as readonly [number, number]
+  const indices = [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]
+  it('向かい合う境界の辺を三角形でつなぐ', () => {
+    const added = stitchSlit(indices, at, arc, 280, 298)
+    expect(added).toHaveLength(6)
+    expect([...new Set(added)].sort((a, b) => a - b)).toEqual([1, 2, 4, 7])
+  })
+  it('離れた辺や弧から遠い辺はつながない', () => {
+    expect(stitchSlit(indices, n => n >= 4 ? [at(n)[0] + 8, at(n)[1]] : at(n), arc, 280, 298)).toEqual([])
+    expect(stitchSlit(indices, n => [at(n)[0] + 30, at(n)[1]], arc, 280, 298)).toEqual([])
   })
 })
 
@@ -75,6 +92,15 @@ describe('眉の組み替え', () => {
 describe('目の組み替え', () => {
   const spec: EyeSpec = { lash: 13, iris: 14, white: 15, top: 279, bottom: 297, strip: 275, left: [[279, 510], [297, 510]], right: [[279, 540], [297, 540]] }
   const lash = shifted(0), iris = shifted(100), white = shifted(200)
+  it('輪郭線がまつ毛の尾と続く行は残し、離れた行だけ消す', () => {
+    const source = atlas(900, 400), ink: Rgba = [30, 20, 40, 255]
+    for (let y = 279; y <= 297; y++) source.set(510, y, ink)
+    source.set(507, 281, ink) // 尾は行 281 だけ輪郭の外へ続く
+    const target = copy(source)
+    rebakeEye(source, target, spec, lash, iris, white)
+    expect(target.get(510, 281)).toEqual(ink)
+    expect(target.get(510, 290)).toEqual(clear)
+  })
   it('輪郭線を虹彩へ移し、白目の抜きを埋め、虹彩の外の影をまつ毛へ移す', () => {
     const source = atlas(900, 400), ring: Rgba = [10, 10, 40, 255], blue: Rgba = [40, 60, 200, 255], sclera: Rgba = [250, 250, 252, 255], shade: Rgba = [80, 50, 110, 255]
     for (let y = 279; y <= 297; y++) source.set(510, y, ring)

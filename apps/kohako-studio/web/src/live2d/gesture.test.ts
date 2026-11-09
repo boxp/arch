@@ -4,11 +4,16 @@ import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
 
-const bone = { S: [710, 533], E: [758, 757], W: [844, 928], band: 34, arm: 22, hand: 20, mirror: false } as const
+const bone = { S: [710, 533], E: [760, 733], W: [844, 928], band: 34, arm: 22, hand: 20, mirror: false } as const
 const rest = { up: 0, upS: 1, fo: 0, foS: 1, ha: 0, haS: 1 }
 
 describe('生成素材の手と前腕の分離', () => {
-  const bone = { S: [710, 533], E: [758, 757], W: [844, 928], arm: 22, hand: 20, mirror: false } as const
+  const bone = { S: [710, 533], E: [760, 733], W: [844, 928], arm: 22, hand: 20, mirror: false } as const
+  it('前腕の支点は親の肘の位置にそのまま付く（肘で離れない）', () => {
+    const pose = { up: 0.2, upS: 0.9, fo: 2.4, foS: 1, ha: 0, haS: 1 }
+    const [x, y] = deformFore(bone, pose, bone.E[0], bone.E[1]), elbow = solveArm(bone, pose).elbow
+    expect(x).toBeCloseTo(elbow[0]); expect(y).toBeCloseTo(elbow[1])
+  })
   it('前腕パーツは従来の前腕の変形と同じ位置へ動く', () => {
     const pose = { up: 0, upS: 1, fo: 1.2, foS: 0.95, ha: 0.1, haS: 1 }
     const [x, y] = [800, 850]
