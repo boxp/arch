@@ -5,9 +5,11 @@ import type { ActingStage, Emotion, Gesture } from './acting'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { patchFaceTexture } from './face-texture'
+import { addQuad, addShared, addTexture, CUFF_POLY, eraseAtlas, FOREARM_POLY, loadTexture, mirrorPolygon, paintCapeCorner, splitMesh, type PartsPlayer, type Polygon, type Split } from './arm-parts'
 
 type Vec = readonly [number, number]
-export type ArmPose = { up: number; upS: number; fo: number; foS: number; ha: number; haS: number; elbowTo?: Vec; elbowW?: number; front?: boolean }
+type HandArt = 'palm' | 'cover'
+export type ArmPose = { up: number; upS: number; fo: number; foS: number; ha: number; haS: number; elbowTo?: Vec; elbowW?: number; front?: boolean; art?: HandArt; artW?: number }
 export type BodyPose = { headX: number; headY: number; headZ: number; bodyX: number; bodyZ: number; lean: number; eyeX: number; eyeY: number }
 type Key = { t: number; right?: ArmPose; left?: ArmPose; body?: Partial<BodyPose> }
 export type Clip = { duration: number; keys: Key[] }
@@ -22,6 +24,7 @@ const RIGHT: Bone = { S: [710, 533], E: [758, 757], W: [844, 928], arm: 22, hand
 const mirrorX = (v: Vec): Vec => [2 * CX - v[0], v[1]]
 const LEFT: Bone = { S: mirrorX(RIGHT.S), E: mirrorX(RIGHT.E), W: mirrorX(RIGHT.W), arm: 23, hand: 21, mirror: true }
 const BROW = 1
+const BODY = 26
 const EYES = new Set([5, 6, 7, 8, 10, 11, 12, 13, 14, 15])
 const MOUTH = 4
 const MOUTH_C: Vec = [574, 352]
@@ -45,11 +48,11 @@ export const faces: Record<Emotion, Face> = {
 const wave = (t: number, fo: number): Key => ({ t, right: { up: 0, upS: 1, fo, foS: 1, ha: fo < -2 ? 0.35 : -0.3, haS: 1 } })
 const GUIDE: ArmPose = { up: 0, upS: 1, fo: -1.92, foS: 1, ha: 0.15, haS: 1 }
 // 制止: 肘を体の脇に置いたまま前腕を内側から立て、胸の前で掌を相手へ向ける。
-const HALT: ArmPose = { up: 0, upS: 1, fo: 3.45, foS: 0.95, ha: 0.1, haS: 1.1, elbowTo: [738, 745], front: true }
-const HALT_RISE: ArmPose = { up: 0, upS: 1, fo: 1.85, foS: 0.92, ha: 0.2, haS: 1.05, elbowTo: [748, 750], front: true }
+const HALT: ArmPose = { up: 0, upS: 1, fo: 3.45, foS: 0.95, ha: 0.1, haS: 1.1, elbowTo: [738, 745], front: true, art: 'palm', artW: 1 }
+const HALT_RISE: ArmPose = { up: 0, upS: 1, fo: 1.85, foS: 0.92, ha: 0.2, haS: 1.05, elbowTo: [748, 750], front: true, art: 'palm', artW: 0 }
 // 照れ: 体の前を通って手を口元へ運ぶ（外へ大回りしない）。終端の向きは従来と同じ。
-const SHY: ArmPose = { up: 0, upS: 1, fo: 3.2, foS: 1.32, ha: 0.02, haS: 0.95, elbowTo: [712, 730], front: true }
-const SHY_RISE: ArmPose = { up: 0, upS: 1, fo: 1.95, foS: 1.1, ha: 0.1, haS: 0.98, elbowTo: [735, 745], front: true }
+const SHY: ArmPose = { up: 0, upS: 1, fo: 3.2, foS: 1.32, ha: 0.02, haS: 0.95, elbowTo: [712, 716], front: true, art: 'cover', artW: 1 }
+const SHY_RISE: ArmPose = { up: 0, upS: 1, fo: 1.95, foS: 1.1, ha: 0.1, haS: 0.98, elbowTo: [735, 745], front: true, art: 'cover', artW: 0 }
 const JOY: ArmPose = { up: 0, upS: 1, fo: -0.42, foS: 1, ha: 0.25, haS: 1 }
 
 export const clips: Record<Exclude<Gesture, 'none'>, Clip> = {
@@ -78,7 +81,10 @@ function lerpArm(a: ArmPose, b: ArmPose, t: number): ArmPose {
   // elbowTo の有無が変わる区間は、指定なし側の自然な肘位置との混合率で補間して跳びを防ぐ。
   const elbowTo = a.elbowTo && b.elbowTo ? [lerp(a.elbowTo[0], b.elbowTo[0], t), lerp(a.elbowTo[1], b.elbowTo[1], t)] as const : b.elbowTo ?? a.elbowTo
   const elbowW = lerp(a.elbowTo ? a.elbowW ?? 1 : 0, b.elbowTo ? b.elbowW ?? 1 : 0, t)
-  return { up: lerp(a.up, b.up, t), upS: lerp(a.upS, b.upS, t), fo: lerp(a.fo, b.fo, t), foS: lerp(a.foS, b.foS, t), ha: lerp(a.ha, b.ha, t), haS: lerp(a.haS, b.haS, t), elbowTo, elbowW, front: b.front ?? a.front }
+  // 手の絵の重みは、絵の種類が変わる切替でも 0 を通るようにする。
+  const art = (t < 0.5 ? a.art ?? b.art : b.art ?? a.art), sameArt = a.art === b.art
+  const artW = sameArt || !a.art || !b.art ? lerp(a.artW ?? 0, b.artW ?? 0, t) : (t < 0.5 ? lerp(a.artW ?? 0, 0, t * 2) : lerp(0, b.artW ?? 0, t * 2 - 1))
+  return { up: lerp(a.up, b.up, t), upS: lerp(a.upS, b.upS, t), fo: lerp(a.fo, b.fo, t), foS: lerp(a.foS, b.foS, t), ha: lerp(a.ha, b.ha, t), haS: lerp(a.haS, b.haS, t), elbowTo, elbowW, front: b.front ?? a.front, art, artW }
 }
 /** 時刻 t のキー補間。腕や体の指定が無いキーは休止姿勢として扱う。 */
 export function sample(clip: Clip, time: number): { right: ArmPose; left: ArmPose; body: BodyPose } {
@@ -134,12 +140,28 @@ export function deformArm(bone: Bone, pose: ArmPose, vx: number, vy: number, rx:
   const u = sub([vx, vy], bone.S), ua = dot(u, ud)
   return add(bone.S, rot(add(scaleV(ud, ua * upS), sub(u, scaleV(ud, ua))), up))
 }
+/** 前腕の絵を肘で回す（分離した前腕のパーツ用。deformArm の前腕の枝と同じ式）。 */
+export function deformFore(bone: Bone, pose: ArmPose, vx: number, vy: number): Vec {
+  const m = bone.mirror ? { ...pose, up: -pose.up, fo: -pose.fo, ha: -pose.ha, elbowTo: pose.elbowTo ? mirrorX(pose.elbowTo) : undefined } : pose
+  const fd = norm(sub(bone.W, bone.E)), newE = solveArm(bone, m).elbow, f = sub([vx, vy], bone.E), fa = dot(f, fd)
+  return add(newE, rot(add(scaleV(fd, fa * foreScale(m)), sub(f, scaleV(fd, fa))), m.fo))
+}
 export function deformHand(bone: Bone, pose: ArmPose, vx: number, vy: number): Vec {
   const m = bone.mirror ? { ...pose, up: -pose.up, fo: -pose.fo, ha: -pose.ha, elbowTo: pose.elbowTo ? mirrorX(pose.elbowTo) : undefined } : pose
   return add(solveArm(bone, m).wrist, rot(scaleV(sub([vx, vy], bone.W), m.haS), m.fo + m.ha))
 }
 
-type Runtime = { memory: WebAssembly.Memory; p2l_mesh_vertices(rig: number, mesh: number): number; p2l_render_commands(rig: number, pointer: number, capacity: number): number }
+// 手の素材は上向きに描かれているので、保持姿勢の回転の逆を掛けた位置を休止座標とする。アンカーは手首（素材の px）。
+const ART: Record<HandArt, { file: string; w: number; h: number; anchor: Vec; scale: number; tilt: number; hold: ArmPose }> = {
+  palm: { file: 'palm.png', w: 360, h: 628, anchor: [227, 612], scale: 0.27, tilt: -0.1, hold: HALT },
+  cover: { file: 'cover.png', w: 360, h: 595, anchor: [55, 579], scale: 0.235, tilt: -0.35, hold: SHY },
+}
+/** マントの下に隠れていた上腕（生成素材）の配置。下端は肘に付いて動く。 */
+const UPPER_ART = { file: 'upper.png', top: [750, 640] as Vec, bottom: [761, 764] as Vec, halfWidth: 39 }
+const SEPARATE_AT = 0.02
+const partURL = (file: string) => new URL(`kohako/live2d/acting/${file}`, location.href).href
+
+type Runtime = { memory: WebAssembly.Memory; p2l_mesh_vertices(rig: number, mesh: number): number; p2l_render_commands(rig: number, pointer: number, capacity: number): number; p2l_mesh_opacity(rig: number, mesh: number): number; p2l_mesh_colors(rig: number, mesh: number, a: number, b: number): void }
 type Internal = Player & { rt: Runtime; update(dt: number): void; rig: number }
 const PARAMS: Record<keyof BodyPose, string> = { headX: 'ParamAngleX', headY: 'ParamAngleY', headZ: 'ParamAngleZ', bodyX: 'ParamBodyAngleX', bodyZ: 'ParamBodyAngleZ', lean: 'ParamBodyLean', eyeX: 'ParamEyeBallX', eyeY: 'ParamEyeBallY' }
 
@@ -171,7 +193,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     cuts.set(bone.arm, { full, cut: new (full.constructor as new (a: number[]) => IndexArray)([...kept, ...forearm]), bent: false })
   }
   const applyCut = (bone: Bone, armPose: ArmPose) => {
-    const entry = cuts.get(bone.arm); if (!entry) return
+    const entry = cuts.get(bone.arm); if (!entry || parts) return // 分離パーツが使えるときは三角形を間引かない
     const bent = armBlend > 0.001 && (Math.abs(armPose.fo) > BENT || !!armPose.elbowTo && (armPose.elbowW ?? 0) > 0.05)
     if (bent === entry.bent) return
     entry.bent = bent
@@ -180,16 +202,77 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.indexBuffer); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW)
   }
   prepareCut(RIGHT); prepareCut(LEFT)
+  // 追加パーツ: 腕の絵を前腕と上腕に画素で分け、隠れていた上腕と手の素材を描き足す。作れない環境では従来の間引きで動く。
+  type Side = { bone: Bone; split: Split; upperTexture: number; originalTexture: number; originalUv: WebGLBuffer | null | undefined; fill: number; fore: number; on: boolean }
+  type Synth = { base: number; pointer: number; write(out: Float32Array): void; opacity(): number; shared?: number }
+  const synth = new Map<number, Synth>(), sway = new Map<number, Vec>()
+  let parts: { right: Side; left: Side; art: Partial<Record<HandArt, number>>; cuff: number } | null = null, partsStatus: Record<string, unknown> = { ready: false }
+  const armOf = (b: Bone) => b === RIGHT ? pose.right : pose.left
+  const artLoaded: Partial<Record<HandArt, boolean>> = {} // 素材が届くまでは元の手のまま（読込失敗時も同じ）
+  const handArt = () => pose.right.art && armBlend > 0.001 && artLoaded[pose.right.art] ? { kind: pose.right.art, w: pose.right.artW ?? 0 } : { kind: undefined, w: 0 }
+  const separatedPose = (a: ArmPose) => armBlend > 0.001 && (Math.abs(a.fo) > SEPARATE_AT || (!!a.elbowTo && (a.elbowW ?? 0) > SEPARATE_AT))
+  const swayOf = (m: number): Vec => sway.get(m) ?? [0, 0]
+  try {
+    const pp = p as unknown as PartsPlayer, alloc = rt as unknown as { p2l_alloc(n: number): number; p2l_dealloc(a: number, n: number): void }, cp = p as unknown as { commandsPointer: number; commandCapacity: number }
+    const loads: Promise<void>[] = []
+    const later = (file: string, loaded?: () => void) => { const index = addTexture(pp); loads.push(loadTexture(gl, partURL(file)).then(t => { pp.textures[index] = t; loaded?.() })); return index }
+    const fillTexture = later(UPPER_ART.file)
+    const makeSide = (bone: Bone): Side => {
+      const poly = bone.mirror ? mirrorPolygon(FOREARM_POLY, CX) : FOREARM_POLY, split = splitMesh(pp, bone.arm, poly, (x, y, sample) => paintCapeCorner(bone.mirror ? 2 * CX - x : x, y, sample(bone.mirror ? 2 * CX - 800 : 800, 696))), mesh = pp.meshes[bone.arm] as PartsPlayer['meshes'][number]
+      const upperTexture = addTexture(pp, split.outside), foreTexture = addTexture(pp, split.inside)
+      const xs = poly.map(c => c[0]), ys = poly.map(c => c[1]), corners: Vec[] = [[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)], [Math.min(...xs), Math.max(...ys)]]
+      const fore = addQuad(pp, new Float32Array(corners.flatMap(c => split.rectUv(c[0], c[1]))), foreTexture)
+      synth.set(fore.index, { base: bone.arm, pointer: fore.pointer, opacity: () => separatedPose(armOf(bone)) ? 1 : 0, write(out) { const [dx, dy] = swayOf(bone.arm); corners.forEach((c, i) => { const q = deformFore(bone, armOf(bone), c[0] + dx, c[1] + dy); out[2 * i] = q[0]; out[2 * i + 1] = q[1] }) } })
+      const place = (v: Vec): Vec => bone.mirror ? mirrorX(v) : v, along = norm(sub(UPPER_ART.bottom, UPPER_ART.top)), across: Vec = scaleV([-along[1], along[0]], UPPER_ART.halfWidth)
+      const top: Vec[] = [place(add(UPPER_ART.top, across)), place(sub(UPPER_ART.top, across))], bottom: Vec[] = [place(sub(UPPER_ART.bottom, across)), place(add(UPPER_ART.bottom, across))]
+      const fill = addQuad(pp, new Float32Array(bone.mirror ? [1, 0, 0, 0, 0, 1, 1, 1] : [0, 0, 1, 0, 1, 1, 0, 1]), fillTexture)
+      synth.set(fill.index, { base: bone.arm, pointer: fill.pointer, opacity: () => separatedPose(armOf(bone)) ? 1 : 0, write(out) {
+        const a = armOf(bone), m = bone.mirror ? { ...a, up: -a.up, fo: -a.fo, ha: -a.ha, elbowTo: a.elbowTo ? mirrorX(a.elbowTo) : undefined } : a, [dx, dy] = swayOf(bone.arm), e = sub(solveArm(bone, m).elbow, bone.E)
+        ;[...top, ...bottom].forEach((c, i) => { const follow = i >= 2 ? e : [0, 0] as Vec; out[2 * i] = c[0] + dx + follow[0]; out[2 * i + 1] = c[1] + dy + follow[1] })
+      } })
+      return { bone, split, upperTexture, originalTexture: mesh.texture, originalUv: mesh.uvBuffer, fill: fill.index, fore: fore.index, on: false }
+    }
+    // 体の層の、腕の裏に隠れていた下塗りの断片を消す（腕を上げると肘の下に残って見える）。
+    const smear = (mirror: boolean): number => {
+      const box: Polygon = [[711, 743], [762, 743], [762, 795], [711, 795]], tanBox: Polygon = [[688, 750], [711, 750], [711, 795], [695, 795]]
+      const m = (poly: Polygon) => mirror ? mirrorPolygon(poly, CX) : poly
+      return eraseAtlas(pp, BODY, m(box), () => false) + eraseAtlas(pp, BODY, m(tanBox), (r, _g, b) => r <= b + 10)
+    }
+    const erased = smear(false) + smear(true)
+    const right = makeSide(RIGHT), left = makeSide(LEFT)
+    const cuffSplit = splitMesh(pp, RIGHT.hand, CUFF_POLY), cuffTexture = addTexture(pp, cuffSplit.inside), cuff = addShared(pp, RIGHT.hand, cuffSplit, cuffTexture)
+    synth.set(cuff, { base: RIGHT.hand, pointer: -1, shared: RIGHT.hand, write() {}, opacity: () => handArt().w > 0.001 ? 1 : 0 })
+    const art: Partial<Record<HandArt, number>> = {}
+    for (const kind of Object.keys(ART) as HandArt[]) {
+      const spec = ART[kind], local = ([x, y]: Vec) => rot(scaleV(sub([x, y], spec.anchor), spec.scale), spec.tilt), hold = spec.hold.fo + spec.hold.ha
+      const corners = ([[0, 0], [spec.w, 0], [spec.w, spec.h], [0, spec.h]] as Vec[]).map(c => add(RIGHT.W, rot(scaleV(local(c), 1 / spec.hold.haS), -hold)))
+      const quad = addQuad(pp, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), later(spec.file, () => { artLoaded[kind] = true }))
+      art[kind] = quad.index
+      synth.set(quad.index, { base: RIGHT.hand, pointer: quad.pointer, opacity: () => { const h = handArt(); return h.kind === kind ? smooth(0.1, 0.6, h.w) : 0 }, write(out) { const [dx, dy] = swayOf(RIGHT.hand); corners.forEach((c, i) => { const q = deformHand(RIGHT, pose.right, c[0] + dx, c[1] + dy); out[2 * i] = q[0]; out[2 * i + 1] = q[1] }) } })
+    }
+    if (cp.commandCapacity != null) { alloc.p2l_dealloc(cp.commandsPointer, cp.commandCapacity * 4 + 4); cp.commandCapacity += 16; cp.commandsPointer = alloc.p2l_alloc(cp.commandCapacity * 4 + 4) }
+    parts = { right, left, art, cuff }
+    partsStatus = { ready: true, textures: 'loading', erased }
+    Promise.all(loads).then(() => { partsStatus = { ready: true, textures: 'loaded', erased } }).catch(e => { partsStatus = { ready: true, textures: 'failed', error: e instanceof Error ? e.message : String(e) } })
+  } catch (e) { parts = null; partsStatus = { ready: false, error: e instanceof Error ? e.message : String(e) } }
+  const applySeparate = (side: Side, armPose: ArmPose) => {
+    const on = separatedPose(armPose); if (on === side.on) return
+    side.on = on
+    const mesh = (p.meshes[side.bone.arm] as PartsPlayer['meshes'][number])
+    mesh.texture = on ? side.upperTexture : side.originalTexture
+    mesh.uvBuffer = on ? side.split.uvBuffer : side.originalUv
+  }
   const frontMeshes = (): number[] => [pose.right.front && armBlend > 0.3 ? RIGHT.hand : -1, pose.left.front && armBlend > 0.3 ? LEFT.hand : -1].filter(i => i >= 0)
 
   const apply = (mesh: number, pointer: number, count: number) => {
     const v = new Float32Array(rt.memory.buffer, pointer, count * 2)
     if (!rests.has(mesh)) rests.set(mesh, v.slice())
     const rest = rests.get(mesh) as Float32Array
+    if (mesh === RIGHT.arm || mesh === LEFT.arm || mesh === RIGHT.hand) { let dx = 0, dy = 0; for (let i = 0; i < count; i++) { dx += (v[2 * i] as number) - (rest[2 * i] as number); dy += (v[2 * i + 1] as number) - (rest[2 * i + 1] as number) } sway.set(mesh, count ? [dx / count, dy / count] : [0, 0]) }
     for (let i = 0; i < count; i++) {
       const x = v[2 * i] as number, y = v[2 * i + 1] as number, rx = rest[2 * i] as number, ry = rest[2 * i + 1] as number
       let out: Vec = [x, y]
-      if (armBlend > 0.001 && (mesh === RIGHT.arm || mesh === LEFT.arm)) { const b = mesh === RIGHT.arm ? RIGHT : LEFT; const d = deformArm(b, mesh === RIGHT.arm ? pose.right : pose.left, x, y, rx, ry); out = [lerp(x, d[0], armBlend), lerp(y, d[1], armBlend)] }
+      if (armBlend > 0.001 && (mesh === RIGHT.arm || mesh === LEFT.arm)) { const b = mesh === RIGHT.arm ? RIGHT : LEFT; if (!(parts && (b === RIGHT ? parts.right.on : parts.left.on))) { const d = deformArm(b, mesh === RIGHT.arm ? pose.right : pose.left, x, y, rx, ry); out = [lerp(x, d[0], armBlend), lerp(y, d[1], armBlend)] } }
       else if (armBlend > 0.001 && (mesh === RIGHT.hand || mesh === LEFT.hand)) { const b = mesh === RIGHT.hand ? RIGHT : LEFT; const d = deformHand(b, mesh === RIGHT.hand ? pose.right : pose.left, x, y); out = [lerp(x, d[0], armBlend), lerp(y, d[1], armBlend)] }
       else if (mesh === BROW) { const outer = Math.min(1, Math.abs(rx - CX) / 75); out = [x, y + (face.browY + lerp(face.browInner, face.browOuter, smooth(0.15, 0.95, outer))) * browPin(outer)] }
       else if (mesh === MOUTH) { const u = Math.min(1, Math.abs(rx - MOUTH_C[0]) / 30); out = [MOUTH_C[0] + (x - MOUTH_C[0]) * face.mouthWidth, y + face.mouthCorner * (u * u - 0.35)] }
@@ -197,7 +280,14 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       v[2 * i] = out[0]; v[2 * i + 1] = out[1]
     }
   }
-  const hookVertices = (rig: number, mesh: number) => {
+  const hookVertices = (rig: number, mesh: number): number => {
+    const extra = synth.get(mesh)
+    if (extra) {
+      if (extra.shared != null) return hookVertices(rig, extra.shared)
+      hookVertices(rig, extra.base)
+      if (done.get(mesh) !== generation) { extra.write(new Float32Array(rt.memory.buffer, extra.pointer, 8)); done.set(mesh, generation) }
+      return extra.pointer
+    }
     const pointer = rt.p2l_mesh_vertices(rig, mesh)
     if ((mesh === BROW || mesh === MOUTH || EYES.has(mesh) || mesh === RIGHT.arm || mesh === LEFT.arm || mesh === RIGHT.hand || mesh === LEFT.hand) && done.get(mesh) !== generation) {
       apply(mesh, pointer, (p.meshes[mesh] as { vertices: number }).vertices); done.set(mesh, generation)
@@ -205,13 +295,27 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     return pointer
   }
   const hookCommands = (rig: number, pointer: number, capacity: number) => {
-    const count = rt.p2l_render_commands(rig, pointer, capacity), front = frontMeshes()
-    if (!front.length) return count
-    const view = new Int32Array(rt.memory.buffer, pointer, Math.min(count, capacity)), list = Array.from(view)
-    view.set([...list.filter(c => !front.includes(c)), ...front.filter(m => list.includes(m))])
-    return count
+    const count = rt.p2l_render_commands(rig, pointer, capacity), front = frontMeshes(), art = handArt(), artMesh = parts && art.kind && art.w > 0.001 ? parts.art[art.kind] : undefined
+    const expand = (c: number): number[] => {
+      if (parts && c === RIGHT.arm && parts.right.on) return [parts.right.fill, c, parts.right.fore]
+      if (parts && c === LEFT.arm && parts.left.on) return [parts.left.fill, c, parts.left.fore]
+      if (parts && c === RIGHT.hand && artMesh != null) return [c, artMesh, parts.cuff]
+      return [c]
+    }
+    if (!front.length && !parts?.right.on && !parts?.left.on && artMesh == null) return count
+    const list = Array.from(new Int32Array(rt.memory.buffer, pointer, Math.min(count, capacity)))
+    const out = [...list.filter(c => !front.includes(c)).flatMap(expand), ...front.filter(m => list.includes(m)).flatMap(expand)].slice(0, capacity)
+    new Int32Array(rt.memory.buffer, pointer, out.length).set(out)
+    return out.length
   }
-  p.rt = Object.create(rt, { p2l_mesh_vertices: { value: hookVertices }, p2l_render_commands: { value: hookCommands } }) as Runtime
+  const hookOpacity = (rig: number, mesh: number) => {
+    const extra = synth.get(mesh)
+    if (extra) return extra.opacity() * rt.p2l_mesh_opacity(rig, extra.base)
+    const base = rt.p2l_mesh_opacity(rig, mesh)
+    return mesh === RIGHT.hand && parts ? base * (1 - smooth(0.35, 0.85, handArt().w)) : base
+  }
+  const hookColors = (rig: number, mesh: number, a: number, b: number) => rt.p2l_mesh_colors(rig, synth.get(mesh)?.base ?? mesh, a, b)
+  p.rt = Object.create(rt, { p2l_mesh_vertices: { value: hookVertices }, p2l_render_commands: { value: hookCommands }, p2l_mesh_opacity: { value: hookOpacity }, p2l_mesh_colors: { value: hookColors } }) as Runtime
   const baseUpdate = p.update.bind(p)
   p.update = (dt: number) => {
     generation++
@@ -229,6 +333,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     if (shown) pose = shown
     armBlend = shown ? 1 : 0
     applyCut(RIGHT, pose.right); applyCut(LEFT, pose.left)
+    if (parts) { applySeparate(parts.right, pose.right); applySeparate(parts.left, pose.left) }
     for (const key of Object.keys(NO_BODY) as (keyof BodyPose)[]) {
       const want = (sampled?.body[key] ?? 0) + (target.head[key] ?? 0)
       headCurrent[key] = lerp(headCurrent[key], want, k)
@@ -246,6 +351,6 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       clip = clips[next]; clipName = next; clipTime = 0; armBlend = 1
     },
     reset() { emotion = 'neutral'; target = faces.neutral; player.expression(null); if (clip) startFade(); clip = null; clipName = 'none' },
-    report: () => ({ supported: true, facePatch, emotion, gesture: clipName, armBlend, clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
+    report: () => ({ supported: true, parts: partsStatus, facePatch, emotion, gesture: clipName, armBlend, clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
   }
 }
