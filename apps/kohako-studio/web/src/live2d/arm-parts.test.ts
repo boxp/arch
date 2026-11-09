@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CUFF_POLY, FOREARM_POLY, inPolygon, mirrorPolygon, paintCapeCorner, triangleCoverage } from './arm-parts'
+import { addQuad, CUFF_POLY, FOREARM_POLY, inPolygon, mirrorPolygon, paintCapeCorner, triangleCoverage, type PartsPlayer } from './arm-parts'
 
 describe('arm-parts', () => {
   it('前腕の範囲は前腕の中央を含み、上腕とマントを含まない', () => {
@@ -24,5 +24,13 @@ describe('arm-parts', () => {
     const uvs = new Float32Array([0.2, 0.2, 0.8, 0.2, 0.8, 0.8]), out = triangleCoverage(uvs, [0, 1, 2], 10, 10, 0, 0, 10, 10)
     expect(out[5 * 10 + 7]).toBe(1) // 内側
     expect(out[8 * 10 + 1]).toBe(0) // 左下は対角の外
+  })
+  it.each([[0x1403, Uint16Array, 12], [0x1405, Uint32Array, 24]] as const)('追加の四角形のインデックスは描画の型 %s に幅を合わせる', (indexType, expected, bytes) => {
+    const uploads: ArrayBufferView[] = [], gl = { UNSIGNED_SHORT: 0x1403, UNSIGNED_INT: 0x1405, ARRAY_BUFFER: 1, ELEMENT_ARRAY_BUFFER: 2, STATIC_DRAW: 3, createBuffer: () => ({}), bindBuffer: () => undefined, bufferData: (target: number, data: ArrayBufferView) => { if (target === 2) uploads.push(data) } }
+    const p = { gl, indexType, meshes: [], textures: [], rig: 0, rt: { p2l_alloc: () => 8 } } as unknown as PartsPlayer
+    const { index } = addQuad(p, new Float32Array(8), 0)
+    expect(p.meshes[index]?.indices).toBeInstanceOf(expected)
+    expect(Array.from(p.meshes[index]?.indices ?? [])).toEqual([0, 1, 2, 0, 2, 3])
+    expect(uploads[0]?.byteLength).toBe(bytes)
   })
 })

@@ -23,7 +23,7 @@ export const mirrorPolygon = (poly: Polygon, cx: number): Polygon => poly.map(([
 
 type Mesh = { vertices: number; uvs: Float32Array; indices: Uint16Array | Uint32Array; texture: number; uvBuffer?: WebGLBuffer | null; indexBuffer?: WebGLBuffer | null; blend?: number; alphaBlend?: number; culling?: boolean; fixed?: boolean; masks?: number[]; invertMask?: boolean }
 export type PartsPlayer = {
-  gl: WebGLRenderingContext; textures: (WebGLTexture | undefined)[]; rig: number; meshes: Mesh[]
+  gl: WebGLRenderingContext; indexType: number; textures: (WebGLTexture | undefined)[]; rig: number; meshes: Mesh[]
   rt: { memory: WebAssembly.Memory; p2l_mesh_vertices(rig: number, mesh: number): number; p2l_alloc(n: number): number; p2l_dealloc(p: number, n: number): void; p2l_texture_png(rig: number, i: number, a: number, b: number, c: number): number }
 }
 function atlasSize(p: PartsPlayer): [number, number] {
@@ -121,7 +121,8 @@ export function eraseAtlas(p: PartsPlayer, mesh: number, region: Polygon, keep: 
 
 /** 4 頂点の追加メッシュ。頂点は毎フレーム呼び出し側が書く。 */
 export function addQuad(p: PartsPlayer, uvs: Float32Array, texture: number): { index: number; pointer: number } {
-  const gl = p.gl, indices = new Uint32Array([0, 1, 2, 0, 2, 3]), pointer = p.rt.p2l_alloc(32), uvBuffer = gl.createBuffer(), indexBuffer = gl.createBuffer()
+  // 描画は全メッシュ共通の p.indexType で行う（OES_element_index_uint が無いと UNSIGNED_SHORT）。バッファの幅を必ず合わせる。
+  const gl = p.gl, indices = new (p.indexType === gl.UNSIGNED_SHORT ? Uint16Array : Uint32Array)([0, 1, 2, 0, 2, 3]), pointer = p.rt.p2l_alloc(32), uvBuffer = gl.createBuffer(), indexBuffer = gl.createBuffer()
   gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer); gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW)
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW)
   p.meshes.push({ vertices: 4, uvs, indices, texture, uvBuffer, indexBuffer, blend: 0, alphaBlend: 0, culling: false, fixed: true, masks: [], invertMask: false })
