@@ -82,4 +82,12 @@ describe('目の組み替え', () => {
     expect(target.get(601, 276)).toEqual(clear) // 影は虹彩の層から消える
     expect(target.get(501, 276)).toEqual(shade) // まつ毛の層へ移る
   })
+  it('白目の層に残る元の虹彩の淡い輪郭は、色味によらず周囲の白目で埋める', () => {
+    const source = atlas(900, 400), sclera: Rgba = [250, 250, 252, 255], ghost: Rgba = [200, 190, 200, 255]
+    for (let x = 495; x <= 555; x++) for (let y = 276; y <= 297; y++) source.set(x + 200, y, sclera)
+    source.set(745, 288, ghost)
+    const target = copy(source)
+    rebakeEye(source, target, spec, lash, iris, white)
+    expect(target.get(745, 288)).toEqual(sclera)
+  })
 })
