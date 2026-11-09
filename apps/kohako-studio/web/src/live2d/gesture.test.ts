@@ -259,9 +259,9 @@ describe('曲げの絵（BOXP-476 TD-02）', () => {
     expect(bentWeight(-2.05)).toBe(1)
     expect(bentWeight(3.41)).toBe(1)
   })
-  it('切替で半透明が見える区間を前腕の角度 0.2rad 以内に抑える', () => {
-    expect(bentWeight(1.06)).toBe(1)
-    expect(bentWeight(0.84)).toBe(0)
+  it('差し替えは半透明の二重を見せないよう、ごく狭い角度で切り替える', () => {
+    expect(bentWeight(0.97)).toBe(1)
+    expect(bentWeight(0.93)).toBe(0)
   })
   it('内回りと左腕では絵を裏返す', () => {
     expect(bentSide({ mirror: false }, { fo: -2 })).toBe(1)

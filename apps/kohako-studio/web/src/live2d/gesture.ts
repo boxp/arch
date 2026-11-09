@@ -181,8 +181,8 @@ const UPPER_ART_REACH_INWARD = 8 // 肘を体の前へ寄せたときの上端�
 const UPPER_ART_INTO_CUFF = 30 // 上腕の下端の位置（正は肘より手の側）。下端の丸みを小手の裏へ入れ、途中のコマでも上腕が開口の手前で止まって見えないようにする（休止の絵の位置と同じ）
 const SEPARATE_AT = 0.02
 // 曲げた腕の絵。v11r の小手の肘側は V 字に切れ込んでいて、回すと先端が二股の板に見える（肘の丸みが無い）。曲げの間だけ、正本シートの上げた腕から切り出した丸い金縁の小手と、肘を包む黒い袖へ差し替える（生成なし）。anchor は素材 px の肘、scale は素材 px→モデル座標。
-export const BENT_ART = { fore: { file: 'fore-bent.png', w: 313, h: 512, anchor: [156.4, 414] as Vec, scale: 0.5 }, elbow: { file: 'elbow-upper.png', w: 345, h: 368, anchor: [172.5, 184] as Vec, scale: 0.5 } }
-const BENT_FROM = 0.85, BENT_TO = 1.05
+export const BENT_ART = { fore: { file: 'fore-bent.png', w: 313, h: 512, anchor: [156.4, 414] as Vec, scale: 0.5 }, elbow: { file: 'elbow-upper.png', w: 294, h: 314, anchor: [147, 156.8] as Vec, scale: 0.5 } }
+const BENT_FROM = 0.94, BENT_TO = 0.96
 /** 前腕の曲げ量に応じた、差し替えの絵の重み（0〜1）。 */
 export const bentWeight = (fo: number) => smooth(BENT_FROM, BENT_TO, Math.abs(fo))
 /** 絵の左右。正本は「手先へ向かって肩が左」の絵。内回り（fo>0）と左腕では裏返す。 */
