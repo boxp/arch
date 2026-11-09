@@ -93,3 +93,6 @@ RUN /opt/hermes/.venv/bin/python /opt/boxp/hermes-agent/patches/fix-scheduler-ne
 # a retry/restart. Build fails if upstream changes the reviewed integration.
 RUN /opt/hermes/.venv/bin/python /opt/boxp/hermes-agent/patches/fix-task-board-delivery.py \
     && /opt/hermes/.venv/bin/python -m unittest discover -s /opt/boxp/hermes-agent/patches -p 'test_task_board_delivery.py'
+
+COPY sunrise/ /opt/boxp/hermes-agent/sunrise/
+RUN chmod 0755 /opt/boxp/hermes-agent/sunrise/sunrise-watch.sh /opt/boxp/hermes-agent/sunrise/watch.py
