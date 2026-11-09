@@ -1,11 +1,29 @@
 import { describe, expect, it } from 'vitest'
-import { browPin, clips, createActingStage, crossfadeArms, deformArm, deformHand, faces, foreScale, isForearm, sample, solveArm } from './gesture'
+import { browPin, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, faces, foreScale, isForearm, sample, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
 
 const bone = { S: [710, 533], E: [758, 757], W: [844, 928], band: 34, arm: 22, hand: 20, mirror: false } as const
 const rest = { up: 0, upS: 1, fo: 0, foS: 1, ha: 0, haS: 1 }
+
+describe('生成素材の手と前腕の分離', () => {
+  const bone = { S: [710, 533], E: [758, 757], W: [844, 928], arm: 22, hand: 20, mirror: false } as const
+  it('前腕パーツは従来の前腕の変形と同じ位置へ動く', () => {
+    const pose = { up: 0, upS: 1, fo: 1.2, foS: 0.95, ha: 0.1, haS: 1 }
+    const [x, y] = [800, 850]
+    expect(deformFore(bone, pose, x, y)).toEqual(deformArm(bone, pose, x, y, x, y))
+  })
+  it('制止と照れは保持区間で手の絵が完全に切り替わり、始点では元の手のまま', () => {
+    expect(sample(clips.halt, 1).right).toMatchObject({ art: 'palm', artW: 1 })
+    expect(sample(clips.shyHand, 2).right).toMatchObject({ art: 'cover', artW: 1 })
+    expect(sample(clips.halt, 0).right.artW ?? 0).toBe(0)
+    expect(sample(clips.shyHand, 0).right.artW ?? 0).toBe(0)
+  })
+  it('挨拶など手の絵を持たない動作では重みが 0 のまま', () => {
+    expect(sample(clips.greet, 0.9).right.artW ?? 0).toBe(0)
+  })
+})
 
 describe('動作の定義', () => {
   it('全ての表情と動作に定義がある', () => {

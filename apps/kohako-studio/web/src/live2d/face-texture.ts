@@ -80,7 +80,8 @@ export function rebakeEye(source: Atlas, target: Atlas, spec: EyeSpec, lash: Lay
   const onRing = (x: number, y: number) => y >= spec.top && y <= spec.bottom && (Math.abs(x - arcX(spec.left, y)) <= RING || Math.abs(x - arcX(spec.right, y)) <= RING)
   const inside = (x: number, y: number) => y >= spec.top && y <= spec.bottom && x >= arcX(spec.left, y) && x <= arcX(spec.right, y)
   eachTexel(target, lash, box, (u, v, x, y) => { if (onRing(x, y) && source.get(u, v)[3] > 0) { target.set(u, v, [0, 0, 0, 0]); count.ring++ } })
-  eachTexel(target, white, box, (u, v, x, y) => {
+  // 帯の外側を読むので、白目の処理範囲は帯の外縁まで含める（box のままだと外縁に元の輪郭が残る）。
+  eachTexel(target, white, { ...box, x0: box.x0 - WHITE_BAND - 3, x1: box.x1 + WHITE_BAND + 3 }, (u, v, x, y) => {
     if (y < spec.strip + 1 || y > spec.bottom || x < arcX(spec.left, y) - WHITE_BAND || x > arcX(spec.right, y) + WHITE_BAND) return
     // 輪郭線の抜きの上端（まつ毛の陰）は側方が見えないので白目色で埋める。
     if (y < spec.top && source.get(u, v)[3] < 128 && Math.min(Math.abs(x - arcX(spec.left, y)), Math.abs(x - arcX(spec.right, y))) <= 3) { target.set(u, v, SCLERA); count.filled++; return }
