@@ -1,0 +1,17 @@
+---
+interface Props {
+  eyebrow: string;
+  title: string;
+}
+const { eyebrow, title } = Astro.props;
+---
+
+<div class="section-heading">
+  <p class="eyebrow">
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <path d="M10 17C7 14 3 11 4 7c1-3 4-3 6 0 2-3 5-3 6 0 1 4-3 7-6 10Z" />
+    </svg>
+    {eyebrow}
+  </p>
+  <h2>{title}</h2>
+</div>

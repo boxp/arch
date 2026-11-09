@@ -23,6 +23,8 @@ export interface Hero {
   height: number;
 }
 
+export const HERO_SIZES = '(min-width: 1024px) 78vw, (min-width: 640px) 135vw, 180vw';
+
 const DIR = join('public', 'illust');
 const JPG = /^hitohako-hero-([0-9a-f]{10})\.jpg$/;
 

@@ -1,0 +1,30 @@
+---
+import profile from "../data/profile.json";
+import allies from "../data/allies.json";
+---
+
+<section id="bonus" class="bonus container">
+  <details>
+    <summary>
+      おまけ：ひとはこさんの世界 <span>物語の設定と仲間たち</span>
+    </summary>
+    <div class="bonus-content">
+      <p>{profile.description[2]}</p>
+      <p>
+        所属: {profile.affiliation} / 得物: {profile.weapon}
+      </p>
+      <ul class="allies">
+        {allies.map((a) => (
+          <li>
+            <img src={a.image} alt={`${a.name}の顔`} width="72" height="72" loading="lazy" decoding="async" />
+            <h3>{a.name}</h3>
+            {"heroineName" in a && <p>{a.heroineName}</p>}
+            <p>{a.role}</p>
+            <p>「{a.quote}」</p>
+            <p>{a.description[0]}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  </details>
+</section>
