@@ -195,7 +195,7 @@ const ART: Record<HandArt, { file: string; w: number; h: number; anchor: Vec; sc
 const UPPER_ART = { file: 'upper.png', top: [750, 640] as Vec, bottom: [761, 764] as Vec, halfWidth: 39 }
 const UPPER_ART_REACH = 114 // 肩の関節から素材の上端までの距離（休止時の top と同じ）
 const UPPER_ART_REACH_INWARD = 8 // 肘を体の前へ寄せたときの上端の距離。袖の裏まで伸ばし、棒の切り口を胴の上に見せない
-const UPPER_ART_INTO_CUFF = 30 // 上腕の下端を肩→肘の延長線上で肘より先へ出す量。下端の丸みを小手の裏へ入れて止まって見えないようにしつつ、軸は肘へ向けて肘の丸みと両縁をつなげる
+const UPPER_ART_INTO_CUFF = 30 // 上腕の下端を肘より先へ出す量。曲げの絵（丸い小手）の間は肩→肘の延長線上に置いて肘の丸みと両縁をつなげ、元の V 字の小手の間は手首の側へ置いて端を開口の内側に収める
 const SEPARATE_AT = 0.02
 // 曲げた腕の絵。v11r の小手の肘側は V 字に切れ込んでいて、回すと先端が二股の板に見える（肘の丸みが無い）。曲げの間だけ、正本シートの上げた腕から切り出した丸い金縁の小手と、肘を包む黒い袖へ差し替える（生成なし）。anchor は素材 px の肘、scale は素材 px→モデル座標。
 export const BENT_ART = { fore: { file: 'fore-bent.png', w: 313, h: 512, anchor: [156.4, 414] as Vec, scale: 0.5 }, elbow: { file: 'elbow-upper.png', w: 294, h: 314, anchor: [147, 156.8] as Vec, scale: 0.5 } }
@@ -288,7 +288,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
         const a = armOf(bone), m = bone.mirror ? { ...a, up: -a.up, fo: -a.fo, ha: -a.ha, elbowTo: a.elbowTo ? mirrorX(a.elbowTo) : undefined } : a, [dx, dy] = swayOf(bone.arm), e = sub(solveArm(bone, m).elbow, bone.E)
         // 上腕は肩から肘へ向かう棒として張る（親子変形）。下端の丸みが肘の先になる。
         // 上端は肩の関節から肘へ向かう線の上に置く（肩の装甲の裏に隠れる）。肘がどちらへ動いても肩から生えて見える。
-        const elbow = solveArm(bone, m), intoCuff = add(elbow.elbow, scaleV(norm(sub(elbow.elbow, bone.S)), UPPER_ART_INTO_CUFF)), b: Vec = (() => { const rest = add(place(UPPER_ART.bottom), e), w = smooth(0.05, 0.4, Math.abs(m.fo)); return [lerp(rest[0], intoCuff[0], w), lerp(rest[1], intoCuff[1], w)] })(), inward = Math.max(0, bone.mirror ? elbow.elbow[0] - bone.E[0] : bone.E[0] - elbow.elbow[0]), t = add(bone.S, scaleV(norm(sub(b, bone.S)), lerp(UPPER_ART_REACH, UPPER_ART_REACH_INWARD, smooth(0, 50, inward)))), along = norm(sub(b, t)), across: Vec = scaleV([-along[1] * side, along[0] * side], UPPER_ART.halfWidth)
+        const elbow = solveArm(bone, m), toUpper = norm(sub(elbow.elbow, bone.S)), toWrist = norm(sub(elbow.wrist, elbow.elbow)), axisW = smooth(0.7, 1.1, Math.abs(m.fo)), intoCuff = add(elbow.elbow, scaleV(norm([lerp(toWrist[0], toUpper[0], axisW), lerp(toWrist[1], toUpper[1], axisW)]), UPPER_ART_INTO_CUFF)), b: Vec = (() => { const rest = add(place(UPPER_ART.bottom), e), w = smooth(0.05, 0.4, Math.abs(m.fo)); return [lerp(rest[0], intoCuff[0], w), lerp(rest[1], intoCuff[1], w)] })(), inward = Math.max(0, bone.mirror ? elbow.elbow[0] - bone.E[0] : bone.E[0] - elbow.elbow[0]), t = add(bone.S, scaleV(norm(sub(b, bone.S)), lerp(UPPER_ART_REACH, UPPER_ART_REACH_INWARD, smooth(0, 50, inward)))), along = norm(sub(b, t)), across: Vec = scaleV([-along[1] * side, along[0] * side], UPPER_ART.halfWidth)
         ;[add(t, across), sub(t, across), sub(b, across), add(b, across)].forEach((c, i) => { out[2 * i] = c[0] + dx; out[2 * i + 1] = c[1] + dy })
       } })
       // 動き始めは元の上腕の絵を重ねて見せ、曲げるにつれて生成の上腕へ移す（絵の切り替わりで一瞬光らないように）。
