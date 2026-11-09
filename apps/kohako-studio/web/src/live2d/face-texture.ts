@@ -109,6 +109,28 @@ export function highlightHoles(indices: ArrayLike<number>, at: (n: number) => re
     return Math.max(...xs) - Math.min(...xs) <= maxSize && Math.max(...ys) - Math.min(...ys) <= maxSize
   })
 }
+/** 白目のメッシュには元の輪郭の位置に三角形の無い細い切れ目がある（虹彩は白目をマスクに描くので、そこで虹彩も切れる）。弧のそばで向かい合う境界の辺どうしを三角形でつなぐ。 */
+export function stitchSlit(indices: ArrayLike<number>, at: (n: number) => readonly [number, number], arc: Arc, top: number, bottom: number, reach = 3, gap = 2.5): number[] {
+  const count = new Map<string, [number, number, number]>()
+  const edge = (a: number, b: number) => { const k = a < b ? `${a},${b}` : `${b},${a}`, e = count.get(k); if (e) e[2]++; else count.set(k, [a, b, 1]) }
+  for (let i = 0; i + 2 < indices.length; i += 3) { const a = indices[i] as number, b = indices[i + 1] as number, c = indices[i + 2] as number; edge(a, b); edge(b, c); edge(c, a) }
+  // 上下に伸びる境界の辺のうち、両端が弧のそばのものだけを切れ目の岸の候補にする。
+  const banks = [...count.values()].filter(([a, b, n]) => {
+    if (n !== 1) return false
+    const [ax, ay] = at(a), [bx, by] = at(b)
+    return Math.abs(by - ay) >= 2 && Math.max(ay, by) >= top && Math.min(ay, by) <= bottom && Math.abs(ax - arcX(arc, ay)) <= reach && Math.abs(bx - arcX(arc, by)) <= reach
+  }).map(([a, b]) => (at(a)[1] <= at(b)[1] ? [a, b] : [b, a]) as [number, number])
+  const xAt = ([a, b]: [number, number], y: number) => { const [ax, ay] = at(a), [bx, by] = at(b); return ax + (bx - ax) * (y - ay) / (by - ay) }
+  const out: number[] = []
+  for (let i = 0; i < banks.length; i++) for (let j = i + 1; j < banks.length; j++) {
+    const p = banks[i] as [number, number], q = banks[j] as [number, number]
+    const low = Math.max(at(p[0])[1], at(q[0])[1]), high = Math.min(at(p[1])[1], at(q[1])[1])
+    if (high - low < 2 || p.some(n => q.includes(n))) continue
+    if (Math.abs(xAt(p, (low + high) / 2) - xAt(q, (low + high) / 2)) > gap) continue
+    out.push(p[0], q[0], p[1], p[1], q[0], q[1])
+  }
+  return out
+}
 export function capLoops(loops: number[][]): number[] { return loops.flatMap(l => l.slice(1, -1).flatMap((n, i) => [l[0] as number, n, l[i + 2] as number])) }
 /** 穴の多角形の中を白にし、すぐ外の半透明の縁も白へなじませる（座標はアトラスの画素）。 */
 export function paintHighlight(source: Atlas, target: Atlas, polygon: readonly (readonly [number, number])[]): number {
@@ -131,7 +153,9 @@ export function rebakeEye(source: Atlas, target: Atlas, spec: EyeSpec, lash: Lay
   const onRing = (x: number, y: number) => y >= spec.top && y <= spec.bottom && (Math.abs(x - arcX(spec.left, y)) <= RING || Math.abs(x - arcX(spec.right, y)) <= RING)
   const nearRing = (x: number, y: number) => y >= spec.top && y <= spec.bottom - 1.5 && Math.min(Math.abs(x - arcX(spec.left, y)), Math.abs(x - arcX(spec.right, y))) <= RING_FRINGE
   const inside = (x: number, y: number) => y >= spec.top && y <= spec.bottom && x >= arcX(spec.left, y) && x <= arcX(spec.right, y)
-  eachTexel(target, lash, box, (u, v, x, y) => { const alpha = source.get(u, v)[3]; if (alpha > 0 && (onRing(x, y) || (alpha < 200 && nearRing(x, y)))) { target.set(u, v, [0, 0, 0, 0]); count.ring++ } })
+  // 輪郭線がまつ毛の尾と続いている行は消さない（消すと尾が欠けて、隠れていた白目の角が四角く出る）。行は外側の不透明さで判定する。
+  const joinsLash = (x: number, y: number) => { const left = Math.abs(x - arcX(spec.left, y)) <= Math.abs(x - arcX(spec.right, y)), edge = left ? arcX(spec.left, y) : arcX(spec.right, y), out = left ? -1 : 1; return [2, 2.5, 3].some(d => readLash(edge + out * d, y)[3] >= 200) }
+  eachTexel(target, lash, box, (u, v, x, y) => { const alpha = source.get(u, v)[3]; if (alpha > 0 && (onRing(x, y) || (alpha < 200 && nearRing(x, y))) && !joinsLash(x, y)) { target.set(u, v, [0, 0, 0, 0]); count.ring++ } })
   // 帯の外側を読むので、白目の処理範囲は帯の外縁まで含める（box のままだと外縁に元の輪郭が残る）。
   eachTexel(target, white, { ...box, x0: box.x0 - WHITE_BAND - 3, x1: box.x1 + WHITE_BAND + 3 }, (u, v, x, y) => {
     if (y < spec.strip + 1 || y > spec.bottom || x < arcX(spec.left, y) - WHITE_BAND || x > arcX(spec.right, y) + WHITE_BAND) return
@@ -153,7 +177,7 @@ export function rebakeEye(source: Atlas, target: Atlas, spec: EyeSpec, lash: Lay
     target.set(u, v, mix(a[3] < 200 ? SCLERA : a, b[3] < 200 ? SCLERA : b, t)); count.filled++
   })
   eachTexel(target, iris, box, (u, v, x, y) => {
-    const ring = onRing(x, y) ? readLash(x, y) : null
+    const ring = onRing(x, y) && !joinsLash(x, y) ? readLash(x, y) : null
     if (inside(x, y)) {
       const own = readIris(x, y)
       // ハイライトは虹彩のメッシュの穴なので触らない。虹彩の上の角も透明のまま、下部の抜きだけ白目の色で埋める。
@@ -267,6 +291,10 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
       for (const loop of loops) paintHighlight(source, target, loop.map(n => [(info.uvs[2 * n] as number) * width, (info.uvs[2 * n + 1] as number) * height] as const))
       return { iris: s.iris, loops }
     })
+    const stitches = EYE_SPECS.map(s => {
+      const info = p.meshes[s.white] as GlPlayer['meshes'][number], v = new Float32Array(p.rt.memory.buffer, p.rt.p2l_mesh_vertices(p.rig, s.white), info.vertices * 2), at = (n: number) => [v[2 * n] as number, v[2 * n + 1] as number] as const
+      return { white: s.white, triangles: [...stitchSlit(info.indices, at, s.left, s.top - 2, s.bottom + 1), ...stitchSlit(info.indices, at, s.right, s.top - 2, s.bottom + 1)] }
+    })
     gl.bindTexture(gl.TEXTURE_2D, p.textures[0] as WebGLTexture)
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
     gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, output)
@@ -276,7 +304,12 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
       info.indices = new Indices([...info.indices, ...capLoops(loops)])
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, info.indexBuffer); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, info.indices, gl.STATIC_DRAW)
     }
-    return { patched: true, brows, eyes, highlightHoles: holes.map(h => h.loops.length), rect: [x0, y0, x1, y1] }
+    for (const { white, triangles } of stitches) {
+      const info = p.meshes[white] as GlPlayer['meshes'][number], Indices = info.indices.constructor as new (a: number[]) => Uint16Array | Uint32Array
+      info.indices = new Indices([...info.indices, ...triangles])
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, info.indexBuffer); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, info.indices, gl.STATIC_DRAW)
+    }
+    return { patched: true, brows, eyes, highlightHoles: holes.map(h => h.loops.length), slitTriangles: stitches.map(s => s.triangles.length / 3), rect: [x0, y0, x1, y1] }
   } finally {
     gl.bindFramebuffer(gl.FRAMEBUFFER, previous)
     gl.deleteFramebuffer(framebuffer)

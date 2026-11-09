@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addQuad, CUFF_POLY, FOREARM_POLY, inPolygon, mirrorPolygon, paintCapeCorner, triangleCoverage, type PartsPlayer } from './arm-parts'
+import { addQuad, CUFF_POLY, FOREARM_POLY, inPolygon, isStaticUpper, mirrorPolygon, paintCapeCorner, triangleCoverage, type PartsPlayer } from './arm-parts'
 
 describe('arm-parts', () => {
   it('前腕の範囲は前腕の中央を含み、上腕とマントを含まない', () => {
@@ -19,6 +19,15 @@ describe('arm-parts', () => {
     expect(paintCapeCorner(790, 722, [1, 2, 3])).toEqual([1, 2, 3])
     expect(paintCapeCorner(793.5, 731.5)).toEqual([38, 28, 34])
     expect(paintCapeCorner(760, 700)).toBeNull()
+  })
+  it('動かない上腕の暗い絵だけを消し、マントの色と輪郭線は残す', () => {
+    const away = () => [60, 55, 70] as const, nearCape = () => [150, 110, 200] as const
+    expect(isStaticUpper(755, 700, [60, 55, 70, 255], away)).toBe(true) // 上腕の黒
+    expect(isStaticUpper(755, 700, [150, 110, 200, 255], away)).toBe(false) // マントの紫
+    expect(isStaticUpper(755, 700, [130, 80, 60, 255], away)).toBe(false) // 裏地の茶
+    expect(isStaticUpper(755, 700, [15, 12, 18, 255], nearCape)).toBe(false) // マントのそばの輪郭線は残す
+    expect(isStaticUpper(755, 700, [15, 12, 18, 255], away)).toBe(true) // 上腕の中の皺の線は消す
+    expect(isStaticUpper(600, 700, [60, 55, 70, 255], away)).toBe(false) // 範囲外
   })
   it('三角形の覆う画素だけを立てる', () => {
     const uvs = new Float32Array([0.2, 0.2, 0.8, 0.2, 0.8, 0.8]), out = triangleCoverage(uvs, [0, 1, 2], 10, 10, 0, 0, 10, 10)
