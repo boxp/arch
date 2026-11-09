@@ -50,7 +50,7 @@ export const faces: Record<Emotion, Face> = {
 
 const wave = (t: number, fo: number): Key => ({ t, right: { up: 0, upS: 1, fo, foS: 1, ha: fo < -2 ? 0.35 : -0.3, haS: 1, elbowTo: [842, 691] } })
 const GUIDE: ArmPose = { up: 0, upS: 1, fo: -1.92, foS: 1, ha: 0.15, haS: 1, elbowTo: [820, 700] }
-// 制止: 肘を体の脇に置いたまま前腕を内側から立て、胸の前で掌を相手へ向ける。
+// 制止: 肘を外へ上げ、体の外側（肩の外、正本シートの掌を見せる構図）で前腕を立てて掌を相手へ向ける。手首を胸の前へ運ぶと前腕が上腕に折り重なって関節が見えないため、体の前は通さない（BOXP-482）。
 const HALT: ArmPose = { up: 0, upS: 1, fo: -2.5, foS: 1, ha: 0.1, haS: 1.1, elbowTo: [857, 677], front: true, art: 'palm', artW: 1 }
 const HALT_RISE: ArmPose = { up: 0, upS: 1, fo: -1.1, foS: 1, ha: 0.2, haS: 1.05, elbowTo: [815, 700], front: true, art: 'palm', artW: 0 }
 // 照れ: 体の前を通って手を口元へ運ぶ（外へ大回りしない）。終端の向きは従来と同じ。

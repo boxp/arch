@@ -106,6 +106,12 @@ describe('腕の変形', () => {
     expect(Math.hypot(elbow[0] - bone.E[0], elbow[1] - bone.E[1])).toBeGreaterThanOrEqual(60)
     expect(elbow[1]).toBeLessThanOrEqual(bone.E[1]) // 腰より下へ下げない
   })
+  it('制止の保持は体の外側で手を肩より高く上げる（胸の前へ折り畳まない）', () => {
+    const { elbow, wrist } = solveArm(bone, sample(clips.halt, 1.5).right)
+    expect(elbow[0]).toBeGreaterThan(bone.E[0])
+    expect(wrist[0]).toBeGreaterThan(bone.W[0])
+    expect(wrist[1]).toBeLessThan(bone.S[1])
+  })
   it('肘を外へ上げると袖が肩口を固定したまま持ち上がり、休止と内側への動作では動かない', () => {
     expect(sleeveAngle(bone, rest)).toBeCloseTo(0)
     expect(sleeveAngle(bone, sample(clips.shyHand, 2).right)).toBe(0)
