@@ -111,8 +111,8 @@ export function splitMesh(p: PartsPlayer, mesh: number, poly: Polygon, paint?: (
   return { uvs, uvBuffer, inside: upload(inside), outside: upload(outside), erased: upload(erased), rectUv: (x, y) => { const [u, v] = layer.forward(x, y); return [(u - x0) / w, (v - y0) / h] } }
 }
 
-/** アトラスの絵のうち、述語が真の画素を透明にする（体の層に残る下塗りの断片の除去）。 */
-export function eraseAtlas(p: PartsPlayer, mesh: number, region: Polygon, keep: (r: number, g: number, b: number, x: number, y: number) => boolean): number {
+/** アトラスの絵のうち、述語が真の画素を透明にする（体の層に残る下塗りの断片の除去）。fill を渡すと透明の代わりにその色で不透明に塗る。 */
+export function eraseAtlas(p: PartsPlayer, mesh: number, region: Polygon, keep: (r: number, g: number, b: number, x: number, y: number) => boolean, fill?: (x: number, y: number) => readonly [number, number, number]): number {
   const gl = p.gl, [width, height] = atlasSize(p), layer = layerOf(p, mesh, width, height), span = region.map(c => layer.forward(c[0], c[1]))
   const x0 = Math.max(0, Math.floor(Math.min(...span.map(s => s[0]))) - 2), y0 = Math.max(0, Math.floor(Math.min(...span.map(s => s[1]))) - 2), x1 = Math.min(width, Math.ceil(Math.max(...span.map(s => s[0]))) + 2), y1 = Math.min(height, Math.ceil(Math.max(...span.map(s => s[1]))) + 2), w = x1 - x0, h = y1 - y0
   const framebuffer = gl.createFramebuffer(), previous = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null, pixels = new Uint8Array(w * h * 4)
@@ -123,7 +123,9 @@ export function eraseAtlas(p: PartsPlayer, mesh: number, region: Polygon, keep: 
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const [mx, my] = layer.inverse(x + x0 + 0.5, y + y0 + 0.5), i = (y * w + x) * 4, a = pixels[i + 3] as number
     if (!a || !inPolygon(region, mx, my) || keep((pixels[i] as number) * 255 / a, (pixels[i + 1] as number) * 255 / a, (pixels[i + 2] as number) * 255 / a, mx, my)) continue
-    pixels[i] = pixels[i + 1] = pixels[i + 2] = pixels[i + 3] = 0; erased++
+    const color = fill?.(mx, my)
+    if (color) { pixels[i] = color[0]; pixels[i + 1] = color[1]; pixels[i + 2] = color[2]; pixels[i + 3] = 255 } else pixels[i] = pixels[i + 1] = pixels[i + 2] = pixels[i + 3] = 0
+    erased++
   }
   gl.bindTexture(gl.TEXTURE_2D, p.textures[0] as WebGLTexture); gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
   gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels)

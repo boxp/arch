@@ -34,8 +34,8 @@ const EYE_R: Vec = [631.5, 278]
 
 const CROSSFADE_SECONDS = 0.55
 const FORESHORTEN_AT = 2.1, FORESHORTEN_WIDTH = 1.05, FORESHORTEN_DEPTH = 0.8, FORESHORTEN_FADE = 0.5
-// 肘を外へ上げるとき、肩の広い袖（ケープ）を上腕の回転の一部だけ一緒に持ち上げる。肩口は動かさず、袖口ほど大きく回す。
-const SLEEVE_FOLLOW = 0.55, SLEEVE_FROM = 15, SLEEVE_TO = 130
+// 肘を外へ上げるとき、肩の広い袖（ケープ）を上腕と同じ角度で持ち上げる（袖は上腕の子）。追従が弱いと上腕が袖の裏へ潜り、小手が袖の端から直接生えて見える。肩口は動かさず、袖口ほど大きく回す。
+const SLEEVE_FOLLOW = 1, SLEEVE_FROM = 15, SLEEVE_TO = 130
 const REST: ArmPose = { up: 0, upS: 1, fo: 0, foS: 1, ha: 0, haS: 1 }
 const NO_BODY: BodyPose = { headX: 0, headY: 0, headZ: 0, bodyX: 0, bodyZ: 0, lean: 0, eyeX: 0, eyeY: 0 }
 
@@ -175,6 +175,7 @@ const ART: Record<HandArt, { file: string; w: number; h: number; anchor: Vec; sc
 /** マントの下に隠れていた上腕（生成素材）の配置。下端は肘に付いて動く。 */
 const UPPER_ART = { file: 'upper.png', top: [750, 640] as Vec, bottom: [761, 764] as Vec, halfWidth: 39 }
 const UPPER_ART_REACH = 114 // 肩の関節から素材の上端までの距離（休止時の top と同じ）
+const UPPER_ART_REACH_INWARD = 8 // 肘を体の前へ寄せたときの上端の距離。袖の裏まで伸ばし、棒の切り口を胴の上に見せない
 const UPPER_ART_INTO_CUFF = 30 // 上腕の下端の位置（正は肘より手の側）。下端の丸みを小手の裏へ入れ、途中のコマでも上腕が開口の手前で止まって見えないようにする（休止の絵の位置と同じ）
 const SEPARATE_AT = 0.02
 const partURL = (file: string) => new URL(`kohako/live2d/acting/${file}`, location.href).href
@@ -247,7 +248,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
         const a = armOf(bone), m = bone.mirror ? { ...a, up: -a.up, fo: -a.fo, ha: -a.ha, elbowTo: a.elbowTo ? mirrorX(a.elbowTo) : undefined } : a, [dx, dy] = swayOf(bone.arm), e = sub(solveArm(bone, m).elbow, bone.E)
         // 上腕は肩から肘へ向かう棒として張る（親子変形）。下端の丸みが肘の先になる。
         // 上端は肩の関節から肘へ向かう線の上に置く（肩の装甲の裏に隠れる）。肘がどちらへ動いても肩から生えて見える。
-        const elbow = solveArm(bone, m), intoCuff = add(elbow.elbow, scaleV(norm(sub(elbow.wrist, elbow.elbow)), UPPER_ART_INTO_CUFF)), b: Vec = (() => { const rest = add(place(UPPER_ART.bottom), e), w = smooth(0.05, 0.4, Math.abs(m.fo)); return [lerp(rest[0], intoCuff[0], w), lerp(rest[1], intoCuff[1], w)] })(), t = add(bone.S, scaleV(norm(sub(b, bone.S)), UPPER_ART_REACH)), along = norm(sub(b, t)), across: Vec = scaleV([-along[1] * side, along[0] * side], UPPER_ART.halfWidth)
+        const elbow = solveArm(bone, m), intoCuff = add(elbow.elbow, scaleV(norm(sub(elbow.wrist, elbow.elbow)), UPPER_ART_INTO_CUFF)), b: Vec = (() => { const rest = add(place(UPPER_ART.bottom), e), w = smooth(0.05, 0.4, Math.abs(m.fo)); return [lerp(rest[0], intoCuff[0], w), lerp(rest[1], intoCuff[1], w)] })(), inward = Math.max(0, bone.mirror ? elbow.elbow[0] - bone.E[0] : bone.E[0] - elbow.elbow[0]), t = add(bone.S, scaleV(norm(sub(b, bone.S)), lerp(UPPER_ART_REACH, UPPER_ART_REACH_INWARD, smooth(0, 50, inward)))), along = norm(sub(b, t)), across: Vec = scaleV([-along[1] * side, along[0] * side], UPPER_ART.halfWidth)
         ;[add(t, across), sub(t, across), sub(b, across), add(b, across)].forEach((c, i) => { out[2 * i] = c[0] + dx; out[2 * i + 1] = c[1] + dy })
       } })
       // 動き始めは元の上腕の絵を重ねて見せ、曲げるにつれて生成の上腕へ移す（絵の切り替わりで一瞬光らないように）。
@@ -258,8 +259,10 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     // 体の層の、腕の裏に隠れていた下塗りの断片を消す（腕を上げると肘の下に残って見える）。
     const smear = (mirror: boolean): number => {
       const box: Polygon = [[711, 743], [762, 743], [762, 795], [711, 795]], tanBox: Polygon = [[688, 750], [711, 750], [711, 795], [695, 795]]
+      // 肩の袖の裏に隠れていた胴の横の下塗り（横に引き伸ばした色の帯）。袖を持ち上げると四角いにじみとして見え、消すと背景が透けるので、髪の暗色で塗る。
+      const side: Polygon = [[696, 610], [725, 610], [729, 750], [674, 750], [683, 678], [696, 640]]
       const m = (poly: Polygon) => mirror ? mirrorPolygon(poly, CX) : poly
-      return eraseAtlas(pp, BODY, m(box), () => false) + eraseAtlas(pp, BODY, m(tanBox), (r, _g, b) => r <= b + 10)
+      return eraseAtlas(pp, BODY, m(box), () => false) + eraseAtlas(pp, BODY, m(tanBox), (r, _g, b) => r <= b + 10) + eraseAtlas(pp, BODY, m(side), () => false, (_x, y) => { const t = smooth(610, 750, y); return [lerp(38, 48, t), lerp(35, 54, t), lerp(50, 78, t)] })
     }
     const erased = smear(false) + smear(true)
     const right = makeSide(RIGHT), left = makeSide(LEFT)

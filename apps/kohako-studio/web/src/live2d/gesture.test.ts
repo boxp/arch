@@ -117,6 +117,9 @@ describe('腕の変形', () => {
     expect(sleeveAngle(bone, sample(clips.shyHand, 2).right)).toBe(0)
     const angle = sleeveAngle(bone, sample(clips.halt, 1.5).right)
     expect(angle).toBeLessThan(-0.1)
+    // 袖は上腕の子: 袖口の回転は上腕の回転と同じ（弱いと上腕が袖の裏へ潜って見えなくなる）
+    const pose = sample(clips.halt, 1.5).right, elbow = solveArm(bone, pose).elbow
+    expect(angle).toBeCloseTo(Math.atan2(elbow[1] - bone.S[1], elbow[0] - bone.S[0]) - Math.atan2(bone.E[1] - bone.S[1], bone.E[0] - bone.S[0]), 5)
     const shoulder = deformSleeve(bone, angle, bone.S[0], bone.S[1] + 5, bone.S[0], bone.S[1] + 5), tip = deformSleeve(bone, angle, 845, 695, 845, 695)
     expect(shoulder[1]).toBeCloseTo(bone.S[1] + 5)
     expect(tip[1]).toBeLessThan(695 - 20)
