@@ -5325,7 +5325,13 @@ reuse_prepare() {
                           (fn [& args]
                             (spit (str (lock-path (System/getenv "TEST_TICKET"))) other-lock)
                             (apply original args)))))
-      (prn (:repo-worktrees (prepare-run-workspace! (System/getenv "TEST_TICKET") (System/getenv "TEST_RUN"))))'
+      (let [workspace (prepare-run-workspace! (System/getenv "TEST_TICKET") (System/getenv "TEST_RUN"))
+            result (first (:repo-worktrees workspace))
+            prompt (workspace-prompt workspace)]
+        (when (:reuse-base-reason result)
+          (assert (clojure.string/includes? prompt "kept to preserve its verified studio dist"))
+          (assert (clojure.string/includes? prompt "switch to the correct base or PR branch before committing")))
+        (prn (:repo-worktrees workspace)))'
 }
 
 reuse_fixture() {
@@ -5431,10 +5437,42 @@ test_workspace_reuse_interplay() {
   git -C "$tmp/source" add .; prune_git -C "$tmp/source" commit -q -m public
   git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD
   git -C "$tmp/source" rev-list HEAD >"$tmp/known"
+  local before_stale; before_stale="$(git -C "$old" rev-parse HEAD) $(git -C "$old" branch --show-current) $(git -C "$old" status --porcelain)"
   reuse_lock "$tmp" BOXP-908 20200103T000000Z
   reuse_prepare "$tmp" BOXP-908 20200103T000000Z boxp/arch >"$tmp/o"
   assert_file_contains "$tmp/o" ':reuse-fallback "studio-dist-public-diff"'
-  [[ -f "$old/apps/kohako-studio/web/dist/copied.txt" ]] || fail 'run with stale dist changed'
+  [[ -f "$old/apps/kohako-studio/web/dist/copied.txt" && "$before_stale" == "$(git -C "$old" rev-parse HEAD) $(git -C "$old" branch --show-current) $(git -C "$old" status --porcelain)" ]] || fail 'run with stale dist changed'
+
+  # A pushed run commit that changes public keeps its matching verified dist.
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"
+  git -C "$tmp/source" remote set-url origin https://github.com/boxp/arch.git
+  mkdir -p "$tmp/source/apps/kohako-studio/web/public"
+  printf 'dist/\n' >"$tmp/source/.gitignore"
+  printf 'abcd' >"$tmp/source/apps/kohako-studio/web/public/copied.txt"
+  touch "$tmp/source/apps/kohako-studio/web/"{package.json,package-lock.json,vite.config.ts}
+  git -C "$tmp/source" add .; prune_git -C "$tmp/source" commit -q -m fixture
+  git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD
+  old="$ws/BOXP-910/20200101T000000Z/ghq/github.com/boxp/arch"
+  mkdir -p "$(dirname "$old")"
+  git -C "$tmp/source" worktree add -q -b codex-task-board/BOXP-910-20200101T000000Z "$old" HEAD
+  printf 'efgh' >"$old/apps/kohako-studio/web/public/copied.txt"
+  git -C "$old" add .; prune_git -C "$old" commit -q -m public
+  local old_head; old_head="$(git -C "$old" rev-parse HEAD)"
+  git -C "$old" rev-list HEAD >"$tmp/known"
+  dist="$old/apps/kohako-studio/web/dist"; mkdir -p "$dist/assets"
+  printf html >"$dist/index.html"; printf asset >"$dist/assets/main-Abc_1234.js"; printf efgh >"$dist/copied.txt"
+  reuse_lock "$tmp" BOXP-910 20200102T000000Z
+  reuse_prepare "$tmp" BOXP-910 20200102T000000Z boxp/arch >"$tmp/o"
+  assert_file_contains "$tmp/o" ':reused-from "20200101T000000Z"'
+  assert_file_contains "$tmp/o" ":reuse-base \"$old_head\""
+  assert_file_contains "$tmp/o" ':reuse-base-reason "studio-dist-keep-head"'
+  local audit="$tmp/state/runs/BOXP-910/20200102T000000Z/workspace-reuse.edn"
+  assert_file_contains "$audit" ':reused-from "20200101T000000Z"'
+  assert_file_contains "$audit" ":reuse-base \"$old_head\""
+  assert_file_contains "$audit" ':reuse-base-reason "studio-dist-keep-head"'
+  new="$ws/BOXP-910/20200102T000000Z/ghq/github.com/boxp/arch"
+  [[ ! -e "$old" && "$(git -C "$new" rev-parse HEAD)" == "$old_head" ]] || fail 'run HEAD was not preserved'
+  [[ "$(cat "$new/apps/kohako-studio/web/public/copied.txt")" == efgh && "$(cat "$new/apps/kohako-studio/web/dist/copied.txt")" == efgh ]] || fail 'public or dist changed'
 
   # The shared source checkout can sit far behind main. Rewinding a reused
   # worktree to it would delete tracked assets that the run then re-expands.

@@ -2247,7 +2247,7 @@
       (try
         (fs/create-dirs (run-dir ticket-id run-id))
         (spit (str (fs/path (run-dir ticket-id run-id) "workspace-reuse.edn"))
-              (pr-str (mapv #(select-keys % [:repo :reused-from :reuse-base :reuse-fallback :worktree-failed]) worktrees)))
+              (pr-str (mapv #(select-keys % [:repo :reused-from :reuse-base :reuse-base-reason :reuse-fallback :worktree-failed]) worktrees)))
         (catch Exception e (log! (str "workspace-reuse: audit-write-failed " (.getMessage e)))))
       {:workspace-dir (str workspace-dir) :repo-worktrees worktrees})))
 
@@ -2258,9 +2258,13 @@
     (str "Ticket run workspace: " (:workspace-dir workspace) "\n"
          (if (seq prepared)
            (str "Repository worktrees for this run:\n"
-                (str/join "" (map (fn [{:keys [repo path branch reused-from reuse-base]}]
+                (str/join "" (map (fn [{:keys [repo path branch reused-from reuse-base reuse-base-reason]}]
                                     (str "- " repo " -> " path " (branch " branch ")\n"
-                                         (when reused-from (str "  Reused from previous run " reused-from "; tracked files are clean at " reuse-base " on a new branch (source HEAD, or the previous run's default-branch base when that is newer). Regenerable ignored outputs (node_modules, dist, ...) may remain; reinstall or rebuild when relevant.\n"))))
+                                         (when reused-from (str "  Reused from previous run " reused-from "; tracked files are clean "
+                                                                (if reuse-base-reason
+                                                                  (str "at the previous run's own HEAD (" reuse-base "), kept to preserve its verified studio dist; it can include that run's already-pushed commits, so switch to the correct base or PR branch before committing.")
+                                                                  (str "at " reuse-base " on a new branch (source HEAD, or the previous run's default-branch base when that is newer)."))
+                                                                " Regenerable ignored outputs (node_modules, dist, ...) may remain; reinstall or rebuild when relevant.\n"))))
                                   prepared))
                 "Use these per-run worktrees for repository changes. Do not edit shared checkouts under /home/boxp/ghq for this task.\n")
            "No repository worktree was prepared for this ticket.\n")
@@ -5965,18 +5969,24 @@
                     source-head (str/trim (:out base-result))
                     base (if (or (not (zero? (:exit base-result))) (str/blank? source-head))
                            source-head
-                           (reuse-switch-base old source-head))]
+                           (reuse-switch-base old source-head))
+                    public-diff? (and (not (str/blank? base))
+                                      (fs/exists? (fs/path old studio-dist) {:nofollow-links true})
+                                      (not (zero? (:exit (command-result ["git" "-C" (str old) "diff" "--quiet" "HEAD" base "--" studio-public])))))
+                    keep-head? (and public-diff? (zero? (:exit (command-result ["git" "-C" (str old) "merge-base" "--is-ancestor" base "HEAD"]))))
+                    old-head-result (when keep-head? (command-result ["git" "-C" (str old) "rev-parse" "HEAD"]))
+                    old-head (some-> old-head-result :out str/trim)
+                    base (if keep-head? old-head base)
+                    reuse-base-reason (when keep-head? "studio-dist-keep-head")]
                 (cond
                   (:hold inspection) (reject (:hold inspection))
                   (not= repo (:repo inspection)) (reject "repo-mismatch")
                   (or (nil? common) (not= common (:external-common-dir inspection))) (reject "common-dir-mismatch")
                   (or (not (zero? (:exit base-result))) (str/blank? base)) (reject "git-error")
-                  ;; A kept dist copies tracked public files. If the switch changes them
-                  ;; the dist stops matching and the run would be held forever, so a run
-                  ;; with a dist that would go stale is left where it is.
-                  (and (fs/exists? (fs/path old studio-dist) {:nofollow-links true})
-                       (not (zero? (:exit (command-result ["git" "-C" (str old) "diff" "--quiet" "HEAD" base "--" studio-public])))))
-                  (reject "studio-dist-public-diff")
+                  (and keep-head? (or (not (zero? (:exit old-head-result))) (str/blank? old-head))) (reject "git-error")
+                  ;; Keep the run's HEAD when its own commits account for the public
+                  ;; difference; otherwise switching would make the verified dist stale.
+                  (and public-diff? (not keep-head?)) (reject "studio-dist-public-diff")
                   :else
                   (do
                     (fs/create-dirs (fs/parent target))
@@ -6009,9 +6019,10 @@
                                       (when (and (str/starts-with? old-branch prefix) (not= branch old-branch)
                                                  (run-id-instant (subs old-branch (count prefix))))
                                         (prune-run-branch! {:dry-run? false :gh-cache cache :stats (atom {:branches 0})} common repo old-branch)))
-                                    (log! (str "workspace-reuse: reuse ticket=" ticket-id " repo=" repo " from=" previous " to=" run-id))
-                                    {:repo repo :path (str target) :branch branch :reused-from previous :reuse-base base
-                                     :git-dirs (vec (distinct (remove str/blank? [(git-path target "--git-dir") (git-path target "--git-common-dir")]))) })))))))))))))))
+                                    (log! (str "workspace-reuse: reuse ticket=" ticket-id " repo=" repo " from=" previous " to=" run-id (when reuse-base-reason (str " reuse-base-reason=" reuse-base-reason))))
+                                    (cond-> {:repo repo :path (str target) :branch branch :reused-from previous :reuse-base base
+                                             :git-dirs (vec (distinct (remove str/blank? [(git-path target "--git-dir") (git-path target "--git-common-dir")]))) }
+                                      reuse-base-reason (assoc :reuse-base-reason reuse-base-reason)))))))))))))))))
       (catch Exception e
         (if @moved?
           (failed (str "Worktree reuse failed after move: " (one-line (.getMessage e))))
