@@ -45,6 +45,15 @@ describe('眉の組み替え', () => {
     expect(target.get(630, 246)).toEqual(ink) // 動く眉の層は残す
     expect(target.get(650, 240)).toEqual(clear) // 前髪の断片は除く
   })
+  it('前髪の束と交差する眉は髪の色で埋め、髪と肌の境目は混ぜない', () => {
+    const source = atlas(800, 400), hair: Rgba = [90, 90, 105, 255], skin: Rgba = [240, 220, 210, 255], ink: Rgba = [20, 20, 25, 255]
+    for (let y = 236; y < 258; y++) { source.set(530, y, y >= 245 && y <= 247 ? ink : hair); source.set(534, y, y >= 245 && y <= 247 ? ink : y < 246 ? hair : skin) }
+    for (const x of [530, 534]) for (let y = 245; y <= 247; y++) source.set(x + 100, y, ink)
+    const target = copy(source)
+    rebakeBrows(source, target, shifted(100), identity)
+    expect(target.get(530, 246)).toEqual(hair)
+    expect([hair, skin]).toContainEqual(target.get(534, 246))
+  })
   it('前髪に隠れた列（上下が暗い）は埋めない', () => {
     const source = atlas(800, 400), hair: Rgba = [40, 40, 50, 255], ink: Rgba = [20, 20, 25, 255]
     for (let y = 236; y < 258; y++) source.set(530, y, hair)
