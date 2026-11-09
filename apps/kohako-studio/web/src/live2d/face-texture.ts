@@ -32,6 +32,8 @@ const BANGS_BROW_BOX = { x0: 546, y0: 243, x1: 560, y1: 254 }
 /** 眉の層に混ざった髪の断片（線に接しているので色では分けられない）。 */
 const BROW_FRAGMENTS = [{ x0: 601, y0: 247, x1: 607, y1: 253 }] as const
 const SCLERA: Rgba = [246, 246, 250, 255]
+/** ハイライトの穴とみなす閉路の大きさの上限（モデル座標）。最大の穴は幅約 3、別の島の縁は幅 40 以上。 */
+const HIGHLIGHT_MAX = 8
 const STRAND_LUMA = 30, EDGE_LUMA = 60, EDGE_REACH = 12
 
 export function arcX(arc: Arc, y: number): number {
@@ -80,6 +82,45 @@ function eachTexel(atlas: Atlas, layer: Layer, box: { x0: number; y0: number; x1
     const [x, y] = layer.inverse(u, v)
     if (x >= box.x0 && x <= box.x1 && y >= box.y0 && y <= box.y1) fn(u, v, x, y)
   }
+}
+
+/** 三角形列の境界の辺をつないで閉路に分ける。 */
+export function boundaryLoops(indices: ArrayLike<number>): number[][] {
+  const edges = new Map<string, [number, number, number]>()
+  for (let i = 0; i + 2 < indices.length; i += 3) for (const [a, b] of [[indices[i], indices[i + 1]], [indices[i + 1], indices[i + 2]], [indices[i + 2], indices[i]]] as [number, number][]) {
+    const key = a < b ? `${a},${b}` : `${b},${a}`, e = edges.get(key); if (e) e[2]++; else edges.set(key, [a, b, 1])
+  }
+  const next = new Map<number, number[]>()
+  for (const [a, b, n] of edges.values()) if (n === 1) { next.set(a, [...(next.get(a) ?? []), b]); next.set(b, [...(next.get(b) ?? []), a]) }
+  const seen = new Set<number>(), loops: number[][] = []
+  for (const start of next.keys()) {
+    if (seen.has(start)) continue
+    const loop: number[] = []
+    for (let at: number | undefined = start; at !== undefined && !seen.has(at); at = (next.get(at) as number[]).find(n => !seen.has(n))) { seen.add(at); loop.push(at) }
+    loops.push(loop)
+  }
+  return loops
+}
+/** 虹彩のハイライトはメッシュの穴で、白目の層が透けて見える。小さな閉路だけを穴として三角形でふさぐ（輪郭や別の島は大きいので対象外）。 */
+export function highlightHoles(indices: ArrayLike<number>, at: (n: number) => readonly [number, number], maxSize: number): number[][] {
+  return boundaryLoops(indices).filter(loop => {
+    if (loop.length < 3) return false
+    const xs = loop.map(n => at(n)[0]), ys = loop.map(n => at(n)[1])
+    return Math.max(...xs) - Math.min(...xs) <= maxSize && Math.max(...ys) - Math.min(...ys) <= maxSize
+  })
+}
+export function capLoops(loops: number[][]): number[] { return loops.flatMap(l => l.slice(1, -1).flatMap((n, i) => [l[0] as number, n, l[i + 2] as number])) }
+/** 穴の多角形の中を白にし、すぐ外の半透明の縁も白へなじませる（座標はアトラスの画素）。 */
+export function paintHighlight(source: Atlas, target: Atlas, polygon: readonly (readonly [number, number])[]): number {
+  const inPolygon = (x: number, y: number) => { let c = false; for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) { const [xi, yi] = polygon[i] as readonly [number, number], [xj, yj] = polygon[j] as readonly [number, number]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c } return c }
+  const us = polygon.map(p => p[0]), vs = polygon.map(p => p[1])
+  let painted = 0
+  for (let v = Math.floor(Math.min(...vs)) - 2; v <= Math.ceil(Math.max(...vs)) + 2; v++) for (let u = Math.floor(Math.min(...us)) - 2; u <= Math.ceil(Math.max(...us)) + 2; u++) {
+    if (inPolygon(u + 0.5, v + 0.5)) { target.set(u, v, WHITE); painted++; continue }
+    const own = source.get(u, v), near = [[-1, 0], [1, 0], [0, -1], [0, 1]].some(([du, dv]) => inPolygon(u + 0.5 + (du as number), v + 0.5 + (dv as number)))
+    if (near && own[3] < 200) { target.set(u, v, over(own, WHITE)); painted++ }
+  }
+  return painted
 }
 
 /** 1 つの目: 輪郭線と下部の色を虹彩へ、上まぶたの影をまつ毛へ移し、白目の抜きを埋める。 */
@@ -177,7 +218,7 @@ export function rebakeBrows(source: Atlas, target: Atlas, brow: Layer, face: Lay
 
 type GlPlayer = {
   gl: WebGLRenderingContext; textures: WebGLTexture[]; rig: number
-  meshes: { vertices: number; uvs: Float32Array; texture: number }[]
+  meshes: { vertices: number; uvs: Float32Array; texture: number; indices: Uint16Array | Uint32Array; indexBuffer: WebGLBuffer }[]
   rt: { memory: WebAssembly.Memory; p2l_mesh_vertices(rig: number, mesh: number): number; p2l_alloc(n: number): number; p2l_dealloc(p: number, n: number): void; p2l_texture_png(rig: number, i: number, a: number, b: number, c: number): number }
 }
 function atlasSize(p: GlPlayer): [number, number] {
@@ -220,10 +261,22 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
     const source = view(original), target = view(output)
     const brows = rebakeBrows(source, target, of(BROW_MESH), of(FACE_MESH), of(BANGS_MESH))
     const eyes = EYE_SPECS.map(s => rebakeEye(source, target, s, of(s.lash), of(s.iris), of(s.white)))
+    const holes = EYE_SPECS.map(s => {
+      const info = p.meshes[s.iris] as GlPlayer['meshes'][number], v = new Float32Array(p.rt.memory.buffer, p.rt.p2l_mesh_vertices(p.rig, s.iris), info.vertices * 2)
+      const loops = highlightHoles(info.indices, n => [v[2 * n] as number, v[2 * n + 1] as number], HIGHLIGHT_MAX)
+      for (const loop of loops) paintHighlight(source, target, loop.map(n => [(info.uvs[2 * n] as number) * width, (info.uvs[2 * n + 1] as number) * height] as const))
+      return { iris: s.iris, loops }
+    })
     gl.bindTexture(gl.TEXTURE_2D, p.textures[0] as WebGLTexture)
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
     gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, output)
-    return { patched: true, brows, eyes, rect: [x0, y0, x1, y1] }
+    // テクスチャの差し替えが通ってから穴をふさぐ（途中で失敗したら元のメッシュのまま）。
+    for (const { iris, loops } of holes) {
+      const info = p.meshes[iris] as GlPlayer['meshes'][number], Indices = info.indices.constructor as new (a: number[]) => Uint16Array | Uint32Array
+      info.indices = new Indices([...info.indices, ...capLoops(loops)])
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, info.indexBuffer); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, info.indices, gl.STATIC_DRAW)
+    }
+    return { patched: true, brows, eyes, highlightHoles: holes.map(h => h.loops.length), rect: [x0, y0, x1, y1] }
   } finally {
     gl.bindFramebuffer(gl.FRAMEBUFFER, previous)
     gl.deleteFramebuffer(framebuffer)

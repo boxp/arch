@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { arcX, fitAffine, luma, over, rebakeBrows, rebakeEye, type Atlas, type EyeSpec, type Rgba } from './face-texture'
+import { arcX, boundaryLoops, capLoops, fitAffine, highlightHoles, luma, over, paintHighlight, rebakeBrows, rebakeEye, type Atlas, type EyeSpec, type Rgba } from './face-texture'
 
 const clear: Rgba = [0, 0, 0, 0]
 function atlas(width: number, height: number): Atlas & { data: Map<string, Rgba> } {
@@ -113,5 +113,35 @@ describe('目の組み替え', () => {
     const target = copy(source)
     rebakeEye(source, target, spec, lash, iris, white)
     expect(target.get(620, 283)).toEqual([255, 255, 255, 255])
+  })
+})
+
+describe('ハイライトの穴', () => {
+  // 外周 0-3 の四角の中に、穴 4-7 がある。穴の周りを 8 枚の三角形で囲む。
+  const ring = [0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7]
+  const points: [number, number][] = [[0, 0], [40, 0], [40, 40], [0, 40], [18, 18], [22, 18], [22, 22], [18, 22]]
+  const at = (n: number) => points[n] as [number, number]
+
+  it('小さな閉路だけを穴として拾い、外周はふさがない', () => {
+    expect(boundaryLoops(ring).map(l => [...l].sort((a, b) => a - b))).toEqual([[0, 1, 2, 3], [4, 5, 6, 7]])
+    expect(highlightHoles(ring, at, 8).map(l => [...l].sort((a, b) => a - b))).toEqual([[4, 5, 6, 7]])
+  })
+
+  it('ふさぐと穴の閉路がなくなる', () => {
+    const closed = [...ring, ...capLoops(highlightHoles(ring, at, 8))]
+    expect(closed.length).toBe(ring.length + 6)
+    expect(highlightHoles(closed, at, 8)).toEqual([])
+    expect(boundaryLoops(closed).length).toBe(1)
+  })
+
+  it('穴の中を白にし、縁の半透明は白へなじませ、離れた画素は変えない', () => {
+    const source = atlas(16, 16), target = atlas(16, 16), blue: Rgba = [40, 60, 200, 255]
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) { const p: Rgba = x >= 6 && x <= 9 && y >= 6 && y <= 9 ? clear : blue; source.set(x, y, p); target.set(x, y, p) }
+    source.set(5, 7, [40, 60, 200, 100]); target.set(5, 7, [40, 60, 200, 100])
+    paintHighlight(source, target, [[6, 6], [10, 6], [10, 10], [6, 10]])
+    expect(target.get(7, 7)).toEqual([255, 255, 255, 255])
+    expect(target.get(5, 7)[3]).toBeCloseTo(255, 6)
+    expect(target.get(5, 7)[0]).toBeGreaterThan(100)
+    expect(target.get(2, 2)).toEqual(blue)
   })
 })
