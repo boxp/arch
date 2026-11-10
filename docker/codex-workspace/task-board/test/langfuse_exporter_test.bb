@@ -1034,6 +1034,22 @@
       (is (str/includes? body "laterreplymarker") (str format))
       (is (not (str/includes? body "hunter123")) (str format)))))
 
+;; Regression (arch#14742 review): the template check is per occurrence. An unclosed opener (password: {{) followed
+;; later by the same name with a closed template (password: {{ secrets.X }}) is still a short symbol password: it
+;; withholds the lineage, and its later restatement is never sent.
+(deftest unclosed-template-opener-before-closed-template-withholds
+  (doseq [text ["password: {{\npassword: {{ secrets.X }}" "password: ${{\nnote\npassword: ${{ secrets.X }}"
+                "password: {%\npassword: {% x %}"]]
+    (is (true? (:unpinned? (lf/named-values text))) text))
+  (doseq [text ["password: ${{ secrets.X }}\npassword: ${{ secrets.Y }}"]]
+    (is (false? (:unpinned? (lf/named-values text))) text))
+  (doseq [format [:claude :codex]]
+    (let [{:keys [spans raw]} (prepared-session format "password: {{\npassword: {{ secrets.X }}"
+                                                "it is {{ , laterreplymarker")
+          gen (last (filter #(str/starts-with? (:name %) "generation:") raw))]
+      (is (str/starts-with? (attr-value gen "langfuse.observation.metadata.body_policy") "withheld_after_") (str format))
+      (is (not (str/includes? (pr-str spans) "laterreplymarker")) (str format)))))
+
 ;; Regression (arch#14742 review): a value of symbols only can be a real password (password: ==). A short one has no
 ;; word boundary to pin it by, so it withholds the lineage as before TD-12; the restatement is never sent.
 (deftest short-symbol-only-values-withhold

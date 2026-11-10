@@ -782,11 +782,19 @@
   "Not a credential by shape (BOXP-428 TD-12): an unquoted template opener whose expression the value scan cut off at
   the space, closed later on the same line (password: ${{ secrets.X }}, {{ .Values.x }}, {% x %}). The opener must be
   the whole value, unquoted (the match ends with it), and followed by a space and a closer on the line; a quoted or
-  unclosed opener (password: \"{{\", password: {{) is a value like any other (short symbols withhold the lineage)."
+  unclosed opener (password: \"{{\", password: {{) is a value like any other (short symbols withhold the lineage).
+  The match text carries no position, so every occurrence of it must be closed: an unclosed password: {{ followed
+  later by password: {{ secrets.X }} is not a template (arch#14742 review), and the short value withholds."
   [text m v]
   (boolean (and (re-matches #"\$?\{[{%]-?" v)
                 (str/ends-with? (str m) v)
-                (re-find (re-pattern (str (java.util.regex.Pattern/quote (str m)) "[ \\t]+[^\\r\\n]*?[}%]\\}")) text))))
+                (let [occurrence (.matcher (re-pattern (java.util.regex.Pattern/quote (str m))) text)
+                      closed (.matcher #"[ \t]+[^\r\n]*?[}%]\}" text)]
+                  (loop [seen? false]
+                    (if (.find occurrence)
+                      (do (.region closed (.end occurrence) (count text))
+                          (when (.lookingAt closed) (recur true)))
+                      seen?))))))
 
 (defn- grep-location?
   "A grep -n location (runtime-authorization.yaml:4:): the name is a file name with an extension and the value is the
@@ -844,16 +852,25 @@
             d (str/replace w escaped-space "$1")]
         (if (= d w) [w] [w d])))))
 
+(defn- open-template?
+  "An unquoted template opener ({{, {%) that no closer follows on its line (arch#14742 review): it is not an object
+  or a template expression but the value itself (password: {{ is a short symbol password and withholds the lineage).
+  A closed template ({{ .Values.x }}) is still scanned as a bracket."
+  [s]
+  (let [s (str/triml (str s))]
+    (boolean (and (re-find #"^\{[{%]" s)
+                  (not (re-find #"^\{[{%]-?[ \t]+[^\r\n]*?[}%]\}" (subs s 0 (min (count s) 4096))))))))
+
 (defn- match-values [kind m]
   (case kind
     :assignment (let [[head key] (re-find name-separator m)
                       tail (subs m (count head))
                       key (str/replace (str key) #"[\"'\\\s]" "")]
                   (cond (re-find #"^\s*[|>]" tail) (map str/trim (rest (str/split tail #"\r?\n|\\+n")))
-                        (re-find #"^\s*[\[{(]" tail) (collection-values tail)
-                        :else (let [v (first-value tail)] (when-not (setting? key v) [v]))))
+                        (and (re-find #"^\s*[\[{(]" tail) (not (open-template? tail))) (collection-values tail)
+                        :else (let [v (first-value (str/triml tail))] (when-not (setting? key v) [v]))))
     :flag (let [tail (str/replace-first m flag-head "")]
-            (if (re-find #"^[\[{(]" tail) (collection-values tail) (shell-values tail)))
+            (if (and (re-find #"^[\[{(]" tail) (not (open-template? tail))) (collection-values tail) (shell-values tail)))
     :cli-password (if (re-find #"(?i)^(?:-u|--user)" m)
                     (let [rest (str/replace-first m #"(?i)^(?:-u|--user)[ \t=]*" "")]
                       (if (re-find opening-quote rest)
@@ -866,7 +883,7 @@
     :env-entry (let [matcher (re-matcher env-value-key m)]
                  (when (.find matcher)
                    (let [tail (str/triml (subs m (.end matcher)))]
-                     (if (re-find #"^[\[{(]" tail) (collection-values tail) [(first-value tail)]))))
+                     (if (and (re-find #"^[\[{(]" tail) (not (open-template? tail))) (collection-values tail) [(first-value tail)]))))
     nil))
 
 (def ^:private tag-close #"(?i)>|&gt;|&#0*62;|&#x0*3e;|\\+u003e")
@@ -946,7 +963,11 @@
                   s)
               pos (loop [p (+ (.start m) (count head))]
                     (if (and (< p n) (#{\space \tab} (.charAt text p))) (recur (inc p)) p))]
-          (if (and head (< pos n) (contains? closers (.charAt text pos)))
+          ;; An unquoted template opener ({{, {%) with no closer on its line is not an object: it is the value
+          ;; itself (password: {{ is a short symbol password and withholds; arch#14742 review). A closed template
+          ;; expression ({{ .Values.x }}) is still scanned as a bracket.
+          (if (and head (< pos n) (contains? closers (.charAt text pos))
+                   (not (open-template? (subs text pos (min n (+ pos 4096))))))
             (let [end (max (.end m) (bracket-end text pos n))]
               (recur (conj acc (subs text (.start m) end)) end))
             (recur (conj acc s) covered))))
