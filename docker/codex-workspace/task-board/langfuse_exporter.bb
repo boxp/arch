@@ -773,12 +773,18 @@
 (defn- reference? [v]
   (boolean (or (re-matches #"\[REDACTED:[a-z_-]+\]" v)
                ;; Not a credential by shape (BOXP-428 TD-12): no letter or digit (ANTHROPIC_API_KEY:-, ==), a template or
-               ;; expression start whose rest the value scan cut off (password: ${{ secrets.X }}, {{ .Values.x }}),
-               ;; a printf directive (n_tokens = %d) or a grep -n location (runtime-authorization.yaml:4:).
+               ;; expression start whose rest the value scan cut off (password: ${{ secrets.X }}, {{ .Values.x }}).
+               ;; A printf directive (password: %d) or digits with a colon (password: 1234:) can be a real password,
+               ;; so they are pinned like any value (a later %d is over-masked as a whole word).
                (not (re-find #"[\p{L}\p{N}]" v))
-               (re-find #"^\$?\{[{%]" v)
-               (re-matches #"%[-+ #0]*\d*(?:\.\d+)?[a-zA-Z]" v)
-               (re-matches #"\d+:" v))))
+               (re-find #"^\$?\{[{%]" v))))
+
+(defn- grep-location?
+  "A grep -n location (runtime-authorization.yaml:4:): the name is a file name with an extension and the value is the
+  line number with its colon. Only this shape is skipped; password: 1234: is pinned (BOXP-428 TD-12)."
+  [match v]
+  (boolean (and (re-matches #"\d+:" v)
+                (re-find #"\.[A-Za-z0-9]{1,10}[\"']?$" (str/trim (str (second (re-find name-separator (str match)))))))))
 
 (defn- variable-like? [v]
   (boolean (re-matches #"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?" v)))
@@ -964,9 +970,11 @@
                              :flag (bracket-matches pattern text #(re-find flag-head %))
                              :env-entry (bracket-matches pattern text env-value-head)
                              (re-seq pattern text))
-                     v (match-values kind (if (vector? match) (first match) match))
+                     :let [m (if (vector? match) (first match) match)]
+                     v (match-values kind m)
                      :let [v (str/trim (str v))]
-                     :when (and (not (str/blank? v)) (not (reference? v)))]
+                     :when (and (not (str/blank? v)) (not (reference? v))
+                                (not (and (= kind :assignment) (grep-location? m v))))]
                  v)
                (for [entry (reversed-bracket-entries text)
                      v (match-values :env-entry entry)

@@ -968,6 +968,9 @@
                           ["same_site_cookie_attribute = \"lax\"" "lax"]
                           ["{\"auth\":38}" "38"]
                           ["password: 5" "5"]
+                          ;; A printf directive or digits with a colon can be a real password (P0 on arch#14742).
+                          ["password: %d" "%d"]
+                          ["password: 1234:" "1234:"]
                           ["<password>abc</password>" "abc"]]]
     (let [{:keys [spans failed raw]} (prepared-session format result (str "it is " value ", laterreplymarker"))
           body (pr-str spans)
@@ -999,7 +1002,8 @@
 ;; BOXP-428 TD-12: values that cannot be a credential by shape are neither pinned nor withheld.
 (deftest reference-shaped-named-values-pin-nothing
   (doseq [text ["password: ${{ secrets.DB_PASSWORD }}" "CLOUDFLARE_API_TOKEN: ${{ secrets.CF }}"
-                "key=${ANTHROPIC_API_KEY:-}" "n_tokens = %d" "runtime-authorization.yaml:4:  kind: Role" "password: =="]]
+                "key=${ANTHROPIC_API_KEY:-}" "runtime-authorization.yaml:4:  kind: Role"
+                "src/secret_store.py:12:  kind: Role" "password: =="]]
     (let [{:keys [values words unpinned?]} (lf/named-values text)]
       (is (false? unpinned?) text)
       (is (empty? values) text)
