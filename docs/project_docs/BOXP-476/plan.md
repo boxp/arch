@@ -72,3 +72,4 @@ Web リグ（kohako-full-v11r）に、発話内容に合わせた表情と腕・
 - 制止は本人採用の arm-onepiece-7fa4a2f を保持し、照れにも同じ「1 枚の腕の絵をフェードで差し替え、肩を支点に回す」方式を使う。
 - 照れの腕は Gemini で 3 call 生成（1 回目は手が外へ上がり不採用、2 回目は肩と口の位置関係が合わず不採用、3 回目を位置ガイド付きで採用）。新枠の推計累計は約 US$0.43（約 73 円、170 円/USD 換算）/上限 1,000 円。来歴は Vault の live2d/gen/boxp476/td06s/。
 - 候補 arm-shy-a97beaf（タグ kohako-studio-candidate/arm-shy-a97beaf）を一覧へ追加。独立実操作判定の結果で状態を更新する。通常 v11r は不変。
+- 候補 arm-shy-a97beaf は照れの独立実操作判定で不合格（拳が大きく鼻先まで覆う）。是正版 arm-shy-4b6f3fc（タグ kohako-studio-candidate/arm-shy-4b6f3fc、生成0回、縮尺0.31→0.28で拳を口元へ）を試作として追加。通常 v11r は不変。
