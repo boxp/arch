@@ -133,14 +133,29 @@
   (let [[first-char & others] (map encoded-char (code-points value))]
     (str/join (cons (str/replace first-char "\\\\{1,255}" "(?<!\\\\)\\\\+") others))))
 
+;; A named value of 1-3 characters (password: q7z, "auth": 38) is pinned as a whole word: masking it inside longer
+;; words would blank ordinary text (old, new, id), and withholding the lineage for it hid whole runs whose tool
+;; output was a test log (PASS: old) or a config file (same_site_cookie_attribute = "lax") (BOXP-428 TD-12).
+(defrecord WordValue [v])
+(defn value-text [x] (if (instance? WordValue x) (:v x) x))
+;; A word boundary is an ASCII letter, digit or _ on neither side; an escape (\n, \u0020, %20) before the value is a
+;; boundary. Non-ASCII letters do not join the word: Japanese has no spaces, so 秘密はq7zです repeats the value q7z
+;; (lolice#1157 review). A non-ASCII value is then also masked inside longer non-ASCII text (over-masking, not a leak).
+(def ^:private word-before "(?:(?<![A-Za-z0-9_])|(?<=\\\\[nrtbf])|(?<=\\\\u[0-9a-fA-F]{4})|(?<=%[0-9a-fA-F]{2}))")
+(def ^:private word-after "(?![A-Za-z0-9_])")
+
 (def values-pattern
   "One alternation, longest first, so a later value cannot rewrite the mark of an earlier one.
-  Any length matches inside a longer word: the value can be part of it, and a blanked word costs less than a leak."
+  Any length matches inside a longer word: the value can be part of it, and a blanked word costs less than a leak.
+  A WordValue matches only as a whole word."
   (memoize
    (fn [values]
      (when (seq values)
        (re-pattern
-        (str/join "|" (map value-pattern (sort-by count > values))))))))
+        (str/join "|" (map (fn [x] (if (instance? WordValue x)
+                                       (str word-before "(?:" (value-pattern (:v x)) ")" word-after)
+                                       (value-pattern x)))
+                             (sort-by (comp count value-text) > values))))))))
 
 (defn entropy-secret?
   "Ids such as run ids and UUIDs have only short hyphen-separated segments; a token has a
@@ -704,8 +719,8 @@
 ;; Values that a name-based known format named (password: x, --token x, -u user:x, env entries). Masking them only
 ;; in place leaves a bare restatement elsewhere in the run readable, so the exporter masks the same value in every
 ;; field of the run (exact text and its serialized escapes; other transforms are the accepted residual,
-;; THREAT_MODEL 2). A value too short to mask without blanking ordinary words, or too long or too many to mask,
-;; is unpinned: in a tool result it withholds the later bodies of the lineage.
+;; THREAT_MODEL 2). A value of 1-3 characters is pinned as a whole word (WordValue). A value too long or too many to
+;; mask is unpinned: in a tool result it withholds the later bodies of the lineage.
 (def pin-kinds #{:env-entry :flag :cli-password :assignment})
 (def min-pinned-length 4)
 (def max-pinned-length 256)
@@ -758,7 +773,39 @@
 ;; starting with $ (password: $hunterhorse): it is pinned like any value (masking a later ${VAR} is a harmless
 ;; over-mask), and when it is too short to pin it does not withhold, since it is most likely a reference.
 (defn- reference? [v]
+  ;; A value of symbols only (password: ==) can be a real password: it is pinned when long enough, and a short one
+  ;; withholds the lineage (named-values), since a whole-word match cannot bound it. A printf directive (password: %d)
+  ;; or digits with a colon (password: 1234:) are pinned like any value (a later %d is over-masked as a whole word).
+  ;; A value that merely starts like a template ("{{hunter123") is pinned too (BOXP-428 TD-12); only a whole
+  ;; template expression is skipped (template-expression?).
   (boolean (re-matches #"\[REDACTED:[a-z_-]+\]" v)))
+
+(defn- template-expression?
+  "Not a credential by shape (BOXP-428 TD-12): an unquoted template opener whose expression the value scan cut off at
+  the space, closed later on the same line (password: ${{ secrets.X }}, {{ .Values.x }}, {% x %}). The opener must be
+  the whole value, unquoted (the match ends with it), and followed by a space and a closer on the line; a quoted or
+  unclosed opener (password: \"{{\", password: {{) is a value like any other (short symbols withhold the lineage).
+  The match text carries no position, so every occurrence of it must be closed: an unclosed password: {{ followed
+  later by password: {{ secrets.X }} is not a template (arch#14742 review), and the short value withholds. The closer
+  must come before any other opener: in password: {{ note password: {{ secrets.X }} the closer belongs to the second
+  template, so the first opener is unclosed (arch#14742 review)."
+  [text m v]
+  (boolean (and (re-matches #"\$?\{[{%]-?" v)
+                (str/ends-with? (str m) v)
+                (let [occurrence (.matcher (re-pattern (java.util.regex.Pattern/quote (str m))) text)
+                      closed (.matcher #"[ \t]+(?:[^\r\n{]|\{(?![{%]))*?[}%]\}" text)]
+                  (loop [seen? false]
+                    (if (.find occurrence)
+                      (do (.region closed (.end occurrence) (count text))
+                          (when (.lookingAt closed) (recur true)))
+                      seen?))))))
+
+(defn- grep-location?
+  "A grep -n location (runtime-authorization.yaml:4:): the name is a file name with an extension and the value is the
+  line number with its colon. Only this shape is skipped; password: 1234: is pinned (BOXP-428 TD-12)."
+  [match v]
+  (boolean (and (re-matches #"\d+:" v)
+                (re-find #"\.[A-Za-z0-9]{1,10}[\"']?$" (str/trim (str (second (re-find name-separator (str match)))))))))
 
 (defn- variable-like? [v]
   (boolean (re-matches #"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?" v)))
@@ -809,16 +856,26 @@
             d (str/replace w escaped-space "$1")]
         (if (= d w) [w] [w d])))))
 
+(defn- open-template?
+  "An unquoted template opener ({{, {%) that no closer follows on its line (arch#14742 review): it is not an object
+  or a template expression but the value itself (password: {{ is a short symbol password and withholds the lineage).
+  A closed template ({{ .Values.x }}) is still scanned as a bracket; a closer after another opener on the line closes
+  that opener, not this one ({{ note {{ x }} is open)."
+  [s]
+  (let [s (str/triml (str s))]
+    (boolean (and (re-find #"^\{[{%]" s)
+                  (not (re-find #"^\{[{%]-?[ \t]+(?:[^\r\n{]|\{(?![{%]))*?[}%]\}" (subs s 0 (min (count s) 4096))))))))
+
 (defn- match-values [kind m]
   (case kind
     :assignment (let [[head key] (re-find name-separator m)
                       tail (subs m (count head))
                       key (str/replace (str key) #"[\"'\\\s]" "")]
                   (cond (re-find #"^\s*[|>]" tail) (map str/trim (rest (str/split tail #"\r?\n|\\+n")))
-                        (re-find #"^\s*[\[{(]" tail) (collection-values tail)
-                        :else (let [v (first-value tail)] (when-not (setting? key v) [v]))))
+                        (and (re-find #"^\s*[\[{(]" tail) (not (open-template? tail))) (collection-values tail)
+                        :else (let [v (first-value (str/triml tail))] (when-not (setting? key v) [v]))))
     :flag (let [tail (str/replace-first m flag-head "")]
-            (if (re-find #"^[\[{(]" tail) (collection-values tail) (shell-values tail)))
+            (if (and (re-find #"^[\[{(]" tail) (not (open-template? tail))) (collection-values tail) (shell-values tail)))
     :cli-password (if (re-find #"(?i)^(?:-u|--user)" m)
                     (let [rest (str/replace-first m #"(?i)^(?:-u|--user)[ \t=]*" "")]
                       (if (re-find opening-quote rest)
@@ -831,7 +888,7 @@
     :env-entry (let [matcher (re-matcher env-value-key m)]
                  (when (.find matcher)
                    (let [tail (str/triml (subs m (.end matcher)))]
-                     (if (re-find #"^[\[{(]" tail) (collection-values tail) [(first-value tail)]))))
+                     (if (and (re-find #"^[\[{(]" tail) (not (open-template? tail))) (collection-values tail) [(first-value tail)]))))
     nil))
 
 (def ^:private tag-close #"(?i)>|&gt;|&#0*62;|&#x0*3e;|\\+u003e")
@@ -903,9 +960,19 @@
           (recur acc covered)
         (let [s (.group m)
               head (head-of s)
+              ;; ${NAME:-default} (also :=, :?, :+): the operator is not part of the value; the default after it is
+              ;; (BOXP-428 TD-12: ${ANTHROPIC_API_KEY:-} names no value, ${API_TOKEN:-x} names x).
+              s (if (and head (>= (.start m) 2) (= "${" (subs text (- (.start m) 2) (.start m)))
+                         (str/ends-with? head ":") (< (count head) (count s)) (#{\- \= \? \+} (.charAt s (count head))))
+                  (str head (subs s (inc (count head))))
+                  s)
               pos (loop [p (+ (.start m) (count head))]
                     (if (and (< p n) (#{\space \tab} (.charAt text p))) (recur (inc p)) p))]
-          (if (and head (< pos n) (contains? closers (.charAt text pos)))
+          ;; An unquoted template opener ({{, {%) with no closer on its line is not an object: it is the value
+          ;; itself (password: {{ is a short symbol password and withholds; arch#14742 review). A closed template
+          ;; expression ({{ .Values.x }}) is still scanned as a bracket.
+          (if (and head (< pos n) (contains? closers (.charAt text pos))
+                   (not (open-template? (subs text pos (min n (+ pos 4096))))))
             (let [end (max (.end m) (bracket-end text pos n))]
               (recur (conj acc (subs text (.start m) end)) end))
             (recur (conj acc s) covered))))
@@ -944,9 +1011,11 @@
                              :flag (bracket-matches pattern text #(re-find flag-head %))
                              :env-entry (bracket-matches pattern text env-value-head)
                              (re-seq pattern text))
-                     v (match-values kind (if (vector? match) (first match) match))
+                     :let [m (if (vector? match) (first match) match)]
+                     v (match-values kind m)
                      :let [v (str/trim (str v))]
-                     :when (and (not (str/blank? v)) (not (reference? v)))]
+                     :when (and (not (str/blank? v)) (not (reference? v)) (not (template-expression? text m v))
+                                (not (and (= kind :assignment) (grep-location? m v))))]
                  v)
                (for [entry (reversed-bracket-entries text)
                      v (match-values :env-entry entry)
@@ -958,10 +1027,16 @@
                      :when (not (reference? v))]
                  v))
         found (distinct (mapcat decoded-forms found))
-        unpinned? (boolean (or (some #(and (< (count %) min-pinned-length) (not (variable-like? %))) found)
-                               (some #(> (count %) max-pinned-length) found)
+        short-symbols? (fn [v] (and (< (count v) min-pinned-length) (not (re-find #"[\p{L}\p{N}]" v))))
+        unpinned? (boolean (or (some #(> (count %) max-pinned-length) found)
+                               ;; A short value of symbols only (password: ==) has no word boundary to pin it by and
+                               ;; masking it everywhere would blank operators (a == b): it withholds the lineage.
+                               (some short-symbols? found)
                                (> (count found) max-pinned-values)))]
-    {:values (vec (filter #(<= min-pinned-length (count %) max-pinned-length) found)) :unpinned? unpinned?}))
+    {:values (vec (filter #(<= min-pinned-length (count %) max-pinned-length) found))
+     ;; Shorter values are pinned as whole words; a short $X form is most likely a reference and is not pinned.
+     :words (vec (filter #(and (< (count %) min-pinned-length) (not (variable-like? %)) (not (short-symbols? %))) found))
+     :unpinned? unpinned?}))
 
 (def withheld-model-output "[withheld: the session saw a known source or a known format]")
 (def withheld-tool-output "[withheld: sensitive path or command]")
@@ -991,6 +1066,10 @@
     :header (let [v (str/replace (str/trim (str (second (str/split m #":" 2)))) #"(?i)^(?:bearer|basic|token|digest)\s+" "")]
               (not (placeholder-credential? (first (str/split v #"\s+")))))
     :url-credentials (not (placeholder-credential? (second (re-find #":([^:@]*)@$" m))))
+    ;; A prefix on an ordinary identifier (npm_config_cache: lower-case words joined by _ or -) or a short word (sk-inet)
+    ;; is masked in place but does not withhold what follows (BOXP-428 TD-12); an issued key does.
+    :provider-key (let [body (str/replace m #"^(?:sk-lf-|pk-lf-|sk-|ghp_|gho_|ghs_|ghu_|github_pat_|xox[baprs]-|npm_|glpat-)" "")]
+                    (not (or (< (count body) 8) (re-matches #"[a-z]+(?:[_-][a-z]+)+" body))))
     true))
 
 (defn- exposure? [output]
@@ -1295,7 +1374,8 @@
   (let [values (->> spans
                     (mapcat :attributes)
                     (filter #(contains? #{"langfuse.observation.input" "langfuse.observation.output"} (:key %)))
-                    (mapcat #(:values (named-values (get-in % [:value :stringValue]))))
+                    (mapcat #(let [{:keys [values words]} (named-values (get-in % [:value :stringValue]))]
+                               (concat values (map ->WordValue words))))
                     distinct vec)]
     (if (> (count values) max-run-pinned-values) :overflow values)))
 
