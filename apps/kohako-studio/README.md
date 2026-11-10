@@ -11,3 +11,9 @@ BFF は Owner 認証用に `KOHAKO_ACCESS_TEAM_DOMAIN`、`KOHAKO_ACCESS_AUD`、`
 試作は Studio と Web リグ画面の選択欄で比較できます。クエリなしでは最新の試作 v12（担当不採用・本人確認用）を表示し、v0〜v3、v5、v6、v11 に戻せます。v4、v7〜v10 は p2lrt が消失したため比較画像と不採用理由を表示します。
 
 表情と動作の比較版は `/kohako/live2d.html?acting=1`（手動）と `/kohako/studio.html?acting=1`（会話連動）で開けます。クエリなしの表示は変わりません。文単位の感情はルールベースで判定し（`web/src/live2d/acting.ts`）、腕・表情は全身 v11r の頂点出力を描画直前に変形して足します（`web/src/live2d/gesture.ts`）。別 LLM による判定や新規素材は使っていません。
+
+## 試作候補（固定版）
+
+試作は通常版や `?acting=1` を上書きせず、`candidates/candidates.json` に候補として追加します（既存 ID の commit は差し替えない）。各候補の commit はタグ `kohako-studio-candidate/<id>` で保持し、CI の `candidates/fetch.sh` がその版の `web/` を取り出し、Docker の candidates ステージが `/kohako/candidates/<id>/` 用に個別ビルドします。候補ごとの JS と acting 素材は別パスで、モデル v11r・runtime・静止表情は通常版と同じ blob であることを fetch 時に検証して共用します。API は nginx で `/kohako/api/` へ書き換え、認証は通常と同じです。一覧は `/kohako/candidates.html`（Studio のフッターからリンク）。
+
+追加手順: commit をタグ `kohako-studio-candidate/<id>` で push → `candidates.json` に id・commit・状態・試した動作・問題点を追記 → 通常の PR。
