@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BAND_ART, bandGrid, bandPoint, handSwap, BENT_ART, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { BAND_ART, bandElbowRow, bandGrid, bandPoint, handSwap, BENT_ART, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -344,6 +344,12 @@ describe('連続腕の帯メッシュ（TD-06/07 段階①: 制止のみ）', ()
   it('帯は素材の金の輪（筒の口）の手前で切り、紫の小手は使わない', () => {
     expect(BAND_ART.cut).toBeLessThan(510)
     expect(Math.max(...bandGrid().rows)).toBe(BAND_ART.cut)
+  })
+  it('帯は肘のしわの行で上腕側と前腕側に分かれる（上腕側は袖の表地の裏に描く。行が見つからず全体が手前になる退行を防ぐ）', () => {
+    const rows = bandGrid().rows, i = bandElbowRow(rows)
+    expect(i).toBeGreaterThan(0)
+    expect(i).toBeLessThan(rows.length - 1)
+    expect(Math.abs((rows[i] as number) - BAND_ART.elbow[1])).toBeLessThanOrEqual(4)
   })
   it('肘をまたいで隣り合う格子点は連続している（絵が切れない・跳ばない）', () => {
     const grid = bandGrid()

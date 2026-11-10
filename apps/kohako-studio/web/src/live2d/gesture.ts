@@ -232,6 +232,15 @@ export function bandGrid(): { points: Vec[]; columns: number; rows: number[] } {
   const sorted = [...new Set(rows.filter(y => y <= A.cut).concat([A.cut]))].sort((a, b) => a - b), xs = [0, 32, 64, 96, 128, 160, 192]
   return { points: sorted.flatMap(y => xs.map(x => [x, y] as Vec)), columns: xs.length, rows: sorted }
 }
+/**
+ * 帯を上腕側（袖の表地の裏）と前腕側（表地の手前）へ分ける格子の行。肘のしわ（elbow[1]）に最も近い行で、必ず 1 以上・最終行未満を返す。
+ * 3e388e8a までは indexOf(elbow[1] - 4) で探しており、該当行が無く -1 になって帯全体が表地の手前に描かれていた（上腕がケープに貼り付いて見えた原因、TD-06）。
+ */
+export function bandElbowRow(rows: readonly number[]): number {
+  let best = 1
+  rows.forEach((y, i) => { if (Math.abs(y - BAND_ART.elbow[1]) < Math.abs((rows[best] as number) - BAND_ART.elbow[1])) best = i })
+  return Math.min(Math.max(best, 1), rows.length - 2)
+}
 const cross2 = (a: Vec, v: Vec) => a[0] * v[1] - a[1] * v[0]
 /** 帯の肘のしわを置くモデル座標（v11r の小手の支点から上腕側へ bendBack 戻した点）と前腕の向き。 */
 export function bandBend(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose: ArmPose): { bend: Vec; foreDir: Vec } {
@@ -346,7 +355,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       if (bone === RIGHT) {
         const grid = bandGrid(), texture = later(BAND_ART.file, () => { bandLoaded = true }), uvs = new Float32Array(grid.points.flatMap(([x, y]) => [x / BAND_ART.w, y / BAND_ART.h])), cols = grid.columns
         const triangles = (from: number, to: number) => { const out: number[] = []; for (let r = from; r < to; r++) for (let c = 0; c + 1 < cols; c++) { const a = r * cols + c, b = a + 1, d = a + cols, e = d + 1; out.push(a, b, e, a, e, d) } return out }
-        const elbowRow = grid.rows.indexOf(BAND_ART.elbow[1] - 4), make = (from: number, to: number) => {
+        const elbowRow = bandElbowRow(grid.rows), make = (from: number, to: number) => {
           const mesh = addMesh(pp, uvs, triangles(from, to), texture)
           synth.set(mesh.index, { base: bone.arm, pointer: mesh.pointer, count: grid.points.length, opacity: () => bandOn(bone) ? 1 : 0, write(out) { const a = armOf(bone), [dx, dy] = swayOf(bone.arm); grid.points.forEach((q, i) => { const v = bandPoint(bone, a, q); out[2 * i] = v[0] + dx; out[2 * i + 1] = v[1] + dy }) } })
           return mesh.index
