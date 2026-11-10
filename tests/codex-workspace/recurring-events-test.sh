@@ -515,9 +515,9 @@ if command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
   chmod 0755 "${tmp}"
   sudo install -d -o boxp -g boxp -m 0755 "${entrypoint_vault}"
   # 既存 registry に別 job と無効化済みの seed job があっても、足りない seed job だけを 1 回足す
-  sudo install -d -o boxp -g boxp -m 0755 "${entrypoint_vault}/Infrastructure/Codex Cron"
+  sudo -u boxp install -d -m 0755 "${entrypoint_vault}/Infrastructure/Codex Cron"
   printf '%s\n' '{:version 1 :jobs [{:id "existing" :enabled true :runner "command" :command "true" :schedule "0 * * * *"} {:id "recurring-events-dry-run" :enabled false :schedule "1 2 * * *"}]}' \
-    | sudo tee "${entrypoint_vault}/Infrastructure/Codex Cron/jobs.edn" >/dev/null
+    | sudo -u boxp tee "${entrypoint_vault}/Infrastructure/Codex Cron/jobs.edn" >/dev/null
   sudo env \
     CODEX_TASK_BOARD_VAULT="${entrypoint_vault}" \
     CODEX_WORKSPACE_RECURRING_EVENTS_SEED="${ROOT_DIR}/docker/codex-workspace/recurring-events/vault-seed" \
