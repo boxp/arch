@@ -296,6 +296,22 @@ describe('実行時の動作の割り込み', () => {
     const atSwitched = joyArmPoint(JOY_ARM.fistPx, joyArmMotion(JOY_SWITCH_SECONDS, 0))
     expect(atSwitched[1]).toBeGreaterThan(fist[1] + 50)
   })
+  it('喜びの低い位置（差し替えの瞬間）は肘を伸ばして待機の腕に重なり、そこから肘を曲げて拳を持ち上げる', () => {
+    // d4f88bee は肘を曲げたまま沈めたため、差し替えの瞬間に拳が待機の手から約 300 離れて現れた（td06j-review-d4f88be）
+    const restE: [number, number] = [760, 733], restW: [number, number] = [844, 928]
+    for (const m of [joyArmMotion(0, 0), joyArmMotion(JOY_SWITCH_SECONDS, 0), joyArmMotion(1, 1)]) {
+      expect(distance(joyArmPoint(JOY_ARM.elbowPx, m), restE)).toBeLessThan(35)
+      expect(distance(joyArmPoint(JOY_ARM.fistPx, m), restW)).toBeLessThan(35)
+      expect(distance(joyArmPoint(JOY_ARM.fistPx, m, true), [2 * 572 - restW[0], restW[1]])).toBeLessThan(35)
+    }
+    // 持ち上げの途中で拳が外へ大きく弧を描かない（保持の拳より外へ 60 以内）、肩の点は動かない（袖から離れない）
+    const hold = joyArmPoint(JOY_ARM.fistPx, joyArmMotion(1, 0))
+    for (let t = JOY_SWITCH_SECONDS; t <= 0.6; t += 1 / 30) {
+      const m = joyArmMotion(t, 0)
+      expect(joyArmPoint(JOY_ARM.fistPx, m)[0]).toBeLessThan(hold[0] + 60)
+      expect(distance(joyArmPoint(JOY_ARM.shoulderPx, m), JOY_ARM.at)).toBeLessThan(8)
+    }
+  })
   it('解除後は腕の変形が外れて休止位置へ戻る', () => {
     const { stage, frame } = setup()
     stage.playGesture('shyHand'); run(frame, 1.5)

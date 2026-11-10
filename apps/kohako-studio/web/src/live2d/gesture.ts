@@ -344,16 +344,33 @@ export const JOY_ARM = {
   shoulderPx: [580, 700] as Vec, elbowPx: [1070, 1455] as Vec, fistPx: [1364, 695] as Vec,
   at: [718, 540] as Vec, scale: 0.25, angle: 0,
 }
-/** 喜びの 1 枚腕の回転と沈み。入りは低い位置で差し替えてから拳を持ち上げ、保持は体の揺れに合わせて小さく弾ませ、戻りは下げ切ってから消す（out は下ろしの進み 0〜1）。 */
-export function joyArmMotion(t: number, out = 0): { angle: number; drop: number } {
+/**
+ * 喜びの低い位置（入りの差し替え・戻りの差し替え）の姿勢。d4f88bee は肩で回して沈めるだけで肘を曲げたままだったため、
+ * 差し替えの瞬間に拳が待機の手から約 300 離れた腰の横に現れて見えた（独立判定 td06j-review-d4f88be）。
+ * 低い位置では肩の回し（upper）で上腕を待機の上腕（肩→肘）に揃え、肘から先を肘の周りに伸ばして（bend）前腕を待機の前腕
+ * （肘→手首）に揃える。こうすると差し替えは待機の腕の上で起こり、そこから肘を曲げて拳を持ち上げる一本の腕の動きになる。
+ */
+export const JOY_LOW = { upper: 0.332, bend: 2.03, band: 120, shorten: 0.32 }
+/** 肘を曲げる途中だけ前腕を短く見せる割合（手前へ持ち上げる遠近。伸ばし切り・曲げ切りでは 0）。2D の回転だけだと拳が外へ大きく弧を描くため。 */
+export function joyForeShorten(bend: number): number { return JOY_LOW.shorten * Math.sin(Math.PI * Math.min(1, Math.max(0, bend / JOY_LOW.bend))) }
+/** 喜びの 1 枚腕の回転・沈み・肘の伸ばし。入りは伸ばした腕で差し替えてから肘を曲げて拳を持ち上げ、保持は体の揺れに合わせて小さく弾ませ、戻りは肘を伸ばして下ろし切ってから消す（out は下ろしの進み 0〜1）。 */
+export function joyArmMotion(t: number, out = 0): { angle: number; drop: number; bend: number } {
   const rise = 1 - ease(Math.min(1, Math.max(0, (t - JOY_SWITCH_SECONDS) / 0.45))), hold = smooth(0.47, 0.87, t), o = ease(out)
-  // 低い位置は肩で 0.35rad だけ回し 100 沈める（0.7rad 回すと前腕が腹の前で水平になる）。肘が待機の肘の真上、拳が体の外に来る。
-  const low = Math.max(rise, o)
-  return { angle: JOY_ARM.angle + 0.35 * low + 0.03 * Math.sin(2 * Math.PI * (t - 0.57) / 0.7) * hold * (1 - o), drop: 100 * low + 5 * Math.abs(Math.sin(2 * Math.PI * (t - 0.57) / 0.7)) * hold * (1 - o) }
+  const low = Math.max(rise, o), bounce = hold * (1 - o)
+  return { angle: JOY_ARM.angle + JOY_LOW.upper * low + 0.03 * Math.sin(2 * Math.PI * (t - 0.57) / 0.7) * bounce, drop: 5 * Math.abs(Math.sin(2 * Math.PI * (t - 0.57) / 0.7)) * bounce, bend: JOY_LOW.bend * low }
 }
-/** 右腕の画素 → モデル座標。left なら右腕の位置を体の中心線で鏡映する（絵は左右反転して貼る）。 */
-export function joyArmPoint(px: Vec, m: { angle: number; drop: number }, left = false): Vec {
-  const H = JOY_ARM, q = add(add(H.at, [0, m.drop]), scaleV(rot(sub(px, H.shoulderPx), m.angle), H.scale))
+/** 喜びの絵の画素が前腕側にある度合い（0=上腕、1=前腕と拳）。肘の角の二等分線からの距離で決める。 */
+export function joyForeWeight(px: Vec): number {
+  const H = JOY_ARM, unit = (v: Vec): Vec => scaleV(v, 1 / Math.hypot(v[0], v[1]))
+  const up = unit(sub(H.shoulderPx, H.elbowPx)), fore = unit(sub(H.fistPx, H.elbowPx)), bis = unit(add(up, fore))
+  let n: Vec = [-bis[1], bis[0]]; if (n[0] * fore[0] + n[1] * fore[1] < 0) n = scaleV(n, -1)
+  const d = (px[0] - H.elbowPx[0]) * n[0] + (px[1] - H.elbowPx[1]) * n[1]
+  return smooth(-JOY_LOW.band / 2, JOY_LOW.band / 2, d)
+}
+/** 右腕の画素 → モデル座標。肘から先を bend だけ肘の周りに回してから、絵全体を肩の点で回して置く。left なら体の中心線で鏡映する（絵は左右反転して貼る）。 */
+export function joyArmPoint(px: Vec, m: { angle: number; drop: number; bend?: number }, left = false): Vec {
+  const H = JOY_ARM, f = m.bend ? joyForeWeight(px) : 0, E = H.elbowPx, b = f ? add(E, scaleV(rot(sub(px, E), f * m.bend!), 1 - f * joyForeShorten(m.bend!))) : px
+  const q = add(add(H.at, [0, m.drop]), scaleV(rot(sub(b, H.shoulderPx), m.angle), H.scale))
   return left ? mirrorX(q) : q
 }
 const posed = (a: ArmPose) => Math.abs(a.fo) > SEPARATE_AT || (!!a.elbowTo && (a.elbowW ?? 0) > SEPARATE_AT) || (a.artW ?? 0) > 0.001
@@ -511,12 +528,12 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     { const [x0, y0, w, h] = JOY_ARM.box
       for (const side of ['right', 'left'] as const) {
         const left = side === 'left', bone = left ? LEFT : RIGHT
-        // 左は角の順を左右入れ替え、UV も反転して巻き方向を保つ（鏡映した位置に左右反転した絵が貼られる）。
-        const corners: Vec[] = left ? [[x0 + w, y0], [x0, y0], [x0, y0 + h], [x0 + w, y0 + h]] : [[x0, y0], [x0 + w, y0], [x0 + w, y0 + h], [x0, y0 + h]]
+        // 肘を伸ばす変形のため格子にする。左は同じ画素を鏡映した位置へ置く（裏面は描くので巻き方向は問わない）。
         for (const layer of ['back', 'front'] as const) {
-          const quad = addQuad(pp, new Float32Array(left ? [1, 0, 0, 0, 0, 1, 1, 1] : [0, 0, 1, 0, 1, 1, 0, 1]), later(JOY_ARM[layer], () => { joyMark[`${side}-${layer}`] = true; joyLoaded = Object.keys(joyMark).length === 4 }))
-          joyQuads[side][layer] = quad.index
-          synth.set(quad.index, { base: bone.arm, pointer: quad.pointer, opacity: () => joyOn() ? 1 : 0, write(out) { const [dx, dy] = swayOf(bone.arm), m = joyArmMotion(haltTime, haltOut); corners.forEach((c, i) => { const q = joyArmPoint(c, m, left); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } })
+          const grid = addGrid(pp, 14, 14, later(JOY_ARM[layer], () => { joyMark[`${side}-${layer}`] = true; joyLoaded = Object.keys(joyMark).length === 4 }))
+          const points: Vec[] = grid.uv.map(([u, v]) => [x0 + u * w, y0 + v * h])
+          joyQuads[side][layer] = grid.index
+          synth.set(grid.index, { base: bone.arm, pointer: grid.pointer, count: points.length, opacity: () => joyOn() ? 1 : 0, write(out) { const [dx, dy] = swayOf(bone.arm), m = joyArmMotion(haltTime, haltOut); points.forEach((c, i) => { const q = joyArmPoint(c, m, left); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } })
         }
       } }
     for (const [m, side] of [[RIGHT.arm, 'right'], [RIGHT.hand, 'right'], [LEFT.arm, 'left'], [LEFT.hand, 'left']] as const) {
