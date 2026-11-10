@@ -133,14 +133,27 @@
   (let [[first-char & others] (map encoded-char (code-points value))]
     (str/join (cons (str/replace first-char "\\\\{1,255}" "(?<!\\\\)\\\\+") others))))
 
+;; A named value of 1-3 characters (password: q7z, "auth": 38) is pinned as a whole word: masking it inside longer
+;; words would blank ordinary text (old, new, id), and withholding the lineage for it hid whole runs whose tool
+;; output was a test log (PASS: old) or a config file (same_site_cookie_attribute = "lax") (BOXP-428 TD-12).
+(defrecord WordValue [v])
+(defn value-text [x] (if (instance? WordValue x) (:v x) x))
+;; A word boundary is a letter, digit or _ on neither side; an escape (\n, \u0020, %20) before the value is a boundary.
+(def ^:private word-before "(?:(?<![\\p{L}\\p{N}_])|(?<=\\\\[nrtbf])|(?<=\\\\u[0-9a-fA-F]{4})|(?<=%[0-9a-fA-F]{2}))")
+(def ^:private word-after "(?![\\p{L}\\p{N}_])")
+
 (def values-pattern
   "One alternation, longest first, so a later value cannot rewrite the mark of an earlier one.
-  Any length matches inside a longer word: the value can be part of it, and a blanked word costs less than a leak."
+  Any length matches inside a longer word: the value can be part of it, and a blanked word costs less than a leak.
+  A WordValue matches only as a whole word."
   (memoize
    (fn [values]
      (when (seq values)
        (re-pattern
-        (str/join "|" (map value-pattern (sort-by count > values))))))))
+        (str/join "|" (map (fn [x] (if (instance? WordValue x)
+                                       (str word-before "(?:" (value-pattern (:v x)) ")" word-after)
+                                       (value-pattern x)))
+                             (sort-by (comp count value-text) > values))))))))
 
 (defn entropy-secret?
   "Ids such as run ids and UUIDs have only short hyphen-separated segments; a token has a
@@ -704,8 +717,8 @@
 ;; Values that a name-based known format named (password: x, --token x, -u user:x, env entries). Masking them only
 ;; in place leaves a bare restatement elsewhere in the run readable, so the exporter masks the same value in every
 ;; field of the run (exact text and its serialized escapes; other transforms are the accepted residual,
-;; THREAT_MODEL 2). A value too short to mask without blanking ordinary words, or too long or too many to mask,
-;; is unpinned: in a tool result it withholds the later bodies of the lineage.
+;; THREAT_MODEL 2). A value of 1-3 characters is pinned as a whole word (WordValue). A value too long or too many to
+;; mask is unpinned: in a tool result it withholds the later bodies of the lineage.
 (def pin-kinds #{:env-entry :flag :cli-password :assignment})
 (def min-pinned-length 4)
 (def max-pinned-length 256)
@@ -758,7 +771,14 @@
 ;; starting with $ (password: $hunterhorse): it is pinned like any value (masking a later ${VAR} is a harmless
 ;; over-mask), and when it is too short to pin it does not withhold, since it is most likely a reference.
 (defn- reference? [v]
-  (boolean (re-matches #"\[REDACTED:[a-z_-]+\]" v)))
+  (boolean (or (re-matches #"\[REDACTED:[a-z_-]+\]" v)
+               ;; Not a credential by shape (BOXP-428 TD-12): no letter or digit (ANTHROPIC_API_KEY:-, ==), a template or
+               ;; expression start whose rest the value scan cut off (password: ${{ secrets.X }}, {{ .Values.x }}),
+               ;; a printf directive (n_tokens = %d) or a grep -n location (runtime-authorization.yaml:4:).
+               (not (re-find #"[\p{L}\p{N}]" v))
+               (re-find #"^\$?\{[{%]" v)
+               (re-matches #"%[-+ #0]*\d*(?:\.\d+)?[a-zA-Z]" v)
+               (re-matches #"\d+:" v))))
 
 (defn- variable-like? [v]
   (boolean (re-matches #"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?" v)))
@@ -958,10 +978,12 @@
                      :when (not (reference? v))]
                  v))
         found (distinct (mapcat decoded-forms found))
-        unpinned? (boolean (or (some #(and (< (count %) min-pinned-length) (not (variable-like? %))) found)
-                               (some #(> (count %) max-pinned-length) found)
+        unpinned? (boolean (or (some #(> (count %) max-pinned-length) found)
                                (> (count found) max-pinned-values)))]
-    {:values (vec (filter #(<= min-pinned-length (count %) max-pinned-length) found)) :unpinned? unpinned?}))
+    {:values (vec (filter #(<= min-pinned-length (count %) max-pinned-length) found))
+     ;; Shorter values are pinned as whole words; a short $X form is most likely a reference and is not pinned.
+     :words (vec (filter #(and (< (count %) min-pinned-length) (not (variable-like? %))) found))
+     :unpinned? unpinned?}))
 
 (def withheld-model-output "[withheld: the session saw a known source or a known format]")
 (def withheld-tool-output "[withheld: sensitive path or command]")
@@ -991,6 +1013,10 @@
     :header (let [v (str/replace (str/trim (str (second (str/split m #":" 2)))) #"(?i)^(?:bearer|basic|token|digest)\s+" "")]
               (not (placeholder-credential? (first (str/split v #"\s+")))))
     :url-credentials (not (placeholder-credential? (second (re-find #":([^:@]*)@$" m))))
+    ;; A prefix on an ordinary identifier (npm_config_cache: lower-case words joined by _ or -) or a short word (sk-inet)
+    ;; is masked in place but does not withhold what follows (BOXP-428 TD-12); an issued key does.
+    :provider-key (let [body (str/replace m #"^(?:sk-lf-|pk-lf-|sk-|ghp_|gho_|ghs_|ghu_|github_pat_|xox[baprs]-|npm_|glpat-)" "")]
+                    (not (or (< (count body) 8) (re-matches #"[a-z]+(?:[_-][a-z]+)+" body))))
     true))
 
 (defn- exposure? [output]
@@ -1295,7 +1321,8 @@
   (let [values (->> spans
                     (mapcat :attributes)
                     (filter #(contains? #{"langfuse.observation.input" "langfuse.observation.output"} (:key %)))
-                    (mapcat #(:values (named-values (get-in % [:value :stringValue]))))
+                    (mapcat #(let [{:keys [values words]} (named-values (get-in % [:value :stringValue]))]
+                               (concat values (map ->WordValue words))))
                     distinct vec)]
     (if (> (count values) max-run-pinned-values) :overflow values)))
 

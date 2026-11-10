@@ -939,13 +939,71 @@
         (is (str/includes? body "laterreplymarker") (str format " " result))
         (is (str/includes? body "first request") (str format " " result))))))
 
-(deftest short-named-values-withhold-the-lineage
-  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
-    (doseq [format [:claude :codex]]
-      (let [spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (privacy-lines format "Bash" "password: q7z\nlaterreplymarker"))
-            gen (last (filter #(str/starts-with? (:name %) "generation:") spans))]
-        (is (str/starts-with? (attr-value gen "langfuse.observation.metadata.body_policy") "withheld_after_") (str format))
-        (is (not (str/includes? (pr-str gen) "q7z")) (str format))))))
+(defn- prepared-session
+  "Tool result `result`, then a reply `reply`, through the whole pipeline (pins, mask, final guard)."
+  [format result reply]
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        root (lf/mk-span ctx {:key "root" :name "task-board-run BOXP-1" :start 1 :end 2 :attrs-map {}})
+        lines (if (= format :claude)
+                [{:type "user" :message {:content "first request"}}
+                 {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat notes.txt"}}]}}
+                 {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content result}]}}
+                 {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text reply}]}}]
+                [{:type "response_item" :payload {:type "message" :role "user" :content "first request"}}
+                 {:type "response_item" :payload {:type "function_call" :call_id "t" :name "exec" :arguments "{\"command\":\"cat notes.txt\"}"}}
+                 {:type "response_item" :payload {:type "function_call_output" :call_id "t" :output result}}
+                 {:type "response_item" :payload {:type "message" :role "assistant" :content reply}}])
+        spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" lines)
+        run {:root root :spans spans :pinned-values (lf/pinned-values-of (cons root spans))}]
+    (assoc (lf/prepare-spans {:secret-values [] :max-spans 100 :max-field-bytes 65536 :max-run-bytes 10000000} run)
+           :raw spans)))
+
+;; BOXP-428 TD-12 (production 2026-11-10): a 1-3 character named value withheld the whole run, and the triggers were
+;; test logs (PASS: old) and config files (same_site_cookie_attribute = "lax"). It is pinned as a whole word instead:
+;; the run stays readable and a bare restatement of the value is still masked.
+(deftest short-named-values-are-pinned-as-words
+  (doseq [format [:claude :codex]
+          [result value] [["password: q7z\nconfigline" "q7z"]
+                          ["PASS: old\nPASS: pin" "old"]
+                          ["same_site_cookie_attribute = \"lax\"" "lax"]
+                          ["{\"auth\":38}" "38"]
+                          ["password: 5" "5"]
+                          ["<password>abc</password>" "abc"]]]
+    (let [{:keys [spans failed raw]} (prepared-session format result (str "it is " value ", laterreplymarker"))
+          body (pr-str spans)
+          gen (last (filter #(str/starts-with? (:name %) "generation:") raw))]
+      (is (nil? failed) (str format " " result))
+      (is (= "sent" (attr-value gen "langfuse.observation.metadata.body_policy")) (str format " " result))
+      (is (str/includes? body "laterreplymarker") (str format " " result))
+      (is (str/includes? body "first request") (str format " " result))
+      (is (not (re-find (re-pattern (str "(?<![A-Za-z0-9_])" value "(?![A-Za-z0-9_])")) body)) (str format " " result))))
+  (testing "a word value is masked after an escape, not inside longer words"
+    (let [pattern (lf/values-pattern [(lf/->WordValue "q7z")])]
+      (doseq [text ["q7z" "x\\nq7z" "x\\u0020q7z" "a%20q7z" "(q7z)" "\"q7z\""]]
+        (is (not (str/includes? (str/replace text pattern "[x]") "q7z")) text))
+      (doseq [text ["aq7zb" "q7z_x" "xq7z"]]
+        (is (str/includes? (str/replace text pattern "[x]") "q7z") text)))))
+
+;; BOXP-428 TD-12: a provider prefix on an ordinary name is masked in place but does not withhold the lineage;
+;; an issued-key shape still does.
+(deftest provider-prefix-on-names-does-not-withhold
+  (doseq [format [:claude :codex]]
+    (let [{:keys [raw]} (prepared-session format "npm_config_cache=/home/u/.npm\nsk-inet ok" "done, laterreplymarker")
+          gen (last (filter #(str/starts-with? (:name %) "generation:") raw))]
+      (is (= "sent" (attr-value gen "langfuse.observation.metadata.body_policy")) (str format)))
+    (let [{:keys [raw spans]} (prepared-session format (str "token " s-github) (str "it is " s-github))
+          gen (last (filter #(str/starts-with? (:name %) "generation:") raw))]
+      (is (str/starts-with? (attr-value gen "langfuse.observation.metadata.body_policy") "withheld_after_") (str format))
+      (is (not (str/includes? (pr-str spans) s-github)) (str format)))))
+
+;; BOXP-428 TD-12: values that cannot be a credential by shape are neither pinned nor withheld.
+(deftest reference-shaped-named-values-pin-nothing
+  (doseq [text ["password: ${{ secrets.DB_PASSWORD }}" "CLOUDFLARE_API_TOKEN: ${{ secrets.CF }}"
+                "key=${ANTHROPIC_API_KEY:-}" "n_tokens = %d" "runtime-authorization.yaml:4:  kind: Role" "password: =="]]
+    (let [{:keys [values words unpinned?]} (lf/named-values text)]
+      (is (false? unpinned?) text)
+      (is (empty? values) text)
+      (is (empty? words) text))))
 
 (deftest named-values-in-serialized-bodies
   (is (= ["quietriverstone"] (:values (lf/named-values "{\"command\":\"mysql -pquietriverstone\"}"))))
@@ -955,7 +1013,8 @@
   (is (= ["quietmeadowstone"] (:values (lf/named-values "<password>quietmeadowstone</password>"))))
   (is (= ["quietmeadowstone"] (:values (lf/named-values "{\"output\":\"\\u003cpassword\\u003equietmeadowstone\\u003c/password\\u003e\"}"))))
   (is (= ["outerkeyvalue"] (:values (lf/named-values "<secret><value>outerkeyvalue</value></secret>"))))
-  (is (true? (:unpinned? (lf/named-values "<password>abc</password>"))))
+  (is (false? (:unpinned? (lf/named-values "<password>abc</password>"))))
+  (is (= ["abc"] (:words (lf/named-values "<password>abc</password>"))))
   (is (= ["${DB_PASSWORD}"] (:values (lf/named-values "<password>${DB_PASSWORD}</password> <password/>")))))
 
 (deftest named-values-in-entity-quotes
@@ -1133,8 +1192,9 @@
   (testing "object keys are names, not values"
     (let [{:keys [values]} (lf/named-values "secret: {primary: hunterhorse, backup: meadowlake}")]
       (is (not-any? #{"primary" "backup"} values))))
-  (testing "a short element is unpinned (fail closed)"
-    (is (:unpinned? (lf/named-values "password: [hunterhorse, ab]"))))
+  (testing "a short element is pinned as a word (BOXP-428 TD-12)"
+    (is (= ["ab"] (:words (lf/named-values "password: [hunterhorse, ab]"))))
+    (is (false? (:unpinned? (lf/named-values "password: [hunterhorse, ab]")))))
   (testing "an object nested in a list with no space after the colon pins the value (lolice#1107 review)"
     (doseq [[text vs] [["password: [{primary:hunterhorse}]" ["hunterhorse"]]
                        ["password: [{primary=hunterhorse}, {backup:meadowlake}]" ["hunterhorse" "meadowlake"]]
@@ -1166,9 +1226,9 @@
       (is (not-any? #(str/starts-with? % "[") values) text)
       (is (not-any? #{"primary" "backup"} values) text)
       (doseq [v vs] (is (not (str/includes? (:value (lf/redact text [])) v)) text))))
-  (testing "a short element is unpinned (fail closed)"
-    (is (:unpinned? (lf/named-values "{\"name\":\"API_SECRET\",\"value\":[\"hunterhorse\",\"ab\"]}")))
-    (is (:unpinned? (lf/named-values "{\"value\":[\"hunterhorse\",\"ab\"],\"name\":\"API_SECRET\"}"))))
+  (testing "a short element is pinned as a word (BOXP-428 TD-12)"
+    (is (= ["ab"] (:words (lf/named-values "{\"name\":\"API_SECRET\",\"value\":[\"hunterhorse\",\"ab\"]}"))))
+    (is (= ["ab"] (:words (lf/named-values "{\"value\":[\"hunterhorse\",\"ab\"],\"name\":\"API_SECRET\"}")))))
   (testing "a non-secret entry with a list value pins nothing"
     (is (empty? (:values (lf/named-values "{\"name\":\"PATH_LIST\",\"value\":[\"alphabeta\",\"gammadelta\"]}"))))))
 
