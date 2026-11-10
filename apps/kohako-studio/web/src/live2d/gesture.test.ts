@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { BENT_ART, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { existsSync } from 'node:fs'
+import { BENT_ART, HALT_SET, haltAngles, haltPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -397,5 +398,33 @@ describe('制止の腕セットの切替（BOXP-476 TD-06 Y\')', () => {
     stage.playGesture('greet')
     run(SWITCH_SECONDS)
     expect(stage.report()).toMatchObject({ gesture: 'greet', armSwitch: null })
+  })
+})
+
+describe('制止の腕セット（BOXP-476 TD-06 改良Y）', () => {
+  const angles = (e: number, w = 0, s = 0) => ({ shoulder: s, elbow: e, wrist: w })
+  it('小手を肘で回しても肘の点は動かず、上腕は動かない', () => {
+    const a = haltPoint(HALT_SET.elbowPx, 'fore', angles(0.3)), b = haltPoint(HALT_SET.elbowPx, 'upper', angles(0.3))
+    expect(Math.hypot(a[0] - HALT_SET.elbow[0], a[1] - HALT_SET.elbow[1])).toBeLessThan(1e-6)
+    expect(Math.hypot(b[0] - HALT_SET.elbow[0], b[1] - HALT_SET.elbow[1])).toBeLessThan(1e-6)
+  })
+  it('手は手首で小手につながったまま回る（親子）', () => {
+    for (const e of [-0.1, 0, 0.32]) for (const w of [-0.1, 0.2]) {
+      const hand = haltPoint(HALT_SET.wristPx, 'hand', angles(e, w)), fore = haltPoint(HALT_SET.wristPx, 'fore', angles(e, w))
+      expect(Math.hypot(hand[0] - fore[0], hand[1] - fore[1])).toBeLessThan(1e-6)
+    }
+  })
+  it('保持の姿勢: 手首は肩より外・上、前腕の長さは休止の ±10% 内', () => {
+    const wrist = haltPoint(HALT_SET.wristPx, 'fore', haltAngles(2)), fore = Math.hypot(wrist[0] - HALT_SET.elbow[0], wrist[1] - HALT_SET.elbow[1])
+    expect(wrist[0]).toBeGreaterThan(880); expect(wrist[1]).toBeLessThan(620)
+    expect(fore / Math.hypot(844 - 760, 928 - 733)).toBeGreaterThan(0.9); expect(fore / Math.hypot(844 - 760, 928 - 733)).toBeLessThan(1.1)
+  })
+  it('入りは前腕を下げた位置から持ち上げ、保持の揺れは小さい', () => {
+    expect(haltAngles(0).elbow).toBeGreaterThan(0.25)
+    for (let t = 0.8; t < 4; t += 0.05) { const a = haltAngles(t); expect(Math.abs(a.elbow)).toBeLessThan(0.03); expect(Math.abs(a.wrist)).toBeLessThan(0.04) }
+    expect(haltAngles(2, 1).elbow).toBeGreaterThan(0.25)
+  })
+  it('3 部品の素材ファイルが揃っている', () => {
+    for (const part of ['upper', 'fore', 'hand'] as const) expect(existsSync(new URL(`../../public/kohako/live2d/acting/${HALT_SET[part].file}`, import.meta.url))).toBe(true)
   })
 })
