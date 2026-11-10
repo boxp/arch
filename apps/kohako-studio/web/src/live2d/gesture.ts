@@ -56,7 +56,7 @@ const GUIDE: ArmPose = { up: 0, upS: 1, fo: -1.92, foS: 1, ha: 0.15, haS: 1, elb
 const HALT: ArmPose = { up: 0, upS: 1, fo: -2.05, foS: 1, ha: 0.1, haS: 1.1, elbowTo: ELBOW_OUT, front: true, art: 'palm', artW: 1 }
 const HALT_RISE: ArmPose = { up: 0, upS: 1, fo: -1.1, foS: 1, ha: 0.2, haS: 1.05, elbowTo: [805, 725], front: true, art: 'palm', artW: 0 }
 // 照れ: 肘は体の脇寄りに残し、前腕を胸の前へ斜めに渡して手を口元へ運ぶ。肘を胸の中央まで寄せると前腕が上腕の真下に立って上腕が読めない（#14730 P1）。
-const SHY: ArmPose = { up: 0, upS: 1, fo: 2.97, foS: 0.92, ha: 0.19, haS: 0.95, elbowTo: [705, 665], front: true, art: 'cover', artW: 1 }
+const SHY: ArmPose = { up: 0, upS: 1, fo: 3.05, foS: 1.02, ha: 0.19, haS: 0.95, elbowTo: [705, 665], front: true, art: 'cover', artW: 1 }
 // 手を口元へ運ぶ途中は、前腕を画面の横へ倒さず手前へ向ける（短縮）。手は体の前をほぼ縦に上がり、腹の前を横切らない。
 const SHY_DOWN: ArmPose = { up: 0, upS: 1, fo: 0.9, foS: 0.45, ha: 2.15, haS: 0.98, elbowTo: [735, 705], front: true, art: 'cover', artW: 0 }
 const SHY_RISE: ArmPose = { up: 0, upS: 1, fo: 2.7, foS: 0.75, ha: 0.45, haS: 0.98, elbowTo: [712, 680], front: true, art: 'cover', artW: 0 }
