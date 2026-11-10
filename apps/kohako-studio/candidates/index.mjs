@@ -6,6 +6,8 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;'
 // created は試作 commit の UTC 時刻。一覧は新しい試作を先頭に並べる。
 const CREATED = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/
 const ids = new Set()
+// 新しい候補を先頭へ追加する約束を守らせる（ファイル順も新しい順でないとビルドを止める）。
+manifest.candidates.forEach((c, i, a) => { if (i > 0 && !(a[i - 1].created >= c.created)) throw Error(`candidates.json must be newest first: ${a[i - 1].id} before ${c.id}`) })
 const candidates = manifest.candidates.map(c => {
   if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(c.id) || !/^[0-9a-f]{40}$/.test(c.commit) || !c.title || !c.status || !CREATED.test(c.created ?? '')) throw Error(`invalid candidate: ${c.id}`)
   if (ids.has(c.id)) throw Error(`duplicate candidate id: ${c.id}`)

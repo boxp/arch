@@ -27,10 +27,4 @@ describe('試作候補の一覧', () => {
     const a = { ...ok, id: 'a', created: '2026-11-10T01:00:00Z' }, b = { ...ok, id: 'b', created: '2026-11-10T13:00:00Z' }, c = { ...ok, id: 'c' }
     expect(sortNewestFirst([a, c, b]).map(x => x.id)).toEqual(['b', 'a', 'c'])
   })
-  it('candidates.json は全候補に created があり新しい順で並ぶ', () => {
-    const m = JSON.parse(readFileSync(new URL('../../../candidates/candidates.json', import.meta.url), 'utf8')) as { candidates: { id: string, created: string }[] }
-    for (const c of m.candidates) expect(c.created, c.id).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/)
-    const created = m.candidates.map(c => c.created)
-    expect(created).toEqual([...created].sort().reverse())
-  })
 })
