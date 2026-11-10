@@ -56,8 +56,10 @@ const GUIDE: ArmPose = { up: 0, upS: 1, fo: -1.92, foS: 1, ha: 0.15, haS: 1, elb
 const HALT: ArmPose = { up: 0, upS: 1, fo: -2.05, foS: 1, ha: 0.1, haS: 1.1, elbowTo: ELBOW_OUT, front: true, art: 'palm', artW: 1 }
 const HALT_RISE: ArmPose = { up: 0, upS: 1, fo: -1.1, foS: 1, ha: 0.2, haS: 1.05, elbowTo: [805, 725], front: true, art: 'palm', artW: 0 }
 // 照れ: 肘は体の脇寄りに残し、前腕を胸の前へ斜めに渡して手を口元へ運ぶ。肘を胸の中央まで寄せると前腕が上腕の真下に立って上腕が読めない（#14730 P1）。
-const SHY: ArmPose = { up: 0, upS: 1, fo: 3.14, foS: 1.09, ha: 0.02, haS: 0.95, elbowTo: [690, 714], front: true, art: 'cover', artW: 1 }
-const SHY_RISE: ArmPose = { up: 0, upS: 1, fo: 2.75, foS: 0.95, ha: 0.7, haS: 0.98, elbowTo: [715, 712], front: true, art: 'cover', artW: 0 }
+const SHY: ArmPose = { up: 0, upS: 1, fo: 2.97, foS: 0.92, ha: 0.19, haS: 0.95, elbowTo: [705, 665], front: true, art: 'cover', artW: 1 }
+// 手を口元へ運ぶ途中は、前腕を画面の横へ倒さず手前へ向ける（短縮）。手は体の前をほぼ縦に上がり、腹の前を横切らない。
+const SHY_DOWN: ArmPose = { up: 0, upS: 1, fo: 0.9, foS: 0.45, ha: 2.15, haS: 0.98, elbowTo: [735, 705], front: true, art: 'cover', artW: 0 }
+const SHY_RISE: ArmPose = { up: 0, upS: 1, fo: 2.7, foS: 0.75, ha: 0.45, haS: 0.98, elbowTo: [712, 680], front: true, art: 'cover', artW: 0 }
 const JOY: ArmPose = { up: 0, upS: 1, fo: -1.85, foS: 1, ha: 0.25, haS: 1, elbowTo: ELBOW_OUT }
 
 export const clips: Record<Exclude<Gesture, 'none'>, Clip> = {
@@ -66,7 +68,7 @@ export const clips: Record<Exclude<Gesture, 'none'>, Clip> = {
   joy: { duration: 1.8, keys: [{ t: 0, right: REST, left: REST, body: {} }, { t: 0.4, right: JOY, left: JOY, body: { bodyZ: 5, headZ: 6, lean: 3, headY: 5 } }, { t: 0.75, right: JOY, left: JOY, body: { bodyZ: -5, headZ: -6, lean: 3, headY: 5 } }, { t: 1.1, right: JOY, left: JOY, body: { bodyZ: 5, headZ: 6, lean: 3, headY: 5 } }, { t: 1.8, right: REST, left: REST, body: {} }] },
   greet: { duration: 2.6, keys: [{ t: 0, right: REST, body: {} }, { ...wave(0.55, -2.15), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { ...wave(0.85, -1.75), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { ...wave(1.15, -2.15), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { ...wave(1.45, -1.75), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { t: 2.1, right: REST, body: {} }, { t: 2.6, right: REST, body: {} }] },
   guide: { duration: 3.2, keys: [{ t: 0, right: REST, body: {} }, { t: 0.7, right: GUIDE, body: { bodyZ: -3, headX: 12, headZ: 3, eyeX: 0.7, eyeY: 0.2 } }, { t: 2.6, right: GUIDE, body: { bodyZ: -3, headX: 12, headZ: 3, eyeX: 0.7, eyeY: 0.2 } }, { t: 3.2, right: REST, body: {} }] },
-  shyHand: { duration: 3.9, keys: [{ t: 0, right: REST, body: {} }, { t: 0.6, right: SHY_RISE, body: { bodyZ: 1, lean: 1 } }, { t: 1.2, right: SHY, body: { bodyZ: 2, lean: 2 } }, { t: 3, right: SHY, body: { bodyZ: 2, lean: 2 } }, { t: 3.45, right: SHY_RISE, body: { bodyZ: 1, lean: 1 } }, { t: 3.9, right: REST, body: {} }] },
+  shyHand: { duration: 3.9, keys: [{ t: 0, right: REST, body: {} }, { t: 0.35, right: SHY_DOWN, body: { bodyZ: 0.5, lean: 0.5 } }, { t: 0.7, right: SHY_RISE, body: { bodyZ: 1, lean: 1 } }, { t: 1.2, right: SHY, body: { bodyZ: 2, lean: 2 } }, { t: 3, right: SHY, body: { bodyZ: 2, lean: 2 } }, { t: 3.35, right: SHY_RISE, body: { bodyZ: 1, lean: 1 } }, { t: 3.6, right: SHY_DOWN, body: { bodyZ: 0.5, lean: 0.5 } }, { t: 3.9, right: REST, body: {} }] },
   halt: { duration: 2.9, keys: [{ t: 0, right: REST, body: {} }, { t: 0.3, right: HALT_RISE, body: { bodyZ: -1, lean: 1 } }, { t: 0.6, right: HALT, body: { bodyZ: -2, lean: 2, headY: -2 } }, { t: 2.2, right: HALT, body: { bodyZ: -2, lean: 2, headY: -2 } }, { t: 2.55, right: HALT_RISE, body: { bodyZ: -1, lean: 1 } }, { t: 2.9, right: REST, body: {} }] },
 }
 
@@ -199,7 +201,7 @@ const UPPER_ART_INTO_CUFF = 30 // 上腕の下端を肘より先へ出す量。�
 const SEPARATE_AT = 0.02
 // 曲げた腕の絵。v11r の小手の肘側は V 字に切れ込んでいて、回すと先端が二股の板に見える（肘の丸みが無い）。曲げの間だけ、丸い金縁で肘側を閉じた小手と、肘を包む黒い袖へ差し替える。小手は v11r の前腕の太さと先細りに合わせた生成素材（Gemini、正本シートの曲げ腕と v11r の前腕を参照）、肘の袖は正本シートからの切り出し。anchor は素材 px の肘、scale は素材 px→モデル座標。
 export const BENT_ART = { fore: { file: 'fore-bent.png', w: 170, h: 540, anchor: [82.5, 417.5] as Vec, scale: 0.518 }, elbow: { file: 'elbow-upper.png', w: 294, h: 314, anchor: [147, 156.8] as Vec, scale: 0.5 } }
-const BENT_FROM = 0.94, BENT_TO = 0.96
+const BENT_FROM = 0.4, BENT_TO = 0.42
 /** 前腕の曲げ量に応じた、差し替えの絵の重み（0〜1）。 */
 export const bentWeight = (fo: number) => smooth(BENT_FROM, BENT_TO, Math.abs(fo))
 /** 絵の左右。正本は「手先へ向かって肩が左」の絵。内回り（fo>0）と左腕では裏返す。 */
@@ -212,6 +214,10 @@ export function placeBentFore(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose
   const m = mirrored(bone, pose), { elbow, wrist } = solveArm(bone, m)
   return placeBent(elbow, sub(wrist, elbow), bentSide(bone, pose), [b, a * foreScale(m)])
 }
+// 元の手と手の素材（掌・口元の手）の切替。両方を半透明で重ねると指が二重に透けて見えるので、重みの中点で入れ替え、半透明の中間を作らない。
+const HAND_SWAP_AT = 0.5
+/** 手の素材の不透明度（0 か 1。元の手は 1 からこれを引く）。 */
+export const handSwap = (w: number) => w >= HAND_SWAP_AT ? 1 : 0
 const partURL = (file: string) => new URL(`kohako/live2d/acting/${file}`, location.href).href
 
 type Runtime = { memory: WebAssembly.Memory; p2l_mesh_vertices(rig: number, mesh: number): number; p2l_render_commands(rig: number, pointer: number, capacity: number): number; p2l_mesh_opacity(rig: number, mesh: number): number; p2l_mesh_colors(rig: number, mesh: number, a: number, b: number): void }
@@ -317,7 +323,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       const corners = ([[0, 0], [spec.w, 0], [spec.w, spec.h], [0, spec.h]] as Vec[]).map(c => add(RIGHT.W, rot(scaleV(local(c), 1 / spec.hold.haS), -hold)))
       const quad = addQuad(pp, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), later(spec.file, () => { artLoaded[kind] = true }))
       art[kind] = quad.index
-      synth.set(quad.index, { base: RIGHT.hand, pointer: quad.pointer, opacity: () => { const h = handArt(); return h.kind === kind ? smooth(0.1, 0.6, h.w) : 0 }, write(out) { const [dx, dy] = swayOf(RIGHT.hand); corners.forEach((c, i) => { const q = deformHand(RIGHT, pose.right, c[0] + dx, c[1] + dy); out[2 * i] = q[0]; out[2 * i + 1] = q[1] }) } })
+      synth.set(quad.index, { base: RIGHT.hand, pointer: quad.pointer, opacity: () => { const h = handArt(); return h.kind === kind ? handSwap(h.w) : 0 }, write(out) { const [dx, dy] = swayOf(RIGHT.hand); corners.forEach((c, i) => { const q = deformHand(RIGHT, pose.right, c[0] + dx, c[1] + dy); out[2 * i] = q[0]; out[2 * i + 1] = q[1] }) } })
     }
     if (cp.commandCapacity != null) { alloc.p2l_dealloc(cp.commandsPointer, cp.commandCapacity * 4 + 4); cp.commandCapacity += 24; cp.commandsPointer = alloc.p2l_alloc(cp.commandCapacity * 4 + 4) }
     parts = { right, left, art, cuff }
@@ -381,7 +387,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     const extra = synth.get(mesh)
     if (extra) return extra.opacity() * rt.p2l_mesh_opacity(rig, extra.base)
     const base = rt.p2l_mesh_opacity(rig, mesh)
-    return mesh === RIGHT.hand && parts ? base * (1 - smooth(0.35, 0.85, handArt().w)) : base
+    return mesh === RIGHT.hand && parts ? base * (1 - handSwap(handArt().w)) : base
   }
   const hookColors = (rig: number, mesh: number, a: number, b: number) => rt.p2l_mesh_colors(rig, synth.get(mesh)?.base ?? mesh, a, b)
   p.rt = Object.create(rt, { p2l_mesh_vertices: { value: hookVertices }, p2l_render_commands: { value: hookCommands }, p2l_mesh_opacity: { value: hookOpacity }, p2l_mesh_colors: { value: hookColors } }) as Runtime
@@ -416,8 +422,9 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     playGesture(next) {
       if (next === 'none') return
       // 前の動作の途中や解除後の戻りの途中でも、その時点の腕の見た目から次の動作へつなぐ。
+      // 休止中から始めるときは動作の最初のキー（休止）とつながっているので、腕の補間を重ねない（重ねると動き出しが遅れて前腕が長いまま横へ倒れる）。
       const plan = interruptPlan(pose, clips[next])
-      startFade(fadeFor(clips[next], plan.from, plan.at), plan.from)
+      if (clip || fadeFrom) startFade(fadeFor(clips[next], plan.from, plan.at), plan.from); else fadeFrom = null
       clip = clips[next]; clipName = next; clipTime = plan.at; armBlend = 1
     },
     reset() { emotion = 'neutral'; target = faces.neutral; player.expression(null); if (clip) startFade(); clip = null; clipName = 'none' },

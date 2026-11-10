@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BENT_ART, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { BENT_ART, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, handSwap, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -100,14 +100,15 @@ describe('腕の変形', () => {
     expect(isForearm(bone, 842, 690)).toBe(false) // 裏地の先端
   })
   // 関節に見えるかの必要条件（最終判断は実描画の連続コマ）。上腕と前腕が別の線分として開き、前腕の長さが保たれ、肘が動くこと。
-  it.each([['制止', 'halt', 1.5], ['照れ', 'shyHand', 2], ['挨拶', 'greet', 0.55], ['案内', 'guide', 1.5], ['喜び', 'joy', 0.75]] as const)('%s の保持は肘が開いて見える', (_name, gesture, time) => {
+  // 照れは手を口元へ運ぶため前腕が少し手前を向く（短縮して見える）。肘を袖の下に寄せたまま手が口元へ届く長さ（BOXP-476 Owner B）。
+  it.each([['制止', 'halt', 1.5, 0.9], ['照れ', 'shyHand', 2, 0.8], ['挨拶', 'greet', 0.55, 0.9], ['案内', 'guide', 1.5, 0.9], ['喜び', 'joy', 0.75, 0.9]] as const)('%s の保持は肘が開いて見える', (_name, gesture, time, minFore) => {
     const pose = sample(clips[gesture], time).right, { elbow, wrist } = solveArm(bone, pose)
     const toShoulder = [bone.S[0] - elbow[0], bone.S[1] - elbow[1]] as const, toWrist = [wrist[0] - elbow[0], wrist[1] - elbow[1]] as const
     const inner = Math.acos((toShoulder[0] * toWrist[0] + toShoulder[1] * toWrist[1]) / (Math.hypot(...toShoulder) * Math.hypot(...toWrist))) * 180 / Math.PI
     expect(inner).toBeGreaterThanOrEqual(29)
     expect(inner).toBeLessThanOrEqual(145)
     const restLength = Math.hypot(bone.W[0] - bone.E[0], bone.W[1] - bone.E[1])
-    expect(Math.hypot(...toWrist) / restLength).toBeGreaterThanOrEqual(0.9)
+    expect(Math.hypot(...toWrist) / restLength).toBeGreaterThanOrEqual(minFore)
     expect(Math.hypot(...toWrist) / restLength).toBeLessThanOrEqual(1.1)
     // 肩から肘の長さは、袖に隠れる上端を含めて休止の 1.14 倍まで。袖の下に見えている区間は休止より長くしない。
     expect(Math.hypot(...toShoulder)).toBeLessThanOrEqual(Math.hypot(bone.E[0] - bone.S[0], bone.E[1] - bone.S[1]) * 1.14)
@@ -291,13 +292,13 @@ describe('実行時の動作の割り込み', () => {
 describe('曲げの絵（BOXP-476 TD-02）', () => {
   it('前腕の曲げが小さいときは元の小手のまま、保持では差し替える', () => {
     expect(bentWeight(0)).toBe(0)
-    expect(bentWeight(0.5)).toBe(0)
+    expect(bentWeight(0.3)).toBe(0)
     expect(bentWeight(-2.05)).toBe(1)
     expect(bentWeight(3.41)).toBe(1)
   })
   it('差し替えは半透明の二重を見せないよう、ごく狭い角度で切り替える', () => {
-    expect(bentWeight(0.97)).toBe(1)
-    expect(bentWeight(0.93)).toBe(0)
+    expect(bentWeight(0.43)).toBe(1)
+    expect(bentWeight(0.39)).toBe(0)
   })
   it('内回りと左腕では絵を裏返す', () => {
     expect(bentSide({ mirror: false }, { fo: -2 })).toBe(1)
@@ -324,5 +325,22 @@ describe('曲げの絵（BOXP-476 TD-02）', () => {
   })
   it('素材の肘の位置は画像の範囲内にある', () => {
     for (const art of [BENT_ART.fore, BENT_ART.elbow]) { expect(art.anchor[0]).toBeGreaterThan(0); expect(art.anchor[0]).toBeLessThan(art.w); expect(art.anchor[1]).toBeGreaterThan(0); expect(art.anchor[1]).toBeLessThan(art.h) }
+  })
+})
+
+describe('照れの経路と手の切替（BOXP-476 Owner B）', () => {
+  const bone = { S: [710, 533] as const, E: [760, 733] as const, W: [844, 928] as const }
+  it('手を口元へ運ぶ途中と戻りで、手首が腹の前を横へ大きく外れない', () => {
+    let widest = 0
+    for (let time = 0; time <= clips.shyHand.duration; time += 1 / 60) {
+      const { elbow, wrist } = solveArm(bone, sample(clips.shyHand, time).right)
+      if (wrist[1] > 620) widest = Math.max(widest, Math.abs(wrist[0] - elbow[0]))
+    }
+    expect(widest).toBeLessThan(110)
+  })
+  it('元の手と手の素材は半透明で重ねず、どちらか一方だけを描く', () => {
+    for (let w = 0; w <= 1; w += 0.01) expect([0, 1]).toContain(handSwap(w))
+    expect(handSwap(0.49)).toBe(0)
+    expect(handSwap(0.51)).toBe(1)
   })
 })
