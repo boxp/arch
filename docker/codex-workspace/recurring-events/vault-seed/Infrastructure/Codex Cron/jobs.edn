@@ -7,4 +7,14 @@
    :time-zone "Asia/Tokyo"
    :workdir "/home/boxp"
    :prompt-file "prompts/recurring-events.md"
-   :bypass-approvals true}]}
+   :bypass-approvals true}
+  ;; BOXP-487: Claude model の同系列正式版への追従と配備後検証。agent は起動しない。
+  ;; tick は UTC の日付で 1 日 1 回だけ実処理し、それ以外の起動は :skipped で終わる。
+  {:id "model-updates"
+   :name "Claude model 更新の確認(agent なし)"
+   :enabled true
+   :runner "command"
+   :command "bb /opt/codex-workspace/model-updates/model_updates.bb tick"
+   :schedule "41 * * * *"
+   :time-zone "Etc/UTC"
+   :workdir "/home/boxp"}]}

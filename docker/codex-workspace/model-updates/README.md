@@ -14,7 +14,9 @@ Task Board と Novel Board の Claude 担当 (`claude-fable` / `claude-opus` / `
 
 ## 日次 check (`model_updates.bb tick`)
 
-codex-workspace の cron job `model-updates` (agent なし) が実行します。lock で同時実行を防ぎ、UTC の日付で 1 日 1 回に抑えます。
+codex-workspace の cron job `model-updates` (agent なし、`:runner "command"`) が毎時 41 分 (UTC) に実行します。lock で同時実行を防ぎ、UTC の日付で 1 日 1 回だけ実処理します (それ以外は `:skipped`)。
+job 定義は `recurring-events/vault-seed/Infrastructure/Codex Cron/jobs.edn` にあり、Pod 起動時に entrypoint が vault の `Codex Cron/jobs.edn` へ id が無いときだけ足します。
+既存の同 id job (無効化を含む) は上書きしません。止めるときは vault の job を `:enabled false` にします。即時に実行するときは `bb /opt/codex-workspace/model-updates/model_updates.bb tick --force`。
 
 1. 公式 `models/overview.md` の `Claude API ID` 行から ID を読みます。取得や解析に失敗したら `catalog-error` で何もしません。
 2. 同じ family で、(major, minor) を数値で比べて現 pin より新しい最大の ID を候補にします。preview、日付付き、別 family は候補にしません。
