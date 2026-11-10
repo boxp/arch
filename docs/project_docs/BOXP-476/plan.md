@@ -74,3 +74,4 @@ Web リグ（kohako-full-v11r）に、発話内容に合わせた表情と腕・
 - 候補 arm-shy-a97beaf（タグ kohako-studio-candidate/arm-shy-a97beaf）を一覧へ追加。独立実操作判定の結果で状態を更新する。通常 v11r は不変。
 - 候補 arm-shy-a97beaf は照れの独立実操作判定で不合格（拳が大きく鼻先まで覆う）。是正版 arm-shy-4b6f3fc（タグ kohako-studio-candidate/arm-shy-4b6f3fc、生成0回、縮尺0.31→0.28で拳を口元へ）を試作として追加。通常 v11r は不変。
 - 候補 arm-shy-4b6f3fc は独立実操作判定で不合格（鼻先の覆いは改善したが、拳が顔に対して大きく口〜顎を占める）。是正版 arm-shy-172a094（タグ kohako-studio-candidate/arm-shy-172a094、生成0回、素材の拳だけを手首から 0.78 倍へ縮め支点を少し上げる）を試作として追加。通常 v11r は不変。
+- 候補 arm-shy-172a094 は独立実操作判定で不合格（一本の腕・肘と形・動き・不変は合、照れの演技が否: 拳が顎の下に留まり口が見える）。是正版 arm-shy-baff7cc（タグ kohako-studio-candidate/arm-shy-baff7cc、生成0回、肩の支点を 15 上げ拳を口元へ）を試作として追加。通常 v11r は不変。
