@@ -197,8 +197,8 @@ const UPPER_ART_REACH = 114 // 肩の関節から素材の上端までの距離�
 const UPPER_ART_REACH_INWARD = 8 // 肘を体の前へ寄せたときの上端の距離。袖の裏まで伸ばし、棒の切り口を胴の上に見せない
 const UPPER_ART_INTO_CUFF = 30 // 上腕の下端を肘より先へ出す量。曲げの絵（丸い小手）の間は肩→肘の延長線上に置いて肘の丸みと両縁をつなげ、元の V 字の小手の間は手首の側へ置いて端を開口の内側に収める
 const SEPARATE_AT = 0.02
-// 曲げた腕の絵。v11r の小手の肘側は V 字に切れ込んでいて、回すと先端が二股の板に見える（肘の丸みが無い）。曲げの間だけ、正本シートの上げた腕から切り出した丸い金縁の小手と、肘を包む黒い袖へ差し替える（生成なし）。anchor は素材 px の肘、scale は素材 px→モデル座標。
-export const BENT_ART = { fore: { file: 'fore-bent.png', w: 313, h: 512, anchor: [156.4, 414] as Vec, scale: 0.5 }, elbow: { file: 'elbow-upper.png', w: 294, h: 314, anchor: [147, 156.8] as Vec, scale: 0.5 } }
+// 曲げた腕の絵。v11r の小手の肘側は V 字に切れ込んでいて、回すと先端が二股の板に見える（肘の丸みが無い）。曲げの間だけ、丸い金縁で肘側を閉じた小手と、肘を包む黒い袖へ差し替える。小手は v11r の前腕の太さと先細りに合わせた生成素材（Gemini、正本シートの曲げ腕と v11r の前腕を参照）、肘の袖は正本シートからの切り出し。anchor は素材 px の肘、scale は素材 px→モデル座標。
+export const BENT_ART = { fore: { file: 'fore-bent.png', w: 170, h: 540, anchor: [82.5, 417.5] as Vec, scale: 0.518 }, elbow: { file: 'elbow-upper.png', w: 294, h: 314, anchor: [147, 156.8] as Vec, scale: 0.5 } }
 const BENT_FROM = 0.94, BENT_TO = 0.96
 /** 前腕の曲げ量に応じた、差し替えの絵の重み（0〜1）。 */
 export const bentWeight = (fo: number) => smooth(BENT_FROM, BENT_TO, Math.abs(fo))
