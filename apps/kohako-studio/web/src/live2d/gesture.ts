@@ -217,7 +217,7 @@ export function placeBentFore(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose
  * 動作の始まりに短いフェードで制止の腕へ差し替える。ここでは制止の腕に既存の比較版の保持姿勢（HALT）の絵を使う。
  */
 export const SWITCH_SECONDS = 0.25
-export const SWITCHED: Partial<Record<Exclude<Gesture, 'none'>, ArmPose>> = { halt: HALT }
+export const SWITCHED: Partial<Record<Exclude<Gesture, 'none'>, ArmPose>> = { halt: HALT, shyHand: SHY }
 /** Cubism のポーズのフェードと同じ考え方で、裏に残す腕の不透明度を決める（背景が透ける割合を 0.15 以下に抑える）。 */
 export function backOpacity(front: number): number {
   const a = Math.min(1, Math.max(0, front)); let o = 1 - a
@@ -245,6 +245,26 @@ export function haltArmAngle(t: number, out = 0): number {
 export function haltArmPoint(px: Vec, angle: number): Vec {
   const H = HALT_ARM
   return add(H.at, scaleV(rot(sub(px, H.shoulderPx), angle), H.scale))
+}
+/**
+ * 照れの 1 枚腕（BOXP-476 TD-06、採用済みの制止 7fa4a2f と同じ方式）。Gemini で生成した照れの腕（肩の切り口〜手前へ出た肘〜
+ * 急に立ち上がる前腕〜口元の拳が 1 本に描かれた絵）を部品に切らず、動作の始まりにフェードで差し替え、肩を支点に回して持ち上げる。
+ * back は腕全体（切り口は肩の装甲の下へ隠れるようぼかした絵）で袖の表地の裏に、front は同じ絵・同じ位置で上腕の上部を除いた
+ * アルファで、口元を隠すため顔の手前（描画の最後）に描く。box は生成画像の画素（ファイルは 0.5 倍）。
+ */
+export const SHY_ARM = {
+  back: 'shy-arm.png', front: 'shy-arm-front.png', box: [544, 236, 960, 1460] as const,
+  shoulderPx: [1343, 1000] as Vec, elbowPx: [1327, 1519] as Vec, fistPx: [717, 449] as Vec,
+  at: [735, 595] as Vec, scale: 0.31, angle: 0.185,
+}
+/** 照れの 1 枚腕の回転と沈み。入りは拳を胸の高さから口元へ持ち上げ、保持は小さく揺らし、戻りは下げながら消す。 */
+export function shyArmMotion(t: number, out = 0): { angle: number; drop: number } {
+  const rise = 1 - ease(Math.min(1, Math.max(0, t / 0.5))), hold = smooth(0.4, 0.9, t), o = ease(out)
+  return { angle: SHY_ARM.angle - 0.22 * rise + 0.01 * Math.sin(t * 2.1) * hold - 0.18 * o, drop: 55 * rise + 45 * o }
+}
+export function shyArmPoint(px: Vec, m: { angle: number; drop: number }): Vec {
+  const H = SHY_ARM
+  return add(add(H.at, [0, m.drop]), scaleV(rot(sub(px, H.shoulderPx), m.angle), H.scale))
 }
 const posed = (a: ArmPose) => Math.abs(a.fo) > SEPARATE_AT || (!!a.elbowTo && (a.elbowW ?? 0) > SEPARATE_AT) || (a.artW ?? 0) > 0.001
 const partURL = (file: string) => new URL(`kohako/live2d/acting/${file}`, location.href).href
@@ -304,9 +324,10 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const posedFor = (side: 'right' | 'left' | null) => side && sw && fadeSides[side] ? posedAlpha : 1
   const ghostFor = (side: 'right' | 'left') => sw && fadeSides[side] ? backOpacity(posedAlpha) : 0
   // 制止の腕セットの状態。haltTime は差し替え開始からの秒、haltOut は戻りのフェードの進み(0〜1)。
-  let haltSet = false, haltLoaded = false, haltTime = 0, haltOut = 0
-  const haltQuads: Partial<Record<'back' | 'front', number>> = {}
-  const haltOn = () => haltSet && haltLoaded
+  // 照れの 1 枚腕も同じ時間（haltTime/haltOut）を使う（同時に出るのはどちらか一方）。
+  let haltSet = false, haltLoaded = false, haltTime = 0, haltOut = 0, shySet = false, shyLoaded = false
+  const haltQuads: Partial<Record<'back' | 'front', number>> = {}, shyQuads: Partial<Record<'back' | 'front', number>> = {}
+  const haltOn = () => haltSet && haltLoaded, shyOn = () => shySet && shyLoaded
   const artLoaded: Partial<Record<HandArt, boolean>> = {} // 素材が届くまでは元の手のまま（読込失敗時も同じ）
   const handArt = () => pose.right.art && armBlend > 0.001 && artLoaded[pose.right.art] ? { kind: pose.right.art, w: pose.right.artW ?? 0 } : { kind: undefined, w: 0 }
   const separatedPose = (a: ArmPose) => armBlend > 0.001 && (Math.abs(a.fo) > SEPARATE_AT || (!!a.elbowTo && (a.elbowW ?? 0) > SEPARATE_AT))
@@ -373,6 +394,14 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
         haltQuads[layer] = quad.index
         synth.set(quad.index, { base: RIGHT.arm, pointer: quad.pointer, opacity: () => haltOn() ? 1 : 0, write(out) { const [dx, dy] = swayOf(RIGHT.arm), angle = haltArmAngle(haltTime, haltOut); corners.forEach((c, i) => { const q = haltArmPoint(c, angle); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } })
       } }
+    // 照れの 1 枚腕。2 枚とも読めたときだけ使い、読めなければ従来の照れの腕のまま。
+    const shyMark = { back: false, front: false }
+    { const [x0, y0, w, h] = SHY_ARM.box, corners: Vec[] = [[x0, y0], [x0 + w, y0], [x0 + w, y0 + h], [x0, y0 + h]]
+      for (const layer of ['back', 'front'] as const) {
+        const quad = addQuad(pp, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), later(SHY_ARM[layer], () => { shyMark[layer] = true; shyLoaded = shyMark.back && shyMark.front }))
+        shyQuads[layer] = quad.index
+        synth.set(quad.index, { base: RIGHT.arm, pointer: quad.pointer, opacity: () => shyOn() ? 1 : 0, write(out) { const [dx, dy] = swayOf(RIGHT.arm), m = shyArmMotion(haltTime, haltOut); corners.forEach((c, i) => { const q = shyArmPoint(c, m); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } })
+      } }
     for (const [m, side] of [[RIGHT.arm, 'right'], [RIGHT.hand, 'right'], [LEFT.arm, 'left'], [LEFT.hand, 'left']] as const) {
       const g = addGhost(pp, m); ghosts.set(m, { ...g, side })
       synth.set(g.index, { base: m, pointer: g.pointer, ghost: true, opacity: () => ghostFor(side), write() {} }) // 頂点は apply が変形前の値を写す
@@ -428,6 +457,9 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       // 制止の 1 枚腕: 元の上腕・小手・手は描かず、腕全体を袖の表地の裏に、同じ絵の肘から先を表地の手前に重ねる。
       if (parts && haltOn() && c === RIGHT.arm && parts.right.on) return [c, haltQuads.back as number, parts.right.outer, haltQuads.front as number]
       if (parts && haltOn() && c === RIGHT.hand) return []
+      // 照れの 1 枚腕: 腕全体を袖の表地の裏に置き、肘から先は口元を隠すため描画の最後（顔の手前）に足す。
+      if (parts && shyOn() && c === RIGHT.arm && parts.right.on) return [c, shyQuads.back as number, parts.right.outer]
+      if (parts && shyOn() && c === RIGHT.hand) return []
       if (parts && c === RIGHT.arm && parts.right.on) return [parts.right.stub, c, parts.right.fill, parts.right.bentElbow, parts.right.outer, parts.right.fore, parts.right.bentFore]
       if (parts && c === LEFT.arm && parts.left.on) return [parts.left.stub, c, parts.left.fill, parts.left.bentElbow, parts.left.outer, parts.left.fore, parts.left.bentFore]
       if (parts && c === RIGHT.hand && artMesh != null) return [c, artMesh, parts.cuff]
@@ -437,7 +469,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     const list = Array.from(new Int32Array(rt.memory.buffer, pointer, Math.min(count, capacity)))
     // 切替中の待機の腕は元の位置（描画順）に置き、切替先の腕はその手前に重ねる。
     const ghostAt = (c: number): number[] => { const g = ghosts.get(c); return g && ghostFor(g.side) > 0.001 ? [g.index] : [] }
-    const out = [...list.flatMap(c => [...ghostAt(c), ...(front.includes(c) ? [] : expand(c))]), ...front.filter(m => list.includes(m)).flatMap(expand)].slice(0, capacity)
+    const out = [...list.flatMap(c => [...ghostAt(c), ...(front.includes(c) ? [] : expand(c))]), ...front.filter(m => list.includes(m)).flatMap(expand), ...(parts && shyOn() && parts.right.on ? [shyQuads.front as number] : [])].slice(0, capacity)
     new Int32Array(rt.memory.buffer, pointer, out.length).set(out)
     return out.length
   }
@@ -452,14 +484,14 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const baseUpdate = p.update.bind(p)
   p.update = (dt: number) => {
     generation++
-    if (haltSet) { haltTime += dt; if (sw?.phase === 'out') haltOut = Math.min(1, (sw.t + dt) / SWITCH_SECONDS) }
+    if (haltSet || shySet) { haltTime += dt; if (sw?.phase === 'out') haltOut = Math.min(1, (sw.t + dt) / SWITCH_SECONDS) }
     if (sw) {
       sw.t += dt
       const x = Math.min(1, sw.t / SWITCH_SECONDS)
       posedAlpha = sw.phase === 'in' ? ease(x) : 1 - ease(x)
       if (x >= 1) {
         const ended = sw; sw = null; posedAlpha = 1
-        if (ended.phase === 'out') { haltSet = false; haltOut = 0; frozen = null; switched = false; pose = { right: REST, left: REST, body: NO_BODY }; armBlend = 0 }
+        if (ended.phase === 'out') { haltSet = false; shySet = false; haltOut = 0; frozen = null; switched = false; pose = { right: REST, left: REST, body: NO_BODY }; armBlend = 0 }
         ended.then?.()
       }
     }
@@ -501,7 +533,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     clip = clips[next]; clipName = next; clipTime = 0; fadeFrom = null; frozen = null; switched = true; armBlend = 1
     pose = { ...sample(clip, 0), right: SWITCHED[next] as ArmPose }
     fadeSides = { right: true, left: false }
-    sw = { phase: 'in', t: 0 }; posedAlpha = 0; haltSet = next === 'halt'; haltTime = 0; haltOut = 0
+    sw = { phase: 'in', t: 0 }; posedAlpha = 0; haltSet = next === 'halt'; shySet = next === 'shyHand'; haltTime = 0; haltOut = 0
   }
   const atRest = () => !sw && !fadeFrom && (armBlend < 0.001 || !posed(pose.right) && !posed(pose.left))
   return {
@@ -521,6 +553,6 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       clip = clips[next]; clipName = next; clipTime = plan.at; armBlend = 1
     },
     reset() { emotion = 'neutral'; target = faces.neutral; player.expression(null); if (switched || sw) { switchOut(); return } if (clip) startFade(); clip = null; clipName = 'none' },
-    report: () => ({ supported: true, parts: partsStatus, facePatch, emotion, gesture: clipName, armBlend, armSwitch: sw ? { phase: sw.phase, t: sw.t, posedAlpha } : null, switched, haltSet: haltOn(), clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
+    report: () => ({ supported: true, parts: partsStatus, facePatch, emotion, gesture: clipName, armBlend, armSwitch: sw ? { phase: sw.phase, t: sw.t, posedAlpha } : null, switched, haltSet: haltOn(), shySet: shyOn(), clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
   }
 }

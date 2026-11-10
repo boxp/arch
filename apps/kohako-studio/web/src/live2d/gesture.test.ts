@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { existsSync } from 'node:fs'
-import { BENT_ART, HALT_ARM, haltArmAngle, haltArmPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { BENT_ART, HALT_ARM, haltArmAngle, haltArmPoint, SHY_ARM, shyArmMotion, shyArmPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -262,7 +262,7 @@ describe('実行時の動作の割り込み', () => {
   it('解除で戻る途中に次の動作が来ても手首が跳ばない', () => {
     for (const released of [0.05, 0.1, 0.2, 0.3, 0.4]) {
       const { stage, frame } = setup()
-      stage.playGesture('shyHand'); run(frame, 1.5)
+      stage.playGesture('joy'); run(frame, 1.5) // 照れは 1 枚腕の差し替え（フェード）になったので、変形で戻る動作で確かめる
       stage.reset()
       let previous = run(frame, released)
       stage.playGesture('greet')
@@ -383,13 +383,15 @@ describe('制止の腕セットの切替（BOXP-476 TD-06 Y\')', () => {
     expect(stage.report()).toMatchObject({ armSwitch: { phase: 'in' }, gesture: 'halt' })
     near(frame(), haltWrist)
   })
-  it('制止→照れは制止の腕をフェードアウトしてから照れを休止から始める', () => {
+  it('制止→照れは制止の腕をフェードアウトしてから照れの腕をフェードインする（腹の前を横切らない）', () => {
     const { stage, frame, run } = setup()
     stage.playGesture('halt'); run(1)
     stage.playGesture('shyHand')
     near(frame(), haltWrist)
     run(SWITCH_SECONDS + 0.02)
-    expect(stage.report()).toMatchObject({ armSwitch: null, gesture: 'shyHand', switched: false })
+    expect(stage.report()).toMatchObject({ armSwitch: { phase: 'in' }, gesture: 'shyHand', switched: true })
+    run(SWITCH_SECONDS)
+    expect(stage.report()).toMatchObject({ armSwitch: null, gesture: 'shyHand', switched: true })
   })
   it('フェードアウト中に次の動作が来たら、フェード後にそれを始める（最後の要求が勝つ）', () => {
     const { stage, run } = setup()
@@ -424,5 +426,28 @@ describe('制止の 1 枚腕（BOXP-476 TD-06 Owner 2）', () => {
   })
   it('素材ファイルが揃っている', () => {
     for (const f of [HALT_ARM.back, HALT_ARM.front]) expect(existsSync(new URL(`../../public/kohako/live2d/acting/${f}`, import.meta.url))).toBe(true)
+  })
+})
+
+describe('照れの 1 枚腕（BOXP-476 TD-06）', () => {
+  const dist = (a: readonly number[], b: readonly number[]) => Math.hypot(a[0] - b[0], a[1] - b[1])
+  it('部品に切らない: 肩・肘・拳の距離はどの時刻でも元の絵の比のまま（剛体の 1 枚）', () => {
+    const H = SHY_ARM, u0 = dist(H.shoulderPx, H.elbowPx) * H.scale, f0 = dist(H.elbowPx, H.fistPx) * H.scale
+    for (const t of [0, 0.2, 0.5, 1, 2]) for (const out of [0, 0.5, 1]) {
+      const m = shyArmMotion(t, out), s = shyArmPoint(H.shoulderPx, m), e = shyArmPoint(H.elbowPx, m), w = shyArmPoint(H.fistPx, m)
+      expect(Math.abs(dist(s, e) - u0)).toBeLessThan(1e-6); expect(Math.abs(dist(e, w) - f0)).toBeLessThan(1e-6)
+    }
+  })
+  it('保持では拳が口元（口の中心の近く）にあり、入りは拳が下から上がってくる', () => {
+    const hold = shyArmPoint(SHY_ARM.fistPx, shyArmMotion(1.5)), start = shyArmPoint(SHY_ARM.fistPx, shyArmMotion(0))
+    expect(dist(hold, [574, 352])).toBeLessThan(40)
+    expect(start[1]).toBeGreaterThan(hold[1] + 40)
+  })
+  it('肘は肩の下（体の外へ張り出さず、袖の下縁より下）に来る', () => {
+    const e = shyArmPoint(SHY_ARM.elbowPx, shyArmMotion(1.5))
+    expect(e[0]).toBeGreaterThan(660); expect(e[0]).toBeLessThan(780); expect(e[1]).toBeGreaterThan(680)
+  })
+  it('照れは腕セットの切替で出す', () => {
+    expect(SWITCHED.shyHand).toBeDefined()
   })
 })
