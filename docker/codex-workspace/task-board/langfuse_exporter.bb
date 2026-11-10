@@ -784,12 +784,14 @@
   the whole value, unquoted (the match ends with it), and followed by a space and a closer on the line; a quoted or
   unclosed opener (password: \"{{\", password: {{) is a value like any other (short symbols withhold the lineage).
   The match text carries no position, so every occurrence of it must be closed: an unclosed password: {{ followed
-  later by password: {{ secrets.X }} is not a template (arch#14742 review), and the short value withholds."
+  later by password: {{ secrets.X }} is not a template (arch#14742 review), and the short value withholds. The closer
+  must come before any other opener: in password: {{ note password: {{ secrets.X }} the closer belongs to the second
+  template, so the first opener is unclosed (arch#14742 review)."
   [text m v]
   (boolean (and (re-matches #"\$?\{[{%]-?" v)
                 (str/ends-with? (str m) v)
                 (let [occurrence (.matcher (re-pattern (java.util.regex.Pattern/quote (str m))) text)
-                      closed (.matcher #"[ \t]+[^\r\n]*?[}%]\}" text)]
+                      closed (.matcher #"[ \t]+(?:[^\r\n{]|\{(?![{%]))*?[}%]\}" text)]
                   (loop [seen? false]
                     (if (.find occurrence)
                       (do (.region closed (.end occurrence) (count text))
@@ -855,11 +857,12 @@
 (defn- open-template?
   "An unquoted template opener ({{, {%) that no closer follows on its line (arch#14742 review): it is not an object
   or a template expression but the value itself (password: {{ is a short symbol password and withholds the lineage).
-  A closed template ({{ .Values.x }}) is still scanned as a bracket."
+  A closed template ({{ .Values.x }}) is still scanned as a bracket; a closer after another opener on the line closes
+  that opener, not this one ({{ note {{ x }} is open)."
   [s]
   (let [s (str/triml (str s))]
     (boolean (and (re-find #"^\{[{%]" s)
-                  (not (re-find #"^\{[{%]-?[ \t]+[^\r\n]*?[}%]\}" (subs s 0 (min (count s) 4096))))))))
+                  (not (re-find #"^\{[{%]-?[ \t]+(?:[^\r\n{]|\{(?![{%]))*?[}%]\}" (subs s 0 (min (count s) 4096))))))))
 
 (defn- match-values [kind m]
   (case kind

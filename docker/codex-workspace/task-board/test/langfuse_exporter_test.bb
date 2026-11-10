@@ -1050,6 +1050,22 @@
       (is (str/starts-with? (attr-value gen "langfuse.observation.metadata.body_policy") "withheld_after_") (str format))
       (is (not (str/includes? (pr-str spans) "laterreplymarker")) (str format)))))
 
+;; Regression (arch#14742 review): a template expression closes before any other opener. An unclosed opener on
+;; the same line as a later closed template (password: {{ note password: {{ secrets.X }}) is a short symbol password:
+;; the closer belongs to the second template, so the first withholds the lineage and its restatement is never sent.
+(deftest unclosed-template-opener-on-same-line-as-closed-template-withholds
+  (doseq [text ["password: {{ note password: {{ secrets.X }}" "password: ${{ x password: ${{ secrets.X }}"
+                "password: {% a {% b %}" "token: {{ note {{ x }}"]]
+    (is (true? (:unpinned? (lf/named-values text))) text))
+  (doseq [text ["password: ${{ secrets.X }} and token: ${{ secrets.Y }}" "PASSWORD: {{ .Values.db.password }} # note"]]
+    (is (false? (:unpinned? (lf/named-values text))) text))
+  (doseq [format [:claude :codex]]
+    (let [{:keys [spans raw]} (prepared-session format "password: {{ note password: {{ secrets.X }}"
+                                                "it is {{ , laterreplymarker")
+          gen (last (filter #(str/starts-with? (:name %) "generation:") raw))]
+      (is (str/starts-with? (attr-value gen "langfuse.observation.metadata.body_policy") "withheld_after_") (str format))
+      (is (not (str/includes? (pr-str spans) "laterreplymarker")) (str format)))))
+
 ;; Regression (arch#14742 review): a value of symbols only can be a real password (password: ==). A short one has no
 ;; word boundary to pin it by, so it withholds the lineage as before TD-12; the restatement is never sent.
 (deftest short-symbol-only-values-withhold
