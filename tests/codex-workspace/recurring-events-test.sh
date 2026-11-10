@@ -503,14 +503,15 @@ model_job="$(bb -e '(let [j (first (filter #(= "model-updates" (:id %)) (:jobs (
 [[ "${model_job}" == "true command bb /opt/codex-workspace/model-updates/model_updates.bb tick" ]] || fail "seed model-updates job mismatch: ${model_job}"
 [[ -f "${ROOT_DIR}/docker/codex-workspace/model-updates/model_updates.bb" ]] || fail "model-updates command target missing"
 # seed の model-updates job は prompt file なしで selector と cron runner を通り command を実行する
+# (CI には /home/boxp が無いため、実行確認用の複製では command と workdir だけを差し替える)
 [[ ! -e "${seed_vault}/Infrastructure/Codex Cron/prompts/model-updates.md" ]] || fail "model-updates must not need a prompt file"
 selected="$(CODEX_CRON_ROOT="${seed_vault}/Infrastructure/Codex Cron" bb "${ROOT_DIR}/docker/codex-workspace/cron/select-codex-cron-job.bb" model-updates)" || fail "selector rejected seed model-updates job"
 grep -Fxq "CODEX_CRON_RUNNER='command'" <<< "${selected}" || fail "selector runner mismatch: ${selected}"
 grep -Fxq "CODEX_CRON_COMMAND='bb /opt/codex-workspace/model-updates/model_updates.bb tick'" <<< "${selected}" || fail "selector command mismatch: ${selected}"
 cron_exec_root="${tmp}/cron-exec"
 mkdir -p "${cron_exec_root}"
-bb -e '(let [[src dst] *command-line-args* r (clojure.edn/read-string (slurp src))] (spit dst (pr-str (update r :jobs (fn [js] (mapv #(if (= "model-updates" (:id %)) (assoc % :command "echo model-updates-ran") %) js))))))' \
-  "${seed_vault}/Infrastructure/Codex Cron/jobs.edn" "${cron_exec_root}/jobs.edn"
+bb -e '(let [[src dst dst-dir] *command-line-args* r (clojure.edn/read-string (slurp src))] (spit dst (pr-str (update r :jobs (fn [js] (mapv #(if (= "model-updates" (:id %)) (assoc % :command "echo model-updates-ran" :workdir dst-dir) %) js))))))' \
+  "${seed_vault}/Infrastructure/Codex Cron/jobs.edn" "${cron_exec_root}/jobs.edn" "${cron_exec_root}"
 CODEX_CRON_ROOT="${cron_exec_root}" CODEX_CRON_SELECTOR="${ROOT_DIR}/docker/codex-workspace/cron/select-codex-cron-job.bb" CODEX_CRON_RUN_ID=t1 \
   bash "${ROOT_DIR}/docker/codex-workspace/cron/run-codex-cron.sh" model-updates >/dev/null || fail "cron runner failed for command job"
 grep -Fxq "model-updates-ran" "${cron_exec_root}/runs/model-updates/t1/stdout.log" || fail "command job did not run"
