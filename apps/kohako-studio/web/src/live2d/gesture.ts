@@ -56,10 +56,10 @@ const GUIDE: ArmPose = { up: 0, upS: 1, fo: -1.92, foS: 1, ha: 0.15, haS: 1, elb
 const HALT: ArmPose = { up: 0, upS: 1, fo: -2.05, foS: 1, ha: 0.1, haS: 1.1, elbowTo: ELBOW_OUT, front: true, art: 'palm', artW: 1 }
 const HALT_RISE: ArmPose = { up: 0, upS: 1, fo: -1.1, foS: 1, ha: 0.2, haS: 1.05, elbowTo: [805, 725], front: true, art: 'palm', artW: 0 }
 // 照れ: 肘は体の脇寄りに残し、前腕を胸の前へ斜めに渡して手を口元へ運ぶ。肘を胸の中央まで寄せると前腕が上腕の真下に立って上腕が読めない（#14730 P1）。
-const SHY: ArmPose = { up: 0, upS: 1, fo: 3.05, foS: 1.02, ha: 0.19, haS: 0.95, elbowTo: [705, 665], front: true, art: 'cover', artW: 1 }
+const SHY: ArmPose = { up: 0, upS: 1, fo: 3.02, foS: 1.355, ha: 0.19, haS: 0.95, elbowTo: [742, 715], front: true, art: 'cover', artW: 1 }
 // 手を口元へ運ぶ途中は、前腕を画面の横へ倒さず手前へ向ける（短縮）。手は体の前をほぼ縦に上がり、腹の前を横切らない。
 const SHY_DOWN: ArmPose = { up: 0, upS: 1, fo: 0.9, foS: 0.45, ha: 2.15, haS: 0.98, elbowTo: [735, 705], front: true, art: 'cover', artW: 0 }
-const SHY_RISE: ArmPose = { up: 0, upS: 1, fo: 2.7, foS: 0.75, ha: 0.45, haS: 0.98, elbowTo: [712, 680], front: true, art: 'cover', artW: 0 }
+const SHY_RISE: ArmPose = { up: 0, upS: 1, fo: 2.7, foS: 0.9, ha: 0.45, haS: 0.98, elbowTo: [740, 712], front: true, art: 'cover', artW: 0 }
 const JOY: ArmPose = { up: 0, upS: 1, fo: -1.85, foS: 1, ha: 0.25, haS: 1, elbowTo: ELBOW_OUT }
 
 export const clips: Record<Exclude<Gesture, 'none'>, Clip> = {
@@ -197,11 +197,12 @@ const ART: Record<HandArt, { file: string; w: number; h: number; anchor: Vec; sc
 const UPPER_ART = { file: 'upper.png', top: [750, 640] as Vec, bottom: [761, 764] as Vec, halfWidth: 39 }
 const UPPER_ART_REACH = 114 // 肩の関節から素材の上端までの距離（休止時の top と同じ）
 const UPPER_ART_REACH_INWARD = 8 // 肘を体の前へ寄せたときの上端の距離。袖の裏まで伸ばし、棒の切り口を胴の上に見せない
-const UPPER_ART_INTO_CUFF = 30 // 上腕の下端を肘より先へ出す量。曲げの絵（丸い小手）の間は肩→肘の延長線上に置いて肘の丸みと両縁をつなげ、元の V 字の小手の間は手首の側へ置いて端を開口の内側に収める
+const UPPER_ART_INTO_CUFF = 12 // 上腕の下端を肘より先へ出す量。曲げの絵（丸い小手）の間は肩→肘の延長線上に置いて肘の丸みと両縁をつなげ、元の V 字の小手の間は手首の側へ置いて端を開口の内側に収める
 const SEPARATE_AT = 0.02
-// 曲げた腕の絵。v11r の小手の肘側は V 字に切れ込んでいて、回すと先端が二股の板に見える（肘の丸みが無い）。曲げの間だけ、丸い金縁で肘側を閉じた小手と、肘を包む黒い袖へ差し替える。小手は v11r の前腕の太さと先細りに合わせた生成素材（Gemini、正本シートの曲げ腕と v11r の前腕を参照）、肘の袖は正本シートからの切り出し。anchor は素材 px の肘、scale は素材 px→モデル座標。
-export const BENT_ART = { fore: { file: 'fore-bent.png', w: 170, h: 540, anchor: [82.5, 417.5] as Vec, scale: 0.518 }, elbow: { file: 'elbow-upper.png', w: 294, h: 314, anchor: [147, 156.8] as Vec, scale: 0.5 } }
+// 曲げた腕の絵。v11r の小手の肘側は V 字に切れ込んでいて、回すと先端が二股の板に見える（肘の丸みが無い）。曲げの間だけ、丸い金縁で肘側を閉じた小手と、肘を包む黒い袖へ差し替える。小手は v11r の前腕の太さと先細りに合わせた生成素材（Gemini、正本シートの曲げ腕と v11r の前腕を参照）、肘の袖は正本シートからの切り出し。小手の肘側は閉じた丸い端を切って金縁の筒口にし（BOXP-488 案C、既存素材の加工）、黒い上腕が筒口へ入って見えるようにする。anchor は素材 px の肘、scale は素材 px→モデル座標。
+export const BENT_ART = { fore: { file: 'fore-bent.png', w: 170, h: 442, anchor: [82.5, 417.5] as Vec, scale: 0.518 }, elbow: { file: 'elbow-upper.png', w: 294, h: 314, anchor: [147, 156.8] as Vec, scale: 0.5 } }
 const BENT_FROM = 0.4, BENT_TO = 0.42
+const BENT_NEAR_WIDEN = 0.28
 /** 前腕の曲げ量に応じた、差し替えの絵の重み（0〜1）。 */
 export const bentWeight = (fo: number) => smooth(BENT_FROM, BENT_TO, Math.abs(fo))
 /** 絵の左右。正本は「手先へ向かって肩が左」の絵。内回り（fo>0）と左腕では裏返す。 */
@@ -212,7 +213,9 @@ export function placeBent(elbow: Vec, axis: Vec, side: number, [b, a]: Vec): Vec
 /** 曲げた前腕の絵の点。軸方向は deformFore と同じ foreScale で縮め、照れの途中の短縮でも小手の先が手首から離れないようにする。 */
 export function placeBentFore(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose: ArmPose, [b, a]: Vec): Vec {
   const m = mirrored(bone, pose), { elbow, wrist } = solveArm(bone, m)
-  return placeBent(elbow, sub(wrist, elbow), bentSide(bone, pose), [b, a * foreScale(m)])
+  const s = foreScale(m)
+  // 照れの保持のように前腕が休止より長く伸びる区間は、手前へ向いた遠近として太く見せる（正本の照れの前腕と同じ見え方。細い棒に見せない）。
+  return placeBent(elbow, sub(wrist, elbow), bentSide(bone, pose), [b * (1 + BENT_NEAR_WIDEN * smooth(1.02, 1.22, s)), a * s])
 }
 // 元の手と手の素材（掌・口元の手）の切替。両方を半透明で重ねると指が二重に透けて見えるので、重みの中点で入れ替え、半透明の中間を作らない。
 const HAND_SWAP_AT = 0.5
