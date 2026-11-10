@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { existsSync } from 'node:fs'
-import { BENT_ART, GREET_WAVE, GUIDE_ARM, guideArmMotion, JOY_ARM, JOY_SWITCH_SECONDS, joyArmMotion, joyArmPoint, guideArmPoint, greetArmPoint, greetWave, haltForeWeight, HALT_ARM, haltArmAngle, haltArmPoint, SHY_ARM, shyArmMotion, shyArmPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { BENT_ART, GREET_WAVE, GUIDE_ARM, guideArmMotion, JOY_ARM, JOY_LOWER_SECONDS, JOY_SWITCH_SECONDS, joyArmMotion, joyArmPoint, guideArmPoint, greetArmPoint, greetWave, haltForeWeight, HALT_ARM, haltArmAngle, haltArmPoint, SHY_ARM, shyArmMotion, shyArmPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -261,15 +261,28 @@ describe('実行時の動作の割り込み', () => {
 
   it('喜びも 1 枚腕の差し替えになり、解除の途中で再要求しても切替のフェードを通る（変形で上げる腕の動作は残っていない）', () => {
     for (const g of ['halt', 'shyHand', 'greet', 'guide', 'joy'] as const) expect(SWITCHED[g]).toBeDefined()
-    for (const released of [0.03, 0.06, 0.09]) { // 喜びの切替は JOY_SWITCH_SECONDS(0.12 秒)
+    for (const released of [0.03, 0.06, 0.09]) { // 喜びの戻りは下ろし JOY_LOWER_SECONDS の後に JOY_SWITCH_SECONDS(0.12 秒) のフェード
       const { stage, frame } = setup()
       stage.playGesture('joy'); run(frame, 1.5)
       expect((stage.report() as { switched: boolean }).switched).toBe(true)
       stage.reset(); run(frame, released)
       expect((stage.report() as { armSwitch: { phase: string } | null }).armSwitch?.phase).toBe('out')
-      stage.playGesture('joy'); run(frame, 0.3)
+      stage.playGesture('joy'); run(frame, JOY_LOWER_SECONDS + 0.3) // 戻りは下ろし（JOY_LOWER_SECONDS）を経てから差し替える
       expect((stage.report() as { armSwitch: { phase: string } | null; gesture: string }).gesture).toBe('joy')
     }
+  })
+  it('喜びの戻りは腕を下ろし切ってから差し替え、入りは低い位置で差し替え終えてから持ち上げる（拳が高いまま消えない）', () => {
+    const { stage, frame } = setup()
+    stage.playGesture('joy'); run(frame, 1.5)
+    stage.reset(); run(frame, JOY_LOWER_SECONDS - 0.05)
+    const mid = stage.report() as { armSwitch: { phase: string; posedAlpha: number } | null }
+    expect(mid.armSwitch?.phase).toBe('out'); expect(mid.armSwitch?.posedAlpha).toBe(1) // 下ろしている間は喜びの腕だけが見える
+    run(frame, 0.1)
+    expect((stage.report() as { armSwitch: { posedAlpha: number } | null }).armSwitch?.posedAlpha ?? 0).toBeLessThan(1)
+    const hold = joyArmPoint(JOY_ARM.fistPx, joyArmMotion(1, 0)), lowered = joyArmPoint(JOY_ARM.fistPx, joyArmMotion(1, 1))
+    expect(lowered[1]).toBeGreaterThan(hold[1] + 100) // フェードが始まる時点の拳は保持より十分下
+    const during = joyArmPoint(JOY_ARM.fistPx, joyArmMotion(JOY_SWITCH_SECONDS / 2, 0)), start = joyArmPoint(JOY_ARM.fistPx, joyArmMotion(0, 0))
+    expect(distance(during, start)).toBeLessThan(0.5) // 入りの切替中は持ち上げない
   })
   it('喜びの左腕は右腕の絵を体の中心線で鏡映した位置に置き、保持の拳は肩の外の高さにある', () => {
     const m = joyArmMotion(1, 0), fist = joyArmPoint(JOY_ARM.fistPx, m), fistL = joyArmPoint(JOY_ARM.fistPx, m, true)

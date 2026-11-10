@@ -222,6 +222,11 @@ export const SWITCH_SECONDS = 0.25
  * （85a81114 の独立判定 td06j-review-85a8111）。重なる時間を短くし、腕を低い位置から持ち上げる途中で差し替える。
  */
 export const JOY_SWITCH_SECONDS = 0.12
+/**
+ * 喜びの戻りで、切替のフェードを始める前に腕を下ろす時間。e53a69a9 は下ろしながら 0.12 秒で消したため、拳が高いまま消えて見えた
+ * （独立判定 td06j-review-e53a69a）。戻りは下ろし切ってから低い位置で差し替え、入りは低い位置で差し替え終えてから持ち上げる。
+ */
+export const JOY_LOWER_SECONDS = 0.4
 export const SWITCHED: Partial<Record<Exclude<Gesture, 'none'>, ArmPose>> = { halt: HALT, shyHand: SHY, greet: HALT, guide: HALT, joy: HALT }
 /** 両腕を差し替える動作（左腕も右と同じ姿勢で保持し、袖の持ち上げと切替のフェードを左右で揃える）。 */
 export const BOTH_ARMS: ReadonlySet<string> = new Set(['joy'])
@@ -339,10 +344,12 @@ export const JOY_ARM = {
   shoulderPx: [580, 700] as Vec, elbowPx: [1070, 1455] as Vec, fistPx: [1364, 695] as Vec,
   at: [718, 540] as Vec, scale: 0.25, angle: 0,
 }
-/** 喜びの 1 枚腕の回転と沈み。入りは拳を下から持ち上げ、保持は体の揺れに合わせて小さく弾ませ、戻りは下げながら消す。 */
+/** 喜びの 1 枚腕の回転と沈み。入りは低い位置で差し替えてから拳を持ち上げ、保持は体の揺れに合わせて小さく弾ませ、戻りは下げ切ってから消す（out は下ろしの進み 0〜1）。 */
 export function joyArmMotion(t: number, out = 0): { angle: number; drop: number } {
-  const rise = 1 - ease(Math.min(1, Math.max(0, t / 0.45))), hold = smooth(0.35, 0.75, t), o = ease(out)
-  return { angle: JOY_ARM.angle + 0.7 * rise + 0.03 * Math.sin(2 * Math.PI * (t - 0.45) / 0.7) * hold + 0.7 * o, drop: 30 * rise + 5 * Math.abs(Math.sin(2 * Math.PI * (t - 0.45) / 0.7)) * hold + 30 * o }
+  const rise = 1 - ease(Math.min(1, Math.max(0, (t - JOY_SWITCH_SECONDS) / 0.45))), hold = smooth(0.47, 0.87, t), o = ease(out)
+  // 低い位置は肩で 0.35rad だけ回し 100 沈める（0.7rad 回すと前腕が腹の前で水平になる）。肘が待機の肘の真上、拳が体の外に来る。
+  const low = Math.max(rise, o)
+  return { angle: JOY_ARM.angle + 0.35 * low + 0.03 * Math.sin(2 * Math.PI * (t - 0.57) / 0.7) * hold * (1 - o), drop: 100 * low + 5 * Math.abs(Math.sin(2 * Math.PI * (t - 0.57) / 0.7)) * hold * (1 - o) }
 }
 /** 右腕の画素 → モデル座標。left なら右腕の位置を体の中心線で鏡映する（絵は左右反転して貼る）。 */
 export function joyArmPoint(px: Vec, m: { angle: number; drop: number }, left = false): Vec {
@@ -602,10 +609,12 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   p.update = (dt: number) => {
     generation++
     if (greetSet) greetTime += dt; else waveDecay += dt
-    if (haltSet || shySet || guideSet || joySet) { haltTime += dt; if (sw?.phase === 'out') haltOut = Math.min(1, (sw.t + dt) / switchSeconds()) }
+    // 喜びの戻りは先に腕を下ろし（lead 秒、腕は不透明のまま）、下ろし切ってから切替のフェードに入る。
+    const lead = sw?.phase === 'out' && joySet ? JOY_LOWER_SECONDS : 0
+    if (haltSet || shySet || guideSet || joySet) { haltTime += dt; if (sw?.phase === 'out') haltOut = Math.min(1, (sw.t + dt) / (lead || switchSeconds())) }
     if (sw) {
       sw.t += dt
-      const x = Math.min(1, sw.t / switchSeconds())
+      const x = Math.min(1, Math.max(0, sw.t - lead) / switchSeconds())
       posedAlpha = sw.phase === 'in' ? ease(x) : 1 - ease(x)
       if (x >= 1) {
         const ended = sw; sw = null; posedAlpha = 1
