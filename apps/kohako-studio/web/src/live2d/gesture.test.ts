@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { existsSync } from 'node:fs'
-import { BENT_ART, HALT_SET, haltAngles, haltPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { BENT_ART, HALT_ARM, haltArmAngle, haltArmPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -401,30 +401,28 @@ describe('制止の腕セットの切替（BOXP-476 TD-06 Y\')', () => {
   })
 })
 
-describe('制止の腕セット（BOXP-476 TD-06 改良Y）', () => {
-  const angles = (e: number, w = 0, s = 0) => ({ shoulder: s, elbow: e, wrist: w })
-  it('小手を肘で回しても肘の点は動かず、上腕は動かない', () => {
-    const a = haltPoint(HALT_SET.elbowPx, 'fore', angles(0.3)), b = haltPoint(HALT_SET.elbowPx, 'upper', angles(0.3))
-    expect(Math.hypot(a[0] - HALT_SET.elbow[0], a[1] - HALT_SET.elbow[1])).toBeLessThan(1e-6)
-    expect(Math.hypot(b[0] - HALT_SET.elbow[0], b[1] - HALT_SET.elbow[1])).toBeLessThan(1e-6)
-  })
-  it('手は手首で小手につながったまま回る（親子）', () => {
-    for (const e of [-0.1, 0, 0.32]) for (const w of [-0.1, 0.2]) {
-      const hand = haltPoint(HALT_SET.wristPx, 'hand', angles(e, w)), fore = haltPoint(HALT_SET.wristPx, 'fore', angles(e, w))
-      expect(Math.hypot(hand[0] - fore[0], hand[1] - fore[1])).toBeLessThan(1e-6)
+describe('制止の 1 枚腕（BOXP-476 TD-06 Owner 2）', () => {
+  const dist = (a: readonly number[], b: readonly number[]) => Math.hypot(a[0] - b[0], a[1] - b[1])
+  it('部品に切らない: 肩・肘・手首の距離はどの角度でも元の絵の比のまま（剛体の 1 枚）', () => {
+    const H = HALT_ARM, u0 = dist(H.shoulderPx, H.elbowPx) * H.scale, f0 = dist(H.elbowPx, H.wristPx) * H.scale
+    for (const a of [-0.3, -0.1, 0, 0.2, 0.5]) {
+      const s = haltArmPoint(H.shoulderPx, a), e = haltArmPoint(H.elbowPx, a), w = haltArmPoint(H.wristPx, a)
+      expect(Math.abs(dist(s, e) - u0)).toBeLessThan(1e-6); expect(Math.abs(dist(e, w) - f0)).toBeLessThan(1e-6)
+      expect(dist(s, H.at)).toBeLessThan(1e-6)
     }
   })
-  it('保持の姿勢: 手首は肩より外・上、前腕の長さは休止の ±10% 内', () => {
-    const wrist = haltPoint(HALT_SET.wristPx, 'fore', haltAngles(2)), fore = Math.hypot(wrist[0] - HALT_SET.elbow[0], wrist[1] - HALT_SET.elbow[1])
-    expect(wrist[0]).toBeGreaterThan(880); expect(wrist[1]).toBeLessThan(620)
-    expect(fore / Math.hypot(844 - 760, 928 - 733)).toBeGreaterThan(0.9); expect(fore / Math.hypot(844 - 760, 928 - 733)).toBeLessThan(1.1)
+  it('保持: 手首は肩より外・上、肘は肩より外、前腕の長さは休止の 0.8〜1.1 倍（上腕の上端は肩の装甲の下に隠れる）', () => {
+    const a = haltArmAngle(2), w = haltArmPoint(HALT_ARM.wristPx, a), e = haltArmPoint(HALT_ARM.elbowPx, a)
+    expect(w[0]).toBeGreaterThan(840); expect(w[1]).toBeLessThan(660); expect(e[0]).toBeGreaterThan(HALT_ARM.at[0])
+    const r = dist(e, w) / Math.hypot(844 - 760, 928 - 733)
+    expect(r).toBeGreaterThan(0.8); expect(r).toBeLessThan(1.1)
   })
-  it('入りは前腕を下げた位置から持ち上げ、保持の揺れは小さい', () => {
-    expect(haltAngles(0).elbow).toBeGreaterThan(0.25)
-    for (let t = 0.8; t < 4; t += 0.05) { const a = haltAngles(t); expect(Math.abs(a.elbow)).toBeLessThan(0.03); expect(Math.abs(a.wrist)).toBeLessThan(0.04) }
-    expect(haltAngles(2, 1).elbow).toBeGreaterThan(0.25)
+  it('入りは下げた位置から持ち上げ、保持の揺れは小さく、戻りで下げる', () => {
+    expect(haltArmAngle(0) - HALT_ARM.angle).toBeGreaterThan(0.25)
+    for (let t = 0.8; t < 4; t += 0.05) expect(Math.abs(haltArmAngle(t) - HALT_ARM.angle)).toBeLessThan(0.02)
+    expect(haltArmAngle(2, 1) - HALT_ARM.angle).toBeGreaterThan(0.2)
   })
-  it('3 部品の素材ファイルが揃っている', () => {
-    for (const part of ['upper', 'fore', 'hand'] as const) expect(existsSync(new URL(`../../public/kohako/live2d/acting/${HALT_SET[part].file}`, import.meta.url))).toBe(true)
+  it('素材ファイルが揃っている', () => {
+    for (const f of [HALT_ARM.back, HALT_ARM.front]) expect(existsSync(new URL(`../../public/kohako/live2d/acting/${f}`, import.meta.url))).toBe(true)
   })
 })

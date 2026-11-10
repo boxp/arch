@@ -225,35 +225,26 @@ export function backOpacity(front: number): number {
   return Math.min(1, Math.max(0, o))
 }
 /**
- * 制止の腕セット（BOXP-476 TD-06 改良Y、Gemini 生成 1 枚から切り分けた 上腕・小手・手）。待機の腕を変形で曲げず、
- * 動作の始まりにこの腕へフェードで差し替え、肩→肘→手首の親子回転で持ち上げと保持の微動を付ける。
- * box は生成画像の画素での各部品の範囲（ファイルは 0.5 倍で保存）。elbowPx/wristPx/shoulderPx は生成画像での関節。
+ * 制止の 1 枚腕（BOXP-476 TD-06 Owner 2）。Gemini で生成した制止の腕（肩〜肘〜小手〜手が 1 本に描かれた絵）を部品に切らず、
+ * 1 枚のまま動作の始まりにフェードで差し替え、肩を支点に絵全体を回して持ち上げ・保持の微動・戻りを付ける（肘や手首は曲げない）。
+ * back は腕全体（肩の丸みだけ肩の装甲の下へ隠れるようぼかした絵）で袖の表地の裏に、front は同じ絵・同じ位置で肘から先だけを
+ * 残したアルファで表地の手前に描く（2 枚は完全に重なるので 1 枚の絵として見える）。box は生成画像の画素（ファイルは 0.5 倍）。
  */
-export const HALT_SET = {
-  upper: { file: 'halt-upper.png', box: [131, 533, 526, 800] as const },
-  fore: { file: 'halt-fore.png', box: [537, 721, 526, 578] as const },
-  hand: { file: 'halt-hand.png', box: [886, 234, 291, 606] as const },
-  elbowPx: [520, 1170] as Vec, wristPx: [967, 790] as Vec, shoulderPx: [288, 352] as Vec,
-  /** モデル座標での肘の位置と、生成画像からの倍率・回転（肩の下から腕を少し外へ開く）。 */
-  elbow: [800, 720] as Vec, scale: 0.34, angle: -0.2,
+export const HALT_ARM = {
+  back: 'halt-arm.png', front: 'halt-arm-front.png', box: [131, 234, 1046, 1099] as const,
+  shoulderPx: [288, 352] as Vec, elbowPx: [520, 1170] as Vec, wristPx: [967, 790] as Vec,
+  /** 生成画像の肩の点を置くモデル座標と、倍率・保持の回転（反時計回りが負）。 */
+  at: [718, 540] as Vec, scale: 0.31, angle: -0.18,
 }
-export type HaltAngles = { shoulder: number; elbow: number; wrist: number }
-/** 制止の腕セットの関節角（画面の時計回りが正）。入り(t: 差し替え開始からの秒)は前腕を下げた位置から持ち上げ、保持は小さく揺らす。out(0〜1)は戻りで前腕を下げる。 */
-export function haltAngles(t: number, out = 0): HaltAngles {
-  const rise = 1 - ease(Math.min(1, Math.max(0, t / 0.5))), hold = smooth(0.3, 0.8, t)
-  return {
-    shoulder: -0.04 * rise + 0.008 * Math.sin(t * 2.6) * hold + 0.03 * ease(out),
-    elbow: 0.32 * rise + 0.025 * Math.sin(t * 2.9 + 0.6) * hold + 0.3 * ease(out),
-    wrist: 0.18 * rise + 0.035 * Math.sin(t * 3.7 + 1.3) * hold + 0.2 * ease(out),
-  }
+/** 1 枚腕の回転（ラジアン、画面の時計回りが正）。t は差し替え開始からの秒、out(0〜1)は戻りの進み。入りは下げた位置から持ち上げる。 */
+export function haltArmAngle(t: number, out = 0): number {
+  const rise = 1 - ease(Math.min(1, Math.max(0, t / 0.45))), hold = smooth(0.3, 0.8, t)
+  return HALT_ARM.angle + 0.3 * rise + 0.012 * Math.sin(t * 2.4) * hold + 0.25 * ease(out)
 }
-/** 制止の腕セットの生成画像の画素 → モデル座標（関節角を親子で適用）。part は回す範囲。 */
-export function haltPoint(px: Vec, part: 'upper' | 'fore' | 'hand', angles: HaltAngles, shoulder: Vec = RIGHT.S): Vec {
-  const H = HALT_SET, base = (q: Vec): Vec => add(H.elbow, scaleV(rot(sub(q, H.elbowPx), H.angle), H.scale))
-  let v = base(px)
-  if (part === 'hand') v = add(base(H.wristPx), rot(sub(v, base(H.wristPx)), angles.wrist))
-  if (part !== 'upper') v = add(H.elbow, rot(sub(v, H.elbow), angles.elbow))
-  return add(shoulder, rot(sub(v, shoulder), angles.shoulder))
+/** 生成画像の画素 → モデル座標（絵全体を肩の点で回すだけ）。 */
+export function haltArmPoint(px: Vec, angle: number): Vec {
+  const H = HALT_ARM
+  return add(H.at, scaleV(rot(sub(px, H.shoulderPx), angle), H.scale))
 }
 const posed = (a: ArmPose) => Math.abs(a.fo) > SEPARATE_AT || (!!a.elbowTo && (a.elbowW ?? 0) > SEPARATE_AT) || (a.artW ?? 0) > 0.001
 const partURL = (file: string) => new URL(`kohako/live2d/acting/${file}`, location.href).href
@@ -314,7 +305,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const ghostFor = (side: 'right' | 'left') => sw && fadeSides[side] ? backOpacity(posedAlpha) : 0
   // 制止の腕セットの状態。haltTime は差し替え開始からの秒、haltOut は戻りのフェードの進み(0〜1)。
   let haltSet = false, haltLoaded = false, haltTime = 0, haltOut = 0
-  const haltQuads: Partial<Record<'upper' | 'fore' | 'hand', number>> = {}
+  const haltQuads: Partial<Record<'back' | 'front', number>> = {}
   const haltOn = () => haltSet && haltLoaded
   const artLoaded: Partial<Record<HandArt, boolean>> = {} // 素材が届くまでは元の手のまま（読込失敗時も同じ）
   const handArt = () => pose.right.art && armBlend > 0.001 && artLoaded[pose.right.art] ? { kind: pose.right.art, w: pose.right.artW ?? 0 } : { kind: undefined, w: 0 }
@@ -374,19 +365,19 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       art[kind] = quad.index
       synth.set(quad.index, { base: RIGHT.hand, pointer: quad.pointer, opacity: () => { const h = handArt(); return h.kind === kind ? smooth(0.1, 0.6, h.w) : 0 }, write(out) { const [dx, dy] = swayOf(RIGHT.hand); corners.forEach((c, i) => { const q = deformHand(RIGHT, pose.right, c[0] + dx, c[1] + dy); out[2 * i] = q[0]; out[2 * i + 1] = q[1] }) } })
     }
-    // 制止の腕セット（上腕・小手・手）。3 枚とも読めたときだけ使い、読めなければ従来の制止の腕のまま。
-    const haltMark = { upper: false, fore: false, hand: false }
-    for (const part of ['upper', 'fore', 'hand'] as const) {
-      const spec = HALT_SET[part], [x0, y0, w, h] = spec.box, corners: Vec[] = [[x0, y0], [x0 + w, y0], [x0 + w, y0 + h], [x0, y0 + h]]
-      const quad = addQuad(pp, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), later(spec.file, () => { haltMark[part] = true; haltLoaded = haltMark.upper && haltMark.fore && haltMark.hand }))
-      haltQuads[part] = quad.index
-      synth.set(quad.index, { base: RIGHT.arm, pointer: quad.pointer, opacity: () => haltOn() ? 1 : 0, write(out) { const [dx, dy] = swayOf(RIGHT.arm), angles = haltAngles(haltTime, haltOut); corners.forEach((c, i) => { const q = haltPoint(c, part, angles); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } })
-    }
+    // 制止の 1 枚腕（back/front は同じ絵の同じ位置）。2 枚とも読めたときだけ使い、読めなければ従来の制止の腕のまま。
+    const haltMark = { back: false, front: false }
+    { const [x0, y0, w, h] = HALT_ARM.box, corners: Vec[] = [[x0, y0], [x0 + w, y0], [x0 + w, y0 + h], [x0, y0 + h]]
+      for (const layer of ['back', 'front'] as const) {
+        const quad = addQuad(pp, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), later(HALT_ARM[layer], () => { haltMark[layer] = true; haltLoaded = haltMark.back && haltMark.front }))
+        haltQuads[layer] = quad.index
+        synth.set(quad.index, { base: RIGHT.arm, pointer: quad.pointer, opacity: () => haltOn() ? 1 : 0, write(out) { const [dx, dy] = swayOf(RIGHT.arm), angle = haltArmAngle(haltTime, haltOut); corners.forEach((c, i) => { const q = haltArmPoint(c, angle); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } })
+      } }
     for (const [m, side] of [[RIGHT.arm, 'right'], [RIGHT.hand, 'right'], [LEFT.arm, 'left'], [LEFT.hand, 'left']] as const) {
       const g = addGhost(pp, m); ghosts.set(m, { ...g, side })
       synth.set(g.index, { base: m, pointer: g.pointer, ghost: true, opacity: () => ghostFor(side), write() {} }) // 頂点は apply が変形前の値を写す
     }
-    if (cp.commandCapacity != null) { alloc.p2l_dealloc(cp.commandsPointer, cp.commandCapacity * 4 + 4); cp.commandCapacity += 31; cp.commandsPointer = alloc.p2l_alloc(cp.commandCapacity * 4 + 4) }
+    if (cp.commandCapacity != null) { alloc.p2l_dealloc(cp.commandsPointer, cp.commandCapacity * 4 + 4); cp.commandCapacity += 30; cp.commandsPointer = alloc.p2l_alloc(cp.commandCapacity * 4 + 4) }
     parts = { right, left, art, cuff }
     partsStatus = { ready: true, textures: 'loading', erased }
     Promise.all(loads).then(() => { partsStatus = { ready: true, textures: 'loaded', erased } }).catch(e => { partsStatus = { ready: true, textures: 'failed', error: e instanceof Error ? e.message : String(e) } })
@@ -434,8 +425,8 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const hookCommands = (rig: number, pointer: number, capacity: number) => {
     const count = rt.p2l_render_commands(rig, pointer, capacity), front = frontMeshes(), art = handArt(), artMesh = parts && art.kind && art.w > 0.001 ? parts.art[art.kind] : undefined
     const expand = (c: number): number[] => {
-      // 制止の腕セット: 元の上腕・小手・手は描かず、上腕は袖の表地の裏、手と小手はその手前（手は小手の輪の下）。
-      if (parts && haltOn() && c === RIGHT.arm && parts.right.on) return [c, haltQuads.upper as number, parts.right.outer, haltQuads.hand as number, haltQuads.fore as number]
+      // 制止の 1 枚腕: 元の上腕・小手・手は描かず、腕全体を袖の表地の裏に、同じ絵の肘から先を表地の手前に重ねる。
+      if (parts && haltOn() && c === RIGHT.arm && parts.right.on) return [c, haltQuads.back as number, parts.right.outer, haltQuads.front as number]
       if (parts && haltOn() && c === RIGHT.hand) return []
       if (parts && c === RIGHT.arm && parts.right.on) return [parts.right.stub, c, parts.right.fill, parts.right.bentElbow, parts.right.outer, parts.right.fore, parts.right.bentFore]
       if (parts && c === LEFT.arm && parts.left.on) return [parts.left.stub, c, parts.left.fill, parts.left.bentElbow, parts.left.outer, parts.left.fore, parts.left.bentFore]
