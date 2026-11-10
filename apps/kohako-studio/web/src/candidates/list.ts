@@ -15,6 +15,8 @@ export function parseIndex(data: unknown): Candidate[] {
 export const candidateURL = (c: Candidate, page: 'live2d' | 'studio' = 'live2d') => `./candidates/${c.id}/${page}.html?acting=1`
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, cls?: string) => { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e }
+// 状態の表示色。本人採用は動作単位（例: 本人採用（制止））なので前方一致で判定する。
+export const statusClass = (s: string) => s.startsWith('本人採用') ? 'adopted' : s === '不合格' ? 'ng' : s === '試作' ? 'trial' : 'unknown'
 
 export function renderCandidates(root: HTMLElement, candidates: Candidate[]) {
   root.replaceChildren()
@@ -22,7 +24,7 @@ export function renderCandidates(root: HTMLElement, candidates: Candidate[]) {
   // 新しい試作を上に。同じ日付は一覧の後ろ（後から追加した方）を上にする。
   for (const c of [...candidates].reverse()) {
     const card = el('article', undefined, 'card'); card.id = `candidate-${c.id}`; card.dataset.candidate = c.id
-    const head = el('h2'); head.append(el('span', c.status, `status status-${c.status === '不合格' ? 'ng' : c.status === '試作' ? 'trial' : 'unknown'}`), document.createTextNode(` ${c.title}`))
+    const head = el('h2'); head.append(el('span', c.status, `status status-${statusClass(c.status)}`), document.createTextNode(` ${c.title}`))
     card.append(head, el('p', `ID ${c.id} ／ 版 ${c.commit.slice(0, 8)}${c.date ? ` ／ ${c.date}` : ''}`, 'meta'))
     if (c.statusNote) card.append(el('p', c.statusNote))
     if (c.actions?.length) card.append(el('p', `試した動作: ${c.actions.join('・')}`))
