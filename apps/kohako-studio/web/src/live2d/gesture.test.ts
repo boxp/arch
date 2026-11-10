@@ -443,10 +443,13 @@ describe('照れの 1 枚腕（BOXP-476 TD-06）', () => {
     expect(dist(hold, [574, 352])).toBeLessThan(60)
     expect(start[1]).toBeGreaterThan(hold[1] + 40)
   })
-  it('拳は鼻先を覆わない大きさと高さ（a97beafe の独立判定『拳が大きく鼻まで覆う』への是正）', () => {
-    // 0.31 倍・拳の中心 y≈391 では鼻先まで覆った。縮尺を下げ、拳の中心を口の高さより下へ置く。
+  it('拳は鼻先を覆わない大きさと高さ（a97beafe/4b6f3fc の独立判定『拳が大きく鼻まで覆う/顔の下半分を占める』への是正）', () => {
+    // 0.31 倍では鼻先まで覆い、0.28 倍でも拳が口〜顎を大きく占めた。素材の拳を手首から 0.78 倍へ縮め（shrink-fist.mjs）、
+    // 拳の上端（素材 727,332）が口の中心の高さ付近に来て鼻先へ届かないこと。
     expect(SHY_ARM.scale).toBeLessThanOrEqual(0.29)
-    expect(shyArmPoint(SHY_ARM.fistPx, shyArmMotion(1.5))[1]).toBeGreaterThan(400)
+    const top = shyArmPoint([727, 332], shyArmMotion(1.5))
+    expect(top[1]).toBeGreaterThan(352 - 20)
+    expect(top[1]).toBeLessThan(352 + 20)
   })
   it('肘は肩の下（体の外へ張り出さず、袖の下縁より下）に来る', () => {
     const e = shyArmPoint(SHY_ARM.elbowPx, shyArmMotion(1.5))
