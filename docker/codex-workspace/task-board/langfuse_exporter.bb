@@ -772,11 +772,11 @@
 ;; over-mask), and when it is too short to pin it does not withhold, since it is most likely a reference.
 (defn- reference? [v]
   (boolean (or (re-matches #"\[REDACTED:[a-z_-]+\]" v)
-               ;; Not a credential by shape (BOXP-428 TD-12): no letter or digit (ANTHROPIC_API_KEY:-, ==), a template or
-               ;; expression start whose rest the value scan cut off (password: ${{ secrets.X }}, {{ .Values.x }}).
-               ;; A printf directive (password: %d) or digits with a colon (password: 1234:) can be a real password,
-               ;; so they are pinned like any value (a later %d is over-masked as a whole word).
-               (not (re-find #"[\p{L}\p{N}]" v))
+               ;; Not a credential by shape (BOXP-428 TD-12): a template or expression start whose rest the value scan
+               ;; cut off (password: ${{ secrets.X }}, {{ .Values.x }}). A value of symbols only (password: ==) can be a
+               ;; real password: it is pinned when long enough, and a short one withholds the lineage (named-values),
+               ;; since a whole-word match cannot bound it. A printf directive (password: %d) or digits with a colon
+               ;; (password: 1234:) are pinned like any value (a later %d is over-masked as a whole word).
                (re-find #"^\$?\{[{%]" v))))
 
 (defn- grep-location?
@@ -929,6 +929,12 @@
           (recur acc covered)
         (let [s (.group m)
               head (head-of s)
+              ;; ${NAME:-default} (also :=, :?, :+): the operator is not part of the value; the default after it is
+              ;; (BOXP-428 TD-12: ${ANTHROPIC_API_KEY:-} names no value, ${API_TOKEN:-x} names x).
+              s (if (and head (>= (.start m) 2) (= "${" (subs text (- (.start m) 2) (.start m)))
+                         (str/ends-with? head ":") (< (count head) (count s)) (#{\- \= \? \+} (.charAt s (count head))))
+                  (str head (subs s (inc (count head))))
+                  s)
               pos (loop [p (+ (.start m) (count head))]
                     (if (and (< p n) (#{\space \tab} (.charAt text p))) (recur (inc p)) p))]
           (if (and head (< pos n) (contains? closers (.charAt text pos)))
@@ -986,11 +992,15 @@
                      :when (not (reference? v))]
                  v))
         found (distinct (mapcat decoded-forms found))
+        short-symbols? (fn [v] (and (< (count v) min-pinned-length) (not (re-find #"[\p{L}\p{N}]" v))))
         unpinned? (boolean (or (some #(> (count %) max-pinned-length) found)
+                               ;; A short value of symbols only (password: ==) has no word boundary to pin it by and
+                               ;; masking it everywhere would blank operators (a == b): it withholds the lineage.
+                               (some short-symbols? found)
                                (> (count found) max-pinned-values)))]
     {:values (vec (filter #(<= min-pinned-length (count %) max-pinned-length) found))
      ;; Shorter values are pinned as whole words; a short $X form is most likely a reference and is not pinned.
-     :words (vec (filter #(and (< (count %) min-pinned-length) (not (variable-like? %))) found))
+     :words (vec (filter #(and (< (count %) min-pinned-length) (not (variable-like? %)) (not (short-symbols? %))) found))
      :unpinned? unpinned?}))
 
 (def withheld-model-output "[withheld: the session saw a known source or a known format]")

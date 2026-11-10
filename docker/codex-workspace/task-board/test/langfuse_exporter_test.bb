@@ -1003,11 +1003,32 @@
 (deftest reference-shaped-named-values-pin-nothing
   (doseq [text ["password: ${{ secrets.DB_PASSWORD }}" "CLOUDFLARE_API_TOKEN: ${{ secrets.CF }}"
                 "key=${ANTHROPIC_API_KEY:-}" "runtime-authorization.yaml:4:  kind: Role"
-                "src/secret_store.py:12:  kind: Role" "password: =="]]
+                "src/secret_store.py:12:  kind: Role" "echo \"${ANTHROPIC_API_KEY:-}\"" "${PASSWORD:-}"]]
     (let [{:keys [values words unpinned?]} (lf/named-values text)]
       (is (false? unpinned?) text)
       (is (empty? values) text)
       (is (empty? words) text))))
+
+;; Regression (arch#14742 review): a value of symbols only can be a real password (password: ==). A short one has no
+;; word boundary to pin it by, so it withholds the lineage as before TD-12; the restatement is never sent.
+(deftest short-symbol-only-values-withhold
+  (doseq [text ["password: ==" "password: \"==\"" "token=***" "password: -"]]
+    (let [{:keys [values words unpinned?]} (lf/named-values text)]
+      (is (true? unpinned?) text)
+      (is (empty? values) text)
+      (is (empty? words) text)))
+  (is (= ["!@#$"] (:values (lf/named-values "password: !@#$"))))
+  (doseq [format [:claude :codex]]
+    (let [{:keys [spans raw]} (prepared-session format "password: ==\nconfigline" "it is == , laterreplymarker")
+          gen (last (filter #(str/starts-with? (:name %) "generation:") raw))]
+      (is (str/starts-with? (attr-value gen "langfuse.observation.metadata.body_policy") "withheld_after_") (str format))
+      (is (not (str/includes? (pr-str spans) "laterreplymarker")) (str format))
+      (is (not (str/includes? (pr-str spans) "it is ==")) (str format)))))
+
+;; ${NAME:-default}: the expansion operator is not part of the value, the default is.
+(deftest expansion-defaults-are-values
+  (is (= ["hunterzz9"] (:values (lf/named-values "echo \"${API_TOKEN:-hunterzz9}\""))))
+  (is (= ["ab"] (:words (lf/named-values "x=${API_TOKEN:=ab}")))))
 
 (deftest named-values-in-serialized-bodies
   (is (= ["quietriverstone"] (:values (lf/named-values "{\"command\":\"mysql -pquietriverstone\"}"))))
