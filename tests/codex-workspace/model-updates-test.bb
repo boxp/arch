@@ -108,6 +108,27 @@
   (assert (= "BOXP-123" (get-in (edn/read-string (slurp state)) [:proposals ["claude-fable" "claude-fable-5-4"]])))
   (apply call (concat tick-args ["--force"]))
   (assert (= calls (slurp board-log))))
+;; Once the CLI knows a waiting-cli candidate, the existing ticket does not skip the canary.
+(spit ids "claude-fable-5-4")
+(spit fake "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 2.1.321; exit 0; fi\necho '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\"}]}}'; echo '{\"type\":\"result\",\"is_error\":false,\"result\":\"boxp-model-canary\",\"modelUsage\":{\"claude-opus-5-5\":{}}}'\n")
+(assert (= "canary-failed" (get-in (apply call (concat tick-args ["--force"])) [:roles :claude-fable :status])))
+(spit fake passing)
+(let [calls (slurp board-log)]
+  (assert (= "proposed" (get-in (apply call (concat tick-args ["--force"])) [:roles :claude-fable :status])))
+  (assert (get-in (edn/read-string (slurp state)) [:candidate-verified ["claude-fable" "claude-fable-5-4"]]))
+  (assert (= calls (slurp board-log))))
+;; A failing deployed-model canary keeps an existing manual hold and never turns it automatic.
+(apply call (concat ["hold" "--role" "claude-fable" "--model" "claude-fable-5-3"] base))
+(let [v (edn/read-string (slurp state))] (spit state (pr-str (update v :verified dissoc "claude-fable"))))
+(spit fake "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 2.1.321; exit 0; fi\necho '{\"type\":\"result\",\"is_error\":true}'\n")
+(assert (= "verification-failed" (get-in (apply call (concat tick-args ["--force"])) [:roles :claude-fable :status])))
+(let [v (edn/read-string (slurp state))]
+  (assert (= "claude-fable-5-3" (get-in v [:hold "claude-fable"])))
+  (assert (not (get-in v [:auto-hold "claude-fable"]))))
+(spit fake passing)
+(apply call (concat tick-args ["--force"]))
+(assert (= "claude-fable-5-3" (get-in (edn/read-string (slurp state)) [:hold "claude-fable"])))
+(apply call (concat ["release" "--role" "claude-fable"] base))
 ;; The real retention page lists Fable 5.1 and 5.2 alike.
 (let [real "Claude Fable 5.2, Claude Mythos 5.2, Claude Fable 5.1, Claude Mythos 5.1, Claude Fable 5, and Claude Mythos 5 are designated Covered Models (see the support article) and require 30-day data retention; ZDR is therefore not available."]
   (spit retention real) (reset-state)
@@ -117,5 +138,5 @@
   (let [c (edn/read-string (slurp catalog))] (spit catalog (pr-str (assoc-in c [:roles "claude-fable" :model] "claude-fable-5-1")))
     (spit state (pr-str {:verified {"claude-fable" "claude-fable-5-1" "claude-opus" "claude-opus-5-5" "claude-sonnet" "claude-sonnet-5-5"}})))
   (assert (= "proposed" (get-in (apply call (concat tick-args ["--force"])) [:roles :claude-fable :status]))))
-(println "PASS: numeric ordering, duplicate proposal, failed deployment hold, auto-hold release, CLI wait ticket and real retention text")
+(println "PASS: numeric ordering, duplicate proposal, failed deployment hold, auto-hold release, manual hold kept, CLI wait ticket, canary after CLI support and real retention text")
 (fs/delete-tree root)

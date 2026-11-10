@@ -95,7 +95,7 @@
                            s (if verification
                                (if (:ok verification) (cond-> (-> s (assoc-in [:verified role] current) (update :history (fnil conj []) {:role role :model current :at now}))
                                      (get-in s [:auto-hold role]) (-> (update :hold dissoc role) (update :auto-hold dissoc role)))
-                                   (cond-> (proposal s role current :verification-failed) (:previous entry) (-> (assoc-in [:hold role] (:previous entry)) (assoc-in [:auto-hold role] true)))) s)
+                                   (cond-> (proposal s role current :verification-failed) (and (:previous entry) (or (nil? (get-in s [:hold role])) (get-in s [:auto-hold role]))) (-> (assoc-in [:hold role] (:previous entry)) (assoc-in [:auto-hold role] true)))) s)
                            candidates (filter #(when-let [v (model-version family %)] (and (model-version family current) (pos? (compare v (model-version family current))))) ids)
                            candidate (last (sort-by #(model-version family %) candidates))
                            retention (when candidate (get-text (env "MODEL_UPDATES_RETENTION_URL" retention-source) (opt "--retention-file")))
@@ -106,8 +106,10 @@
                                         (nil? candidate) {:status :current}
                                         (or (nil? old-cover) (nil? new-cover) (not= old-cover new-cover)) {:status :policy-diff :candidate candidate :reason "保持条件の取得失敗または差分"}
                                         (not (contains? cli-ids candidate)) {:status :waiting-cli :candidate candidate :reason "配備 CLI が未対応: 更新票で CLAUDE_CODE_VERSION も上げる"}
-                                        existing {:status :proposed :candidate candidate}
-                                        :else (if (:ok (canary candidate)) {:status :proposed :candidate candidate} {:status :canary-failed :candidate candidate :reason "canary の判定に失敗"}))
+                                        (and existing (get-in s [:candidate-verified [role candidate]])) {:status :proposed :candidate candidate}
+                                        :else (if (:ok (canary candidate)) {:status :proposed :candidate candidate :canary-ok true} {:status :canary-failed :candidate candidate :reason "canary の判定に失敗"}))
+                           s (if (:canary-ok result) (assoc-in s [:candidate-verified [role candidate]] true) s)
+                           result (dissoc result :canary-ok)
                            s (if (#{:proposed :waiting-cli} (:status result)) (proposal s role candidate (if (= :waiting-cli (:status result)) :waiting-cli :candidate)) s)
                            result (if (and (#{:proposed :waiting-cli} (:status result)) (nil? (get-in s [:proposals [role candidate]]))) (assoc result :status :ticket-error :reason "起票失敗") result)]
                        (assoc-in s [:roles role] (merge {:candidate candidate :reason nil} result)))) initial families)]

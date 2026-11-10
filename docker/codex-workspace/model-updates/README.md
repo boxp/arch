@@ -20,7 +20,7 @@ codex-workspace の cron job `model-updates` (agent なし) が実行します�
 2. 同じ family で、(major, minor) を数値で比べて現 pin より新しい最大の ID を候補にします。preview、日付付き、別 family は候補にしません。
 3. 公式 `api-and-data-retention.md` の保持条件 (30 日保持が必要な model の一覧) に、候補と現 pin が同じ扱いで載っているかを比べます。
    差がある、または読めない場合は `policy-diff` で更新しません (privacy 条件の変更は Owner 判断)。
-4. 配備中の CLI バイナリが候補 ID を内蔵していなければ `waiting-cli` とし、CLI の更新を含む更新票を 1 枚作ります。
+4. 配備中の CLI バイナリが候補 ID を内蔵していなければ `waiting-cli` とし、CLI の更新を含む更新票を 1 枚作ります。 更新票が既にあっても、CLI が対応した後は候補 canary に合格するまで `proposed` にしません。
 5. 内蔵していれば、実 CLI で短い canary (stream-json、Bash tool 1 往復、`modelUsage` が候補だけ、
    `unrecognized_model` 警告なし) を実行し、合格したら更新票を 1 枚作ります。同じ role と候補では 2 枚目を作りません。
 6. 更新票の担当 agent は `model_updates.bb pin` で catalog を更新し、通常の PR、review、CI、merge を通します。
@@ -30,7 +30,7 @@ codex-workspace の cron job `model-updates` (agent なし) が実行します�
 
 - 配備中の pin が state の検証済み (`:verified`) と違えば、その pin で canary を実行します。
 - 合格: `:verified` と `:history` を更新します。自動で入れた hold があれば外します。
-- 不合格: `:previous` へ自動 hold し (`:auto-hold`)、更新票へ記録します。新規 run は旧正常版で動きます。
+- 不合格: `:previous` へ自動 hold し (`:auto-hold`)、更新票へ記録します (手動 hold が既にあればそれを維持し上書きしません)。新規 run は旧正常版で動きます。
 - 手動: `hold --role R --model M` (M は catalog の `:model` か `:previous` だけ) と `release --role R`。手動 hold は自動では外しません。
 - 恒久的に戻すときは catalog を戻す PR を通常どおり出します。
 
