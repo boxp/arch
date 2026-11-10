@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { existsSync } from 'node:fs'
-import { BENT_ART, GREET_WAVE, GUIDE_ARM, guideArmMotion, JOY_ARM, joyArmMotion, joyArmPoint, guideArmPoint, greetArmPoint, greetWave, haltForeWeight, HALT_ARM, haltArmAngle, haltArmPoint, SHY_ARM, shyArmMotion, shyArmPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { BENT_ART, GREET_WAVE, GUIDE_ARM, guideArmMotion, JOY_ARM, JOY_SWITCH_SECONDS, joyArmMotion, joyArmPoint, guideArmPoint, greetArmPoint, greetWave, haltForeWeight, HALT_ARM, haltArmAngle, haltArmPoint, SHY_ARM, shyArmMotion, shyArmPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -261,7 +261,7 @@ describe('実行時の動作の割り込み', () => {
 
   it('喜びも 1 枚腕の差し替えになり、解除の途中で再要求しても切替のフェードを通る（変形で上げる腕の動作は残っていない）', () => {
     for (const g of ['halt', 'shyHand', 'greet', 'guide', 'joy'] as const) expect(SWITCHED[g]).toBeDefined()
-    for (const released of [0.05, 0.1, 0.2]) {
+    for (const released of [0.03, 0.06, 0.09]) { // 喜びの切替は JOY_SWITCH_SECONDS(0.12 秒)
       const { stage, frame } = setup()
       stage.playGesture('joy'); run(frame, 1.5)
       expect((stage.report() as { switched: boolean }).switched).toBe(true)
@@ -278,6 +278,10 @@ describe('実行時の動作の割り込み', () => {
     expect(fist[1]).toBeLessThan(620); expect(fist[1]).toBeGreaterThan(480) // 肩の高さ付近
     const start = joyArmPoint(JOY_ARM.fistPx, joyArmMotion(0, 0))
     expect(start[1]).toBeGreaterThan(fist[1] + 40) // 入りは下から持ち上げる
+    // 両腕の二重が目立たないよう切替は制止より短く、切替が終わる時点の拳はまだ保持より下（現れるのでなく持ち上がって見える）
+    expect(JOY_SWITCH_SECONDS).toBeLessThan(SWITCH_SECONDS)
+    const atSwitched = joyArmPoint(JOY_ARM.fistPx, joyArmMotion(JOY_SWITCH_SECONDS, 0))
+    expect(atSwitched[1]).toBeGreaterThan(fist[1] + 50)
   })
   it('解除後は腕の変形が外れて休止位置へ戻る', () => {
     const { stage, frame } = setup()

@@ -217,6 +217,11 @@ export function placeBentFore(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose
  * 動作の始まりに短いフェードで制止の腕へ差し替える。ここでは制止の腕に既存の比較版の保持姿勢（HALT）の絵を使う。
  */
 export const SWITCH_SECONDS = 0.25
+/**
+ * 喜びの切替の時間。喜びは両腕を同時に差し替えるため、待機の腕と喜びの腕が両側で半透明に重なり、制止と同じ 0.25 秒でも目立つ
+ * （85a81114 の独立判定 td06j-review-85a8111）。重なる時間を短くし、腕を低い位置から持ち上げる途中で差し替える。
+ */
+export const JOY_SWITCH_SECONDS = 0.12
 export const SWITCHED: Partial<Record<Exclude<Gesture, 'none'>, ArmPose>> = { halt: HALT, shyHand: SHY, greet: HALT, guide: HALT, joy: HALT }
 /** 両腕を差し替える動作（左腕も右と同じ姿勢で保持し、袖の持ち上げと切替のフェードを左右で揃える）。 */
 export const BOTH_ARMS: ReadonlySet<string> = new Set(['joy'])
@@ -336,8 +341,8 @@ export const JOY_ARM = {
 }
 /** 喜びの 1 枚腕の回転と沈み。入りは拳を下から持ち上げ、保持は体の揺れに合わせて小さく弾ませ、戻りは下げながら消す。 */
 export function joyArmMotion(t: number, out = 0): { angle: number; drop: number } {
-  const rise = 1 - ease(Math.min(1, Math.max(0, t / 0.4))), hold = smooth(0.3, 0.7, t), o = ease(out)
-  return { angle: JOY_ARM.angle + 0.5 * rise + 0.04 * Math.sin(2 * Math.PI * (t - 0.4) / 0.7) * hold + 0.45 * o, drop: 30 * rise + 6 * Math.abs(Math.sin(2 * Math.PI * (t - 0.4) / 0.7)) * hold + 30 * o }
+  const rise = 1 - ease(Math.min(1, Math.max(0, t / 0.45))), hold = smooth(0.35, 0.75, t), o = ease(out)
+  return { angle: JOY_ARM.angle + 0.7 * rise + 0.03 * Math.sin(2 * Math.PI * (t - 0.45) / 0.7) * hold + 0.7 * o, drop: 30 * rise + 5 * Math.abs(Math.sin(2 * Math.PI * (t - 0.45) / 0.7)) * hold + 30 * o }
 }
 /** 右腕の画素 → モデル座標。left なら右腕の位置を体の中心線で鏡映する（絵は左右反転して貼る）。 */
 export function joyArmPoint(px: Vec, m: { angle: number; drop: number }, left = false): Vec {
@@ -406,6 +411,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   let haltSet = false, haltLoaded = false, haltTime = 0, haltOut = 0, shySet = false, shyLoaded = false, guideSet = false, guideLoaded = false, greetSet = false, joySet = false, joyLoaded = false
   // 挨拶の手振りは挨拶を始めてからの秒で進める（制止から直接つないでも振りが途中から始まらない）。挨拶から制止へ直接つないだときは、そのときの振りを 0.25 秒で 0 へ戻す。
   let greetTime = 0, waveFrom = 0, waveDecay = 1
+  const switchSeconds = () => joySet ? JOY_SWITCH_SECONDS : SWITCH_SECONDS
   const haltQuads: Partial<Record<'back' | 'front', number>> = {}, shyQuads: Partial<Record<'back' | 'front', number>> = {}, guideQuads: Partial<Record<'back' | 'front', number>> = {}
   const joyQuads: Record<'right' | 'left', Partial<Record<'back' | 'front', number>>> = { right: {}, left: {} }
   const haltOn = () => haltSet && haltLoaded, shyOn = () => shySet && shyLoaded, guideOn = () => guideSet && guideLoaded, joyOn = () => joySet && joyLoaded
@@ -596,10 +602,10 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   p.update = (dt: number) => {
     generation++
     if (greetSet) greetTime += dt; else waveDecay += dt
-    if (haltSet || shySet || guideSet || joySet) { haltTime += dt; if (sw?.phase === 'out') haltOut = Math.min(1, (sw.t + dt) / SWITCH_SECONDS) }
+    if (haltSet || shySet || guideSet || joySet) { haltTime += dt; if (sw?.phase === 'out') haltOut = Math.min(1, (sw.t + dt) / switchSeconds()) }
     if (sw) {
       sw.t += dt
-      const x = Math.min(1, sw.t / SWITCH_SECONDS)
+      const x = Math.min(1, sw.t / switchSeconds())
       posedAlpha = sw.phase === 'in' ? ease(x) : 1 - ease(x)
       if (x >= 1) {
         const ended = sw; sw = null; posedAlpha = 1
