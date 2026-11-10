@@ -985,7 +985,17 @@
       (doseq [text ["q7z" "x\\nq7z" "x\\u0020q7z" "a%20q7z" "(q7z)" "\"q7z\""]]
         (is (not (str/includes? (str/replace text pattern "[x]") "q7z")) text))
       (doseq [text ["aq7zb" "q7z_x" "xq7z"]]
-        (is (str/includes? (str/replace text pattern "[x]") "q7z") text)))))
+        (is (str/includes? (str/replace text pattern "[x]") "q7z") text))
+      ;; Only ASCII letters, digits and _ join a word (lolice#1157 review: 秘密はq7zです).
+      (doseq [text ["秘密はq7zです" "値:q7z。" "éq7zé" "q7z１"]]
+        (is (not (str/includes? (str/replace text pattern "[x]") "q7z")) text))))
+  (testing "a short value restated inside Japanese text is masked"
+    (doseq [format [:claude :codex]]
+      (let [{:keys [spans failed]} (prepared-session format "password: q7z\nconfigline" "秘密はq7zです。jareplymarker")
+            body (pr-str spans)]
+        (is (nil? failed) (str format))
+        (is (str/includes? body "jareplymarker") (str format))
+        (is (not (str/includes? body "q7z")) (str format))))))
 
 ;; BOXP-428 TD-12: a provider prefix on an ordinary name is masked in place but does not withhold the lineage;
 ;; an issued-key shape still does.

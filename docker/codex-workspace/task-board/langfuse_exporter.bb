@@ -138,9 +138,11 @@
 ;; output was a test log (PASS: old) or a config file (same_site_cookie_attribute = "lax") (BOXP-428 TD-12).
 (defrecord WordValue [v])
 (defn value-text [x] (if (instance? WordValue x) (:v x) x))
-;; A word boundary is a letter, digit or _ on neither side; an escape (\n, \u0020, %20) before the value is a boundary.
-(def ^:private word-before "(?:(?<![\\p{L}\\p{N}_])|(?<=\\\\[nrtbf])|(?<=\\\\u[0-9a-fA-F]{4})|(?<=%[0-9a-fA-F]{2}))")
-(def ^:private word-after "(?![\\p{L}\\p{N}_])")
+;; A word boundary is an ASCII letter, digit or _ on neither side; an escape (\n, \u0020, %20) before the value is a
+;; boundary. Non-ASCII letters do not join the word: Japanese has no spaces, so 秘密はq7zです repeats the value q7z
+;; (lolice#1157 review). A non-ASCII value is then also masked inside longer non-ASCII text (over-masking, not a leak).
+(def ^:private word-before "(?:(?<![A-Za-z0-9_])|(?<=\\\\[nrtbf])|(?<=\\\\u[0-9a-fA-F]{4})|(?<=%[0-9a-fA-F]{2}))")
+(def ^:private word-after "(?![A-Za-z0-9_])")
 
 (def values-pattern
   "One alternation, longest first, so a later value cannot rewrite the mark of an earlier one.
