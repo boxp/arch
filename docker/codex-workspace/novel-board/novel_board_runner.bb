@@ -161,10 +161,39 @@
 
 (def localllm-aliases #{"localllm" "local-llm" "local_llm"})
 
-(def claude-assignee->model
-  {"claude-fable" "claude-fable-5-1"
+(def claude-builtin-models
+  {"claude-fable" "claude-fable-5-2"
    "claude-opus" "claude-opus-5-5"
    "claude-sonnet" "claude-sonnet-5-5"})
+
+(def claude-roles #{"claude-fable" "claude-opus" "claude-sonnet"})
+
+(defn read-model-catalog [path]
+  (with-open [reader (java.io.PushbackReader. (io/reader path))]
+    (let [eof (Object.) value (edn/read {:eof eof} reader)]
+      (when-not (identical? eof (edn/read {:eof eof} reader))
+        (throw (Exception. "trailing catalog data")))
+      value)))
+
+(defn resolve-claude-model [role]
+  (let [path (or (System/getenv "CODEX_NOVEL_BOARD_MODEL_CATALOG") (System/getenv "CODEX_TASK_BOARD_MODEL_CATALOG") "/opt/codex-workspace/model-catalog.edn")
+        state-path (or (System/getenv "CODEX_TASK_BOARD_MODEL_STATE") (str (System/getProperty "user.home") "/.codex-task-board/model-updates/state.edn"))
+        warn (fn [s] (binding [*out* *err*] (println (str "model catalog: " s))))
+        catalog (try (let [v (read-model-catalog path)]
+                       (when-not (and (= 1 (:version v)) (map? (:roles v))) (throw (Exception. "invalid catalog")))
+                       (when (seq (remove claude-roles (keys (:roles v)))) (warn "unknown roles ignored")) v)
+                     (catch Exception e (warn (str "using builtin: " (.getMessage e))) nil))
+        entry (get-in catalog [:roles role])
+        family (subs role 7)
+        valid? (and (= family (:family entry)) (string? (:model entry)) (re-matches (re-pattern (str "^claude-" family "-[0-9]+-[0-9]+$")) (:model entry)))
+        _ (when (and catalog (not valid?)) (warn (str "invalid role " role "; using builtin")))
+        state (try (edn/read-string (slurp state-path)) (catch Exception _ {}))
+        hold (get-in state [:hold role])
+        hold-valid? (and valid? (string? hold) (some #{hold} [(:model entry) (:previous entry)]) (re-matches (re-pattern (str "^claude-" family "-[0-9]+-[0-9]+$")) hold))
+        _ (when (and (map? (:hold state)) (contains? (:hold state) role) (not hold-valid?)) (warn (str "invalid hold for " role)))]
+    (cond hold-valid? {:model hold :model-source :hold}
+          valid? {:model (:model entry) :model-source :catalog}
+          :else {:model (get claude-builtin-models role) :model-source :builtin})))
 
 (def codex-assignee->model
   {"codex" "gpt-5.6-terra"
@@ -195,7 +224,7 @@
   (let [value (normalize-assignee assignee)]
     (cond
       (= "localllm" value) :localllm
-      (contains? claude-assignee->model value) :claude
+      (contains? claude-roles value) :claude
       (some? (parse-codex-assignee value)) :codex
       :else nil)))
 
@@ -205,7 +234,7 @@
 
 (def supported-assignee-names
   (str "localllm, "
-       (str/join ", " (sort (keys claude-assignee->model))) ", "
+       (str/join ", " (sort claude-roles)) ", "
        (str/join ", " (sort (keys codex-assignee->model)))))
 
 ;; ---------------------------------------------------------------------------
@@ -602,11 +631,11 @@
   (let [path (fs/path (run-dir novel-id run-id) "summary.edn")
         ;; `:shutdown` is written by the terminating runner itself (BOXP-252); keep it
         ;; when the next owner re-marks the same run as interrupted.
-        previous (try (select-keys (read-edn-file path {}) [:agent :action :shutdown]) (catch Exception _ {}))]
+        previous (try (select-keys (read-edn-file path {}) [:agent :action :shutdown :model :model-source]) (catch Exception _ {}))]
     (ensure-private-dir! (run-dir novel-id run-id))
     (write-edn-file! path (merge previous
                                  {:novel novel-id :run-id run-id :status status :updated-at (now-str)}
-                                 extra))))
+                                 (cond-> extra (nil? (:model extra)) (dissoc :model))))))
 
 (declare append-history!)
 
@@ -3021,8 +3050,8 @@
 (defn cloud-result-marker [text]
   (some-> (re-find #"(?im)^NOVEL_BOARD_RESULT:\s*(done|blocked)\b.*$" (or text "")) second str/lower-case))
 
-(defn claude-args [agent]
-  (let [model (get claude-assignee->model agent)]
+(defn claude-args [agent & [resolved]]
+  (let [model (:model (or resolved (resolve-claude-model agent)))]
     (cond-> [(env "CODEX_NOVEL_BOARD_CLAUDE_BIN" "claude") "--print" "--output-format" "text" "--model" model]
       (bypass-approvals?) (conj "--dangerously-skip-permissions")
       (not (bypass-approvals?)) (into ["--add-dir" (vault)]))))
@@ -3079,7 +3108,9 @@
     (private-file! prompt-path)
     ;; A spec left by a previous run must not be reused for a new manuscript.
     (fs/delete-if-exists (illustration-spec-path novel-id))
-    (let [args (if (= :claude route) (claude-args agent) (codex-args agent work last-message-path))
+    (let [model-info (when (= :claude route) (resolve-claude-model agent))
+          _ (when model-info (mark-run! novel-id (str (fs/file-name run-dir)) :running model-info))
+          args (if (= :claude route) (claude-args agent model-info) (codex-args agent work last-message-path))
           ;; The agent never needs the image or local-llm credentials; keep them
           ;; out of its environment so vault-authored prompts cannot exfiltrate them.
           child-env (reduce dissoc (into {} (System/getenv))
@@ -3103,7 +3134,7 @@
           last-message (when (fs/exists? last-message-path) (slurp (str last-message-path)))
           marker (cloud-result-marker last-message)]
       (record-evidence! run-dir {:phase (name action) :route route :agent agent :status (cond shutdown? :shutdown (zero? exit) :exit-0 :else :exit-nonzero)
-                                 :exit-code exit :idle-timeout? idle-timeout? :shutdown? shutdown? :result marker})
+                                 :model (:model model-info) :model-source (:model-source model-info) :exit-code exit :idle-timeout? idle-timeout? :shutdown? shutdown? :result marker})
       (cond
         shutdown? {:ok? false :shutdown? true :agent-exit-code exit
                    :reason "runner の計画停止により agent を停止しました（次の owner が再開します）"}
@@ -3112,7 +3143,7 @@
         (= "blocked" marker) {:ok? false :reason (str "agent が blocked を返しました: "
                                                       (sanitize-error (last (str/split-lines (str/trim (or last-message ""))))))}
         (not= "done" marker) {:ok? false :reason "agent が NOVEL_BOARD_RESULT: done を返さずに終了しました。exit 0 だけでは成功扱いにしません。再開条件: agent を再割当"}
-        :else {:ok? true :model (if (= :claude route) (get claude-assignee->model agent) (get codex-assignee->model (:base-assignee (parse-codex-assignee agent))))}))))
+        :else {:ok? true :model (if (= :claude route) (:model model-info) (get codex-assignee->model (:base-assignee (parse-codex-assignee agent))))}))))
 
 ;; ---------------------------------------------------------------------------
 ;; Actions

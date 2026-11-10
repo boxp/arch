@@ -883,7 +883,7 @@ write_requirements NOVEL-10
 tick
 [[ "$(lane_of "${BOARD}" NOVEL-10)" == "Draft" ]] || fail "exit 0 without manuscript must fail"
 assert_contains "${VAULT}/Novels/NOVEL-10.md" "exit 0 だけでは成功扱いにしません"
-assert_contains "${FAKE_CLAUDE_ARG_LOG}" "--model claude-fable-5-1"
+assert_contains "${FAKE_CLAUDE_ARG_LOG}" "--model claude-fable-5-2"
 echo blocked >"${FAKE_CLAUDE_MODE_FILE}"
 set_assignee NOVEL-10 claude-fable
 tick

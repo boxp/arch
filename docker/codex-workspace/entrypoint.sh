@@ -187,13 +187,18 @@ ensure_recurring_events_cron_job() {
                (= stale-output-root (:output-root job)))
         (dissoc job :output-root)
         job))
+    ;; seed の各 job は id が無いときだけ足す。既存 job の設定 (無効化を含む) は上書きしない。
     (let [[target seed] *command-line-args*
-          seed-job (first (:jobs (registry (read-edn seed {:version 1 :jobs []}))))
+          seed-jobs (:jobs (registry (read-edn seed {:version 1 :jobs []})))
+          seed-by-id (into {} (map (juxt :id identity)) seed-jobs)
           current (registry (read-edn target {:version 1 :jobs []}))
-          jobs (mapv #(migrate-job seed-job %) (:jobs current))
-          next-jobs (if (and seed-job (not-any? #(= (:id %) (:id seed-job)) jobs))
-                      (conj jobs seed-job)
-                      jobs)]
+          jobs (mapv #(migrate-job (seed-by-id (:id %)) %) (:jobs current))
+          next-jobs (reduce (fn [acc seed-job]
+                              (if (not-any? #(= (:id %) (:id seed-job)) acc)
+                                (conj acc seed-job)
+                                acc))
+                            jobs
+                            seed-jobs)]
       (when (not= next-jobs (:jobs current))
         (spit target (str (pr-str (assoc current :jobs next-jobs)) "\n"))))
   ' "${jobs}" "${seed}"

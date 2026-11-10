@@ -12,7 +12,7 @@ TICKET = re.compile(r'[A-Z]+-\d+\Z')
 # Same shape as the ledger's run-id-re: full uuid, short hex suffix, or none, with optional -groom.
 RUN = re.compile(r'\d{8}T\d{6}Z(?:-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|-[0-9a-f]{1,8})?(?:-groom)?\Z')
 UUID = re.compile(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z')
-MODELS = {'gpt-6.1-terra': 'codex-terra', 'gpt-6.1-sol': 'codex-sol', 'gpt-6-astra': 'codex-astra', 'claude-fable-5-1': 'claude-fable', 'claude-opus-5-5': 'claude-opus', 'claude-sonnet-5-5': 'claude-sonnet', 'claude-haiku-5-5': 'claude-haiku'}
+MODELS = {'gpt-6.1-terra': 'codex-terra', 'gpt-6.1-sol': 'codex-sol', 'gpt-6-astra': 'codex-astra', 'claude-fable-5-1': 'claude-fable', 'claude-fable-5-2': 'claude-fable', 'claude-opus-5-5': 'claude-opus', 'claude-sonnet-5-5': 'claude-sonnet', 'claude-haiku-5-5': 'claude-haiku'}
 ALLOWED = {'agent': set('codex codex-terra codex-sol codex-full codex-mini codex-astra claude-fable claude-opus claude-sonnet fable localllm localllm-coder'.split()), 'status': set('succeeded retrying blocked interrupted failed running superseded'.split()), 'result': set('review blocked done ready'.split()), 'action': set('implement groom review-fix blocked-retry docs-edit docs-groom'.split())}
 REASONS = ('no_events', 'unreadable', 'no_usage_event', 'multiple_usage_events', 'child_session_not_found', 'child_session_ambiguous', 'child_session_unreadable', 'child_no_token_count', 'summary_missing', 'delegation_missing', 'delegation_failed', 'review_gate_usage_unrecorded', 'claude_subagent_usage_unknown', 'claude_usage_lower_bound_only')
 

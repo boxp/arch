@@ -322,14 +322,43 @@
           {:base-assignee base-assignee
            :reasoning-effort reasoning-effort})))))
 
-(def claude-assignee->model
-  {"claude-fable" "claude-fable-5-1"
+(def claude-builtin-models
+  {"claude-fable" "claude-fable-5-2"
    "claude-opus" "claude-opus-5-5"
    "claude-sonnet" "claude-sonnet-5-5"})
 
+(def claude-roles #{"claude-fable" "claude-opus" "claude-sonnet"})
+
+(defn read-model-catalog [path]
+  (with-open [reader (java.io.PushbackReader. (io/reader path))]
+    (let [eof (Object.) value (edn/read {:eof eof} reader)]
+      (when-not (identical? eof (edn/read {:eof eof} reader))
+        (throw (Exception. "trailing catalog data")))
+      value)))
+
+(defn resolve-claude-model [role]
+  (let [path (or (System/getenv "CODEX_TASK_BOARD_MODEL_CATALOG") "/opt/codex-workspace/model-catalog.edn")
+        state-path (or (System/getenv "CODEX_TASK_BOARD_MODEL_STATE") (str (System/getProperty "user.home") "/.codex-task-board/model-updates/state.edn"))
+        warn (fn [s] (binding [*out* *err*] (println (str "model catalog: " s))))
+        catalog (try (let [v (read-model-catalog path)]
+                       (when-not (and (= 1 (:version v)) (map? (:roles v))) (throw (Exception. "invalid catalog")))
+                       (when (seq (remove claude-roles (keys (:roles v)))) (warn "unknown roles ignored")) v)
+                     (catch Exception e (warn (str "using builtin: " (.getMessage e))) nil))
+        entry (get-in catalog [:roles role])
+        family (subs role 7)
+        valid? (and (= family (:family entry)) (string? (:model entry)) (re-matches (re-pattern (str "^claude-" family "-[0-9]+-[0-9]+$")) (:model entry)))
+        _ (when (and catalog (not valid?)) (warn (str "invalid role " role "; using builtin")))
+        state (try (edn/read-string (slurp state-path)) (catch Exception _ {}))
+        hold (get-in state [:hold role])
+        hold-valid? (and valid? (string? hold) (some #{hold} [(:model entry) (:previous entry)]) (re-matches (re-pattern (str "^claude-" family "-[0-9]+-[0-9]+$")) hold))
+        _ (when (and (map? (:hold state)) (contains? (:hold state) role) (not hold-valid?)) (warn (str "invalid hold for " role)))]
+    (cond hold-valid? {:model hold :model-source :hold}
+          valid? {:model (:model entry) :model-source :catalog}
+          :else {:model (get claude-builtin-models role) :model-source :builtin})))
+
 (defn claude-assignee? [assignee]
   (or (= "fable" assignee)
-      (contains? claude-assignee->model assignee)))
+      (contains? claude-roles assignee)))
 
 (def localllm-assignee "localllm")
 (def localllm-coder-assignee "localllm-coder")
@@ -1293,7 +1322,7 @@
         ;; `:shutdown` is written by the terminating runner itself; keep it when
         ;; the next owner re-marks the same run as interrupted.
         previous-agent (try
-                         (select-keys (read-edn-file path {}) [:agent :shutdown :todo :progress])
+                         (select-keys (read-edn-file path {}) [:agent :shutdown :todo :progress :model :model-source])
                          (catch Exception _ {}))
         summary (merge previous-agent
                        {:ticket ticket-id
@@ -2693,7 +2722,7 @@
                     "Previous run summaries:\n" (pr-str previous) "\n\n"
                     (or (pr-gate-retry-prompt ticket-id) "")
                     (when (= "fable" agent) (fable-policy-prompt))
-                    (when (contains? claude-assignee->model agent) (claude-policy-prompt agent))
+                    (when (contains? claude-roles agent) (claude-policy-prompt agent))
                     (when (contains? #{"codex-sol" "codex-full"} base-agent) (codex-sol-policy-prompt agent))
                     (when (= "codex-astra" base-agent) (codex-astra-policy-prompt agent))
                     (ai-ops-decision-prompt ai-ops)
@@ -3317,10 +3346,10 @@
       (seq extra)
       (into (str/split extra #"\s+")))))
 
-(defn claude-model-args [agent]
+(defn claude-model-args [agent & [resolved]]
   (if (= "fable" agent)
     (fable-model-args)
-    ["--model" (get claude-assignee->model agent)]))
+    ["--model" (:model (or resolved (resolve-claude-model agent)))]))
 
 (defn claude-stream-summary
   "One pass over a Claude stream-json stdout, keeping only the last result,
@@ -3508,6 +3537,7 @@
           ;; leave hook trust decisions to the operator.
           codex-hooks? (and todo-hooks? (not (claude-assignee? agent)) (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true")))
           toml-hook (fn [event matcher] (str "[{matcher=" (pr-str matcher) ",hooks=[{type=\"command\",command=" (pr-str (hook-command event)) "}]}]"))
+          model-info (when (and (claude-assignee? agent) (not= agent "fable")) (resolve-claude-model agent))
           agent-args (if (claude-assignee? agent)
                        (cond-> [(env "CODEX_TASK_BOARD_CLAUDE_BIN" "claude") "--print" "--output-format" "stream-json" "--verbose"]
                    (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
@@ -3520,7 +3550,7 @@
                    todo-hooks?
                    (into ["--settings" (str hooks-alias)])
                    true
-                   (into (claude-model-args agent)))
+                   (into (claude-model-args agent model-info)))
 
                        (cond-> ["codex" "exec" "--json" "--cd" (:workspace-dir workspace)
                           "--skip-git-repo-check"
@@ -3623,7 +3653,7 @@
                                       :instance-id runner-instance-id
                                       :agent-exit-code exit
                                       :agent-stopped-at (now-str)}}
-                          ai-ops-fields))
+                          model-info ai-ops-fields))
         (let [status (if (zero? exit) :succeeded :failed)]
           (mark-run! ticket-id run status
                      (merge {:action action
@@ -3636,7 +3666,7 @@
                              :finished-at (now-str)}
                             (when-let [progress (progress-marker last-message)]
                               {:progress progress})
-                            ai-ops-fields))))
+                            model-info ai-ops-fields))))
       {:exit exit
        :result marker
        :run-id run
@@ -6301,9 +6331,10 @@
                                   "codex-sol" "gpt-6.1-sol" "codex-full" "gpt-6.1-sol"
                                   "codex-mini" "gpt-5.6-luna" "codex-astra" "gpt-6-astra"})
       (swap! failures conj "review delegation policy for changed Codex routes"))
-    (when-not (= claude-assignee->model {"claude-fable" "claude-fable-5-1"
-                                        "claude-opus" "claude-opus-5-5"
-                                        "claude-sonnet" "claude-sonnet-5-5"})
+    (when-not (and (= claude-roles #{"claude-fable" "claude-opus" "claude-sonnet"})
+                   (= claude-roles (set (keys claude-builtin-models)))
+                   (every? (fn [[role model]] (re-matches (re-pattern (str "^" role "-[0-9]+-[0-9]+$")) model)) claude-builtin-models)
+                   (every? (fn [role] (re-matches (re-pattern (str "^" role "-[0-9]+-[0-9]+$")) (:model (resolve-claude-model role)))) claude-roles))
       (swap! failures conj "review delegation policy for changed Claude routes"))
     ;; BOXP-360: draft / conflict are output defects; a missing or unknown
     ;; mergeStateStatus could not be evaluated and is classified unknown.
@@ -6360,7 +6391,7 @@
     ;; Versioned projections cannot affect legacy candidate selection while off.
     ;; Include every existing route and lane, plus unsupported/new v2 routes.
     (doseq [[lane status] lane->status
-            assignee (concat (keys assignee->model) (keys claude-assignee->model)
+            assignee (concat (keys assignee->model) claude-roles
                              ["fable" "codex-sol-high" "claude-fable" "unknown"])
             intent ["run" "pause" "cancel" "wait-human"]]
       (let [expected (when (supported-assignee? assignee)
@@ -6405,10 +6436,10 @@
           (println (str "FAIL: same-second run IDs must be unique: " first-id " / " second-id))
           (swap! failures conj "same-second run ID uniqueness"))))
 
-    (doseq [[assignee expected-model] claude-assignee->model]
+    (doseq [[assignee expected-model] claude-builtin-models]
       (let [args (claude-model-args assignee)
             actual-model (arg-value args "--model")]
-        (if (and (= expected-model actual-model)
+        (if (and (= (:model (resolve-claude-model assignee)) actual-model)
                  (supported-assignee? assignee)
                  (not-any? #{"--agent"} args))
           (println (str "PASS: " assignee " -> " actual-model " without legacy fable agent"))
@@ -6416,7 +6447,7 @@
             (println (str "FAIL: " assignee " expected=" expected-model " args=" args))
             (swap! failures conj assignee)))))
     (if (and (claude-assignee? "fable")
-             (not (contains? claude-assignee->model "fable")))
+             (not (contains? claude-roles "fable")))
       (println "PASS: legacy fable remains a separate Claude route")
       (do
         (println "FAIL: legacy fable must remain separate from explicit Claude model mappings")
