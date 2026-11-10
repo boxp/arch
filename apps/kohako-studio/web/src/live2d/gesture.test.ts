@@ -440,8 +440,13 @@ describe('照れの 1 枚腕（BOXP-476 TD-06）', () => {
   })
   it('保持では拳が口元（口の中心の近く）にあり、入りは拳が下から上がってくる', () => {
     const hold = shyArmPoint(SHY_ARM.fistPx, shyArmMotion(1.5)), start = shyArmPoint(SHY_ARM.fistPx, shyArmMotion(0))
-    expect(dist(hold, [574, 352])).toBeLessThan(40)
+    expect(dist(hold, [574, 352])).toBeLessThan(60)
     expect(start[1]).toBeGreaterThan(hold[1] + 40)
+  })
+  it('拳は鼻先を覆わない大きさと高さ（a97beafe の独立判定『拳が大きく鼻まで覆う』への是正）', () => {
+    // 0.31 倍・拳の中心 y≈391 では鼻先まで覆った。縮尺を下げ、拳の中心を口の高さより下へ置く。
+    expect(SHY_ARM.scale).toBeLessThanOrEqual(0.29)
+    expect(shyArmPoint(SHY_ARM.fistPx, shyArmMotion(1.5))[1]).toBeGreaterThan(400)
   })
   it('肘は肩の下（体の外へ張り出さず、袖の下縁より下）に来る', () => {
     const e = shyArmPoint(SHY_ARM.elbowPx, shyArmMotion(1.5))

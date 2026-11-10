@@ -251,11 +251,12 @@ export function haltArmPoint(px: Vec, angle: number): Vec {
  * 急に立ち上がる前腕〜口元の拳が 1 本に描かれた絵）を部品に切らず、動作の始まりにフェードで差し替え、肩を支点に回して持ち上げる。
  * back は腕全体（切り口は肩の装甲の下へ隠れるようぼかした絵）で袖の表地の裏に、front は同じ絵・同じ位置で上腕の上部を除いた
  * アルファで、口元を隠すため顔の手前（描画の最後）に描く。box は生成画像の画素（ファイルは 0.5 倍）。
+ * a97beafe（0.31 倍）は独立判定で拳が大きく鼻先まで覆ったため、0.28 倍に縮め拳を口の高さへ下げた（肩の支点も少し内上へ）。
  */
 export const SHY_ARM = {
   back: 'shy-arm.png', front: 'shy-arm-front.png', box: [544, 236, 960, 1460] as const,
   shoulderPx: [1343, 1000] as Vec, elbowPx: [1327, 1519] as Vec, fistPx: [717, 449] as Vec,
-  at: [735, 595] as Vec, scale: 0.31, angle: 0.185,
+  at: [726, 585] as Vec, scale: 0.28, angle: 0.15,
 }
 /** 照れの 1 枚腕の回転と沈み。入りは拳を胸の高さから口元へ持ち上げ、保持は小さく揺らし、戻りは下げながら消す。 */
 export function shyArmMotion(t: number, out = 0): { angle: number; drop: number } {
