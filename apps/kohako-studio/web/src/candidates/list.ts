@@ -1,5 +1,5 @@
 // 試作候補の一覧（/kohako/candidates/index.json）を描画する。値はすべて textContent で入れる。
-export type Candidate = { id: string, commit: string, title: string, status: string, statusNote?: string, date?: string, pr?: string, actions?: string[], problems?: string[], built: boolean }
+export type Candidate = { id: string, commit: string, title: string, status: string, statusNote?: string, date?: string, created?: string, pr?: string, actions?: string[], problems?: string[], built: boolean }
 
 const ID = /^[a-z0-9][a-z0-9-]{0,39}$/
 const COMMIT = /^[0-9a-f]{40}$/
@@ -18,11 +18,13 @@ const el = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, cls?: 
 // 状態の表示色。本人採用は動作単位（例: 本人採用（制止））なので前方一致で判定する。
 export const statusClass = (s: string) => s.startsWith('本人採用') ? 'adopted' : s.startsWith('独立判定合格') ? 'pass' : s === '不合格' ? 'ng' : s === '試作' ? 'trial' : 'unknown'
 
+/** 新しい試作を先頭に。created（試作 commit の UTC 時刻）の降順、無いものは末尾で元の順を保つ。 */
+export const sortNewestFirst = (cs: Candidate[]) => cs.map((c, i) => ({ c, i })).sort((a, b) => (b.c.created ?? '').localeCompare(a.c.created ?? '') || a.i - b.i).map(x => x.c)
+
 export function renderCandidates(root: HTMLElement, candidates: Candidate[]) {
   root.replaceChildren()
   if (candidates.length === 0) { root.append(el('p', '候補がありません')); return }
-  // 新しい試作を上に。同じ日付は一覧の後ろ（後から追加した方）を上にする。
-  for (const c of [...candidates].reverse()) {
+  for (const c of sortNewestFirst(candidates)) {
     const card = el('article', undefined, 'card'); card.id = `candidate-${c.id}`; card.dataset.candidate = c.id
     const head = el('h2'); head.append(el('span', c.status, `status status-${statusClass(c.status)}`), document.createTextNode(` ${c.title}`))
     card.append(head, el('p', `ID ${c.id} ／ 版 ${c.commit.slice(0, 8)}${c.date ? ` ／ ${c.date}` : ''}`, 'meta'))
