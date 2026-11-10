@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { browPin, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, faces, foreScale, isForearm, sample, solveArm } from './gesture'
+import { BENT_ART, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
 
 const bone = { S: [710, 533], E: [760, 733], W: [844, 928], band: 34, arm: 22, hand: 20, mirror: false } as const
+const HEM = [[771, 663], [841, 691]] as const // 紫の袖の下縁
+const CUFF_EDGE = [[729, 758.5], [745, 761.5], [760, 759.5], [769, 753], [773, 746], [777, 733], [781, 713], [784, 702], [787, 697.5]] as const // 小手の金の開口（FOREARM_POLY の上辺）
 const rest = { up: 0, upS: 1, fo: 0, foS: 1, ha: 0, haS: 1 }
 
 describe('生成素材の手と前腕の分離', () => {
@@ -68,6 +70,11 @@ describe('腕の変形', () => {
     const shy = sample(clips.shyHand, 2).right
     expect(solveArm(bone, shy).wrist[1]).toBeLessThan(560)
   })
+  it('照れの保持は肘が肩の下に残り、前腕が胸の前を斜めに渡る（肘を胸の中央へ寄せて上腕を隠さない）', () => {
+    const { elbow, wrist } = solveArm(bone, sample(clips.shyHand, 2).right)
+    expect(Math.abs(elbow[0] - bone.S[0])).toBeLessThanOrEqual(40)
+    expect(elbow[0] - wrist[0]).toBeGreaterThanOrEqual(60)
+  })
   it('照れの動作は開始と終了で肘と手首が跳ばない', () => {
     const clip = clips.shyHand, restPos = solveArm(bone, rest), step = 1 / 60
     for (const time of [0, clip.duration]) {
@@ -92,10 +99,68 @@ describe('腕の変形', () => {
     expect(isForearm(bone, 720, 600)).toBe(false) // 肩の装甲
     expect(isForearm(bone, 842, 690)).toBe(false) // 裏地の先端
   })
-  it('照れも制止も、手首は体の内側を通って上がる（外へ大回りしない）', () => {
-    for (const clip of [clips.shyHand, clips.halt]) {
-      for (let time = 0; time <= 1.2; time += 1 / 30) expect(solveArm(bone, sample(clip, time).right).wrist[0]).toBeLessThanOrEqual(bone.W[0] + 1)
+  // 関節に見えるかの必要条件（最終判断は実描画の連続コマ）。上腕と前腕が別の線分として開き、前腕の長さが保たれ、肘が動くこと。
+  it.each([['制止', 'halt', 1.5], ['照れ', 'shyHand', 2], ['挨拶', 'greet', 0.55], ['案内', 'guide', 1.5], ['喜び', 'joy', 0.75]] as const)('%s の保持は肘が開いて見える', (_name, gesture, time) => {
+    const pose = sample(clips[gesture], time).right, { elbow, wrist } = solveArm(bone, pose)
+    const toShoulder = [bone.S[0] - elbow[0], bone.S[1] - elbow[1]] as const, toWrist = [wrist[0] - elbow[0], wrist[1] - elbow[1]] as const
+    const inner = Math.acos((toShoulder[0] * toWrist[0] + toShoulder[1] * toWrist[1]) / (Math.hypot(...toShoulder) * Math.hypot(...toWrist))) * 180 / Math.PI
+    expect(inner).toBeGreaterThanOrEqual(29)
+    expect(inner).toBeLessThanOrEqual(145)
+    const restLength = Math.hypot(bone.W[0] - bone.E[0], bone.W[1] - bone.E[1])
+    expect(Math.hypot(...toWrist) / restLength).toBeGreaterThanOrEqual(0.9)
+    expect(Math.hypot(...toWrist) / restLength).toBeLessThanOrEqual(1.1)
+    // 肩から肘の長さは、袖に隠れる上端を含めて休止の 1.14 倍まで。袖の下に見えている区間は休止より長くしない。
+    expect(Math.hypot(...toShoulder)).toBeLessThanOrEqual(Math.hypot(bone.E[0] - bone.S[0], bone.E[1] - bone.S[1]) * 1.14)
+    expect(Math.hypot(elbow[0] - bone.E[0], elbow[1] - bone.E[1])).toBeGreaterThanOrEqual(60)
+    expect(elbow[1]).toBeLessThanOrEqual(bone.E[1] + 5) // 腰より下へは大きく下げない（袖の下に上腕を見せる分だけ休止より少し下げてよい。BOXP-485）
+  })
+  it.each([['制止', 'halt', 1.5], ['挨拶', 'greet', 0.55], ['案内', 'guide', 1.5], ['喜び', 'joy', 0.75]] as const)('%s の保持は肘が袖の下縁より下に出て上腕が見える', (_name, gesture, time) => {
+    const { elbow } = solveArm(bone, sample(clips[gesture], time).right)
+    const hemY = 663 + (elbow[0] - 771) * (691 - 663) / (841 - 771)
+    expect(elbow[1] - hemY).toBeGreaterThanOrEqual(20)
+  })
+  // 袖の下縁から小手の開口まで、肩→肘の中心線が見える長さ。袖と小手を実際の変形で動かして測る（BOXP-485 の条件 1 と 3）。
+  const visibleUpper = (pose: ArmPose) => {
+    const m = pose, { elbow, wrist } = solveArm(bone, m), length = (v: readonly [number, number]) => Math.hypot(v[0], v[1])
+    const toCuff = [wrist[0] - elbow[0], wrist[1] - elbow[1]] as const, b = [elbow[0] + toCuff[0] / length(toCuff) * 30, elbow[1] + toCuff[1] / length(toCuff) * 30] as const
+    const angle = sleeveAngle(bone, m), hem = HEM.map(p => deformSleeve(bone, angle, p[0], p[1], p[0], p[1])), cuff = CUFF_EDGE.map(p => deformFore(bone, m, p[0], p[1]))
+    const hit = (line: readonly (readonly [number, number])[], pick: (a: number, b: number) => number) => {
+      let found = NaN
+      for (let i = 0; i + 1 < line.length; i++) {
+        const p = line[i] as readonly [number, number], q = line[i + 1] as readonly [number, number], dx = b[0] - bone.S[0], dy = b[1] - bone.S[1], ex = q[0] - p[0], ey = q[1] - p[1], d = dx * ey - dy * ex
+        if (Math.abs(d) < 1e-9) continue
+        const s = ((p[0] - bone.S[0]) * ey - (p[1] - bone.S[1]) * ex) / d, u = ((p[0] - bone.S[0]) * dy - (p[1] - bone.S[1]) * dx) / d
+        if (u < 0 || u > 1) continue
+        found = Number.isNaN(found) ? s : pick(found, s)
+      }
+      return found
     }
+    const total = Math.hypot(b[0] - bone.S[0], b[1] - bone.S[1])
+    const end = hit(cuff, Math.min) // 開口の金の縁をかすめて届かないときは、上腕の下端までを見える区間とする
+    return (Math.min(Number.isNaN(end) ? 1 : end, 1) - hit(hem, Math.max)) * total
+  }
+  it.each([['制止', 'halt', 1.5], ['挨拶', 'greet', 0.55], ['案内', 'guide', 1.5], ['喜び', 'joy', 0.75]] as const)('%s の保持は袖の下縁から小手まで上腕が 50px 以上見え、休止より長くは見えない', (_name, gesture, time) => {
+    const visible = visibleUpper(sample(clips[gesture], time).right)
+    expect(visible).toBeGreaterThanOrEqual(50)
+    expect(visible).toBeLessThanOrEqual(74)
+  })
+  it('制止の保持は体の外側で手を肩より高く上げる（胸の前へ折り畳まない）', () => {
+    const { elbow, wrist } = solveArm(bone, sample(clips.halt, 1.5).right)
+    expect(elbow[0]).toBeGreaterThan(bone.E[0])
+    expect(wrist[0]).toBeGreaterThan(bone.W[0])
+    expect(wrist[1]).toBeLessThan(bone.S[1] + 50) // 掌は手首より約 170px 上まで届き、顔の高さへ出る
+  })
+  it('肘を外へ上げると袖が肩口を固定したまま持ち上がり、休止と内側への動作では動かない', () => {
+    expect(sleeveAngle(bone, rest)).toBeCloseTo(0)
+    expect(sleeveAngle(bone, sample(clips.shyHand, 2).right)).toBe(0)
+    const angle = sleeveAngle(bone, sample(clips.halt, 1.5).right)
+    expect(angle).toBeLessThan(-0.05)
+    // 袖は上腕より少なく回って垂れる（同じだけ回すと上腕が袖の裏に隠れ続ける）
+    const pose = sample(clips.halt, 1.5).right, elbow = solveArm(bone, pose).elbow, armAngle = Math.atan2(elbow[1] - bone.S[1], elbow[0] - bone.S[0]) - Math.atan2(bone.E[1] - bone.S[1], bone.E[0] - bone.S[0])
+    expect(angle).toBeGreaterThan(armAngle * 0.8)
+    const shoulder = deformSleeve(bone, angle, bone.S[0], bone.S[1] + 5, bone.S[0], bone.S[1] + 5), tip = deformSleeve(bone, angle, 845, 695, 845, 695)
+    expect(shoulder[1]).toBeCloseTo(bone.S[1] + 5)
+    expect(tip[1]).toBeLessThan(695 - 2)
   })
   it('眉の外端は動かさず、内側だけ動かす', () => {
     expect(browPin(0.3)).toBe(1)
@@ -105,8 +170,8 @@ describe('腕の変形', () => {
     expect(browPin(0.66)).toBeLessThan(0.7)
   })
   it('体の前を通る前腕は水平付近で短く描き、始点と終点の長さは変えない', () => {
-    const pose = { up: 0, upS: 1, fo: 1.75, foS: 1, ha: 0, haS: 1 }
-    expect(foreScale({ ...pose, front: true })).toBeCloseTo(0.5)
+    const pose = { up: 0, upS: 1, fo: 2.1, foS: 1, ha: 0, haS: 1 }
+    expect(foreScale({ ...pose, fo: 2.1, front: true })).toBeCloseTo(0.5)
     expect(foreScale(pose)).toBe(1) // 外へ出す動作は短縮しない
     expect(foreScale({ ...pose, fo: 0, front: true })).toBeGreaterThan(0.99)
     expect(foreScale({ ...pose, fo: 3.45, front: true })).toBeGreaterThan(0.99)
@@ -134,6 +199,37 @@ describe('動作の切り替え', () => {
       const a = wrist(i / steps), b = wrist((i + 1) / steps)
       expect(Math.hypot(a[0] - b[0], a[1] - b[1])).toBeLessThan(whole * 0.1)
     }
+  })
+})
+
+describe('上げた腕からの反対側への割込み（BOXP-476 TD-02）', () => {
+  const held = (gesture: 'shyHand' | 'halt', time: number) => sample(clips[gesture], time)
+  const path = (from: 'shyHand' | 'halt', fromTime: number, to: 'shyHand' | 'halt') => {
+    const start = held(from, fromTime), plan = interruptPlan(start, clips[to])
+    return { plan, frames: Array.from({ length: 21 }, (_, i) => { const x = i / 20; return solveArm(bone, crossfadeArms(plan.from, sample(clips[to], plan.at + x * 0.8), x).right) }) }
+  }
+  it('照れ→制止は上を回り、手首が腹の高さへ下がらない', () => {
+    const { plan, frames } = path('shyHand', 1.2, 'halt')
+    expect(plan.at).toBeGreaterThan(0)
+    expect(Math.abs(plan.from.right.fo - clips.halt.keys[2]!.right!.fo)).toBeLessThan(Math.PI)
+    for (const { wrist, elbow } of frames) { expect(wrist[1]).toBeLessThan(elbow[1]); expect(wrist[1]).toBeLessThan(600) }
+  })
+  it('制止→照れも逆向きに同じ', () => {
+    const { frames } = path('halt', 1.2, 'shyHand')
+    for (const { wrist, elbow } of frames) { expect(wrist[1]).toBeLessThan(elbow[1]); expect(wrist[1]).toBeLessThan(600) }
+  })
+  it('上がっていない腕や同じ側への切替は経路も開始時刻も変えない', () => {
+    const low = { right: rest, left: rest }
+    expect(interruptPlan(low, clips.halt)).toEqual({ from: low, at: 0 })
+    const raised = held('halt', 1.2)
+    expect(interruptPlan(raised, clips.greet).at).toBe(0)
+  })
+  it('曲げの絵の裏返しは割込みで回る途中の 1 回だけ', () => {
+    const { plan } = path('shyHand', 1.2, 'halt'), from = plan.from.right.fo, to = clips.halt.keys[2]!.right!.fo
+    const sides = Array.from({ length: 41 }, (_, i) => bentSide({ mirror: false }, { fo: from + (to - from) * i / 40 }))
+    expect(sides[0]).toBe(bentSide({ mirror: false }, { fo: 3.41 }))
+    expect(sides.at(-1)).toBe(1)
+    expect(sides.filter((v, i) => i > 0 && v !== sides[i - 1]).length).toBe(1)
   })
 })
 
@@ -189,5 +285,44 @@ describe('実行時の動作の割り込み', () => {
     stage.reset()
     for (let i = 0; i < 60; i++) { frame(); stage.reset() }
     expect((stage as ReturnType<typeof createActingStage>).report().armBlend).toBe(0)
+  })
+})
+
+describe('曲げの絵（BOXP-476 TD-02）', () => {
+  it('前腕の曲げが小さいときは元の小手のまま、保持では差し替える', () => {
+    expect(bentWeight(0)).toBe(0)
+    expect(bentWeight(0.5)).toBe(0)
+    expect(bentWeight(-2.05)).toBe(1)
+    expect(bentWeight(3.41)).toBe(1)
+  })
+  it('差し替えは半透明の二重を見せないよう、ごく狭い角度で切り替える', () => {
+    expect(bentWeight(0.97)).toBe(1)
+    expect(bentWeight(0.93)).toBe(0)
+  })
+  it('内回りと左腕では絵を裏返す', () => {
+    expect(bentSide({ mirror: false }, { fo: -2 })).toBe(1)
+    expect(bentSide({ mirror: false }, { fo: 3.4 })).toBe(-1)
+    expect(bentSide({ mirror: true }, { fo: -1.85 })).toBe(-1)
+  })
+  it('絵は肘を原点に軸の向きへ置く', () => {
+    const near = (a: readonly [number, number], b: readonly [number, number]) => { expect(a[0]).toBeCloseTo(b[0], 6); expect(a[1]).toBeCloseTo(b[1], 6) }
+    near(placeBent([100, 200], [0, -1], 1, [0, 50]), [100, 150])
+    near(placeBent([100, 200], [0, -1], 1, [10, 0]), [110, 200])
+    near(placeBent([100, 200], [0, -1], -1, [10, 0]), [90, 200])
+  })
+  it('照れの途中で前腕が短縮しても、曲げた小手の先は手首に付いたまま縮む', () => {
+    const length = Math.hypot(bone.W[0] - bone.E[0], bone.W[1] - bone.E[1])
+    const shortened: ArmPose = { ...rest, fo: 2.1, front: true }
+    expect(foreScale(shortened)).toBeCloseTo(0.5)
+    const { elbow, wrist } = solveArm(bone, shortened), tip = placeBentFore(bone, shortened, [0, length])
+    expect(tip[0]).toBeCloseTo(wrist[0], 6); expect(tip[1]).toBeCloseTo(wrist[1], 6)
+    const origin = placeBentFore(bone, shortened, [0, 0]); expect(origin[0]).toBeCloseTo(elbow[0], 6); expect(origin[1]).toBeCloseTo(elbow[1], 6)
+    const left = { ...bone, S: [1210, 533], E: [1160, 733], W: [1076, 928], mirror: true } as const // 左腕も同じ（中心 960 で反転）
+    const mirroredPose: ArmPose = { ...shortened, fo: -2.1 }, s = solveArm(left, shortened), leftTip = placeBentFore(left, mirroredPose, [0, length])
+    expect(Math.hypot(s.wrist[0] - s.elbow[0], s.wrist[1] - s.elbow[1])).toBeCloseTo(length * 0.5, 6)
+    expect(Math.hypot(leftTip[0] - s.elbow[0], leftTip[1] - s.elbow[1])).toBeCloseTo(length * 0.5, 6)
+  })
+  it('素材の肘の位置は画像の範囲内にある', () => {
+    for (const art of [BENT_ART.fore, BENT_ART.elbow]) { expect(art.anchor[0]).toBeGreaterThan(0); expect(art.anchor[0]).toBeLessThan(art.w); expect(art.anchor[1]).toBeGreaterThan(0); expect(art.anchor[1]).toBeLessThan(art.h) }
   })
 })
