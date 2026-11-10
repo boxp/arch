@@ -236,15 +236,35 @@ export const HALT_ARM = {
   /** 生成画像の肩の点を置くモデル座標と、倍率・保持の回転（反時計回りが負）。 */
   at: [718, 540] as Vec, scale: 0.31, angle: -0.18,
 }
-/** 1 枚腕の回転（ラジアン、画面の時計回りが正）。t は差し替え開始からの秒、out(0〜1)は戻りの進み。入りは下げた位置から持ち上げる。 */
-export function haltArmAngle(t: number, out = 0): number {
-  const rise = 1 - ease(Math.min(1, Math.max(0, t / 0.45))), hold = smooth(0.3, 0.8, t)
-  return HALT_ARM.angle + 0.3 * rise + 0.012 * Math.sin(t * 2.4) * hold + 0.25 * ease(out)
-}
 /** 生成画像の画素 → モデル座標（絵全体を肩の点で回すだけ）。 */
-export function haltArmPoint(px: Vec, angle: number): Vec {
-  const H = HALT_ARM
+export function haltArmPoint(px: Vec, angle: number, H: { at: Vec; scale: number; shoulderPx: Vec } = HALT_ARM): Vec {
   return add(H.at, scaleV(rot(sub(px, H.shoulderPx), angle), H.scale))
+}
+/**
+ * 制止の途中姿勢の 1 枚腕（BOXP-476 TD-06 Owner 最新2、Gemini 生成 td06m-mid1）。保持の 1 枚腕と同じ尺度で描いた
+ * 「前腕がほぼ水平で手を持ち上げかけた」腕。休止 → 途中 → 保持（戻りは逆順）を短いフェードでつなぐ。肩の点は保持と同じ位置へ置く。
+ */
+export const HALT_MID = {
+  back: 'halt-mid.png', front: 'halt-mid-front.png', box: [125, 510, 1304, 857] as const,
+  shoulderPx: [293, 370] as Vec, elbowPx: [470, 1200] as Vec, wristPx: [860, 960] as Vec,
+  at: HALT_ARM.at, scale: HALT_ARM.scale, angle: -0.14,
+}
+/** 途中姿勢だけを見せる秒（待機の腕からのフェードと同じ長さ）と、途中 ⇄ 保持のフェードの秒。 */
+export const HALT_MID_SECONDS = SWITCH_SECONDS, HALT_CROSS_SECONDS = 0.18
+export type HaltLayer = { op: number; angle: number }
+/**
+ * 3 枚の出し入れ。t は差し替え開始からの秒、ret は保持 → 途中の戻りの秒（null なら入り/保持）、down は途中 → 待機の戻りの進み(0〜1、
+ * 待機の腕へのフェード自体は posedAlpha が受け持つ)。保持は途中の上に重ねてフェードし、保持が出きるまで途中は消さない（背景が透けない）。
+ */
+export function haltLayers(t: number, ret: number | null, down: number | null): { mid: HaltLayer; hold: HaltLayer } {
+  const clamp = (x: number) => Math.min(1, Math.max(0, x)), sway = 0.012 * Math.sin(t * 2.4) * smooth(0.6, 1.1, t)
+  if (down !== null) return { mid: { op: 1, angle: HALT_MID.angle + 0.2 * ease(clamp(down)) }, hold: { op: 0, angle: HALT_ARM.angle } }
+  if (ret !== null) { const r = ease(clamp(ret / HALT_CROSS_SECONDS)); return { mid: { op: 1, angle: HALT_MID.angle - 0.05 * (1 - r) }, hold: { op: 1 - r, angle: HALT_ARM.angle + 0.06 * r } } }
+  const k = ease(clamp((t - HALT_MID_SECONDS) / HALT_CROSS_SECONDS))
+  return {
+    mid: { op: k >= 1 ? 0 : 1, angle: HALT_MID.angle + 0.16 * (1 - ease(clamp(t / (HALT_MID_SECONDS + HALT_CROSS_SECONDS)))) },
+    hold: { op: k, angle: HALT_ARM.angle + 0.08 * (1 - ease(clamp((t - HALT_MID_SECONDS) / 0.4))) + sway },
+  }
 }
 const posed = (a: ArmPose) => Math.abs(a.fo) > SEPARATE_AT || (!!a.elbowTo && (a.elbowW ?? 0) > SEPARATE_AT) || (a.artW ?? 0) > 0.001
 const partURL = (file: string) => new URL(`kohako/live2d/acting/${file}`, location.href).href
@@ -304,8 +324,10 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const posedFor = (side: 'right' | 'left' | null) => side && sw && fadeSides[side] ? posedAlpha : 1
   const ghostFor = (side: 'right' | 'left') => sw && fadeSides[side] ? backOpacity(posedAlpha) : 0
   // 制止の腕セットの状態。haltTime は差し替え開始からの秒、haltOut は戻りのフェードの進み(0〜1)。
-  let haltSet = false, haltLoaded = false, haltTime = 0, haltOut = 0
-  const haltQuads: Partial<Record<'back' | 'front', number>> = {}
+  // haltRet は保持 → 途中の戻りの秒（null なら入り/保持）、haltDown は途中 → 待機の戻りに入ったか、haltRetThen は戻り後に呼ぶもの。
+  let haltSet = false, haltLoaded = false, haltTime = 0, haltOut = 0, haltRet: number | null = null, haltDown = false, haltRetThen: (() => void) | undefined
+  const haltQuads: Partial<Record<'midBack' | 'midFront' | 'back' | 'front', number>> = {}
+  const haltNow = () => haltLayers(haltTime, haltRet, haltDown ? haltOut : null)
   const haltOn = () => haltSet && haltLoaded
   const artLoaded: Partial<Record<HandArt, boolean>> = {} // 素材が届くまでは元の手のまま（読込失敗時も同じ）
   const handArt = () => pose.right.art && armBlend > 0.001 && artLoaded[pose.right.art] ? { kind: pose.right.art, w: pose.right.artW ?? 0 } : { kind: undefined, w: 0 }
@@ -366,18 +388,21 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       synth.set(quad.index, { base: RIGHT.hand, pointer: quad.pointer, opacity: () => { const h = handArt(); return h.kind === kind ? smooth(0.1, 0.6, h.w) : 0 }, write(out) { const [dx, dy] = swayOf(RIGHT.hand); corners.forEach((c, i) => { const q = deformHand(RIGHT, pose.right, c[0] + dx, c[1] + dy); out[2 * i] = q[0]; out[2 * i + 1] = q[1] }) } })
     }
     // 制止の 1 枚腕（back/front は同じ絵の同じ位置）。2 枚とも読めたときだけ使い、読めなければ従来の制止の腕のまま。
-    const haltMark = { back: false, front: false }
-    { const [x0, y0, w, h] = HALT_ARM.box, corners: Vec[] = [[x0, y0], [x0 + w, y0], [x0 + w, y0 + h], [x0, y0 + h]]
-      for (const layer of ['back', 'front'] as const) {
-        const quad = addQuad(pp, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), later(HALT_ARM[layer], () => { haltMark[layer] = true; haltLoaded = haltMark.back && haltMark.front }))
-        haltQuads[layer] = quad.index
-        synth.set(quad.index, { base: RIGHT.arm, pointer: quad.pointer, opacity: () => haltOn() ? 1 : 0, write(out) { const [dx, dy] = swayOf(RIGHT.arm), angle = haltArmAngle(haltTime, haltOut); corners.forEach((c, i) => { const q = haltArmPoint(c, angle); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } })
-      } }
+    // 途中(mid)と保持(hold)の 2 姿勢 × back/front。4 枚とも読めたときだけ使い、読めなければ従来の制止の腕のまま。
+    const haltMark = { midBack: false, midFront: false, back: false, front: false }
+    for (const [pose_, spec, layers] of [['mid', HALT_MID, [['midBack', 'back'], ['midFront', 'front']]], ['hold', HALT_ARM, [['back', 'back'], ['front', 'front']]]] as const) {
+      const [x0, y0, w, h] = spec.box, corners: Vec[] = [[x0, y0], [x0 + w, y0], [x0 + w, y0 + h], [x0, y0 + h]]
+      for (const [key, file] of layers) {
+        const quad = addQuad(pp, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), later(spec[file], () => { haltMark[key] = true; haltLoaded = Object.values(haltMark).every(Boolean) }))
+        haltQuads[key] = quad.index
+        synth.set(quad.index, { base: RIGHT.arm, pointer: quad.pointer, opacity: () => haltOn() ? haltNow()[pose_].op : 0, write(out) { const [dx, dy] = swayOf(RIGHT.arm), angle = haltNow()[pose_].angle; corners.forEach((c, i) => { const q = haltArmPoint(c, angle, spec); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } })
+      }
+    }
     for (const [m, side] of [[RIGHT.arm, 'right'], [RIGHT.hand, 'right'], [LEFT.arm, 'left'], [LEFT.hand, 'left']] as const) {
       const g = addGhost(pp, m); ghosts.set(m, { ...g, side })
       synth.set(g.index, { base: m, pointer: g.pointer, ghost: true, opacity: () => ghostFor(side), write() {} }) // 頂点は apply が変形前の値を写す
     }
-    if (cp.commandCapacity != null) { alloc.p2l_dealloc(cp.commandsPointer, cp.commandCapacity * 4 + 4); cp.commandCapacity += 30; cp.commandsPointer = alloc.p2l_alloc(cp.commandCapacity * 4 + 4) }
+    if (cp.commandCapacity != null) { alloc.p2l_dealloc(cp.commandsPointer, cp.commandCapacity * 4 + 4); cp.commandCapacity += 32; cp.commandsPointer = alloc.p2l_alloc(cp.commandCapacity * 4 + 4) }
     parts = { right, left, art, cuff }
     partsStatus = { ready: true, textures: 'loading', erased }
     Promise.all(loads).then(() => { partsStatus = { ready: true, textures: 'loaded', erased } }).catch(e => { partsStatus = { ready: true, textures: 'failed', error: e instanceof Error ? e.message : String(e) } })
@@ -426,7 +451,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     const count = rt.p2l_render_commands(rig, pointer, capacity), front = frontMeshes(), art = handArt(), artMesh = parts && art.kind && art.w > 0.001 ? parts.art[art.kind] : undefined
     const expand = (c: number): number[] => {
       // 制止の 1 枚腕: 元の上腕・小手・手は描かず、腕全体を袖の表地の裏に、同じ絵の肘から先を表地の手前に重ねる。
-      if (parts && haltOn() && c === RIGHT.arm && parts.right.on) return [c, haltQuads.back as number, parts.right.outer, haltQuads.front as number]
+      if (parts && haltOn() && c === RIGHT.arm && parts.right.on) return [c, haltQuads.midBack as number, haltQuads.back as number, parts.right.outer, haltQuads.midFront as number, haltQuads.front as number]
       if (parts && haltOn() && c === RIGHT.hand) return []
       if (parts && c === RIGHT.arm && parts.right.on) return [parts.right.stub, c, parts.right.fill, parts.right.bentElbow, parts.right.outer, parts.right.fore, parts.right.bentFore]
       if (parts && c === LEFT.arm && parts.left.on) return [parts.left.stub, c, parts.left.fill, parts.left.bentElbow, parts.left.outer, parts.left.fore, parts.left.bentFore]
@@ -452,14 +477,17 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const baseUpdate = p.update.bind(p)
   p.update = (dt: number) => {
     generation++
-    if (haltSet) { haltTime += dt; if (sw?.phase === 'out') haltOut = Math.min(1, (sw.t + dt) / SWITCH_SECONDS) }
+    if (haltSet) {
+      haltTime += dt; if (sw?.phase === 'out') haltOut = Math.min(1, (sw.t + dt) / SWITCH_SECONDS)
+      if (haltRet !== null) { haltRet += dt; if (haltRet >= HALT_CROSS_SECONDS) { const then = haltRetThen; haltRet = null; haltRetThen = undefined; haltDown = true; switchOut(then) } }
+    }
     if (sw) {
       sw.t += dt
       const x = Math.min(1, sw.t / SWITCH_SECONDS)
       posedAlpha = sw.phase === 'in' ? ease(x) : 1 - ease(x)
       if (x >= 1) {
         const ended = sw; sw = null; posedAlpha = 1
-        if (ended.phase === 'out') { haltSet = false; haltOut = 0; frozen = null; switched = false; pose = { right: REST, left: REST, body: NO_BODY }; armBlend = 0 }
+        if (ended.phase === 'out') { haltSet = false; haltOut = 0; haltRet = null; haltDown = false; haltRetThen = undefined; frozen = null; switched = false; pose = { right: REST, left: REST, body: NO_BODY }; armBlend = 0 }
         ended.then?.()
       }
     }
@@ -491,6 +519,13 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   // 今の腕を待機の腕へフェードで戻す（姿勢は止めたまま）。then はフェード後に呼ぶ。
   function switchOut(then?: () => void) {
     if (sw?.phase === 'out') { sw.then = then; return }
+    // 制止の保持が見えているときは、まず保持 → 途中へフェードしてから待機の腕へ戻す（逆順の 3 枚）。
+    if (haltOn() && !haltDown) {
+      if (haltRet !== null) { haltRetThen = then; return }
+      const op = haltNow().hold.op
+      if (op > 0.001) { frozen = { right: pose.right, left: pose.left, body: pose.body }; clip = null; clipName = 'none'; fadeFrom = null; haltRet = (1 - op) * HALT_CROSS_SECONDS; haltRetThen = then; return }
+    }
+    haltDown = haltSet
     frozen = { right: pose.right, left: pose.left, body: pose.body }
     fadeSides = { right: armBlend > 0.001 && posed(pose.right), left: armBlend > 0.001 && posed(pose.left) }
     clip = null; clipName = 'none'; fadeFrom = null
@@ -501,7 +536,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     clip = clips[next]; clipName = next; clipTime = 0; fadeFrom = null; frozen = null; switched = true; armBlend = 1
     pose = { ...sample(clip, 0), right: SWITCHED[next] as ArmPose }
     fadeSides = { right: true, left: false }
-    sw = { phase: 'in', t: 0 }; posedAlpha = 0; haltSet = next === 'halt'; haltTime = 0; haltOut = 0
+    sw = { phase: 'in', t: 0 }; posedAlpha = 0; haltSet = next === 'halt'; haltTime = 0; haltOut = 0; haltRet = null; haltDown = false; haltRetThen = undefined
   }
   const atRest = () => !sw && !fadeFrom && (armBlend < 0.001 || !posed(pose.right) && !posed(pose.left))
   return {
