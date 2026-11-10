@@ -23,7 +23,7 @@ codex-workspace の cron job `model-updates` (agent なし) が実行します�
 4. 配備中の CLI バイナリが候補 ID を内蔵していなければ `waiting-cli` とし、CLI の更新を含む更新票を 1 枚作ります。 更新票が既にあっても、CLI が対応した後は候補 canary に合格するまで `proposed` にしません。
 5. 内蔵していれば、実 CLI で短い canary (stream-json、Bash tool 1 往復、`modelUsage` が候補だけ、
    `unrecognized_model` 警告なし) を実行し、合格したら更新票を 1 枚作ります。同じ role と候補では 2 枚目を作りません。
-6. 更新票の担当 agent は `model_updates.bb pin` で catalog を更新し、通常の PR、review、CI、merge を通します。
+6. 更新票の担当 agent は `model_updates.bb pin` で catalog を更新し、通常の PR、review、CI、merge を通します。pin は候補 canary の合格記録 (`:candidate-verified`) が無ければその場で canary し、不合格なら catalog を変えません。waiting-cli の票は先に CLI 更新だけを配備し、tick で候補が `proposed` になってから pin します。
    image が配備されると、次の tick が新しい pin を canary で検証します。
 
 ## 配備後の検証と rollback
@@ -31,7 +31,7 @@ codex-workspace の cron job `model-updates` (agent なし) が実行します�
 - 配備中の pin が state の検証済み (`:verified`) と違えば、その pin で canary を実行します。
 - 合格: `:verified` と `:history` を更新します。自動で入れた hold があれば外します。
 - 不合格: `:previous` へ自動 hold し (`:auto-hold`)、更新票へ記録します (手動 hold が既にあればそれを維持し上書きしません)。新規 run は旧正常版で動きます。
-- 手動: `hold --role R --model M` (M は catalog の `:model` か `:previous` だけ) と `release --role R`。手動 hold は自動では外しません。
+- 手動: `hold --role R --model M` (M は catalog の `:model` か `:previous` だけ) と `release --role R`。手動 hold は自動では外しません。 hold / release / pin は tick と同じロックを待ってから state を更新するため、実行中の tick に上書きされません。
 - 恒久的に戻すときは catalog を戻す PR を通常どおり出します。
 
 状態は `~/.codex-task-board/model-updates/state.edn`、canary の判定項目は `canary/` に保存します (応答本文や認証情報は保存しません)。

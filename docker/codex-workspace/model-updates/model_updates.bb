@@ -55,7 +55,7 @@
 (defn ticket! [role model kind]
   (let [summary (java.io.File/createTempFile "model-update-" ".md")
         cmd (env "MODEL_UPDATES_TASK_BOARD_CMD" (str (System/getProperty "user.home") "/.claude/skills/obsidian-task-board/bin/task-board.bb"))
-        _ (spit summary (str "モデル " role " を " model " へ更新します。種別: " (name kind) "\n\n`bb /opt/codex-workspace/model-updates/model_updates.bb pin --catalog docker/codex-workspace/model-catalog.edn --role " role " --model " model " --ticket BOXP-N` を実行。種別が waiting-cli の場合は、npm の @anthropic-ai/claude-code で候補 ID を内蔵する版 (platform package を npm pack して strings で確認) へ CLAUDE_CODE_VERSION と :min-cli を上げる。通常 PR → review/CI → merge → 配備後 `model_updates.bb tick --force` で verified を確認。\n"))
+        _ (spit summary (str "モデル " role " を " model " へ更新します。種別: " (name kind) "\n\n種別が waiting-cli の場合は 2 段階で進める。(1) pin はまだ変えず、npm の @anthropic-ai/claude-code で候補 ID を内蔵する版 (platform package を npm pack して strings で確認) へ CLAUDE_CODE_VERSION と :min-cli だけを上げる通常 PR → review/CI → merge → 配備。(2) 配備後 `bb /opt/codex-workspace/model-updates/model_updates.bb tick --force` で候補の status が proposed (候補 canary 合格) になったことを確認してから次へ進む。canary-failed なら pin せず Notes に記録して止める。\n\n候補 canary 合格後 (種別 candidate は起票時点で合格済み) に `bb /opt/codex-workspace/model-updates/model_updates.bb pin --catalog docker/codex-workspace/model-catalog.edn --role " role " --model " model " --ticket BOXP-N` を実行。pin は候補 canary の合格記録が無ければその場で canary し、不合格なら失敗する。通常 PR → review/CI → merge → 配備後 `model_updates.bb tick --force` で verified を確認。\n"))
         prefix (if (str/ends-with? cmd ".bb") ["bb" cmd] [cmd])
         r (run (into prefix ["create" "--vault" (env "CODEX_TASK_BOARD_VAULT" "/home/boxp/Documents/obsidian-headless/BOXP") "--lane" "Ready" "--assignee" "codex-terra" "--priority" "medium" "--repo" "boxp/arch" "--title" (str "モデル自動追従: " role " を " model " へ更新") "--summary-file" (str summary)]))]
     (.delete summary)
@@ -114,8 +114,10 @@
                            result (if (and (#{:proposed :waiting-cli} (:status result)) (nil? (get-in s [:proposals [role candidate]]))) (assoc result :status :ticket-error :reason "起票失敗") result)]
                        (assoc-in s [:roles role] (merge {:candidate candidate :reason nil} result)))) initial families)]
         (atomic! state-path final) {:status :checked :roles (:roles final)}))))
-(defn with-lock [f] (fs/create-dirs root) (with-open [raf (RandomAccessFile. (str root "/tick.lock") "rw") ch (.getChannel raf)]
-                       (if (try (.tryLock ch) (catch Exception _ nil)) (f) ;; closing the channel releases the lock (bb does not expose FileLock methods)
+;; tick holds the lock for its whole read-modify-write of state; hold, release
+;; and pin wait for it (blocking) so a running tick cannot overwrite their change.
+(defn with-lock [f & [wait?]] (fs/create-dirs root) (with-open [raf (RandomAccessFile. (str root "/tick.lock") "rw") ch (.getChannel raf)]
+                       (if (if wait? (.lock ch) (try (.tryLock ch) (catch Exception _ nil))) (f) ;; closing the channel releases the lock (bb does not expose FileLock methods)
                          (let [event {:status :locked :at (str (Instant/now))}]
                            (spit (str root "/lock-events.jsonl") (str (json/generate-string event) "\n") :append true) event))))
 (try
@@ -123,13 +125,19 @@
                  "status" (let [state (read-edn state-path {})] {:catalog (catalog!) :state state :last-check (select-keys state [:last-check-date :last-check-at :roles])})
                  "tick" (with-lock tick!)
                  "canary" (canary (or (opt "--model") (throw (ex-info "--model required" {}))))
-                 "pin" (let [c (catalog!) role (opt "--role") model (opt "--model") family (get families role) old (get-in c [:roles role :model])]
+                 "pin" (with-lock #(let [c (catalog!) role (opt "--role") model (opt "--model") family (get families role) old (get-in c [:roles role :model])]
                          (when-not (and family (model-version family model) old) (throw (ex-info "invalid role or model" {})))
-                         (let [c (-> c (assoc-in [:roles role :previous] old) (assoc-in [:roles role :model] model) (assoc-in [:roles role :verified-at] (str (Instant/now))) (update-in [:roles role :history] (fnil conj []) {:model model :since (str (LocalDate/now ZoneOffset/UTC)) :ticket (opt "--ticket")}))] (atomic! catalog-path c) {:status :pinned :role role :model model}))
-                 "hold" (let [c (catalog!) role (opt "--role") model (opt "--model") entry (get-in c [:roles role])]
+                         ;; Never pin an unverified candidate: require the tick's recorded canary pass, or pass one now.
+                         (let [s (read-edn state-path {})]
+                           (when-not (get-in s [:candidate-verified [role model]])
+                             (if (:ok (canary model))
+                               (atomic! state-path (assoc-in s [:candidate-verified [role model]] true))
+                               (throw (ex-info "candidate canary failed; not pinning" {:model model})))))
+                         (let [c (-> c (assoc-in [:roles role :previous] old) (assoc-in [:roles role :model] model) (assoc-in [:roles role :verified-at] (str (Instant/now))) (update-in [:roles role :history] (fnil conj []) {:model model :since (str (LocalDate/now ZoneOffset/UTC)) :ticket (opt "--ticket")}))] (atomic! catalog-path c) {:status :pinned :role role :model model})) true)
+                 "hold" (with-lock #(let [c (catalog!) role (opt "--role") model (opt "--model") entry (get-in c [:roles role])]
                           (when-not (and (model-version (get families role) model) (some #{model} [(:model entry) (:previous entry)])) (throw (ex-info "invalid hold" {})))
-                          (let [s (-> (read-edn state-path {}) (assoc-in [:hold role] model) (update :auto-hold dissoc role))] (atomic! state-path s) {:status :held :role role :model model}))
-                 "release" (let [role (opt "--role") _ (when-not (contains? families role) (throw (ex-info "invalid role" {}))) s (-> (read-edn state-path {}) (update :hold dissoc role) (update :auto-hold dissoc role))] (atomic! state-path s) {:status :released :role role})
+                          (let [s (-> (read-edn state-path {}) (assoc-in [:hold role] model) (update :auto-hold dissoc role))] (atomic! state-path s) {:status :held :role role :model model})) true)
+                 "release" (with-lock #(let [role (opt "--role") _ (when-not (contains? families role) (throw (ex-info "invalid role" {}))) s (-> (read-edn state-path {}) (update :hold dissoc role) (update :auto-hold dissoc role))] (atomic! state-path s) {:status :released :role role}) true)
                  (throw (ex-info "expected status, tick, canary, pin, hold or release" {})))]
     (println (json/generate-string (json-safe result))) (when (and (= command "canary") (not (:ok result))) (System/exit 1)))
   (catch Exception e (binding [*out* *err*] (println (.getMessage e))) (System/exit 1)))

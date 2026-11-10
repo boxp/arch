@@ -139,4 +139,25 @@
     (spit state (pr-str {:verified {"claude-fable" "claude-fable-5-1" "claude-opus" "claude-opus-5-5" "claude-sonnet" "claude-sonnet-5-5"}})))
   (assert (= "proposed" (get-in (apply call (concat tick-args ["--force"])) [:roles :claude-fable :status]))))
 (println "PASS: numeric ordering, duplicate proposal, failed deployment hold, auto-hold release, manual hold kept, CLI wait ticket, canary after CLI support and real retention text")
+;; pin refuses a candidate without a canary pass (recorded by tick or run now).
+(let [c (edn/read-string (slurp catalog)) st (edn/read-string (slurp state))]
+  (spit fake "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 2.1.321; exit 0; fi\necho '{\"type\":\"result\",\"is_error\":true}'\n")
+  (assert (try (apply call (concat ["pin" "--role" "claude-fable" "--model" "claude-fable-5-7" "--ticket" "BOXP-123"] base)) false (catch Exception _ true)))
+  (assert (= c (edn/read-string (slurp catalog))))
+  (spit fake passing)
+  (assert (= "pinned" (:status (apply call (concat ["pin" "--role" "claude-fable" "--model" "claude-fable-5-7" "--ticket" "BOXP-123"] base)))))
+  (assert (get-in (edn/read-string (slurp state)) [:candidate-verified ["claude-fable" "claude-fable-5-7"]]))
+  (spit catalog (pr-str c)) (spit state (pr-str st)))
+;; hold waits for a running tick's lock instead of racing its state write.
+(let [lock-file (str root "/.codex-task-board/model-updates/tick.lock") marker (str root "/lock-ready-2")
+      proc (p/process ["python3" "-c" "import fcntl,sys,time; f=open(sys.argv[1],'w'); fcntl.lockf(f,fcntl.LOCK_EX); open(sys.argv[2],'w').close(); time.sleep(2)" lock-file marker])]
+  (loop [n 0] (when (and (< n 100) (not (fs/exists? marker))) (Thread/sleep 50) (recur (inc n))))
+  (let [started (System/currentTimeMillis)
+        r (apply call (concat ["hold" "--role" "claude-opus" "--model" "claude-opus-5-5"] base))]
+    (assert (= "held" (:status r)))
+    (assert (>= (- (System/currentTimeMillis) started) 1000))
+    (assert (= "claude-opus-5-5" (get-in (edn/read-string (slurp state)) [:hold "claude-opus"]))))
+  @proc
+  (apply call (concat ["release" "--role" "claude-opus"] base)))
+(println "PASS: pin requires candidate canary, hold waits for tick lock")
 (fs/delete-tree root)
