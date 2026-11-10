@@ -259,17 +259,20 @@ const SAME_ARM: ReadonlySet<string> = new Set(['halt', 'greet'])
  * 制止/挨拶に見える」とされたため、案内専用の絵（td06u-guide1: 肩の切り口〜下がる上腕〜直角の肘〜ほぼ水平に外へ出る前腕〜
  * 掌を上へ向け指先を画面の UI 側へ揃えた手）を Gemini で生成し、部品に切らず動作の始まりにフェードで差し替える。
  * back は腕全体で袖の表地の裏に、front は同じ絵・同じ位置で上腕の上部を除いたアルファで表地の手前に描く。box は生成画像の画素（ファイルは 0.5 倍）。
- * 0.31 倍・角度 0 では手先がモデルの画面の右端（x≈1143）を越えて切れたため、0.28 倍（照れと同じ）にして肩で 0.2 下へ回した。
+ * 0.31 倍・角度 0 では手先がモデルの画面の右端（x≈1143）を越えて切れたため、0.28 倍（照れと同じ）にして肩で下へ回した。
+ * cce68801 の独立判定で「袖とケープの間に上腕が細い帯で見え肘が硬い」とされたため、肩の点を外へ 30 画素寄せて上腕を袖の下に収め
+ * （袖の下から太い上腕が出て肘で曲がる）、角度を 0.25 にして指先を画面内に保つ。入り・戻りは腕を下げた位置（+0.45rad）から
+ * 持ち上げ、待機の腕とのフェードの重なりが腰の前を水平に横切らないようにする。
  */
 export const GUIDE_ARM = {
   back: 'guide-arm.png', front: 'guide-arm-front.png', box: [430, 267, 1737, 950] as const,
   shoulderPx: [600, 330] as Vec, elbowPx: [730, 1067] as Vec, wristPx: [1500, 897] as Vec, tipPx: [2150, 867] as Vec,
-  at: [718, 540] as Vec, scale: 0.28, angle: 0.2,
+  at: [748, 540] as Vec, scale: 0.28, angle: 0.25,
 }
 /** 案内の 1 枚腕の回転と沈み。入りは手を下から差し出し、保持は小さく揺らし、戻りは下げながら消す。 */
 export function guideArmMotion(t: number, out = 0): { angle: number; drop: number } {
   const rise = 1 - ease(Math.min(1, Math.max(0, t / 0.45))), hold = smooth(0.35, 0.85, t), o = ease(out)
-  return { angle: GUIDE_ARM.angle + 0.2 * rise + 0.012 * Math.sin(t * 2.2) * hold + 0.2 * o, drop: 40 * rise + 35 * o }
+  return { angle: GUIDE_ARM.angle + 0.45 * rise + 0.012 * Math.sin(t * 2.2) * hold + 0.45 * o, drop: 25 * rise + 25 * o }
 }
 export function guideArmPoint(px: Vec, m: { angle: number; drop: number }): Vec {
   const H = GUIDE_ARM

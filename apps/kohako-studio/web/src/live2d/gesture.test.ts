@@ -512,6 +512,11 @@ describe('案内の 1 枚腕（案内専用の生成絵、BOXP-476 TD-06）', ()
     expect(tip[0]).toBeGreaterThan(w[0] + 120)
     expect(Math.abs(tip[1] - w[1])).toBeLessThan(40)
   })
+  it('保持の肩の点は袖の内側（x≥745）で上腕が袖の下に隠れ、指先は画面の右端（1143）より内側', () => {
+    const m = guideArmMotion(1.5), tip = guideArmPoint(GUIDE_ARM.tipPx, m)
+    expect(GUIDE_ARM.at[0]).toBeGreaterThanOrEqual(745)
+    expect(tip[0]).toBeLessThan(1143 - 8)
+  })
   it('入りは手を下から差し出し、1/60 秒ごとの手先の移動は跳ばない', () => {
     let prev = guideArmPoint(GUIDE_ARM.tipPx, guideArmMotion(0)), max = 0
     expect(prev[1]).toBeGreaterThan(guideArmPoint(GUIDE_ARM.tipPx, guideArmMotion(1.5))[1] + 60)
