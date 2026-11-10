@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BENT_ART, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { BAND_ART, bandGrid, bandPoint, BENT_ART, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -324,5 +324,29 @@ describe('曲げの絵（BOXP-476 TD-02）', () => {
   })
   it('素材の肘の位置は画像の範囲内にある', () => {
     for (const art of [BENT_ART.fore, BENT_ART.elbow]) { expect(art.anchor[0]).toBeGreaterThan(0); expect(art.anchor[0]).toBeLessThan(art.w); expect(art.anchor[1]).toBeGreaterThan(0); expect(art.anchor[1]).toBeLessThan(art.h) }
+  })
+})
+
+describe('連続腕の帯メッシュ（TD-06 試作: 照れ・制止のみ）', () => {
+  const bone = { S: [710, 533], E: [760, 733], W: [844, 928], arm: 22, hand: 20, mirror: false } as const
+  const poses = { halt: sample(clips.halt, 1.5).right, shy: sample(clips.shyHand, 2).right, rise: sample(clips.halt, 0.3).right }
+  it('素材の肩・肘・手首が、骨の肩・肘・手首にそのまま付く（肘で離れない）', () => {
+    for (const pose of Object.values(poses)) {
+      const { elbow, wrist } = solveArm(bone, pose)
+      const near = (a: readonly number[], b: readonly number[]) => { expect(a[0]).toBeCloseTo(b[0] as number, 4); expect(a[1]).toBeCloseTo(b[1] as number, 4) }
+      near(bandPoint(bone, pose, BAND_ART.top), bone.S); near(bandPoint(bone, pose, BAND_ART.elbow), elbow); near(bandPoint(bone, pose, BAND_ART.wrist), wrist)
+    }
+  })
+  it('肘をまたいで隣り合う格子点は連続している（絵が切れない・跳ばない）', () => {
+    const grid = bandGrid()
+    for (const pose of Object.values(poses)) for (let r = 0; r + 1 < grid.rows.length; r++) for (let c = 0; c < grid.columns; c++) {
+      const a = bandPoint(bone, pose, grid.points[r * grid.columns + c] as [number, number]), b = bandPoint(bone, pose, grid.points[(r + 1) * grid.columns + c] as [number, number])
+      expect(Math.hypot(a[0] - b[0], a[1] - b[1])).toBeLessThan(40)
+    }
+  })
+  it('照れと制止だけが帯の絵を使い、始点・終点の休止も同じ絵のまま（動作の途中で絵を替えない）', () => {
+    for (const t of [0, 0.3, 1, 2.9]) expect(sample(clips.halt, t).right.band).toBe(true)
+    for (const t of [0, 0.6, 2, 3.9]) expect(sample(clips.shyHand, t).right.band).toBe(true)
+    for (const g of ['greet', 'guide', 'joy'] as const) expect(sample(clips[g], 0.8).right.band).toBeFalsy()
   })
 })

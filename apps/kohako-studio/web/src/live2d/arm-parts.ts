@@ -145,6 +145,14 @@ export function addQuad(p: PartsPlayer, uvs: Float32Array, texture: number): { i
   p.meshes.push({ vertices: 4, uvs, indices, texture, uvBuffer, indexBuffer, blend: 0, alphaBlend: 0, culling: false, fixed: true, masks: [], invertMask: false })
   return { index: p.meshes.length - 1, pointer }
 }
+/** 任意の頂点数の追加メッシュ（帯状の連続腕など）。頂点は毎フレーム呼び出し側が書く。 */
+export function addMesh(p: PartsPlayer, uvs: Float32Array, triangles: readonly number[], texture: number): { index: number; pointer: number } {
+  const gl = p.gl, indices = new (p.indexType === gl.UNSIGNED_SHORT ? Uint16Array : Uint32Array)(triangles), vertices = uvs.length / 2, pointer = p.rt.p2l_alloc(vertices * 8), uvBuffer = gl.createBuffer(), indexBuffer = gl.createBuffer()
+  gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer); gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW)
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW)
+  p.meshes.push({ vertices, uvs, indices, texture, uvBuffer, indexBuffer, blend: 0, alphaBlend: 0, culling: false, fixed: true, masks: [], invertMask: false })
+  return { index: p.meshes.length - 1, pointer }
+}
 /** メッシュと同じ形の追加メッシュ（頂点は元のメッシュと共有する）。 */
 export function addShared(p: PartsPlayer, base: number, split: Split, texture: number): number {
   const gl = p.gl, info = p.meshes[base] as Mesh, indexBuffer = gl.createBuffer()

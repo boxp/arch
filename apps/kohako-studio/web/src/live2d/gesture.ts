@@ -5,11 +5,11 @@ import type { ActingStage, Emotion, Gesture } from './acting'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { patchFaceTexture } from './face-texture'
-import { addQuad, addShared, addTexture, CUFF_POLY, eraseAtlas, FOREARM_POLY, isSleeveLining, isStaticUpper, loadTexture, mirrorPolygon, paintCapeCorner, splitMesh, type PartsPlayer, type Polygon, type Split } from './arm-parts'
+import { addMesh, addQuad, addShared, addTexture, CUFF_POLY, eraseAtlas, FOREARM_POLY, isSleeveLining, isStaticUpper, loadTexture, mirrorPolygon, paintCapeCorner, splitMesh, type PartsPlayer, type Polygon, type Split } from './arm-parts'
 
 type Vec = readonly [number, number]
 type HandArt = 'palm' | 'cover'
-export type ArmPose = { up: number; upS: number; fo: number; foS: number; ha: number; haS: number; elbowTo?: Vec; elbowW?: number; front?: boolean; art?: HandArt; artW?: number }
+export type ArmPose = { up: number; upS: number; fo: number; foS: number; ha: number; haS: number; elbowTo?: Vec; elbowW?: number; front?: boolean; art?: HandArt; artW?: number; band?: boolean }
 export type BodyPose = { headX: number; headY: number; headZ: number; bodyX: number; bodyZ: number; lean: number; eyeX: number; eyeY: number }
 type Key = { t: number; right?: ArmPose; left?: ArmPose; body?: Partial<BodyPose> }
 export type Clip = { duration: number; keys: Key[] }
@@ -53,11 +53,13 @@ const ELBOW_OUT: Vec = [828, 736]
 const wave = (t: number, fo: number): Key => ({ t, right: { up: 0, upS: 1, fo, foS: 1, ha: fo < -2 ? 0.35 : -0.3, haS: 1, elbowTo: ELBOW_OUT } })
 const GUIDE: ArmPose = { up: 0, upS: 1, fo: -1.92, foS: 1, ha: 0.15, haS: 1, elbowTo: ELBOW_OUT }
 // 制止: 肘を外へ上げ、体の外側で前腕を斜めに立てて掌を相手へ向ける。前腕を真上まで立てると上腕に重なって上腕が隠れるため、内角を開いた角度で止める（BOXP-482/485）。
-const HALT: ArmPose = { up: 0, upS: 1, fo: -2.05, foS: 1, ha: 0.1, haS: 1.1, elbowTo: ELBOW_OUT, front: true, art: 'palm', artW: 1 }
-const HALT_RISE: ArmPose = { up: 0, upS: 1, fo: -1.1, foS: 1, ha: 0.2, haS: 1.05, elbowTo: [805, 725], front: true, art: 'palm', artW: 0 }
+const HALT: ArmPose = { up: 0, upS: 1, fo: -2.05, foS: 1, ha: 0.1, haS: 1.1, elbowTo: ELBOW_OUT, front: true, art: 'palm', artW: 1, band: true }
+const HALT_RISE: ArmPose = { up: 0, upS: 1, fo: -1.1, foS: 1, ha: 0.2, haS: 1.05, elbowTo: [805, 725], front: true, art: 'palm', artW: 0, band: true }
 // 照れ: 肘は体の脇寄りに残し、前腕を胸の前へ斜めに渡して手を口元へ運ぶ。肘を胸の中央まで寄せると前腕が上腕の真下に立って上腕が読めない（#14730 P1）。
-const SHY: ArmPose = { up: 0, upS: 1, fo: 3.14, foS: 1.09, ha: 0.02, haS: 0.95, elbowTo: [690, 714], front: true, art: 'cover', artW: 1 }
-const SHY_RISE: ArmPose = { up: 0, upS: 1, fo: 2.75, foS: 0.95, ha: 0.7, haS: 0.98, elbowTo: [715, 712], front: true, art: 'cover', artW: 0 }
+const SHY: ArmPose = { up: 0, upS: 1, fo: 3.14, foS: 1.09, ha: 0.02, haS: 0.95, elbowTo: [690, 714], front: true, art: 'cover', artW: 1, band: true }
+const SHY_RISE: ArmPose = { up: 0, upS: 1, fo: 2.75, foS: 0.95, ha: 0.7, haS: 0.98, elbowTo: [715, 712], front: true, art: 'cover', artW: 0, band: true }
+// 照れと制止は連続した腕の絵（帯メッシュ）で描く（BOXP-476 TD-06 の試作範囲）。始点と終点の休止も同じ絵にして、動作の途中で絵を切り替えない。
+const REST_BAND: ArmPose = { ...REST, band: true }
 const JOY: ArmPose = { up: 0, upS: 1, fo: -1.85, foS: 1, ha: 0.25, haS: 1, elbowTo: ELBOW_OUT }
 
 export const clips: Record<Exclude<Gesture, 'none'>, Clip> = {
@@ -66,8 +68,8 @@ export const clips: Record<Exclude<Gesture, 'none'>, Clip> = {
   joy: { duration: 1.8, keys: [{ t: 0, right: REST, left: REST, body: {} }, { t: 0.4, right: JOY, left: JOY, body: { bodyZ: 5, headZ: 6, lean: 3, headY: 5 } }, { t: 0.75, right: JOY, left: JOY, body: { bodyZ: -5, headZ: -6, lean: 3, headY: 5 } }, { t: 1.1, right: JOY, left: JOY, body: { bodyZ: 5, headZ: 6, lean: 3, headY: 5 } }, { t: 1.8, right: REST, left: REST, body: {} }] },
   greet: { duration: 2.6, keys: [{ t: 0, right: REST, body: {} }, { ...wave(0.55, -2.15), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { ...wave(0.85, -1.75), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { ...wave(1.15, -2.15), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { ...wave(1.45, -1.75), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { t: 2.1, right: REST, body: {} }, { t: 2.6, right: REST, body: {} }] },
   guide: { duration: 3.2, keys: [{ t: 0, right: REST, body: {} }, { t: 0.7, right: GUIDE, body: { bodyZ: -3, headX: 12, headZ: 3, eyeX: 0.7, eyeY: 0.2 } }, { t: 2.6, right: GUIDE, body: { bodyZ: -3, headX: 12, headZ: 3, eyeX: 0.7, eyeY: 0.2 } }, { t: 3.2, right: REST, body: {} }] },
-  shyHand: { duration: 3.9, keys: [{ t: 0, right: REST, body: {} }, { t: 0.6, right: SHY_RISE, body: { bodyZ: 1, lean: 1 } }, { t: 1.2, right: SHY, body: { bodyZ: 2, lean: 2 } }, { t: 3, right: SHY, body: { bodyZ: 2, lean: 2 } }, { t: 3.45, right: SHY_RISE, body: { bodyZ: 1, lean: 1 } }, { t: 3.9, right: REST, body: {} }] },
-  halt: { duration: 2.9, keys: [{ t: 0, right: REST, body: {} }, { t: 0.3, right: HALT_RISE, body: { bodyZ: -1, lean: 1 } }, { t: 0.6, right: HALT, body: { bodyZ: -2, lean: 2, headY: -2 } }, { t: 2.2, right: HALT, body: { bodyZ: -2, lean: 2, headY: -2 } }, { t: 2.55, right: HALT_RISE, body: { bodyZ: -1, lean: 1 } }, { t: 2.9, right: REST, body: {} }] },
+  shyHand: { duration: 3.9, keys: [{ t: 0, right: REST_BAND, body: {} }, { t: 0.6, right: SHY_RISE, body: { bodyZ: 1, lean: 1 } }, { t: 1.2, right: SHY, body: { bodyZ: 2, lean: 2 } }, { t: 3, right: SHY, body: { bodyZ: 2, lean: 2 } }, { t: 3.45, right: SHY_RISE, body: { bodyZ: 1, lean: 1 } }, { t: 3.9, right: REST_BAND, body: {} }] },
+  halt: { duration: 2.9, keys: [{ t: 0, right: REST_BAND, body: {} }, { t: 0.3, right: HALT_RISE, body: { bodyZ: -1, lean: 1 } }, { t: 0.6, right: HALT, body: { bodyZ: -2, lean: 2, headY: -2 } }, { t: 2.2, right: HALT, body: { bodyZ: -2, lean: 2, headY: -2 } }, { t: 2.55, right: HALT_RISE, body: { bodyZ: -1, lean: 1 } }, { t: 2.9, right: REST_BAND, body: {} }] },
 }
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t
@@ -89,7 +91,7 @@ function lerpArm(a: ArmPose, b: ArmPose, t: number): ArmPose {
   // 手の絵の重みは、絵の種類が変わる切替でも 0 を通るようにする。
   const art = (t < 0.5 ? a.art ?? b.art : b.art ?? a.art), sameArt = a.art === b.art
   const artW = sameArt || !a.art || !b.art ? lerp(a.artW ?? 0, b.artW ?? 0, t) : (t < 0.5 ? lerp(a.artW ?? 0, 0, t * 2) : lerp(0, b.artW ?? 0, t * 2 - 1))
-  return { up: lerp(a.up, b.up, t), upS: lerp(a.upS, b.upS, t), fo: lerp(a.fo, b.fo, t), foS: lerp(a.foS, b.foS, t), ha: lerp(a.ha, b.ha, t), haS: lerp(a.haS, b.haS, t), elbowTo, elbowW, front: b.front ?? a.front, art, artW }
+  return { up: lerp(a.up, b.up, t), upS: lerp(a.upS, b.upS, t), fo: lerp(a.fo, b.fo, t), foS: lerp(a.foS, b.foS, t), ha: lerp(a.ha, b.ha, t), haS: lerp(a.haS, b.haS, t), elbowTo, elbowW, front: b.front ?? a.front, art, artW, band: t < 0.5 ? a.band : b.band }
 }
 /** 時刻 t のキー補間。腕や体の指定が無いキーは休止姿勢として扱う。 */
 export function sample(clip: Clip, time: number): { right: ArmPose; left: ArmPose; body: BodyPose } {
@@ -212,6 +214,35 @@ export function placeBentFore(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose
   const m = mirrored(bone, pose), { elbow, wrist } = solveArm(bone, m)
   return placeBent(elbow, sub(wrist, elbow), bentSide(bone, pose), [b, a * foreScale(m)])
 }
+/**
+ * 肩〜手首を 1 枚で描いた連続腕（BOXP-476 TD-06、Gemini 生成）。素材 px の中心線は 肩(top)→肘(elbow)→手首(wrist)。
+ * 帯状のメッシュにして、上腕の骨と前腕の骨の角度を肘のまわりで混ぜて曲げる（肘をまたぐ絵が切れずに丸く曲がる）。
+ * 肘(elbow)は小手の金縁のすぐ上の黒い袖に置く（v11r の休止で小手が始まる位置と揃え、動き始めの絵の切替で小手の長さが変わらないようにする）。
+ * scale は素材 px→モデル座標、foreWidth は前腕の横幅の倍率（肘側, 手首側。v11r の小手の幅 86→56 に合わせる）、blend は肘で角度を混ぜる範囲（素材 px、肘からの距離。金縁は曲げない）。
+ */
+export const BAND_ART = { file: 'arm-band.png', w: 192, h: 893, top: [95, 20] as Vec, elbow: [87, 490] as Vec, wrist: [117, 873] as Vec, scale: 0.48, foreWidth: [1.15, 1.3] as const, blend: [-60, 18] as const }
+/** 帯メッシュの格子（素材 px）。肘のまわりは細かく刻む。 */
+export function bandGrid(): { points: Vec[]; columns: number; rows: number[] } {
+  const A = BAND_ART, rows: number[] = []
+  for (let y = 0; y <= A.h; y += 28) rows.push(y)
+  for (let y = A.elbow[1] - 60; y <= A.elbow[1] + 60; y += 8) rows.push(y)
+  const sorted = [...new Set(rows.concat([A.h]))].sort((a, b) => a - b), xs = [0, 32, 64, 96, 128, 160, 192]
+  return { points: sorted.flatMap(y => xs.map(x => [x, y] as Vec)), columns: xs.length, rows: sorted }
+}
+const cross2 = (a: Vec, v: Vec) => a[0] * v[1] - a[1] * v[0]
+/** 素材 px の点を、姿勢に合わせたモデル座標へ置く。上端は肩の関節、肘は solveArm の肘、下端は手首に一致する。 */
+export function bandPoint(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose: ArmPose, p: Vec): Vec {
+  const A = BAND_ART, m = mirrored(bone, pose), { elbow, wrist } = solveArm(bone, m), side = bone.mirror ? -1 : 1
+  const uArt = norm(sub(A.elbow, A.top)), fArt = norm(sub(A.wrist, A.elbow)), d = sub(p, A.elbow)
+  const lenU = Math.hypot(...sub(A.elbow, A.top)), lenF = Math.hypot(...sub(A.wrist, A.elbow))
+  const uModel = sub(elbow, bone.S), fModel = sub(wrist, elbow)
+  const su = Math.hypot(...uModel) / lenU, sf = Math.hypot(...fModel) / lenF
+  const fa = dot(d, fArt), t = Math.min(1, Math.max(0, fa / lenF)), w = smooth(A.blend[0], A.blend[1], fa)
+  // 各骨の座標系（軸方向, 横）。上腕も肩→肘の向きを軸にして、肘より先の向きと揃える。
+  const localU: Vec = [dot(d, uArt) * su, cross2(uArt, d) * A.scale * side], localF: Vec = [fa * sf, cross2(fArt, d) * A.scale * lerp(A.foreWidth[0], A.foreWidth[1], t) * side]
+  const angU = Math.atan2(uModel[1], uModel[0]), angF = Math.atan2(fModel[1], fModel[0]), angle = angU + w * wrapAngle(angF - angU)
+  return add(elbow, rot([lerp(localU[0], localF[0], w), lerp(localU[1], localF[1], w)], angle))
+}
 const partURL = (file: string) => new URL(`kohako/live2d/acting/${file}`, location.href).href
 
 type Runtime = { memory: WebAssembly.Memory; p2l_mesh_vertices(rig: number, mesh: number): number; p2l_render_commands(rig: number, pointer: number, capacity: number): number; p2l_mesh_opacity(rig: number, mesh: number): number; p2l_mesh_colors(rig: number, mesh: number, a: number, b: number): void }
@@ -256,11 +287,14 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   }
   prepareCut(RIGHT); prepareCut(LEFT)
   // 追加パーツ: 腕の絵を前腕と上腕に画素で分け、隠れていた上腕と手の素材を描き足す。作れない環境では従来の間引きで動く。
-  type Side = { bone: Bone; split: Split; upperTexture: number; originalTexture: number; originalUv: WebGLBuffer | null | undefined; fill: number; fore: number; stub: number; outer: number; bentFore: number; bentElbow: number; on: boolean }
-  type Synth = { base: number; pointer: number; write(out: Float32Array): void; opacity(): number; shared?: number }
+  type Side = { bone: Bone; split: Split; upperTexture: number; originalTexture: number; originalUv: WebGLBuffer | null | undefined; fill: number; fore: number; stub: number; outer: number; bentFore: number; bentElbow: number; band?: { upper: number; fore: number }; on: boolean }
+  type Synth = { base: number; pointer: number; write(out: Float32Array): void; opacity(): number; shared?: number; count?: number }
   const synth = new Map<number, Synth>(), sway = new Map<number, Vec>()
   let parts: { right: Side; left: Side; art: Partial<Record<HandArt, number>>; cuff: number } | null = null, partsStatus: Record<string, unknown> = { ready: false }
   const armOf = (b: Bone) => b === RIGHT ? pose.right : pose.left
+  let bandLoaded = false
+  /** 連続腕の帯メッシュで描くか（照れ・制止の試作だけ。素材が届くまでは従来の板のまま）。 */
+  const bandOn = (b: Bone) => { const a = armOf(b); return b === RIGHT && bandLoaded && !!a.band && separatedPose(a) }
   const artLoaded: Partial<Record<HandArt, boolean>> = {} // 素材が届くまでは元の手のまま（読込失敗時も同じ）
   const handArt = () => pose.right.art && armBlend > 0.001 && artLoaded[pose.right.art] ? { kind: pose.right.art, w: pose.right.artW ?? 0 } : { kind: undefined, w: 0 }
   const separatedPose = (a: ArmPose) => armBlend > 0.001 && (Math.abs(a.fo) > SEPARATE_AT || (!!a.elbowTo && (a.elbowW ?? 0) > SEPARATE_AT))
@@ -276,15 +310,15 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       const poly = bone.mirror ? mirrorPolygon(FOREARM_POLY, CX) : FOREARM_POLY, split = splitMesh(pp, bone.arm, poly, (x, y, sample, own) => { const rx = bone.mirror ? 2 * CX - x : x, cape = paintCapeCorner(rx, y, sample(bone.mirror ? 2 * CX - 800 : 800, 696)); return cape ?? (isStaticUpper(rx, y, own, (sx, sy) => sample(bone.mirror ? 2 * CX - sx : sx, sy)) ? 'erase' : null) }, (x, y) => isSleeveLining(bone.mirror ? 2 * CX - x : x, y)), mesh = pp.meshes[bone.arm] as PartsPlayer['meshes'][number]
       const upperTexture = addTexture(pp, split.outside), foreTexture = addTexture(pp, split.inside)
       const unmirror = (a: ArmPose): ArmPose => bone.mirror ? { ...a, up: -a.up, fo: -a.fo, ha: -a.ha, elbowTo: a.elbowTo ? mirrorX(a.elbowTo) : undefined } : a
-      const bentWeightOf = () => { const a = armOf(bone); return separatedPose(a) && bentLoaded() ? bentWeight(a.fo) : 0 }
+      const bentWeightOf = () => { const a = armOf(bone); return separatedPose(a) && bentLoaded() && !bandOn(bone) ? bentWeight(a.fo) : 0 }
       const bentQuad = (art: typeof BENT_ART.fore | typeof BENT_ART.elbow, texture: number, place: (a: ArmPose, c: Vec) => Vec) => { const quad = addQuad(pp, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), texture), corners = artCorners(art); synth.set(quad.index, { base: bone.arm, pointer: quad.pointer, opacity: bentWeightOf, write(out) { const a = armOf(bone), [dx, dy] = swayOf(bone.arm); corners.forEach((c, i) => { const q = place(a, c); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } }); return quad.index }
       const bentFore = bentQuad(BENT_ART.fore, bentForeTexture, (a, c) => placeBentFore(bone, a, c)), bentElbow = bentQuad(BENT_ART.elbow, bentElbowTexture, (a, c) => { const { elbow } = solveArm(bone, unmirror(a)); return placeBent(elbow, sub(bone.S, elbow), bentSide(bone, a), c) })
       const xs = poly.map(c => c[0]), ys = poly.map(c => c[1]), corners: Vec[] = [[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)], [Math.min(...xs), Math.max(...ys)]]
       const fore = addQuad(pp, new Float32Array(corners.flatMap(c => split.rectUv(c[0], c[1]))), foreTexture)
-      synth.set(fore.index, { base: bone.arm, pointer: fore.pointer, opacity: () => separatedPose(armOf(bone)) && bentWeightOf() < 0.995 ? 1 : 0, write(out) { const [dx, dy] = swayOf(bone.arm); corners.forEach((c, i) => { const q = deformFore(bone, armOf(bone), c[0] + dx, c[1] + dy); out[2 * i] = q[0]; out[2 * i + 1] = q[1] }) } })
+      synth.set(fore.index, { base: bone.arm, pointer: fore.pointer, opacity: () => separatedPose(armOf(bone)) && bentWeightOf() < 0.995 && !bandOn(bone) ? 1 : 0, write(out) { const [dx, dy] = swayOf(bone.arm); corners.forEach((c, i) => { const q = deformFore(bone, armOf(bone), c[0] + dx, c[1] + dy); out[2 * i] = q[0]; out[2 * i + 1] = q[1] }) } })
       const place = (v: Vec): Vec => bone.mirror ? mirrorX(v) : v, side = bone.mirror ? -1 : 1
       const fill = addQuad(pp, new Float32Array(bone.mirror ? [1, 0, 0, 0, 0, 1, 1, 1] : [0, 0, 1, 0, 1, 1, 0, 1]), fillTexture)
-      synth.set(fill.index, { base: bone.arm, pointer: fill.pointer, opacity: () => separatedPose(armOf(bone)) ? 1 : 0, write(out) {
+      synth.set(fill.index, { base: bone.arm, pointer: fill.pointer, opacity: () => separatedPose(armOf(bone)) && !bandOn(bone) ? 1 : 0, write(out) {
         const a = armOf(bone), m = bone.mirror ? { ...a, up: -a.up, fo: -a.fo, ha: -a.ha, elbowTo: a.elbowTo ? mirrorX(a.elbowTo) : undefined } : a, [dx, dy] = swayOf(bone.arm), e = sub(solveArm(bone, m).elbow, bone.E)
         // 上腕は肩から肘へ向かう棒として張る（親子変形）。下端の丸みが肘の先になる。
         // 上端は肩の関節から肘へ向かう線の上に置く（肩の装甲の裏に隠れる）。肘がどちらへ動いても肩から生えて見える。
@@ -297,7 +331,19 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       // 袖の紫の表地だけのコピー。上腕は裏地の手前、表地の裏を通る（描画順は hookCommands）。
       const outer = addShared(pp, bone.arm, split, addTexture(pp, split.front as WebGLTexture))
       synth.set(outer, { base: bone.arm, pointer: -1, shared: bone.arm, write() {}, opacity: () => separatedPose(armOf(bone)) ? 1 : 0 })
-      return { bone, split, upperTexture, originalTexture: mesh.texture, originalUv: mesh.uvBuffer, fill: fill.index, fore: fore.index, stub, outer, bentFore, bentElbow, on: false }
+      // 連続腕（右腕のみ）。肘の行で上腕側と前腕側の 2 枚に分け、上腕側は袖の表地の裏、前腕側は表地の手前に描く。
+      let band: Side['band']
+      if (bone === RIGHT) {
+        const grid = bandGrid(), texture = later(BAND_ART.file, () => { bandLoaded = true }), uvs = new Float32Array(grid.points.flatMap(([x, y]) => [x / BAND_ART.w, y / BAND_ART.h])), cols = grid.columns
+        const triangles = (from: number, to: number) => { const out: number[] = []; for (let r = from; r < to; r++) for (let c = 0; c + 1 < cols; c++) { const a = r * cols + c, b = a + 1, d = a + cols, e = d + 1; out.push(a, b, e, a, e, d) } return out }
+        const elbowRow = grid.rows.indexOf(BAND_ART.elbow[1] - 4), make = (from: number, to: number) => {
+          const mesh = addMesh(pp, uvs, triangles(from, to), texture)
+          synth.set(mesh.index, { base: bone.arm, pointer: mesh.pointer, count: grid.points.length, opacity: () => bandOn(bone) ? 1 : 0, write(out) { const a = armOf(bone), [dx, dy] = swayOf(bone.arm); grid.points.forEach((q, i) => { const v = bandPoint(bone, a, q); out[2 * i] = v[0] + dx; out[2 * i + 1] = v[1] + dy }) } })
+          return mesh.index
+        }
+        band = { upper: make(0, elbowRow), fore: make(elbowRow, grid.rows.length - 1) }
+      }
+      return { bone, split, upperTexture, originalTexture: mesh.texture, originalUv: mesh.uvBuffer, fill: fill.index, fore: fore.index, stub, outer, bentFore, bentElbow, band, on: false }
     }
     // 体の層の、腕の裏に隠れていた下塗りの断片を消す（腕を上げると肘の下に残って見える）。
     const smear = (mirror: boolean): number => {
@@ -354,7 +400,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     if (extra) {
       if (extra.shared != null) return hookVertices(rig, extra.shared)
       hookVertices(rig, extra.base)
-      if (done.get(mesh) !== generation) { extra.write(new Float32Array(rt.memory.buffer, extra.pointer, 8)); done.set(mesh, generation) }
+      if (done.get(mesh) !== generation) { extra.write(new Float32Array(rt.memory.buffer, extra.pointer, (extra.count ?? 4) * 2)); done.set(mesh, generation) }
       return extra.pointer
     }
     const pointer = rt.p2l_mesh_vertices(rig, mesh)
@@ -366,7 +412,10 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const hookCommands = (rig: number, pointer: number, capacity: number) => {
     const count = rt.p2l_render_commands(rig, pointer, capacity), front = frontMeshes(), art = handArt(), artMesh = parts && art.kind && art.w > 0.001 ? parts.art[art.kind] : undefined
     const expand = (c: number): number[] => {
+      const band = parts?.right.band, banded = !!band && bandOn(RIGHT), bandFront = banded && front.includes(RIGHT.hand)
+      if (parts && band && c === RIGHT.arm && parts.right.on && banded) return [parts.right.stub, c, band.upper, parts.right.outer, ...(bandFront ? [] : [band.fore])]
       if (parts && c === RIGHT.arm && parts.right.on) return [parts.right.stub, c, parts.right.fill, parts.right.bentElbow, parts.right.outer, parts.right.fore, parts.right.bentFore]
+      if (band && bandFront && c === RIGHT.hand) return [band.fore, c, ...(parts && artMesh != null ? [artMesh, parts.cuff] : [])]
       if (parts && c === LEFT.arm && parts.left.on) return [parts.left.stub, c, parts.left.fill, parts.left.bentElbow, parts.left.outer, parts.left.fore, parts.left.bentFore]
       if (parts && c === RIGHT.hand && artMesh != null) return [c, artMesh, parts.cuff]
       return [c]
@@ -390,7 +439,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     generation++
     if (clip) { clipTime += dt; if (clipTime >= clip.duration) { clip = null; clipName = 'none'; startFade() } }
     const sampled = clip ? sample(clip, clipTime) : null
-    const goal = sampled ?? (fadeFrom ? { right: REST, left: REST, body: NO_BODY } : null)
+    const goal = sampled ?? (fadeFrom ? { right: { ...REST, band: fadeFrom.right.band }, left: REST, body: NO_BODY } : null) // 解除の戻りも同じ絵のまま休止へ
     let shown = goal
     if (goal && fadeFrom) {
       fadeTime += dt
