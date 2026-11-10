@@ -217,7 +217,7 @@ export function placeBentFore(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose
  * 動作の始まりに短いフェードで制止の腕へ差し替える。ここでは制止の腕に既存の比較版の保持姿勢（HALT）の絵を使う。
  */
 export const SWITCH_SECONDS = 0.25
-export const SWITCHED: Partial<Record<Exclude<Gesture, 'none'>, ArmPose>> = { halt: HALT, shyHand: SHY, greet: HALT }
+export const SWITCHED: Partial<Record<Exclude<Gesture, 'none'>, ArmPose>> = { halt: HALT, shyHand: SHY, greet: HALT, guide: HALT }
 /** Cubism のポーズのフェードと同じ考え方で、裏に残す腕の不透明度を決める（背景が透ける割合を 0.15 以下に抑える）。 */
 export function backOpacity(front: number): number {
   const a = Math.min(1, Math.max(0, front)); let o = 1 - a
@@ -253,7 +253,17 @@ export function haltArmPoint(px: Vec, angle: number): Vec {
  */
 export const GREET_WAVE = { amp: 0.15, hz: 1.4, start: 0.4, band: 90 }
 /** 同じ 1 枚腕（制止の絵）を使う動作。互いの切替では腕を消さない。 */
-const SAME_ARM: ReadonlySet<string> = new Set(['halt', 'greet'])
+const SAME_ARM: ReadonlySet<string> = new Set(['halt', 'greet', 'guide'])
+/**
+ * 案内の 1 枚腕（BOXP-476 TD-06、生成なし）。挨拶と同じく本人採用の制止 7fa4a2f の 1 枚腕を使い、持ち上げた後に
+ * 腕全体を肩の点で外へ開き（angle）、肘から先を肘の周りに外へ倒して（fore）、掌を見せたまま手で横（画面の UI 側）を示す。
+ * 絵は切らず、挨拶の手振りと同じ肘の帯で曲げる。制止・挨拶との切替は腕を消さず、この開きを滑らかに足し引きする。
+ */
+export const GUIDE_OPEN = { angle: -0.2, fore: 0.7, rate: 5 }
+/** 1 枚腕の開きの目標（制止・挨拶は 0、案内は GUIDE_OPEN）。 */
+export const openTarget = (g: string) => g === 'guide' ? 1 : 0
+/** 開き k(0〜1) を指数的に目標へ近づける（dt 秒）。 */
+export const stepOpen = (k: number, goal: number, dt: number) => k + (goal - k) * (1 - Math.exp(-dt * GUIDE_OPEN.rate))
 /** 手振りの角度（ラジアン、時計回りが正）。t は差し替え開始からの秒、out(0〜1)は戻りの進み。 */
 export function greetWave(t: number, out = 0): number {
   const G = GREET_WAVE, env = smooth(G.start, G.start + 0.25, t) * (1 - smooth(1.95, 2.35, t)) * (1 - ease(out))
@@ -357,6 +367,8 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   let haltSet = false, haltLoaded = false, haltTime = 0, haltOut = 0, shySet = false, shyLoaded = false, greetSet = false
   // 挨拶の手振りは挨拶を始めてからの秒で進める（制止から直接つないでも振りが途中から始まらない）。挨拶から制止へ直接つないだときは、そのときの振りを 0.25 秒で 0 へ戻す。
   let greetTime = 0, waveFrom = 0, waveDecay = 1
+  // 案内の開き(0〜1)。案内中は 1 へ、制止・挨拶へ移ると 0 へ滑らかに戻す（腕は消さない）。
+  let open = 0
   const haltQuads: Partial<Record<'back' | 'front', number>> = {}, shyQuads: Partial<Record<'back' | 'front', number>> = {}
   const haltOn = () => haltSet && haltLoaded, shyOn = () => shySet && shyLoaded
   const artLoaded: Partial<Record<HandArt, boolean>> = {} // 素材が届くまでは元の手のまま（読込失敗時も同じ）
@@ -425,7 +437,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
         const grid = addGrid(pp, 14, 14, later(HALT_ARM[layer], () => { haltMark[layer] = true; haltLoaded = haltMark.back && haltMark.front }))
         const points: Vec[] = grid.uv.map(([u, v]) => [x0 + u * w, y0 + v * h])
         haltQuads[layer] = grid.index
-        synth.set(grid.index, { base: RIGHT.arm, pointer: grid.pointer, count: points.length, opacity: () => haltOn() ? 1 : 0, write(out) { const [dx, dy] = swayOf(RIGHT.arm), angle = haltArmAngle(haltTime, haltOut), wave = greetSet ? greetWave(greetTime, haltOut) : waveFrom * (1 - ease(Math.min(1, waveDecay / SWITCH_SECONDS))); points.forEach((c, i) => { const q = greetArmPoint(c, angle, wave); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } })
+        synth.set(grid.index, { base: RIGHT.arm, pointer: grid.pointer, count: points.length, opacity: () => haltOn() ? 1 : 0, write(out) { const [dx, dy] = swayOf(RIGHT.arm), angle = haltArmAngle(haltTime, haltOut) + GUIDE_OPEN.angle * open, wave = (greetSet ? greetWave(greetTime, haltOut) : waveFrom * (1 - ease(Math.min(1, waveDecay / SWITCH_SECONDS)))) + GUIDE_OPEN.fore * open; points.forEach((c, i) => { const q = greetArmPoint(c, angle, wave); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } })
       } }
     // 照れの 1 枚腕。2 枚とも読めたときだけ使い、読めなければ従来の照れの腕のまま。
     const shyMark = { back: false, front: false }
@@ -518,6 +530,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   p.update = (dt: number) => {
     generation++
     if (greetSet) greetTime += dt; else waveDecay += dt
+    if (haltSet) open = stepOpen(open, switched && !(sw?.phase === 'out') ? openTarget(clipName) : open, dt)
     if (haltSet || shySet) { haltTime += dt; if (sw?.phase === 'out') haltOut = Math.min(1, (sw.t + dt) / SWITCH_SECONDS) }
     if (sw) {
       sw.t += dt
@@ -525,7 +538,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       posedAlpha = sw.phase === 'in' ? ease(x) : 1 - ease(x)
       if (x >= 1) {
         const ended = sw; sw = null; posedAlpha = 1
-        if (ended.phase === 'out') { haltSet = false; shySet = false; greetSet = false; haltOut = 0; frozen = null; switched = false; pose = { right: REST, left: REST, body: NO_BODY }; armBlend = 0 }
+        if (ended.phase === 'out') { open = 0; haltSet = false; shySet = false; greetSet = false; haltOut = 0; frozen = null; switched = false; pose = { right: REST, left: REST, body: NO_BODY }; armBlend = 0 }
         ended.then?.()
       }
     }
@@ -567,7 +580,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     clip = clips[next]; clipName = next; clipTime = 0; fadeFrom = null; frozen = null; switched = true; armBlend = 1
     pose = { ...sample(clip, 0), right: SWITCHED[next] as ArmPose }
     fadeSides = { right: true, left: false }
-    sw = { phase: 'in', t: 0 }; posedAlpha = 0; haltSet = next === 'halt' || next === 'greet'; greetSet = next === 'greet'; greetTime = 0; waveFrom = 0; waveDecay = 1; shySet = next === 'shyHand'; haltTime = 0; haltOut = 0
+    sw = { phase: 'in', t: 0 }; posedAlpha = 0; haltSet = next === 'halt' || next === 'greet' || next === 'guide'; open = 0; greetSet = next === 'greet'; greetTime = 0; waveFrom = 0; waveDecay = 1; shySet = next === 'shyHand'; haltTime = 0; haltOut = 0
   }
   const atRest = () => !sw && !fadeFrom && (armBlend < 0.001 || !posed(pose.right) && !posed(pose.left))
   return {
@@ -578,7 +591,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
         const start = () => { if (SWITCHED[next]) switchIn(next); else { clip = clips[next]; clipName = next; clipTime = 0; fadeFrom = null; armBlend = 1 } }
         if (sw?.phase === 'out') { sw.then = start; return }
         if (switched && clipName === next) { clipTime = Math.min(clipTime, 0.6); return } // 同じ切替動作の再要求は保持を延ばすだけ
-        // 制止⇄挨拶は同じ 1 枚腕なので、腕を消さずにそのまま次の動作へ移る（上げた腕を下ろして出し直さない）。
+        // 制止⇄挨拶⇄案内は同じ 1 枚腕なので、腕を消さずにそのまま次の動作へ移る（上げた腕を下ろして出し直さない）。
         if (switched && SAME_ARM.has(clipName) && SAME_ARM.has(next)) {
           if (next === 'greet') { greetSet = true; greetTime = 0 } else { waveFrom = greetSet ? greetWave(greetTime, haltOut) : 0; waveDecay = 0; greetSet = false }
           clip = clips[next]; clipName = next; clipTime = 0; return
@@ -592,6 +605,6 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       clip = clips[next]; clipName = next; clipTime = plan.at; armBlend = 1
     },
     reset() { emotion = 'neutral'; target = faces.neutral; player.expression(null); if (switched || sw) { switchOut(); return } if (clip) startFade(); clip = null; clipName = 'none' },
-    report: () => ({ supported: true, parts: partsStatus, facePatch, emotion, gesture: clipName, armBlend, armSwitch: sw ? { phase: sw.phase, t: sw.t, posedAlpha } : null, switched, haltSet: haltOn(), greetSet: greetSet && haltOn(), shySet: shyOn(), clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
+    report: () => ({ supported: true, parts: partsStatus, facePatch, emotion, gesture: clipName, armBlend, armSwitch: sw ? { phase: sw.phase, t: sw.t, posedAlpha } : null, switched, haltSet: haltOn(), greetSet: greetSet && haltOn(), guideOpen: open, shySet: shyOn(), clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
   }
 }

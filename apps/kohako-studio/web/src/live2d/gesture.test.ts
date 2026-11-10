@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { existsSync } from 'node:fs'
-import { BENT_ART, GREET_WAVE, greetArmPoint, greetWave, haltForeWeight, HALT_ARM, haltArmAngle, haltArmPoint, SHY_ARM, shyArmMotion, shyArmPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { BENT_ART, GREET_WAVE, GUIDE_OPEN, openTarget, stepOpen, greetArmPoint, greetWave, haltForeWeight, HALT_ARM, haltArmAngle, haltArmPoint, SHY_ARM, shyArmMotion, shyArmPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -265,7 +265,7 @@ describe('実行時の動作の割り込み', () => {
       stage.playGesture('joy'); run(frame, 1.5) // 照れは 1 枚腕の差し替え（フェード）になったので、変形で戻る動作で確かめる
       stage.reset()
       let previous = run(frame, released)
-      stage.playGesture('guide') // 挨拶も 1 枚腕の差し替えになったので、変形で上げる案内で確かめる
+      stage.playGesture('joy') // 挨拶・案内も 1 枚腕の差し替えになったので、変形で上げる喜びで確かめる
       const first = frame()
       expect(distance(first, previous)).toBeLessThan(45)
       previous = first
@@ -397,9 +397,9 @@ describe('制止の腕セットの切替（BOXP-476 TD-06 Y\')', () => {
     const { stage, run } = setup()
     stage.playGesture('halt'); run(1)
     stage.reset(); run(0.1)
-    stage.playGesture('guide')
-    run(SWITCH_SECONDS)
-    expect(stage.report()).toMatchObject({ gesture: 'guide', armSwitch: null })
+    stage.playGesture('guide') // 案内も 1 枚腕なので、待機の腕へ戻り切ってから差し替える
+    run(2 * SWITCH_SECONDS)
+    expect(stage.report()).toMatchObject({ gesture: 'guide', armSwitch: null, switched: true })
   })
   it('挨拶は制止と同じ 1 枚腕へフェードで差し替え、手振りが終われば待機の腕へ戻る', () => {
     const { stage, run } = setup()
@@ -498,5 +498,39 @@ describe('照れの 1 枚腕（BOXP-476 TD-06）', () => {
   })
   it('照れは腕セットの切替で出す', () => {
     expect(SWITCHED.shyHand).toBeDefined()
+  })
+})
+
+describe('案内の 1 枚腕（制止の 1 枚腕を外へ開く、BOXP-476 TD-06）', () => {
+  it('案内も制止と同じ 1 枚腕で、開きは案内だけ 1・制止と挨拶は 0', () => {
+    expect(SWITCHED.guide).toBe(SWITCHED.halt)
+    expect([openTarget('guide'), openTarget('halt'), openTarget('greet')]).toEqual([1, 0, 0])
+  })
+  it('開きは跳ばずに目標へ近づく（1/60 秒で 0.1 未満、1 秒で 0.99 以上）', () => {
+    expect(stepOpen(0, 1, 1 / 60)).toBeLessThan(0.1)
+    let k = 0; for (let i = 0; i < 60; i++) k = stepOpen(k, 1, 1 / 60)
+    expect(k).toBeGreaterThan(0.99)
+  })
+  it('開くと手首が肩から外（画面右）へ出て、肩の点は動かない', () => {
+    const H = HALT_ARM, a = haltArmAngle(1.5)
+    const s0 = haltArmPoint(H.shoulderPx, a), s1 = greetArmPoint(H.shoulderPx, a + GUIDE_OPEN.angle, GUIDE_OPEN.fore)
+    expect(Math.hypot(s1[0] - s0[0], s1[1] - s0[1])).toBeLessThan(1e-9)
+    const w0 = haltArmPoint(H.wristPx, a), w1 = greetArmPoint(H.wristPx, a + GUIDE_OPEN.angle, GUIDE_OPEN.fore)
+    expect(w1[0]).toBeGreaterThan(w0[0] + 20)
+  })
+  it('制止⇄案内は腕を消さずに直接つなぎ、案内の終わりで待機の腕へ戻る', () => {
+    const memory = new WebAssembly.Memory({ initial: 1 })
+    const player = { rig: 0, expressions: [], meshes: Array.from({ length: 33 }, () => ({ vertices: 0 })), expression() {}, setParameter() {}, update(_dt: number) {}, rt: { memory, p2l_render_commands: () => 0, p2l_mesh_vertices: () => 0 } }
+    const stage = createActingStage(player as unknown as Player, { id: 'kohako-full-v11r' } as RigModel)
+    const run = (s: number) => { for (let i = 0; i < Math.round(s * 60); i++) player.update(1 / 60) }
+    stage.playGesture('halt'); run(1.2)
+    stage.playGesture('guide')
+    expect(stage.report()).toMatchObject({ gesture: 'guide', armSwitch: null, switched: true })
+    run(1); expect((stage.report() as { guideOpen: number }).guideOpen).toBeGreaterThan(0.9)
+    stage.playGesture('halt'); run(1)
+    expect(stage.report()).toMatchObject({ gesture: 'halt', armSwitch: null })
+    expect((stage.report() as { guideOpen: number }).guideOpen).toBeLessThan(0.1)
+    stage.playGesture('guide'); run(clips.guide.duration + 0.5)
+    expect(stage.report()).toMatchObject({ gesture: 'none', switched: false })
   })
 })
