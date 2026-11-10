@@ -10,5 +10,6 @@ h2 { margin: 0 0 4px; font-size: 17px }
 .status { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 10px; background: #e5e0d8 }
 .status-ng { background: #f6d5d0; color: #7a1d10 }
 .status-trial { background: #fff0c2; color: #5a4300 }
+.status-adopted { background: #d4ecd6; color: #17501f }
 .card-link { display: inline-block; padding: 8px 12px; border-radius: 6px; background: #5b3d8a; color: #fff; text-decoration: none }
 .missing { color: #7a1d10 }

@@ -1,10 +1,16 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { candidateURL, parseIndex } from './list'
+import { candidateURL, parseIndex, statusClass } from './list'
 
 const ok = { id: 'arm-4980edd', commit: '4980edd3a5a89232b4f0bb343e604fafca2d2828', title: '腕', status: '試作', built: true }
 
 describe('試作候補の一覧', () => {
+  it('本人採用は動作単位の表記でも採用の色にする', () => {
+    expect(statusClass('本人採用（制止）')).toBe('adopted')
+    expect(statusClass('不合格')).toBe('ng')
+    expect(statusClass('試作')).toBe('trial')
+    expect(statusClass('その他')).toBe('unknown')
+  })
   it('形の崩れた項目を捨てる', () => {
     expect(parseIndex({ candidates: [ok, { ...ok, id: '../x' }, { ...ok, commit: 'abc' }, null] })).toHaveLength(1)
     expect(parseIndex(null)).toEqual([])
