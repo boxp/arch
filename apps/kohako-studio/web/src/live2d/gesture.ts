@@ -263,11 +263,13 @@ const SAME_ARM: ReadonlySet<string> = new Set(['halt', 'greet'])
  * cce68801 の独立判定で「袖とケープの間に上腕が細い帯で見え肘が硬い」とされたため、肩の点を外へ 30 画素寄せて上腕を袖の下に収め
  * （袖の下から太い上腕が出て肘で曲がる）、角度を 0.25 にして指先を画面内に保つ。入り・戻りは腕を下げた位置（+0.45rad）から
  * 持ち上げ、待機の腕とのフェードの重なりが腰の前を水平に横切らないようにする。
+ * 32cff098 の独立判定で「元絵の肘が直角で黒いしわが密集し塊に見える」とされたため、肘を約 120 度に開きしわを抑えた絵
+ * （td06u2-guide2）を生成し直した。絵の腕が太く描かれているので 0.21 倍に縮め、角度 0.14 で指先を横へ向けたまま手先を画面内に保つ。
  */
 export const GUIDE_ARM = {
-  back: 'guide-arm.png', front: 'guide-arm-front.png', box: [430, 267, 1737, 950] as const,
-  shoulderPx: [600, 330] as Vec, elbowPx: [730, 1067] as Vec, wristPx: [1500, 897] as Vec, tipPx: [2150, 867] as Vec,
-  at: [748, 540] as Vec, scale: 0.28, angle: 0.25,
+  back: 'guide-arm.png', front: 'guide-arm-front.png', box: [204, 264, 2152, 1219] as const,
+  shoulderPx: [410, 345] as Vec, elbowPx: [760, 1240] as Vec, wristPx: [1577, 1188] as Vec, tipPx: [2351, 1250] as Vec,
+  at: [748, 540] as Vec, scale: 0.21, angle: 0.14,
 }
 /** 案内の 1 枚腕の回転と沈み。入りは手を下から差し出し、保持は小さく揺らし、戻りは下げながら消す。 */
 export function guideArmMotion(t: number, out = 0): { angle: number; drop: number } {
