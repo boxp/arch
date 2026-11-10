@@ -113,7 +113,7 @@
                        (assoc-in s [:roles role] (merge {:candidate candidate :reason nil} result)))) initial families)]
         (atomic! state-path final) {:status :checked :roles (:roles final)}))))
 (defn with-lock [f] (fs/create-dirs root) (with-open [raf (RandomAccessFile. (str root "/tick.lock") "rw") ch (.getChannel raf)]
-                       (if-let [lock (try (.tryLock ch) (catch Exception _ nil))] (try (f) (finally (.close lock)))
+                       (if (try (.tryLock ch) (catch Exception _ nil)) (f) ;; closing the channel releases the lock (bb does not expose FileLock methods)
                          (let [event {:status :locked :at (str (Instant/now))}]
                            (spit (str root "/lock-events.jsonl") (str (json/generate-string event) "\n") :append true) event))))
 (try
