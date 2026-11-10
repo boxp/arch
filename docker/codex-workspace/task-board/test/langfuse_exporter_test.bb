@@ -1009,6 +1009,31 @@
       (is (empty? values) text)
       (is (empty? words) text))))
 
+;; Regression (arch#14742 review): only a whole template expression is skipped. A value that merely starts like a
+;; template ({{hunter123) is a password: it is pinned and a later restatement is masked; a quoted or unclosed opener
+;; is a short symbol value and withholds the lineage.
+(deftest template-like-values-are-pinned
+  (doseq [[text v] [["password: \"{{hunter123\"" "{{hunter123"]
+                    ["password: '{%secretpw'" "{%secretpw"]
+                    ["password: \"${{hunter123\"" "${{hunter123"]
+                    ["{\"password\": \"{{hunter123\"}" "{{hunter123"]]]
+    (is (some #{v} (:values (lf/named-values text))) text))
+  (doseq [text ["password: \"{{\"" "password: '${{'" "password: \"{%\""]]
+    (is (true? (:unpinned? (lf/named-values text))) text))
+  (doseq [text ["password: ${{ secrets.X }}" "PASSWORD: {{ .Values.db.password }} # note"]]
+    (let [{:keys [values words unpinned?]} (lf/named-values text)]
+      (is (false? unpinned?) text)
+      (is (not-any? #(re-find #"^\$?\{[{%]" %) (concat values words)) text)))
+  (doseq [format [:claude :codex]]
+    (let [{:keys [spans failed raw]} (prepared-session format "password: \"{{hunter123\"\nconfigline"
+                                                       "it is {{hunter123 , laterreplymarker")
+          body (pr-str spans)
+          gen (last (filter #(str/starts-with? (:name %) "generation:") raw))]
+      (is (nil? failed) (str format))
+      (is (= "sent" (attr-value gen "langfuse.observation.metadata.body_policy")) (str format))
+      (is (str/includes? body "laterreplymarker") (str format))
+      (is (not (str/includes? body "hunter123")) (str format)))))
+
 ;; Regression (arch#14742 review): a value of symbols only can be a real password (password: ==). A short one has no
 ;; word boundary to pin it by, so it withholds the lineage as before TD-12; the restatement is never sent.
 (deftest short-symbol-only-values-withhold

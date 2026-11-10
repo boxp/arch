@@ -771,13 +771,22 @@
 ;; starting with $ (password: $hunterhorse): it is pinned like any value (masking a later ${VAR} is a harmless
 ;; over-mask), and when it is too short to pin it does not withhold, since it is most likely a reference.
 (defn- reference? [v]
-  (boolean (or (re-matches #"\[REDACTED:[a-z_-]+\]" v)
-               ;; Not a credential by shape (BOXP-428 TD-12): a template or expression start whose rest the value scan
-               ;; cut off (password: ${{ secrets.X }}, {{ .Values.x }}). A value of symbols only (password: ==) can be a
-               ;; real password: it is pinned when long enough, and a short one withholds the lineage (named-values),
-               ;; since a whole-word match cannot bound it. A printf directive (password: %d) or digits with a colon
-               ;; (password: 1234:) are pinned like any value (a later %d is over-masked as a whole word).
-               (re-find #"^\$?\{[{%]" v))))
+  ;; A value of symbols only (password: ==) can be a real password: it is pinned when long enough, and a short one
+  ;; withholds the lineage (named-values), since a whole-word match cannot bound it. A printf directive (password: %d)
+  ;; or digits with a colon (password: 1234:) are pinned like any value (a later %d is over-masked as a whole word).
+  ;; A value that merely starts like a template ("{{hunter123") is pinned too (BOXP-428 TD-12); only a whole
+  ;; template expression is skipped (template-expression?).
+  (boolean (re-matches #"\[REDACTED:[a-z_-]+\]" v)))
+
+(defn- template-expression?
+  "Not a credential by shape (BOXP-428 TD-12): an unquoted template opener whose expression the value scan cut off at
+  the space, closed later on the same line (password: ${{ secrets.X }}, {{ .Values.x }}, {% x %}). The opener must be
+  the whole value, unquoted (the match ends with it), and followed by a space and a closer on the line; a quoted or
+  unclosed opener (password: \"{{\", password: {{) is a value like any other (short symbols withhold the lineage)."
+  [text m v]
+  (boolean (and (re-matches #"\$?\{[{%]-?" v)
+                (str/ends-with? (str m) v)
+                (re-find (re-pattern (str (java.util.regex.Pattern/quote (str m)) "[ \\t]+[^\\r\\n]*?[}%]\\}")) text))))
 
 (defn- grep-location?
   "A grep -n location (runtime-authorization.yaml:4:): the name is a file name with an extension and the value is the
@@ -979,7 +988,7 @@
                      :let [m (if (vector? match) (first match) match)]
                      v (match-values kind m)
                      :let [v (str/trim (str v))]
-                     :when (and (not (str/blank? v)) (not (reference? v))
+                     :when (and (not (str/blank? v)) (not (reference? v)) (not (template-expression? text m v))
                                 (not (and (= kind :assignment) (grep-location? m v))))]
                  v)
                (for [entry (reversed-bracket-entries text)
