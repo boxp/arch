@@ -59,8 +59,12 @@
   (when-let [[major minor] (model-version family model)]
     (let [lines (filter #(and (re-find #"(?i)data retention" %) (re-find #"(?i)requires?\b" %)
                               (re-find #"(?i)require[s]? 30-day data retention" %)) (some-> text str/split-lines))
-          lists (distinct (keep covered-list lines))]
-      (when (= 1 (count lists)) (contains? (first lists) [family major minor])))))
+          parsed (map covered-list lines)
+          lists (distinct parsed)]
+      ;; 1 行でも一覧を読めなければ (nil) 全体を判定不能にする。読めた行だけで
+      ;; 一致と見なすと、形式が変わった行の条件差分を見逃すため。
+      (when (and (seq parsed) (not-any? nil? parsed) (= 1 (count lists)))
+        (contains? (first lists) [family major minor])))))
 (defn ticket! [role model kind]
   (let [summary (java.io.File/createTempFile "model-update-" ".md")
         cmd (env "MODEL_UPDATES_TASK_BOARD_CMD" (str (System/getProperty "user.home") "/.claude/skills/obsidian-task-board/bin/task-board.bb"))
