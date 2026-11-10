@@ -301,9 +301,14 @@ describe('実行時の動作の割り込み', () => {
     const restE: [number, number] = [760, 733], restW: [number, number] = [844, 928]
     for (const m of [joyArmMotion(0, 0), joyArmMotion(JOY_SWITCH_SECONDS, 0), joyArmMotion(1, 1)]) {
       expect(distance(joyArmPoint(JOY_ARM.elbowPx, m), restE)).toBeLessThan(35)
-      expect(distance(joyArmPoint(JOY_ARM.fistPx, m), restW)).toBeLessThan(35)
-      expect(distance(joyArmPoint(JOY_ARM.fistPx, m, true), [2 * 572 - restW[0], restW[1]])).toBeLessThan(35)
+      // 拳は待機の手首の先（開いた手の掌の上）に重なる。18210eee は手首にあり、下に開いた手が残って手が二つに見えた（td06j-review-18210ee）
+      const fist = joyArmPoint(JOY_ARM.fistPx, m), dir = [restW[0] - restE[0], restW[1] - restE[1]], len = Math.hypot(dir[0], dir[1])
+      const along = ((fist[0] - restW[0]) * dir[0] + (fist[1] - restW[1]) * dir[1]) / len
+      expect(along).toBeGreaterThan(5); expect(along).toBeLessThan(50)
+      expect(distance(fist, restW)).toBeLessThan(55)
+      expect(distance(joyArmPoint(JOY_ARM.fistPx, m, true), [2 * 572 - fist[0], fist[1]])).toBeLessThan(0.01)
     }
+    expect(JOY_SWITCH_SECONDS).toBeLessThanOrEqual(1 / 29) // 差し替えは 1 コマで済ませ、両側で開いた手と拳が半透明に重ならない
     // 持ち上げの途中で拳が外へ大きく弧を描かない（保持の拳より外へ 60 以内）、肩の点は動かない（袖から離れない）
     const hold = joyArmPoint(JOY_ARM.fistPx, joyArmMotion(1, 0))
     for (let t = JOY_SWITCH_SECONDS; t <= 0.6; t += 1 / 30) {

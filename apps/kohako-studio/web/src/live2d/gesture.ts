@@ -221,7 +221,9 @@ export const SWITCH_SECONDS = 0.25
  * 喜びの切替の時間。喜びは両腕を同時に差し替えるため、待機の腕と喜びの腕が両側で半透明に重なり、制止と同じ 0.25 秒でも目立つ
  * （85a81114 の独立判定 td06j-review-85a8111）。重なる時間を短くし、腕を低い位置から持ち上げる途中で差し替える。
  */
-export const JOY_SWITCH_SECONDS = 0.12
+export const JOY_SWITCH_SECONDS = 0.034
+/** 喜びの拳を持ち上げる時間。18210eee の 0.45 秒では前腕が外へ水平に向く途中の形が数コマ続いて目立った（独立判定 td06j-review-18210ee）。 */
+export const JOY_LIFT_SECONDS = 0.3
 /**
  * 喜びの戻りで、切替のフェードを始める前に腕を下ろす時間。e53a69a9 は下ろしながら 0.12 秒で消したため、拳が高いまま消えて見えた
  * （独立判定 td06j-review-e53a69a）。戻りは下ろし切ってから低い位置で差し替え、入りは低い位置で差し替え終えてから持ち上げる。
@@ -350,14 +352,16 @@ export const JOY_ARM = {
  * 低い位置では肩の回し（upper）で上腕を待機の上腕（肩→肘）に揃え、肘から先を肘の周りに伸ばして（bend）前腕を待機の前腕
  * （肘→手首）に揃える。こうすると差し替えは待機の腕の上で起こり、そこから肘を曲げて拳を持ち上げる一本の腕の動きになる。
  */
-export const JOY_LOW = { upper: 0.332, bend: 2.03, band: 120, shorten: 0.32 }
+export const JOY_LOW = { upper: 0.332, bend: 2.03, band: 90, shorten: 0.18, stretch: 0.1 }
 /** 肘を曲げる途中だけ前腕を短く見せる割合（手前へ持ち上げる遠近。伸ばし切り・曲げ切りでは 0）。2D の回転だけだと拳が外へ大きく弧を描くため。 */
 export function joyForeShorten(bend: number): number { return JOY_LOW.shorten * Math.sin(Math.PI * Math.min(1, Math.max(0, bend / JOY_LOW.bend))) }
+/** 低い位置（肘を伸ばし切った姿勢）で前腕を少し長く見せる割合。差し替えの瞬間に拳を待機の開いた手の掌の上に重ね、手が二つに見えないようにする（18210eee は拳が手首にあり下に開いた手が残った）。曲げるにつれて 0 へ。 */
+export function joyLowStretch(bend: number): number { const k = Math.min(1, Math.max(0, bend / JOY_LOW.bend)); return JOY_LOW.stretch * k * k * k }
 /** 喜びの 1 枚腕の回転・沈み・肘の伸ばし。入りは伸ばした腕で差し替えてから肘を曲げて拳を持ち上げ、保持は体の揺れに合わせて小さく弾ませ、戻りは肘を伸ばして下ろし切ってから消す（out は下ろしの進み 0〜1）。 */
 export function joyArmMotion(t: number, out = 0): { angle: number; drop: number; bend: number } {
-  const rise = 1 - ease(Math.min(1, Math.max(0, (t - JOY_SWITCH_SECONDS) / 0.45))), hold = smooth(0.47, 0.87, t), o = ease(out)
+  const rise = 1 - ease(Math.min(1, Math.max(0, (t - JOY_SWITCH_SECONDS) / JOY_LIFT_SECONDS))), hold = smooth(0.47, 0.87, t), o = ease(out)
   const low = Math.max(rise, o), bounce = hold * (1 - o)
-  return { angle: JOY_ARM.angle + JOY_LOW.upper * low + 0.03 * Math.sin(2 * Math.PI * (t - 0.57) / 0.7) * bounce, drop: 5 * Math.abs(Math.sin(2 * Math.PI * (t - 0.57) / 0.7)) * bounce, bend: JOY_LOW.bend * low }
+  return { angle: JOY_ARM.angle + JOY_LOW.upper * Math.sqrt(low) + 0.03 * Math.sin(2 * Math.PI * (t - 0.57) / 0.7) * bounce, drop: 5 * Math.abs(Math.sin(2 * Math.PI * (t - 0.57) / 0.7)) * bounce, bend: JOY_LOW.bend * low }
 }
 /** 喜びの絵の画素が前腕側にある度合い（0=上腕、1=前腕と拳）。肘の角の二等分線からの距離で決める。 */
 export function joyForeWeight(px: Vec): number {
@@ -369,7 +373,7 @@ export function joyForeWeight(px: Vec): number {
 }
 /** 右腕の画素 → モデル座標。肘から先を bend だけ肘の周りに回してから、絵全体を肩の点で回して置く。left なら体の中心線で鏡映する（絵は左右反転して貼る）。 */
 export function joyArmPoint(px: Vec, m: { angle: number; drop: number; bend?: number }, left = false): Vec {
-  const H = JOY_ARM, f = m.bend ? joyForeWeight(px) : 0, E = H.elbowPx, b = f ? add(E, scaleV(rot(sub(px, E), f * m.bend!), 1 - f * joyForeShorten(m.bend!))) : px
+  const H = JOY_ARM, f = m.bend ? joyForeWeight(px) : 0, E = H.elbowPx, b = f ? add(E, scaleV(rot(sub(px, E), f * m.bend!), 1 - f * joyForeShorten(m.bend!) + f * joyLowStretch(m.bend!))) : px
   const q = add(add(H.at, [0, m.drop]), scaleV(rot(sub(b, H.shoulderPx), m.angle), H.scale))
   return left ? mirrorX(q) : q
 }
