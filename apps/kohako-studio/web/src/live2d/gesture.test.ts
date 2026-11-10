@@ -413,6 +413,18 @@ describe('制止の腕セットの切替（BOXP-476 TD-06 Y\')', () => {
 })
 
 describe('挨拶の手振り（制止の 1 枚腕の肘から先だけを振る、BOXP-476 TD-06）', () => {
+  it('制止⇄挨拶は同じ 1 枚腕のまま直接つなぎ、腕を消して出し直さない', () => {
+    const memory = new WebAssembly.Memory({ initial: 1 })
+    const player = { rig: 0, expressions: [], meshes: Array.from({ length: 33 }, () => ({ vertices: 0 })), expression() {}, setParameter() {}, update(_dt: number) {}, rt: { memory, p2l_render_commands: () => 0, p2l_mesh_vertices: () => 0 } }
+    const stage = createActingStage(player as unknown as Player, { id: 'kohako-full-v11r' } as RigModel)
+    const run = (s: number) => { for (let i = 0; i < Math.round(s * 60); i++) player.update(1 / 60) }
+    stage.playGesture('halt'); run(1.2)
+    stage.playGesture('greet')
+    expect(stage.report()).toMatchObject({ gesture: 'greet', armSwitch: null, switched: true })
+    run(0.5); expect(stage.report()).toMatchObject({ gesture: 'greet', armSwitch: null })
+    stage.playGesture('halt')
+    expect(stage.report()).toMatchObject({ gesture: 'halt', armSwitch: null, switched: true })
+  })
   it('手振りは保持の間だけで、始まりと終わりと戻りでは 0（制止と同じ位置）', () => {
     for (const [t, o] of [[0, 0], [GREET_WAVE.start, 0], [2.4, 0], [1, 1]] as const) expect(Math.abs(greetWave(t, o))).toBeLessThan(1e-12)
     const peak = Math.max(...Array.from({ length: 100 }, (_, i) => Math.abs(greetWave(0.6 + i * 0.013))))
