@@ -68,9 +68,12 @@
 (defn ticket! [role model kind]
   (let [summary (java.io.File/createTempFile "model-update-" ".md")
         cmd (env "MODEL_UPDATES_TASK_BOARD_CMD" (str (System/getProperty "user.home") "/.claude/skills/obsidian-task-board/bin/task-board.bb"))
-        _ (spit summary (str "モデル " role " を " model " へ更新します。種別: " (name kind) "\n\n種別が waiting-cli の場合は 2 段階で進める。(1) pin はまだ変えず、npm の @anthropic-ai/claude-code で候補 ID を内蔵する版 (platform package を npm pack して strings で確認) へ CLAUDE_CODE_VERSION と :min-cli だけを上げる通常 PR → review/CI → merge → 配備。(2) 配備後 `bb /opt/codex-workspace/model-updates/model_updates.bb tick --force` で候補の status が proposed (候補 canary 合格) になったことを確認してから次へ進む。canary-failed なら pin せず Notes に記録して止める。\n\n候補 canary 合格後 (種別 candidate は起票時点で合格済み) に `bb /opt/codex-workspace/model-updates/model_updates.bb pin --catalog docker/codex-workspace/model-catalog.edn --role " role " --model " model " --ticket BOXP-N` を実行。pin は候補 canary の合格記録が無ければその場で canary し、不合格なら失敗する。通常 PR → review/CI → merge → 配備後 `model_updates.bb tick --force` で verified を確認。\n"))
+        failed? (= kind :verification-failed)
+        ;; 失敗票に pin 手順を書くと、従った pin が :previous を失敗中の現行モデルで上書きし hold を無効にするため、更新票と文面を分ける。
+        _ (spit summary (if failed? (str "配備後 canary 失敗の記録: " role " の現行 pin " model " が配備後 canary に失敗しました。これは更新票ではありません。\n\n" model " へ pin しないこと (pin すると catalog の :previous が " model " で上書きされ、旧モデルへの hold が効かなくなる)。catalog に :previous があれば tick が自動 hold 済み (`bb /opt/codex-workspace/model-updates/model_updates.bb status` の :hold で確認)。原因 (CLI 版、提供状況、認証、利用枠) を調べて Notes に記録する。戻す場合は該当 pin PR を revert する通常 PR → review/CI → merge → 配備後 `model_updates.bb tick --force` で verified を確認する。\n")
+                          (str "モデル " role " を " model " へ更新します。種別: " (name kind) "\n\n種別が waiting-cli の場合は 2 段階で進める。(1) pin はまだ変えず、npm の @anthropic-ai/claude-code で候補 ID を内蔵する版 (platform package を npm pack して strings で確認) へ CLAUDE_CODE_VERSION と :min-cli だけを上げる通常 PR → review/CI → merge → 配備。(2) 配備後 `bb /opt/codex-workspace/model-updates/model_updates.bb tick --force` で候補の status が proposed (候補 canary 合格) になったことを確認してから次へ進む。canary-failed なら pin せず Notes に記録して止める。\n\n候補 canary 合格後 (種別 candidate は起票時点で合格済み) に `bb /opt/codex-workspace/model-updates/model_updates.bb pin --catalog docker/codex-workspace/model-catalog.edn --role " role " --model " model " --ticket BOXP-N` を実行。pin は候補 canary の合格記録が無ければその場で canary し、不合格なら失敗する。通常 PR → review/CI → merge → 配備後 `model_updates.bb tick --force` で verified を確認。\n")))
         prefix (if (str/ends-with? cmd ".bb") ["bb" cmd] [cmd])
-        r (run (into prefix ["create" "--vault" (env "CODEX_TASK_BOARD_VAULT" "/home/boxp/Documents/obsidian-headless/BOXP") "--lane" "Ready" "--assignee" "codex-terra" "--priority" "medium" "--repo" "boxp/arch" "--title" (str "モデル自動追従: " role " を " model " へ更新") "--summary-file" (str summary)]))]
+        r (run (into prefix ["create" "--vault" (env "CODEX_TASK_BOARD_VAULT" "/home/boxp/Documents/obsidian-headless/BOXP") "--lane" "Ready" "--assignee" "codex-terra" "--priority" "medium" "--repo" "boxp/arch" "--title" (if failed? (str "モデル自動追従: " role " の " model " が配備後 canary に失敗") (str "モデル自動追従: " role " を " model " へ更新")) "--summary-file" (str summary)]))]
     (.delete summary)
     (when (zero? (:exit r)) (some-> (re-find #"BOXP-[0-9]+" (:out r)) str))))
 (defn proposal [state role model kind]
@@ -83,6 +86,10 @@
             result (run (into prefix ["append-note" ticket "--vault" (env "CODEX_TASK_BOARD_VAULT" "/home/boxp/Documents/obsidian-headless/BOXP") "--source" "model-updates" "--note" (str "配備後 canary 失敗: " role " " model "。previous がある場合は hold します。")]))]
         (if (zero? (:exit result)) (assoc-in state [:verification-notes note-key] true) state))
       ticket state
+      ;; 更新票が無い配備後失敗は専用の失敗票で記録し、:proposals (更新候補の票) には入れない。
+      (= kind :verification-failed)
+      (if (get-in state [:verification-tickets key]) state
+          (if-let [created (ticket! role model kind)] (assoc-in state [:verification-tickets key] created) state))
       :else (if-let [created (ticket! role model kind)] (assoc-in state [:proposals key] created) state))))
 (defn json-safe [v]
   (cond (map? v) (into {} (map (fn [[k x]] [(if (or (string? k) (keyword? k)) k (pr-str k)) (json-safe x)]) v))
@@ -140,6 +147,8 @@
                  "canary" (canary (or (opt "--model") (throw (ex-info "--model required" {}))))
                  "pin" (with-lock #(let [c (catalog!) role (opt "--role") model (opt "--model") family (get families role) old (get-in c [:roles role :model])]
                          (when-not (and family (model-version family model) old) (throw (ex-info "invalid role or model" {})))
+                         ;; 現行と同じモデルへの pin は :previous を現行で上書きし hold 先を失うため拒否する。
+                         (when (= model old) (throw (ex-info "model is already pinned; refusing to overwrite :previous" {:model model})))
                          ;; Never pin an unverified candidate: require the tick's recorded canary pass, or pass one now.
                          (let [s (read-edn state-path {})]
                            (when-not (get-in s [:candidate-verified [role model]])

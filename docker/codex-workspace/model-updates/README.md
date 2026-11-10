@@ -33,7 +33,7 @@ job 定義は `recurring-events/vault-seed/Infrastructure/Codex Cron/jobs.edn` �
 
 - 配備中の pin が state の検証済み (`:verified`) と違えば、その pin で canary を実行します。
 - 合格: `:verified` と `:history` を更新します。自動で入れた hold があれば外します。
-- 不合格: `:previous` へ自動 hold し (`:auto-hold`)、更新票へ記録します (手動 hold が既にあればそれを維持し上書きしません)。新規 run は旧正常版で動きます。
+- 不合格: `:previous` へ自動 hold し (`:auto-hold`)、更新票へ記録します (手動 hold が既にあればそれを維持し上書きしません)。更新票が無ければ pin 手順を含まない失敗票を別に作り (`:verification-tickets`)、更新候補 (`:proposals`) にはしません。pin は現行と同じモデルを拒否し、`:previous` (hold 先) を上書きしません。新規 run は旧正常版で動きます。
 - 手動: `hold --role R --model M` (M は catalog の `:model` か `:previous` だけ) と `release --role R`。手動 hold は自動では外しません。 hold / release / pin は tick と同じロックを待ってから state を更新するため、実行中の tick に上書きされません。
 - 恒久的に戻すときは catalog を戻す PR を通常どおり出します。
 

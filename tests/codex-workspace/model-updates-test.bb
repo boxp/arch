@@ -8,7 +8,8 @@
 (spit fake "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 2.1.321; exit 0; fi\n[ -z \"${ANTHROPIC_API_KEY:-}\" ] || exit 9\nwhile [ $# -gt 0 ]; do if [ \"$1\" = --model ]; then model=$2; break; fi; shift; done\nprintf '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\"}]}}\\n{\"type\":\"result\",\"is_error\":false,\"result\":\"boxp-model-canary\",\"modelUsage\":{\"%s\":{}}}\\n' \"$model\"\n")
 (fs/set-posix-file-permissions fake "rwxr-xr-x")
 (def board (str root "/board"))
-(spit board "#!/bin/sh\nprintf \"%s\\n\" \"$1\" >> \"$BOARD_CALL_LOG\"\necho BOXP-123\n")
+(spit board "#!/bin/sh\nprintf \"%s\\n\" \"$1\" >> \"$BOARD_CALL_LOG\"\nwhile [ $# -gt 0 ]; do if [ \"$1\" = --summary-file ]; then cat \"$2\" >> \"$BOARD_CALL_LOG.summaries\"; fi; shift; done\necho BOXP-123\n")
+(def board-summaries (str root "/board-calls.summaries"))
 (fs/set-posix-file-permissions board "rwxr-xr-x")
 (def state (str root "/state.edn"))
 (def board-log (str root "/board-calls"))
@@ -96,9 +97,20 @@
 (spit fake "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 2.1.321; exit 0; fi\necho unrecognized_model >&2\necho '{\"type\":\"result\",\"is_error\":true}'\n")
 (reset-state)
 (let [v (edn/read-string (slurp state))] (spit state (pr-str (assoc-in v [:verified "claude-fable"] "claude-fable-5-2"))))
+(fs/delete-if-exists board-summaries)
 (let [r (apply call tick-args)]
   (assert (= "verification-failed" (get-in r [:roles :claude-fable :status])))
-  (assert (= "claude-fable-5-2" (get-in (edn/read-string (slurp state)) [:hold "claude-fable"]))))
+  (assert (= "claude-fable-5-2" (get-in (edn/read-string (slurp state)) [:hold "claude-fable"])))
+  ;; 更新票が無い失敗は失敗票で記録し、現行モデルへの更新候補票 (:proposals) にはしない。
+  (let [v (edn/read-string (slurp state))]
+    (assert (nil? (get-in v [:proposals ["claude-fable" "claude-fable-5-3"]])))
+    (assert (= "BOXP-123" (get-in v [:verification-tickets ["claude-fable" "claude-fable-5-3"]]))))
+  (assert (str/includes? (slurp board-summaries) "これは更新票ではありません"))
+  (assert (not (str/includes? (slurp board-summaries) "pin --catalog")))
+  ;; 失敗票の指示に反して現行モデルへ pin しても :previous は上書きされない。
+  (let [c (slurp catalog)]
+    (assert (try (apply call (concat ["pin" "--role" "claude-fable" "--model" "claude-fable-5-3" "--ticket" "BOXP-123"] base)) false (catch Exception _ true)))
+    (assert (= c (slurp catalog)))))
 ;; A later passing canary releases only the automatic hold; a manual hold stays.
 (def passing (str "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 2.1.321; exit 0; fi\nwhile [ $# -gt 0 ]; do if [ \"$1\" = --model ]; then model=$2; break; fi; shift; done\nprintf '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\"}]}}\\n{\"type\":\"result\",\"is_error\":false,\"result\":\"boxp-model-canary\",\"modelUsage\":{\"%s\":{}}}\\n' \"$model\"\n"))
 (spit fake passing)
