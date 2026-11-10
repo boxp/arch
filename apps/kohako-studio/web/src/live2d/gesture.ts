@@ -56,9 +56,9 @@ const GUIDE: ArmPose = { up: 0, upS: 1, fo: -1.92, foS: 1, ha: 0.15, haS: 1, elb
 const HALT: ArmPose = { up: 0, upS: 1, fo: -2.05, foS: 1, ha: 0.1, haS: 1.1, elbowTo: ELBOW_OUT, front: true, art: 'palm', artW: 1, band: true }
 const HALT_RISE: ArmPose = { up: 0, upS: 1, fo: -1.1, foS: 1, ha: 0.2, haS: 1.05, elbowTo: [805, 725], front: true, art: 'palm', artW: 0, band: true }
 // 照れ: 肘は体の脇寄りに残し、前腕を胸の前へ斜めに渡して手を口元へ運ぶ。肘を胸の中央まで寄せると前腕が上腕の真下に立って上腕が読めない（#14730 P1）。
-const SHY: ArmPose = { up: 0, upS: 1, fo: 3.14, foS: 1.09, ha: 0.02, haS: 0.95, elbowTo: [690, 714], front: true, art: 'cover', artW: 1, band: true }
-const SHY_RISE: ArmPose = { up: 0, upS: 1, fo: 2.75, foS: 0.95, ha: 0.7, haS: 0.98, elbowTo: [715, 712], front: true, art: 'cover', artW: 0, band: true }
-// 照れと制止は連続した腕の絵（帯メッシュ）で描く（BOXP-476 TD-06 の試作範囲）。始点と終点の休止も同じ絵にして、動作の途中で絵を切り替えない。
+const SHY: ArmPose = { up: 0, upS: 1, fo: 3.14, foS: 1.09, ha: 0.02, haS: 0.95, elbowTo: [690, 714], front: true, art: 'cover', artW: 1 }
+const SHY_RISE: ArmPose = { up: 0, upS: 1, fo: 2.75, foS: 0.95, ha: 0.7, haS: 0.98, elbowTo: [715, 712], front: true, art: 'cover', artW: 0 }
+// 制止は連続した腕の絵（帯メッシュ）の黒い袖で肘を曲げる（BOXP-476 TD-06/07 の段階①）。照れは帯を使わず従来の比較版のまま。始点と終点の休止も同じ絵にして、動作の途中で絵を切り替えない。
 const REST_BAND: ArmPose = { ...REST, band: true }
 const JOY: ArmPose = { up: 0, upS: 1, fo: -1.85, foS: 1, ha: 0.25, haS: 1, elbowTo: ELBOW_OUT }
 
@@ -68,7 +68,7 @@ export const clips: Record<Exclude<Gesture, 'none'>, Clip> = {
   joy: { duration: 1.8, keys: [{ t: 0, right: REST, left: REST, body: {} }, { t: 0.4, right: JOY, left: JOY, body: { bodyZ: 5, headZ: 6, lean: 3, headY: 5 } }, { t: 0.75, right: JOY, left: JOY, body: { bodyZ: -5, headZ: -6, lean: 3, headY: 5 } }, { t: 1.1, right: JOY, left: JOY, body: { bodyZ: 5, headZ: 6, lean: 3, headY: 5 } }, { t: 1.8, right: REST, left: REST, body: {} }] },
   greet: { duration: 2.6, keys: [{ t: 0, right: REST, body: {} }, { ...wave(0.55, -2.15), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { ...wave(0.85, -1.75), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { ...wave(1.15, -2.15), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { ...wave(1.45, -1.75), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { t: 2.1, right: REST, body: {} }, { t: 2.6, right: REST, body: {} }] },
   guide: { duration: 3.2, keys: [{ t: 0, right: REST, body: {} }, { t: 0.7, right: GUIDE, body: { bodyZ: -3, headX: 12, headZ: 3, eyeX: 0.7, eyeY: 0.2 } }, { t: 2.6, right: GUIDE, body: { bodyZ: -3, headX: 12, headZ: 3, eyeX: 0.7, eyeY: 0.2 } }, { t: 3.2, right: REST, body: {} }] },
-  shyHand: { duration: 3.9, keys: [{ t: 0, right: REST_BAND, body: {} }, { t: 0.6, right: SHY_RISE, body: { bodyZ: 1, lean: 1 } }, { t: 1.2, right: SHY, body: { bodyZ: 2, lean: 2 } }, { t: 3, right: SHY, body: { bodyZ: 2, lean: 2 } }, { t: 3.45, right: SHY_RISE, body: { bodyZ: 1, lean: 1 } }, { t: 3.9, right: REST_BAND, body: {} }] },
+  shyHand: { duration: 3.9, keys: [{ t: 0, right: REST, body: {} }, { t: 0.6, right: SHY_RISE, body: { bodyZ: 1, lean: 1 } }, { t: 1.2, right: SHY, body: { bodyZ: 2, lean: 2 } }, { t: 3, right: SHY, body: { bodyZ: 2, lean: 2 } }, { t: 3.45, right: SHY_RISE, body: { bodyZ: 1, lean: 1 } }, { t: 3.9, right: REST, body: {} }] },
   halt: { duration: 2.9, keys: [{ t: 0, right: REST_BAND, body: {} }, { t: 0.3, right: HALT_RISE, body: { bodyZ: -1, lean: 1 } }, { t: 0.6, right: HALT, body: { bodyZ: -2, lean: 2, headY: -2 } }, { t: 2.2, right: HALT, body: { bodyZ: -2, lean: 2, headY: -2 } }, { t: 2.55, right: HALT_RISE, body: { bodyZ: -1, lean: 1 } }, { t: 2.9, right: REST_BAND, body: {} }] },
 }
 
@@ -215,34 +215,44 @@ export function placeBentFore(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose
   return placeBent(elbow, sub(wrist, elbow), bentSide(bone, pose), [b, a * foreScale(m)])
 }
 /**
- * 肩〜手首を 1 枚で描いた連続腕（BOXP-476 TD-06、Gemini 生成）。素材 px の中心線は 肩(top)→肘(elbow)→手首(wrist)。
- * 帯状のメッシュにして、上腕の骨と前腕の骨の角度を肘のまわりで混ぜて曲げる（肘をまたぐ絵が切れずに丸く曲がる）。
- * 肘(elbow)は小手の金縁のすぐ上の黒い袖に置く（v11r の休止で小手が始まる位置と揃え、動き始めの絵の切替で小手の長さが変わらないようにする）。
- * scale は素材 px→モデル座標、foreWidth は前腕の横幅の倍率（肘側, 手首側。v11r の小手の幅 86→56 に合わせる）、blend は肘で角度を混ぜる範囲（素材 px、肘からの距離。金縁は曲げない）。
+ * 制止の連続腕（BOXP-476 TD-06/07、Gemini 生成の肩〜手首の絵のうち黒い袖だけを使う）。素材 px の中心線は 肩(top)→肘のしわ(elbow)→手首方向(wrist)。
+ * 帯状のメッシュにして、上腕の骨と前腕の骨の角度を肘のしわのまわりで混ぜて曲げる（肘をまたぐ黒い袖が切れずに丸く曲がる）。
+ * 素材の金の輪と紫の小手（軸に垂直な「筒の口」の輪で、正本や v11r の腕に沿う V 字の縁と形が違う）は使わず、帯は輪の手前 cut で切る。
+ * 前腕は v11r の V 字の縁の小手（休止と同じ絵）をそのまま重ね、黒い袖がその縁の中へ入る並び「袖→黒い上腕→黒い肘→金の縁→紫」にする（BOXP-489 の見直し）。
+ * bendBack は肘のしわを、v11r の小手の支点（solveArm の肘＝縁の開口の中央）から上腕側へ戻す距離（モデル座標）。
+ * upperTopWidth は上腕の上端の横幅の倍率（素材の袖は肩ほど太く、そのままだと肩口で胸の縁にはみ出す。しわでは 1）。
+ * reach はしわから cut までの黒い袖を、前腕の軸に沿ってモデル座標で何 px に置くか（V 字の縁の一番深い所より先まで届かせ、縁の内側に隙間を作らない）。
  */
-export const BAND_ART = { file: 'arm-band.png', w: 192, h: 893, top: [95, 20] as Vec, elbow: [87, 490] as Vec, wrist: [117, 873] as Vec, scale: 0.48, foreWidth: [1.15, 1.3] as const, blend: [-60, 18] as const }
-/** 帯メッシュの格子（素材 px）。肘のまわりは細かく刻む。 */
+export const BAND_ART = { file: 'arm-band.png', w: 192, h: 893, top: [95, 20] as Vec, elbow: [83, 420] as Vec, wrist: [117, 873] as Vec, cut: 504, scale: 0.48, blend: [-45, 45] as const, bendBack: 22, reach: 58, upperTopWidth: 0.78 }
+/** 帯メッシュの格子（素材 px、上端から cut まで）。肘のまわりは細かく刻む。 */
 export function bandGrid(): { points: Vec[]; columns: number; rows: number[] } {
   const A = BAND_ART, rows: number[] = []
-  for (let y = 0; y <= A.h; y += 28) rows.push(y)
-  for (let y = A.elbow[1] - 60; y <= A.elbow[1] + 60; y += 8) rows.push(y)
-  const sorted = [...new Set(rows.concat([A.h]))].sort((a, b) => a - b), xs = [0, 32, 64, 96, 128, 160, 192]
+  for (let y = 0; y < A.cut; y += 28) rows.push(y)
+  for (let y = A.elbow[1] - 56; y <= A.elbow[1] + 56; y += 8) rows.push(y)
+  const sorted = [...new Set(rows.filter(y => y <= A.cut).concat([A.cut]))].sort((a, b) => a - b), xs = [0, 32, 64, 96, 128, 160, 192]
   return { points: sorted.flatMap(y => xs.map(x => [x, y] as Vec)), columns: xs.length, rows: sorted }
 }
 const cross2 = (a: Vec, v: Vec) => a[0] * v[1] - a[1] * v[0]
-/** 素材 px の点を、姿勢に合わせたモデル座標へ置く。上端は肩の関節、肘は solveArm の肘、下端は手首に一致する。 */
-export function bandPoint(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose: ArmPose, p: Vec): Vec {
-  const A = BAND_ART, m = mirrored(bone, pose), { elbow, wrist } = solveArm(bone, m), side = bone.mirror ? -1 : 1
-  const uArt = norm(sub(A.elbow, A.top)), fArt = norm(sub(A.wrist, A.elbow)), d = sub(p, A.elbow)
-  const lenU = Math.hypot(...sub(A.elbow, A.top)), lenF = Math.hypot(...sub(A.wrist, A.elbow))
-  const uModel = sub(elbow, bone.S), fModel = sub(wrist, elbow)
-  const su = Math.hypot(...uModel) / lenU, sf = Math.hypot(...fModel) / lenF
-  const fa = dot(d, fArt), t = Math.min(1, Math.max(0, fa / lenF)), w = smooth(A.blend[0], A.blend[1], fa)
-  // 各骨の座標系（軸方向, 横）。上腕も肩→肘の向きを軸にして、肘より先の向きと揃える。
-  const localU: Vec = [dot(d, uArt) * su, cross2(uArt, d) * A.scale * side], localF: Vec = [fa * sf, cross2(fArt, d) * A.scale * lerp(A.foreWidth[0], A.foreWidth[1], t) * side]
-  const angU = Math.atan2(uModel[1], uModel[0]), angF = Math.atan2(fModel[1], fModel[0]), angle = angU + w * wrapAngle(angF - angU)
-  return add(elbow, rot([lerp(localU[0], localF[0], w), lerp(localU[1], localF[1], w)], angle))
+/** 帯の肘のしわを置くモデル座標（v11r の小手の支点から上腕側へ bendBack 戻した点）と前腕の向き。 */
+export function bandBend(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose: ArmPose): { bend: Vec; foreDir: Vec } {
+  const m = mirrored(bone, pose), { elbow, wrist } = solveArm(bone, m), foreDir = norm(sub(wrist, elbow))
+  return { bend: sub(elbow, scaleV(foreDir, BAND_ART.bendBack)), foreDir }
 }
+/** 素材 px の点を、姿勢に合わせたモデル座標へ置く。上端は肩の関節、肘のしわは bandBend、しわより先は前腕の軸の上に並ぶ。 */
+export function bandPoint(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose: ArmPose, p: Vec): Vec {
+  const A = BAND_ART, { bend, foreDir } = bandBend(bone, pose), side = bone.mirror ? -1 : 1
+  const uArt = norm(sub(A.elbow, A.top)), fArt = norm(sub(A.wrist, A.elbow)), d = sub(p, A.elbow)
+  const lenU = Math.hypot(...sub(A.elbow, A.top)), uModel = sub(bend, bone.S), su = Math.hypot(...uModel) / lenU, sf = A.reach / (A.cut - A.elbow[1])
+  const fa = dot(d, fArt), w = smooth(A.blend[0], A.blend[1], fa)
+  // 各骨の座標系（軸方向, 横）。上腕も肩→しわの向きを軸にして、しわより先の向きと揃える。横幅は素材の比率のまま（v11r の小手の内側に収まる）。
+  const tU = Math.min(1, Math.max(0, 1 + dot(d, uArt) / lenU)), localU: Vec = [dot(d, uArt) * su, cross2(uArt, d) * A.scale * lerp(A.upperTopWidth, 1, tU) * side], localF: Vec = [fa * sf, cross2(fArt, d) * A.scale * side]
+  const angU = Math.atan2(uModel[1], uModel[0]), angF = Math.atan2(foreDir[1], foreDir[0]), angle = angU + w * wrapAngle(angF - angU)
+  return add(bend, rot([lerp(localU[0], localF[0], w), lerp(localU[1], localF[1], w)], angle))
+}
+// 元の手と手の素材（掌・口元の手）の切替。両方を半透明で重ねると指が二重に透けて見えるので、重みの中点で入れ替え、半透明の中間を作らない（#14733 から持ち込み）。
+const HAND_SWAP_AT = 0.5
+/** 手の素材の不透明度（0 か 1。元の手は 1 からこれを引く）。 */
+export const handSwap = (w: number) => w >= HAND_SWAP_AT ? 1 : 0
 const partURL = (file: string) => new URL(`kohako/live2d/acting/${file}`, location.href).href
 
 type Runtime = { memory: WebAssembly.Memory; p2l_mesh_vertices(rig: number, mesh: number): number; p2l_render_commands(rig: number, pointer: number, capacity: number): number; p2l_mesh_opacity(rig: number, mesh: number): number; p2l_mesh_colors(rig: number, mesh: number, a: number, b: number): void }
@@ -293,7 +303,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   let parts: { right: Side; left: Side; art: Partial<Record<HandArt, number>>; cuff: number } | null = null, partsStatus: Record<string, unknown> = { ready: false }
   const armOf = (b: Bone) => b === RIGHT ? pose.right : pose.left
   let bandLoaded = false
-  /** 連続腕の帯メッシュで描くか（照れ・制止の試作だけ。素材が届くまでは従来の板のまま）。 */
+  /** 連続腕の帯メッシュで描くか（制止の試作だけ。素材が届くまでは従来の板のまま）。 */
   const bandOn = (b: Bone) => { const a = armOf(b); return b === RIGHT && bandLoaded && !!a.band && separatedPose(a) }
   const artLoaded: Partial<Record<HandArt, boolean>> = {} // 素材が届くまでは元の手のまま（読込失敗時も同じ）
   const handArt = () => pose.right.art && armBlend > 0.001 && artLoaded[pose.right.art] ? { kind: pose.right.art, w: pose.right.artW ?? 0 } : { kind: undefined, w: 0 }
@@ -315,7 +325,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       const bentFore = bentQuad(BENT_ART.fore, bentForeTexture, (a, c) => placeBentFore(bone, a, c)), bentElbow = bentQuad(BENT_ART.elbow, bentElbowTexture, (a, c) => { const { elbow } = solveArm(bone, unmirror(a)); return placeBent(elbow, sub(bone.S, elbow), bentSide(bone, a), c) })
       const xs = poly.map(c => c[0]), ys = poly.map(c => c[1]), corners: Vec[] = [[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)], [Math.min(...xs), Math.max(...ys)]]
       const fore = addQuad(pp, new Float32Array(corners.flatMap(c => split.rectUv(c[0], c[1]))), foreTexture)
-      synth.set(fore.index, { base: bone.arm, pointer: fore.pointer, opacity: () => separatedPose(armOf(bone)) && bentWeightOf() < 0.995 && !bandOn(bone) ? 1 : 0, write(out) { const [dx, dy] = swayOf(bone.arm); corners.forEach((c, i) => { const q = deformFore(bone, armOf(bone), c[0] + dx, c[1] + dy); out[2 * i] = q[0]; out[2 * i + 1] = q[1] }) } })
+      synth.set(fore.index, { base: bone.arm, pointer: fore.pointer, opacity: () => separatedPose(armOf(bone)) && bentWeightOf() < 0.995 ? 1 : 0, write(out) { const [dx, dy] = swayOf(bone.arm); corners.forEach((c, i) => { const q = deformFore(bone, armOf(bone), c[0] + dx, c[1] + dy); out[2 * i] = q[0]; out[2 * i + 1] = q[1] }) } })
       const place = (v: Vec): Vec => bone.mirror ? mirrorX(v) : v, side = bone.mirror ? -1 : 1
       const fill = addQuad(pp, new Float32Array(bone.mirror ? [1, 0, 0, 0, 0, 1, 1, 1] : [0, 0, 1, 0, 1, 1, 0, 1]), fillTexture)
       synth.set(fill.index, { base: bone.arm, pointer: fill.pointer, opacity: () => separatedPose(armOf(bone)) && !bandOn(bone) ? 1 : 0, write(out) {
@@ -331,7 +341,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       // 袖の紫の表地だけのコピー。上腕は裏地の手前、表地の裏を通る（描画順は hookCommands）。
       const outer = addShared(pp, bone.arm, split, addTexture(pp, split.front as WebGLTexture))
       synth.set(outer, { base: bone.arm, pointer: -1, shared: bone.arm, write() {}, opacity: () => separatedPose(armOf(bone)) ? 1 : 0 })
-      // 連続腕（右腕のみ）。肘の行で上腕側と前腕側の 2 枚に分け、上腕側は袖の表地の裏、前腕側は表地の手前に描く。
+      // 連続腕（右腕のみ、黒い袖の部分）。肘のしわの行で上腕側と前腕側の 2 枚に分け、上腕側は袖の表地の裏、前腕側は表地の手前に描く。
       let band: Side['band']
       if (bone === RIGHT) {
         const grid = bandGrid(), texture = later(BAND_ART.file, () => { bandLoaded = true }), uvs = new Float32Array(grid.points.flatMap(([x, y]) => [x / BAND_ART.w, y / BAND_ART.h])), cols = grid.columns
@@ -363,7 +373,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       const corners = ([[0, 0], [spec.w, 0], [spec.w, spec.h], [0, spec.h]] as Vec[]).map(c => add(RIGHT.W, rot(scaleV(local(c), 1 / spec.hold.haS), -hold)))
       const quad = addQuad(pp, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), later(spec.file, () => { artLoaded[kind] = true }))
       art[kind] = quad.index
-      synth.set(quad.index, { base: RIGHT.hand, pointer: quad.pointer, opacity: () => { const h = handArt(); return h.kind === kind ? smooth(0.1, 0.6, h.w) : 0 }, write(out) { const [dx, dy] = swayOf(RIGHT.hand); corners.forEach((c, i) => { const q = deformHand(RIGHT, pose.right, c[0] + dx, c[1] + dy); out[2 * i] = q[0]; out[2 * i + 1] = q[1] }) } })
+      synth.set(quad.index, { base: RIGHT.hand, pointer: quad.pointer, opacity: () => { const h = handArt(); return h.kind === kind ? handSwap(h.w) : 0 }, write(out) { const [dx, dy] = swayOf(RIGHT.hand); corners.forEach((c, i) => { const q = deformHand(RIGHT, pose.right, c[0] + dx, c[1] + dy); out[2 * i] = q[0]; out[2 * i + 1] = q[1] }) } })
     }
     if (cp.commandCapacity != null) { alloc.p2l_dealloc(cp.commandsPointer, cp.commandCapacity * 4 + 4); cp.commandCapacity += 24; cp.commandsPointer = alloc.p2l_alloc(cp.commandCapacity * 4 + 4) }
     parts = { right, left, art, cuff }
@@ -412,10 +422,10 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const hookCommands = (rig: number, pointer: number, capacity: number) => {
     const count = rt.p2l_render_commands(rig, pointer, capacity), front = frontMeshes(), art = handArt(), artMesh = parts && art.kind && art.w > 0.001 ? parts.art[art.kind] : undefined
     const expand = (c: number): number[] => {
-      const band = parts?.right.band, banded = !!band && bandOn(RIGHT), bandFront = banded && front.includes(RIGHT.hand)
-      if (parts && band && c === RIGHT.arm && parts.right.on && banded) return [parts.right.stub, c, band.upper, parts.right.outer, ...(bandFront ? [] : [band.fore])]
+      const band = parts?.right.band
+      // 帯: 黒い上腕は袖の表地の裏、肘のしわから先の黒い袖は表地の手前、その上に v11r の V 字の小手（parts.right.fore）を重ねる。
+      if (parts && band && c === RIGHT.arm && parts.right.on && bandOn(RIGHT)) return [parts.right.stub, c, band.upper, parts.right.outer, band.fore, parts.right.fore]
       if (parts && c === RIGHT.arm && parts.right.on) return [parts.right.stub, c, parts.right.fill, parts.right.bentElbow, parts.right.outer, parts.right.fore, parts.right.bentFore]
-      if (band && bandFront && c === RIGHT.hand) return [band.fore, c, ...(parts && artMesh != null ? [artMesh, parts.cuff] : [])]
       if (parts && c === LEFT.arm && parts.left.on) return [parts.left.stub, c, parts.left.fill, parts.left.bentElbow, parts.left.outer, parts.left.fore, parts.left.bentFore]
       if (parts && c === RIGHT.hand && artMesh != null) return [c, artMesh, parts.cuff]
       return [c]
@@ -430,7 +440,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     const extra = synth.get(mesh)
     if (extra) return extra.opacity() * rt.p2l_mesh_opacity(rig, extra.base)
     const base = rt.p2l_mesh_opacity(rig, mesh)
-    return mesh === RIGHT.hand && parts ? base * (1 - smooth(0.35, 0.85, handArt().w)) : base
+    return mesh === RIGHT.hand && parts ? base * (1 - handSwap(handArt().w)) : base
   }
   const hookColors = (rig: number, mesh: number, a: number, b: number) => rt.p2l_mesh_colors(rig, synth.get(mesh)?.base ?? mesh, a, b)
   p.rt = Object.create(rt, { p2l_mesh_vertices: { value: hookVertices }, p2l_render_commands: { value: hookCommands }, p2l_mesh_opacity: { value: hookOpacity }, p2l_mesh_colors: { value: hookColors } }) as Runtime

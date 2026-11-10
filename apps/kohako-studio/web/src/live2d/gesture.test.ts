@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BAND_ART, bandGrid, bandPoint, BENT_ART, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { BAND_ART, bandGrid, bandPoint, handSwap, BENT_ART, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -327,15 +327,23 @@ describe('曲げの絵（BOXP-476 TD-02）', () => {
   })
 })
 
-describe('連続腕の帯メッシュ（TD-06 試作: 照れ・制止のみ）', () => {
+describe('連続腕の帯メッシュ（TD-06/07 段階①: 制止のみ）', () => {
   const bone = { S: [710, 533], E: [760, 733], W: [844, 928], arm: 22, hand: 20, mirror: false } as const
-  const poses = { halt: sample(clips.halt, 1.5).right, shy: sample(clips.shyHand, 2).right, rise: sample(clips.halt, 0.3).right }
-  it('素材の肩・肘・手首が、骨の肩・肘・手首にそのまま付く（肘で離れない）', () => {
+  const poses = { halt: sample(clips.halt, 1.5).right, rise: sample(clips.halt, 0.3).right, start: sample(clips.halt, 0.05).right }
+  const near = (a: readonly number[], b: readonly number[]) => { expect(a[0]).toBeCloseTo(b[0] as number, 4); expect(a[1]).toBeCloseTo(b[1] as number, 4) }
+  it('素材の肩は骨の肩、肘のしわは v11r の小手の支点の少し上腕側に付き、黒い袖は前腕の軸に沿って小手の縁の内側まで届く', () => {
     for (const pose of Object.values(poses)) {
-      const { elbow, wrist } = solveArm(bone, pose)
-      const near = (a: readonly number[], b: readonly number[]) => { expect(a[0]).toBeCloseTo(b[0] as number, 4); expect(a[1]).toBeCloseTo(b[1] as number, 4) }
-      near(bandPoint(bone, pose, BAND_ART.top), bone.S); near(bandPoint(bone, pose, BAND_ART.elbow), elbow); near(bandPoint(bone, pose, BAND_ART.wrist), wrist)
+      const { elbow, wrist } = solveArm(bone, pose), dir = [(wrist[0] - elbow[0]) / Math.hypot(wrist[0] - elbow[0], wrist[1] - elbow[1]), (wrist[1] - elbow[1]) / Math.hypot(wrist[0] - elbow[0], wrist[1] - elbow[1])]
+      near(bandPoint(bone, pose, BAND_ART.top), bone.S)
+      near(bandPoint(bone, pose, BAND_ART.elbow), [elbow[0] - dir[0] * BAND_ART.bendBack, elbow[1] - dir[1] * BAND_ART.bendBack])
+      const end = bandPoint(bone, pose, [BAND_ART.elbow[0], BAND_ART.cut]), along = (end[0] - elbow[0]) * dir[0] + (end[1] - elbow[1]) * dir[1]
+      // v11r の小手の縁は支点から前腕の軸方向に -22〜+20 px に広がる。黒い袖はその一番深い所より先まで届く。
+      expect(along).toBeGreaterThan(25)
     }
+  })
+  it('帯は素材の金の輪（筒の口）の手前で切り、紫の小手は使わない', () => {
+    expect(BAND_ART.cut).toBeLessThan(510)
+    expect(Math.max(...bandGrid().rows)).toBe(BAND_ART.cut)
   })
   it('肘をまたいで隣り合う格子点は連続している（絵が切れない・跳ばない）', () => {
     const grid = bandGrid()
@@ -344,9 +352,14 @@ describe('連続腕の帯メッシュ（TD-06 試作: 照れ・制止のみ）',
       expect(Math.hypot(a[0] - b[0], a[1] - b[1])).toBeLessThan(40)
     }
   })
-  it('照れと制止だけが帯の絵を使い、始点・終点の休止も同じ絵のまま（動作の途中で絵を替えない）', () => {
+  it('制止だけが帯の絵を使い、始点・終点の休止も同じ絵のまま。照れは帯を使わない（段階①では従来の比較版）', () => {
     for (const t of [0, 0.3, 1, 2.9]) expect(sample(clips.halt, t).right.band).toBe(true)
-    for (const t of [0, 0.6, 2, 3.9]) expect(sample(clips.shyHand, t).right.band).toBe(true)
+    for (const t of [0, 0.6, 2, 3.9]) expect(sample(clips.shyHand, t).right.band).toBeFalsy()
     for (const g of ['greet', 'guide', 'joy'] as const) expect(sample(clips[g], 0.8).right.band).toBeFalsy()
+  })
+  it('元の手と手の素材は中点で 0/1 に切り替わり、半透明で重ならない', () => {
+    for (let w = 0; w <= 1; w += 0.01) expect([0, 1]).toContain(handSwap(w))
+    expect(handSwap(0.49)).toBe(0)
+    expect(handSwap(0.51)).toBe(1)
   })
 })
