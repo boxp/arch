@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { existsSync } from 'node:fs'
-import { BENT_ART, HALT_ARM, haltArmAngle, haltArmPoint, SHY_ARM, shyArmMotion, shyArmPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { BENT_ART, GREET_WAVE, greetArmPoint, greetWave, haltForeWeight, HALT_ARM, haltArmAngle, haltArmPoint, SHY_ARM, shyArmMotion, shyArmPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -265,7 +265,7 @@ describe('実行時の動作の割り込み', () => {
       stage.playGesture('joy'); run(frame, 1.5) // 照れは 1 枚腕の差し替え（フェード）になったので、変形で戻る動作で確かめる
       stage.reset()
       let previous = run(frame, released)
-      stage.playGesture('greet')
+      stage.playGesture('guide') // 挨拶も 1 枚腕の差し替えになったので、変形で上げる案内で確かめる
       const first = frame()
       expect(distance(first, previous)).toBeLessThan(45)
       previous = first
@@ -397,9 +397,38 @@ describe('制止の腕セットの切替（BOXP-476 TD-06 Y\')', () => {
     const { stage, run } = setup()
     stage.playGesture('halt'); run(1)
     stage.reset(); run(0.1)
-    stage.playGesture('greet')
+    stage.playGesture('guide')
     run(SWITCH_SECONDS)
-    expect(stage.report()).toMatchObject({ gesture: 'greet', armSwitch: null })
+    expect(stage.report()).toMatchObject({ gesture: 'guide', armSwitch: null })
+  })
+  it('挨拶は制止と同じ 1 枚腕へフェードで差し替え、手振りが終われば待機の腕へ戻る', () => {
+    const { stage, run } = setup()
+    stage.playGesture('greet')
+    expect(stage.report()).toMatchObject({ armSwitch: { phase: 'in' }, gesture: 'greet', switched: true })
+    run(1)
+    expect(stage.report()).toMatchObject({ armSwitch: null, gesture: 'greet' })
+    run(clips.greet.duration)
+    expect(stage.report()).toMatchObject({ gesture: 'none', switched: false })
+  })
+})
+
+describe('挨拶の手振り（制止の 1 枚腕の肘から先だけを振る、BOXP-476 TD-06）', () => {
+  it('手振りは保持の間だけで、始まりと終わりと戻りでは 0（制止と同じ位置）', () => {
+    for (const [t, o] of [[0, 0], [GREET_WAVE.start, 0], [2.4, 0], [1, 1]] as const) expect(Math.abs(greetWave(t, o))).toBeLessThan(1e-12)
+    const peak = Math.max(...Array.from({ length: 100 }, (_, i) => Math.abs(greetWave(0.6 + i * 0.013))))
+    expect(peak).toBeGreaterThan(0.1); expect(peak).toBeLessThanOrEqual(GREET_WAVE.amp + 1e-9)
+  })
+  it('上腕と肩は動かさず、手首と手は肘の周りを回る（肘からの距離は変わらない）', () => {
+    const H = HALT_ARM, a = haltArmAngle(1.5)
+    expect(haltForeWeight(H.shoulderPx)).toBe(0); expect(haltForeWeight(H.wristPx)).toBe(1)
+    const s0 = haltArmPoint(H.shoulderPx, a), s1 = greetArmPoint(H.shoulderPx, a, 0.15)
+    expect(Math.hypot(s1[0] - s0[0], s1[1] - s0[1])).toBeLessThan(1e-9)
+    const e = haltArmPoint(H.elbowPx, a), w0 = haltArmPoint(H.wristPx, a), w1 = greetArmPoint(H.wristPx, a, 0.15)
+    expect(Math.hypot(w1[0] - w0[0], w1[1] - w0[1])).toBeGreaterThan(15)
+    expect(Math.abs(Math.hypot(w1[0] - e[0], w1[1] - e[1]) - Math.hypot(w0[0] - e[0], w0[1] - e[1]))).toBeLessThan(1e-6)
+  })
+  it('手振り 0 のときは制止と完全に同じ写像', () => {
+    for (const px of [[131, 234], [600, 800], [1177, 1333], [967, 790]] as const) expect(greetArmPoint(px as unknown as [number, number], -0.18, 0)).toEqual(haltArmPoint(px as unknown as [number, number], -0.18))
   })
 })
 

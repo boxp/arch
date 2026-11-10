@@ -5,7 +5,7 @@ import type { ActingStage, Emotion, Gesture } from './acting'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { patchFaceTexture } from './face-texture'
-import { addGhost, addQuad, addShared, addTexture, CUFF_POLY, eraseAtlas, FOREARM_POLY, isSleeveLining, isStaticUpper, loadTexture, mirrorPolygon, paintCapeCorner, splitMesh, type PartsPlayer, type Polygon, type Split } from './arm-parts'
+import { addGhost, addGrid, addQuad, addShared, addTexture, CUFF_POLY, eraseAtlas, FOREARM_POLY, isSleeveLining, isStaticUpper, loadTexture, mirrorPolygon, paintCapeCorner, splitMesh, type PartsPlayer, type Polygon, type Split } from './arm-parts'
 
 type Vec = readonly [number, number]
 type HandArt = 'palm' | 'cover'
@@ -217,7 +217,7 @@ export function placeBentFore(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose
  * 動作の始まりに短いフェードで制止の腕へ差し替える。ここでは制止の腕に既存の比較版の保持姿勢（HALT）の絵を使う。
  */
 export const SWITCH_SECONDS = 0.25
-export const SWITCHED: Partial<Record<Exclude<Gesture, 'none'>, ArmPose>> = { halt: HALT, shyHand: SHY }
+export const SWITCHED: Partial<Record<Exclude<Gesture, 'none'>, ArmPose>> = { halt: HALT, shyHand: SHY, greet: HALT }
 /** Cubism のポーズのフェードと同じ考え方で、裏に残す腕の不透明度を決める（背景が透ける割合を 0.15 以下に抑える）。 */
 export function backOpacity(front: number): number {
   const a = Math.min(1, Math.max(0, front)); let o = 1 - a
@@ -245,6 +245,30 @@ export function haltArmAngle(t: number, out = 0): number {
 export function haltArmPoint(px: Vec, angle: number): Vec {
   const H = HALT_ARM
   return add(H.at, scaleV(rot(sub(px, H.shoulderPx), angle), H.scale))
+}
+/**
+ * 挨拶の 1 枚腕（BOXP-476 TD-06、生成なし）。本人採用の制止 7fa4a2f の 1 枚腕（掌を見せて手を挙げた絵）をそのまま使い、
+ * 持ち上げまでは制止と同じ。保持の間だけ、肘から先を肘を中心に左右へ振って手を振る。肘をまたぐ帯（幅 band 画素）は
+ * 重みを滑らかに変え、上腕は動かさない（絵は切らない）。wave=0 のときは制止と同じ位置（制止の見た目は変えない）。
+ */
+export const GREET_WAVE = { amp: 0.15, hz: 1.4, start: 0.4, band: 90 }
+/** 手振りの角度（ラジアン、時計回りが正）。t は差し替え開始からの秒、out(0〜1)は戻りの進み。 */
+export function greetWave(t: number, out = 0): number {
+  const G = GREET_WAVE, env = smooth(G.start, G.start + 0.25, t) * (1 - smooth(1.95, 2.35, t)) * (1 - ease(out))
+  return G.amp * Math.sin(2 * Math.PI * G.hz * (t - G.start)) * env
+}
+/** 1 枚腕の画素が前腕側にある度合い（0=上腕、1=前腕と手）。肘の角の二等分線からの距離で決める。 */
+export function haltForeWeight(px: Vec): number {
+  const H = HALT_ARM, unit = (v: Vec): Vec => scaleV(v, 1 / Math.hypot(v[0], v[1]))
+  const up = unit(sub(H.shoulderPx, H.elbowPx)), fore = unit(sub(H.wristPx, H.elbowPx)), bis = unit(add(up, fore))
+  let n: Vec = [-bis[1], bis[0]]; if (n[0] * fore[0] + n[1] * fore[1] < 0) n = scaleV(n, -1)
+  const d = (px[0] - H.elbowPx[0]) * n[0] + (px[1] - H.elbowPx[1]) * n[1]
+  return smooth(-GREET_WAVE.band / 2, GREET_WAVE.band / 2, d)
+}
+/** 挨拶: 肘から先を wave だけ肘の周りに回してから、制止と同じく絵全体を肩の点で回して置く。 */
+export function greetArmPoint(px: Vec, angle: number, wave: number): Vec {
+  const w = haltForeWeight(px) * wave, E = HALT_ARM.elbowPx
+  return haltArmPoint(w ? add(E, rot(sub(px, E), w)) : px, angle)
 }
 /**
  * 照れの 1 枚腕（BOXP-476 TD-06、採用済みの制止 7fa4a2f と同じ方式）。Gemini で生成した照れの腕（肩の切り口〜手前へ出た肘〜
@@ -315,7 +339,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   prepareCut(RIGHT); prepareCut(LEFT)
   // 追加パーツ: 腕の絵を前腕と上腕に画素で分け、隠れていた上腕と手の素材を描き足す。作れない環境では従来の間引きで動く。
   type Side = { bone: Bone; split: Split; upperTexture: number; originalTexture: number; originalUv: WebGLBuffer | null | undefined; fill: number; fore: number; stub: number; outer: number; bentFore: number; bentElbow: number; on: boolean }
-  type Synth = { base: number; pointer: number; write(out: Float32Array): void; opacity(): number; shared?: number; ghost?: boolean }
+  type Synth = { base: number; pointer: number; write(out: Float32Array): void; opacity(): number; shared?: number; ghost?: boolean; count?: number }
   const synth = new Map<number, Synth>(), sway = new Map<number, Vec>()
   let parts: { right: Side; left: Side; art: Partial<Record<HandArt, number>>; cuff: number } | null = null, partsStatus: Record<string, unknown> = { ready: false }
   const armOf = (b: Bone) => b === RIGHT ? pose.right : pose.left
@@ -328,7 +352,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const ghostFor = (side: 'right' | 'left') => sw && fadeSides[side] ? backOpacity(posedAlpha) : 0
   // 制止の腕セットの状態。haltTime は差し替え開始からの秒、haltOut は戻りのフェードの進み(0〜1)。
   // 照れの 1 枚腕も同じ時間（haltTime/haltOut）を使う（同時に出るのはどちらか一方）。
-  let haltSet = false, haltLoaded = false, haltTime = 0, haltOut = 0, shySet = false, shyLoaded = false
+  let haltSet = false, haltLoaded = false, haltTime = 0, haltOut = 0, shySet = false, shyLoaded = false, greetSet = false
   const haltQuads: Partial<Record<'back' | 'front', number>> = {}, shyQuads: Partial<Record<'back' | 'front', number>> = {}
   const haltOn = () => haltSet && haltLoaded, shyOn = () => shySet && shyLoaded
   const artLoaded: Partial<Record<HandArt, boolean>> = {} // 素材が届くまでは元の手のまま（読込失敗時も同じ）
@@ -391,11 +415,13 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     }
     // 制止の 1 枚腕（back/front は同じ絵の同じ位置）。2 枚とも読めたときだけ使い、読めなければ従来の制止の腕のまま。
     const haltMark = { back: false, front: false }
-    { const [x0, y0, w, h] = HALT_ARM.box, corners: Vec[] = [[x0, y0], [x0 + w, y0], [x0 + w, y0 + h], [x0, y0 + h]]
+    // 挨拶も同じ絵を使い肘から先だけ曲げるため、4 頂点ではなく格子にする（wave=0 なら制止の 4 頂点と同じ写像）。
+    { const [x0, y0, w, h] = HALT_ARM.box
       for (const layer of ['back', 'front'] as const) {
-        const quad = addQuad(pp, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), later(HALT_ARM[layer], () => { haltMark[layer] = true; haltLoaded = haltMark.back && haltMark.front }))
-        haltQuads[layer] = quad.index
-        synth.set(quad.index, { base: RIGHT.arm, pointer: quad.pointer, opacity: () => haltOn() ? 1 : 0, write(out) { const [dx, dy] = swayOf(RIGHT.arm), angle = haltArmAngle(haltTime, haltOut); corners.forEach((c, i) => { const q = haltArmPoint(c, angle); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } })
+        const grid = addGrid(pp, 14, 14, later(HALT_ARM[layer], () => { haltMark[layer] = true; haltLoaded = haltMark.back && haltMark.front }))
+        const points: Vec[] = grid.uv.map(([u, v]) => [x0 + u * w, y0 + v * h])
+        haltQuads[layer] = grid.index
+        synth.set(grid.index, { base: RIGHT.arm, pointer: grid.pointer, count: points.length, opacity: () => haltOn() ? 1 : 0, write(out) { const [dx, dy] = swayOf(RIGHT.arm), angle = haltArmAngle(haltTime, haltOut), wave = greetSet ? greetWave(haltTime, haltOut) : 0; points.forEach((c, i) => { const q = greetArmPoint(c, angle, wave); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } })
       } }
     // 照れの 1 枚腕。2 枚とも読めたときだけ使い、読めなければ従来の照れの腕のまま。
     const shyMark = { back: false, front: false }
@@ -445,7 +471,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     if (extra) {
       if (extra.shared != null) return hookVertices(rig, extra.shared)
       hookVertices(rig, extra.base)
-      if (done.get(mesh) !== generation) { extra.write(new Float32Array(rt.memory.buffer, extra.pointer, 8)); done.set(mesh, generation) }
+      if (done.get(mesh) !== generation) { extra.write(new Float32Array(rt.memory.buffer, extra.pointer, (extra.count ?? 4) * 2)); done.set(mesh, generation) }
       return extra.pointer
     }
     const pointer = rt.p2l_mesh_vertices(rig, mesh)
@@ -494,7 +520,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       posedAlpha = sw.phase === 'in' ? ease(x) : 1 - ease(x)
       if (x >= 1) {
         const ended = sw; sw = null; posedAlpha = 1
-        if (ended.phase === 'out') { haltSet = false; shySet = false; haltOut = 0; frozen = null; switched = false; pose = { right: REST, left: REST, body: NO_BODY }; armBlend = 0 }
+        if (ended.phase === 'out') { haltSet = false; shySet = false; greetSet = false; haltOut = 0; frozen = null; switched = false; pose = { right: REST, left: REST, body: NO_BODY }; armBlend = 0 }
         ended.then?.()
       }
     }
@@ -536,7 +562,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     clip = clips[next]; clipName = next; clipTime = 0; fadeFrom = null; frozen = null; switched = true; armBlend = 1
     pose = { ...sample(clip, 0), right: SWITCHED[next] as ArmPose }
     fadeSides = { right: true, left: false }
-    sw = { phase: 'in', t: 0 }; posedAlpha = 0; haltSet = next === 'halt'; shySet = next === 'shyHand'; haltTime = 0; haltOut = 0
+    sw = { phase: 'in', t: 0 }; posedAlpha = 0; haltSet = next === 'halt' || next === 'greet'; greetSet = next === 'greet'; shySet = next === 'shyHand'; haltTime = 0; haltOut = 0
   }
   const atRest = () => !sw && !fadeFrom && (armBlend < 0.001 || !posed(pose.right) && !posed(pose.left))
   return {
@@ -556,6 +582,6 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       clip = clips[next]; clipName = next; clipTime = plan.at; armBlend = 1
     },
     reset() { emotion = 'neutral'; target = faces.neutral; player.expression(null); if (switched || sw) { switchOut(); return } if (clip) startFade(); clip = null; clipName = 'none' },
-    report: () => ({ supported: true, parts: partsStatus, facePatch, emotion, gesture: clipName, armBlend, armSwitch: sw ? { phase: sw.phase, t: sw.t, posedAlpha } : null, switched, haltSet: haltOn(), shySet: shyOn(), clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
+    report: () => ({ supported: true, parts: partsStatus, facePatch, emotion, gesture: clipName, armBlend, armSwitch: sw ? { phase: sw.phase, t: sw.t, posedAlpha } : null, switched, haltSet: haltOn(), greetSet: greetSet && haltOn(), shySet: shyOn(), clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
   }
 }
