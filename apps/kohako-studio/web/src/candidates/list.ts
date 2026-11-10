@@ -16,7 +16,7 @@ export const candidateURL = (c: Candidate, page: 'live2d' | 'studio' = 'live2d')
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, cls?: string) => { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e }
 // 状態の表示色。本人採用は動作単位（例: 本人採用（制止））なので前方一致で判定する。
-export const statusClass = (s: string) => s.startsWith('本人採用') ? 'adopted' : s === '不合格' ? 'ng' : s === '試作' ? 'trial' : 'unknown'
+export const statusClass = (s: string) => s.startsWith('本人採用') ? 'adopted' : s.startsWith('独立判定合格') ? 'pass' : s === '不合格' ? 'ng' : s === '試作' ? 'trial' : 'unknown'
 
 export function renderCandidates(root: HTMLElement, candidates: Candidate[]) {
   root.replaceChildren()

@@ -7,6 +7,7 @@ const ok = { id: 'arm-4980edd', commit: '4980edd3a5a89232b4f0bb343e604fafca2d282
 describe('試作候補の一覧', () => {
   it('本人採用は動作単位の表記でも採用の色にする', () => {
     expect(statusClass('本人採用（制止）')).toBe('adopted')
+    expect(statusClass('独立判定合格（照れ）')).toBe('pass')
     expect(statusClass('不合格')).toBe('ng')
     expect(statusClass('試作')).toBe('trial')
     expect(statusClass('その他')).toBe('unknown')
