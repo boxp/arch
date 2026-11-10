@@ -46,6 +46,13 @@
 (assert (= "policy-diff" (status-for "| Claude API ID | `claude-fable-5-5` |\n" "claude-fable-5-5")))
 (let [r (str root "/retention-missing.md")] (spit r "no requirement here\n") (reset-state) (spit official "| Claude API ID | `claude-fable-5-4` |\n") (spit ids "claude-fable-5-4")
   (assert (= "policy-diff" (get-in (apply call (concat (butlast tick-args) [r])) [:roles :claude-fable :status]))))
+;; A catalog row whose IDs cannot be parsed for the family is an error, not "current".
+(assert (= "catalog-error" (status-for "| Claude API ID | `claude-fable-latest` | `fable 5.4` |\n" "")))
+;; Retention lists that cannot be parsed or disagree (format change, partial body) never pass as "same".
+(doseq [body ["* **Covered models:** These models require 30-day data retention.\n"
+              "* **Claude Fable 5.3:** These models require 30-day data retention.\nClaude Fable 5.3 and Claude Fable 5.4 are designated Covered Models and require 30-day data retention.\n"]]
+  (let [r (str root "/retention-broken.md")] (spit r body) (reset-state) (spit official "| Claude API ID | `claude-fable-5-4` |\n") (spit ids "claude-fable-5-4")
+    (assert (= "policy-diff" (get-in (apply call (concat (butlast tick-args) [r])) [:roles :claude-fable :status])))))
 (println "PASS: old, equal, foreign and suffixed IDs, CLI wait, catalog error and policy difference")
 ;; FileChannel locks interoperate with POSIX record locks held by another process.
 (let [lock-dir (str root "/.codex-task-board/model-updates")

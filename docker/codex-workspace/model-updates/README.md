@@ -18,10 +18,11 @@ codex-workspace の cron job `model-updates` (agent なし、`:runner "command"`
 job 定義は `recurring-events/vault-seed/Infrastructure/Codex Cron/jobs.edn` にあり、Pod 起動時に entrypoint が vault の `Codex Cron/jobs.edn` へ id が無いときだけ足します。
 既存の同 id job (無効化を含む) は上書きしません。止めるときは vault の job を `:enabled false` にします。即時に実行するときは `bb /opt/codex-workspace/model-updates/model_updates.bb tick --force`。
 
-1. 公式 `models/overview.md` の `Claude API ID` 行から ID を読みます。取得や解析に失敗したら `catalog-error` で何もしません。
+1. 公式 `models/overview.md` の `Claude API ID` 行から ID を読みます。取得や解析に失敗した、または行はあっても role と同じ family の ID を 1 つも読めない場合は `catalog-error` で何もしません (`current` 扱いにしません)。
 2. 同じ family で、(major, minor) を数値で比べて現 pin より新しい最大の ID を候補にします。preview、日付付き、別 family は候補にしません。
 3. 公式 `api-and-data-retention.md` の保持条件 (30 日保持が必要な model の一覧) に、候補と現 pin が同じ扱いで載っているかを比べます。
-   差がある、または読めない場合は `policy-diff` で更新しません (privacy 条件の変更は Owner 判断)。
+   一覧は「30-day data retention を require する」行の `require` より前に並ぶ `Claude <Family> X.Y` を解析し、該当行が複数あれば全行の一覧が一致した時だけ使います。一覧に無い model を対象外と見なすのは、この一覧を解析できた時だけです。
+   差がある、行や一覧が読めない、行どうしの一覧が食い違う (形式変更や不完全な応答) 場合は `policy-diff` で更新しません (privacy 条件の変更は Owner 判断)。
 4. 配備中の CLI バイナリが候補 ID を内蔵していなければ `waiting-cli` とし、CLI の更新を含む更新票を 1 枚作ります。 更新票が既にあっても、CLI が対応した後は候補 canary に合格するまで `proposed` にしません。
 5. 内蔵していれば、実 CLI で短い canary (stream-json、Bash tool 1 往復、`modelUsage` が候補だけ、
    `unrecognized_model` 警告なし) を実行し、合格したら更新票を 1 枚作ります。同じ role と候補では 2 枚目を作りません。

@@ -43,15 +43,24 @@
         path (str root "/canary/" (str/replace (str (Instant/now)) #":" "-") "-" model ".json")]
     (fs/create-dirs (fs/parent path)) (spit path (json/generate-string report)) report))
 (def retention-source "https://platform.claude.com/docs/en/manage-claude/api-and-data-retention.md")
+(defn covered-list
+  "Covered models named before `require` on one retention requirement line, as
+  #{[family major minor]}; nil when the line names none."
+  [line]
+  (let [prefix (subs line 0 (or (some-> (re-find #"(?i)require" line) (as-> m (str/index-of line m))) (count line)))
+        names (re-seq #"Claude ([A-Z][a-z]+) ([0-9]+)(?:\.([0-9]+))?(?![0-9.])" prefix)]
+    (when (seq names) (set (map (fn [[_ fam a b]] [(str/lower-case fam) (bigint a) (bigint (or b "0"))]) names)))))
 (defn retention-covered
   "Whether the official retention page lists this model as requiring 30-day
-  retention. nil when the page or its requirement lines cannot be read."
+  retention. Absence counts as not covered only when the page yields a parsed,
+  consistent covered list; nil when the page, its requirement lines or the list
+  cannot be read, or when its lists disagree (format change or partial body)."
   [text family model]
   (when-let [[major minor] (model-version family model)]
-    (let [lines (filter #(and (re-find #"(?i)data retention" %) (re-find #"(?i)requires?" %)) (some-> text str/split-lines))
-          name (str "Claude " (str/capitalize family) " " major "." minor)
-          pattern (re-pattern (str (java.util.regex.Pattern/quote name) "(?![0-9])"))]
-      (when (seq lines) (boolean (some #(re-find pattern %) lines))))))
+    (let [lines (filter #(and (re-find #"(?i)data retention" %) (re-find #"(?i)requires?\b" %)
+                              (re-find #"(?i)require[s]? 30-day data retention" %)) (some-> text str/split-lines))
+          lists (distinct (keep covered-list lines))]
+      (when (= 1 (count lists)) (contains? (first lists) [family major minor])))))
 (defn ticket! [role model kind]
   (let [summary (java.io.File/createTempFile "model-update-" ".md")
         cmd (env "MODEL_UPDATES_TASK_BOARD_CMD" (str (System/getProperty "user.home") "/.claude/skills/obsidian-task-board/bin/task-board.bb"))
@@ -101,7 +110,7 @@
                            retention (when candidate (get-text (env "MODEL_UPDATES_RETENTION_URL" retention-source) (opt "--retention-file")))
                            old-cover (when candidate (retention-covered retention family current)) new-cover (when candidate (retention-covered retention family candidate))
                            existing (when candidate (get-in s [:proposals [role candidate]]))
-                           result (cond (nil? line) {:status :catalog-error :reason "公式 catalog の取得または解析に失敗"}
+                           result (cond (or (nil? line) (not-any? #(model-version family %) ids)) {:status :catalog-error :reason "公式 catalog の取得または解析に失敗 (同系列の ID を読めない)"}
                                         (and verification (not (:ok verification))) {:status :verification-failed :reason "配備後 canary 失敗"}
                                         (nil? candidate) {:status :current}
                                         (or (nil? old-cover) (nil? new-cover) (not= old-cover new-cover)) {:status :policy-diff :candidate candidate :reason "保持条件の取得失敗または差分"}
