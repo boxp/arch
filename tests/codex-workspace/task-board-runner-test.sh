@@ -3389,19 +3389,19 @@ test_stale_prune_studio_dist() {
   mkdir -p "${source}/apps/kohako-studio/web/public"
   printf 'dist/\nresults/\n' >"${source}/.gitignore"
   printf 'abcd' >"${source}/apps/kohako-studio/web/public/copied.txt"
-  touch "${source}/apps/kohako-studio/web/"{package.json,package-lock.json,vite.config.ts}
+  touch "${source}/apps/kohako-studio/web/"{package.json,package-lock.json,vite.config.ts,candidates.html}
   git -C "${source}" add .; prune_git -C "${source}" commit -q -m fixture
   git -C "${source}" update-ref refs/remotes/origin/main HEAD
   git -C "${source}" rev-list HEAD >"${known}"
   git clone -q "${source}" "${other}"; git -C "${other}" remote set-url origin https://github.com/boxp/example.git
   write_board "${vault}" ''
-  for ticket in $(seq 920 932); do
+  for ticket in $(seq 920 933); do
     ticket="BOXP-${ticket}"; write_prune_ticket "${vault}" "${ticket}" blocked 2020-01-01
     for i in 1 2 3 4; do
       run="2020010${i}T000000Z"
       if [[ "${ticket}" == BOXP-930 ]]; then co="$(add_prune_run "${state}" "${other}" "${ticket}" "${run}")"; else co="$(add_prune_run "${state}" "${source}" "${ticket}" "${run}")"; fi
       dist="${co}/apps/kohako-studio/web/dist"; mkdir -p "${dist}/assets"
-      printf html >"${dist}/index.html"; printf asset >"${dist}/assets/main-Abc_1234.js"
+      printf html >"${dist}/index.html"; printf entry >"${dist}/candidates.html"; printf asset >"${dist}/assets/main-Abc_1234.js"
       cp "${co}/apps/kohako-studio/web/public/copied.txt" "${dist}/copied.txt"
       if [[ "${i}" == 1 ]]; then
         case "${ticket}" in
@@ -3414,6 +3414,7 @@ test_stale_prune_studio_dist() {
           BOXP-927) mkdir -p "${co}/x/apps/kohako-studio/web/dist"; touch "${co}/x/apps/kohako-studio/web/dist/a" ;;
           BOXP-928) echo dirty >"${co}/dirty" ;;
           BOXP-931) mkdir -p "${co}/results"; touch "${co}/results/a" ;;
+          BOXP-933) printf html >"${dist}/extra.html" ;;
           BOXP-932) git -C "${co}" rm -q --cached apps/kohako-studio/web/vite.config.ts; echo apps/kohako-studio/web/vite.config.ts >>"$(git -C "${co}" rev-parse --git-path info/exclude)" ;;
         esac
       fi
@@ -3423,7 +3424,9 @@ test_stale_prune_studio_dist() {
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" >"${out}"
   [[ ! -e "${ws}/BOXP-920/20200101T000000Z" && ! -e "${ws}/BOXP-920/20200102T000000Z" ]] || fail 'normal studio dist retained'
   [[ -d "${ws}/BOXP-920/20200103T000000Z" && -d "${ws}/BOXP-920/20200104T000000Z" ]] || fail 'latest studio dist removed'
-  for i in $(seq 921 932); do [[ -d "${ws}/BOXP-${i}/20200101T000000Z" ]] || fail "unsafe studio run removed: ${i}"; done
+  for i in $(seq 921 933); do [[ -d "${ws}/BOXP-${i}/20200101T000000Z" ]] || fail "unsafe studio run removed: ${i}"; done
+  # A dist HTML page counts as a build entry only when its source is tracked.
+  assert_file_contains "${out}" 'BOXP-933/20200101T000000Z.*reason=ignored-unknown path=apps/kohako-studio/web/dist/extra.html'
   assert_file_contains "${out}" 'BOXP-921/20200101T000000Z.*reason=ignored-unknown path=apps/kohako-studio/web/dist/render.png'
   assert_file_contains "${out}" 'BOXP-922/20200101T000000Z.*reason=ignored-unknown path=apps/kohako-studio/web/dist/copied.txt'
   assert_file_contains "${out}" 'BOXP-923/20200101T000000Z.*reason=ignored-unknown path=apps/kohako-studio/web/public/untracked.txt'

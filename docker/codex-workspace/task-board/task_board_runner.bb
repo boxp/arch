@@ -5339,6 +5339,7 @@
         (some #{[".clj-kondo" ".cache"] [".lsp" ".cache"]} (partition 2 1 parts)))))
 
 (def studio-dist "apps/kohako-studio/web/dist/")
+(def studio-web "apps/kohako-studio/web/")
 (def studio-public "apps/kohako-studio/web/public/")
 (def studio-inputs ["apps/kohako-studio/web/package.json"
                     "apps/kohako-studio/web/package-lock.json"
@@ -5347,7 +5348,8 @@
 (defn studio-dist-hold [checkout]
   (try
     (let [result (command-result (into ["git" "-C" (str checkout) "ls-files" "-z" "--"]
-                                       (conj studio-inputs (subs studio-public 0 (dec (count studio-public))))))]
+                                       (conj studio-inputs (subs studio-public 0 (dec (count studio-public)))
+                                             (str ":(glob)" studio-web "*.html"))))]
       (if-not (zero? (:exit result))
         "studio-dist-scan-failed git-ls-files"
         (let [tracked (set (str/split (:out result) #"\u0000"))
@@ -5367,7 +5369,12 @@
 
                         (not (java.nio.file.Files/isRegularFile path nofollow)) (unknown rel)
                         (> (long (java.nio.file.Files/getAttribute path "unix:nlink" nofollow)) 1) (unknown rel)
+                        ;; Top-level HTML is a Vite entry output when the same-named
+                        ;; entry source is tracked next to vite.config.ts (e.g. a new
+                        ;; candidates.html page); any other HTML stays unknown.
                         (or (contains? #{"index.html" "studio.html" "live2d.html"} rel)
+                            (and (re-matches #"[^/]+\.html" rel)
+                                 (contains? tracked (str studio-web rel)))
                             (re-matches #"assets/[^/]+-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+" rel)) nil
                         :else
                         (let [public (fs/path checkout (str studio-public rel))]
