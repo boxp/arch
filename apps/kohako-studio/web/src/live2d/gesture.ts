@@ -5,7 +5,7 @@ import type { ActingStage, Emotion, Gesture } from './acting'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { patchFaceTexture } from './face-texture'
-import { addQuad, addShared, addTexture, CUFF_POLY, eraseAtlas, FOREARM_POLY, isSleeveLining, isStaticUpper, loadTexture, mirrorPolygon, paintCapeCorner, splitMesh, type PartsPlayer, type Polygon, type Split } from './arm-parts'
+import { addGhost, addQuad, addShared, addTexture, CUFF_POLY, eraseAtlas, FOREARM_POLY, isSleeveLining, isStaticUpper, loadTexture, mirrorPolygon, paintCapeCorner, splitMesh, type PartsPlayer, type Polygon, type Split } from './arm-parts'
 
 type Vec = readonly [number, number]
 type HandArt = 'palm' | 'cover'
@@ -212,6 +212,19 @@ export function placeBentFore(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose
   const m = mirrored(bone, pose), { elbow, wrist } = solveArm(bone, m)
   return placeBent(elbow, sub(wrist, elbow), bentSide(bone, pose), [b, a * foreScale(m)])
 }
+/**
+ * 腕セットの切替（BOXP-476 TD-06 Y'）。一般的な Live2D の「腕 A/B」と同じく、待機の腕を変形で制止の形まで曲げず、
+ * 動作の始まりに短いフェードで制止の腕へ差し替える。ここでは制止の腕に既存の比較版の保持姿勢（HALT）の絵を使う。
+ */
+export const SWITCH_SECONDS = 0.25
+export const SWITCHED: Partial<Record<Exclude<Gesture, 'none'>, ArmPose>> = { halt: HALT }
+/** Cubism のポーズのフェードと同じ考え方で、裏に残す腕の不透明度を決める（背景が透ける割合を 0.15 以下に抑える）。 */
+export function backOpacity(front: number): number {
+  const a = Math.min(1, Math.max(0, front)); let o = 1 - a
+  if ((1 - o) * (1 - a) > 0.15) o = 1 - 0.15 / (1 - a)
+  return Math.min(1, Math.max(0, o))
+}
+const posed = (a: ArmPose) => Math.abs(a.fo) > SEPARATE_AT || (!!a.elbowTo && (a.elbowW ?? 0) > SEPARATE_AT) || (a.artW ?? 0) > 0.001
 const partURL = (file: string) => new URL(`kohako/live2d/acting/${file}`, location.href).href
 
 type Runtime = { memory: WebAssembly.Memory; p2l_mesh_vertices(rig: number, mesh: number): number; p2l_render_commands(rig: number, pointer: number, capacity: number): number; p2l_mesh_opacity(rig: number, mesh: number): number; p2l_mesh_colors(rig: number, mesh: number, a: number, b: number): void }
@@ -257,10 +270,17 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   prepareCut(RIGHT); prepareCut(LEFT)
   // 追加パーツ: 腕の絵を前腕と上腕に画素で分け、隠れていた上腕と手の素材を描き足す。作れない環境では従来の間引きで動く。
   type Side = { bone: Bone; split: Split; upperTexture: number; originalTexture: number; originalUv: WebGLBuffer | null | undefined; fill: number; fore: number; stub: number; outer: number; bentFore: number; bentElbow: number; on: boolean }
-  type Synth = { base: number; pointer: number; write(out: Float32Array): void; opacity(): number; shared?: number }
+  type Synth = { base: number; pointer: number; write(out: Float32Array): void; opacity(): number; shared?: number; ghost?: boolean }
   const synth = new Map<number, Synth>(), sway = new Map<number, Vec>()
   let parts: { right: Side; left: Side; art: Partial<Record<HandArt, number>>; cuff: number } | null = null, partsStatus: Record<string, unknown> = { ready: false }
   const armOf = (b: Bone) => b === RIGHT ? pose.right : pose.left
+  // 腕セットの切替の状態。out は今の腕を待機の腕へ、in は待機の腕から切替先の腕へフェードする。
+  let sw: { phase: 'in' | 'out'; t: number; then?: () => void } | null = null, posedAlpha = 1, switched = false, frozen: ReturnType<typeof sample> | null = null
+  let fadeSides = { right: false, left: false }
+  const ghosts = new Map<number, { index: number; pointer: number; side: 'right' | 'left' }>()
+  const sideOf = (m: number): 'right' | 'left' | null => m === RIGHT.arm || m === RIGHT.hand ? 'right' : m === LEFT.arm || m === LEFT.hand ? 'left' : null
+  const posedFor = (side: 'right' | 'left' | null) => side && sw && fadeSides[side] ? posedAlpha : 1
+  const ghostFor = (side: 'right' | 'left') => sw && fadeSides[side] ? backOpacity(posedAlpha) : 0
   const artLoaded: Partial<Record<HandArt, boolean>> = {} // 素材が届くまでは元の手のまま（読込失敗時も同じ）
   const handArt = () => pose.right.art && armBlend > 0.001 && artLoaded[pose.right.art] ? { kind: pose.right.art, w: pose.right.artW ?? 0 } : { kind: undefined, w: 0 }
   const separatedPose = (a: ArmPose) => armBlend > 0.001 && (Math.abs(a.fo) > SEPARATE_AT || (!!a.elbowTo && (a.elbowW ?? 0) > SEPARATE_AT))
@@ -319,7 +339,11 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       art[kind] = quad.index
       synth.set(quad.index, { base: RIGHT.hand, pointer: quad.pointer, opacity: () => { const h = handArt(); return h.kind === kind ? smooth(0.1, 0.6, h.w) : 0 }, write(out) { const [dx, dy] = swayOf(RIGHT.hand); corners.forEach((c, i) => { const q = deformHand(RIGHT, pose.right, c[0] + dx, c[1] + dy); out[2 * i] = q[0]; out[2 * i + 1] = q[1] }) } })
     }
-    if (cp.commandCapacity != null) { alloc.p2l_dealloc(cp.commandsPointer, cp.commandCapacity * 4 + 4); cp.commandCapacity += 24; cp.commandsPointer = alloc.p2l_alloc(cp.commandCapacity * 4 + 4) }
+    for (const [m, side] of [[RIGHT.arm, 'right'], [RIGHT.hand, 'right'], [LEFT.arm, 'left'], [LEFT.hand, 'left']] as const) {
+      const g = addGhost(pp, m); ghosts.set(m, { ...g, side })
+      synth.set(g.index, { base: m, pointer: g.pointer, ghost: true, opacity: () => ghostFor(side), write() {} }) // 頂点は apply が変形前の値を写す
+    }
+    if (cp.commandCapacity != null) { alloc.p2l_dealloc(cp.commandsPointer, cp.commandCapacity * 4 + 4); cp.commandCapacity += 28; cp.commandsPointer = alloc.p2l_alloc(cp.commandCapacity * 4 + 4) }
     parts = { right, left, art, cuff }
     partsStatus = { ready: true, textures: 'loading', erased }
     Promise.all(loads).then(() => { partsStatus = { ready: true, textures: 'loaded', erased } }).catch(e => { partsStatus = { ready: true, textures: 'failed', error: e instanceof Error ? e.message : String(e) } })
@@ -337,6 +361,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     const v = new Float32Array(rt.memory.buffer, pointer, count * 2)
     if (!rests.has(mesh)) rests.set(mesh, v.slice())
     const rest = rests.get(mesh) as Float32Array
+    const ghost = ghosts.get(mesh); if (ghost) new Float32Array(rt.memory.buffer, ghost.pointer, count * 2).set(v)
     if (mesh === RIGHT.arm || mesh === LEFT.arm || mesh === RIGHT.hand) { let dx = 0, dy = 0; for (let i = 0; i < count; i++) { dx += (v[2 * i] as number) - (rest[2 * i] as number); dy += (v[2 * i + 1] as number) - (rest[2 * i + 1] as number) } sway.set(mesh, count ? [dx / count, dy / count] : [0, 0]) }
     for (let i = 0; i < count; i++) {
       const x = v[2 * i] as number, y = v[2 * i + 1] as number, rx = rest[2 * i] as number, ry = rest[2 * i + 1] as number
@@ -371,16 +396,18 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       if (parts && c === RIGHT.hand && artMesh != null) return [c, artMesh, parts.cuff]
       return [c]
     }
-    if (!front.length && !parts?.right.on && !parts?.left.on && artMesh == null) return count
+    if (!front.length && !parts?.right.on && !parts?.left.on && artMesh == null && !sw) return count
     const list = Array.from(new Int32Array(rt.memory.buffer, pointer, Math.min(count, capacity)))
-    const out = [...list.filter(c => !front.includes(c)).flatMap(expand), ...front.filter(m => list.includes(m)).flatMap(expand)].slice(0, capacity)
+    // 切替中の待機の腕は元の位置（描画順）に置き、切替先の腕はその手前に重ねる。
+    const ghostAt = (c: number): number[] => { const g = ghosts.get(c); return g && ghostFor(g.side) > 0.001 ? [g.index] : [] }
+    const out = [...list.flatMap(c => [...ghostAt(c), ...(front.includes(c) ? [] : expand(c))]), ...front.filter(m => list.includes(m)).flatMap(expand)].slice(0, capacity)
     new Int32Array(rt.memory.buffer, pointer, out.length).set(out)
     return out.length
   }
   const hookOpacity = (rig: number, mesh: number) => {
     const extra = synth.get(mesh)
-    if (extra) return extra.opacity() * rt.p2l_mesh_opacity(rig, extra.base)
-    const base = rt.p2l_mesh_opacity(rig, mesh)
+    if (extra) return extra.opacity() * rt.p2l_mesh_opacity(rig, extra.base) * (extra.ghost ? 1 : posedFor(sideOf(extra.base)))
+    const base = rt.p2l_mesh_opacity(rig, mesh) * posedFor(sideOf(mesh))
     return mesh === RIGHT.hand && parts ? base * (1 - smooth(0.35, 0.85, handArt().w)) : base
   }
   const hookColors = (rig: number, mesh: number, a: number, b: number) => rt.p2l_mesh_colors(rig, synth.get(mesh)?.base ?? mesh, a, b)
@@ -388,9 +415,21 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const baseUpdate = p.update.bind(p)
   p.update = (dt: number) => {
     generation++
-    if (clip) { clipTime += dt; if (clipTime >= clip.duration) { clip = null; clipName = 'none'; startFade() } }
-    const sampled = clip ? sample(clip, clipTime) : null
-    const goal = sampled ?? (fadeFrom ? { right: REST, left: REST, body: NO_BODY } : null)
+    if (sw) {
+      sw.t += dt
+      const x = Math.min(1, sw.t / SWITCH_SECONDS)
+      posedAlpha = sw.phase === 'in' ? ease(x) : 1 - ease(x)
+      if (x >= 1) {
+        const ended = sw; sw = null; posedAlpha = 1
+        if (ended.phase === 'out') { frozen = null; switched = false; pose = { right: REST, left: REST, body: NO_BODY }; armBlend = 0 }
+        ended.then?.()
+      }
+    }
+    if (clip) { clipTime += dt; if (clipTime >= clip.duration) { if (switched) { switchOut() } else { clip = null; clipName = 'none'; startFade() } } }
+    const raw = clip ? sample(clip, clipTime) : null
+    const hold = clip && SWITCHED[clipName as Exclude<Gesture, 'none'>]
+    const sampled = raw && hold ? { ...raw, right: hold } : raw
+    const goal = frozen ?? sampled ?? (fadeFrom ? { right: REST, left: REST, body: NO_BODY } : null)
     let shown = goal
     if (goal && fadeFrom) {
       fadeTime += dt
@@ -411,16 +450,39 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     p.setParameter('ParamMouthForm', face.mouth)
     baseUpdate(dt)
   }
+  // 今の腕を待機の腕へフェードで戻す（姿勢は止めたまま）。then はフェード後に呼ぶ。
+  function switchOut(then?: () => void) {
+    if (sw?.phase === 'out') { sw.then = then; return }
+    frozen = { right: pose.right, left: pose.left, body: pose.body }
+    fadeSides = { right: armBlend > 0.001 && posed(pose.right), left: armBlend > 0.001 && posed(pose.left) }
+    clip = null; clipName = 'none'; fadeFrom = null
+    sw = { phase: 'out', t: 0, then }
+  }
+  // 待機の腕から、切替先の腕セットへフェードで差し替える。
+  function switchIn(next: Exclude<Gesture, 'none'>) {
+    clip = clips[next]; clipName = next; clipTime = 0; fadeFrom = null; frozen = null; switched = true; armBlend = 1
+    pose = { ...sample(clip, 0), right: SWITCHED[next] as ArmPose }
+    fadeSides = { right: true, left: false }
+    sw = { phase: 'in', t: 0 }; posedAlpha = 0
+  }
+  const atRest = () => !sw && !fadeFrom && (armBlend < 0.001 || !posed(pose.right) && !posed(pose.left))
   return {
     setEmotion(next) { emotion = next; target = faces[next]; player.expression(target.expression && player.expressions.includes(target.expression) ? target.expression : null) },
     playGesture(next) {
       if (next === 'none') return
+      if (SWITCHED[next] || switched || sw) {
+        const start = () => { if (SWITCHED[next]) switchIn(next); else { clip = clips[next]; clipName = next; clipTime = 0; fadeFrom = null; armBlend = 1 } }
+        if (sw?.phase === 'out') { sw.then = start; return }
+        if (switched && clipName === next) { clipTime = Math.min(clipTime, 0.6); return } // 同じ切替動作の再要求は保持を延ばすだけ
+        if (SWITCHED[next] && atRest()) { switchIn(next); return }
+        if (switched || SWITCHED[next] || sw) { switchOut(start); return }
+      }
       // 前の動作の途中や解除後の戻りの途中でも、その時点の腕の見た目から次の動作へつなぐ。
       const plan = interruptPlan(pose, clips[next])
       startFade(fadeFor(clips[next], plan.from, plan.at), plan.from)
       clip = clips[next]; clipName = next; clipTime = plan.at; armBlend = 1
     },
-    reset() { emotion = 'neutral'; target = faces.neutral; player.expression(null); if (clip) startFade(); clip = null; clipName = 'none' },
-    report: () => ({ supported: true, parts: partsStatus, facePatch, emotion, gesture: clipName, armBlend, clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
+    reset() { emotion = 'neutral'; target = faces.neutral; player.expression(null); if (switched || sw) { switchOut(); return } if (clip) startFade(); clip = null; clipName = 'none' },
+    report: () => ({ supported: true, parts: partsStatus, facePatch, emotion, gesture: clipName, armBlend, armSwitch: sw ? { phase: sw.phase, t: sw.t, posedAlpha } : null, switched, clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
   }
 }

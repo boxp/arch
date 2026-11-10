@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BENT_ART, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { BENT_ART, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -324,5 +324,78 @@ describe('曲げの絵（BOXP-476 TD-02）', () => {
   })
   it('素材の肘の位置は画像の範囲内にある', () => {
     for (const art of [BENT_ART.fore, BENT_ART.elbow]) { expect(art.anchor[0]).toBeGreaterThan(0); expect(art.anchor[0]).toBeLessThan(art.w); expect(art.anchor[1]).toBeGreaterThan(0); expect(art.anchor[1]).toBeLessThan(art.h) }
+  })
+})
+
+describe('制止の腕セットの切替（BOXP-476 TD-06 Y\')', () => {
+  const HAND = 20, ARM = 22
+  function setup() {
+    const memory = new WebAssembly.Memory({ initial: 1 }), points: Record<number, readonly number[]> = { [HAND]: bone.W, [ARM]: bone.E }
+    const player = {
+      rig: 0, expressions: [], meshes: Array.from({ length: 33 }, (_, i) => ({ vertices: points[i] ? 1 : 0 })),
+      expression() {}, setParameter() {}, update(_dt: number) {},
+      rt: { memory, p2l_render_commands: () => 0, p2l_mesh_vertices(_rig: number, mesh: number) { new Float32Array(memory.buffer, mesh * 16, 2).set(points[mesh] ?? []); return mesh * 16 } },
+    }
+    const stage = createActingStage(player as unknown as Player, { id: 'kohako-full-v11r' } as RigModel) as ReturnType<typeof createActingStage>
+    const frame = () => { player.update(1 / 60); player.rt.p2l_mesh_vertices(0, ARM); const v = new Float32Array(memory.buffer, player.rt.p2l_mesh_vertices(0, HAND), 2); return [v[0] as number, v[1] as number] as const }
+    const run = (seconds: number) => { let last = frame(); for (let i = 1; i < Math.round(seconds * 60); i++) last = frame(); return last }
+    return { stage, frame, run }
+  }
+  const haltWrist = solveArm(bone, SWITCHED.halt as ArmPose).wrist
+  const near = (a: readonly [number, number], b: readonly [number, number], d = 0.5) => expect(Math.hypot(a[0] - b[0], a[1] - b[1])).toBeLessThan(d)
+  it('裏に残す腕は、背景が透ける割合を 0.15 以下に抑える', () => {
+    expect(backOpacity(0)).toBe(1); expect(backOpacity(1)).toBe(0)
+    for (let a = 0; a <= 0.99; a += 0.01) expect((1 - backOpacity(a)) * (1 - a)).toBeLessThanOrEqual(0.1501)
+  })
+  it('休止からの制止は変形で上げず、最初のコマから制止の腕を置いて 0.25 秒でフェードインする', () => {
+    const { stage, frame, run } = setup()
+    stage.playGesture('halt')
+    near(frame(), haltWrist)
+    expect(stage.report().armSwitch).toMatchObject({ phase: 'in' })
+    run(SWITCH_SECONDS)
+    expect(stage.report().armSwitch).toBeNull()
+    near(run(1), haltWrist)
+  })
+  it('解除は制止の姿勢のままフェードアウトし、その後に休止へ戻る', () => {
+    const { stage, frame, run } = setup()
+    stage.playGesture('halt'); run(1)
+    stage.reset()
+    near(frame(), haltWrist)
+    expect(stage.report().armSwitch).toMatchObject({ phase: 'out' })
+    run(SWITCH_SECONDS + 0.05)
+    expect(stage.report()).toMatchObject({ armBlend: 0, armSwitch: null, switched: false })
+  })
+  it('動作の終わりも同じくフェードアウトで戻る', () => {
+    const { stage, run } = setup()
+    stage.playGesture('halt'); run(clips.halt.duration + 0.02)
+    expect(stage.report().armSwitch).toMatchObject({ phase: 'out' })
+    run(SWITCH_SECONDS + 0.05)
+    expect(stage.report().armBlend).toBe(0)
+  })
+  it('照れ→制止は照れの腕をフェードアウトしてから制止の腕をフェードインする（腕は経路を動かない）', () => {
+    const { stage, frame, run } = setup()
+    stage.playGesture('shyHand'); const shy = run(1.5)
+    stage.playGesture('halt')
+    near(frame(), shy, 1)
+    expect(stage.report().armSwitch).toMatchObject({ phase: 'out' })
+    run(SWITCH_SECONDS)
+    expect(stage.report()).toMatchObject({ armSwitch: { phase: 'in' }, gesture: 'halt' })
+    near(frame(), haltWrist)
+  })
+  it('制止→照れは制止の腕をフェードアウトしてから照れを休止から始める', () => {
+    const { stage, frame, run } = setup()
+    stage.playGesture('halt'); run(1)
+    stage.playGesture('shyHand')
+    near(frame(), haltWrist)
+    run(SWITCH_SECONDS + 0.02)
+    expect(stage.report()).toMatchObject({ armSwitch: null, gesture: 'shyHand', switched: false })
+  })
+  it('フェードアウト中に次の動作が来たら、フェード後にそれを始める（最後の要求が勝つ）', () => {
+    const { stage, run } = setup()
+    stage.playGesture('halt'); run(1)
+    stage.reset(); run(0.1)
+    stage.playGesture('greet')
+    run(SWITCH_SECONDS)
+    expect(stage.report()).toMatchObject({ gesture: 'greet', armSwitch: null })
   })
 })

@@ -152,6 +152,16 @@ export function addShared(p: PartsPlayer, base: number, split: Split, texture: n
   p.meshes.push({ vertices: info.vertices, uvs: split.uvs, indices: info.indices, texture, uvBuffer: split.uvBuffer, indexBuffer, blend: 0, alphaBlend: 0, culling: false, fixed: true, masks: [], invertMask: false })
   return p.meshes.length - 1
 }
+/**
+ * メッシュの元の絵（テクスチャ・UV・三角形）を、別の頂点バッファで描く追加メッシュ。腕セットの切替で、待機の腕を
+ * 新しい腕の裏にフェードで残すために使う（BOXP-476 TD-06 Y'）。頂点は呼び出し側が pointer へ毎フレーム書く。
+ */
+export function addGhost(p: PartsPlayer, base: number): { index: number; pointer: number } {
+  const gl = p.gl, info = p.meshes[base] as Mesh, indexBuffer = gl.createBuffer(), indices = info.indices.slice(), pointer = p.rt.p2l_alloc(info.vertices * 8)
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW)
+  p.meshes.push({ vertices: info.vertices, uvs: info.uvs, indices, texture: info.texture, uvBuffer: info.uvBuffer, indexBuffer, blend: info.blend ?? 0, alphaBlend: info.alphaBlend ?? 0, culling: info.culling ?? false, fixed: true, masks: info.masks ?? [], invertMask: info.invertMask ?? false })
+  return { index: p.meshes.length - 1, pointer }
+}
 export function addTexture(p: PartsPlayer, texture?: WebGLTexture): number { p.textures.push(texture); return p.textures.length - 1 }
 export async function loadTexture(gl: WebGLRenderingContext, url: string): Promise<WebGLTexture> {
   const response = await fetch(url, { credentials: 'same-origin' })
