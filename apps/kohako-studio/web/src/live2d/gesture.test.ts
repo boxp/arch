@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { existsSync } from 'node:fs'
-import { BENT_ART, GREET_WAVE, GUIDE_ARM, guideArmMotion, guideArmPoint, greetArmPoint, greetWave, haltForeWeight, HALT_ARM, haltArmAngle, haltArmPoint, SHY_ARM, shyArmMotion, shyArmPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { BENT_ART, GREET_WAVE, GUIDE_ARM, guideArmMotion, JOY_ARM, joyArmMotion, joyArmPoint, guideArmPoint, greetArmPoint, greetWave, haltForeWeight, HALT_ARM, haltArmAngle, haltArmPoint, SHY_ARM, shyArmMotion, shyArmPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -259,18 +259,25 @@ describe('実行時の動作の割り込み', () => {
   const run = (frame: () => readonly [number, number], seconds: number) => { let last = frame(); for (let i = 1; i < Math.round(seconds * 60); i++) last = frame(); return last }
   const distance = (a: readonly [number, number], b: readonly [number, number]) => Math.hypot(a[0] - b[0], a[1] - b[1])
 
-  it('解除で戻る途中に次の動作が来ても手首が跳ばない', () => {
-    for (const released of [0.05, 0.1, 0.2, 0.3, 0.4]) {
+  it('喜びも 1 枚腕の差し替えになり、解除の途中で再要求しても切替のフェードを通る（変形で上げる腕の動作は残っていない）', () => {
+    for (const g of ['halt', 'shyHand', 'greet', 'guide', 'joy'] as const) expect(SWITCHED[g]).toBeDefined()
+    for (const released of [0.05, 0.1, 0.2]) {
       const { stage, frame } = setup()
-      stage.playGesture('joy'); run(frame, 1.5) // 照れは 1 枚腕の差し替え（フェード）になったので、変形で戻る動作で確かめる
-      stage.reset()
-      let previous = run(frame, released)
-      stage.playGesture('joy') // 挨拶・案内も 1 枚腕の差し替えになったので、変形で上げる喜びで確かめる
-      const first = frame()
-      expect(distance(first, previous)).toBeLessThan(45)
-      previous = first
-      for (let i = 0; i < 40; i++) { const current = frame(); expect(distance(current, previous)).toBeLessThan(45); previous = current }
+      stage.playGesture('joy'); run(frame, 1.5)
+      expect((stage.report() as { switched: boolean }).switched).toBe(true)
+      stage.reset(); run(frame, released)
+      expect((stage.report() as { armSwitch: { phase: string } | null }).armSwitch?.phase).toBe('out')
+      stage.playGesture('joy'); run(frame, 0.3)
+      expect((stage.report() as { armSwitch: { phase: string } | null; gesture: string }).gesture).toBe('joy')
     }
+  })
+  it('喜びの左腕は右腕の絵を体の中心線で鏡映した位置に置き、保持の拳は肩の外の高さにある', () => {
+    const m = joyArmMotion(1, 0), fist = joyArmPoint(JOY_ARM.fistPx, m), fistL = joyArmPoint(JOY_ARM.fistPx, m, true)
+    expect(fistL[0]).toBeCloseTo(2 * 572 - fist[0], 5); expect(fistL[1]).toBeCloseTo(fist[1], 5)
+    expect(fist[0]).toBeGreaterThan(JOY_ARM.at[0] + 120) // 肩より外（照れの口元・制止の掌と区別）
+    expect(fist[1]).toBeLessThan(620); expect(fist[1]).toBeGreaterThan(480) // 肩の高さ付近
+    const start = joyArmPoint(JOY_ARM.fistPx, joyArmMotion(0, 0))
+    expect(start[1]).toBeGreaterThan(fist[1] + 40) // 入りは下から持ち上げる
   })
   it('解除後は腕の変形が外れて休止位置へ戻る', () => {
     const { stage, frame } = setup()

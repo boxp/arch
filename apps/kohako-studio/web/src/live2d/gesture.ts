@@ -63,7 +63,7 @@ const JOY: ArmPose = { up: 0, upS: 1, fo: -1.85, foS: 1, ha: 0.25, haS: 1, elbow
 export const clips: Record<Exclude<Gesture, 'none'>, Clip> = {
   nod: { duration: 1.1, keys: [{ t: 0, body: {} }, { t: 0.28, body: { headY: -12, lean: 1.2 } }, { t: 0.55, body: {} }, { t: 0.8, body: { headY: -8, lean: 0.8 } }, { t: 1.1, body: {} }] },
   tilt: { duration: 1.5, keys: [{ t: 0, body: {} }, { t: 0.4, body: { headZ: 13, headX: 8, bodyZ: 3, eyeX: 0.3 } }, { t: 1.1, body: { headZ: 13, headX: 8, bodyZ: 3, eyeX: 0.3 } }, { t: 1.5, body: {} }] },
-  joy: { duration: 1.8, keys: [{ t: 0, right: REST, left: REST, body: {} }, { t: 0.4, right: JOY, left: JOY, body: { bodyZ: 5, headZ: 6, lean: 3, headY: 5 } }, { t: 0.75, right: JOY, left: JOY, body: { bodyZ: -5, headZ: -6, lean: 3, headY: 5 } }, { t: 1.1, right: JOY, left: JOY, body: { bodyZ: 5, headZ: 6, lean: 3, headY: 5 } }, { t: 1.8, right: REST, left: REST, body: {} }] },
+  joy: { duration: 2.5, keys: [{ t: 0, right: REST, left: REST, body: {} }, { t: 0.4, right: JOY, left: JOY, body: { bodyZ: 5, headZ: 6, lean: 3, headY: 5 } }, { t: 0.75, right: JOY, left: JOY, body: { bodyZ: -5, headZ: -6, lean: 3, headY: 5 } }, { t: 1.1, right: JOY, left: JOY, body: { bodyZ: 5, headZ: 6, lean: 3, headY: 5 } }, { t: 1.45, right: JOY, left: JOY, body: { bodyZ: -5, headZ: -6, lean: 3, headY: 5 } }, { t: 1.8, right: JOY, left: JOY, body: { bodyZ: 3, headZ: 4, lean: 2, headY: 4 } }, { t: 2.5, right: REST, left: REST, body: {} }] },
   greet: { duration: 2.6, keys: [{ t: 0, right: REST, body: {} }, { ...wave(0.55, -2.15), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { ...wave(0.85, -1.75), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { ...wave(1.15, -2.15), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { ...wave(1.45, -1.75), body: { bodyZ: -4, headZ: 5, headX: 6 } }, { t: 2.1, right: REST, body: {} }, { t: 2.6, right: REST, body: {} }] },
   guide: { duration: 3.2, keys: [{ t: 0, right: REST, body: {} }, { t: 0.7, right: GUIDE, body: { bodyZ: -3, headX: 12, headZ: 3, eyeX: 0.7, eyeY: 0.2 } }, { t: 2.6, right: GUIDE, body: { bodyZ: -3, headX: 12, headZ: 3, eyeX: 0.7, eyeY: 0.2 } }, { t: 3.2, right: REST, body: {} }] },
   shyHand: { duration: 3.9, keys: [{ t: 0, right: REST, body: {} }, { t: 0.6, right: SHY_RISE, body: { bodyZ: 1, lean: 1 } }, { t: 1.2, right: SHY, body: { bodyZ: 2, lean: 2 } }, { t: 3, right: SHY, body: { bodyZ: 2, lean: 2 } }, { t: 3.45, right: SHY_RISE, body: { bodyZ: 1, lean: 1 } }, { t: 3.9, right: REST, body: {} }] },
@@ -217,7 +217,9 @@ export function placeBentFore(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose
  * 動作の始まりに短いフェードで制止の腕へ差し替える。ここでは制止の腕に既存の比較版の保持姿勢（HALT）の絵を使う。
  */
 export const SWITCH_SECONDS = 0.25
-export const SWITCHED: Partial<Record<Exclude<Gesture, 'none'>, ArmPose>> = { halt: HALT, shyHand: SHY, greet: HALT, guide: HALT }
+export const SWITCHED: Partial<Record<Exclude<Gesture, 'none'>, ArmPose>> = { halt: HALT, shyHand: SHY, greet: HALT, guide: HALT, joy: HALT }
+/** 両腕を差し替える動作（左腕も右と同じ姿勢で保持し、袖の持ち上げと切替のフェードを左右で揃える）。 */
+export const BOTH_ARMS: ReadonlySet<string> = new Set(['joy'])
 /** Cubism のポーズのフェードと同じ考え方で、裏に残す腕の不透明度を決める（背景が透ける割合を 0.15 以下に抑える）。 */
 export function backOpacity(front: number): number {
   const a = Math.min(1, Math.max(0, front)); let o = 1 - a
@@ -321,6 +323,27 @@ export function shyArmPoint(px: Vec, m: { angle: number; drop: number }): Vec {
   const H = SHY_ARM
   return add(add(H.at, [0, m.drop]), scaleV(rot(sub(px, H.shoulderPx), m.angle), H.scale))
 }
+/**
+ * 喜びの 1 枚腕（BOXP-476 TD-06、制止/照れ/案内と同じ方式）。Gemini で生成した喜びの右腕（肩の切り口〜外下へ出た肘〜
+ * 立ち上がる前腕〜肩の外の高さの小さな拳が 1 本に描かれた絵 td06j-joy1）を部品に切らず、動作の始まりにフェードで差し替える。
+ * 喜びは両腕の動作なので、左腕は同じ絵を左右反転し体の中心線（CX）で鏡映した位置に置く。
+ * back は腕全体で袖の表地の裏に、front は同じ絵・同じ位置で上腕の上部を除いたアルファで表地の手前に描く。box は生成画像の画素（ファイルは 0.5 倍）。
+ */
+export const JOY_ARM = {
+  back: 'joy-arm.png', front: 'joy-arm-front.png', box: [465, 581, 1032, 930] as const,
+  shoulderPx: [580, 700] as Vec, elbowPx: [1070, 1455] as Vec, fistPx: [1364, 695] as Vec,
+  at: [718, 540] as Vec, scale: 0.25, angle: 0,
+}
+/** 喜びの 1 枚腕の回転と沈み。入りは拳を下から持ち上げ、保持は体の揺れに合わせて小さく弾ませ、戻りは下げながら消す。 */
+export function joyArmMotion(t: number, out = 0): { angle: number; drop: number } {
+  const rise = 1 - ease(Math.min(1, Math.max(0, t / 0.4))), hold = smooth(0.3, 0.7, t), o = ease(out)
+  return { angle: JOY_ARM.angle + 0.5 * rise + 0.04 * Math.sin(2 * Math.PI * (t - 0.4) / 0.7) * hold + 0.45 * o, drop: 30 * rise + 6 * Math.abs(Math.sin(2 * Math.PI * (t - 0.4) / 0.7)) * hold + 30 * o }
+}
+/** 右腕の画素 → モデル座標。left なら右腕の位置を体の中心線で鏡映する（絵は左右反転して貼る）。 */
+export function joyArmPoint(px: Vec, m: { angle: number; drop: number }, left = false): Vec {
+  const H = JOY_ARM, q = add(add(H.at, [0, m.drop]), scaleV(rot(sub(px, H.shoulderPx), m.angle), H.scale))
+  return left ? mirrorX(q) : q
+}
 const posed = (a: ArmPose) => Math.abs(a.fo) > SEPARATE_AT || (!!a.elbowTo && (a.elbowW ?? 0) > SEPARATE_AT) || (a.artW ?? 0) > 0.001
 const partURL = (file: string) => new URL(`kohako/live2d/acting/${file}`, location.href).href
 
@@ -380,11 +403,12 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const ghostFor = (side: 'right' | 'left') => sw && fadeSides[side] ? backOpacity(posedAlpha) : 0
   // 制止の腕セットの状態。haltTime は差し替え開始からの秒、haltOut は戻りのフェードの進み(0〜1)。
   // 照れの 1 枚腕も同じ時間（haltTime/haltOut）を使う（同時に出るのはどちらか一方）。
-  let haltSet = false, haltLoaded = false, haltTime = 0, haltOut = 0, shySet = false, shyLoaded = false, guideSet = false, guideLoaded = false, greetSet = false
+  let haltSet = false, haltLoaded = false, haltTime = 0, haltOut = 0, shySet = false, shyLoaded = false, guideSet = false, guideLoaded = false, greetSet = false, joySet = false, joyLoaded = false
   // 挨拶の手振りは挨拶を始めてからの秒で進める（制止から直接つないでも振りが途中から始まらない）。挨拶から制止へ直接つないだときは、そのときの振りを 0.25 秒で 0 へ戻す。
   let greetTime = 0, waveFrom = 0, waveDecay = 1
   const haltQuads: Partial<Record<'back' | 'front', number>> = {}, shyQuads: Partial<Record<'back' | 'front', number>> = {}, guideQuads: Partial<Record<'back' | 'front', number>> = {}
-  const haltOn = () => haltSet && haltLoaded, shyOn = () => shySet && shyLoaded, guideOn = () => guideSet && guideLoaded
+  const joyQuads: Record<'right' | 'left', Partial<Record<'back' | 'front', number>>> = { right: {}, left: {} }
+  const haltOn = () => haltSet && haltLoaded, shyOn = () => shySet && shyLoaded, guideOn = () => guideSet && guideLoaded, joyOn = () => joySet && joyLoaded
   const artLoaded: Partial<Record<HandArt, boolean>> = {} // 素材が届くまでは元の手のまま（読込失敗時も同じ）
   const handArt = () => pose.right.art && armBlend > 0.001 && artLoaded[pose.right.art] ? { kind: pose.right.art, w: pose.right.artW ?? 0 } : { kind: undefined, w: 0 }
   const separatedPose = (a: ArmPose) => armBlend > 0.001 && (Math.abs(a.fo) > SEPARATE_AT || (!!a.elbowTo && (a.elbowW ?? 0) > SEPARATE_AT))
@@ -469,6 +493,19 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
         guideQuads[layer] = quad.index
         synth.set(quad.index, { base: RIGHT.arm, pointer: quad.pointer, opacity: () => guideOn() ? 1 : 0, write(out) { const [dx, dy] = swayOf(RIGHT.arm), m = guideArmMotion(haltTime, haltOut); corners.forEach((c, i) => { const q = guideArmPoint(c, m); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } })
       } }
+    // 喜びの 1 枚腕（左右）。4 枚とも読めたときだけ使い、読めなければ従来の喜びの腕のまま。左は同じ絵を左右反転して鏡映した位置へ置く。
+    const joyMark: Record<string, boolean> = {}
+    { const [x0, y0, w, h] = JOY_ARM.box
+      for (const side of ['right', 'left'] as const) {
+        const left = side === 'left', bone = left ? LEFT : RIGHT
+        // 左は角の順を左右入れ替え、UV も反転して巻き方向を保つ（鏡映した位置に左右反転した絵が貼られる）。
+        const corners: Vec[] = left ? [[x0 + w, y0], [x0, y0], [x0, y0 + h], [x0 + w, y0 + h]] : [[x0, y0], [x0 + w, y0], [x0 + w, y0 + h], [x0, y0 + h]]
+        for (const layer of ['back', 'front'] as const) {
+          const quad = addQuad(pp, new Float32Array(left ? [1, 0, 0, 0, 0, 1, 1, 1] : [0, 0, 1, 0, 1, 1, 0, 1]), later(JOY_ARM[layer], () => { joyMark[`${side}-${layer}`] = true; joyLoaded = Object.keys(joyMark).length === 4 }))
+          joyQuads[side][layer] = quad.index
+          synth.set(quad.index, { base: bone.arm, pointer: quad.pointer, opacity: () => joyOn() ? 1 : 0, write(out) { const [dx, dy] = swayOf(bone.arm), m = joyArmMotion(haltTime, haltOut); corners.forEach((c, i) => { const q = joyArmPoint(c, m, left); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } })
+        }
+      } }
     for (const [m, side] of [[RIGHT.arm, 'right'], [RIGHT.hand, 'right'], [LEFT.arm, 'left'], [LEFT.hand, 'left']] as const) {
       const g = addGhost(pp, m); ghosts.set(m, { ...g, side })
       synth.set(g.index, { base: m, pointer: g.pointer, ghost: true, opacity: () => ghostFor(side), write() {} }) // 頂点は apply が変形前の値を写す
@@ -530,6 +567,10 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       // 案内の 1 枚腕: 制止と同じく腕全体を袖の表地の裏に、同じ絵の肘から先を表地の手前に重ねる。
       if (parts && guideOn() && c === RIGHT.arm && parts.right.on) return [c, guideQuads.back as number, parts.right.outer, guideQuads.front as number]
       if (parts && guideOn() && c === RIGHT.hand) return []
+      // 喜びの 1 枚腕（左右）: 制止と同じく腕全体を袖の表地の裏に、同じ絵の肘から先を表地の手前に重ねる。
+      if (parts && joyOn() && c === RIGHT.arm && parts.right.on) return [c, joyQuads.right.back as number, parts.right.outer, joyQuads.right.front as number]
+      if (parts && joyOn() && c === LEFT.arm && parts.left.on) return [c, joyQuads.left.back as number, parts.left.outer, joyQuads.left.front as number]
+      if (parts && joyOn() && (c === RIGHT.hand || c === LEFT.hand)) return []
       if (parts && c === RIGHT.arm && parts.right.on) return [parts.right.stub, c, parts.right.fill, parts.right.bentElbow, parts.right.outer, parts.right.fore, parts.right.bentFore]
       if (parts && c === LEFT.arm && parts.left.on) return [parts.left.stub, c, parts.left.fill, parts.left.bentElbow, parts.left.outer, parts.left.fore, parts.left.bentFore]
       if (parts && c === RIGHT.hand && artMesh != null) return [c, artMesh, parts.cuff]
@@ -555,21 +596,21 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   p.update = (dt: number) => {
     generation++
     if (greetSet) greetTime += dt; else waveDecay += dt
-    if (haltSet || shySet || guideSet) { haltTime += dt; if (sw?.phase === 'out') haltOut = Math.min(1, (sw.t + dt) / SWITCH_SECONDS) }
+    if (haltSet || shySet || guideSet || joySet) { haltTime += dt; if (sw?.phase === 'out') haltOut = Math.min(1, (sw.t + dt) / SWITCH_SECONDS) }
     if (sw) {
       sw.t += dt
       const x = Math.min(1, sw.t / SWITCH_SECONDS)
       posedAlpha = sw.phase === 'in' ? ease(x) : 1 - ease(x)
       if (x >= 1) {
         const ended = sw; sw = null; posedAlpha = 1
-        if (ended.phase === 'out') { haltSet = false; shySet = false; guideSet = false; greetSet = false; haltOut = 0; frozen = null; switched = false; pose = { right: REST, left: REST, body: NO_BODY }; armBlend = 0 }
+        if (ended.phase === 'out') { haltSet = false; shySet = false; guideSet = false; greetSet = false; joySet = false; haltOut = 0; frozen = null; switched = false; pose = { right: REST, left: REST, body: NO_BODY }; armBlend = 0 }
         ended.then?.()
       }
     }
     if (clip) { clipTime += dt; if (clipTime >= clip.duration) { if (switched) { switchOut() } else { clip = null; clipName = 'none'; startFade() } } }
     const raw = clip ? sample(clip, clipTime) : null
     const hold = clip && SWITCHED[clipName as Exclude<Gesture, 'none'>]
-    const sampled = raw && hold ? { ...raw, right: hold } : raw
+    const sampled = raw && hold ? { ...raw, right: hold, left: BOTH_ARMS.has(clipName) ? hold : raw.left } : raw
     const goal = frozen ?? sampled ?? (fadeFrom ? { right: REST, left: REST, body: NO_BODY } : null)
     let shown = goal
     if (goal && fadeFrom) {
@@ -602,9 +643,10 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   // 待機の腕から、切替先の腕セットへフェードで差し替える。
   function switchIn(next: Exclude<Gesture, 'none'>) {
     clip = clips[next]; clipName = next; clipTime = 0; fadeFrom = null; frozen = null; switched = true; armBlend = 1
-    pose = { ...sample(clip, 0), right: SWITCHED[next] as ArmPose }
-    fadeSides = { right: true, left: false }
-    sw = { phase: 'in', t: 0 }; posedAlpha = 0; haltSet = next === 'halt' || next === 'greet'; greetSet = next === 'greet'; greetTime = 0; waveFrom = 0; waveDecay = 1; shySet = next === 'shyHand'; guideSet = next === 'guide'; haltTime = 0; haltOut = 0
+    const both = BOTH_ARMS.has(next)
+    pose = { ...sample(clip, 0), right: SWITCHED[next] as ArmPose, ...(both ? { left: SWITCHED[next] as ArmPose } : {}) }
+    fadeSides = { right: true, left: both }
+    sw = { phase: 'in', t: 0 }; posedAlpha = 0; haltSet = next === 'halt' || next === 'greet'; greetSet = next === 'greet'; greetTime = 0; waveFrom = 0; waveDecay = 1; shySet = next === 'shyHand'; guideSet = next === 'guide'; joySet = next === 'joy'; haltTime = 0; haltOut = 0
   }
   const atRest = () => !sw && !fadeFrom && (armBlend < 0.001 || !posed(pose.right) && !posed(pose.left))
   return {
@@ -629,6 +671,6 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       clip = clips[next]; clipName = next; clipTime = plan.at; armBlend = 1
     },
     reset() { emotion = 'neutral'; target = faces.neutral; player.expression(null); if (switched || sw) { switchOut(); return } if (clip) startFade(); clip = null; clipName = 'none' },
-    report: () => ({ supported: true, parts: partsStatus, facePatch, emotion, gesture: clipName, armBlend, armSwitch: sw ? { phase: sw.phase, t: sw.t, posedAlpha } : null, switched, haltSet: haltOn(), greetSet: greetSet && haltOn(), guideSet: guideOn(), shySet: shyOn(), clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
+    report: () => ({ supported: true, parts: partsStatus, facePatch, emotion, gesture: clipName, armBlend, armSwitch: sw ? { phase: sw.phase, t: sw.t, posedAlpha } : null, switched, haltSet: haltOn(), greetSet: greetSet && haltOn(), guideSet: guideOn(), joySet: joyOn(), shySet: shyOn(), clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
   }
 }
