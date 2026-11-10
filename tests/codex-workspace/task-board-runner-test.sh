@@ -808,7 +808,7 @@ test_explicit_claude_assignees_use_fixed_models_and_pinned_binary() {
 
   for assignee in claude-fable claude-opus claude-sonnet; do
     case "${assignee}" in
-      claude-fable) model=claude-fable-5-1; ticket=BOXP-163 ;;
+      claude-fable) model=claude-fable-5-2; ticket=BOXP-163 ;;
       claude-opus) model=claude-opus-5-5; ticket=BOXP-164 ;;
       claude-sonnet) model=claude-sonnet-5-5; ticket=BOXP-165 ;;
     esac
@@ -5500,6 +5500,41 @@ test_workspace_reuse_interplay() {
     else
       [[ "$(stat -c %i "$new/asset")" == "$inode" ]] || fail "tracked asset was re-expanded: $case_name"
     fi
+  done
+}
+
+test_claude_catalog_and_hold_resolution() {
+  local tmp vault state bin catalog model_state args case_name expected source ticket summary
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  catalog="${tmp}/catalog.edn"; model_state="${tmp}/model-state.edn"; args="${tmp}/args"
+  mkdir -p "${bin}"; make_fake_claude "${bin}"
+  for case_name in missing previous invalid family; do
+    ticket="BOXP-876"
+    rm -rf "${vault}" "${state}" "${args}" "${catalog}" "${model_state}"
+    case "${case_name}" in
+      missing) expected=claude-fable-5-2; source=builtin ;;
+      previous) expected=claude-fable-5-1; source=hold ;;
+      invalid) expected=claude-fable-5-2; source=catalog ;;
+      family) expected=claude-fable-5-2; source=builtin ;;
+    esac
+    if [[ "${case_name}" != missing ]]; then
+      if [[ "${case_name}" == family ]]; then
+        printf '%s\n' '{:version 1 :roles {"claude-fable" {:family "opus" :model "claude-opus-5-5"}}}' > "${catalog}"
+      else
+        printf '%s\n' '{:version 1 :roles {"claude-fable" {:family "fable" :model "claude-fable-5-2" :previous "claude-fable-5-1"}}}' > "${catalog}"
+      fi
+    fi
+    [[ "${case_name}" != previous ]] || printf '%s\n' '{:hold {"claude-fable" "claude-fable-5-1"}}' > "${model_state}"
+    [[ "${case_name}" != invalid ]] || printf '%s\n' '{:hold {"claude-fable" "claude-opus-5-5"}}' > "${model_state}"
+    write_board "${vault}" "- [ ] [[Tickets/${ticket}|${ticket}: model]] #ticket status::in-progress"
+    write_ticket "${vault}" "${ticket}" in-progress claude-fable
+    CODEX_TASK_BOARD_CLAUDE_BIN="${bin}/claude" CODEX_TASK_BOARD_MODEL_CATALOG="${catalog}" \
+      CODEX_TASK_BOARD_MODEL_STATE="${model_state}" CLAUDE_FAKE_ARG_LOG_DIR="${args}" \
+      CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' run_tick "${vault}" "${state}" env >"${tmp}/out"
+    assert_file_contains "${args}/${ticket}.log" "--model ${expected}"
+    summary="$(find "${state}/runs/${ticket}" -name summary.edn | head -1)"
+    assert_file_contains "${summary}" ":model \"${expected}\""
+    assert_file_contains "${summary}" ":model-source :${source}"
   done
 }
 
