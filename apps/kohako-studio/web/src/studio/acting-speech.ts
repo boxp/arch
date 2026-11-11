@@ -1,5 +1,5 @@
-export type SentenceEvents = { onSentence(index: number, sentence: string): void; onEnd(): void; onError(message: string): void }
-export function createSentenceSpeaker(deps: { synth: { speak(u: unknown): void; cancel(): void }; makeUtterance(text: string): { onstart: unknown; onend: unknown; onerror: unknown } }) {
+export type SentenceEvents = { onSentence(index: number, sentence: string): void; onBoundary?(index: number, charIndex: number): void; onEnd(): void; onError(message: string): void }
+export function createSentenceSpeaker(deps: { synth: { speak(u: unknown): void; cancel(): void }; makeUtterance(text: string): { onstart: unknown; onend: unknown; onerror: unknown; onboundary?: unknown } }) {
   let generation = 0
   function cancel() { generation++; deps.synth.cancel() }
   function speak(sentences: string[], events: SentenceEvents) {
@@ -9,6 +9,7 @@ export function createSentenceSpeaker(deps: { synth: { speak(u: unknown): void; 
       if (index >= sentences.length) { generation++; events.onEnd(); return }
       const utterance = deps.makeUtterance(sentences[index])
       utterance.onstart = () => { if (current === generation) events.onSentence(index, sentences[index]) }
+      utterance.onboundary = (event: { charIndex: number }) => { if (current === generation) events.onBoundary?.(index, event.charIndex) }
       utterance.onend = () => { if (current === generation) next(index + 1) }
       utterance.onerror = (event: { error?: string }) => {
         if (current !== generation) return
