@@ -20,7 +20,8 @@ async function scenario(name, plan, reload = null) {
   await page.goto('http://localhost:8766/kohako/home.html')
   await page.waitForFunction(() => document.getElementById('connection').textContent.startsWith('接続中'), null, { timeout: 30000 })
   await page.fill('#message', 'テスト'); await page.press('#message', 'Enter').catch(() => {}); await page.evaluate(() => document.getElementById('form').requestSubmit())
-  if (reload) { await page.waitForTimeout(reload.postHang ? 1000 : 2500); gets = 0; reload.active = true; await page.reload(); await page.waitForFunction(() => document.getElementById('connection').textContent.startsWith('接続中'), null, { timeout: 30000 })
+  if (reload) { await page.waitForTimeout(reload.postHang ? 1000 : 2500); gets = 0; reload.active = true; await page.reload(); await page.waitForFunction(() => /^(接続中|未認証)/.test(document.getElementById('connection').textContent), null, { timeout: 30000 })
+    if (reload.submitAfterReload) { await page.waitForTimeout(2000); await page.fill('#message', '認証切れ中の送信'); out[name + ':sendDisabledAfter'] = await page.evaluate(() => document.getElementById('send').disabled); await page.evaluate(() => document.getElementById('form').requestSubmit()) }
     if (reload.submitDuringLookup) { await page.fill('#message', '割り込み'); out[name + ':sendDisabledDuringLookup'] = await page.evaluate(() => document.getElementById('send').disabled); await page.evaluate(() => document.getElementById('form').requestSubmit()) } }
   await page.waitForTimeout(14000)
   out[name] = await page.evaluate(() => ({ state: window.__kohakoHome.state, reply: document.getElementById('reply').textContent, error: document.getElementById('error').textContent, conn: document.getElementById('connection').textContent, inflight: sessionStorage.length, history: window.__kohakoHome.history.map(h => h.who + ': ' + h.text.slice(0, 60)) }))
@@ -37,6 +38,8 @@ await scenario('reloadSlowLookup', (n, rl) => !rl.active ? [200, { status: 'pend
 await scenario('reloadBeforePostReply', (n, rl) => !rl.active ? [200, { status: 'pending' }] : n === 1 ? [200, { status: 'pending' }] : [200, { status: 'done', reply: { text: '送信直後の再読込でも届きました、ご主人さま。' } }], { active: false, postHang: true })
 // POST の応答前に再読込し BFF 未受理（404）→ 自動再送せず本文を入力欄へ戻す（再送時は同じ受付番号）
 await scenario('reloadBeforePostUnaccepted', (n, rl) => [404, { error: 'unknown_request' }], { active: false, postHang: true })
+// 再読込後の初回照会が 401（認証切れ）→ 未認証表示とエラー、送信不可、控えは残す（P1: 送信を再有効化しない）
+await scenario('reload401', (n, rl) => !rl.active ? [200, { status: 'pending' }] : [401, { error: 'unauthenticated' }], { active: false, submitAfterReload: true })
 // 404 → 終了
 await scenario('gone404', n => [404, { error: 'not_found' }])
 console.log(JSON.stringify(out, null, 1))

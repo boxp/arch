@@ -207,8 +207,10 @@ async function resumeInflight() {
   // 200 に加え一時的な失敗（502 など）や通信例外でも追跡を再開し、poll 側で問い合わせを続ける（送信可能に戻すと再送で二重実行になり得る）。
   if (!r || pollVerdict(r.status, !!r.data) !== 'terminal') { requestId = saved.requestId; accepted = true; started = Date.now(); addHistory('お知らせ', '再読み込み前の依頼の続きを追っています。'); show('thinking'); void poll(requestId, saved.expiresAt); return }
   busy = false
-  if (r.status === 404) { setInflight(null); addHistory('お知らせ', '前回の依頼は見つかりませんでした（新しい会話になった可能性があります）。') }
-  show(state)
+  if (r.status === 404) { setInflight(null); addHistory('お知らせ', '前回の依頼は見つかりませんでした（新しい会話になった可能性があります）。'); show(state); return }
+  // 401/403 は認証切れ。控えを残したまま未認証表示にして送信を止め、再ログイン後の再接続で続きを追う。それ以外の終端は控えを消して失敗を表示する。
+  if (r.status !== 401 && r.status !== 403) setInflight(null)
+  fail(r.status, r.data)
 }
 async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
   let misses = 0
@@ -222,7 +224,7 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
     const verdict = pollVerdict(result.status, !!result.data)
     if (verdict === 'retry') { lost(); continue }
     if (netDown || misses) { misses = 0; netDown = false; connection.textContent = '接続中・Web 専用の会話'; error.textContent = ''; show(state) }
-    if (verdict === 'terminal' || !result.data) { busy = false; requestId = ''; setInflight(null); fail(result.status, result.data); return }
+    if (verdict === 'terminal' || !result.data) { busy = false; requestId = ''; if (result.status !== 401 && result.status !== 403) setInflight(null); fail(result.status, result.data); return }
     const next = interpretRequest(result.data)
     if (next.state === 'approval' && next.approval) {
       if (approvalId !== next.approval.approvalId) { approvalId = next.approval.approvalId; approvalExpires = next.approval.expiresAt; el('approval-summary').textContent = next.approval.summary; el('approval-error').textContent = ''; addHistory('お知らせ', `確認が必要です: ${next.approval.summary}`); setBubble('実行する前に確認させてください、ご主人さま。') }
