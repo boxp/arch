@@ -23,13 +23,15 @@ export async function createNotifications(dir: string, push: (id: string) => Pro
       await save(); return 'stored' as const
     }),
     mark: (id: string, field: 'readAt' | 'handledAt') => mutate(async () => { const item = items.find(i => i.eventId === id); if (!item) return false; item[field] ??= new Date(now()).toISOString(); await save(); return true }),
-    reply: (id: string, x: any, submit: (item: Item, reply: NonNullable<Item['reply']>) => boolean) => mutate(async () => {
+    reply: (id: string, x: any, submit: (item: Item, reply: NonNullable<Item['reply']>) => boolean, tracked: (requestId: string) => boolean = () => true) => mutate(async () => {
       const item = items.find(i => i.eventId === id); if (!item) return { error: 'not_found' }
       if (!x || Object.keys(x).some(k => !['replyId','kind','value'].includes(k)) || typeof x.replyId !== 'string' || !/^[A-Za-z0-9-]{8,64}$/.test(x.replyId) || !['text','choice'].includes(x.kind) || !string(x.value,500) || !x.value.trim() || x.kind === 'choice' && !item.choices?.includes(x.value)) return { error: 'invalid' }
       if (item.reply && item.reply.replyId !== x.replyId) return { error: 'already_replied' }
       // 'claimed' のまま残るのは claim 保存後・送信前に BFF が止まった場合だけ（mutate で直列化し submit は同期）。
       // 送れたか分からないので submit_failed と同じく同じ requestId で再送可能にし、Hermes 側は reply_id で重複を照合する。
-      if (item.reply && item.reply.status === 'submitted') return { requestId: item.reply.requestId, status: item.reply.status, existing: true }
+      // submitted でも会話トラッカー（メモリ）が受付番号を知らなければ BFF 再起動で追跡が失われている。
+      // 返信が実行されたか分からないので同じ requestId で再送し、Hermes 側が reply_id で重複を照合する（追跡も再開できる）。
+      if (item.reply && item.reply.status === 'submitted' && tracked(item.reply.requestId)) return { requestId: item.reply.requestId, status: item.reply.status, existing: true }
       if (!item.reply) { item.reply = { replyId: x.replyId, kind: x.kind, value: x.value, requestId: randomUUID(), claimedAt: new Date(now()).toISOString(), status: 'claimed' }; await save() }
       let ok = false; try { ok = submit(item, item.reply) } catch { /* 同じ claim で再試行 */ }
       item.reply.status = ok ? 'submitted' : 'submit_failed'; await save()

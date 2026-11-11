@@ -26,12 +26,13 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
         track(result.data.requestId, replyText(i, kind, value)); await refresh()
       } catch { status.textContent = '返信を送信できませんでした。' }
     }
+    // 「会話で続きを見る」も同じ返信を POST する。BFF が追跡中なら再実行せず受付番号を返し、再起動で追跡が消えていれば同じ受付番号で再送して追跡を再開する。
     // 返信は家の Web 会話へ送られるので、応答・承認要求・停止は会話画面の追跡で扱う（受信箱では受付番号だけを持つ）。
     const track = (requestId: string, text: string) => {
       if (follow(requestId, text)) { panel.hidden = true; return }
       notice = status.textContent = `返信は受付済みです（受付番号: ${requestId}）。いまは別の会話を追っているため、終わってから「会話で続きを見る」を押してください。`
     }
-    if (i.reply && i.reply.status === 'submitted') { const r = i.reply; line(detail, `返信済み。受付番号: ${r.requestId}`); detail.append(button('会話で続きを見る', () => track(r.requestId, replyText(i, r.kind, r.value)))) }
+    if (i.reply && i.reply.status === 'submitted') { const r = i.reply; line(detail, `返信済み。受付番号: ${r.requestId}`); detail.append(button('会話で続きを見る', () => { void send(r.kind, r.value) })) }
     else if (i.reply) { const r = i.reply; line(detail, `「${r.value}」の送信を確認できませんでした（受付番号: ${r.requestId}）。同じ受付番号で再送できます。`); detail.append(button('同じ返信を再送', () => { void send(r.kind, r.value) })) }
     else if (i.choices?.length) for (const choice of i.choices) detail.append(button(choice, () => { void send('choice', choice) }))
     else { const input = document.createElement('textarea'); input.maxLength = 500; input.placeholder = '返信を入力'; detail.append(input, button('返信する', () => { if (input.value.trim()) void send('text', input.value) })) }
