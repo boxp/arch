@@ -1,7 +1,7 @@
 // BOXP-500: コハコの家（kohako-home）。Studio と同じ BFF・認証・Web 専用会話を使う全画面 UI。
 // 会話の送信・重複防止・停止・承認・追跡は Studio（src/studio/main.ts）と同じ規則。人格・判断・記憶は Hermes だけが持つ。
 import './style.css'
-import { formatPool, formatTasks, summaryLine, type Status } from './status'
+import { formatPool, formatTasks, summaryLine, upstreamUnavailable, type Status } from './status'
 import { petFollow, zeroPet } from './petfollow'
 import { makeVisemes, visemeAt, boundaryTime, spokenSeconds, type VisemeSequence } from '../live2d/viseme'
 import { interpretRequest, newOutgoing, pcm16, presentation, resolveUnconfirmed, rigStateOf, sendOutcomeUnknown, silentSpeechSeconds, studioRigModelId, wantsActing, wantsRig, type Outgoing, type State } from '../studio/model'
@@ -191,12 +191,13 @@ function renderStatus() {
 async function refreshStatus() {
   clearTimeout(statusTimer); if (document.hidden || statusLoading) return
   statusLoading = true
+  let backoff = false
   try {
     const r = await call('status'); if (r.status === 401 || r.status === 403) fail(r.status, r.data)
     if (r.status !== 200 || r.data?.schema !== 'kohako-home-status/v1') throw Error('status unavailable')
-    statusValue = r.data as unknown as Status; statusFailed = false; statusDelay = 60000
-  } catch { statusFailed = true }
-  finally { statusLoading = false; renderStatus(); if (!document.hidden) { statusTimer = window.setTimeout(() => void refreshStatus(), statusDelay); if (statusFailed) statusDelay = Math.min(600000, statusDelay * 2) } }
+    statusValue = r.data as unknown as Status; statusFailed = false; backoff = upstreamUnavailable(statusValue)
+  } catch { statusFailed = true; backoff = true }
+  finally { statusLoading = false; renderStatus(); if (!backoff) statusDelay = 60000; if (!document.hidden) { statusTimer = window.setTimeout(() => void refreshStatus(), statusDelay); if (backoff) statusDelay = Math.min(600000, statusDelay * 2) } }
 }
 document.addEventListener('visibilitychange', () => { clearTimeout(statusTimer); if (!document.hidden) void refreshStatus() })
 const statusOpen = el<HTMLButtonElement>('status-open'), statusPanel = el('status-panel')

@@ -18,3 +18,5 @@ export function summaryLine(status: Status): string {
   const percent = (id: string) => { const p = status.quota.pools.find(x => x.id === id); const ws = p?.windows.filter(w => w.usedPercent !== null && !['unavailable', 'unobserved', 'not_provided'].includes(w.state)) ?? []; if (!ws.length) return '不明'; const top = ws.reduce((a, b) => (b.usedPercent as number) > (a.usedPercent as number) ? b : a); return `${top.usedPercent}%${['stale', 'expired'].includes(top.state) ? '（古い）' : top.state === 'freshness_unknown' ? '（時刻不明）' : ''}` }
   return `Claude ${percent('claude_shared')}・Codex ${percent('codex_shared')}・${status.tasks.state === 'ok' ? `進行中 ${status.tasks.inProgress.total}件${status.tasks.inProgress.complete ? '' : '以上'}` : '進行中 不明'}`
 }
+/** BFF は上流の取得失敗も HTTP 200 の unavailable で返すため、どちらかが取れていなければ再取得を間引く対象にする。 */
+export function upstreamUnavailable(status: Status): boolean { return status.quota.state === 'unavailable' || status.tasks.state === 'unavailable' }
