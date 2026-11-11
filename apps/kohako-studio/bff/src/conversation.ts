@@ -140,9 +140,13 @@ export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 
       let touchApproval = false
       const onApproval: NonNullable<Parameters<typeof hermes.run>[4]> = (runId, approval) => {
           if (!approval) { if (entry.approval) entry.approval.active = false; return }
-          // ポーリングで同じ承認が再通知された場合、自動 deny 済みなら再送・上書きしない（先行 deny を cancel が待てなくなるため）。
+          // ポーリングで同じ承認が再通知された場合、自動 deny が送信中または確定済みなら再送・上書きしない（先行 deny を cancel が待てなくなるため）。
+          // 先行 deny が unknown（429・通信障害等）で終わっていれば拒否を再試行し、古い unknown は待機対象から外す。
           const cur = entry.approval
-          if (cur && cur.consumed && cur.choice === 'deny' && cur.denyOnly && !cur.active && approval.requestId && cur.runId === runId && cur.hermesRequestId === approval.requestId && cur.generation === approval.generation) return
+          if (cur && cur.consumed && cur.choice === 'deny' && cur.denyOnly && !cur.active && approval.requestId && cur.runId === runId && cur.hermesRequestId === approval.requestId && cur.generation === approval.generation) {
+            if (cur.result !== 'unknown') return
+            entry.lateDenies = entry.lateDenies?.filter((p) => p !== cur.pendingResult)
+          }
           // 停止を依頼した後に届いた承認は表示せず拒否する。
           if (entry.cancelRequested) {
             // 結果を破棄しない: unknown なら一度だけ再送し、それでも unknown なら停止未確認として記録する（後続の cancel は unknown を返す）。
