@@ -2,7 +2,7 @@ import { it, expect } from 'vitest'
 import { generateKeyPairSync, sign } from 'node:crypto'
 import { createServer } from 'node:http'
 import { createAuth } from './auth.js'
-import { createApp, instructions } from './app.js'
+import { createApp, instructions, studioInstructions } from './app.js'
 import type { createHermes } from './hermes.js'
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
 const jwt = () => { const h = Buffer.from(JSON.stringify({ alg: 'RS256', kid: 'k' })).toString('base64url'), p = Buffer.from(JSON.stringify({ iss: 'https://access.example.test', aud: 'abc', email: 'owner@example.test', exp: Date.now() / 1000 + 60 })).toString('base64url'); return `${h}.${p}.${sign('RSA-SHA256', Buffer.from(`${h}.${p}`), privateKey).toString('base64url')}` }
@@ -327,17 +327,26 @@ it('serves status only to authenticated principals and only by GET', async () =>
 })
 it('returns cleaned replies and only valid views', async () => {
   let output = ''
-  const hermes = { run: async () => ({ status: 'done', text: output }) } as unknown as ReturnType<typeof createHermes>
+  const seen: string[] = [], hermes = { run: async (_i: string, _t: string, _s: string, ins: string) => { seen.push(ins); return { status: 'done', text: output } } } as unknown as ReturnType<typeof createHermes>
   const server = createServer(createApp({ authenticate: async () => 'owner', hermes }))
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
   try {
     const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
     for (const [id, json, valid] of [['view-123', '{"kind":"usage"}', true], ['view-456', '{"kind":"usage","x":1}', false]] as const) {
       output = `返答\n\`\`\`kohako-view\n${json}\n\`\`\``
-      await fetch(base + 'messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId: id, kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }) })
+      await fetch(base + 'messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId: id, kind: 'text', text: 'hello', expiresAt: Date.now() + 60000, views: true }) })
       await new Promise(r => setTimeout(r, 10))
       const item = await (await fetch(base + `requests/${id}`)).json() as any
       expect(item.reply.text).toBe('返答'); expect(item.reply.views).toEqual(valid ? [{ kind: 'usage' }] : undefined)
     }
+    // Studio（views 未指定）では view 形式を指示せず、本文もそのまま返す（ブロックを消して結果を失わない）。
+    expect(seen.at(-1)).toBe(instructions)
+    output = "返答\n```kohako-view\n{\"kind\":\"usage\"}\n```"
+    await fetch(base + 'messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId: 'studio-123', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }) })
+    await new Promise(r => setTimeout(r, 10))
+    const studio = await (await fetch(base + 'requests/studio-123')).json() as any
+    expect(seen.at(-1)).toBe(studioInstructions); expect(studioInstructions).not.toContain('kohako-view')
+    expect(studio.reply.text).toBe(output); expect(studio.reply.views).toBeUndefined()
+    expect((await fetch(base + 'messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId: 'studio-456', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000, views: 'yes' }) })).status).toBe(400)
   } finally { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())) }
 })

@@ -4,7 +4,10 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createConversation, type Input } from './conversation.js'
 import { createHermes } from './hermes.js'
 import { pcmToWav, STT_FINAL_FIELDS } from './stt.js'
-export const instructions = 'あなたの返答は Web UI の吹き出しに表示され、必要に応じて音声で読み上げられます。' + VIEW_INSTRUCTIONS
+const BASE_INSTRUCTIONS = 'あなたの返答は Web UI の吹き出しに表示され、必要に応じて音声で読み上げられます。'
+// 視覚パネルを持つ家の画面（views: true を送る）だけに kohako-view 形式を指示する。Studio は views を表示しないので本文だけで返させる。
+export const instructions = BASE_INSTRUCTIONS + VIEW_INSTRUCTIONS
+export const studioInstructions = BASE_INSTRUCTIONS
 type Principal = 'owner' | 'verifier'
 export function createApp(opts: { authenticate: (headers: IncomingMessage['headers']) => Promise<Principal | null>; hermes?: ReturnType<typeof createHermes>; sttUrl?: string; status?: { get: () => Promise<StatusPayload> }; now?: () => number; fetch?: typeof fetch }) {
   const now = opts.now ?? Date.now, fetcher = opts.fetch ?? fetch
@@ -52,11 +55,11 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
       }
       if (typeof x.expiresAt !== 'number' || !Number.isFinite(x.expiresAt) || x.expiresAt > now() + 600000) return json(400, { error: 'invalid' })
       let input: Input
-      if (x.kind === 'text' && typeof x.text === 'string' && x.text.trim() && x.text.length <= 500) input = { kind: 'text', requestId: x.requestId, text: x.text, expiresAt: x.expiresAt }
+      if (x.kind === 'text' && typeof x.text === 'string' && x.text.trim() && x.text.length <= 500 && (x.views === undefined || x.views === true)) input = { kind: 'text', requestId: x.requestId, text: x.text, expiresAt: x.expiresAt, ...(x.views === true ? { views: true } : {}) }
       else if (x.kind === 'touch' && Object.keys(x).every(k => ['requestId', 'kind', 'touch', 'expiresAt'].includes(k)) && x.touch && typeof x.touch === 'object' && !Array.isArray(x.touch) && Object.keys(x.touch).length === 3 && ['head', 'hand'].includes(x.touch.zone) && ['pat', 'tap'].includes(x.touch.action) && Number.isInteger(x.touch.count) && x.touch.count >= 1 && x.touch.count <= 20) input = { kind: 'touch', requestId: x.requestId, touch: { zone: x.touch.zone, action: x.touch.action, count: x.touch.count }, expiresAt: x.expiresAt }
       else return json(400, { error: 'invalid' })
       if (x.expiresAt <= now()) return json(410, { error: 'expired' })
-      const entry = conv.submit(input, instructions)
+      const entry = conv.submit(input, input.kind === 'touch' || input.views ? instructions : studioInstructions)
       return 'payloadHash' in entry ? json(202, view(entry)) : json(entry.error === 'busy' ? 429 : 409, entry)
     } catch { if (!res.headersSent) json(500, { error: 'internal_error' }); else res.end() }
   }

@@ -402,7 +402,7 @@ el<HTMLFormElement>('form').addEventListener('submit', async event => {
   const resending = payload === unconfirmed
   setUnconfirmed(payload)
   let result: Awaited<ReturnType<typeof call>> | null = null
-  try { result = await call('messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) } catch { result = null }
+  try { result = await call('messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, views: true }) }) } catch { result = null }
   if (result && result.status === 202) {
     setUnconfirmed(null); accepted = true; addHistory('あなた', payload.text); message.value = ''; message.style.height = ''
     setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true }); show(state); void poll(requestId); return

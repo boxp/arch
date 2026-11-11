@@ -1,7 +1,7 @@
 import { extractViews, type View } from './views.js'
 import { createHash, randomBytes } from 'node:crypto'
 import type { createHermes } from './hermes.js'
-export type Input = { requestId: string; expiresAt: number } & ({ kind: 'text'; text: string } | { kind: 'touch'; touch: { zone: 'head' | 'hand'; action: 'pat' | 'tap'; count: number } })
+export type Input = { requestId: string; expiresAt: number } & ({ kind: 'text'; text: string; views?: true } | { kind: 'touch'; touch: { zone: 'head' | 'hand'; action: 'pat' | 'tap'; count: number } })
 type Entry = {
   requestId: string
   payloadHash: string
@@ -57,7 +57,7 @@ export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 
   const hash = (input: Input) =>
     createHash('sha256')
       .update(
-        JSON.stringify([input.kind, input.kind === 'text' ? input.text : input.touch, input.expiresAt]),
+        JSON.stringify([input.kind, input.kind === 'text' ? input.text : input.touch, input.expiresAt, ...(input.kind === 'text' && input.views ? ['views'] : [])]),
       )
       .digest('hex')
   function clean() {
@@ -198,7 +198,7 @@ export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 
           // 終了した run の承認待ちは無効化する（ポーリング失敗/タイムアウトで approval が残り承認待ちを返し続けないように）。
           if (entry.approval) entry.approval.active = false
           if (result.status === 'done') {
-            const extracted = extractViews(result.text), reply = extracted.text.slice(0, 1000)
+            const extracted = input.kind === 'touch' || input.views ? extractViews(result.text) : { text: result.text, views: [] }, reply = extracted.text.slice(0, 1000)
             entry.reply = { text: reply, at: now(), ...(extracted.views.length ? { views: extracted.views } : {}) }
             lastExchange = { kind: input.kind, text: text.slice(0, 500), reply }
           }
