@@ -34,7 +34,7 @@ describe('notifications', () => {
       expect((await restart.reply(payload.eventId, reply, submit)).existing).toBe(true); expect(submit).toHaveBeenCalledTimes(1)
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
-  it('re-submits a submitted reply with the same requestId when the conversation tracker lost it after a restart', async () => {
+  it('resumes a submitted reply with the same requestId when the conversation tracker lost it after a restart', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'inbox-')), push = vi.fn(async () => ({}))
     try {
       const store = await createNotifications(dir, push); await store.ingest(payload)

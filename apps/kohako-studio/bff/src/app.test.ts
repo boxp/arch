@@ -373,3 +373,47 @@ it('disables notification routes without storage and restricts verifier', async 
     expect((await fetch(base(server) + 'notifications', { headers: { authorization: 'verifier' } })).status).toBe(200)
   } finally { for (const s of [server, disabled]) { s.closeAllConnections(); await new Promise<void>(r => s.close(() => r())) }; await rm(dir, { recursive: true, force: true }) }
 })
+it('resumes a notification reply after a BFF restart without executing it twice in Hermes', async () => {
+  const { mkdtemp, rm, readFile, writeFile } = await import('node:fs/promises'), { tmpdir } = await import('node:os'), { join } = await import('node:path'), { createPush } = await import('./push.js'), { createNotifications } = await import('./notifications.js'), { createHermes: real } = await import('./hermes.js')
+  const json = (status: number, body: object) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+  // Hermes の durable idempotency（同じ鍵・同じ本文なら同じ run を replay、本文違いは 409）を模した上流。
+  const keys = new Map<string, { body: string; runId: string }>(), posts: string[] = [], polls: string[] = []; let executions = 0
+  const fetcher = (async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/v1/toolsets')) return json(200, { data: [] })
+    if (url.endsWith('/v1/runs')) {
+      const key = (init!.headers as Record<string, string>)['Idempotency-Key'], body = String(init!.body), seen = keys.get(key); posts.push(key)
+      if (seen) return seen.body === body ? json(202, { run_id: seen.runId, replayed: true }) : json(409, { error: { code: 'idempotency_key_conflict' } })
+      const runId = `run${++executions}`; keys.set(key, { body, runId }); return json(202, { run_id: runId })
+    }
+    polls.push(url.split('/').pop()!); return json(200, { status: 'completed', output: '了解しました' })
+  }) as unknown as typeof fetch
+  const dir = await mkdtemp(join(tmpdir(), 'resume-')), push = await createPush(dir, { subject: 'https://example.com', quietHours: '2-9' })
+  const start = async () => { const notifications = await createNotifications(dir, push.send), server = createServer(createApp({ authenticate: async () => 'owner', notifications, push, hermes: real({ url: 'http://h', key: 'k', fetch: fetcher, sleep: async () => {} }) })); await new Promise<void>(r => server.listen(0, '127.0.0.1', r)); return { notifications, server } }
+  const stop = async (s: Awaited<ReturnType<typeof start>>) => { s.server.closeAllConnections(); await new Promise<void>(r => s.server.close(() => r())) }
+  const api = (s: Awaited<ReturnType<typeof start>>, path: string, body?: object) => fetch(`http://127.0.0.1:${(s.server.address() as { port: number }).port}/kohako/api/v1/${path}`, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {})
+  const until = async (fn: () => Promise<boolean>) => { for (let i = 0; i < 100; i++) { if (await fn()) return; await new Promise(r => setTimeout(r, 10)) } throw Error('timeout') }
+  const reply = { replyId: 'reply-123456', kind: 'choice', value: 'A' }
+  let s = await start()
+  try {
+    await s.notifications.ingest({ eventId: 'event-123456', source: 'task-board', eventType: 'run-finished', ticketId: 'BOXP-1', title: 't', body: 'b', choices: ['A', 'B'], createdAt: '2026-01-01T00:00:00Z' })
+    const first = await (await api(s, 'notifications/event-123456/reply', reply)).json() as { requestId: string; status: string }
+    expect(first.status).toBe('submitted')
+    await until(async () => (await (await api(s, `requests/${first.requestId}`)).json() as { status: string }).status === 'done')
+    const file = join(dir, 'notifications.json')
+    await until(async () => JSON.parse(await readFile(file, 'utf8'))[0].reply.runId === 'run1')
+    expect(executions).toBe(1); expect(posts).toHaveLength(1)
+    // 再起動 1: run id が記録済み → 再送せず run1 の追跡だけを再開する。
+    await stop(s); s = await start()
+    expect((await api(s, `requests/${first.requestId}`)).status).toBe(404)
+    const resumed = await (await api(s, 'notifications/event-123456/reply', reply)).json() as { requestId: string; status: string }
+    expect(resumed).toMatchObject({ requestId: first.requestId, status: 'submitted' })
+    await until(async () => (await (await api(s, `requests/${first.requestId}`)).json() as { status: string }).status === 'done')
+    expect(posts).toHaveLength(1); expect(executions).toBe(1); expect(polls.at(-1)).toBe('run1')
+    // 再起動 2: run id を記録する前に止まった場合 → 同じ鍵・同じ本文で再送し Hermes が同じ run を replay する（新しい実行はない）。
+    const items = JSON.parse(await readFile(file, 'utf8')); delete items[0].reply.runId; await writeFile(file, JSON.stringify(items))
+    await stop(s); s = await start()
+    await api(s, 'notifications/event-123456/reply', reply)
+    await until(async () => (await (await api(s, `requests/${first.requestId}`)).json() as { status: string }).status === 'done')
+    expect(posts).toHaveLength(2); expect(new Set(posts).size).toBe(1); expect(executions).toBe(1)
+  } finally { await stop(s); await rm(dir, { recursive: true, force: true }) }
+})

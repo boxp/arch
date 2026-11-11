@@ -112,6 +112,14 @@ export function createHermes({
       const id = post.data?.run_id
       if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) return { status: 'unknown', error: 'hermes_schema' }
       options.onRun?.(id)
+      return await poll(id, options)
+    } catch {
+      return { status: 'unknown', error: 'hermes_unreachable' }
+    }
+  }
+  /** 既に受理済みの run を追跡し直す（BFF 再起動後に通知返信の会話を再開する用。新しい run は作らない）。 */
+  async function poll(id: string, options: Pick<RunOptions, 'pollMs' | 'polls' | 'onApproval'>): Promise<Result> {
+    try {
       let waiting = false,
         pollErrors = 0
       for (let i = 0; i < (options.polls ?? 300); i++) {
@@ -171,8 +179,13 @@ export function createHermes({
         return result.code ? 'not_pending' : 'ok'
       } catch { return 'unknown' }
     },
-    run(requestId: string, text: string, sessionId: string, instructions: string, onApproval?: RunOptions['onApproval'], attempt?: number, onRun?: RunOptions['onRun']): Promise<Result> {
-      return execute({ idempotencyKey: `kohako-web-${sessionId}-${requestId}${attempt && attempt > 0 ? `-retry${attempt}` : ''}`, input: text, sessionId, instructions, onApproval, onRun })
+    watch(runId: string, onApproval?: RunOptions['onApproval']): Promise<Result> {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(runId)) return Promise.resolve({ status: 'unknown', error: 'hermes_schema' })
+      return poll(runId, { onApproval })
+    },
+    run(requestId: string, text: string, sessionId: string, instructions: string, onApproval?: RunOptions['onApproval'], attempt?: number, onRun?: RunOptions['onRun'], stableKey?: string): Promise<Result> {
+      // stableKey は session を跨いで同じ返信を一度だけ受理させるための鍵（通知返信の再送用）。
+      return execute({ idempotencyKey: stableKey ?? `kohako-web-${sessionId}-${requestId}${attempt && attempt > 0 ? `-retry${attempt}` : ''}`, input: text, sessionId, instructions, onApproval, onRun })
     },
     execute,
   }
