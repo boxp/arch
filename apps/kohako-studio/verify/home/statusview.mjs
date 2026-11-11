@@ -12,46 +12,28 @@ const b = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsaf
 const out = {}, failures = []
 const check = (cond, msg) => { if (!cond) failures.push(msg) }
 const overlap = (a, c) => a && c && a.x < c.x + c.width && c.x < a.x + a.width && a.y < c.y + c.height && c.y < a.y + a.height
-async function scenario(name, viewport, mode) {
+async function scenario(name, viewport, mode, scene = 'relax', large = false) {
   const ctx = await b.newContext({ viewport, isMobile: viewport.width < 600, hasTouch: viewport.width < 600 }), page = await ctx.newPage()
-  let statusCalls = 0
-  await ctx.route('**/kohako/api/v1/**', async r => {
-    const p = new URL(r.request().url()).pathname.replace('/kohako/api/v1/', ''), j = (s, o) => r.fulfill({ status: s, contentType: 'application/json', body: JSON.stringify(o) })
-    if (p === 'me') return j(200, { authenticated: true })
-    if (p === 'conversation') return j(200, { enabled: true, stt: null })
-    if (p === 'status') { statusCalls++; return mode === 'fail' ? j(503, { error: 'status_disabled' }) : j(200, status) }
-    return j(404, {})
-  })
+  await ctx.route('**/kohako/api/v1/**', async r => { const p = new URL(r.request().url()).pathname.replace('/kohako/api/v1/', ''), j = (s, o) => r.fulfill({ status: s, contentType: 'application/json', body: JSON.stringify(o) }); if (p === 'me') return j(200, { authenticated: true }); if (p === 'conversation') return j(200, { enabled: true, stt: null }); if (p === 'status') return mode === 'fail' ? j(503, {}) : j(200, status); return j(404, {}) })
   await page.goto('http://localhost:8768/kohako/home.html')
-  await page.waitForFunction(() => document.getElementById('connection').textContent.startsWith('接続中'), null, { timeout: 30000 })
-  await page.waitForFunction(() => !document.getElementById('status-open').textContent.includes('確認中'), null, { timeout: 10000 })
-  const summary = await page.textContent('#status-open')
+  await page.waitForFunction(() => document.getElementById('connection').textContent.startsWith('接続中'))
+  await page.waitForFunction(() => !document.getElementById('status-widget').textContent.includes('確認中'))
+  if (large) await page.addStyleTag({ content: 'html{font-size:125%}' })
+  await page.evaluate(scene => { document.body.dataset.scene = scene; new MutationObserver(() => { if (document.body.dataset.scene !== scene) document.body.dataset.scene = scene }).observe(document.body, { attributes: true, attributeFilter: ['data-scene'] }) }, scene)
+  await page.waitForTimeout(500)
+  const widget = await page.textContent('#status-widget')
+  const boxes = await page.evaluate(() => { const rect = e => { if (!e) return null; for (let o = e; o; o = o.parentElement) if (+getComputedStyle(o).opacity === 0) return null; const s = getComputedStyle(e), r = e.getBoundingClientRect(); return s.display !== 'none' && s.visibility !== 'hidden' && +s.opacity > 0 && r.width && r.height ? { x: r.x, y: r.y, width: r.width, height: r.height } : null }; const ids = ['status-widget', 'form', 'message', 'send', 'stop', 'bubble', 'cards', 'trouble', 'character', 'greeting', 'clock', 'date']; return Object.fromEntries(ids.map(id => [id, rect(document.getElementById(id))])) })
+  check(await page.locator('.stage #status-widget').count() === 1 && !!boxes['status-widget'], `${name}: widget not visible in stage`)
+  for (const id of ['form', 'message', 'send', 'stop', 'bubble', 'cards', 'trouble', 'greeting', 'clock', 'date']) check(!overlap(boxes['status-widget'], boxes[id]), `${name}: widget overlaps ${id}`)
+  if (viewport.width < 600 && scene !== 'relax') { const c = boxes.character; check(!overlap(boxes['status-widget'], { x: c.x + c.width * .2, y: c.y, width: c.width * .6, height: c.height }), `${name}: widget overlaps central character`) }
   await page.screenshot({ path: `${outDir}/${name}-closed.png` })
-  await page.click('#status-open')
-  const detail = await page.textContent('#status-detail')
-  const boxes = await page.evaluate(() => Object.fromEntries(['status-panel', 'form', 'message', 'send', 'stop', 'approval', 'character'].map(id => { const e = document.getElementById(id); const r = e && !e.hidden ? e.getBoundingClientRect() : null; return [id, r && r.width ? { x: r.x, y: r.y, width: r.width, height: r.height } : null] })))
-  await page.screenshot({ path: `${outDir}/${name}-open.png` })
-  await page.keyboard.press('Escape')
-  const closedByEsc = await page.evaluate(() => document.getElementById('status-panel').hidden)
-  for (const id of ['form', 'message', 'send', 'stop']) check(!overlap(boxes['status-panel'], boxes[id]), `${name}: status panel overlaps #${id}`)
-  check(closedByEsc, `${name}: Esc did not close the panel`)
-  check(!/進行中 0件/.test(summary + detail) || (status.tasks.state === 'ok' && status.tasks.inProgress.total === 0), `${name}: shows 0 tasks without data`)
-  if (mode === 'fail') { check(summary.includes('取得できません'), `${name}: failure not shown in summary`); check(!/\d+%/.test(summary + detail), `${name}: shows a percentage without data`) }
-  else {
-    const t = status.tasks.inProgress
-    check(summary.includes(`進行中 ${t.total}件`), `${name}: summary total != ${t.total}`)
-    check(t.total === t.byAgent.reduce((n, x) => n + x.count, 0), `${name}: total != sum(byAgent)`)
-    for (const a of t.byAgent) check(detail.includes(`${a.agent} ${a.count}`), `${name}: detail misses ${a.agent} ${a.count}`)
-    for (const p of status.quota.pools) { check(detail.includes(p.label), `${name}: detail misses pool ${p.label}`); for (const w of p.windows) if (w.usedPercent !== null) check(detail.includes(`${w.label} ${w.usedPercent}%`), `${name}: detail misses ${p.label} ${w.label} ${w.usedPercent}%`) }
-  }
-  out[name] = { summary, detail, statusCalls, boxes }
-  await ctx.close()
+  await page.click('#status-widget'); const detail = await page.textContent('#status-detail'); const inside = await page.evaluate(() => { const p = document.getElementById('status-panel').getBoundingClientRect(), s = document.querySelector('.stage').getBoundingClientRect(); return p.top >= s.top - 1 && p.bottom <= s.bottom + 1 && p.left >= s.left - 1 && p.right <= s.right + 1 }); check(inside, `${name}: detail popover is clipped outside the stage`); await page.screenshot({ path: `${outDir}/${name}-open.png` }); await page.keyboard.press('Escape')
+  check(await page.locator('#status-panel').isHidden(), `${name}: Escape did not close`)
+  if (mode === 'fail') { check(widget.includes('取得できません'), `${name}: failure missing`); check(!/\d+%|0件/.test(widget + detail), `${name}: invented values`) }
+  else { for (const id of ['claude_shared', 'codex_shared']) { const p = status.quota.pools.find(p => p.id === id), ws = p.windows.filter(w => w.usedPercent !== null && !['unavailable','unobserved','not_provided'].includes(w.state)), value = Math.max(...ws.map(w => w.usedPercent)); check(await page.locator(`[data-pool="${id}"] .gauge-value`).textContent() === `${value}%`, `${name}: ${id} value mismatch`) } const t = status.tasks.inProgress; check(await page.locator('.task-total').textContent() === String(t.total), `${name}: task total mismatch`); check(t.total === t.byAgent.reduce((n, a) => n + a.count, 0), `${name}: total differs from sum`); for (const a of t.byAgent) check(widget.includes(`${a.agent} ${a.count}`), `${name}: missing chip ${a.agent}`); for (const p of status.quota.pools) { check(detail.includes(p.label), `${name}: missing ${p.label}`); for (const w of p.windows) if (w.usedPercent !== null) check(detail.includes(`${w.label} ${w.usedPercent}%`), `${name}: missing ${w.label}`) } }
+  out[name] = { widget, detail, boxes }; await ctx.close()
 }
-await scenario('pc', { width: 1280, height: 800 }, 'ok')
-await scenario('mobile', { width: 390, height: 844 }, 'ok')
-await scenario('mobile-landscape', { width: 844, height: 390 }, 'ok')
-await scenario('fail', { width: 390, height: 844 }, 'fail')
-await b.close(); srv.close()
-fs.writeFileSync(`${outDir}/result.json`, JSON.stringify({ out, failures }, null, 1))
-console.log(JSON.stringify({ failures, summaries: Object.fromEntries(Object.entries(out).map(([k, v]) => [k, v.summary])) }, null, 1))
-process.exit(failures.length ? 1 : 0)
+for (const [name, viewport] of [['pc', { width: 1280, height: 800 }], ['portrait', { width: 390, height: 844 }], ['landscape', { width: 844, height: 390 }]]) for (const scene of ['relax', 'talk', 'show']) await scenario(`${name}-${scene}`, viewport, 'ok', scene)
+await scenario('fail-portrait', { width: 390, height: 844 }, 'fail')
+await scenario('large-pc', { width: 1280, height: 800 }, 'ok', 'relax', true)
+await b.close(); srv.close(); fs.writeFileSync(`${outDir}/result.json`, JSON.stringify({ out, failures }, null, 1)); console.log(JSON.stringify({ failures }, null, 1)); process.exit(failures.length ? 1 : 0)

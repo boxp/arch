@@ -16,3 +16,5 @@ Playwright コンテナ（`mcr.microsoft.com/playwright:v1.56.1-noble`、`npm i 
 `mouthpet.mjs` はローカル build と完全な BFF モックで、無音再生中の推定口形と PC / Pixel 7 の頭追従を記録します。Playwright 1.56.1 の node_modules を /pw、build を /site/kohako、出力先を /out に置いて実行します。動きを減らす設定では口の幅変形と頭追従を無効にし、口の開閉のみ残します。口形は文字ベースの近似で、漢字の読みや実際の音素は認識しません。
 
 `pat.mjs` は同じ条件で頭を右・左になでたときの petFollow 値と顔周辺の画像（静止 / 右 / 左 / 離した後）を /out に保存します（Playwright のパッケージ解決のため /pw/node_modules/playwright-core へのリンクが必要です）。
+
+`statusview.mjs` は `STATUS_JSON` の実データ写しと BFF モックを使い、舞台内ウィジェットの数値、詳細の開閉、各画面サイズの重なり、取得失敗時の表示を確認し、スクリーンショットを保存します。
