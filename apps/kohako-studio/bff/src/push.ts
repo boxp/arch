@@ -7,9 +7,15 @@ type Subscription = { endpoint: string; keys: { p256dh: string; auth: string } }
 export function summarizePush(item: Pick<Item, 'title' | 'body' | 'eventType'>, minimal = false) {
   if (minimal) return { title: 'コハコ', body: 'コハコからお知らせがあります' }
   const fallback: Record<string, string> = { 'run-finished': '完了しました', 'lane-changed': '確認が必要です', 'morning-digest': 'お知らせがあります', 'run-stopped': '止まっています' }
-  let body = item.body.replace(/https?:\/\/[^\s]+/gi, '(リンク)').replace(/[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '(メール)').replace(/(?:~\/[^\s]+|\/(?:[^\s/]+\/)+[^\s/]+)/g, '(パス)').replace(/[A-Za-z0-9_+\/=-]{20,}/g, '(省略)').replace(/[*`#>|]+/g, '').replace(/\s+/g, ' ').trim() || fallback[item.eventType] || '新しいお知らせがあります'
+  let body = redact(item.body) || fallback[item.eventType] || '新しいお知らせがあります'
   if (body.length > 120) body = body.slice(0, 119) + '…'
-  return { title: item.title.slice(0, 80), body }
+  // タイトルもロック画面に出るため本文と同じ伏字処理を通す
+  const title = redact(item.title).slice(0, 80) || 'コハコ'
+  return { title, body }
+}
+/** ロック画面に出してよい形へ: URL・メール・パス・長い英数字列（トークン等）を伏せ、Markdown記号を除く */
+export function redact(text: string) {
+  return text.replace(/https?:\/\/[^\s]+/gi, '(リンク)').replace(/[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '(メール)').replace(/(?:~\/[^\s]+|\/(?:[^\s/]+\/)+[^\s/]+)/g, '(パス)').replace(/[A-Za-z0-9_+\/=-]{20,}/g, '(省略)').replace(/[*`#>|]+/g, '').replace(/\s+/g, ' ').trim()
 }
 export async function createPush(dir: string, opts: { subject: string; quietHours: string; minimal?: boolean; now?: () => number; sender?: typeof webPush.sendNotification }) {
   const keyPath = join(dir, 'vapid.json'), path = join(dir, 'push-subscriptions.json'), now = opts.now ?? Date.now

@@ -9,7 +9,7 @@ export function validPayload(x: any): boolean {
 export async function createNotifications(dir: string, push: (item: Item) => Promise<{ pushedAt?: string; pushSkipped?: Item['pushSkipped'] }>, now = Date.now) {
   const path = join(dir, 'notifications.json'), items = await load<Item[]>(path, []); let queue = Promise.resolve()
   const mutate = <T>(fn: () => Promise<T> | T): Promise<T> => { const result = queue.then(fn); queue = result.then(() => {}, () => {}); return result }
-  const save = () => atomic(path, items)
+  const save = () => atomic(path, items), leases = new Map<string, number>()
   return {
     list: () => { const visible = items.filter(i => i.source !== 'task-board'); return { items: [...visible].reverse(), unread: visible.filter(i => !i.readAt).length } },
     ingest: (x: any) => mutate(async () => {
@@ -22,6 +22,9 @@ export async function createNotifications(dir: string, push: (item: Item) => Pro
       try { Object.assign(item, await push(item)) } catch { item.pushSkipped = 'error' }
       await save(); return 'stored' as const
     }),
+    /** 吹き出し表示前の仮押さえ（30秒）。永続化しないので、表示前にページが閉じても期限後に再案内できる。複数タブの同時表示を防ぐ。 */
+    claimAnnounce: (id: string) => mutate(() => { const item = items.find(i => i.eventId === id); if (!item) return null; if (item.announcedAt || (leases.get(id) ?? 0) > now()) return false; leases.set(id, now() + 30_000); return true }),
+    /** 実際に表示した後に案内済みを永続化する。 */
     announce: (id: string) => mutate(async () => { const item = items.find(i => i.eventId === id); if (!item) return null; if (item.announcedAt) return false; item.announcedAt = new Date(now()).toISOString(); await save(); return true }),
     mark: (id: string, field: 'readAt' | 'handledAt') => mutate(async () => { const item = items.find(i => i.eventId === id); if (!item) return false; item[field] ??= new Date(now()).toISOString(); await save(); return true }),
     /** Hermes が返した run id を返信に記録する（BFF 再起動後に再送せず、その run の追跡だけを再開するため）。 */

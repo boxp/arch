@@ -7,6 +7,20 @@ import { createPush } from './push.js'
 import { atomic, load } from './storage.js'
 const payload = { eventId: 'event-123456', source: 'task-board-report', eventType: 'ready', title: '題', body: '本文', choices: ['はい'], createdAt: '2026-01-01T00:00:00Z' }
 describe('notifications', () => {
+  it('案内の仮押さえは期限切れ・再起動で解け、表示後の案内済みだけが永続化される', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'inbox-'))
+    try {
+      let t = Date.parse('2026-01-01T00:00:00Z'); const store = await createNotifications(dir, async () => ({}), () => t); await store.ingest(payload)
+      expect(await store.claimAnnounce(payload.eventId)).toBe(true); expect(await store.claimAnnounce(payload.eventId)).toBe(false)
+      // 表示前にページが閉じた: 仮押さえの期限後は再び案内できる
+      t += 31_000; expect(await store.claimAnnounce(payload.eventId)).toBe(true)
+      // BFF 再起動では仮押さえは残らない
+      const restart = await createNotifications(dir, async () => ({}), () => t); expect(await restart.claimAnnounce(payload.eventId)).toBe(true)
+      expect(await restart.announce(payload.eventId)).toBe(true); expect(await restart.claimAnnounce(payload.eventId)).toBe(false)
+      expect((await createNotifications(dir, async () => ({}), () => t + 3600_000)).list().items[0].announcedAt).toBeTruthy()
+      expect(await store.claimAnnounce('missing-123456')).toBeNull()
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
   it('hides legacy items without deleting them or changing deduplication', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'inbox-'))
     try { const store = await createNotifications(dir, async () => ({})); const legacy = { ...payload, eventId: 'legacy-123456', source: 'task-board' }; await store.ingest(legacy); await store.ingest(payload); expect(store.list().items.map(i => i.eventId)).toEqual([payload.eventId]); expect(store.list().unread).toBe(1); expect(await store.ingest({ ...legacy, source: 'task-board-report' })).toBe('duplicate'); expect((await load<any[]>(join(dir, 'notifications.json'), [])).length).toBe(2) } finally { await rm(dir, { recursive: true, force: true }) }
@@ -82,5 +96,8 @@ it('伏字と本文の短縮、空本文と minimal を扱う', async () => {
   expect(summarizePush({ ...item, body: '**BOXP-1 完了**\n# 結果\n`ok`' }).body).toBe('BOXP-1 完了 結果 ok')
   expect(summarizePush({ ...item, body: '  ' }).body).toBe('完了しました')
   expect(summarizePush({ ...item, body: '', eventType: 'unknown' }).body).toBe('新しいお知らせがあります')
+  // タイトルもロック画面に出るため伏字にする
+  expect(summarizePush({ ...item, title: 'BOXP-1: https://x.example/a を user@example.com へ /home/u/secret.txt abcdefghijklmnopqrstuvwxyz123' }).title).toBe('BOXP-1: (リンク) を (メール) へ (パス) (省略)')
+  expect(summarizePush({ ...item, title: '**' }).title).toBe('コハコ')
   expect(summarizePush(item, true)).toEqual({ title: 'コハコ', body: 'コハコからお知らせがあります' })
 })

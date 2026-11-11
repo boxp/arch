@@ -11,7 +11,7 @@ type Announcer = { canAnnounce: () => boolean; announce: (item: Item, actions: {
 export function initInbox(follow: (requestId: string, text: string) => boolean = () => false, announcer?: Announcer) {
   const el = (id: string) => document.getElementById(id)!, panel = el('inbox'), list = el('inbox-list'), detail = el('inbox-detail'), message = el('push-message')
   let notice = '', items: Item[] = [], selected = notificationParam(location.search), timer = 0, waiting = false, active = '', holdTimer = 0
-  let opening = !!selected, pending: { item: Item; more: number } | undefined
+  let opening = !!selected
   const call = async (path: string, method = 'GET', body?: unknown) => { const r = await fetch(`/kohako/api/v1/${path}`, { method, ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }) }); return { status: r.status, data: r.status === 204 ? null : await r.json() } }
   const button = (text: string, fn: () => void) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = text; b.addEventListener('click', fn); return b }
   const line = (parent: HTMLElement, text: string) => { const p = document.createElement('p'); p.textContent = text; parent.append(p) }
@@ -31,23 +31,20 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
   }
   async function tryAnnounce() {
     if (!announcer || waiting || active || opening || document.hidden || !announcer.canAnnounce()) return
-    const choice = pending ?? pickAnnouncements(items), { item, more } = choice; if (!item) return
+    const { item, more } = pickAnnouncements(items); if (!item) return
     waiting = true
     try {
-      if (!pending) {
-      const result = await call(`notifications/${encodeURIComponent(item.eventId)}/announced`, 'POST')
+      // 表示前は短時間の仮押さえだけ（複数タブの同時表示防止）。案内済みは実際に表示した後に保存するので、
+      // 仮押さえ後に表示できずページが閉じられても、期限後に再び案内される。
+      const result = await call(`notifications/${encodeURIComponent(item.eventId)}/announcing`, 'POST')
       if (result.status !== 200) return
-      item.announcedAt = new Date().toISOString()
-      if (!result.data.announced) return
-      if (more) for (const other of items.filter(i => i.eventId !== item.eventId && pickAnnouncements([i]).item)) { const r = await call(`notifications/${encodeURIComponent(other.eventId)}/announced`, 'POST'); if (r.status === 200) other.announcedAt = new Date().toISOString() }
-      pending = { item, more }
-      }
-      if (document.hidden || opening || !announcer.canAnnounce()) return
-      if (items.find(i => i.eventId === item.eventId)?.readAt) { pending = undefined; return }
-      pending = undefined
+      if (!result.data.claimed) { item.announcedAt = new Date().toISOString(); return } // 他タブが表示中/表示済み。次の一覧更新でサーバー状態に戻る
+      if (document.hidden || opening || active || !announcer.canAnnounce() || items.find(i => i.eventId === item.eventId)?.readAt) return
       active = item.eventId; holdTimer = window.setTimeout(release, 20000)
       const status = document.getElementById('notice-status')!
       announcer.announce(item, { send: async (kind, value) => { const ok = await send(item, kind, value, status); if (ok) release(); return ok }, open: () => { opening = true; release(); void open(item.eventId).finally(() => { opening = false }) }, later: release }, more)
+      const shown = more ? items.filter(i => pickAnnouncements([i]).item) : [item]
+      for (const i of shown) { const r = await call(`notifications/${encodeURIComponent(i.eventId)}/announced`, 'POST'); if (r.status === 200) i.announcedAt = new Date().toISOString() }
     } catch { /* 次回更新で再試行 */ } finally { waiting = false }
   }
   function render() {
@@ -74,7 +71,7 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
   } catch { message.textContent = '通知を設定できませんでした。' } })() })
   el('push-off').addEventListener('click', () => { void (async () => { try { const reg = await navigator.serviceWorker.getRegistration('/kohako/'), sub = await reg?.pushManager.getSubscription(); if (sub) { const result = await call('push/subscriptions', 'DELETE', { endpoint: sub.endpoint }); if (result.status !== 204) throw Error(); await sub.unsubscribe() }; message.textContent = 'この端末の通知をOFFにしました。' } catch { message.textContent = '通知をOFFにできませんでした。' } })() })
   navigator.serviceWorker?.addEventListener('message', e => { if (e.data?.type === 'open-notification' && notificationParam(`?notification=${encodeURIComponent(e.data.eventId)}`)) void openNotification(e.data.eventId) })
-  async function openNotification(id: string) { opening = true; if (pending?.item.eventId === id) pending = undefined; try { await call(`notifications/${encodeURIComponent(id)}/announced`, 'POST'); await open(id) } finally { opening = false } }
+  async function openNotification(id: string) { opening = true; try { await call(`notifications/${encodeURIComponent(id)}/announced`, 'POST'); await open(id) } finally { opening = false } }
   const schedule = () => { clearInterval(timer); if (!document.hidden) { void refresh().then(() => { if (selected && items.some(i => i.eventId === selected)) void openNotification(selected); else opening = false }); timer = window.setInterval(() => void refresh(), 60000) } }
   document.addEventListener('visibilitychange', schedule); schedule(); return { retry: () => void tryAnnounce() }
 }

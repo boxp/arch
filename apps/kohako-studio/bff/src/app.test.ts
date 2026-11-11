@@ -374,7 +374,14 @@ it('disables notification routes without storage and restricts verifier', async 
     expect((await fetch(base(server) + 'notifications/event-123456/announced', { method: 'POST' })).status).toBe(401)
     expect((await post('notifications/missing-123456/announced', 'owner')).status).toBe(404)
     await notifications.ingest({ eventId: 'event-123456', source: 'task-board-report', eventType: 'run-finished', title: '題', body: '本文', createdAt: '2026-01-01T00:00:00Z' })
+    expect((await post('notifications/event-123456/announcing', 'verifier')).status).toBe(403)
+    expect((await post('notifications/missing-123456/announcing', 'owner')).status).toBe(404)
+    // 仮押さえは表示前の二重表示だけを防ぎ、案内済みは永続化しない（表示前に閉じても再案内できる）
+    expect(await (await post('notifications/event-123456/announcing', 'owner')).json()).toEqual({ claimed: true })
+    expect(await (await post('notifications/event-123456/announcing', 'owner')).json()).toEqual({ claimed: false })
+    expect(notifications.list().items[0].announcedAt).toBeUndefined()
     expect(await (await post('notifications/event-123456/announced', 'owner')).json()).toEqual({ announced: true })
+    expect(await (await post('notifications/event-123456/announcing', 'owner')).json()).toEqual({ claimed: false })
     const at = notifications.list().items[0].announcedAt
     expect(await (await post('notifications/event-123456/announced', 'owner')).json()).toEqual({ announced: false }); expect(notifications.list().items[0].announcedAt).toBe(at)
     expect((await fetch(base(server) + 'notifications', { headers: { authorization: 'verifier' } })).status).toBe(200)

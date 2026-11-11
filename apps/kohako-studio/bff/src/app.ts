@@ -33,7 +33,8 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
         if (ingest ? principal !== 'notifier' : readOnly ? principal === 'notifier' : principal !== 'owner') return json(403, { error: 'forbidden' })
         if (readOnly) return json(200, opts.notifications.list())
         if (method === 'GET' && route === 'push/key') return json(200, { publicKey: opts.push.publicKey })
-        const match = /^notifications\/([A-Za-z0-9._:-]{8,200})\/(read|handled|reply|announced)$/.exec(route)
+        const match = /^notifications\/([A-Za-z0-9._:-]{8,200})\/(read|handled|reply|announced|announcing)$/.exec(route)
+        if (method === 'POST' && match?.[2] === 'announcing') { const claimed = await opts.notifications.claimAnnounce(match[1]); return claimed === null ? json(404, { error: 'not_found' }) : json(200, { claimed }) }
         if (method === 'POST' && match?.[2] === 'announced') { const announced = await opts.notifications.announce(match[1]); return announced === null ? json(404, { error: 'not_found' }) : json(200, { announced }) }
         if (method === 'POST' && match && match[2] !== 'reply') return await opts.notifications.mark(match[1], match[2] === 'read' ? 'readAt' : 'handledAt') ? json(200, { status: 'ok' }) : json(404, { error: 'not_found' })
         if (!((method === 'POST' && (ingest || match?.[2] === 'reply' || route === 'push/subscriptions')) || (method === 'DELETE' && route === 'push/subscriptions'))) return json(404, { error: 'not_found' })
