@@ -425,6 +425,8 @@ rigCanvas.addEventListener('pointerup', e => {
   if (kind) touchReact(zone, kind, 'pointer')
 })
 rigCanvas.addEventListener('pointercancel', () => { track = null })
+// キャンバスの外で離したときも追跡を解放する（以後のふれあいが止まらないように）。
+for (const ev of ['pointerup', 'pointercancel'] as const) window.addEventListener(ev, e => { if (track && e.pointerId === track.id && e.target !== rigCanvas) track = null })
 // 二本指・ピンチはふれあいにしない。
 rigCanvas.addEventListener('touchstart', e => { if (e.touches.length > 1) track = null }, { passive: true })
 character.addEventListener('click', () => { if (character.classList.contains('mini')) { message.blur(); renderCards([]); refreshScene(true) } })
