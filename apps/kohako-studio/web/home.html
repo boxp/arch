@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"><meta name="theme-color" content="#f3eef9"><title>コハコの家</title></head>
+<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"><meta name="theme-color" content="#f3eef9"><link rel="manifest" href="/kohako/manifest.webmanifest"><title>コハコの家</title></head>
 <body data-scene="offline" data-shape="pc">
 <div class="room" aria-hidden="true"><svg class="circuit" viewBox="0 0 400 300" preserveAspectRatio="xMidYMid slice"><path d="M0 60h80l20 20h90M400 220h-70l-20-20h-110M40 300v-60l20-20h60M360 0v50l-20 20h-60"/><circle cx="190" cy="80" r="3"/><circle cx="200" cy="200" r="3"/><circle cx="120" cy="220" r="3"/><circle cx="280" cy="70" r="3"/></svg><span class="petal p1"></span><span class="petal p2"></span><span class="petal p3"></span></div>
 <header class="top">
@@ -11,6 +11,7 @@
   <span class="spacer"></span>
   <label class="toggle"><input id="speech" type="checkbox"> 読み上げ</label>
   <button id="touch-open" type="button" class="ghost" aria-haspopup="true" aria-expanded="false">ふれあい</button>
+  <button id="inbox-open" type="button" class="ghost" hidden>受信箱 <span id="inbox-badge"></span></button>
   <button id="history-open" type="button" class="ghost">☰ 履歴</button>
   <button id="settings-open" type="button" class="ghost">⚙ 設定</button>
   <a class="ghost link" href="studio.html">Studio（開発用）</a>
@@ -27,6 +28,7 @@
 </main>
 <section id="approval" class="approval" role="dialog" aria-modal="true" aria-labelledby="approval-title" hidden><strong id="approval-title">実行前の確認</strong><p id="approval-summary"></p><p id="approval-expiry" class="muted"></p><p id="approval-error" class="error" role="alert"></p><div class="actions"><button id="allow" type="button">一度だけ許可</button><button id="deny" type="button" class="secondary">拒否</button></div></section>
 <form id="form" class="bar"><label for="message" class="sr-only">メッセージ</label><textarea id="message" rows="1" maxlength="500" placeholder="コハコに話しかける"></textarea><button id="record" type="button" class="secondary" hidden>押して録音</button><button id="send" type="submit" disabled>送信</button><button id="stop" type="button" class="danger" hidden>停止</button><button id="hush" type="button" class="secondary" hidden>読み上げを止める</button></form>
+<aside id="inbox" class="drawer" aria-label="受信箱" hidden><div class="drawer-head"><h2>受信箱</h2><button id="inbox-close" type="button" class="ghost">閉じる</button></div><div id="inbox-list"></div><div id="inbox-detail"></div><hr><button id="push-on" type="button">この端末で通知を受け取る</button><button id="push-off" type="button">この端末の通知をOFF</button><p id="push-message" role="status"></p></aside>
 <aside id="history" class="drawer" aria-label="履歴" hidden><div class="drawer-head"><h2>この画面を開いてからの履歴</h2><button id="history-close" type="button" class="ghost">閉じる</button></div><p class="muted">この会話は Web 専用です。Telegram とは別の会話・履歴・承認・停止です。人格と既存の記憶は Hermes で共有されます。タブを閉じると、この一覧は消えます。</p><ol id="history-list"></ol></aside>
 <aside id="settings" class="drawer" aria-label="設定" hidden><div class="drawer-head"><h2>設定</h2><button id="settings-close" type="button" class="ghost">閉じる</button></div>
   <label><input id="pref-touch" type="checkbox"> ふれあい（頭をなでる・手にタッチ）</label>

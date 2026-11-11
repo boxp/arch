@@ -125,7 +125,11 @@ export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 
       // 承認の拒否を Hermes で確認できなかった場合は、停止を依頼しても承認が残りうるので停止成功とはしない。
       return !runEnded || denyResult === 'unknown' || late.includes('unknown') || entry.cancelUnconfirmed ? 'unknown' : stopped
     },
-    submit(input: Input, instructions: string, onSettled?: (status: 'done' | 'failed' | 'unknown') => void): Entry | { error: 'request_conflict' | 'busy' } {
+    /**
+     * resume: 通知返信用。sessionId/idempotencyKey を固定して同じ本文なら Hermes の durable idempotency で同じ run を replay させる
+     * （BFF 再起動後の再送でも二重実行しない）。runId が分かっていれば新しい run は作らず、その run の追跡だけを再開する。
+     */
+    submit(input: Input, instructions: string, onSettled?: (status: 'done' | 'failed' | 'unknown') => void, resume?: { sessionId: string; idempotencyKey: string; runId?: string; onRun?: (runId: string) => void }): Entry | { error: 'request_conflict' | 'busy' } {
       const existing = this.check(input)
       if (existing) return existing
       if ([...entries.values()].some((e) => e.status === 'pending')) return { error: 'busy' }
@@ -189,7 +193,8 @@ export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 
             void pending.pendingResult.then((result) => { pending.result = result })
           }, 280_000).unref?.()
         }
-      const onRun = (runId: string) => { entry.runId = runId; if (entry.cancelRequested) void hermes.stop(runId) }
+      const onRun = (runId: string) => { entry.runId = runId; try { resume?.onRun?.(runId) } catch { /* 保存失敗でも追跡は続ける */ } if (entry.cancelRequested) void hermes.stop(runId) }
+      if (resume?.runId) entry.runId = resume.runId
       const applyResult = (settled: Awaited<ReturnType<typeof hermes.run>>) => {
           const result = touchApproval ? { status: 'failed' as const, error: 'touch_approval_denied' } : entry.cancelRequested && settled.status === 'failed' ? { status: 'failed' as const, error: 'cancelled' } : settled
           entry.status = result.status
@@ -221,8 +226,11 @@ export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 
       let markSettled: () => void = () => {}
       entry.settled = new Promise<void>((r) => { markSettled = r })
       void (async () => {
-        let result = await hermes.run(input.requestId, text, `${prefix}-${sessionStartedAt.toString(36)}`, instructions, onApproval, undefined, onRun)
-        if (result.status === 'failed' && result.error === 'unknown_execution' && !entry.approval && !touchApproval) {
+        let result = resume?.runId
+          ? await hermes.watch(resume.runId, onApproval)
+          : await hermes.run(input.requestId, text, resume?.sessionId ?? `${prefix}-${sessionStartedAt.toString(36)}`, instructions, onApproval, undefined, onRun, resume?.idempotencyKey)
+        // 通知返信は本文・session を変えると別 run として再実行されうるので、別 session での自動再送はしない。
+        if (!resume && result.status === 'failed' && result.error === 'unknown_execution' && !entry.approval && !touchApproval) {
           // 同じミリ秒でも必ず別の session id になるようにする（停止中 session へ再送しない）。
           sessionStartedAt = Math.max(now(), sessionStartedAt + 1)
           console.warn('kohako_web_conv session_rotated unknown_execution')
