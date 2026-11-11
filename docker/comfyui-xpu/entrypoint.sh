@@ -18,6 +18,6 @@ print(message, flush=True)'
 # --offline keeps the browser and the server away from the internet and turns
 # the paid partner API nodes off. Custom nodes are never loaded, including any
 # that a workflow user manages to write below /data/custom_nodes.
-exec python main.py --listen 0.0.0.0 --port 8188 --disable-auto-launch \
+exec python /usr/local/bin/comfyui-watchdog -- python main.py --listen 0.0.0.0 --port 8188 --disable-auto-launch \
   --offline --disable-all-custom-nodes \
   --base-directory /data --temp-directory /scratch/temp "$@"

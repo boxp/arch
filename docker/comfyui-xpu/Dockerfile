@@ -58,6 +58,7 @@ RUN python3 -m venv /opt/comfyui/venv \
     && chmod -R a-w /app /opt/comfyui/venv \
     && chown -R 1000:1000 /data /scratch
 
+COPY watchdog.py /usr/local/bin/comfyui-watchdog
 COPY entrypoint.sh /usr/local/bin/comfyui-xpu-entrypoint
 RUN chmod 0755 /usr/local/bin/comfyui-xpu-entrypoint
 
