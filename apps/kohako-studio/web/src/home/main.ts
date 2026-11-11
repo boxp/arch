@@ -2,7 +2,7 @@
 // 会話の送信・重複防止・停止・承認・追跡は Studio（src/studio/main.ts）と同じ規則。人格・判断・記憶は Hermes だけが持つ。
 import './style.css'
 import { states, formatPool, formatTasks, gaugeOf, taskBadgeOf, upstreamUnavailable, type Status } from './status'
-import { validateViews, mapsUrl, htmlSrcdoc, type View } from './views'
+import { validateViews, mapsUrl, htmlSrcdoc, sanitizeHtml, type View } from './views'
 import { clipHold, isPetting, petFollow, petShown, zeroPet } from './petfollow'
 import { makeVisemes, visemeAt, boundaryTime, spokenSeconds, type VisemeSequence } from '../live2d/viseme'
 import { interpretRequest, newOutgoing, pcm16, presentation, resolveUnconfirmed, rigStateOf, sendOutcomeUnknown, silentSpeechSeconds, studioRigModelId, wantsActing, wantsRig, type Outgoing, type State } from '../studio/model'
@@ -126,7 +126,7 @@ function openViewer(view: View, opener: HTMLElement) {
     line('開くと目的地（出発地を選んだ場合は出発地も）が Google に送られます。家の中への地図の埋め込みは Google の API キー（新しい契約）が必要なため行っていません。')
   } else if (view.kind === 'html') {
     line('コハコが作った図です。数値は会話内容にもとづくもので、確認されたデータではありません。')
-    const frame = document.createElement('iframe'); frame.setAttribute('sandbox', 'allow-scripts'); frame.referrerPolicy = 'no-referrer'; frame.setAttribute('allow', ''); frame.title = view.title; frame.srcdoc = htmlSrcdoc(view.html); viewerBody.append(frame)
+    const frame = document.createElement('iframe'); frame.setAttribute('sandbox', ''); frame.referrerPolicy = 'no-referrer'; frame.setAttribute('allow', ''); frame.title = view.title; frame.srcdoc = htmlSrcdoc(sanitizeHtml(view.html)); viewerBody.append(frame)
   } else {
     const refresh = document.createElement('button'); refresh.textContent = '最新にする'; refresh.type = 'button'; viewerBody.append(refresh)
     const chart = document.createElement('div'); viewerBody.append(chart)

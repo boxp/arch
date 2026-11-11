@@ -6,4 +6,4 @@ it('validates and constructs a fixed maps URL', () => {
   expect(validateViews([{ ...v, extra: 1 }, { kind: 'usage' }])).toEqual([{ kind: 'usage' }])
   expect(validateViews([{ kind: 'html', title: 'x', html: 'a'.repeat(20001) }, { kind: 'usage', title: '\u0001' }])).toEqual([])
 })
-it('places the CSP before untrusted HTML', () => { const s = htmlSrcdoc('<script>ok()</script>'); expect(s.startsWith('<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy"')).toBe(true); expect(s.indexOf('Content-Security-Policy')).toBeLessThan(s.indexOf('<script>')) })
+it('places the CSP before untrusted HTML', () => { const s = htmlSrcdoc('<script>ok()</script>'); expect(s.startsWith('<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy"')).toBe(true); expect(s.indexOf('Content-Security-Policy')).toBeLessThan(s.indexOf('<script>')); expect(s).toContain("script-src 'none'"); expect(s).not.toMatch(/script-src[^;]*unsafe-inline/) })

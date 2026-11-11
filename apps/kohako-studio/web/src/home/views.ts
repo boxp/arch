@@ -18,4 +18,15 @@ export function mapsUrl(view: Extract<View, { kind: 'map' }>, useOrigin: boolean
   if (useOrigin && view.origin) p.set('origin', view.origin)
   return `https://www.google.com/maps/dir/?${p}`
 }
-export function htmlSrcdoc(html: string): string { return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>${html}</body></html>` }
+// 生成HTMLはスクリプトを実行させず（sandbox="" と script-src 'none'）、さらに遷移・外部参照につながる要素と属性を除く。
+const DROP = 'script,noscript,meta,base,link,iframe,frame,frameset,object,embed,applet,form,input,button,textarea,select,portal,template,animate,set,animatemotion,animatetransform,foreignobject'
+const URL_ATTRS = new Set(['href', 'xlink:href', 'src', 'srcset', 'action', 'formaction', 'background', 'poster', 'ping', 'data', 'codebase', 'cite', 'longdesc', 'usemap'])
+export function sanitizeHtml(html: string, doc: Document = new DOMParser().parseFromString(`<body>${html}</body>`, 'text/html')): string {
+  doc.body.querySelectorAll(DROP).forEach(e => e.remove())
+  for (const e of Array.from(doc.body.querySelectorAll('*'))) for (const a of Array.from(e.attributes)) {
+    const n = a.name.toLowerCase(), v = a.value.trim()
+    if (n.startsWith('on') || n === 'target' || n === 'http-equiv' || (URL_ATTRS.has(n) && !(v.startsWith('#') || /^data:image\/(png|gif|jpeg|webp);/i.test(v)))) e.removeAttribute(a.name)
+  }
+  return doc.body.innerHTML
+}
+export function htmlSrcdoc(html: string): string { return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; img-src data:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>${html}</body></html>` }

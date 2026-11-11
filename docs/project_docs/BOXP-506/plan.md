@@ -9,7 +9,7 @@
 - 種類
   - `map`: 目的地の名前・住所（任意で出発地・移動手段）。家側で Google Maps URLs（`https://www.google.com/maps/dir/?api=1&...`、公式・キー不要）を組み立て、外部で開く。
   - `usage`: 数値を持たない。家が既存 `/kohako/api/v1/status`（BOXP-504）の実データで棒グラフを描く（観測時刻・共有/専用・未提供・鮮度を表示）。
-  - `html`: モデルが作った HTML。未信頼として `sandbox="allow-scripts"`（allow-same-origin なし）の iframe に srcdoc で表示し、先頭に通信を全部禁じる CSP を置く。
+  - `html`: モデルが作った HTML。未信頼として家の側で script・meta・リンク先・イベント属性など遷移や外部参照につながる要素と属性を除去し、`sandbox=""`（スクリプト・同一 origin・遷移を許さない）の iframe に srcdoc で表示し、先頭に `script-src 'none'` と通信を全部禁じる CSP を置く（iframe 自身の遷移は CSP では止められないため、JavaScript は実行させない）。
 
 ## 地図の制約
 - Google Maps の iframe 埋め込みの公式方式は Maps Embed API で、API キー（Google Cloud のプロジェクトと API 契約）が必要。新しい API 契約・課金は承認範囲外のため使わない。
