@@ -11,7 +11,8 @@ export function normalizeChome(address: string): string | null {
 export function createGeocoder({ fetcher = fetch, url = process.env.KOHAKO_GEOCODE_URL ?? 'https://nominatim.openstreetmap.org/search', intervalMs = 1000, timeoutMs = 4000, deadlineMs = 7000 }: { fetcher?: typeof fetch; url?: string; intervalMs?: number; timeoutMs?: number; deadlineMs?: number } = {}) {
   const cache = new Map<string, { at: number; value: Geo | null }>()
   let queue = Promise.resolve(), last = 0
-  const query = async (q: string, requested: Geo['precision']): Promise<Geo | null> => {
+  const queryRaw = async (q: string, requested: Geo['precision'], deadline?: AbortSignal): Promise<Geo | null> => {
+    if (deadline?.aborted) return null
     const key = `${requested}:${q}`, cached = cache.get(key)
     if (cached && Date.now() - cached.at < 86400_000) return cached.value
     let resolve!: (v: Geo | null) => void
@@ -19,10 +20,15 @@ export function createGeocoder({ fetcher = fetch, url = process.env.KOHAKO_GEOCO
     queue = queue.then(async () => {
       const again = cache.get(key)
       if (again && Date.now() - again.at < 86400_000) { resolve(again.value); return }
+      // 期限切れの検索は送らずにキューを空ける（タイムアウトした検索が後続を塞がないように）。
+      if (deadline?.aborted) { resolve(null); return }
       const wait = Math.max(0, last + intervalMs - Date.now()); if (wait) await new Promise(r => setTimeout(r, wait))
+      if (deadline?.aborted) { resolve(null); return }
       last = Date.now()
       let value: Geo | null = null, cacheable = false, precision = requested
       const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs)
+      const onDeadline = () => controller.abort()
+      deadline?.addEventListener('abort', onDeadline, { once: true })
       try {
         const p = new URL(url); for (const [k, v] of Object.entries({ format: 'jsonv2', limit: '1', countrycodes: 'jp', 'accept-language': 'ja', q })) p.searchParams.set(k, v)
         const response = await Promise.race([fetcher(p.toString(), { headers: { 'User-Agent': 'kohako-home/1.0 (+https://github.com/boxp/arch)' }, signal: controller.signal, redirect: 'error' }), new Promise<never>((_, reject) => controller.signal.addEventListener('abort', () => reject(Error('timeout')), { once: true }))])
@@ -42,7 +48,7 @@ export function createGeocoder({ fetcher = fetch, url = process.env.KOHAKO_GEOCO
           }
           value = { lat, lon, bbox, precision, label: q.slice(0, 120), source: 'openstreetmap' }
         }
-      } catch { /* 検索失敗は地図位置なしで返す */ } finally { clearTimeout(timer) }
+      } catch { /* 検索失敗は地図位置なしで返す */ } finally { clearTimeout(timer); deadline?.removeEventListener('abort', onDeadline) }
       if (cacheable) { cache.delete(key); cache.set(key, { at: Date.now(), value }); while (cache.size > 200) cache.delete(cache.keys().next().value!) }
       resolve(value)
     }).catch(() => resolve(null))
@@ -50,8 +56,9 @@ export function createGeocoder({ fetcher = fetch, url = process.env.KOHAKO_GEOCO
   }
   // 住所が与えられた時は住所由来の位置を正とし、名称検索の結果はその範囲内にある時だけ採用する（同名の別店舗を避ける）。
   // deadlineMs を過ぎたら、それまでに得た最良の位置（概略でも）を返す。
-  const resolveView = async (view: Extract<View, { kind: 'map' }>, best: { geo: Geo | null }): Promise<Geo | null> => {
+  const resolveView = async (view: Extract<View, { kind: 'map' }>, best: { geo: Geo | null }, deadline: AbortSignal): Promise<Geo | null> => {
     const { address, name } = view.destination
+    const query = (q: string, p: Geo['precision']) => queryRaw(q, p, deadline)
     if (address) {
       const exact = await query(address, 'exact'); best.geo = exact
       if (exact?.precision === 'exact') return exact
@@ -70,9 +77,11 @@ export function createGeocoder({ fetcher = fetch, url = process.env.KOHAKO_GEOCO
     return Promise.all(views.map(async view => {
       if (view.kind !== 'map') return view
       const best: { geo: Geo | null } = { geo: null }
+      const deadline = new AbortController()
       let timer: ReturnType<typeof setTimeout> | undefined
-      const geo = await Promise.race([resolveView(view, best).catch(() => best.geo), new Promise<Geo | null>(r => { timer = setTimeout(() => r(best.geo), deadlineMs); timer.unref?.() })])
-      clearTimeout(timer)
+      // 期限で deadline を中断し、送信中の検索の打ち切り・未送信の検索の取り止めを行う。
+      const geo = await Promise.race([resolveView(view, best, deadline.signal).catch(() => best.geo), new Promise<Geo | null>(r => { timer = setTimeout(() => { deadline.abort(); r(best.geo) }, deadlineMs); timer.unref?.() })])
+      clearTimeout(timer); deadline.abort()
       return geo ? { ...view, geo } : view
     }))
   }

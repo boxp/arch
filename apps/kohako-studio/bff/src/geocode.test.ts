@@ -51,3 +51,23 @@ it('keeps an already found area when later searches time out at the deadline', a
   const [result] = await createGeocoder({ fetcher, intervalMs: 0, timeoutMs: 1000, deadlineMs: 50 })([map])
   expect(result.kind === 'map' && result.geo?.precision).toBe('area')
 })
+it('drops queued searches after the deadline so timed-out lookups do not block later ones', async () => {
+  let hang = true
+  const fetcher = vi.fn((_: string, init?: RequestInit) => hang
+    ? new Promise<Response>((_r, reject) => init?.signal?.addEventListener('abort', () => reject(Error('aborted'))))
+    : Promise.resolve(response(hit)))
+  const geocode = createGeocoder({ fetcher, intervalMs: 0, timeoutMs: 10_000, deadlineMs: 40 })
+  const views = Array.from({ length: 5 }, (_, i): View => ({ kind: 'map', title: 'x', destination: { name: `店${i}` } }))
+  const timedOut = await Promise.all(views.map(v => geocode([v])))
+  expect(timedOut.every(([v]) => v.kind === 'map' && !v.geo)).toBe(true)
+  await new Promise(r => setTimeout(r, 20))
+  const calls = fetcher.mock.calls.length
+  // 期限を過ぎた検索は送信中なら中断され、キューに残らない
+  expect(fetcher.mock.calls.every(c => c[1]?.signal?.aborted)).toBe(true)
+  hang = false
+  const started = Date.now()
+  const [after] = await geocode([{ kind: 'map', title: 'y', destination: { name: '駅' } }])
+  expect(Date.now() - started).toBeLessThan(200)
+  expect(after.kind === 'map' && after.geo?.precision).toBe('exact')
+  expect(fetcher.mock.calls.length).toBe(calls + 1)
+})
