@@ -10,6 +10,10 @@ type Entry = {
   createdAt: number
   runId?: string
   cancelRequested?: boolean
+  /** 停止依頼後に届いた承認への deny。結果が unknown なら停止を成功とはしない。 */
+  lateDenies?: Promise<'ok' | 'not_pending' | 'unknown'>[]
+  cancelUnconfirmed?: boolean
+  settled?: Promise<void>
   approval?: { approvalId: string; runId: string; hermesRequestId?: string; generation?: number; summary: string; expiresAt: number; consumed: boolean; choice?: 'once' | 'deny'; result?: 'ok' | 'not_pending' | 'unknown'; denyOnly: boolean; active: boolean; pendingResult?: Promise<'ok' | 'not_pending' | 'unknown'> }
 }
 /** 鍵らしき文字列だけを伏せる。path・URL は Owner が対象を判断するのに必要なので残す。 */
@@ -42,7 +46,7 @@ export function approvalSummary(approval: { description: string; command: string
   lines.push(command ? `実行内容: ${command}${fullyShown ? '' : '（全文を表示できないため拒否のみ可能）'}` : '実行内容: （不明のため拒否のみ可能）')
   return { summary: lines.join('\n'), fullyShown }
 }
-export function createConversation({ now, hermes, prefix }: { now: () => number; hermes: ReturnType<typeof createHermes>; prefix: string }) {
+export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 }: { now: () => number; hermes: ReturnType<typeof createHermes>; prefix: string; cancelSettleMs?: number }) {
   const entries = new Map<string, Entry>()
   let sessionStartedAt = now(),
     lastUse = sessionStartedAt,
@@ -109,8 +113,11 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
         pending.result ??= denyResult
       }
       const stopped = entry.runId ? await hermes.stop(entry.runId) : 'ok'
+      // stop と行き違いで届く承認があるので、run の終了を一定時間待ち、その間に届いた承認の deny 結果も確かめる。
+      if (entry.status === 'pending' && entry.settled) await Promise.race([entry.settled, new Promise<void>((r) => setTimeout(r, cancelSettleMs).unref?.())])
+      const late = await Promise.all(entry.lateDenies ?? [])
       // 承認の拒否を Hermes で確認できなかった場合は、停止を依頼しても承認が残りうるので停止成功とはしない。
-      return denyResult === 'unknown' ? 'unknown' : stopped
+      return denyResult === 'unknown' || late.includes('unknown') || entry.cancelUnconfirmed ? 'unknown' : stopped
     },
     submit(input: Input, instructions: string, onSettled?: (status: 'done' | 'failed' | 'unknown') => void): Entry | { error: 'request_conflict' | 'busy' } {
       const existing = this.check(input)
@@ -130,7 +137,13 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
           if (!approval) { if (entry.approval) entry.approval.active = false; return }
           // 停止を依頼した後に届いた承認は表示せず拒否する。
           if (entry.cancelRequested) {
-            void hermes.approve(runId, 'deny', approval.requestId, approval.generation).catch(() => {})
+            // 結果を破棄しない: unknown なら一度だけ再送し、それでも unknown なら停止未確認として記録する（後続の cancel は unknown を返す）。
+            const deny = () => hermes.approve(runId, 'deny', approval.requestId, approval.generation).catch(() => 'unknown' as const)
+            const result = deny().then((r) => (r === 'unknown' ? deny() : r)).then((r) => { if (r === 'unknown') entry.cancelUnconfirmed = true; return r })
+            ;(entry.lateDenies ??= []).push(result)
+            // Owner に一度だけ許可を出させない: 消費済み deny として記録する。
+            entry.approval = { approvalId: randomBytes(8).toString('hex'), runId, hermesRequestId: approval.requestId, generation: approval.generation, summary: '', expiresAt: now(), consumed: true, choice: 'deny', active: false, denyOnly: true, pendingResult: result }
+            void result.then((r) => { if (entry.approval?.pendingResult === result) entry.approval.result = r })
             return
           }
           if (input.kind === 'touch') {
@@ -171,6 +184,7 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
           }
           if (result.status !== 'done' && result.error) entry.error = result.error
           // 共有 claim の保存失敗（容量不足等）で process を落とさない。claim file は claimed のまま残り、再実行はされない。
+          markSettled()
           try { onSettled?.(result.status) } catch (e) { console.error('decision settle failed', e instanceof Error ? e.message : 'unknown') }
         }
       // ポーリング失敗/タイムアウト等で上流 run の終了を確認できないまま pending を解除すると、
@@ -184,6 +198,8 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
         console.warn('kohako_web_conv session_rotated upstream_unconfirmed')
         if (entry.runId) await hermes.stop(entry.runId)
       }
+      let markSettled: () => void = () => {}
+      entry.settled = new Promise<void>((r) => { markSettled = r })
       void (async () => {
         let result = await hermes.run(input.requestId, text, `${prefix}-${sessionStartedAt.toString(36)}`, instructions, onApproval, undefined, onRun)
         if (result.status === 'failed' && result.error === 'unknown_execution' && !entry.approval && !touchApproval) {

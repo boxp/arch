@@ -209,3 +209,24 @@ it('reports cancel as unconfirmed when the deny before stop is unknown (BOXP-503
   expect(await conv.cancel('owner-952')).toBe('unknown')
   expect(calls).toEqual([['approve', 'run', 'deny', 'p1', 1], ['stop', 'run']])
 })
+it('treats only 404/409 approval responses as not pending (BOXP-503)', async () => {
+  const { createHermes: real } = await import('./hermes.js')
+  for (const [status, expected] of [[409, 'not_pending'], [404, 'not_pending'], [429, 'unknown'], [400, 'unknown'], [200, 'ok']] as const) {
+    const hermes = real({ url: 'http://h', key: 'k', fetch: (async () => new Response(status === 200 ? '{}' : 'x', { status })) as typeof fetch })
+    expect(await hermes.approve('run', 'deny', 'p1', 1)).toBe(expected)
+  }
+})
+it('does not report cancel as successful when a deny for an approval arriving after stop is unknown (BOXP-503)', async () => {
+  const { createConversation } = await import('./conversation.js')
+  const calls: any[] = []
+  let cb: any = () => {}
+  const hermes = { run: (_id: string, _text: string, _session: string, _i: string, onApproval: any, _a: any, onRun: any) => { cb = onApproval; onRun('run'); return new Promise(() => {}) }, approve: async (...args: any[]) => { calls.push(['approve', ...args]); return 'unknown' }, stop: async (id: string) => { calls.push(['stop', id]); setTimeout(() => cb('run', { requestId: 'p2', generation: 2, description: 'test', command: 'echo late', choices: ['once', 'deny'] }), 5); return 'ok' } } as unknown as ReturnType<typeof createHermes>
+  const conv = createConversation({ now: Date.now, hermes, prefix: 'kohako-web', cancelSettleMs: 50 })
+  conv.submit({ requestId: 'owner-953', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }, 'i')
+  expect(await conv.cancel('owner-953')).toBe('unknown')
+  expect(calls).toEqual([['stop', 'run'], ['approve', 'run', 'deny', 'p2', 2], ['approve', 'run', 'deny', 'p2', 2]])
+  expect(await conv.approve('owner-953', conv.get('owner-953')!.approval!.approvalId, 'once')).toBe('approval_conflict')
+  // 窓の外で届いた場合も、記録された未確認状態により後続の cancel は成功を返さない。
+  cb('run', { requestId: 'p3', generation: 3, description: 'test', command: 'echo later', choices: ['once', 'deny'] })
+  expect(await conv.cancel('owner-953')).toBe('unknown')
+})
