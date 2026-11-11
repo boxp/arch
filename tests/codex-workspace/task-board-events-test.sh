@@ -242,6 +242,8 @@ test_home_inbox_copy_is_independent_of_telegram() {
   # Home down: Telegram delivery is still accepted, the home copy waits for a retry.
   echo 500 >"${CASE_TMP}/home-mode"
   record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress blocked blocked >/dev/null
+  mkdir -p "${CASE_VAULT}/Projects/task-board-events/delivered-copies"
+  printf '{"event":"BOXP-901-r1-blocked","text":"Telegram report"}' >"${CASE_VAULT}/Projects/task-board-events/delivered-copies/BOXP-901-r1-blocked.md"
   run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" \
     CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
   assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-blocked.edn" ':status :accepted'
@@ -257,9 +259,19 @@ test_home_inbox_copy_is_independent_of_telegram() {
   [[ "$(grep -c '^stored ' "${CASE_TMP}/home.log")" -eq 1 ]] || fail "home copy must be stored exactly once"
   assert_file_contains "${CASE_TMP}/home.log" '"eventId":"BOXP-901-r1-blocked"'
   assert_file_contains "${CASE_TMP}/home.log" '"ticketId":"BOXP-901"'
-  assert_file_contains "${CASE_TMP}/home.log" '"source":"task-board"'
+  assert_file_contains "${CASE_TMP}/home.log" '"source":"task-board-report"'
+  assert_file_contains "${CASE_TMP}/home.log" '"body":"Telegram report"'
   assert_file_contains "${CASE_STATE}/outbox/home/BOXP-901-r1-blocked.edn" ':status :sent'
   assert_file_not_contains "${CASE_TMP}/home.log" 'unauthorized'
+
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-903 r3 in-progress blocked blocked >/dev/null
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-904 r4 in-progress blocked blocked >/dev/null
+  mkdir -p "${CASE_VAULT}/Projects/task-board-events/delivery-receipts"
+  printf '{"event":"BOXP-903-r3-blocked","state":"silent"}' >"${CASE_VAULT}/Projects/task-board-events/delivery-receipts/BOXP-903-r3-blocked.md"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-903-r3-blocked.edn" ':status :skipped'
+  assert_file_not_contains "${CASE_TMP}/home.log" 'BOXP-903'
+  [[ ! -e "${CASE_STATE}/outbox/home/BOXP-904-r4-blocked.edn" ]] || fail "missing copy must wait"
 
   # Unset URL = rollback: nothing is sent to the home inbox.
   record "${CASE_VAULT}" "${CASE_STATE}" BOXP-902 r2 in-progress done done >/dev/null

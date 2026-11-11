@@ -3,6 +3,7 @@
 Only the authenticated task-board adapter's canonical chat identity is eligible.
 This module never modifies Notes, replays work, or relaxes gateway authorization.
 It writes metadata-only delivery receipts alongside the vault Tickets directory.
+Delivered copies separately preserve the text actually sent to Telegram for the home inbox.
 They are .md notes because the dispatcher reads them from another replica of the
 vault, and Obsidian Sync does not carry .json files.
 """
@@ -168,6 +169,26 @@ def vault_receipt(vault, event, state, classification):
         return False
 
 
+
+def delivered_copy(vault, event, content, classification):
+    try:
+        directory = Path(vault).parent / "Projects/task-board-events/delivered-copies"
+        directory.mkdir(parents=True, exist_ok=True)
+        import tempfile
+        fd, temporary = tempfile.mkstemp(prefix=".copy-", dir=directory)
+        try:
+            with os.fdopen(fd, "w") as stream:
+                json.dump({"event": event, "classification": classification, "text": content,
+                           "sent_at": clock().isoformat()}, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, directory / (event + ".md"))
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+    except Exception:
+        logger.warning("task-board delivered copy unavailable event=%s", event)
+
 def receipt_shows_egress(vault, event, root=None):
     """True when a send of this event happened or may have happened."""
     if root is None:
@@ -297,6 +318,8 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
                 logger.warning("task-board delivery event=%s classification=%s state=uncertain", event, classification)
                 return SendResult(success=False, error=f"Delivery uncertain; reconcile event={event}")
             save("sent" if sent.success else "uncertain")
+            if sent.success:
+                delivered_copy(vault, event, content, classification)
             vault_receipt(vault, event, "sent" if sent.success else "uncertain", classification)
             logger.info("task-board delivery event=%s classification=%s state=%s", event, classification,
                         "sent" if sent.success else "uncertain")

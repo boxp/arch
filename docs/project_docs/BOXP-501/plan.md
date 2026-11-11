@@ -35,3 +35,7 @@
 ## 既存契約
 - 02:00–09:00 JST 静音、Task Board の defer/quiet-held、Alertmanager critical 例外、サンライズ例外は変えない。
 - Telegram は一括停止しない。家とTelegramの会話履歴は統合しない。
+
+## 段階3' (TD-02): Telegram 実配信本文の複製
+
+Hermes は Telegram への送信成功後、receipt より先に実送信本文を delivered-copies に原子的に保存する。dispatcher は同期された本文をそのまま家の受信箱へ転送し、選択肢を抽出する。silent、quiet-held および未送信の event は家へ出さず、静音中の内容は朝 digest の実配信本文で届ける。コピーが未着の場合は期限まで待つ。BFF は同一 event ID の重複を防ぎ、旧方式の raw 項目を一覧と未読数から除外する。cron、Alertmanager、サンライズは未接続で、Telegram を維持し次段階で扱う。

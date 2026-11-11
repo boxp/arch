@@ -80,6 +80,7 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(list(self.root.glob("*.json")))
             path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".md")
             self.assertEqual(json.loads(path.read_text())["state"], "quiet-held")
+            self.assertFalse((self.vault.parent / "Projects/task-board-events/delivered-copies" / (EVENT + ".md")).exists())
         with patch.object(delivery, "clock", return_value=datetime(2026, 10, 30, 0, 0, tzinfo=timezone.utc)):
             self.assertTrue((await self.send("report")).success)
             self.assertEqual(self.calls, ["report"])
@@ -245,7 +246,11 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
                 text = "【Task Board 通知】SFW fixture"
                 self.assertEqual(self.shape(text), (text, False))
                 self.assertTrue((await self.send(text)).success)
-                self.assertTrue((await self.send(text)).success)
+                copy = self.vault.parent / "Projects/task-board-events/delivered-copies" / (EVENT + ".md")
+                self.assertEqual(json.loads(copy.read_text())["text"], text)
+                original = copy.read_bytes()
+                self.assertTrue((await self.send("different duplicate")).success)
+                self.assertEqual(copy.read_bytes(), original)
                 self.assertEqual(self.calls[-1], text)
         self.assertEqual(len(self.calls), 2)
 
@@ -254,6 +259,7 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.shape("[SILENT]", marker=True), ("[SILENT]", True))
         self.assertTrue((await self.send("NO_REPLY")).success)
         self.assertFalse(self.calls)
+        self.assertFalse((self.vault.parent / "Projects/task-board-events/delivered-copies" / (EVENT + ".md")).exists())
 
     async def test_silence_without_evidence_alerts_once(self):
         text, silent = self.shape("[SILENT]", marker=True)
@@ -482,6 +488,7 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
             metadata={"_boxp_task_board_final": True, "_boxp_task_board_queued": True},
             root=self.root, vault=self.vault)
         self.assertFalse(result.success)
+        self.assertFalse((self.vault.parent / "Projects/task-board-events/delivered-copies" / (EVENT + ".md")).exists())
         self.fail = False
         self.assertFalse((await self.send("SFW fallback report")).success)
         self.assertEqual(len(self.calls), 1)

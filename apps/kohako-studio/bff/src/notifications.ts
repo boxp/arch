@@ -11,7 +11,7 @@ export async function createNotifications(dir: string, push: (id: string) => Pro
   const mutate = <T>(fn: () => Promise<T> | T): Promise<T> => { const result = queue.then(fn); queue = result.then(() => {}, () => {}); return result }
   const save = () => atomic(path, items)
   return {
-    list: () => ({ items: [...items].reverse(), unread: items.filter(i => !i.readAt).length }),
+    list: () => { const visible = items.filter(i => i.source !== 'task-board'); return { items: [...visible].reverse(), unread: visible.filter(i => !i.readAt).length } },
     ingest: (x: any) => mutate(async () => {
       if (!validPayload(x)) return 'invalid' as const
       const old = items.find(i => i.eventId === x.eventId)

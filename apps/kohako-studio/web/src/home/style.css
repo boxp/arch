@@ -146,3 +146,5 @@ body[data-shape="landscape"] .viewer iframe{height:min(300px,55vh)}
 .queue li.unconfirmed{background:#fbf1dc}
 .q-state{flex:none;font-size:.75rem;color:var(--muted)}.q-text{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
 .queue p{margin:2px 0}.queue p:empty{display:none}.queue .actions button[hidden]{display:none}
+
+#inbox-detail p { white-space: pre-wrap; }
