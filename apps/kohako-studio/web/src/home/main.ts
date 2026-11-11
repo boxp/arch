@@ -3,7 +3,7 @@ import { initInbox } from './inbox'
 // 会話の送信・重複防止・停止・承認・追跡は Studio（src/studio/main.ts）と同じ規則。人格・判断・記憶は Hermes だけが持つ。
 import './style.css'
 import { states, formatPool, formatTasks, gaugeOf, taskBadgeOf, upstreamUnavailable, type Status } from './status'
-import { validateViews, mapsUrl, htmlSrcdoc, sanitizeHtml, type View } from './views'
+import { validateViews, mapsUrl, osmUrl, htmlSrcdoc, sanitizeHtml, type View } from './views'
 import { clipHold, isPetting, petFollow, petShown, zeroPet } from './petfollow'
 import { makeVisemes, visemeAt, boundaryTime, spokenSeconds, type VisemeSequence } from '../live2d/viseme'
 import { interpretRequest, newOutgoing, pcm16, presentation, resolveUnconfirmed, rigStateOf, sendOutcomeUnknown, silentSpeechSeconds, studioRigModelId, wantsActing, wantsRig, type Outgoing, type State } from '../studio/model'
@@ -98,7 +98,7 @@ function renderCards(next: Card[], views: View[] = []) {
     cardList.append(box)
   }
   for (const view of views) {
-    const button = document.createElement('button'); button.type = 'button'; button.textContent = view.kind === 'map' ? '地図を開く' : view.kind === 'usage' ? '利用枠のグラフを開く' : '図を開く'
+    const button = document.createElement('button'); button.type = 'button'; button.textContent = view.kind === 'map' ? '地図を表示' : view.kind === 'usage' ? '利用枠のグラフを開く' : '図を開く'
     button.addEventListener('click', () => openViewer(view, button)); cardList.append(button)
   }
   cardsBox.hidden = !cardsOpen
@@ -114,17 +114,26 @@ function closeViewer(focus = true) {
 }
 el('viewer-close').addEventListener('click', () => closeViewer())
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !viewer.hidden) closeViewer() })
-function openViewer(view: View, opener: HTMLElement) {
+function openViewer(view: View, opener: HTMLElement, focus = true) {
   viewerOpener = opener; viewer.hidden = false; body.dataset.viewer = 'open'; viewerBody.replaceChildren()
   el('viewer-title').textContent = view.title ?? '利用枠'; refreshScene(true)
   const line = (text: string) => { const p = document.createElement('p'); p.textContent = text; viewerBody.append(p); return p }
   if (view.kind === 'map') {
+    // 地図を先頭に置き、スマホでもスクロールなしで見えるようにする。
+    if (view.geo) {
+      const frame = document.createElement('iframe'); frame.src = osmUrl(view.geo); frame.setAttribute('sandbox', 'allow-scripts allow-same-origin'); frame.referrerPolicy = 'no-referrer'; frame.setAttribute('allow', ''); frame.loading = 'eager'; frame.title = view.title; viewerBody.append(frame)
+      line('© OpenStreetMap contributors')
+    } else line('地図の位置を特定できませんでした')
     line([view.destination.name, view.destination.address].filter(Boolean).join(' '))
     if (view.mode) line(`移動手段: ${{ transit: '公共交通', walking: '徒歩', driving: '車', bicycling: '自転車' }[view.mode]}`)
     if (view.origin) line(`出発地: ${view.origin}`)
+    if (view.geo) {
+      line(view.geo.precision === 'area' ? `番地まで特定できなかったため『${view.geo.label}』付近を表示しています` : `『${view.geo.label}』の位置（OpenStreetMap の検索結果）`)
+      line('地図は OpenStreetMap から読み込みます（目的地付近の位置だけが送られ、出発地は送りません）。経路はこの地図には描かれません。')
+    }
     const link = (text: string, origin: boolean) => { const a = document.createElement('a'); a.href = mapsUrl(view, origin); a.target = '_blank'; a.rel = 'noopener noreferrer'; a.referrerPolicy = 'no-referrer'; a.textContent = text; viewerBody.append(a, document.createElement('br')) }
     link('Google マップで経路を開く', false); if (view.origin) link(`出発地『${view.origin}』から開く`, true)
-    line('開くと目的地（出発地を選んだ場合は出発地も）が Google に送られます。家の中への地図の埋め込みは Google の API キー（新しい契約）が必要なため行っていません。')
+    line('開くと目的地（出発地を選んだ場合は出発地も）が Google に送られます。Google マップの家の中への埋め込みは API キー（新しい契約）が必要なため、地図は OpenStreetMap で表示しています。')
   } else if (view.kind === 'html') {
     line('コハコが作った図です。数値は会話内容にもとづくもので、確認されたデータではありません。')
     const frame = document.createElement('iframe'); frame.setAttribute('sandbox', ''); frame.referrerPolicy = 'no-referrer'; frame.setAttribute('allow', ''); frame.title = view.title; frame.srcdoc = htmlSrcdoc(sanitizeHtml(view.html)); viewerBody.append(frame)
@@ -145,7 +154,7 @@ function openViewer(view: View, opener: HTMLElement) {
     }
     refresh.addEventListener('click', async () => { await refreshStatus(); draw() }); draw(); if (!statusValue) void refreshStatus().then(draw)
   }
-  el('viewer-close').focus()
+  if (focus) el('viewer-close').focus()
 }
 
 el('cards-close').addEventListener('click', () => { renderCards([]); lastActivity = Date.now() - 60_000; refreshScene(true) })
@@ -343,6 +352,8 @@ function deliver(text: string, views: View[] = []) {
   error.textContent = ''; trouble.hidden = true
   lastReply = text; lastActivity = Date.now(); reply.dataset.reply = '1'
   setBubble(text || '（空の返答でした）'); addHistory('コハコ', text); renderCards(cardsFromText(text), views)
+  const map = views.find(view => view.kind === 'map'), mapButton = map && cardList.querySelector<HTMLButtonElement>('button:last-child')
+  if (map && mapButton) openViewer(map, mapButton, false)
   if (actingEnabled && text) {
     const sentences = splitSentences(text)
     acting?.beginReply(); show('speaking')

@@ -1,3 +1,4 @@
+import { createGeocoder } from './geocode.js'
 import type { createNotifications } from './notifications.js'
 import type { createPush } from './push.js'
 import { VIEW_INSTRUCTIONS } from './views.js'
@@ -13,7 +14,8 @@ export const studioInstructions = BASE_INSTRUCTIONS
 type Principal = 'owner' | 'verifier' | 'notifier'
 export function createApp(opts: { authenticate: (headers: IncomingMessage['headers']) => Promise<Principal | null>; hermes?: ReturnType<typeof createHermes>; notifications?: Awaited<ReturnType<typeof createNotifications>>; push?: Awaited<ReturnType<typeof createPush>>; sttUrl?: string; status?: { get: () => Promise<StatusPayload> }; now?: () => number; fetch?: typeof fetch }) {
   const now = opts.now ?? Date.now, fetcher = opts.fetch ?? fetch
-  const conversations = opts.hermes ? { owner: createConversation({ now, hermes: opts.hermes, prefix: 'kohako-web' }), verifier: createConversation({ now, hermes: opts.hermes, prefix: 'kohako-verify' }) } : undefined
+  const geocode = createGeocoder({ fetcher })
+  const conversations = opts.hermes ? { owner: createConversation({ now, hermes: opts.hermes, prefix: 'kohako-web', geocode }), verifier: createConversation({ now, hermes: opts.hermes, prefix: 'kohako-verify', geocode }) } : undefined
   const awaitingApproval = (e: NonNullable<ReturnType<NonNullable<typeof conversations>['owner']['get']>>) => e.status === 'pending' && !!e.approval?.active && !e.approval.consumed
   const view = (e: NonNullable<ReturnType<NonNullable<typeof conversations>['owner']['get']>>) => ({ requestId: e.requestId, status: awaitingApproval(e) ? 'approval' : e.status, ...(e.reply ? { reply: e.reply } : {}), ...(e.error ? { error: e.error } : {}), ...(awaitingApproval(e) && e.approval ? { approval: { approvalId: e.approval.approvalId, summary: e.approval.summary, expiresAt: e.approval.expiresAt } } : {}) })
   return async (req: IncomingMessage, res: ServerResponse) => {
