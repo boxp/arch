@@ -200,3 +200,12 @@ it('waits for an in-flight deny before stopping on concurrent cancel (BOXP-503)'
   await Promise.all([first, second])
   expect(calls.slice(1)).toEqual([['stop', 'run'], ['stop', 'run']])
 })
+it('reports cancel as unconfirmed when the deny before stop is unknown (BOXP-503)', async () => {
+  const { createConversation } = await import('./conversation.js')
+  const calls: any[] = []
+  const hermes = { run: (_id: string, _text: string, _session: string, _i: string, onApproval: any, _a: any, onRun: any) => { onRun('run'); onApproval('run', { requestId: 'p1', generation: 1, description: 'test', command: 'echo hi', choices: ['once', 'deny'] }); return new Promise(() => {}) }, approve: async (...args: any[]) => { calls.push(['approve', ...args]); return 'unknown' }, stop: async (id: string) => { calls.push(['stop', id]); return 'ok' } } as unknown as ReturnType<typeof createHermes>
+  const conv = createConversation({ now: Date.now, hermes, prefix: 'kohako-web' })
+  conv.submit({ requestId: 'owner-952', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }, 'i')
+  expect(await conv.cancel('owner-952')).toBe('unknown')
+  expect(calls).toEqual([['approve', 'run', 'deny', 'p1', 1], ['stop', 'run']])
+})

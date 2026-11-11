@@ -103,11 +103,14 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
         pending.pendingResult = hermes.approve(pending.runId, 'deny', pending.hermesRequestId, pending.generation)
       }
       // 並行する cancel・自動 deny・Owner の回答で承認が送信中なら、その完了を待ってから stop する（拒否より先に停止しない）。
+      let denyResult: 'ok' | 'not_pending' | 'unknown' = 'ok'
       if (pending?.pendingResult) {
-        const result = await pending.pendingResult.catch(() => 'unknown' as const)
-        pending.result ??= result
+        denyResult = await pending.pendingResult.catch(() => 'unknown' as const)
+        pending.result ??= denyResult
       }
-      return entry.runId ? hermes.stop(entry.runId) : 'ok'
+      const stopped = entry.runId ? await hermes.stop(entry.runId) : 'ok'
+      // 承認の拒否を Hermes で確認できなかった場合は、停止を依頼しても承認が残りうるので停止成功とはしない。
+      return denyResult === 'unknown' ? 'unknown' : stopped
     },
     submit(input: Input, instructions: string, onSettled?: (status: 'done' | 'failed' | 'unknown') => void): Entry | { error: 'request_conflict' | 'busy' } {
       const existing = this.check(input)
