@@ -39,3 +39,10 @@
 ## 段階3' (TD-02): Telegram 実配信本文の複製
 
 Hermes は Telegram への送信成功後、receipt より先に実送信本文を delivered-copies に原子的に保存する。dispatcher は同期された本文をそのまま家の受信箱へ転送し、選択肢を抽出する。silent、quiet-held および未送信の event は家へ出さず、静音中の内容は朝 digest の実配信本文で届ける。コピーが未着の場合は期限まで待つ。BFF は同一 event ID の重複を防ぎ、旧方式の raw 項目を一覧と未読数から除外する。cron、Alertmanager、サンライズは未接続で、Telegram を維持し次段階で扱う。
+
+### ビルド障害対応: Ubuntu 取得先の国内ミラー切替 (2026-11-11, Owner 承認済み)
+
+- 理由: archive.ubuntu.com が GitHub runner と cluster の両方で名前解決できず、Codex Workspace Image の `apt-get update` が失敗した。
+- 変更: `docker/codex-workspace/Dockerfile` で本体 archive の `URIs` だけを `http://linux.yz.yamagata-u.ac.jp/ubuntu/` へ置き換える。security.ubuntu.com、OS 版、署名検証の設定は変えない。
+- 確認: resolute-updates の InRelease は公式の security.ubuntu.com 上の同じファイルと日時が一致した。Ubuntu Archive 署名鍵で正しい署名と確認した。digest を固定した base image (26.04/amd64) で apt update とパッケージ取得が成功した。
+- 戻し方: build-arg `UBUNTU_ARCHIVE_MIRROR=http://archive.ubuntu.com/ubuntu/` を渡すか、ARG の既定値を戻す。
