@@ -40,6 +40,8 @@ await scenario('reloadBeforePostReply', (n, rl) => !rl.active ? [200, { status: 
 await scenario('reloadBeforePostUnaccepted', (n, rl) => [404, { error: 'unknown_request' }], { active: false, postHang: true })
 // 再読込後の初回照会が 401（認証切れ）→ 未認証表示とエラー、送信不可、控えは残す（P1: 送信を再有効化しない）
 await scenario('reload401', (n, rl) => !rl.active ? [200, { status: 'pending' }] : [401, { error: 'unauthenticated' }], { active: false, submitAfterReload: true })
+// POST 応答前に再読込し、受理状況の照会が 401（認証切れ）→ 未認証表示、送信不可、控え（unconfirmed）は残す
+await scenario('reloadBeforePost401', (n, rl) => [401, { error: 'unauthenticated' }], { active: false, postHang: true, submitAfterReload: true })
 // 404 → 終了
 await scenario('gone404', n => [404, { error: 'not_found' }])
 console.log(JSON.stringify(out, null, 1))

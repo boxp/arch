@@ -502,6 +502,8 @@ async function resumeUnconfirmed(pending: Outgoing) {
     addHistory('あなた', pending.text); addHistory('お知らせ', '再読み込み前の送信は受理済みでした。再送せずに結果を追います。'); show('thinking'); void poll(requestId); return
   }
   busy = false
+  // 401/403 は認証切れ。控えを残したまま未認証表示にして送信を止め、再ログイン後の再接続で受理状況を確認し直す。
+  if (lookup && (lookup.status === 401 || lookup.status === 403) && unconfirmed === pending) { message.value = pending.text; fail(lookup.status, lookup.data); return }
   if (unconfirmed === pending) { message.value = pending.text; addHistory('お知らせ', '再読み込み前の送信の受理を確認できませんでした。もう一度送信すると、同じ受付番号で確認してから送ります（二重実行はしません）。') }
   show(state)
 }
