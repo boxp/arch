@@ -242,6 +242,15 @@ it('does not report cancel as successful while the run end is unconfirmed (BOXP-
   settle({ status: 'failed', error: 'x' }); await new Promise(r => setTimeout(r, 5))
   expect(conv.get('owner-954')!.status).toBe('failed')
 })
+it('does not report cancel as successful when the run settles as unknown (BOXP-503)', async () => {
+  const { createConversation } = await import('./conversation.js')
+  let settle: (v: any) => void = () => {}
+  const hermes = { run: (_id: string, _text: string, _session: string, _i: string, _onApproval: any, _a: any, onRun: any) => { onRun('run'); return new Promise(r => { settle = r }) }, approve: async () => 'ok', stop: async () => { settle({ status: 'unknown', error: 'poll_failed' }); return 'ok' } } as unknown as ReturnType<typeof createHermes>
+  const conv = createConversation({ now: Date.now, hermes, prefix: 'kohako-web', cancelSettleMs: 20 })
+  conv.submit({ requestId: 'owner-957', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }, 'i')
+  expect(await conv.cancel('owner-957')).toBe('unknown')
+  expect(conv.get('owner-957')!.status).toBe('unknown')
+})
 it('waits for the touch auto-deny before stopping and reports its unknown result (BOXP-503)', async () => {
   const { createConversation } = await import('./conversation.js')
   const calls: any[] = []

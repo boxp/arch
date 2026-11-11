@@ -116,7 +116,9 @@ export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 
       // stop と行き違いで届く承認があるので、run の終了を一定時間待ち、その間に届いた承認の deny 結果も確かめる。
       if (entry.status === 'pending' && entry.settled) await Promise.race([entry.settled, new Promise<void>((r) => setTimeout(r, cancelSettleMs).unref?.())])
       // run の終了を確認できなければ、この後に届く承認の deny 成否を確かめられないので停止成功とはしない。
-      const runEnded = entry.status !== 'pending'
+      // status=unknown（ポーリング失敗等）や internal_error は上流 run の終了を確認できていないので終了扱いにしない。
+      const status = entry.status as Entry['status']
+      const runEnded = status === 'done' || (status === 'failed' && entry.error !== 'internal_error')
       const late = await Promise.all(entry.lateDenies ?? [])
       // 承認の拒否を Hermes で確認できなかった場合は、停止を依頼しても承認が残りうるので停止成功とはしない。
       return !runEnded || denyResult === 'unknown' || late.includes('unknown') || entry.cancelUnconfirmed ? 'unknown' : stopped
