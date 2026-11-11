@@ -296,7 +296,7 @@ describe('実行時の動作の割り込み', () => {
     stage.playGesture('joy'); run(frame, 1.5); stage.reset()
     const alpha = () => (stage.report() as { armSwitch: { posedAlpha: number } | null }).armSwitch?.posedAlpha
     run(frame, JOY_LOWER_SECONDS - JOY_SWITCH_SECONDS - 0.03); expect(alpha()).toBe(1)
-    run(frame, 0.08); expect(alpha() ?? 0).toBeLessThan(1)
+    run(frame, 0.1); expect(alpha() ?? 0).toBeLessThan(1) // 切替時間の中点で一瞬で切り替える
     run(frame, 0.2); expect((stage.report() as { armSwitch: unknown }).armSwitch).toBeNull()
   })
   it('解除後は腕の変形が外れて休止位置へ戻る', () => {
@@ -568,6 +568,7 @@ describe('案内の 1 枚腕（案内専用の生成絵、BOXP-476 TD-06）', ()
 describe('喜びの中割り（BOXP-495 案C）', () => {
   it('入りは待機→中割り→喜び、戻りは喜び→中割り→待機の順で、中割りの拳は待機の手と喜びの低い拳の間の高さにある', () => {
     expect(joyMidMix(0, 0)).toBe(0); expect(joyMidMix(0.3, 0)).toBe(1)
+    for (const t of [0.12, 0.135, 0.15]) expect([0, 1]).toContain(joyMidMix(t, 0)) // 重ねずに一瞬で切り替える
     expect(joyMidMix(1, 0.5)).toBe(1); expect(joyMidMix(1, 0.8)).toBe(0)
     const fist = joyMidPoint(JOY_MID.fistPx, joyMidAngle(0.05, 0)), elbow = joyMidPoint(JOY_MID.elbowPx, joyMidAngle(0.05, 0))
     const low = joyArmPoint(JOY_ARM.fistPx, joyArmMotion(JOY_SWITCH_SECONDS, 0))

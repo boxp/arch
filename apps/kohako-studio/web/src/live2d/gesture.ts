@@ -371,8 +371,14 @@ export const JOY_MID = {
 export const JOY_MID_SWAP = { inFrom: 0.1, inTo: 0.17, outFrom: 0.55, outTo: 0.7 }
 /** 喜びの腕の見え方（0=中割りだけ、1=喜びだけ）。中割りは喜びの裏に置き、喜びが出きるまで消さない。 */
 export function joyMidMix(t: number, out = 0): number {
+  // ae2e87f6 は半透明で重ねたため中割りの拳と喜びの拳が二つ見えた（独立判定 td06j-review-ae2e87f）。重ねずに区間の中点で一瞬で切り替える。
   const S = JOY_MID_SWAP
-  return smooth(S.inFrom, S.inTo, t) * (1 - smooth(S.outFrom, S.outTo, out))
+  return (t >= (S.inFrom + S.inTo) / 2 ? 1 : 0) * (out >= (S.outFrom + S.outTo) / 2 ? 0 : 1)
+}
+/** 喜びの待機の腕⇄中割りの切替（in は 0→1、out は 1→0）。重ねずに切替時間の中点で一瞬で切り替える（手が二つ見えない）。 */
+export function joyCut(x: number, phase: 'in' | 'out'): number {
+  const on = x >= 0.5 ? 1 : 0
+  return phase === 'in' ? on : 1 - on
 }
 /** 中割りの回転（画面の時計回りが正）。入りは肘を少し外へ開きながら拳を持ち上げ、戻りは裏返す。 */
 export function joyMidAngle(t: number, out = 0): number {
@@ -654,7 +660,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     if (sw) {
       sw.t += dt
       const x = Math.min(1, Math.max(0, sw.t - lead) / switchSeconds())
-      posedAlpha = sw.phase === 'in' ? ease(x) : 1 - ease(x)
+      posedAlpha = joySet ? joyCut(x, sw.phase) : sw.phase === 'in' ? ease(x) : 1 - ease(x)
       if (x >= 1) {
         const ended = sw; sw = null; posedAlpha = 1
         if (ended.phase === 'out') { haltSet = false; shySet = false; guideSet = false; greetSet = false; joySet = false; haltOut = 0; frozen = null; switched = false; pose = { right: REST, left: REST, body: NO_BODY }; armBlend = 0 }
