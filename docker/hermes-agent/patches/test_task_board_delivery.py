@@ -254,6 +254,39 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(self.calls[-1], text)
         self.assertEqual(len(self.calls), 2)
 
+    async def test_failed_home_copy_after_egress_is_recovered_not_deduplicated(self):
+        self.note("notified")
+        text = "【Task Board 通知】SFW fixture"
+        copy = self.vault.parent / "Projects/task-board-events/delivered-copies" / (EVENT + ".md")
+        original = delivery.delivered_copy
+        with patch.object(delivery, "delivered_copy", return_value=False):
+            self.assertTrue((await self.send(text)).success)
+        self.assertFalse(copy.exists())
+        local = json.loads(next(self.root.glob("*.json")).read_text())
+        self.assertEqual((local["state"], local["copy_text"]), ("sent", text))
+        with patch.object(delivery, "delivered_copy", side_effect=original):
+            # The redelivery is deduplicated (no second Telegram send) but the copy is retried.
+            self.assertTrue((await self.send("different duplicate")).success)
+        self.assertEqual(self.calls, [text])
+        self.assertEqual(json.loads(copy.read_text())["text"], text)
+        local = json.loads(next(self.root.glob("*.json")).read_text())
+        self.assertNotIn("copy_text", local)
+        self.assertTrue(local["copied"])
+
+    async def test_pending_home_copy_is_recovered_by_another_event(self):
+        self.note("notified")
+        text = "【Task Board 通知】SFW fixture"
+        with patch.object(delivery, "delivered_copy", return_value=False):
+            self.assertTrue((await self.send(text)).success)
+        other = "BOXP-999-20261030T130000Z-00000000-0000-0000-0000-000000000001-review"
+        chat = "webhook:v2:" + base64.urlsafe_b64encode(json.dumps(["default", "task-board", other]).encode()).decode().rstrip("=")
+        self.note("notified", event=other)
+        await delivery.send_once(self.adapter, chat, "other report", metadata={"_boxp_task_board_final": True},
+                                 root=self.root, vault=self.vault)
+        copies = self.vault.parent / "Projects/task-board-events/delivered-copies"
+        self.assertEqual(json.loads((copies / (EVENT + ".md")).read_text())["text"], text)
+        self.assertEqual(json.loads((copies / (other + ".md")).read_text())["text"], "other report")
+
     async def test_proven_silent_has_no_warning_or_egress(self):
         self.note("silent")
         self.assertEqual(self.shape("[SILENT]", marker=True), ("[SILENT]", True))
@@ -271,7 +304,8 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
         receipt = json.loads(next(self.root.glob("*.json")).read_text())
         self.assertEqual(receipt["classification"], "unresolved")
         self.assertEqual(receipt["state"], "sent")  # notice delivered; business outcome unresolved
-        self.assertEqual(set(receipt), {"event", "classification", "state", "updated_at"})
+        # Delivered text stays out of the local receipt once the home copy is durable.
+        self.assertEqual(set(receipt), {"event", "classification", "state", "updated_at", "copied"})
 
     async def test_notified_but_missing_reply_is_not_silence(self):
         self.note("notified")

@@ -186,8 +186,68 @@ def delivered_copy(vault, event, content, classification):
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
+        return True
     except Exception:
         logger.warning("task-board delivered copy unavailable event=%s", event)
+        return False
+
+
+def copy_exists(vault, event):
+    path = Path(vault).parent / "Projects/task-board-events/delivered-copies" / (event + ".md")
+    try:
+        return json.loads(path.read_text()).get("event") == event
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def recover_copies(vault, root):
+    """Telegram already has these reports; retry the home copy whose write failed.
+
+    The local sent receipt keeps the delivered text until the copy is written, so a
+    storage failure after egress delays the home inbox instead of losing it.
+    """
+    try:
+        paths = list(Path(root).glob("*.json"))
+    except OSError:
+        return
+    for path in paths:
+        try:
+            lock = (Path(root) / (path.name.split(".")[0] + ".lock")).open("a")
+        except OSError:
+            continue
+        with lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue  # an in-flight send of this event owns its receipt
+            recover_copy(vault, path)
+
+
+def recover_copy(vault, path):
+    try:
+        previous = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(previous, dict) or previous.get("state") != "sent" or "copy_text" not in previous:
+        return
+    event = previous.get("event")
+    if not event:
+        return
+    if not (copy_exists(vault, event) or
+            delivered_copy(vault, event, previous["copy_text"], previous.get("classification"))):
+        return
+    previous.pop("copy_text", None)
+    previous["copied"] = True
+    try:
+        temporary = path.with_suffix(".tmp")
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            json.dump(previous, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except OSError:
+        logger.warning("task-board delivered copy receipt update failed event=%s", event)
 
 def receipt_shows_egress(vault, event, root=None):
     """True when a send of this event happened or may have happened."""
@@ -256,6 +316,7 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
             root = get_hermes_home() / "task-board-delivery-receipts"
         root = Path(root)
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        recover_copies(vault, root)
         key = hashlib.sha256(event.encode()).hexdigest()
         # A reconciliation notice is not the business report. Its successful
         # delivery must not consume the report's receipt if a later authorized
@@ -293,9 +354,9 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
             # Resolve the authorized destination before creating any delivery intent.
             delivery = retained_destination(adapter, chat_id)
 
-            def save(state):
+            def save(state, **extra):
                 payload = {"event": event, "classification": classification, "state": state,
-                           "updated_at": datetime.now(timezone.utc).isoformat()}
+                           "updated_at": datetime.now(timezone.utc).isoformat(), **extra}
                 temporary = path.with_suffix(".tmp")
                 fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
                 with os.fdopen(fd, "w") as stream:
@@ -317,9 +378,14 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
                 vault_receipt(vault, event, "uncertain", classification)
                 logger.warning("task-board delivery event=%s classification=%s state=uncertain", event, classification)
                 return SendResult(success=False, error=f"Delivery uncertain; reconcile event={event}")
-            save("sent" if sent.success else "uncertain")
             if sent.success:
-                delivered_copy(vault, event, content, classification)
+                # Keep the delivered text until the home copy is durable: a failed copy
+                # write is retried by recover_copies instead of being deduplicated away.
+                save("sent", copy_text=content)
+                if delivered_copy(vault, event, content, classification):
+                    save("sent", copied=True)
+            else:
+                save("uncertain")
             vault_receipt(vault, event, "sent" if sent.success else "uncertain", classification)
             logger.info("task-board delivery event=%s classification=%s state=%s", event, classification,
                         "sent" if sent.success else "uncertain")
