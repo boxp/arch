@@ -1,9 +1,10 @@
+import { VIEW_INSTRUCTIONS } from './views.js'
 import type { StatusPayload } from './status.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createConversation, type Input } from './conversation.js'
 import { createHermes } from './hermes.js'
 import { pcmToWav, STT_FINAL_FIELDS } from './stt.js'
-export const instructions = 'あなたの返答は Web UI の吹き出しに表示され、必要に応じて音声で読み上げられます。'
+export const instructions = 'あなたの返答は Web UI の吹き出しに表示され、必要に応じて音声で読み上げられます。' + VIEW_INSTRUCTIONS
 type Principal = 'owner' | 'verifier'
 export function createApp(opts: { authenticate: (headers: IncomingMessage['headers']) => Promise<Principal | null>; hermes?: ReturnType<typeof createHermes>; sttUrl?: string; status?: { get: () => Promise<StatusPayload> }; now?: () => number; fetch?: typeof fetch }) {
   const now = opts.now ?? Date.now, fetcher = opts.fetch ?? fetch

@@ -1,3 +1,4 @@
+import { extractViews, type View } from './views.js'
 import { createHash, randomBytes } from 'node:crypto'
 import type { createHermes } from './hermes.js'
 export type Input = { requestId: string; expiresAt: number } & ({ kind: 'text'; text: string } | { kind: 'touch'; touch: { zone: 'head' | 'hand'; action: 'pat' | 'tap'; count: number } })
@@ -5,7 +6,7 @@ type Entry = {
   requestId: string
   payloadHash: string
   status: 'pending' | 'done' | 'failed' | 'unknown'
-  reply?: { text: string; at: number }
+  reply?: { text: string; at: number; views?: View[] }
   error?: string
   createdAt: number
   runId?: string
@@ -197,8 +198,9 @@ export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 
           // 終了した run の承認待ちは無効化する（ポーリング失敗/タイムアウトで approval が残り承認待ちを返し続けないように）。
           if (entry.approval) entry.approval.active = false
           if (result.status === 'done') {
-            entry.reply = { text: result.text, at: now() }
-            lastExchange = { kind: input.kind, text: text.slice(0, 500), reply: result.text.slice(0, 1000) }
+            const extracted = extractViews(result.text), reply = extracted.text.slice(0, 1000)
+            entry.reply = { text: reply, at: now(), ...(extracted.views.length ? { views: extracted.views } : {}) }
+            lastExchange = { kind: input.kind, text: text.slice(0, 500), reply }
           }
           if (result.status !== 'done' && result.error) entry.error = result.error
           // 共有 claim の保存失敗（容量不足等）で process を落とさない。claim file は claimed のまま残り、再実行はされない。

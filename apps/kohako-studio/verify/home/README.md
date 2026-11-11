@@ -18,3 +18,5 @@ Playwright コンテナ（`mcr.microsoft.com/playwright:v1.56.1-noble`、`npm i 
 `pat.mjs` は同じ条件で頭を右・左になでたときの petFollow 値と顔周辺の画像（静止 / 右 / 左 / 離した後）を /out に保存します（Playwright のパッケージ解決のため /pw/node_modules/playwright-core へのリンクが必要です）。
 
 `statusview.mjs` は `STATUS_JSON` の実データ写しと BFF モックを使い、舞台内ウィジェットの数値、詳細の開閉、各画面サイズの重なり、取得失敗時の表示を確認し、スクリーンショットを保存します。
+
+`viewpanel.mjs` は BFF をモックして地図・利用枠・HTML 図の表示、iframe の制約、操作欄との重なりを PC・スマートフォンで検証します。ビルドを `SITE`（既定 `/site`）の `kohako/` に配置し、必要に応じて `PORT` と出力ディレクトリ引数を指定して実行します。

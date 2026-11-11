@@ -115,7 +115,7 @@ export function createHermes({
       let waiting = false,
         pollErrors = 0
       for (let i = 0; i < (options.polls ?? 300); i++) {
-        const poll = await request(`/v1/runs/${id}`, { headers: auth })
+        const poll = await request(`/v1/runs/${id}`, { headers: auth }, 262144) // 図の HTML を含む返答（最大 24000 字）を受け取れる大きさ
         // 4xx（429 等）は上流 run の終了を意味しない。429 は待って再確認し、それ以外/上限超過は結果未確認(unknown)として
         // 呼出し側に上流停止と session 切替をさせる（failed で返すと同 session で次の run が並行実行される）。
         if (poll.code) {
@@ -148,7 +148,7 @@ export function createHermes({
           return typeof poll.data?.output === 'string'
             ? {
                 status: 'done',
-                text: poll.data.output.trim().slice(0, 1000),
+                text: poll.data.output.trim().slice(0, 24000),
                 ...(typeof poll.data.model === 'string' ? { model: poll.data.model.slice(0, 64) } : {}),
               }
             : { status: 'unknown', error: 'hermes_schema' }

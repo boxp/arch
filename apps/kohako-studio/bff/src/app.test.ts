@@ -325,3 +325,19 @@ it('serves status only to authenticated principals and only by GET', async () =>
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
   }
 })
+it('returns cleaned replies and only valid views', async () => {
+  let output = ''
+  const hermes = { run: async () => ({ status: 'done', text: output }) } as unknown as ReturnType<typeof createHermes>
+  const server = createServer(createApp({ authenticate: async () => 'owner', hermes }))
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+  try {
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
+    for (const [id, json, valid] of [['view-123', '{"kind":"usage"}', true], ['view-456', '{"kind":"usage","x":1}', false]] as const) {
+      output = `返答\n\`\`\`kohako-view\n${json}\n\`\`\``
+      await fetch(base + 'messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId: id, kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }) })
+      await new Promise(r => setTimeout(r, 10))
+      const item = await (await fetch(base + `requests/${id}`)).json() as any
+      expect(item.reply.text).toBe('返答'); expect(item.reply.views).toEqual(valid ? [{ kind: 'usage' }] : undefined)
+    }
+  } finally { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())) }
+})
