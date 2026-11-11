@@ -17,6 +17,7 @@ import { cardsFromText, type Card } from './cards'
 import { acts, bboxOf, classifyTouch, HAND_MESHES, HEAD_MESHES, inside, toScreenRect, TouchLimiter, TouchBatcher, type Point, type Rect, type Zone } from './touch'
 import { parsePrefs, type Prefs } from './prefs'
 import { parseResume, parseUnconfirmed, pollVerdict, type Inflight } from './resume'
+import { addErrorText, holdLabel, MessageQueue, QUEUE_MAX_ITEMS, type HoldReason, type QueueItem } from './queue'
 
 const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
 const body = document.body, face = el<HTMLImageElement>('face'), rigCanvas = el<HTMLCanvasElement>('rig'), character = el('character')
@@ -48,7 +49,11 @@ applyPrefs()
 // ---- 会話の状態（Studio と同じ） ----
 let state: State = 'offline', enabled = false, stt = false, requestId = '', started = 0, approvalId = '', approvalExpires = 0, busy = false, accepted = false, netDown = false
 let unconfirmed: Outgoing | null = parseUnconfirmed(tab.get(UNCONFIRMED_KEY))
-const setUnconfirmed = (o: Outgoing | null) => { unconfirmed = o; tab.set(UNCONFIRMED_KEY, o ? JSON.stringify(o) : null) }
+const setUnconfirmed = (o: Outgoing | null) => { unconfirmed = o; if (!o) pendingFromQueue = false; tab.set(UNCONFIRMED_KEY, o ? JSON.stringify(o) : null) }
+// BOXP-508: 送信待ち（本文はメモリだけ）。pendingFromQueue は受理未確認の控えが送信待ちから送り出したものか（入力欄に戻さず送信待ち欄に出す）。
+const queue = new MessageQueue()
+let pendingFromQueue = false, dispatching = false, dispatchTimer = 0
+const queueBox = el('queue'), queueList = el('queue-list'), queueStatus = el('queue-status'), queueNote = el('queue-note'), queueResume = el<HTMLButtonElement>('queue-resume'), queueClear = el<HTMLButtonElement>('queue-clear')
 const setInflight = (x: Inflight | null) => tab.set(INFLIGHT_KEY, x ? JSON.stringify(x) : null)
 let recording: { stream: MediaStream; context: AudioContext; source: MediaStreamAudioSourceNode; processor: ScriptProcessorNode; chunks: Float32Array[]; size: number; timer: number } | null = null
 let starting = false, held = false
@@ -168,8 +173,9 @@ function show(next: State) {
   if (next !== 'speaking') { speakingSince = 0; visemes = null; stage?.setViseme?.(null); rig?.lipSync(0); clearTimeout(mouthTimer) }
   if (rig) report.pose = { state: next, ...(actingEnabled ? actingPose(rig, rigStateOf[next]) : applyPose(rig, rigModel, rigStateOf[next])) }
   if (acting) { acting.setOperational(rigStateOf[next]); report.acting = acting.snapshot }
-  send.disabled = !enabled || busy || touchActive || !!recording || starting
-  send.hidden = busy && accepted
+  // 応答待ち中も入力欄は使え、送信ボタンは「キューに追加」になる（送信待ちがある間も順序を守るため積む）。
+  send.disabled = !enabled || touchActive || !!recording || starting
+  send.textContent = queueing() ? 'キューに追加' : '送信'
   stop.hidden = !busy || !requestId || !accepted
   record.hidden = !stt; record.disabled = !enabled || !stt || busy
   hush.hidden = next !== 'speaking' || !speech.checked
@@ -177,6 +183,7 @@ function show(next: State) {
   if (showApproval && approvalBox.hidden) { approvalBox.hidden = false; el<HTMLButtonElement>('deny').focus() } else if (!showApproval) approvalBox.hidden = true
   trouble.hidden = !(next === 'failed' || next === 'offline' || netDown) || !error.textContent
   refreshScene()
+  renderQueue(); scheduleDispatch()
 }
 
 // ---- 場面 ----
@@ -208,7 +215,7 @@ window.addEventListener('resize', () => refreshScene())
 window.visualViewport?.addEventListener('resize', () => refreshScene())
 message.addEventListener('input', () => { typingUntil = Date.now() + 2000; message.style.height = 'auto'; message.style.height = `${Math.min(message.scrollHeight, window.innerHeight * 0.3)}px` })
 message.addEventListener('focus', () => setTimeout(() => refreshScene(), 300)); message.addEventListener('blur', () => setTimeout(() => refreshScene(), 300))
-message.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); el<HTMLFormElement>('form').requestSubmit() } })
+message.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); el<HTMLFormElement>('form').requestSubmit() } })
 for (const box of [bubble, cardsBox]) box.addEventListener('scroll', () => { scrollingUntil = Date.now() + 1000 }, { passive: true })
 window.addEventListener('pointerdown', () => { pointerDown = true }, true); window.addEventListener('pointerup', () => { pointerDown = false }, true); window.addEventListener('pointercancel', () => { pointerDown = false }, true)
 
@@ -385,8 +392,103 @@ speech.addEventListener('change', () => { if (!speech.checked) hushNow() })
 function hushNow() { if (actingEnabled) interruptActing(); else if (synthesis) window.speechSynthesis.cancel(); if (state === 'speaking') show('done') }
 hush.addEventListener('click', hushNow)
 
-el<HTMLFormElement>('form').addEventListener('submit', async event => {
-  event.preventDefault(); const text = message.value.trim(); if (!text || busy || touchActive || !enabled || recording || starting) return
+// ---- 送信待ち（BOXP-508） ----
+/** 入力欄からの送信を送信待ちへ積むか。応答待ち中・送信中・読み上げ中、または送信待ち（保留を含む）が残っている間は順序を守るため積む（読み上げを新しい発言で中断しない）。 */
+function queueing(): boolean { return busy || state === 'speaking' || queue.size > 0 || pendingFromQueue }
+/** 自動送信を止める理由（なければ null）。正常終了（done）と待機（idle）以外では送らない。 */
+function holdFor(): HoldReason | null {
+  if (!enabled) return 'auth'
+  if (unconfirmed) return 'unknown'
+  if (netDown || state === 'offline') return 'offline'
+  if (state === 'stopped') return 'stopped'
+  if (state === 'failed') return 'failed'
+  return null
+}
+function renderQueue() {
+  const items = queue.list(), pending = pendingFromQueue && unconfirmed ? unconfirmed : null
+  queueBox.hidden = !items.length && !pending && !queueNote.textContent
+  queueList.replaceChildren()
+  if (pending) {
+    const li = document.createElement('li'); li.className = 'unconfirmed'
+    const label = document.createElement('span'); label.className = 'q-state'; label.textContent = busy ? '受理を確認中' : '受理未確認'
+    const text = document.createElement('span'); text.className = 'q-text'; text.textContent = pending.text
+    li.append(label, text); queueList.append(li)
+  }
+  items.forEach((item, i) => {
+    const li = document.createElement('li')
+    const label = document.createElement('span'); label.className = 'q-state'; label.textContent = `${i + 1}番目・未送信`
+    const text = document.createElement('span'); text.className = 'q-text'; text.textContent = item.text
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'ghost'; cancel.textContent = '取消'; cancel.setAttribute('aria-label', `送信待ち ${i + 1}番目を取り消す`)
+    cancel.addEventListener('click', () => { if (queue.remove(item.id)) { queueNote.textContent = ''; addHistory('お知らせ', '送信待ちを 1 件取り消しました（送っていません）。'); show(state) } })
+    li.append(label, text, cancel); queueList.append(li)
+  })
+  const held = queue.held ?? (pending && !busy ? 'unknown' : null)
+  queueStatus.textContent = held
+    ? `${holdLabel[held]}、送信待ちの自動送信を止めています。「再開」で${pending ? '受理状況を確認してから' : '先頭から順に'}送ります。`
+    : items.length ? (busy || state === 'speaking' ? `いまの応答が終わったら、上から順に 1 件ずつ送ります（${items.length}/${QUEUE_MAX_ITEMS}）。` : 'まもなく先頭を送ります。') : ''
+  queueResume.hidden = !held; queueResume.disabled = busy
+  queueClear.hidden = !items.length
+}
+function scheduleDispatch() { if (!dispatchTimer) dispatchTimer = window.setTimeout(() => { dispatchTimer = 0; tryDispatch(false) }, 0) }
+/** 送信待ちの先頭を 1 件だけ送る。force は「再開」の明示操作（失敗・停止の後でも送る）。 */
+function tryDispatch(force: boolean) {
+  if (!queue.size) return
+  // 通信切れは応答待ち中でもその場で保留にする（再接続後に明示の「再開」なしで自動送信しないため）。
+  if (!force && netDown && !queue.held && queue.hold('offline')) { addHistory('お知らせ', `${holdLabel.offline}、送信待ち ${queue.size} 件の自動送信を止めました。`); renderQueue() }
+  if (busy || dispatching) return
+  if (!force) {
+    if (queue.held) return
+    const reason = holdFor()
+    if (reason) { if (queue.hold(reason)) { addHistory('お知らせ', `${holdLabel[reason]}、送信待ち ${queue.size} 件の自動送信を止めました。`); renderQueue() } return }
+    if (state !== 'done' && state !== 'idle') return
+  }
+  if (!enabled || unconfirmed || touchActive || recording || starting || netDown) return
+  queue.resume()
+  const item = queue.take(); if (!item) return
+  dispatching = true
+  void sendText(item.text, item).finally(() => { dispatching = false; show(state) })
+}
+function enqueue(text: string): boolean {
+  const added = queue.add(text, Date.now())
+  if (!added.ok) { queueNote.textContent = addErrorText[added.error]; renderQueue(); return false }
+  queueNote.textContent = ''; message.value = ''; message.style.height = ''; typingUntil = 0
+  show(state)
+  return true
+}
+queueResume.addEventListener('click', () => {
+  if (busy) return
+  if (!enabled) { queueNote.textContent = '認証が切れています。再ログイン後に「再接続」してから再開してください。'; renderQueue(); return }
+  // 通信が戻るまでは保留を解かない（解くと再接続時に明示の再開なしで自動送信されるため）。
+  if (netDown) { queueNote.textContent = '通信が切れています。接続が戻ってから「再開」してください。'; renderQueue(); return }
+  queueNote.textContent = ''; queue.resume()
+  if (unconfirmed) { const pending = unconfirmed; void sendText(pending.text, 'pending'); return }
+  tryDispatch(true)
+})
+queueClear.addEventListener('click', () => { const n = queue.size; queue.clear(); queueNote.textContent = ''; if (n) addHistory('お知らせ', `送信待ち ${n} 件をすべて取り消しました（送っていません）。`); show(state) })
+// 送信待ちはメモリだけに持つため、再読み込み・タブを閉じる前にブラウザの確認を出す（黙って再送・保存はしない）。
+window.addEventListener('beforeunload', e => { if (queue.size) { e.preventDefault(); e.returnValue = '' } })
+
+el<HTMLFormElement>('form').addEventListener('submit', event => {
+  event.preventDefault(); const text = message.value.trim(); if (!text || touchActive || !enabled || recording || starting) return
+  if (queueing()) { enqueue(text); return }
+  if (unconfirmed && unconfirmed.text !== text) {
+    // 受理未確認の前回の発言がある間は、新しい本文を送信待ちへ積んでから前回分を同じ受付番号で確認・再送する（入力を消さず、順序も守る）。
+    if (!enqueue(text)) return
+    addHistory('お知らせ', '受理未確認の前回メッセージを先に同じ受付番号で確認します（重複実行防止）。新しい発言は送信待ちに積みました。')
+    const pending = unconfirmed; void sendText(pending.text, 'pending'); return
+  }
+  message.value = ''; message.style.height = ''
+  void sendText(text, 'composer')
+})
+/**
+ * 1 件の発言を送る。from: 'composer' は入力欄から、'pending' は受理未確認の控えの確認・再送、QueueItem は送信待ちの先頭。
+ * 受理（202）されるまで履歴に「あなた」として出さない。受理されなかったと確定したら本文を元の場所（入力欄が空ならそこ、送信待ちなら先頭）へ戻す。
+ */
+async function sendText(text: string, from: 'composer' | 'pending' | QueueItem): Promise<void> {
+  const giveBack = () => {
+    if (typeof from === 'object') queue.putBack(from)
+    else if (from === 'composer') { if (!message.value.trim()) message.value = text; else queue.putBack({ id: -Date.now(), text, addedAt: Date.now() }) }
+  }
   if (actingEnabled) interruptActing(); else if (synthesis) window.speechSynthesis.cancel()
   error.textContent = ''; busy = true; accepted = false; started = Date.now(); lastActivity = Date.now(); typingUntil = 0; delete reply.dataset.reply
   setBubble('…'); show('thinking')
@@ -398,35 +500,38 @@ el<HTMLFormElement>('form').addEventListener('submit', async event => {
     try { lookup = await call(`requests/${pending.requestId}`) } catch { lookup = null }
     const decision = resolveUnconfirmed(pending, lookup ? lookup.status : null, Date.now())
     if (decision === 'attach') {
-      setUnconfirmed(null); message.value = pending.text; requestId = pending.requestId; accepted = true
+      setUnconfirmed(null); requestId = pending.requestId; accepted = true
       setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true })
-      addHistory('お知らせ', '前回の送信は受理済みでした。再送せずに結果を追います。'); show('thinking'); void poll(requestId); return
+      addHistory('あなた', pending.text); addHistory('お知らせ', '前回の送信は受理済みでした。再送せずに結果を追います。'); show('thinking'); void poll(requestId); return
     }
     if (decision === 'wait') {
-      busy = false; message.value = pending.text
+      busy = false; if (from === 'composer') giveBack()
       setError('前回の送信が受理されたか確認できません。二重実行を避けるため、確認できるまで新しい送信は行いません。しばらくしてから再度送信してください。'); show('failed'); return
     }
-    if (decision === 'resend') { payload = pending; if (pending.text !== text) { message.value = pending.text; addHistory('お知らせ', '受理未確認の前回メッセージを同じ受付番号で再送します（重複実行防止）。') } }
-    else { setUnconfirmed(null); payload = newOutgoing(text, Date.now(), () => crypto.randomUUID()) }
+    if (decision === 'resend') payload = pending
+    else { const fromQueue = pendingFromQueue; setUnconfirmed(null); pendingFromQueue = fromQueue; payload = newOutgoing(pending.text, Date.now(), () => crypto.randomUUID()) }
   } else payload = newOutgoing(text, Date.now(), () => crypto.randomUUID())
   requestId = payload.requestId
   // POST 応答前に再読み込みされても BFF 受理済みの依頼を追い直せるよう、送信前に本文と受付番号を控える（再送時は同じ受付番号で BFF が冪等に扱う）。
   const resending = payload === unconfirmed
-  setUnconfirmed(payload)
+  setUnconfirmed(payload); if (typeof from === 'object') pendingFromQueue = true
   let result: Awaited<ReturnType<typeof call>> | null = null
   try { result = await call('messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, views: true }) }) } catch { result = null }
   if (result && result.status === 202) {
-    setUnconfirmed(null); accepted = true; addHistory('あなた', payload.text); message.value = ''; message.style.height = ''
+    setUnconfirmed(null); accepted = true; addHistory('あなた', payload.text)
     setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true }); show(state); void poll(requestId); return
   }
   busy = false; requestId = ''
   if (sendOutcomeUnknown(result ? result.status : null) || resending) {
-    setUnconfirmed(payload)
+    // 受理されたか不明。本文は控え（同じ受付番号）に残し、送信待ちには戻さない（戻すと二重に送り得る）。
+    setUnconfirmed(payload); if (from === 'composer' && !message.value.trim()) message.value = text
     setError('送信結果を確認できません。もう一度送信すると、まず前回の受理状況を確認します（二重実行はしません）。'); show('failed'); return
   }
+  const wasQueued = pendingFromQueue
   setUnconfirmed(null) // 受理されなかったことが確定したので控えを消す
+  if (from !== 'pending') giveBack(); else if (wasQueued) queue.putBack({ id: -Date.now(), text: payload.text, addedAt: Date.now() }); else if (!message.value.trim()) message.value = payload.text; else queue.putBack({ id: -Date.now(), text: payload.text, addedAt: Date.now() })
   fail(result!.status, result!.data)
-})
+}
 async function decide(choice: 'once' | 'deny') {
   if (!requestId || !approvalId) return
   const allow = el<HTMLButtonElement>('allow'), deny = el<HTMLButtonElement>('deny'); allow.disabled = deny.disabled = true
@@ -495,7 +600,7 @@ const limiter = new TouchLimiter(), touchBatcher = new TouchBatcher()
 let touchActive = false, touchDebounce = 0
 // 会話中（考え中・読み上げ中・聞き取り中・録音中/録音開始中）や承認待ち・失敗・未接続では接触 event を Hermes へ送らない
 const CONVERSING: State[] = ['thinking', 'speaking', 'listening', 'approval', 'failed', 'offline']
-function touchSendable(): boolean { return prefs.lines && enabled && !busy && !unconfirmed && !netDown && !recording && !starting && !CONVERSING.includes(state) }
+function touchSendable(): boolean { return prefs.lines && enabled && !busy && !unconfirmed && !queue.size && !netDown && !recording && !starting && !CONVERSING.includes(state) }
 async function sendTouch() {
   const batch = touchBatcher.take(Date.now(), touchSendable())
   if (!batch) return
