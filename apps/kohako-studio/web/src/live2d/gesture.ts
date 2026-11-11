@@ -355,6 +355,34 @@ export function joyArmPoint(px: Vec, m: { angle: number; drop: number }, left = 
   const H = JOY_ARM, q = add(add(H.at, [0, m.drop]), scaleV(rot(sub(px, H.shoulderPx), m.angle), H.scale))
   return left ? mirrorX(q) : q
 }
+/**
+ * 喜びの中割りの腕（BOXP-476 TD-06、停滞レビュー BOXP-495 案C）。待機の腕（前腕が下）と喜びの腕（前腕が上）を平面で回してつなぐと
+ * 前腕が必ず水平を通り、1 回で入れ替えると拳が離れた位置に現れる（3e4c6465 の独立判定 td06j-review-3e4c646）。そこで前腕が見る人の方を
+ * 向いて短く見える中割りの絵（td06k-mid3: 上腕は真下、小手の金縁が重なり、拳が肘の手前）を Gemini で生成し、待機→中割り→喜びの順に
+ * 動きの途中で入れ替える（前腕は奥行きで持ち上がって見える）。box は生成画像の画素（ファイルは 0.5 倍）。袖の幅と拳の大きさを喜びの絵に
+ * 揃えるため 0.223 倍で置く。
+ */
+export const JOY_MID = {
+  back: 'joy-mid.png', front: 'joy-mid-front.png', box: [718, 404, 444, 1308] as const,
+  shoulderPx: [915, 353] as Vec, elbowPx: [920, 1188] as Vec, fistPx: [930, 1530] as Vec,
+  at: [718, 540] as Vec, scale: 0.223,
+}
+/** 入り: 0〜JOY_SWITCH_SECONDS で待機→中割り、JOY_MID_SWAP の間に中割り→喜び。戻りは out（0〜1）で同じ順を裏返す。 */
+export const JOY_MID_SWAP = { inFrom: 0.1, inTo: 0.17, outFrom: 0.55, outTo: 0.7 }
+/** 喜びの腕の見え方（0=中割りだけ、1=喜びだけ）。中割りは喜びの裏に置き、喜びが出きるまで消さない。 */
+export function joyMidMix(t: number, out = 0): number {
+  const S = JOY_MID_SWAP
+  return smooth(S.inFrom, S.inTo, t) * (1 - smooth(S.outFrom, S.outTo, out))
+}
+/** 中割りの回転（画面の時計回りが正）。入りは肘を少し外へ開きながら拳を持ち上げ、戻りは裏返す。 */
+export function joyMidAngle(t: number, out = 0): number {
+  const k = Math.max(ease(Math.min(1, Math.max(0, t / JOY_MID_SWAP.inTo))) * (1 - smooth(JOY_MID_SWAP.outFrom, 1, out)), 0)
+  return -0.42 - 0.13 * k
+}
+export function joyMidPoint(px: Vec, angle: number, left = false): Vec {
+  const H = JOY_MID, q = add(H.at, scaleV(rot(sub(px, H.shoulderPx), angle), H.scale))
+  return left ? mirrorX(q) : q
+}
 const posed = (a: ArmPose) => Math.abs(a.fo) > SEPARATE_AT || (!!a.elbowTo && (a.elbowW ?? 0) > SEPARATE_AT) || (a.artW ?? 0) > 0.001
 const partURL = (file: string) => new URL(`kohako/live2d/acting/${file}`, location.href).href
 
@@ -419,7 +447,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   let greetTime = 0, waveFrom = 0, waveDecay = 1
   const switchSeconds = () => joySet ? JOY_SWITCH_SECONDS : SWITCH_SECONDS
   const haltQuads: Partial<Record<'back' | 'front', number>> = {}, shyQuads: Partial<Record<'back' | 'front', number>> = {}, guideQuads: Partial<Record<'back' | 'front', number>> = {}
-  const joyQuads: Record<'right' | 'left', Partial<Record<'back' | 'front', number>>> = { right: {}, left: {} }
+  const joyQuads: Record<'right' | 'left', Partial<Record<'back' | 'front' | 'midBack' | 'midFront', number>>> = { right: {}, left: {} }
   const haltOn = () => haltSet && haltLoaded, shyOn = () => shySet && shyLoaded, guideOn = () => guideSet && guideLoaded, joyOn = () => joySet && joyLoaded
   const artLoaded: Partial<Record<HandArt, boolean>> = {} // 素材が届くまでは元の手のまま（読込失敗時も同じ）
   const handArt = () => pose.right.art && armBlend > 0.001 && artLoaded[pose.right.art] ? { kind: pose.right.art, w: pose.right.artW ?? 0 } : { kind: undefined, w: 0 }
@@ -513,9 +541,21 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
         // 左は角の順を左右入れ替え、UV も反転して巻き方向を保つ（鏡映した位置に左右反転した絵が貼られる）。
         const corners: Vec[] = left ? [[x0 + w, y0], [x0, y0], [x0, y0 + h], [x0 + w, y0 + h]] : [[x0, y0], [x0 + w, y0], [x0 + w, y0 + h], [x0, y0 + h]]
         for (const layer of ['back', 'front'] as const) {
-          const quad = addQuad(pp, new Float32Array(left ? [1, 0, 0, 0, 0, 1, 1, 1] : [0, 0, 1, 0, 1, 1, 0, 1]), later(JOY_ARM[layer], () => { joyMark[`${side}-${layer}`] = true; joyLoaded = Object.keys(joyMark).length === 4 }))
+          const quad = addQuad(pp, new Float32Array(left ? [1, 0, 0, 0, 0, 1, 1, 1] : [0, 0, 1, 0, 1, 1, 0, 1]), later(JOY_ARM[layer], () => { joyMark[`${side}-${layer}`] = true; joyLoaded = Object.keys(joyMark).length === 8 }))
           joyQuads[side][layer] = quad.index
-          synth.set(quad.index, { base: bone.arm, pointer: quad.pointer, opacity: () => joyOn() ? 1 : 0, write(out) { const [dx, dy] = swayOf(bone.arm), m = joyArmMotion(haltTime, haltOut); corners.forEach((c, i) => { const q = joyArmPoint(c, m, left); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } })
+          synth.set(quad.index, { base: bone.arm, pointer: quad.pointer, opacity: () => joyOn() ? joyMidMix(haltTime, haltOut) : 0, write(out) { const [dx, dy] = swayOf(bone.arm), m = joyArmMotion(haltTime, haltOut); corners.forEach((c, i) => { const q = joyArmPoint(c, m, left); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } })
+        }
+      }
+      // 中割りの腕（左右）。喜びの腕の裏に置き、喜びの腕が出きるまで不透明のまま残す（背景が透けない）。
+      const [mx0, my0, mw, mh] = JOY_MID.box
+      for (const side of ['right', 'left'] as const) {
+        const left = side === 'left', bone = left ? LEFT : RIGHT
+        const corners: Vec[] = left ? [[mx0 + mw, my0], [mx0, my0], [mx0, my0 + mh], [mx0 + mw, my0 + mh]] : [[mx0, my0], [mx0 + mw, my0], [mx0 + mw, my0 + mh], [mx0, my0 + mh]]
+        for (const layer of ['back', 'front'] as const) {
+          const key = layer === 'back' ? 'midBack' : 'midFront'
+          const quad = addQuad(pp, new Float32Array(left ? [1, 0, 0, 0, 0, 1, 1, 1] : [0, 0, 1, 0, 1, 1, 0, 1]), later(JOY_MID[layer], () => { joyMark[`${side}-${key}`] = true; joyLoaded = Object.keys(joyMark).length === 8 }))
+          joyQuads[side][key] = quad.index
+          synth.set(quad.index, { base: bone.arm, pointer: quad.pointer, opacity: () => joyOn() ? backOpacity(joyMidMix(haltTime, haltOut)) : 0, write(out) { const [dx, dy] = swayOf(bone.arm), a = joyMidAngle(haltTime, haltOut); corners.forEach((c, i) => { const q = joyMidPoint(c, a, left); out[2 * i] = q[0] + dx; out[2 * i + 1] = q[1] + dy }) } })
         }
       } }
     for (const [m, side] of [[RIGHT.arm, 'right'], [RIGHT.hand, 'right'], [LEFT.arm, 'left'], [LEFT.hand, 'left']] as const) {
@@ -580,8 +620,8 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       if (parts && guideOn() && c === RIGHT.arm && parts.right.on) return [c, guideQuads.back as number, parts.right.outer, guideQuads.front as number]
       if (parts && guideOn() && c === RIGHT.hand) return []
       // 喜びの 1 枚腕（左右）: 制止と同じく腕全体を袖の表地の裏に、同じ絵の肘から先を表地の手前に重ねる。
-      if (parts && joyOn() && c === RIGHT.arm && parts.right.on) return [c, joyQuads.right.back as number, parts.right.outer, joyQuads.right.front as number]
-      if (parts && joyOn() && c === LEFT.arm && parts.left.on) return [c, joyQuads.left.back as number, parts.left.outer, joyQuads.left.front as number]
+      if (parts && joyOn() && c === RIGHT.arm && parts.right.on) return [c, joyQuads.right.midBack as number, joyQuads.right.back as number, parts.right.outer, joyQuads.right.midFront as number, joyQuads.right.front as number]
+      if (parts && joyOn() && c === LEFT.arm && parts.left.on) return [c, joyQuads.left.midBack as number, joyQuads.left.back as number, parts.left.outer, joyQuads.left.midFront as number, joyQuads.left.front as number]
       if (parts && joyOn() && (c === RIGHT.hand || c === LEFT.hand)) return []
       if (parts && c === RIGHT.arm && parts.right.on) return [parts.right.stub, c, parts.right.fill, parts.right.bentElbow, parts.right.outer, parts.right.fore, parts.right.bentFore]
       if (parts && c === LEFT.arm && parts.left.on) return [parts.left.stub, c, parts.left.fill, parts.left.bentElbow, parts.left.outer, parts.left.fore, parts.left.bentFore]

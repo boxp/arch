@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { existsSync } from 'node:fs'
-import { BENT_ART, GREET_WAVE, GUIDE_ARM, guideArmMotion, JOY_ARM, JOY_LOWER_SECONDS, JOY_SWITCH_SECONDS, joyArmMotion, joyArmPoint, guideArmPoint, greetArmPoint, greetWave, haltForeWeight, HALT_ARM, haltArmAngle, haltArmPoint, SHY_ARM, shyArmMotion, shyArmPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { JOY_MID, joyMidAngle, joyMidMix, joyMidPoint, BENT_ART, GREET_WAVE, GUIDE_ARM, guideArmMotion, JOY_ARM, JOY_LOWER_SECONDS, JOY_SWITCH_SECONDS, joyArmMotion, joyArmPoint, guideArmPoint, greetArmPoint, greetWave, haltForeWeight, HALT_ARM, haltArmAngle, haltArmPoint, SHY_ARM, shyArmMotion, shyArmPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -564,3 +564,15 @@ describe('案内の 1 枚腕（案内専用の生成絵、BOXP-476 TD-06）', ()
     expect(stage.report()).toMatchObject({ gesture: 'none', switched: false })
   })
 })
+
+describe('喜びの中割り（BOXP-495 案C）', () => {
+  it('入りは待機→中割り→喜び、戻りは喜び→中割り→待機の順で、中割りの拳は待機の手と喜びの低い拳の間の高さにある', () => {
+    expect(joyMidMix(0, 0)).toBe(0); expect(joyMidMix(0.3, 0)).toBe(1)
+    expect(joyMidMix(1, 0.5)).toBe(1); expect(joyMidMix(1, 0.8)).toBe(0)
+    const fist = joyMidPoint(JOY_MID.fistPx, joyMidAngle(0.05, 0)), elbow = joyMidPoint(JOY_MID.elbowPx, joyMidAngle(0.05, 0))
+    const low = joyArmPoint(JOY_ARM.fistPx, joyArmMotion(JOY_SWITCH_SECONDS, 0))
+    expect(fist[1]).toBeGreaterThan(low[1]); expect(fist[1]).toBeLessThan(928)
+    expect(fist[0]).toBeGreaterThan(800); expect(elbow[0]).toBeGreaterThan(718)
+  })
+})
+
