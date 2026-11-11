@@ -5815,11 +5815,18 @@
   (when (workspace-metrics-enabled?)
     (try
       (let [m (or measurement unmeasured-workspace)
-            prefix (first (str/split (or reason "unknown") #" " 2))]
-        (workspace-metrics-write! (merge {:event :prune-run :ticket ticket-id :run run-id :result result :reason reason :mode mode} m))
-        (if (= result :deleted)
+            prefix (first (str/split (or reason "unknown") #" " 2))
+            ;; A dry-run removes nothing: never count its plan as reclaimed space.
+            would-delete? (and (:dry-run? ctx) (= result :deleted))]
+        (workspace-metrics-write! (merge {:event :prune-run :ticket ticket-id :run run-id
+                                          :result (if would-delete? :would-delete result)
+                                          :reason reason :mode mode} m))
+        (cond
+          would-delete? nil
+          (= result :deleted)
           (if (:measured? m) (swap! (:capacity ctx) update :reclaimed-allocated-bytes-est + (:allocated-bytes m))
               (swap! (:capacity ctx) update :deleted-unmeasured inc))
+          :else
           (if (:measured? m) (swap! (:capacity ctx) update-in [:held-bytes-by-reason prefix] (fnil + 0) (:allocated-bytes m))
               (swap! (:capacity ctx) update :held-unmeasured inc))))
       (catch Exception e (log! (str "workspace-metrics: warning " (.getMessage e)))))))
@@ -5874,6 +5881,8 @@
                                          checkouts))
             ;; Inspection can take a while (GitHub lookups); look once more
             ;; for a reopened ticket right before anything is removed.
+            measurement (delay (when (and (workspace-metrics-enabled?) (not locked-unguarded?))
+                                 (measure-workspace! ctx run-path false 30)))
             recheck (delay (if locked-unguarded?
                              (with-ticket-lock-guard ticket-id #(prune-ticket-status ctx ticket-id))
                              (prune-ticket-status ctx ticket-id)))]
@@ -5889,9 +5898,12 @@
             (log! (str "prune: delete " run-path " (dry-run)"))
             (doseq [[common-dir repo] branch-repos]
               (prune-run-branch! ctx common-dir repo branch))
-            {:result :deleted :mode mode :measurement (when (and (workspace-metrics-enabled?) (not locked-unguarded?)) (measure-workspace! ctx run-path false 30))})
+            {:result :deleted :mode mode :measurement @measurement})
 
-          (or (and (= mode :done) (not (:eligible? @recheck)))
+          ;; Measure (up to 30s per du) before the final status recheck so
+          ;; a ticket reopened during measurement is never deleted.
+          (and (do (force measurement) true)
+               (or (and (= mode :done) (not (:eligible? @recheck)))
               (and (= mode :stale)
                    (or (not (contains? stale-ticket-reasons (:reason @recheck)))
                        (and locked-unguarded? (not= "locked-active" (:reason @recheck)))
@@ -5899,11 +5911,11 @@
                             (= run-id (:active-run-id @recheck)))
                        (not (:eligible? (stale-run-decision run-id
                               (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))
-                              (now) (stale-retention-hours) (keep-latest-runs)))))))
+                              (now) (stale-retention-hours) (keep-latest-runs))))))))
           {:result :ticket-skipped :reason (:reason @recheck)}
 
           :else
-          (let [measurement (when (and (workspace-metrics-enabled?) (not locked-unguarded?)) (measure-workspace! ctx run-path false 30))]
+          (let [measurement @measurement]
           (if-let [reason (delete-run-workspace! ctx run-path checkouts)]
             (hold reason)
             (do

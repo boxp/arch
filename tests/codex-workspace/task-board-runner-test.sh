@@ -5533,6 +5533,35 @@ test_workspace_metrics_ledger() {
   PATH="$tmp/bin:$PATH" GH_FAKE_KNOWN_SHAS="$tmp/known" CODEX_TASK_BOARD_WORKSPACE_METRICS_MAX_MEASURE=0 \
     run_prune "$tmp/vault" "$tmp/state" >"$tmp/prune3"
 
+  # A dry-run deletes nothing, so it is never counted as reclaimed space.
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  write_board "$tmp/vault" ""
+  write_prune_ticket "$tmp/vault" BOXP-901 done 2020-01-01
+  add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z >/dev/null
+  PATH="$tmp/bin:$PATH" GH_FAKE_KNOWN_SHAS="$tmp/known" run_prune "$tmp/vault" "$tmp/state" --dry-run >"$tmp/prune-dry"
+  [[ -d "$tmp/state/workspaces/BOXP-901/20200101T000000Z" ]] || fail 'dry-run deleted a run'
+  ledger="$tmp/state/metrics/workspace-capacity.edn"
+  assert_file_contains "$ledger" ':result :would-delete'
+  if grep -q ':result :deleted' "$ledger"; then fail 'dry-run recorded :deleted'; fi
+  assert_file_contains "$tmp/prune-dry" 'reclaimed-est-bytes=0'
+  CODEX_TASK_BOARD_ROOT="$tmp/state" bb "$RUNNER" workspace-metrics --since-hours 1000000 >"$tmp/summary-dry"
+  assert_file_contains "$tmp/summary-dry" 'reclaimed-allocated-bytes-est= 0'
+
+  # A ticket reopened while the pre-delete measurement runs is not deleted:
+  # the final status recheck happens after measuring.
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  write_board "$tmp/vault" ""
+  write_prune_ticket "$tmp/vault" BOXP-901 done 2020-01-01
+  add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z >/dev/null
+  cat >"$tmp/bin/du" <<DU
+#!/usr/bin/env bash
+sed -i 's/^status:.*/status: in-progress/; s/^closed:.*/closed:/' "$tmp/vault/Tickets/BOXP-901.md"
+exec $(command -v du) "\$@"
+DU
+  chmod +x "$tmp/bin/du"
+  PATH="$tmp/bin:$PATH" GH_FAKE_KNOWN_SHAS="$tmp/known" run_prune "$tmp/vault" "$tmp/state" >"$tmp/prune-reopen"
+  [[ -d "$tmp/state/workspaces/BOXP-901/20200101T000000Z" ]] || fail 'run of a ticket reopened during measurement was deleted'
+
   # Metrics never change prune decisions, and an unwritable ledger is harmless.
   local mode summary_on summary_off summary_ro summary_zero
   for mode in on off ro zero; do
