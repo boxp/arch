@@ -170,7 +170,10 @@ def vault_receipt(vault, event, state, classification):
 
 
 
-def delivered_copy(vault, event, content, classification):
+def delivered_copy(vault, event, content, classification, kind=""):
+    """Save the text Telegram received. A reconciliation notice uses its own
+    ``.notice`` copy so that a later formal report of the same event is never
+    shadowed by (or deduplicated against) the notice in the home inbox."""
     try:
         directory = Path(vault).parent / "Projects/task-board-events/delivered-copies"
         directory.mkdir(parents=True, exist_ok=True)
@@ -182,7 +185,7 @@ def delivered_copy(vault, event, content, classification):
                            "sent_at": clock().isoformat()}, stream)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, directory / (event + ".md"))
+            os.replace(temporary, directory / (event + kind + ".md"))
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
@@ -192,8 +195,8 @@ def delivered_copy(vault, event, content, classification):
         return False
 
 
-def copy_exists(vault, event):
-    path = Path(vault).parent / "Projects/task-board-events/delivered-copies" / (event + ".md")
+def copy_exists(vault, event, kind=""):
+    path = Path(vault).parent / "Projects/task-board-events/delivered-copies" / (event + kind + ".md")
     try:
         return json.loads(path.read_text()).get("event") == event
     except (OSError, ValueError, AttributeError):
@@ -233,8 +236,9 @@ def recover_copy(vault, path):
     event = previous.get("event")
     if not event:
         return
-    if not (copy_exists(vault, event) or
-            delivered_copy(vault, event, previous["copy_text"], previous.get("classification"))):
+    kind = ".notice" if path.name.endswith(".notice.json") else ""
+    if not (copy_exists(vault, event, kind) or
+            delivered_copy(vault, event, previous["copy_text"], previous.get("classification"), kind)):
         return
     previous.pop("copy_text", None)
     previous["copied"] = True
@@ -382,7 +386,8 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
                 # Keep the delivered text until the home copy is durable: a failed copy
                 # write is retried by recover_copies instead of being deduplicated away.
                 save("sent", copy_text=content)
-                if delivered_copy(vault, event, content, classification):
+                if delivered_copy(vault, event, content, classification,
+                                  ".notice" if suffix == ".notice.json" else ""):
                     save("sent", copied=True)
             else:
                 save("uncertain")

@@ -698,6 +698,9 @@
 ;; Copy only text actually sent to Telegram, using the synced delivered copy.
 ;; Home state and retries remain independent; unsetting the URL disables delivery.
 ;; Silent and digest-folded events are skipped, while missing copies wait for sync.
+;; Home IDs are <event>.report / <event>.notice: a reconciliation notice never shadows the
+;; later formal report, and legacy raw lane-change items (home state <event>.edn, BFF item
+;; <event>) neither block nor deduplicate the delivered copy.
 
 (defn home-url [] (System/getenv "CODEX_TASK_BOARD_EVENT_HOME_URL"))
 (defn home-token-path [] (env "CODEX_TASK_BOARD_EVENT_HOME_TOKEN_FILE" "/var/run/secrets/kohako-bff-notifier/token"))
@@ -713,8 +716,8 @@
 
 (defn clip [s n] (let [s (str s)] (if (> (count s) n) (subs s 0 n) s)))
 
-(defn delivered-copy [event]
-  (try (let [copy (json/parse-string (slurp (str (fs/path (vault) "Projects/task-board-events/delivered-copies" (str (:event-id event) ".md")))) true)]
+(defn delivered-copy [event kind]
+  (try (let [copy (json/parse-string (slurp (str (fs/path (vault) "Projects/task-board-events/delivered-copies" (str (:event-id event) kind ".md")))) true)]
          (when (and (= (:event copy) (:event-id event)) (string? (:text copy)) (not (str/blank? (:text copy)))) copy))
        (catch Exception _ nil)))
 
@@ -722,12 +725,12 @@
   (let [letters (vec (distinct (keep #(second (re-find #"^\s*(?:[-*・]\s*)?(?:\*\*)?([A-F])[)）.．:：](?:\*\*)?\s*\S" %)) (str/split-lines text))))]
     (when (and (>= (count letters) 2) (= letters (mapv str (take (count letters) "ABCDEF")))) letters)))
 
-(defn home-payload [event copy]
+(defn home-payload [event home-id copy]
   (let [tid (:ticket-id event)
         text (:text copy)
         body (if (> (count text) 4000) (str (subs text 0 3999) "…") text)
         title (if (digest? event) "Task Board 朝のまとめ" (str tid ": " (or (ticket-title tid) tid)))]
-    (cond-> {:eventId (:event-id event) :source "task-board-report" :eventType (:event-type event)
+    (cond-> {:eventId home-id :source "task-board-report" :eventType (:event-type event)
              :title (clip title 200) :body body :createdAt (:created-at event)}
       (extract-choices text) (assoc :choices (extract-choices text))
       (and tid (re-matches #"[A-Z]+-\d+" tid)) (assoc :ticketId tid)
@@ -737,15 +740,15 @@
   (let [path (fs/path (home-dir) (str event-id ".edn"))]
     (when (fs/exists? path) (read-event path))))
 
-(defn send-home! [event copy]
+(defn send-home! [event home-id copy]
   (let [token (try (str/trim (slurp (home-token-path))) (catch Exception _ nil))]
     (if (str/blank? token)
       {:ok? false :error "home token unavailable"}
       (try
         (let [resp (http/post (home-url) {:headers {"content-type" "application/json"
                                                     "authorization" (str "Bearer " token)
-                                                    "x-request-id" (:event-id event)}
-                                          :body (json/generate-string (home-payload event copy))
+                                                    "x-request-id" home-id}
+                                          :body (json/generate-string (home-payload event home-id copy))
                                           :timeout (* 1000 (env-long "CODEX_TASK_BOARD_EVENT_HTTP_TIMEOUT_SECONDS" "15"))
                                           :throw false})
               status (:status resp)
@@ -755,42 +758,58 @@
                 :else {:ok? false :status status :error (str "http " status)}))
         (catch Exception e {:ok? false :error (str "transport: " (.getMessage e))})))))
 
+(defn send-home-copy!
+  "Send one delivered copy under its home ID, recording per-ID state. Returns acc."
+  [acc event home-id state copy]
+  (let [{:keys [ok? permanent? status home-status error]} (send-home! event home-id copy)
+        attempts (inc (:attempts state 0))
+        base {:event-id home-id :attempts attempts :last-http-status status :updated-at (now-str)}]
+    (cond
+      ok? (do (write-event! (home-dir) (assoc base :status :sent :home-status home-status :sent-at (now-str)))
+              (log! (str "home inbox " home-id " http=" status " status=" home-status))
+              (update acc :home-sent inc))
+      (or permanent? (>= attempts (home-max-attempts)))
+      (do (write-event! (home-dir) (assoc base :status :failed :last-error error))
+          (log! (str "home inbox gave up on " home-id ": " error))
+          (update acc :home-failed (fnil inc 0)))
+      :else
+      (do (write-event! (home-dir) (assoc base :status :retry :last-error error
+                                          :next-attempt-at (str (.plusSeconds (now) (backoff-seconds attempts)))))
+          (update acc :home-retry (fnil inc 0))))))
+
+(defn home-waiting? [state]
+  (and (:next-attempt-at state) (.isAfter (Instant/parse (:next-attempt-at state)) (now))))
+
 (defn flush-home!
-  "Copy recent outbox events to the home inbox once each."
+  "Copy each event's Telegram-delivered report (and any reconciliation notice) to the home inbox once."
   []
   (if (str/blank? (home-url))
     {:home-sent 0}
     (reduce
      (fn [acc event]
        (let [id (:event-id event)
-             state (read-home-state id)
-             copy (when id (delivered-copy event))
+             report-id (str id ".report")
+             notice-id (str id ".notice")
+             state (when id (read-home-state report-id))
+             notice-state (when id (read-home-state notice-id))
+             copy (when id (delivered-copy event ""))
+             notice (when (and id (not copy)) (delivered-copy event ".notice"))
              receipt (when id (receipt-state event))
+             expired? (and id (> (seconds-since (:created-at event)) (home-max-age-seconds)))
              reason (cond
                       (and (not copy) (= receipt "silent")) "silent"
                       (and (not copy) (or (= receipt "quiet-held") (:digest-id event))) "quiet-held"
-                      (and (not copy) (> (seconds-since (:created-at event)) (home-max-age-seconds))) "no-telegram-copy")]
+                      (and (not copy) expired?) "no-telegram-copy")]
          (cond
            (or (nil? id) (contains? #{:sent :failed :skipped} (:status state))) acc
-           reason (do (write-event! (home-dir) {:event-id id :status :skipped :reason reason :updated-at (now-str)}) acc)
-           (or (nil? copy) (> (seconds-since (:created-at event)) (home-max-age-seconds))
-               (and (:next-attempt-at state) (.isAfter (Instant/parse (:next-attempt-at state)) (now)))) acc
-           :else
-           (let [{:keys [ok? permanent? status home-status error]} (send-home! event copy)
-                 attempts (inc (:attempts state 0))
-                 base {:event-id id :attempts attempts :last-http-status status :updated-at (now-str)}]
-             (cond
-               ok? (do (write-event! (home-dir) (assoc base :status :sent :home-status home-status :sent-at (now-str)))
-                       (log! (str "home inbox " id " http=" status " status=" home-status))
-                       (update acc :home-sent inc))
-               (or permanent? (>= attempts (home-max-attempts)))
-               (do (write-event! (home-dir) (assoc base :status :failed :last-error error))
-                   (log! (str "home inbox gave up on " id ": " error))
-                   (update acc :home-failed (fnil inc 0)))
-               :else
-               (do (write-event! (home-dir) (assoc base :status :retry :last-error error
-                                                   :next-attempt-at (str (.plusSeconds (now) (backoff-seconds attempts)))))
-                   (update acc :home-retry (fnil inc 0))))))))
+           ;; A notice went to Telegram but the report may still follow: show the notice now,
+           ;; keep waiting for the report under its own ID.
+           (and notice (not expired?) (not (contains? #{:sent :failed} (:status notice-state)))
+                (not (home-waiting? notice-state)))
+           (send-home-copy! acc event notice-id notice-state notice)
+           reason (do (write-event! (home-dir) {:event-id report-id :status :skipped :reason reason :updated-at (now-str)}) acc)
+           (or (nil? copy) expired? (home-waiting? state)) acc
+           :else (send-home-copy! acc event report-id state copy))))
      {:home-sent 0}
      (sort-by :created-at (all-events)))))
 
@@ -890,8 +909,8 @@
            (let [in? (fn [h start end] (if (<= start end) (and (>= h start) (< h end)) (or (>= h start) (< h end))))]
              (and (in? 3 2 9) (not (in? 9 2 9)) (in? 23 22 6) (in? 1 22 6) (not (in? 12 22 6)))))
     (check "home payload uses delivered text"
-           (let [p (home-payload {:event-id "BOXP-1-r1-done" :event-type "task-board.run-finished" :ticket-id "BOXP-1" :created-at "t"} {:text "A) yes\nB) no"})]
-             (and (= "task-board-report" (:source p)) (= "A) yes\nB) no" (:body p)) (= ["A" "B"] (:choices p)))))
+           (let [p (home-payload {:event-id "BOXP-1-r1-done" :event-type "task-board.run-finished" :ticket-id "BOXP-1" :created-at "t"} "BOXP-1-r1-done.report" {:text "A) yes\nB) no"})]
+             (and (= "task-board-report" (:source p)) (= "BOXP-1-r1-done.report" (:eventId p)) (= "A) yes\nB) no" (:body p)) (= ["A" "B"] (:choices p)))))
     (check "choice extraction requires a consecutive sequence"
            (and (= ["A" "B"] (extract-choices "- **A) yes**\n・ B： no\nA) again"))
                 (nil? (extract-choices "B) yes\nC) no")) (nil? (extract-choices "A) only"))

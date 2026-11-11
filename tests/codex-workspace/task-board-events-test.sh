@@ -247,7 +247,7 @@ test_home_inbox_copy_is_independent_of_telegram() {
   run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" \
     CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
   assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-blocked.edn" ':status :accepted'
-  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-901-r1-blocked.edn" ':status :retry'
+  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-901-r1-blocked.report.edn" ':status :retry'
 
   # Home back after the backoff: stored once with ids and the ticket title; later ticks never resend.
   rm -f "${CASE_TMP}/home-mode"
@@ -257,11 +257,11 @@ test_home_inbox_copy_is_independent_of_telegram() {
       CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
   done
   [[ "$(grep -c '^stored ' "${CASE_TMP}/home.log")" -eq 1 ]] || fail "home copy must be stored exactly once"
-  assert_file_contains "${CASE_TMP}/home.log" '"eventId":"BOXP-901-r1-blocked"'
+  assert_file_contains "${CASE_TMP}/home.log" '"eventId":"BOXP-901-r1-blocked.report"'
   assert_file_contains "${CASE_TMP}/home.log" '"ticketId":"BOXP-901"'
   assert_file_contains "${CASE_TMP}/home.log" '"source":"task-board-report"'
   assert_file_contains "${CASE_TMP}/home.log" '"body":"Telegram report"'
-  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-901-r1-blocked.edn" ':status :sent'
+  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-901-r1-blocked.report.edn" ':status :sent'
   assert_file_not_contains "${CASE_TMP}/home.log" 'unauthorized'
 
   record "${CASE_VAULT}" "${CASE_STATE}" BOXP-903 r3 in-progress blocked blocked >/dev/null
@@ -269,16 +269,36 @@ test_home_inbox_copy_is_independent_of_telegram() {
   mkdir -p "${CASE_VAULT}/Projects/task-board-events/delivery-receipts"
   printf '{"event":"BOXP-903-r3-blocked","state":"silent"}' >"${CASE_VAULT}/Projects/task-board-events/delivery-receipts/BOXP-903-r3-blocked.md"
   run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
-  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-903-r3-blocked.edn" ':status :skipped'
+  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-903-r3-blocked.report.edn" ':status :skipped'
   assert_file_not_contains "${CASE_TMP}/home.log" 'BOXP-903'
-  [[ ! -e "${CASE_STATE}/outbox/home/BOXP-904-r4-blocked.edn" ]] || fail "missing copy must wait"
+  [[ ! -e "${CASE_STATE}/outbox/home/BOXP-904-r4-blocked.report.edn" ]] || fail "missing copy must wait"
+
+  # A reconciliation notice is shown under its own ID; the later formal report of the
+  # same event still reaches the inbox instead of being deduplicated against the notice.
+  printf '{"event":"BOXP-904-r4-blocked","text":"reconcile notice"}' >"${CASE_VAULT}/Projects/task-board-events/delivered-copies/BOXP-904-r4-blocked.notice.md"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  assert_file_contains "${CASE_TMP}/home.log" '"eventId":"BOXP-904-r4-blocked.notice"'
+  [[ ! -e "${CASE_STATE}/outbox/home/BOXP-904-r4-blocked.report.edn" ]] || fail "report must keep waiting after a notice"
+  printf '{"event":"BOXP-904-r4-blocked","text":"formal report"}' >"${CASE_VAULT}/Projects/task-board-events/delivered-copies/BOXP-904-r4-blocked.md"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  assert_file_contains "${CASE_TMP}/home.log" '"eventId":"BOXP-904-r4-blocked.report"'
+  assert_file_contains "${CASE_TMP}/home.log" '"body":"formal report"'
+  [[ "$(grep -c 'BOXP-904-r4-blocked.notice' "${CASE_TMP}/home.log")" -eq 1 ]] || fail "notice must be sent once"
+
+  # Legacy raw lane-change state (old <event>.edn :sent) must not block the delivered copy.
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-905 r5 in-progress blocked blocked >/dev/null
+  printf '{:event-id "BOXP-905-r5-blocked" :status :sent}' >"${CASE_STATE}/outbox/home/BOXP-905-r5-blocked.edn"
+  printf '{"event":"BOXP-905-r5-blocked","text":"late telegram copy"}' >"${CASE_VAULT}/Projects/task-board-events/delivered-copies/BOXP-905-r5-blocked.md"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  assert_file_contains "${CASE_TMP}/home.log" '"eventId":"BOXP-905-r5-blocked.report"'
+  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-905-r5-blocked.report.edn" ':status :sent'
 
   # Unset URL = rollback: nothing is sent to the home inbox.
   record "${CASE_VAULT}" "${CASE_STATE}" BOXP-902 r2 in-progress done done >/dev/null
   run_events "${CASE_VAULT}" "${CASE_STATE}" env \
     CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
   assert_file_not_contains "${CASE_TMP}/home.log" 'BOXP-902'
-  [[ ! -e "${CASE_STATE}/outbox/home/BOXP-902-r2-done.edn" ]] || fail "disabled home copy must not write state"
+  [[ ! -e "${CASE_STATE}/outbox/home/BOXP-902-r2-done.report.edn" ]] || fail "disabled home copy must not write state"
   kill "${home_pid}" 2>/dev/null || true; wait "${home_pid}" 2>/dev/null || true
   stop_receiver
 }

@@ -329,6 +329,10 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue((await self.send(recovered)).success)
                 self.assertEqual(self.calls, [recovered, report])
                 self.assertEqual(len(list(self.root.glob("*.json"))), 2)
+                # The notice copy must not shadow the report copy for the home inbox.
+                copies = self.vault.parent / "Projects/task-board-events/delivered-copies"
+                self.assertEqual(json.loads((copies / (EVENT + ".md")).read_text())["text"], report)
+                self.assertEqual(json.loads((copies / (EVENT + ".notice.md")).read_text())["text"], recovered)
 
     async def test_recovered_prefix_uses_notice_receipt_and_preserves_unknown_report(self):
         recovered = delivery.recovered_marker(self.source, "NO_REPLY", self.vault)
