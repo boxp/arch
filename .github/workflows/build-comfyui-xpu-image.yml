@@ -6,16 +6,9 @@ on:
     paths: ['docker/comfyui-xpu/**', '.github/workflows/build-comfyui-xpu-image.yml']
   pull_request:
     paths: ['docker/comfyui-xpu/**', '.github/workflows/build-comfyui-xpu-image.yml']
-  workflow_dispatch:
-    inputs:
-      comfyui_repo:
-        description: 'ComfyUI source repository'
-        required: true
-        default: 'https://github.com/comfyanonymous/ComfyUI.git'
-      comfyui_ref:
-        description: 'ComfyUI source ref (empty: the tag pinned in the Dockerfile)'
-        required: false
-        default: ''
+  # The source is always the tag pinned in the Dockerfile, so a manual run cannot
+  # publish an image built from anything that did not pass review on main.
+  workflow_dispatch: {}
 
 jobs:
   build-and-push:
@@ -28,17 +21,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Resolve source
-        id: source
-        env:
-          INPUT_COMFYUI_REPO: ${{ inputs.comfyui_repo }}
-          INPUT_COMFYUI_REF: ${{ inputs.comfyui_ref }}
-        run: |
-          repo="${INPUT_COMFYUI_REPO:-https://github.com/comfyanonymous/ComfyUI.git}"
-          ref="${INPUT_COMFYUI_REF:-$(sed -n 's/^ARG COMFYUI_REF=//p' docker/comfyui-xpu/Dockerfile)}"
-          echo "repo=$repo" >> "$GITHUB_OUTPUT"
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -66,6 +48,3 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64
-          build-args: |
-            COMFYUI_REPO=${{ steps.source.outputs.repo }}
-            COMFYUI_REF=${{ steps.source.outputs.ref }}

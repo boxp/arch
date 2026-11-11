@@ -4,4 +4,4 @@ Intel Arc 140T 向けの PyTorch ネイティブ XPU / Level Zero イメージ�
 
 `--base-directory /data` で起動し、`/data` に input、output、user と models を配置し、`/scratch` に一時ファイルとキャッシュを置く。両方とも UID/GID 1000 で書き込み可能なボリュームを用意する。カスタムノード、ComfyUI-Manager、パートナー API ノードは意図的に無効化している。
 
-更新時は Dockerfile の `COMFYUI_REF` を変更し（workflow は既定でこの値を使う）、ビルド時の CPU テストと MiniMax H3 の検査を確認する。Renovate は Dockerfile のタグ更新を検出する。
+更新時は Dockerfile の `COMFYUI_REF` を変更し（workflow は常にこの値で build する）、ビルド時の CPU テストと MiniMax H3 の検査を確認する。Renovate は Dockerfile のタグ更新を検出する。
