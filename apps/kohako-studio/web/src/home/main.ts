@@ -2,7 +2,7 @@
 // 会話の送信・重複防止・停止・承認・追跡は Studio（src/studio/main.ts）と同じ規則。人格・判断・記憶は Hermes だけが持つ。
 import './style.css'
 import { formatPool, formatTasks, gaugeOf, taskBadgeOf, upstreamUnavailable, type Status } from './status'
-import { petFollow, zeroPet } from './petfollow'
+import { clipHold, isPetting, petFollow, petShown, zeroPet } from './petfollow'
 import { makeVisemes, visemeAt, boundaryTime, spokenSeconds, type VisemeSequence } from '../live2d/viseme'
 import { interpretRequest, newOutgoing, pcm16, presentation, resolveUnconfirmed, rigStateOf, sendOutcomeUnknown, silentSpeechSeconds, studioRigModelId, wantsActing, wantsRig, type Outgoing, type State } from '../studio/model'
 import { clipIdFor, clipName, lookFor, modelFor, mouthLevel, poseFor, type RigState } from '../live2d/model'
@@ -506,6 +506,7 @@ function touchReact(zone: Zone, kind: 'tap' | 'pat', via: 'pointer' | 'menu') {
 }
 let track: { id: number; zone: Zone; points: Point[]; headRect: Rect | null } | null = null
 let petOffset = zeroPet(), petTick = 0
+let holdClipForPet: (on: boolean) => void = () => {}
 rigCanvas.addEventListener('pointerdown', e => {
   if (!e.isPrimary || track) return
   if (character.classList.contains('mini')) return
@@ -547,8 +548,10 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') { for (const
 function rigTick(now: number) {
   if (!rig) return
   const dt = petTick ? Math.min(0.1, (now - petTick) / 1000) : 0; petTick = now
-  petOffset = petFollow(petOffset, track?.zone === 'head' && track.headRect ? { points: track.points, rect: track.headRect } : null, dt, { enabled: !touchBlocked(), reduced: reduced(), subtle: prefs.intensity === 'subtle' })
-  stage?.setPetOffset?.(petOffset); report.petFollow = { ...petOffset }
+  const petTrack = track?.zone === 'head' && track.headRect ? { points: track.points, rect: track.headRect, now } : null, petOptions = { enabled: !touchBlocked(), reduced: reduced(), subtle: prefs.intensity === 'subtle' }
+  petOffset = petFollow(petOffset, petTrack, dt, petOptions)
+  if (stage?.setPetOffset) { stage.setPetOffset(petOffset); holdClipForPet(isPetting(petTrack, petOptions) || petShown(petOffset)) }
+  report.petFollow = { ...petOffset }
   const v = visemes && state === 'speaking' && speakingSince ? visemeAt(visemes, visemeAnchor + (now - speakingSince) / 1000, visemeLive) : { vowel: 'closed', open: 0, width: 1 }
   const mouth = mouthLevel(rigModel, v.open)
   stage?.setViseme?.(v.vowel === 'closed' ? null : { open: v.open, width: reduced() ? 1 : v.width })
@@ -560,6 +563,11 @@ async function startRig() {
   try {
     const loaded = await loadRig(rigCanvas, rigModel, './kohako/live2d/sample/')
     rig = loaded.player; rig.start()
+    // 待機クリップは頭の角度（ParamAngleX/Y/Z）を毎フレーム上書きし、setParameter で足した追従は描画に出ない（BOXP-505 TD-01 で実測）。
+    // なでている間（と離して戻り切るまで）だけクリップを止め、戻ったら最後に指定されたクリップを再開する。
+    const clips = clipHold(rig.play.bind(rig))
+    rig.play = id => clips.play(id)
+    holdClipForPet = on => { clips.hold(on); report.petHeld = clips.held }
     const ids = (rig as Player & { meshIds?: string[] }).meshIds ?? []
     headIdx = HEAD_MESHES.map(n => ids.indexOf(n)).filter(i => i >= 0); handIdx = HAND_MESHES.map(n => ids.indexOf(n)).filter(i => i >= 0)
     // stage は ?acting=0 でも作る（なで追従の ParamAngle と母音口形は stage の update フックで毎フレーム反映される）。
