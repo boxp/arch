@@ -10,9 +10,11 @@ type Entry = {
   createdAt: number
   runId?: string
   cancelRequested?: boolean
-  /** 停止依頼後に届いた承認への deny。結果が unknown なら停止を成功とはしない。 */
+  /** 停止依頼後に届いた承認・なでるの自動 deny。cancel は全件の完了を待ち、unknown があれば停止を成功とはしない。 */
   lateDenies?: Promise<'ok' | 'not_pending' | 'unknown'>[]
   cancelUnconfirmed?: boolean
+  /** 上流 run の終了を確認できたか（なでるの表示上の failed 置換とは独立に、Hermes の実結果で判定する）。 */
+  upstreamEnded?: boolean
   settled?: Promise<void>
   approval?: { approvalId: string; runId: string; hermesRequestId?: string; generation?: number; summary: string; expiresAt: number; consumed: boolean; choice?: 'once' | 'deny'; result?: 'ok' | 'not_pending' | 'unknown'; denyOnly: boolean; active: boolean; pendingResult?: Promise<'ok' | 'not_pending' | 'unknown'> }
 }
@@ -117,8 +119,7 @@ export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 
       if (entry.status === 'pending' && entry.settled) await Promise.race([entry.settled, new Promise<void>((r) => setTimeout(r, cancelSettleMs).unref?.())])
       // run の終了を確認できなければ、この後に届く承認の deny 成否を確かめられないので停止成功とはしない。
       // status=unknown（ポーリング失敗等）や internal_error は上流 run の終了を確認できていないので終了扱いにしない。
-      const status = entry.status as Entry['status']
-      const runEnded = status === 'done' || (status === 'failed' && entry.error !== 'internal_error')
+      const runEnded = entry.upstreamEnded === true
       const late = await Promise.all(entry.lateDenies ?? [])
       // 承認の拒否を Hermes で確認できなかった場合は、停止を依頼しても承認が残りうるので停止成功とはしない。
       return !runEnded || denyResult === 'unknown' || late.includes('unknown') || entry.cancelUnconfirmed ? 'unknown' : stopped
@@ -139,6 +140,9 @@ export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 
       let touchApproval = false
       const onApproval: NonNullable<Parameters<typeof hermes.run>[4]> = (runId, approval) => {
           if (!approval) { if (entry.approval) entry.approval.active = false; return }
+          // ポーリングで同じ承認が再通知された場合、自動 deny 済みなら再送・上書きしない（先行 deny を cancel が待てなくなるため）。
+          const cur = entry.approval
+          if (cur && cur.consumed && cur.choice === 'deny' && cur.denyOnly && !cur.active && approval.requestId && cur.runId === runId && cur.hermesRequestId === approval.requestId && cur.generation === approval.generation) return
           // 停止を依頼した後に届いた承認は表示せず拒否する。
           if (entry.cancelRequested) {
             // 結果を破棄しない: unknown なら一度だけ再送し、それでも unknown なら停止未確認として記録する（後続の cancel は unknown を返す）。
@@ -154,6 +158,7 @@ export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 
             touchApproval = true
             // 自動 deny も消費済み承認として記録する（並行する cancel が deny の完了を待ち、結果が unknown なら停止成功としない）。
             const result = hermes.approve(runId, 'deny', approval.requestId, approval.generation).catch(() => 'unknown' as const)
+            ;(entry.lateDenies ??= []).push(result)
             entry.approval = { approvalId: randomBytes(8).toString('hex'), runId, hermesRequestId: approval.requestId, generation: approval.generation, summary: '', expiresAt: now(), consumed: true, choice: 'deny', active: false, denyOnly: true, pendingResult: result }
             void result.then((r) => { if (entry.approval?.pendingResult === result) entry.approval.result = r })
             return
@@ -183,6 +188,8 @@ export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 
       const applyResult = (settled: Awaited<ReturnType<typeof hermes.run>>) => {
           const result = touchApproval ? { status: 'failed' as const, error: 'touch_approval_denied' } : entry.cancelRequested && settled.status === 'failed' ? { status: 'failed' as const, error: 'cancelled' } : settled
           entry.status = result.status
+          // run 終了の確認は Hermes の実結果で行う（unknown/internal_error は終了未確認）。
+          entry.upstreamEnded = settled.status === 'done' || (settled.status === 'failed' && settled.error !== 'internal_error')
           // 終了した run の承認待ちは無効化する（ポーリング失敗/タイムアウトで approval が残り承認待ちを返し続けないように）。
           if (entry.approval) entry.approval.active = false
           if (result.status === 'done') {
