@@ -10,6 +10,12 @@ type Entry = {
   createdAt: number
   runId?: string
   cancelRequested?: boolean
+  /** 停止依頼後に届いた承認・なでるの自動 deny。cancel は全件の完了を待ち、unknown があれば停止を成功とはしない。 */
+  lateDenies?: Promise<'ok' | 'not_pending' | 'unknown'>[]
+  cancelUnconfirmed?: boolean
+  /** 上流 run の終了を確認できたか（なでるの表示上の failed 置換とは独立に、Hermes の実結果で判定する）。 */
+  upstreamEnded?: boolean
+  settled?: Promise<void>
   approval?: { approvalId: string; runId: string; hermesRequestId?: string; generation?: number; summary: string; expiresAt: number; consumed: boolean; choice?: 'once' | 'deny'; result?: 'ok' | 'not_pending' | 'unknown'; denyOnly: boolean; active: boolean; pendingResult?: Promise<'ok' | 'not_pending' | 'unknown'> }
 }
 /** 鍵らしき文字列だけを伏せる。path・URL は Owner が対象を判断するのに必要なので残す。 */
@@ -42,7 +48,7 @@ export function approvalSummary(approval: { description: string; command: string
   lines.push(command ? `実行内容: ${command}${fullyShown ? '' : '（全文を表示できないため拒否のみ可能）'}` : '実行内容: （不明のため拒否のみ可能）')
   return { summary: lines.join('\n'), fullyShown }
 }
-export function createConversation({ now, hermes, prefix }: { now: () => number; hermes: ReturnType<typeof createHermes>; prefix: string }) {
+export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 }: { now: () => number; hermes: ReturnType<typeof createHermes>; prefix: string; cancelSettleMs?: number }) {
   const entries = new Map<string, Entry>()
   let sessionStartedAt = now(),
     lastUse = sessionStartedAt,
@@ -95,7 +101,28 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
       const entry = entries.get(requestId)
       if (!entry || entry.status !== 'pending') return 'not_pending'
       entry.cancelRequested = true
-      return entry.runId ? hermes.stop(entry.runId) : 'ok'
+      // 停止前に未回答の承認を deny で消費する（Hermes は stop だけでは保留中の承認を解かず、停止後の once で実行されうるため）。
+      const pending = entry.approval
+      if (pending && pending.active && !pending.consumed) {
+        pending.consumed = true
+        pending.choice = 'deny'
+        pending.pendingResult = hermes.approve(pending.runId, 'deny', pending.hermesRequestId, pending.generation)
+      }
+      // 並行する cancel・自動 deny・Owner の回答で承認が送信中なら、その完了を待ってから stop する（拒否より先に停止しない）。
+      let denyResult: 'ok' | 'not_pending' | 'unknown' = 'ok'
+      if (pending?.pendingResult) {
+        denyResult = await pending.pendingResult.catch(() => 'unknown' as const)
+        pending.result ??= denyResult
+      }
+      const stopped = entry.runId ? await hermes.stop(entry.runId) : 'ok'
+      // stop と行き違いで届く承認があるので、run の終了を一定時間待ち、その間に届いた承認の deny 結果も確かめる。
+      if (entry.status === 'pending' && entry.settled) await Promise.race([entry.settled, new Promise<void>((r) => setTimeout(r, cancelSettleMs).unref?.())])
+      // run の終了を確認できなければ、この後に届く承認の deny 成否を確かめられないので停止成功とはしない。
+      // status=unknown（ポーリング失敗等）や internal_error は上流 run の終了を確認できていないので終了扱いにしない。
+      const runEnded = entry.upstreamEnded === true
+      const late = await Promise.all(entry.lateDenies ?? [])
+      // 承認の拒否を Hermes で確認できなかった場合は、停止を依頼しても承認が残りうるので停止成功とはしない。
+      return !runEnded || denyResult === 'unknown' || late.includes('unknown') || entry.cancelUnconfirmed ? 'unknown' : stopped
     },
     submit(input: Input, instructions: string, onSettled?: (status: 'done' | 'failed' | 'unknown') => void): Entry | { error: 'request_conflict' | 'busy' } {
       const existing = this.check(input)
@@ -113,9 +140,31 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
       let touchApproval = false
       const onApproval: NonNullable<Parameters<typeof hermes.run>[4]> = (runId, approval) => {
           if (!approval) { if (entry.approval) entry.approval.active = false; return }
+          // ポーリングで同じ承認が再通知された場合、自動 deny が送信中または確定済みなら再送・上書きしない（先行 deny を cancel が待てなくなるため）。
+          // 先行 deny が unknown（429・通信障害等）で終わっていれば拒否を再試行し、古い unknown は待機対象から外す。
+          const cur = entry.approval
+          if (cur && cur.consumed && cur.choice === 'deny' && cur.denyOnly && !cur.active && approval.requestId && cur.runId === runId && cur.hermesRequestId === approval.requestId && cur.generation === approval.generation) {
+            if (cur.result !== 'unknown') return
+            entry.lateDenies = entry.lateDenies?.filter((p) => p !== cur.pendingResult)
+          }
+          // 停止を依頼した後に届いた承認は表示せず拒否する。
+          if (entry.cancelRequested) {
+            // 結果を破棄しない: unknown なら一度だけ再送し、それでも unknown なら停止未確認として記録する（後続の cancel は unknown を返す）。
+            const deny = () => hermes.approve(runId, 'deny', approval.requestId, approval.generation).catch(() => 'unknown' as const)
+            const result = deny().then((r) => (r === 'unknown' ? deny() : r)).then((r) => { if (r === 'unknown') entry.cancelUnconfirmed = true; return r })
+            ;(entry.lateDenies ??= []).push(result)
+            // Owner に一度だけ許可を出させない: 消費済み deny として記録する。
+            entry.approval = { approvalId: randomBytes(8).toString('hex'), runId, hermesRequestId: approval.requestId, generation: approval.generation, summary: '', expiresAt: now(), consumed: true, choice: 'deny', active: false, denyOnly: true, pendingResult: result }
+            void result.then((r) => { if (entry.approval?.pendingResult === result) entry.approval.result = r })
+            return
+          }
           if (input.kind === 'touch') {
             touchApproval = true
-            void hermes.approve(runId, 'deny', approval.requestId, approval.generation).catch(() => {})
+            // 自動 deny も消費済み承認として記録する（並行する cancel が deny の完了を待ち、結果が unknown なら停止成功としない）。
+            const result = hermes.approve(runId, 'deny', approval.requestId, approval.generation).catch(() => 'unknown' as const)
+            ;(entry.lateDenies ??= []).push(result)
+            entry.approval = { approvalId: randomBytes(8).toString('hex'), runId, hermesRequestId: approval.requestId, generation: approval.generation, summary: '', expiresAt: now(), consumed: true, choice: 'deny', active: false, denyOnly: true, pendingResult: result }
+            void result.then((r) => { if (entry.approval?.pendingResult === result) entry.approval.result = r })
             return
           }
           // 同じ prompt_id でも execution_generation が変われば新しい承認として表示し直す（古い generation を送ると失敗するため）。
@@ -143,6 +192,8 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
       const applyResult = (settled: Awaited<ReturnType<typeof hermes.run>>) => {
           const result = touchApproval ? { status: 'failed' as const, error: 'touch_approval_denied' } : entry.cancelRequested && settled.status === 'failed' ? { status: 'failed' as const, error: 'cancelled' } : settled
           entry.status = result.status
+          // run 終了の確認は Hermes の実結果で行う（unknown/internal_error は終了未確認）。
+          entry.upstreamEnded = settled.status === 'done' || (settled.status === 'failed' && settled.error !== 'internal_error')
           // 終了した run の承認待ちは無効化する（ポーリング失敗/タイムアウトで approval が残り承認待ちを返し続けないように）。
           if (entry.approval) entry.approval.active = false
           if (result.status === 'done') {
@@ -151,6 +202,7 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
           }
           if (result.status !== 'done' && result.error) entry.error = result.error
           // 共有 claim の保存失敗（容量不足等）で process を落とさない。claim file は claimed のまま残り、再実行はされない。
+          markSettled()
           try { onSettled?.(result.status) } catch (e) { console.error('decision settle failed', e instanceof Error ? e.message : 'unknown') }
         }
       // ポーリング失敗/タイムアウト等で上流 run の終了を確認できないまま pending を解除すると、
@@ -164,6 +216,8 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
         console.warn('kohako_web_conv session_rotated upstream_unconfirmed')
         if (entry.runId) await hermes.stop(entry.runId)
       }
+      let markSettled: () => void = () => {}
+      entry.settled = new Promise<void>((r) => { markSettled = r })
       void (async () => {
         let result = await hermes.run(input.requestId, text, `${prefix}-${sessionStartedAt.toString(36)}`, instructions, onApproval, undefined, onRun)
         if (result.status === 'failed' && result.error === 'unknown_execution' && !entry.approval && !touchApproval) {
