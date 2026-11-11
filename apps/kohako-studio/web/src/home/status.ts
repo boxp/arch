@@ -2,7 +2,7 @@ export type Window = { name: string; label: string; state: string; usedPercent: 
 export type Pool = { id: string; label: string; windows: Window[]; state?: string; note?: string }
 export type Tasks = { state: string; inProgress: { total: number | null; complete: boolean; byAgent: { agent: string; count: number }[]; conflicts: string[] } }
 export type Status = { schema: string; generatedAt: string; quota: { state: string; pools: Pool[] }; tasks: Tasks }
-const states: Record<string, string> = { ok: '正常', near_limit: '上限間近', exhausted: '上限到達', stale: '古い情報', freshness_unknown: '観測時刻不明', expired: 'リセット後未観測', not_provided: '未提供', unobserved: '不明', not_applicable: '対象外', unavailable: '取得できません' }
+export const states: Record<string, string> = { ok: '正常', near_limit: '上限間近', exhausted: '上限到達', stale: '古い情報', freshness_unknown: '観測時刻不明', expired: 'リセット後未観測', not_provided: '未提供', unobserved: '不明', not_applicable: '対象外', unavailable: '取得できません' }
 const time = (s: string) => new Date(s).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
 export function relativeTime(s: string, now = Date.now()) { const ms = new Date(s).getTime() - now; if (ms <= 0) return '経過'; const hours = Math.ceil(ms / 3600000); return hours >= 24 ? `あと${Math.ceil(hours / 24)}日` : `あと${hours}時間` }
 export function formatPool(pool: Pool, now = Date.now()): string {
