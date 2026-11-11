@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createNotifications } from './notifications.js'
 import { createPush } from './push.js'
+import { atomic, load } from './storage.js'
 const payload = { eventId: 'event-123456', source: 'task-board', eventType: 'ready', title: '題', body: '本文', choices: ['はい'], createdAt: '2026-01-01T00:00:00Z' }
 describe('notifications', () => {
   it('deduplicates, persists, and claims replies before submission with retry', async () => {
@@ -17,6 +18,20 @@ describe('notifications', () => {
       expect((await restart.reply(payload.eventId, { ...reply, replyId: 'other-123456' }, submit)).error).toBe('already_replied')
       const retry = await restart.reply(payload.eventId, reply, () => true); expect(retry.requestId).toBe(first.requestId); expect(retry.status).toBe('submitted')
       expect((await restart.reply(payload.eventId, reply, submit)).requestId).toBe(first.requestId); expect(submit).toHaveBeenCalledTimes(1)
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+  it('re-submits a reply whose claim was saved but not sent before a restart', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'inbox-')), push = vi.fn(async () => ({}))
+    try {
+      const store = await createNotifications(dir, push); await store.ingest(payload)
+      const reply = { replyId: 'reply-123456', kind: 'choice', value: 'はい' }
+      // claim 保存直後に BFF が止まった状態を再現する（submit が戻らないまま保存だけ残る）。
+      const items = await load<any[]>(join(dir, 'notifications.json'), [])
+      items[0].reply = { ...reply, requestId: 'req-claimed', claimedAt: '2026-01-01T00:00:00Z', status: 'claimed' }; await atomic(join(dir, 'notifications.json'), items)
+      const restart = await createNotifications(dir, push), submit = vi.fn(() => true)
+      const result = await restart.reply(payload.eventId, reply, submit)
+      expect(submit).toHaveBeenCalledTimes(1); expect(submit.mock.calls[0][1]).toMatchObject({ requestId: 'req-claimed', value: 'はい' }); expect(result).toMatchObject({ requestId: 'req-claimed', status: 'submitted' })
+      expect((await restart.reply(payload.eventId, reply, submit)).existing).toBe(true); expect(submit).toHaveBeenCalledTimes(1)
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
   it('skips quiet hours and removes expired subscriptions', async () => {

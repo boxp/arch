@@ -27,7 +27,9 @@ export async function createNotifications(dir: string, push: (id: string) => Pro
       const item = items.find(i => i.eventId === id); if (!item) return { error: 'not_found' }
       if (!x || Object.keys(x).some(k => !['replyId','kind','value'].includes(k)) || typeof x.replyId !== 'string' || !/^[A-Za-z0-9-]{8,64}$/.test(x.replyId) || !['text','choice'].includes(x.kind) || !string(x.value,500) || !x.value.trim() || x.kind === 'choice' && !item.choices?.includes(x.value)) return { error: 'invalid' }
       if (item.reply && item.reply.replyId !== x.replyId) return { error: 'already_replied' }
-      if (item.reply && item.reply.status !== 'submit_failed') return { requestId: item.reply.requestId, status: item.reply.status, existing: true }
+      // 'claimed' のまま残るのは claim 保存後・送信前に BFF が止まった場合だけ（mutate で直列化し submit は同期）。
+      // 送れたか分からないので submit_failed と同じく同じ requestId で再送可能にし、Hermes 側は reply_id で重複を照合する。
+      if (item.reply && item.reply.status === 'submitted') return { requestId: item.reply.requestId, status: item.reply.status, existing: true }
       if (!item.reply) { item.reply = { replyId: x.replyId, kind: x.kind, value: x.value, requestId: randomUUID(), claimedAt: new Date(now()).toISOString(), status: 'claimed' }; await save() }
       let ok = false; try { ok = submit(item, item.reply) } catch { /* 同じ claim で再試行 */ }
       item.reply.status = ok ? 'submitted' : 'submit_failed'; await save()

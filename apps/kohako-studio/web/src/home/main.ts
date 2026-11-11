@@ -657,4 +657,14 @@ async function resumeUnconfirmed(pending: Outgoing) {
   show(state)
 }
 
-initInbox()
+/** 通知への返信（BFF が同じ Web 会話へ受付番号付きで送ったもの）を通常の依頼と同じく追い、応答・承認・停止を家の会話画面に出す。 */
+function followRequest(id: string, text: string): boolean {
+  if (requestId === id) return true
+  if (busy || unconfirmed || !enabled) return false
+  if (actingEnabled) interruptActing(); else if (synthesis) window.speechSynthesis.cancel()
+  error.textContent = ''; busy = true; accepted = true; started = Date.now(); lastActivity = Date.now(); delete reply.dataset.reply
+  requestId = id; addHistory('あなた', text); setBubble('…')
+  setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true }); show('thinking'); void poll(requestId)
+  return true
+}
+initInbox(followRequest)
