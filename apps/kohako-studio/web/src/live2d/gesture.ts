@@ -222,6 +222,12 @@ export const SWITCH_SECONDS = 0.25
  * （85a81114 の独立判定 td06j-review-85a8111）。重なる時間を短くし、腕を低い位置から持ち上げる途中で差し替える。
  */
 export const JOY_SWITCH_SECONDS = 0.12
+/**
+ * 喜びの戻りで腕を下ろす時間。入れ替え（JOY_SWITCH_SECONDS）は下ろしの最後の部分だけに置く。
+ * e53a69a9 は下ろしと消えるフェードを同じ 0.12 秒に入れて拳が高いまま消えた（独立判定 td06j-review-e53a69a）。
+ * 停滞レビュー BOXP-495 案B: 入りは e53a69a9 のまま、戻りは入りを時間方向に裏返す（下ろしながら最後の 0.12 秒で入れ替える）。
+ */
+export const JOY_LOWER_SECONDS = 0.45
 export const SWITCHED: Partial<Record<Exclude<Gesture, 'none'>, ArmPose>> = { halt: HALT, shyHand: SHY, greet: HALT, guide: HALT, joy: HALT }
 /** 両腕を差し替える動作（左腕も右と同じ姿勢で保持し、袖の持ち上げと切替のフェードを左右で揃える）。 */
 export const BOTH_ARMS: ReadonlySet<string> = new Set(['joy'])
@@ -342,7 +348,7 @@ export const JOY_ARM = {
 /** 喜びの 1 枚腕の回転と沈み。入りは拳を下から持ち上げ、保持は体の揺れに合わせて小さく弾ませ、戻りは下げながら消す。 */
 export function joyArmMotion(t: number, out = 0): { angle: number; drop: number } {
   const rise = 1 - ease(Math.min(1, Math.max(0, t / 0.45))), hold = smooth(0.35, 0.75, t), o = ease(out)
-  return { angle: JOY_ARM.angle + 0.7 * rise + 0.03 * Math.sin(2 * Math.PI * (t - 0.45) / 0.7) * hold + 0.7 * o, drop: 30 * rise + 5 * Math.abs(Math.sin(2 * Math.PI * (t - 0.45) / 0.7)) * hold + 30 * o }
+  return { angle: JOY_ARM.angle + 0.7 * rise + 0.03 * Math.sin(2 * Math.PI * (t - 0.45) / 0.7) * hold * (1 - o) + 0.7 * o, drop: 30 * rise + 5 * Math.abs(Math.sin(2 * Math.PI * (t - 0.45) / 0.7)) * hold * (1 - o) + 30 * o }
 }
 /** 右腕の画素 → モデル座標。left なら右腕の位置を体の中心線で鏡映する（絵は左右反転して貼る）。 */
 export function joyArmPoint(px: Vec, m: { angle: number; drop: number }, left = false): Vec {
@@ -602,10 +608,12 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   p.update = (dt: number) => {
     generation++
     if (greetSet) greetTime += dt; else waveDecay += dt
-    if (haltSet || shySet || guideSet || joySet) { haltTime += dt; if (sw?.phase === 'out') haltOut = Math.min(1, (sw.t + dt) / switchSeconds()) }
+    // 喜びの戻りは JOY_LOWER_SECONDS かけて下ろし、その最後の JOY_SWITCH_SECONDS だけで待機の腕と入れ替える（動きの途中で入れ替える）。
+    const lower = sw?.phase === 'out' && joySet ? JOY_LOWER_SECONDS : 0, lead = lower ? lower - switchSeconds() : 0
+    if (haltSet || shySet || guideSet || joySet) { haltTime += dt; if (sw?.phase === 'out') haltOut = Math.min(1, (sw.t + dt) / (lower || switchSeconds())) }
     if (sw) {
       sw.t += dt
-      const x = Math.min(1, sw.t / switchSeconds())
+      const x = Math.min(1, Math.max(0, sw.t - lead) / switchSeconds())
       posedAlpha = sw.phase === 'in' ? ease(x) : 1 - ease(x)
       if (x >= 1) {
         const ended = sw; sw = null; posedAlpha = 1

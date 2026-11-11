@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { existsSync } from 'node:fs'
-import { BENT_ART, GREET_WAVE, GUIDE_ARM, guideArmMotion, JOY_ARM, JOY_SWITCH_SECONDS, joyArmMotion, joyArmPoint, guideArmPoint, greetArmPoint, greetWave, haltForeWeight, HALT_ARM, haltArmAngle, haltArmPoint, SHY_ARM, shyArmMotion, shyArmPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
+import { BENT_ART, GREET_WAVE, GUIDE_ARM, guideArmMotion, JOY_ARM, JOY_LOWER_SECONDS, JOY_SWITCH_SECONDS, joyArmMotion, joyArmPoint, guideArmPoint, greetArmPoint, greetWave, haltForeWeight, HALT_ARM, haltArmAngle, haltArmPoint, SHY_ARM, shyArmMotion, shyArmPoint, backOpacity, SWITCH_SECONDS, SWITCHED, interruptPlan, bentSide, bentWeight, placeBent, placeBentFore, browPin, type ArmPose, clips, createActingStage, crossfadeArms, deformArm, deformFore, deformHand, deformSleeve, faces, foreScale, isForearm, sample, sleeveAngle, solveArm } from './gesture'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { emotions, gestures } from './acting'
@@ -267,7 +267,7 @@ describe('実行時の動作の割り込み', () => {
       expect((stage.report() as { switched: boolean }).switched).toBe(true)
       stage.reset(); run(frame, released)
       expect((stage.report() as { armSwitch: { phase: string } | null }).armSwitch?.phase).toBe('out')
-      stage.playGesture('joy'); run(frame, 0.3)
+      stage.playGesture('joy'); run(frame, JOY_LOWER_SECONDS + 0.2) // 戻りは下ろし切ってから次の喜びへ
       expect((stage.report() as { armSwitch: { phase: string } | null; gesture: string }).gesture).toBe('joy')
     }
   })
@@ -282,6 +282,22 @@ describe('実行時の動作の割り込み', () => {
     expect(JOY_SWITCH_SECONDS).toBeLessThan(SWITCH_SECONDS)
     const atSwitched = joyArmPoint(JOY_ARM.fistPx, joyArmMotion(JOY_SWITCH_SECONDS, 0))
     expect(atSwitched[1]).toBeGreaterThan(fist[1] + 50)
+  })
+  it('喜びの戻りは下ろしの最後だけで待機の腕と入れ替え、入れ替えの始まりで拳は入りの入れ替え終わりと同程度に低い（BOXP-495 案B）', () => {
+    const hold = joyArmPoint(JOY_ARM.fistPx, joyArmMotion(1, 0))
+    const startOut = (JOY_LOWER_SECONDS - JOY_SWITCH_SECONDS) / JOY_LOWER_SECONDS
+    const atSwapStart = joyArmPoint(JOY_ARM.fistPx, joyArmMotion(3, startOut))
+    const entrySwapEnd = joyArmPoint(JOY_ARM.fistPx, joyArmMotion(JOY_SWITCH_SECONDS, 0))
+    expect(JOY_LOWER_SECONDS).toBeGreaterThan(3 * JOY_SWITCH_SECONDS)
+    expect(atSwapStart[1]).toBeGreaterThan(hold[1] + 50)
+    expect(Math.abs(atSwapStart[1] - entrySwapEnd[1])).toBeLessThan(25)
+    // 実ステージでも下ろしの間は待機の腕が出ず（posedAlpha=1）、最後の区間でだけ入れ替わる
+    const { stage, frame } = setup()
+    stage.playGesture('joy'); run(frame, 1.5); stage.reset()
+    const alpha = () => (stage.report() as { armSwitch: { posedAlpha: number } | null }).armSwitch?.posedAlpha
+    run(frame, JOY_LOWER_SECONDS - JOY_SWITCH_SECONDS - 0.03); expect(alpha()).toBe(1)
+    run(frame, 0.08); expect(alpha() ?? 0).toBeLessThan(1)
+    run(frame, 0.2); expect((stage.report() as { armSwitch: unknown }).armSwitch).toBeNull()
   })
   it('解除後は腕の変形が外れて休止位置へ戻る', () => {
     const { stage, frame } = setup()
