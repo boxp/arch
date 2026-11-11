@@ -26,3 +26,55 @@
     state: present
     update_cache: true
   when: gpu_worker_host_tools_enabled | bool
+
+- name: Validate i915 request timeout
+  ansible.builtin.assert:
+    that:
+      - gpu_worker_host_tools_i915_request_timeout_ms | string is match('^[0-9]+$')
+  when: gpu_worker_host_tools_i915_timeout_enabled | bool
+
+- name: Configure i915 request timeout at module load
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/i915-request-timeout.conf
+    content: "options i915 request_timeout_ms={{ gpu_worker_host_tools_i915_request_timeout_ms }}\n"
+    mode: "0644"
+  notify: Update initramfs for i915 request timeout
+  when: gpu_worker_host_tools_i915_timeout_enabled | bool
+
+- name: Check for the live i915 request timeout parameter
+  ansible.builtin.stat:
+    path: /sys/module/i915/parameters/request_timeout_ms
+  register: gpu_worker_i915_timeout_sysfs
+  when:
+    - gpu_worker_host_tools_i915_timeout_enabled | bool
+    - not (is_chroot | default(false) | bool)
+
+- name: Read the live i915 request timeout
+  ansible.builtin.slurp:
+    src: /sys/module/i915/parameters/request_timeout_ms
+  register: gpu_worker_i915_timeout_current
+  when:
+    - gpu_worker_host_tools_i915_timeout_enabled | bool
+    - not (is_chroot | default(false) | bool)
+    - gpu_worker_i915_timeout_sysfs.stat.exists
+
+- name: Update the live i915 request timeout
+  ansible.builtin.shell: "echo {{ gpu_worker_host_tools_i915_request_timeout_ms | int }} > /sys/module/i915/parameters/request_timeout_ms"
+  changed_when: true
+  when:
+    - gpu_worker_host_tools_i915_timeout_enabled | bool
+    - not (is_chroot | default(false) | bool)
+    - gpu_worker_i915_timeout_sysfs.stat.exists
+    - gpu_worker_i915_timeout_current.content | b64decode | trim != gpu_worker_host_tools_i915_request_timeout_ms | string
+    - not ansible_check_mode
+
+- name: Report the live i915 request timeout change in check mode
+  ansible.builtin.debug:
+    msg: i915 request timeout would be updated
+  changed_when: true
+  when:
+    - ansible_check_mode
+    - gpu_worker_host_tools_i915_timeout_enabled | bool
+    - not (is_chroot | default(false) | bool)
+    - gpu_worker_i915_timeout_sysfs.stat.exists
+    - gpu_worker_i915_timeout_current.content | b64decode | trim != gpu_worker_host_tools_i915_request_timeout_ms | string

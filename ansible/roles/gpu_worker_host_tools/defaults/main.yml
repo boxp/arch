@@ -1,5 +1,7 @@
 ---
 gpu_worker_host_tools_enabled: false
+gpu_worker_host_tools_i915_timeout_enabled: false
+gpu_worker_host_tools_i915_request_timeout_ms: 600000
 gpu_worker_host_tools_intel_graphics_ppa: ppa:kobuk-team/intel-graphics
 gpu_worker_host_tools_nvtop_ppa: ppa:quentiumyt/nvtop
 gpu_worker_host_tools_packages:
