@@ -198,11 +198,15 @@ window.addEventListener('offline', () => { netDown = true; show(state) })
 /** 再読み込み前に追っていた依頼があれば続きを追う（本文は保存していない）。 */
 async function resumeInflight() {
   const saved = parseResume(tab.get(INFLIGHT_KEY), Date.now()); if (!saved || busy) { if (!saved) setInflight(null); return }
+  // 初回照会を待つ間に送信されると requestId が上書きされて追跡が取り違えるため、照会前から送信を止めておく。
+  busy = true; accepted = false; show(state)
   let r: Awaited<ReturnType<typeof call>> | null = null
   try { r = await call(`requests/${saved.requestId}`) } catch { r = null }
   // 200 に加え一時的な失敗（502 など）や通信例外でも追跡を再開し、poll 側で問い合わせを続ける（送信可能に戻すと再送で二重実行になり得る）。
-  if (!r || pollVerdict(r.status, !!r.data) !== 'terminal') { requestId = saved.requestId; accepted = true; busy = true; started = Date.now(); addHistory('お知らせ', '再読み込み前の依頼の続きを追っています。'); show('thinking'); void poll(requestId, saved.expiresAt); return }
-  if (r && r.status === 404) { setInflight(null); addHistory('お知らせ', '前回の依頼は見つかりませんでした（新しい会話になった可能性があります）。') }
+  if (!r || pollVerdict(r.status, !!r.data) !== 'terminal') { requestId = saved.requestId; accepted = true; started = Date.now(); addHistory('お知らせ', '再読み込み前の依頼の続きを追っています。'); show('thinking'); void poll(requestId, saved.expiresAt); return }
+  busy = false
+  if (r.status === 404) { setInflight(null); addHistory('お知らせ', '前回の依頼は見つかりませんでした（新しい会話になった可能性があります）。') }
+  show(state)
 }
 async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
   let misses = 0
