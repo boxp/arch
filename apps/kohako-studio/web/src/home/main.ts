@@ -9,7 +9,7 @@ import { createActingStage } from '../live2d/gesture'
 import { createSentenceSpeaker, createSilentSentencer } from '../studio/acting-speech'
 import { SceneDirector, targetScene, type Scene } from './scene'
 import { cardsFromText, type Card } from './cards'
-import { acts, bboxOf, classifyTouch, HAND_MESHES, HEAD_MESHES, inside, toScreenRect, TouchLimiter, type Point, type Rect, type Zone } from './touch'
+import { acts, bboxOf, classifyTouch, HAND_MESHES, HEAD_MESHES, inside, toScreenRect, TouchLimiter, TouchBatcher, type Point, type Rect, type Zone } from './touch'
 import { parsePrefs, type Prefs } from './prefs'
 import { parseResume, parseUnconfirmed, pollVerdict, type Inflight } from './resume'
 
@@ -102,7 +102,7 @@ function show(next: State) {
   if (next !== 'speaking') { speakingSince = 0; clearTimeout(mouthTimer) }
   if (rig) report.pose = { state: next, ...(actingEnabled ? actingPose(rig, rigStateOf[next]) : applyPose(rig, rigModel, rigStateOf[next])) }
   if (acting) { acting.setOperational(rigStateOf[next]); report.acting = acting.snapshot }
-  send.disabled = !enabled || busy || !!recording || starting
+  send.disabled = !enabled || busy || touchActive || !!recording || starting
   send.hidden = busy && accepted
   stop.hidden = !busy || !requestId || !accepted
   record.hidden = !stt; record.disabled = !enabled || !stt || busy
@@ -277,7 +277,7 @@ function hushNow() { if (actingEnabled) interruptActing(); else if (synthesis) w
 hush.addEventListener('click', hushNow)
 
 el<HTMLFormElement>('form').addEventListener('submit', async event => {
-  event.preventDefault(); const text = message.value.trim(); if (!text || busy || !enabled || recording || starting) return
+  event.preventDefault(); const text = message.value.trim(); if (!text || busy || touchActive || !enabled || recording || starting) return
   if (actingEnabled) interruptActing(); else if (synthesis) window.speechSynthesis.cancel()
   error.textContent = ''; busy = true; accepted = false; started = Date.now(); lastActivity = Date.now(); typingUntil = 0; delete reply.dataset.reply
   renderCards([]); setBubble('…'); show('thinking')
@@ -381,8 +381,39 @@ record.addEventListener('pointerdown', async event => {
 })
 for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) record.addEventListener(ev, () => void finishRecording())
 
-// ---- ふれあい（端末内だけ。通信・AI 呼び出し・記憶・数値の保存をしない） ----
-const limiter = new TouchLimiter()
+// ---- ふれあい ----
+const limiter = new TouchLimiter(), touchBatcher = new TouchBatcher()
+let touchActive = false, touchDebounce = 0
+async function sendTouch() {
+  const batch = touchBatcher.take(Date.now(), prefs.lines && enabled && !busy && !unconfirmed && !netDown && !['approval', 'failed', 'offline'].includes(state))
+  if (!batch) return
+  touchActive = true; show(state)
+  const id = crypto.randomUUID(), expiresAt = Date.now() + 60000
+  try {
+    const sent = await call('messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(10000), body: JSON.stringify({ requestId: id, kind: 'touch', touch: batch, expiresAt }) })
+    if (sent.status !== 202) throw new Error('send failed')
+    while (Date.now() < expiresAt) {
+      await new Promise(resolve => setTimeout(resolve, 1200))
+      const result = await call(`requests/${id}`, { signal: AbortSignal.timeout(10000) })
+      if (result.status !== 200 || !result.data) throw new Error('poll failed')
+      const next = interpretRequest(result.data)
+      if (next.state === 'done' && next.text) {
+        if (prefs.lines && !busy && !netDown && !['approval', 'failed', 'offline'].includes(state)) {
+          const before = reply.textContent ?? '', wasTouch = bubble.classList.contains('touch')
+          setBubble(next.text, true)
+          clearTimeout(touchLineTimer)
+          touchLineTimer = window.setTimeout(() => { if (bubble.classList.contains('touch')) setBubble(wasTouch ? '' : before) }, 4500)
+        }
+        return
+      }
+      if (result.data.status !== 'pending') throw new Error('request failed')
+    }
+    throw new Error('timeout')
+  } catch {
+    el('touch-live').textContent = '返事を受け取れませんでした。'
+    try { await call(`requests/${id}/cancel`, { method: 'POST', signal: AbortSignal.timeout(10000) }) } catch { /* 結果不明 */ }
+  } finally { touchActive = false; touchBatcher.finish(); show(state) }
+}
 let headIdx: number[] = [], handIdx: number[] = [], areas: { head: Rect | null; hands: Rect[] } = { head: null, hands: [] }, reactionTimer = 0
 const BIG = ['joy', 'greet', 'guide', 'shyHand', 'halt']
 function computeAreas() {
@@ -405,9 +436,9 @@ function touchBlocked(): string | null {
 function touchReact(zone: Zone, kind: 'tap' | 'pat', via: 'pointer' | 'menu') {
   const blocked = touchBlocked(); if (blocked) { if (via === 'menu') el('touch-live').textContent = blocked; return }
   const now = Date.now(), quietOnly = state === 'thinking' || state === 'speaking' || state === 'listening'
-  const { reaction, line } = limiter.react(kind, zone, now, { lines: prefs.lines, quietOnly })
+  const { reaction } = limiter.react(kind, zone, now, { lines: false, quietOnly })
   const act = acts[reaction], gesture = prefs.intensity === 'subtle' || reduced() ? act.subtleGesture : act.gesture
-  ;(report.touches as unknown[]).push({ at: now, zone, kind, via, reaction, line, gesture, state }); if ((report.touches as unknown[]).length > 50) (report.touches as unknown[]).shift()
+  ;(report.touches as unknown[]).push({ at: now, zone, kind, via, reaction, gesture, state }); if ((report.touches as unknown[]).length > 50) (report.touches as unknown[]).shift()
   if (stage) {
     if (quietOnly) { if (!BIG.includes(String(acting?.snapshot.gesture))) stage.playGesture('nod') }
     else {
@@ -417,11 +448,11 @@ function touchReact(zone: Zone, kind: 'tap' | 'pat', via: 'pointer' | 'menu') {
     }
   }
   const words = zone === 'hand' ? 'ハイタッチしました' : kind === 'pat' ? '頭をなでました' : '頭にタッチしました'
-  el('touch-live').textContent = `${words}。${line ?? 'コハコが反応しました。'}`
-  if (line && !quietOnly) {
-    const before = reply.textContent ?? '', wasTouch = bubble.classList.contains('touch')
-    setBubble(line, true); lastActivity = Date.now(); if (sceneNow() === 'relax') refreshScene()
-    touchLineTimer = window.setTimeout(() => { if (bubble.classList.contains('touch')) setBubble(wasTouch ? '' : before) }, 4500)
+  el('touch-live').textContent = `${words}。`
+  if (prefs.lines && !busy && !touchActive && !unconfirmed && !netDown && !['approval', 'failed', 'offline'].includes(state)) {
+    touchBatcher.add(zone, kind, now)
+    clearTimeout(touchDebounce)
+    touchDebounce = window.setTimeout(() => void sendTouch(), 1200)
   }
 }
 let track: { id: number; zone: Zone; points: Point[] } | null = null

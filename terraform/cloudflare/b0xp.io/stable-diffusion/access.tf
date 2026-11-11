@@ -28,9 +28,9 @@ resource "cloudflare_zero_trust_access_application" "stable_diffusion" {
 # ComfyUI は利用者が組んだ workflow を実行し、入口から LLM の停止（GPU 切替）も起こせるため、
 # その範囲では公開しない。hitohako-stage / portfolio-stage と同じ方式で、boxp 本人の GitHub
 # メールアドレスに限定し、require で GitHub IdP 経由であることを要求する。
-# BOXP-502: sd-webui.b0xp.io も同じ本人限定 policy 形式へ変更した（下の stable_diffusion_access）。
+# 既存 sd-webui.b0xp.io の policy は変更しない。
 locals {
-  owner_emails = ["tiyotiyouda@gmail.com"]
+  comfyui_owner_emails = ["tiyotiyouda@gmail.com"]
 }
 
 resource "cloudflare_zero_trust_access_policy" "comfyui_owner" {
@@ -38,7 +38,7 @@ resource "cloudflare_zero_trust_access_policy" "comfyui_owner" {
   name       = "policy for comfyui.b0xp.io (owner only)"
   decision   = "allow"
   include = [
-    for email in local.owner_emails : {
+    for email in local.comfyui_owner_emails : {
       email = { email = email }
     }
   ]
@@ -69,19 +69,11 @@ locals {
   ][0]
 }
 
-# BOXP-502: sd-webui.b0xp.io も GitHub ログイン全員ではなく本人限定にする。
-# comfyui_owner と同型（本人メールを include、GitHub IdP を require）。policy は in-place 更新し、
-# application と policy の ID は変えない。
 resource "cloudflare_zero_trust_access_policy" "stable_diffusion_access" {
   account_id = var.account_id
   name       = "policy for sd-webui.b0xp.io"
   decision   = "allow"
-  include = [
-    for email in local.owner_emails : {
-      email = { email = email }
-    }
-  ]
-  require = [{
+  include = [{
     login_method = {
       id = local.github_idp_id
     }

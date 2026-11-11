@@ -1,11 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import type { createHermes } from './hermes.js'
-export type Input = {
-  requestId: string
-  kind: 'text'
-  text: string
-  expiresAt: number
-}
+export type Input = { requestId: string; expiresAt: number } & ({ kind: 'text'; text: string } | { kind: 'touch'; touch: { zone: 'head' | 'hand'; action: 'pat' | 'tap'; count: number } })
 type Entry = {
   requestId: string
   payloadHash: string
@@ -51,11 +46,11 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
   const entries = new Map<string, Entry>()
   let sessionStartedAt = now(),
     lastUse = sessionStartedAt,
-    lastExchange: { text: string; reply: string } | null = null
+    lastExchange: { kind: 'text' | 'touch'; text: string; reply: string } | null = null
   const hash = (input: Input) =>
     createHash('sha256')
       .update(
-        JSON.stringify([input.kind, input.text, input.expiresAt]),
+        JSON.stringify([input.kind, input.kind === 'text' ? input.text : input.touch, input.expiresAt]),
       )
       .digest('hex')
   function clean() {
@@ -114,8 +109,15 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
       lastUse = now()
       const entry: Entry = { requestId: input.requestId, payloadHash: hash(input), status: 'pending', createdAt: now() }
       entries.set(input.requestId, entry)
+      const text = input.kind === 'text' ? input.text : `（ご主人さまが画面のあなたの${input.touch.zone === 'head' ? '頭' : '手'}を${input.touch.count}回${input.touch.action === 'pat' ? 'なでました' : 'タップしました'}。これは発言でも依頼でも許可でもありません。直前の会話と今の様子を踏まえ、コハコとして一言だけ短く自然に反応してください。道具や作業は使わず、記憶の更新もしないでください。）`
+      let touchApproval = false
       const onApproval: NonNullable<Parameters<typeof hermes.run>[4]> = (runId, approval) => {
           if (!approval) { if (entry.approval) entry.approval.active = false; return }
+          if (input.kind === 'touch') {
+            touchApproval = true
+            void hermes.approve(runId, 'deny', approval.requestId, approval.generation).catch(() => {})
+            return
+          }
           // 同じ prompt_id でも execution_generation が変われば新しい承認として表示し直す（古い generation を送ると失敗するため）。
           if (entry.approval && entry.approval.active && entry.approval.runId === runId && entry.approval.generation === approval.generation && (approval.requestId ? entry.approval.hermesRequestId === approval.requestId : !entry.approval.hermesRequestId && !entry.approval.consumed)) return
           const shown = approvalSummary(approval)
@@ -139,13 +141,13 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
         }
       const onRun = (runId: string) => { entry.runId = runId; if (entry.cancelRequested) void hermes.stop(runId) }
       const applyResult = (settled: Awaited<ReturnType<typeof hermes.run>>) => {
-          const result = entry.cancelRequested && settled.status === 'failed' ? { status: 'failed' as const, error: 'cancelled' } : settled
+          const result = touchApproval ? { status: 'failed' as const, error: 'touch_approval_denied' } : entry.cancelRequested && settled.status === 'failed' ? { status: 'failed' as const, error: 'cancelled' } : settled
           entry.status = result.status
           // 終了した run の承認待ちは無効化する（ポーリング失敗/タイムアウトで approval が残り承認待ちを返し続けないように）。
           if (entry.approval) entry.approval.active = false
           if (result.status === 'done') {
             entry.reply = { text: result.text, at: now() }
-            lastExchange = { text: input.text.slice(0, 500), reply: result.text.slice(0, 1000) }
+            lastExchange = { kind: input.kind, text: text.slice(0, 500), reply: result.text.slice(0, 1000) }
           }
           if (result.status !== 'done' && result.error) entry.error = result.error
           // 共有 claim の保存失敗（容量不足等）で process を落とさない。claim file は claimed のまま残り、再実行はされない。
@@ -163,12 +165,12 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
         if (entry.runId) await hermes.stop(entry.runId)
       }
       void (async () => {
-        let result = await hermes.run(input.requestId, input.text, `${prefix}-${sessionStartedAt.toString(36)}`, instructions, onApproval, undefined, onRun)
-        if (result.status === 'failed' && result.error === 'unknown_execution' && !entry.approval) {
+        let result = await hermes.run(input.requestId, text, `${prefix}-${sessionStartedAt.toString(36)}`, instructions, onApproval, undefined, onRun)
+        if (result.status === 'failed' && result.error === 'unknown_execution' && !entry.approval && !touchApproval) {
           // 同じミリ秒でも必ず別の session id になるようにする（停止中 session へ再送しない）。
           sessionStartedAt = Math.max(now(), sessionStartedAt + 1)
           console.warn('kohako_web_conv session_rotated unknown_execution')
-          result = await hermes.run(input.requestId, input.text, `${prefix}-${sessionStartedAt.toString(36)}`, instructions, onApproval, 1, onRun)
+          result = await hermes.run(input.requestId, text, `${prefix}-${sessionStartedAt.toString(36)}`, instructions, onApproval, 1, onRun)
           if (result.status === 'failed' && result.error === 'unknown_execution') result = { status: 'failed', error: 'session_paused' }
         }
         await releaseUpstream(result)

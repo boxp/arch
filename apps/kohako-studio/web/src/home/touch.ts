@@ -68,3 +68,23 @@ export function bboxOf(vertices: ArrayLike<number>, into?: [number, number, numb
 export const inside = (r: Rect, x: number, y: number) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h
 /** 頭は前髪・顔、手は手袋だけ（腕・胴・顔の部品には判定を置かない）。 */
 export const HEAD_MESHES = ['ArtMeshFrontHair', 'ArtMeshFrontHairL', 'ArtMeshFrontHairR', 'ArtMeshFace'], HAND_MESHES = ['ArtMeshHandwearL', 'ArtMeshHandwearR']
+
+/** 接触の集約と送信頻度を制御する。異なる操作は直近の操作に切り替える。 */
+export class TouchBatcher {
+  private batch: { zone: Zone; action: TouchKind; count: number; at: number } | null = null
+  private lastSent = -Infinity
+  private inflight = false
+  add(zone: Zone, action: TouchKind, now: number) {
+    if (this.inflight) return
+    const count = this.batch?.zone === zone && this.batch.action === action ? Math.min(20, this.batch.count + 1) : 1
+    this.batch = { zone, action, count, at: now }
+  }
+  take(now: number, allowed: boolean) {
+    if (!this.batch || now - this.batch.at < 1200) return null
+    const batch = this.batch; this.batch = null
+    if (!allowed || this.inflight || now - this.lastSent < 15000) return null
+    this.inflight = true; this.lastSent = now
+    return { zone: batch.zone, action: batch.action, count: batch.count }
+  }
+  finish() { this.inflight = false }
+}

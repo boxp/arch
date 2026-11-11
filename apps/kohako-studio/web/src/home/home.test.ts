@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { SceneDirector, targetScene, type SceneInput } from './scene'
 import { cardsFromText } from './cards'
-import { bboxOf, classifyTouch, TouchLimiter, toScreenRect, type Point } from './touch'
+import { bboxOf, classifyTouch, TouchLimiter, TouchBatcher, toScreenRect, type Point } from './touch'
 import { parseResume, parseUnconfirmed, pollVerdict } from './resume'
 import { parsePrefs } from './prefs'
 
@@ -111,4 +111,15 @@ describe('pollVerdict', () => {
     expect(pollVerdict(200, true)).toBe('ok')
     for (const s of [401, 403, 404, 400]) expect(pollVerdict(s, true)).toBe('terminal')
   })
+})
+
+it('aggregates touches after quiet time and suppresses in-flight and frequent requests', () => {
+  const b = new TouchBatcher()
+  b.add('head', 'pat', 0); b.add('head', 'pat', 500)
+  expect(b.take(1699, true)).toBeNull()
+  expect(b.take(1700, true)).toEqual({ zone: 'head', action: 'pat', count: 2 })
+  b.add('hand', 'tap', 2000); expect(b.take(4000, true)).toBeNull()
+  b.finish(); b.add('hand', 'tap', 4000); expect(b.take(5200, true)).toBeNull()
+  b.add('head', 'tap', 16000); expect(b.take(17200, false)).toBeNull()
+  b.add('hand', 'tap', 18000); expect(b.take(19200, true)).toEqual({ zone: 'hand', action: 'tap', count: 1 })
 })

@@ -47,9 +47,13 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
         if (!['once', 'deny'].includes(x.choice) || typeof x.approvalId !== 'string' || !/^[a-f0-9]{16}$/.test(x.approvalId)) return json(400, { error: 'invalid' })
         const result = await conv.approve(x.requestId, x.approvalId, x.choice); return result === 'ok' ? json(200, { status: 'pending' }) : result === 'unknown' ? json(202, { status: 'approval-unknown' }) : json(result === 'approval_expired' ? 410 : 409, { error: result })
       }
-      if (x.kind !== 'text' || typeof x.text !== 'string' || !x.text.trim() || x.text.length > 500 || typeof x.expiresAt !== 'number' || !Number.isFinite(x.expiresAt) || x.expiresAt > now() + 600000) return json(400, { error: 'invalid' })
+      if (typeof x.expiresAt !== 'number' || !Number.isFinite(x.expiresAt) || x.expiresAt > now() + 600000) return json(400, { error: 'invalid' })
+      let input: Input
+      if (x.kind === 'text' && typeof x.text === 'string' && x.text.trim() && x.text.length <= 500) input = { kind: 'text', requestId: x.requestId, text: x.text, expiresAt: x.expiresAt }
+      else if (x.kind === 'touch' && Object.keys(x).every(k => ['requestId', 'kind', 'touch', 'expiresAt'].includes(k)) && x.touch && typeof x.touch === 'object' && !Array.isArray(x.touch) && Object.keys(x.touch).length === 3 && ['head', 'hand'].includes(x.touch.zone) && ['pat', 'tap'].includes(x.touch.action) && Number.isInteger(x.touch.count) && x.touch.count >= 1 && x.touch.count <= 20) input = { kind: 'touch', requestId: x.requestId, touch: { zone: x.touch.zone, action: x.touch.action, count: x.touch.count }, expiresAt: x.expiresAt }
+      else return json(400, { error: 'invalid' })
       if (x.expiresAt <= now()) return json(410, { error: 'expired' })
-      const input: Input = { kind: 'text', requestId: x.requestId, text: x.text, expiresAt: x.expiresAt }; const entry = conv.submit(input, instructions)
+      const entry = conv.submit(input, instructions)
       return 'payloadHash' in entry ? json(202, view(entry)) : json(entry.error === 'busy' ? 429 : 409, entry)
     } catch { if (!res.headersSent) json(500, { error: 'internal_error' }); else res.end() }
   }
