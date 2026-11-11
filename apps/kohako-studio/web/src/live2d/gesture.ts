@@ -341,6 +341,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   let generation = 0, target = faces.neutral, face = { ...faces.neutral }, clip: Clip | null = null, clipName: Gesture = 'none', clipTime = 0, emotion: Emotion = 'neutral'
   let pose: ReturnType<typeof sample> = { right: REST, left: REST, body: NO_BODY }, armBlend = 0
   const headCurrent = { ...NO_BODY }
+  let visemeWidth = 1, visemeWant = 1, petOffset = { headX: 0, headY: 0, headZ: 0 }
   let fadeFrom: { right: ArmPose; left: ArmPose } | null = null, fadeTime = 0, fadeSeconds = CROSSFADE_SECONDS
   // 腕の表示は常に pose そのもの。解除も関節の補間で戻すので、どの時点で次の動作が来ても pose から正確につなげる。
   const startFade = (seconds = CROSSFADE_SECONDS, from: { right: ArmPose; left: ArmPose } = pose) => { fadeFrom = { right: from.right, left: from.left }; fadeTime = 0; fadeSeconds = seconds }
@@ -501,7 +502,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       if (armBlend > 0.001 && (mesh === RIGHT.arm || mesh === LEFT.arm)) { const b = mesh === RIGHT.arm ? RIGHT : LEFT; const armPose = mesh === RIGHT.arm ? pose.right : pose.left; if (parts && (b === RIGHT ? parts.right.on : parts.left.on)) out = deformSleeve(b, sleeveAngle(b, armPose), x, y, rx, ry); else { const d = deformArm(b, armPose, x, y, rx, ry); out = [lerp(x, d[0], armBlend), lerp(y, d[1], armBlend)] } }
       else if (armBlend > 0.001 && (mesh === RIGHT.hand || mesh === LEFT.hand)) { const b = mesh === RIGHT.hand ? RIGHT : LEFT; const d = deformHand(b, mesh === RIGHT.hand ? pose.right : pose.left, x, y); out = [lerp(x, d[0], armBlend), lerp(y, d[1], armBlend)] }
       else if (mesh === BROW) { const outer = Math.min(1, Math.abs(rx - CX) / 75); out = [x, y + (face.browY + lerp(face.browInner, face.browOuter, smooth(0.15, 0.95, outer))) * browPin(outer)] }
-      else if (mesh === MOUTH) { const u = Math.min(1, Math.abs(rx - MOUTH_C[0]) / 30); out = [MOUTH_C[0] + (x - MOUTH_C[0]) * face.mouthWidth, y + face.mouthCorner * (u * u - 0.35)] }
+      else if (mesh === MOUTH) { const u = Math.min(1, Math.abs(rx - MOUTH_C[0]) / 30); out = [MOUTH_C[0] + (x - MOUTH_C[0]) * face.mouthWidth * visemeWidth, y + face.mouthCorner * (u * u - 0.35)] }
       else if (EYES.has(mesh)) { const c = rx < CX ? EYE_L : EYE_R; out = [c[0] + (x - c[0]) * face.eyeSX, c[1] + (y - c[1]) * face.eyeSY] }
       v[2 * i] = out[0]; v[2 * i + 1] = out[1]
     }
@@ -580,13 +581,15 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       else shown = crossfadeArms(fadeFrom, goal, fadeTime / fadeSeconds)
     }
     const k = 1 - Math.exp(-dt * 7)
+    // 母音の口幅は約 40ms で追従させ、閉口時も急に戻らないようにする。
+    visemeWidth = lerp(visemeWidth, visemeWant, 1 - Math.exp(-dt * 25))
     for (const key of Object.keys(face) as (keyof Face)[]) if (typeof face[key] === 'number' && typeof target[key] === 'number') (face[key] as number) = lerp(face[key] as number, target[key] as number, k)
     if (shown) pose = shown
     armBlend = shown ? 1 : 0
     applyCut(RIGHT, pose.right); applyCut(LEFT, pose.left)
     if (parts) { applySeparate(parts.right, pose.right); applySeparate(parts.left, pose.left) }
     for (const key of Object.keys(NO_BODY) as (keyof BodyPose)[]) {
-      const want = (sampled?.body[key] ?? 0) + (target.head[key] ?? 0)
+      const want = (sampled?.body[key] ?? 0) + (target.head[key] ?? 0) + (key === 'headX' || key === 'headY' || key === 'headZ' ? petOffset[key] : 0)
       headCurrent[key] = lerp(headCurrent[key], want, k)
       p.setParameter(PARAMS[key], headCurrent[key])
     }
@@ -610,6 +613,8 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   }
   const atRest = () => !sw && !fadeFrom && (armBlend < 0.001 || !posed(pose.right) && !posed(pose.left))
   return {
+    setViseme(v) { visemeWant = v ? Math.max(0.78, Math.min(1.15, v.width)) : 1 },
+    setPetOffset(v) { petOffset = v },
     setEmotion(next) { emotion = next; target = faces[next]; player.expression(target.expression && player.expressions.includes(target.expression) ? target.expression : null) },
     playGesture(next) {
       if (next === 'none') return
