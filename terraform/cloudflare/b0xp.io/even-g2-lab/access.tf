@@ -23,7 +23,10 @@ data "cloudflare_zero_trust_organization" "current" {
 
 locals {
   kohako_studio_hostname = "kohako-studio.b0xp.io"
-  kohako_g2_hostname     = "kohako-g2.b0xp.io"
+  # BOXP-500 TD-01: 覚えやすい本命入口。Studio と同じ Access application の
+  # 追加 destination にして AUD を共有する（BFF は単一 AUD を検証するため）。
+  kohako_home_hostname = "kohako-home.b0xp.io"
+  kohako_g2_hostname   = "kohako-g2.b0xp.io"
   # Same Owner email as hitohako-stage / portfolio-stage, and the user shown on
   # the Owner's enrolled Android device (BOXP-324 4-6-8).
   kohako_g2_owner_emails = ["tiyotiyouda@gmail.com"]
@@ -105,9 +108,13 @@ resource "cloudflare_zero_trust_access_policy" "kohako_studio_owner" {
 }
 
 resource "cloudflare_zero_trust_access_application" "kohako_studio" {
-  zone_id                     = var.zone_id
-  name                        = "Access application for ${local.kohako_studio_hostname}"
-  domain                      = local.kohako_studio_hostname
+  zone_id = var.zone_id
+  name    = "Access application for ${local.kohako_studio_hostname}"
+  domain  = local.kohako_studio_hostname
+  destinations = [
+    { type = "public", uri = local.kohako_studio_hostname },
+    { type = "public", uri = local.kohako_home_hostname },
+  ]
   type                        = "self_hosted"
   session_duration            = "24h"
   allow_authenticate_via_warp = false

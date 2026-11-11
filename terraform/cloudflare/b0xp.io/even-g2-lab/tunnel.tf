@@ -50,6 +50,20 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "even_g2_lab" {
         }
       },
       {
+        # BOXP-500 TD-01: kohako-home.b0xp.io は Studio と同じ Service・同じ AUD。
+        # ルート / は nginx が /kohako/home.html へ相対リダイレクトする。
+        hostname = local.kohako_home_hostname
+        path     = "^/($|kohako/|healthz$)"
+        service  = "http://kohako-studio.kohako-studio.svc.cluster.local:80"
+        origin_request = {
+          access = {
+            required  = true
+            team_name = local.zero_trust_team_name
+            aud_tag   = [cloudflare_zero_trust_access_application.kohako_studio.aud]
+          }
+        }
+      },
+      {
         service = "http_status:404"
       }
     ]
