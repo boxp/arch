@@ -165,3 +165,17 @@ it('validates and deduplicates touch, rejects concurrent work and automatically 
     expect(result.status).toBe('failed'); expect(result.reply).toBeUndefined(); expect(result.approval).toBeUndefined()
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
 })
+it('serves status only to authenticated principals and only by GET', async () => {
+  const { createStatus } = await import('./status.js')
+  const status = createStatus({ fetch, now: Date.now, quotaUrl: '', boardUrl: '' })
+  for (const enabled of [false, true]) {
+    const server = createServer(createApp({ authenticate: async h => h.authorization === 'owner' ? 'owner' : h.authorization === 'verifier' ? 'verifier' : null, ...(enabled ? { status } : {}) }))
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/status`
+      expect((await fetch(url)).status).toBe(401)
+      for (const authorization of ['owner', 'verifier']) { const response = await fetch(url, { headers: { authorization } }); expect(response.status).toBe(enabled ? 200 : 503); expect(response.headers.get('cache-control')).toBe('no-store') }
+      expect((await fetch(url, { method: 'POST', headers: { authorization: 'owner' } })).status).toBe(404)
+    } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
+  }
+})

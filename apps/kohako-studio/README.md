@@ -19,3 +19,5 @@ BFF は Owner 認証用に `KOHAKO_ACCESS_TEAM_DOMAIN`、`KOHAKO_ACCESS_AUD`、`
 追加手順: commit をタグ `kohako-studio-candidate/<id>` で push → `candidates.json` に id・commit・状態・試した動作・問題点を追記 → 通常の PR。
 
 コハコの家 `/kohako/home.html` は日常利用のメイン画面で、Studio は開発用プロトタイプです。同じ BFF・認証を使い、ふれあいの反応はローカルのみ、会話は Web 専用セッションです。
+
+ホームの利用枠と進行中件数は認証済みの `GET /kohako/api/v1/status` から取得します。利用枠は共有プール単位で表示し、未観測・古い情報や取得失敗を区別します。進行中はボードの In Progress を一意 ID で数え、切り詰められた場合は下限を表示します。60 秒ごとに更新し、非表示中は停止、失敗時は最大 10 分まで間隔を延ばします。上流 URL は `KOHAKO_STATUS_QUOTA_URL` と `KOHAKO_STATUS_BOARD_URL` で設定でき、空文字で各上流を無効にできます。

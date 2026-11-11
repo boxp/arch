@@ -90,3 +90,8 @@ body[data-kbd="1"] .bubble{top:2%;max-height:60%}
 
 body.reduce *,body.reduce *::before{transition:none!important;animation:none!important}
 @media (prefers-reduced-motion:reduce){*,*::before{transition:none!important;animation:none!important}}
+.status-summary{font-size:.72rem;max-width:32vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.status-panel{position:fixed;z-index:20;top:3.5rem;right:1rem;width:min(440px,90vw);overflow:auto;background:#fff;border:1px solid #c6b5d6;border-radius:12px;padding:10px;box-shadow:0 5px 20px #33224444;font-size:.8rem}
+.status-panel p,.status-clock p{margin:.3em 0}.status-clock{font-size:.72rem;max-width:48vw;line-height:1.3}
+body[data-shape="portrait"] .status-clock,body[data-shape="landscape"] .status-clock{display:none}
+body[data-shape="portrait"] .status-summary{flex:1 1 100%;max-width:none;text-align:left}
