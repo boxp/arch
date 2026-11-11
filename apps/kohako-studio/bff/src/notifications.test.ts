@@ -27,11 +27,24 @@ describe('notifications', () => {
       const reply = { replyId: 'reply-123456', kind: 'choice', value: 'はい' }
       // claim 保存直後に BFF が止まった状態を再現する（submit が戻らないまま保存だけ残る）。
       const items = await load<any[]>(join(dir, 'notifications.json'), [])
-      items[0].reply = { ...reply, requestId: 'req-claimed', claimedAt: '2026-01-01T00:00:00Z', status: 'claimed' }; await atomic(join(dir, 'notifications.json'), items)
+      items[0].reply = { ...reply, requestId: 'req-claimed', claimedAt: new Date().toISOString(), status: 'claimed' }; await atomic(join(dir, 'notifications.json'), items)
       const restart = await createNotifications(dir, push), submit = vi.fn(() => true)
       const result = await restart.reply(payload.eventId, reply, submit)
       expect(submit).toHaveBeenCalledTimes(1); expect(submit.mock.calls[0][1]).toMatchObject({ requestId: 'req-claimed', value: 'はい' }); expect(result).toMatchObject({ requestId: 'req-claimed', status: 'submitted' })
       expect((await restart.reply(payload.eventId, reply, submit)).existing).toBe(true); expect(submit).toHaveBeenCalledTimes(1)
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+  it('does not re-submit a claimed reply older than the Hermes idempotency window', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'inbox-')), push = vi.fn(async () => ({}))
+    try {
+      const store = await createNotifications(dir, push); await store.ingest(payload)
+      const reply = { replyId: 'reply-123456', kind: 'choice', value: 'はい' }
+      // Hermes 受理直後・submitted 保存前に BFF が停止し、24h 以上経ってから再送要求が来た状態を再現する。
+      const items = await load<any[]>(join(dir, 'notifications.json'), [])
+      items[0].reply = { ...reply, requestId: 'req-old', claimedAt: new Date(Date.now() - 25 * 3600_000).toISOString(), status: 'claimed' }; await atomic(join(dir, 'notifications.json'), items)
+      const restart = await createNotifications(dir, push), submit = vi.fn(() => true)
+      const result = await restart.reply(payload.eventId, reply, submit)
+      expect(submit).not.toHaveBeenCalled(); expect(result).toMatchObject({ requestId: 'req-old', status: 'claimed', existing: true, expired: true })
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
   it('resumes a submitted reply with the same requestId when the conversation tracker lost it after a restart', async () => {

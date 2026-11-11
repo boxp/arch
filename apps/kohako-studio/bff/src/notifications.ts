@@ -33,8 +33,8 @@ export async function createNotifications(dir: string, push: (id: string) => Pro
       // ここに来る既存返信は、会話トラッカー（メモリ）が受付番号を知らない = BFF 再起動等で追跡が失われたもの。
       // 二重実行を防ぐため新しい run は作らない: run id が記録済みならその run の追跡だけを再開し（submit 側で watch）、
       // 未記録なら固定した session・本文・Idempotency-Key で再送して Hermes の durable idempotency（24h）に同じ run を replay させる。
-      // replay 保証期間を過ぎた未確認の返信は再送しない（Hermes が受理済みなら二重実行になりうるため）。
-      if (item.reply && !item.reply.runId && item.reply.status !== 'claimed' && now() - Date.parse(item.reply.claimedAt) > 23 * 3600_000) return { requestId: item.reply.requestId, status: item.reply.status, existing: true, expired: true }
+      // replay 保証期間を過ぎた未確認の返信は、claimed（受理直後に状態保存前で停止した可能性あり）も含め再送しない（Hermes が受理済みなら二重実行になりうるため）。
+      if (item.reply && !item.reply.runId && now() - Date.parse(item.reply.claimedAt) > 23 * 3600_000) return { requestId: item.reply.requestId, status: item.reply.status, existing: true, expired: true }
       if (!item.reply) { item.reply = { replyId: x.replyId, kind: x.kind, value: x.value, requestId: randomUUID(), claimedAt: new Date(now()).toISOString(), status: 'claimed', ...(sessionId ? { sessionId } : {}) }; await save() }
       else if (!item.reply.sessionId && sessionId) { item.reply.sessionId = sessionId; await save() }
       const was = item.reply.status
