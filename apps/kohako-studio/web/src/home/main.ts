@@ -118,15 +118,18 @@ function openViewer(view: View, opener: HTMLElement, focus = true) {
   el('viewer-title').textContent = view.title ?? '利用枠'; refreshScene(true)
   const line = (text: string) => { const p = document.createElement('p'); p.textContent = text; viewerBody.append(p); return p }
   if (view.kind === 'map') {
+    // 地図を先頭に置き、スマホでもスクロールなしで見えるようにする。
+    if (view.geo) {
+      const frame = document.createElement('iframe'); frame.src = osmUrl(view.geo); frame.setAttribute('sandbox', 'allow-scripts allow-same-origin'); frame.referrerPolicy = 'no-referrer'; frame.setAttribute('allow', ''); frame.loading = 'eager'; frame.title = view.title; viewerBody.append(frame)
+      line('© OpenStreetMap contributors')
+    } else line('地図の位置を特定できませんでした')
     line([view.destination.name, view.destination.address].filter(Boolean).join(' '))
     if (view.mode) line(`移動手段: ${{ transit: '公共交通', walking: '徒歩', driving: '車', bicycling: '自転車' }[view.mode]}`)
     if (view.origin) line(`出発地: ${view.origin}`)
     if (view.geo) {
       line(view.geo.precision === 'area' ? `番地まで特定できなかったため『${view.geo.label}』付近を表示しています` : `『${view.geo.label}』の位置（OpenStreetMap の検索結果）`)
-      const frame = document.createElement('iframe'); frame.src = osmUrl(view.geo); frame.setAttribute('sandbox', 'allow-scripts allow-same-origin'); frame.referrerPolicy = 'no-referrer'; frame.setAttribute('allow', ''); frame.loading = 'eager'; frame.title = view.title; viewerBody.append(frame)
-      line('© OpenStreetMap contributors')
       line('地図は OpenStreetMap から読み込みます（目的地付近の位置だけが送られ、出発地は送りません）。経路はこの地図には描かれません。')
-    } else line('地図の位置を特定できませんでした')
+    }
     const link = (text: string, origin: boolean) => { const a = document.createElement('a'); a.href = mapsUrl(view, origin); a.target = '_blank'; a.rel = 'noopener noreferrer'; a.referrerPolicy = 'no-referrer'; a.textContent = text; viewerBody.append(a, document.createElement('br')) }
     link('Google マップで経路を開く', false); if (view.origin) link(`出発地『${view.origin}』から開く`, true)
     line('開くと目的地（出発地を選んだ場合は出発地も）が Google に送られます。Google マップの家の中への埋め込みは API キー（新しい契約）が必要なため、地図は OpenStreetMap で表示しています。')

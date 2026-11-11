@@ -198,7 +198,7 @@ export function createConversation({ now, hermes, prefix, geocode = async (views
           if (entry.approval) entry.approval.active = false
           if (result.status === 'done') {
             const extracted = input.kind === 'touch' || input.views ? extractViews(result.text) : { text: result.text, views: [] }, reply = extracted.text.slice(0, 1000)
-            const views = input.kind === 'text' && input.views ? await geocode(extracted.views) : extracted.views
+            const views = input.kind === 'text' && input.views ? await Promise.race([geocode(extracted.views), new Promise<View[]>(r => setTimeout(() => r(extracted.views), 8000).unref?.())]) : extracted.views
             entry.reply = { text: reply, at: now(), ...(views.length ? { views } : {}) }
             lastExchange = { kind: input.kind, text: text.slice(0, 500), reply }
           }

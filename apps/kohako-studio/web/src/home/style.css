@@ -135,3 +135,4 @@ body[data-viewer="open"] .character,body[data-viewer="open"] .bubble{transition:
 body[data-viewer="open"] .viewer{box-sizing:border-box}
 
 body[data-shape="portrait"] .viewer iframe{height:min(300px,30vh)}
+body[data-shape="landscape"] .viewer iframe{height:min(300px,55vh)}

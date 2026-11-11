@@ -11,8 +11,8 @@ export function normalizeChome(address: string): string | null {
 export function createGeocoder({ fetcher = fetch, url = process.env.KOHAKO_GEOCODE_URL ?? 'https://nominatim.openstreetmap.org/search', intervalMs = 1000, timeoutMs = 4000 }: { fetcher?: typeof fetch; url?: string; intervalMs?: number; timeoutMs?: number } = {}) {
   const cache = new Map<string, { at: number; value: Geo | null }>()
   let queue = Promise.resolve(), last = 0
-  const query = async (q: string, precision: Geo['precision']): Promise<Geo | null> => {
-    const key = `${precision}:${q}`, cached = cache.get(key)
+  const query = async (q: string, requested: Geo['precision']): Promise<Geo | null> => {
+    const key = `${requested}:${q}`, cached = cache.get(key)
     if (cached && Date.now() - cached.at < 86400_000) return cached.value
     let resolve!: (v: Geo | null) => void
     const result = new Promise<Geo | null>(r => { resolve = r })
@@ -21,7 +21,7 @@ export function createGeocoder({ fetcher = fetch, url = process.env.KOHAKO_GEOCO
       if (again && Date.now() - again.at < 86400_000) { resolve(again.value); return }
       const wait = Math.max(0, last + intervalMs - Date.now()); if (wait) await new Promise(r => setTimeout(r, wait))
       last = Date.now()
-      let value: Geo | null = null, cacheable = false
+      let value: Geo | null = null, cacheable = false, precision = requested
       const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs)
       try {
         const p = new URL(url); for (const [k, v] of Object.entries({ format: 'jsonv2', limit: '1', countrycodes: 'jp', 'accept-language': 'ja', q })) p.searchParams.set(k, v)
@@ -32,6 +32,8 @@ export function createGeocoder({ fetcher = fetch, url = process.env.KOHAKO_GEOCO
         cacheable = true
         const item = data[0], lat = Number(item?.lat), lon = Number(item?.lon)
         if (item && typeof item.lat === 'string' && typeof item.lon === 'string' && Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180) {
+          // 番地・建物・駅など点で示せる結果(place_rank 26 以上)だけを exact とし、丁目や町域の一致は付近表示にする。
+          if (precision === 'exact' && !(Number(item.place_rank) >= 26)) precision = 'area'
           const delta = precision === 'exact' ? .004 : .006
           let bbox: [number, number, number, number] = [Math.max(-180, lon - delta), Math.max(-90, lat - delta), Math.min(180, lon + delta), Math.min(90, lat + delta)]
           if (precision === 'area' && Array.isArray(item.boundingbox) && item.boundingbox.length === 4) {
@@ -52,8 +54,9 @@ export function createGeocoder({ fetcher = fetch, url = process.env.KOHAKO_GEOCO
       if (view.kind !== 'map') return view
       const address = view.destination.address, candidates: [string | null | undefined, Geo['precision']][] = [[address, 'exact'], [view.destination.name, 'exact'], [address && normalizeChome(address), 'area']]
       const seen = new Set<string>()
-      for (const [q, precision] of candidates) if (q && !seen.has(q)) { seen.add(q); const geo = await query(q, precision); if (geo) return { ...view, geo } }
-      return view
+      let fallback: Geo | null = null
+      for (const [q, precision] of candidates) if (q && !seen.has(q)) { seen.add(q); const geo = await query(q, precision); if (geo?.precision === 'exact') return { ...view, geo }; fallback ??= geo }
+      return fallback ? { ...view, geo: fallback } : view
     }))
   }
 }
