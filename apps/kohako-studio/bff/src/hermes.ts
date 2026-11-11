@@ -86,7 +86,9 @@ export function createHermes({
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(runId)) return 'not_pending'
     try {
       const result = await request(`/v1/runs/${runId}/approval`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify(requestId && generation !== undefined ? { request_id: requestId, execution_generation: generation, choice } : { choice, ...(requestId ? { request_id: requestId } : {}) }) })
-      return result.code ? 'not_pending' : 'ok'
+      // 承認が既に無い（404/409）ことを Hermes が明示した時だけ not_pending。429/400 等は承認が残りうるので unknown。
+      if (!result.code) return 'ok'
+      return result.code === '404' || result.code === '409' ? 'not_pending' : 'unknown'
     } catch { return 'unknown' }
   }
   async function execute(options: RunOptions): Promise<Result> {

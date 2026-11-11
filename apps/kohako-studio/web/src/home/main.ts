@@ -1,6 +1,7 @@
 // BOXP-500: コハコの家（kohako-home）。Studio と同じ BFF・認証・Web 専用会話を使う全画面 UI。
 // 会話の送信・重複防止・停止・承認・追跡は Studio（src/studio/main.ts）と同じ規則。人格・判断・記憶は Hermes だけが持つ。
 import './style.css'
+import { formatPool, formatTasks, summaryLine, upstreamUnavailable, type Status } from './status'
 import { clipHold, isPetting, petFollow, petShown, zeroPet } from './petfollow'
 import { makeVisemes, visemeAt, boundaryTime, spokenSeconds, type VisemeSequence } from '../live2d/viseme'
 import { interpretRequest, newOutgoing, pcm16, presentation, resolveUnconfirmed, rigStateOf, sendOutcomeUnknown, silentSpeechSeconds, studioRigModelId, wantsActing, wantsRig, type Outgoing, type State } from '../studio/model'
@@ -179,6 +180,33 @@ async function call(path: string, init: RequestInit = {}): Promise<{ status: num
   const data: unknown = await response.json().catch(() => null)
   return { status: response.status, data: data && typeof data === 'object' && !Array.isArray(data) ? data as Record<string, unknown> : null }
 }
+// 利用枠とボードは会話の有効・無効に関係なく取得する。
+let statusValue: Status | null = null, statusDelay = 60000, statusTimer = 0, statusLoading = false, statusFailed = false
+function renderStatus() {
+  const lines = statusValue ? [...statusValue.quota.pools.map(p => formatPool(p)), formatTasks(statusValue.tasks), `更新 ${new Date(statusValue.generatedAt).toLocaleString('ja-JP')}`] : []
+  if (statusFailed) lines.unshift(statusValue ? '取得できません（前回の古い情報）' : '取得できません')
+  el('status-open').textContent = statusValue ? `${summaryLine(statusValue)}${statusFailed ? '・古い情報' : ''}` : statusFailed ? '枠・進行中 取得できません' : '枠・進行中を確認中'
+  for (const id of ['status-detail', 'status-clock']) { const host = el(id); host.replaceChildren(); for (const line of lines) { const p = document.createElement('p'); p.textContent = line; host.append(p) } }
+}
+async function refreshStatus() {
+  clearTimeout(statusTimer); if (document.hidden || statusLoading) return
+  statusLoading = true
+  let backoff = false
+  try {
+    const r = await call('status'); if (r.status === 401 || r.status === 403) fail(r.status, r.data)
+    if (r.status !== 200 || r.data?.schema !== 'kohako-home-status/v1') throw Error('status unavailable')
+    statusValue = r.data as unknown as Status; statusFailed = false; backoff = upstreamUnavailable(statusValue)
+  } catch { statusFailed = true; backoff = true }
+  finally { statusLoading = false; renderStatus(); if (!backoff) statusDelay = 60000; if (!document.hidden) { statusTimer = window.setTimeout(() => void refreshStatus(), statusDelay); if (backoff) statusDelay = Math.min(600000, statusDelay * 2) } }
+}
+document.addEventListener('visibilitychange', () => { clearTimeout(statusTimer); if (!document.hidden) void refreshStatus() })
+const statusOpen = el<HTMLButtonElement>('status-open'), statusPanel = el('status-panel')
+function setStatusShown(shown: boolean) { statusPanel.hidden = !shown; document.body.classList.toggle('status-shown', shown); statusOpen.setAttribute('aria-expanded', String(shown)) }
+function closeStatus() { setStatusShown(false) }
+statusOpen.addEventListener('click', () => setStatusShown(statusPanel.hidden))
+el('status-close').addEventListener('click', () => { closeStatus(); statusOpen.focus() })
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeStatus() })
+void refreshStatus()
 function setError(text: string) { error.textContent = text; if (text) addHistory('お知らせ', text) }
 function fail(status: number, data: Record<string, unknown> | null) {
   setError(problem(status, data))
