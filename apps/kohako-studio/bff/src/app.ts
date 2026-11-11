@@ -1,10 +1,11 @@
+import type { StatusPayload } from './status.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createConversation, type Input } from './conversation.js'
 import { createHermes } from './hermes.js'
 import { pcmToWav, STT_FINAL_FIELDS } from './stt.js'
 export const instructions = 'あなたの返答は Web UI の吹き出しに表示され、必要に応じて音声で読み上げられます。'
 type Principal = 'owner' | 'verifier'
-export function createApp(opts: { authenticate: (headers: IncomingMessage['headers']) => Promise<Principal | null>; hermes?: ReturnType<typeof createHermes>; sttUrl?: string; now?: () => number; fetch?: typeof fetch }) {
+export function createApp(opts: { authenticate: (headers: IncomingMessage['headers']) => Promise<Principal | null>; hermes?: ReturnType<typeof createHermes>; sttUrl?: string; status?: { get: () => Promise<StatusPayload> }; now?: () => number; fetch?: typeof fetch }) {
   const now = opts.now ?? Date.now, fetcher = opts.fetch ?? fetch
   const conversations = opts.hermes ? { owner: createConversation({ now, hermes: opts.hermes, prefix: 'kohako-web' }), verifier: createConversation({ now, hermes: opts.hermes, prefix: 'kohako-verify' }) } : undefined
   const awaitingApproval = (e: NonNullable<ReturnType<NonNullable<typeof conversations>['owner']['get']>>) => e.status === 'pending' && !!e.approval?.active && !e.approval.consumed
@@ -18,6 +19,7 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
       const conv = conversations?.[principal], base = '/kohako/api/v1/'
       if (!path.startsWith(base)) return json(404, { error: 'not_found' })
       const route = path.slice(base.length)
+      if (method === 'GET' && route === 'status') return opts.status ? json(200, await opts.status.get()) : json(503, { error: 'status_disabled' })
       if (method === 'GET' && route === 'me') return json(200, { authenticated: true })
       if (method === 'GET' && route === 'conversation') return json(200, { enabled: !!conv, stt: opts.sttUrl ? 'whisper' : null, sessionStartedAt: conv?.sessionStartedAt })
       const match = /^requests\/([A-Za-z0-9-]{8,64})(\/cancel)?$/.exec(route)
