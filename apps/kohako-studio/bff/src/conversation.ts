@@ -95,6 +95,14 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
       const entry = entries.get(requestId)
       if (!entry || entry.status !== 'pending') return 'not_pending'
       entry.cancelRequested = true
+      // 停止前に未回答の承認を deny で消費する（Hermes は stop だけでは保留中の承認を解かず、停止後の once で実行されうるため）。
+      const pending = entry.approval
+      if (pending && pending.active && !pending.consumed) {
+        pending.consumed = true
+        pending.choice = 'deny'
+        pending.pendingResult = hermes.approve(pending.runId, 'deny', pending.hermesRequestId, pending.generation)
+        pending.result = await pending.pendingResult.catch(() => 'unknown' as const)
+      }
       return entry.runId ? hermes.stop(entry.runId) : 'ok'
     },
     submit(input: Input, instructions: string, onSettled?: (status: 'done' | 'failed' | 'unknown') => void): Entry | { error: 'request_conflict' | 'busy' } {
@@ -113,6 +121,11 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
       let touchApproval = false
       const onApproval: NonNullable<Parameters<typeof hermes.run>[4]> = (runId, approval) => {
           if (!approval) { if (entry.approval) entry.approval.active = false; return }
+          // 停止を依頼した後に届いた承認は表示せず拒否する。
+          if (entry.cancelRequested) {
+            void hermes.approve(runId, 'deny', approval.requestId, approval.generation).catch(() => {})
+            return
+          }
           if (input.kind === 'touch') {
             touchApproval = true
             void hermes.approve(runId, 'deny', approval.requestId, approval.generation).catch(() => {})

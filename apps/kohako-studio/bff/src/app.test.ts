@@ -165,3 +165,24 @@ it('validates and deduplicates touch, rejects concurrent work and automatically 
     expect(result.status).toBe('failed'); expect(result.reply).toBeUndefined(); expect(result.approval).toBeUndefined()
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
 })
+it('denies a pending approval before stopping and denies approvals that arrive after stop (BOXP-503)', async () => {
+  let cb: any = () => {}
+  const calls: any[] = []
+  const hermes = { run: (_id: string, _text: string, _session: string, _i: string, onApproval: any, _a: any, onRun: any) => { cb = onApproval; onRun('run'); onApproval('run', { requestId: 'p1', generation: 1, description: 'test', command: 'echo hi', choices: ['once', 'deny'] }); return new Promise(() => {}) }, approve: async (...args: any[]) => { calls.push(['approve', ...args]); return 'ok' }, stop: async (id: string) => { calls.push(['stop', id]); return 'ok' } } as unknown as ReturnType<typeof createHermes>
+  const server = createServer(createApp({ authenticate: async () => 'owner', hermes }))
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
+    const post = (path: string, body: object) => fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    expect((await post('messages', { requestId: 'owner-950', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 })).status).toBe(202)
+    const pending = await (await fetch(base + 'requests/owner-950')).json() as any
+    expect(pending.status).toBe('approval')
+    expect((await post('requests/owner-950/cancel', {})).status).toBe(202)
+    expect(calls).toEqual([['approve', 'run', 'deny', 'p1', 1], ['stop', 'run']])
+    expect((await post('approvals', { requestId: 'owner-950', approvalId: pending.approval.approvalId, choice: 'once' })).status).not.toBe(200)
+    cb('run', { requestId: 'p2', generation: 2, description: 'test', command: 'echo again', choices: ['once', 'deny'] })
+    await new Promise(r => setTimeout(r, 10))
+    expect(calls.filter(c => c[0] === 'approve' && c[2] === 'once')).toEqual([])
+    expect(calls.at(-1)).toEqual(['approve', 'run', 'deny', 'p2', 2])
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
+})
