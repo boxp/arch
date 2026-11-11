@@ -10,8 +10,14 @@
   },
   "devDependencies": {
     "@types/node": "22.20.5",
+    "@types/web-push": "3.6.4",
     "typescript": "5.9.3",
     "vitest": "5.1.0"
   },
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "web-push": "3.6.7"
+  }
 }

@@ -136,3 +136,4 @@ body[data-viewer="open"] .viewer{box-sizing:border-box}
 
 body[data-shape="portrait"] .viewer iframe{height:min(300px,30vh)}
 body[data-shape="landscape"] .viewer iframe{height:min(300px,55vh)}
+#inbox-list { display: grid; gap: .4rem; } #inbox-list button { text-align: left; } #inbox-detail { white-space: pre-wrap; overflow-wrap: anywhere; } #inbox-detail textarea { width: 100%; }

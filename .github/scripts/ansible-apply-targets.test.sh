@@ -173,7 +173,7 @@ check "repo: worker-image.yml -> worker" "$WORKER" "$repo_root" ansible/playbook
 check "repo: node-shanghai-1.yml -> shanghai-1" '["shanghai-1"]' "$repo_root" ansible/playbooks/node-shanghai-1.yml
 check "repo: upgrade-k8s.yml + kubernetes_upgrade role -> none" '[]' "$repo_root" ansible/playbooks/upgrade-k8s.yml ansible/roles/kubernetes_upgrade/tasks/main.yml
 check "repo: network_configuration role -> CP" "$CP" "$repo_root" ansible/roles/network_configuration/tasks/main.yml
-check "repo: gpu_worker_host_tools role -> worker" "$WORKER" "$repo_root" ansible/roles/gpu_worker_host_tools/tasks/main.yml
+check "repo: gpu_worker_host_tools role -> worker" "$WORKER" "$repo_root" ansible/roles/gpu_worker_host_tools/tasks/main.yml ansible/roles/gpu_worker_host_tools/defaults/main.yml ansible/roles/gpu_worker_host_tools/handlers/main.yml
 check "repo: user_management role -> all" "$ALL" "$repo_root" ansible/roles/user_management/tasks/main.yml
 check "repo: uv.lock -> all" "$ALL" "$repo_root" ansible/uv.lock
 check "repo: vars/nodes.yml -> all" "$ALL" "$repo_root" ansible/vars/nodes.yml

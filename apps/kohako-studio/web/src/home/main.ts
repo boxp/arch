@@ -1,3 +1,4 @@
+import { initInbox } from './inbox'
 // BOXP-500: コハコの家（kohako-home）。Studio と同じ BFF・認証・Web 専用会話を使う全画面 UI。
 // 会話の送信・重複防止・停止・承認・追跡は Studio（src/studio/main.ts）と同じ規則。人格・判断・記憶は Hermes だけが持つ。
 import './style.css'
@@ -666,3 +667,15 @@ async function resumeUnconfirmed(pending: Outgoing) {
   if (unconfirmed === pending) { message.value = pending.text; addHistory('お知らせ', '再読み込み前の送信の受理を確認できませんでした。もう一度送信すると、同じ受付番号で確認してから送ります（二重実行はしません）。') }
   show(state)
 }
+
+/** 通知への返信（BFF が同じ Web 会話へ受付番号付きで送ったもの）を通常の依頼と同じく追い、応答・承認・停止を家の会話画面に出す。 */
+function followRequest(id: string, text: string): boolean {
+  if (requestId === id) return true
+  if (busy || unconfirmed || !enabled) return false
+  if (actingEnabled) interruptActing(); else if (synthesis) window.speechSynthesis.cancel()
+  error.textContent = ''; busy = true; accepted = true; started = Date.now(); lastActivity = Date.now(); delete reply.dataset.reply
+  requestId = id; addHistory('あなた', text); setBubble('…')
+  setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true }); show('thinking'); void poll(requestId)
+  return true
+}
+initInbox(followRequest)
