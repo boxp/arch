@@ -71,7 +71,7 @@ locals {
 
 # BOXP-502: sd-webui.b0xp.io も GitHub ログイン全員ではなく本人限定にする。
 # comfyui_owner と同型（本人メールを include、GitHub IdP を require）。policy は in-place 更新し、
-# application と policy の ID は変えない。
+# application と policy の ID は変えない。（BOXP-502 readback 用の検証 PR。merge しない）
 resource "cloudflare_zero_trust_access_policy" "stable_diffusion_access" {
   account_id = var.account_id
   name       = "policy for sd-webui.b0xp.io"
