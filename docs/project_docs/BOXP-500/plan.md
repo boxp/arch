@@ -30,3 +30,12 @@ Owner 承認済みの案A「ナビの部屋」を、本命UI **コハコの家�
 
 ## 範囲外
 新課金/権限/画像・音声生成/新外部サービス、BFF/Hermes 変更、Telegram hook 移行（BOXP-501）。
+
+## 追補: TD-01 kohako-home.b0xp.io 専用入口（2026-11-11）
+
+- 既存 even-g2-lab トンネルに `kohako-home.b0xp.io` の ingress を追加（Service は Studio と同じ `kohako-studio`、path は `^/($|kohako/|healthz$)`）。
+- Access は新 application を作らず、既存 `kohako_studio` application の `destinations` に追加して AUD を共有（BFF は単一 AUD を検証、cloudflared も同じ AUD を要求）。policy（Owner email + GitHub IdP）は変更しない。
+- DNS CNAME は Access/トンネル設定の後に作成（depends_on）。
+- nginx は `/` を `/kohako/home.html` へ相対 302（API は頁相対 `api/v1/` のため家は `/kohako/` 配下で配信）。
+- 新トンネル/token/Secret/課金/認証緩和なし。rollback は PR revert → tfaction apply。
+- 検証: apply 後に新URLで未認証遮断・認証後の描画/素材/API・実会話/停止、旧 kohako-studio の Studio/home 非退行。
