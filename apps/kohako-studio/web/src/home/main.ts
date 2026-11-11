@@ -201,8 +201,9 @@ async function refreshStatus() {
 }
 document.addEventListener('visibilitychange', () => { clearTimeout(statusTimer); if (!document.hidden) void refreshStatus() })
 const statusOpen = el<HTMLButtonElement>('status-open'), statusPanel = el('status-panel')
-function closeStatus() { statusPanel.hidden = true; statusOpen.setAttribute('aria-expanded', 'false') }
-statusOpen.addEventListener('click', () => { { const top = Math.round(document.querySelector('header.top')!.getBoundingClientRect().bottom + 6), limit = Math.round(el('form').getBoundingClientRect().top - 6); statusPanel.style.top = `${top}px`; statusPanel.style.maxHeight = `${Math.max(120, limit - top)}px` } statusPanel.hidden = !statusPanel.hidden; statusOpen.setAttribute('aria-expanded', String(!statusPanel.hidden)) })
+function setStatusShown(shown: boolean) { statusPanel.hidden = !shown; document.body.classList.toggle('status-shown', shown); statusOpen.setAttribute('aria-expanded', String(shown)) }
+function closeStatus() { setStatusShown(false) }
+statusOpen.addEventListener('click', () => setStatusShown(statusPanel.hidden))
 el('status-close').addEventListener('click', () => { closeStatus(); statusOpen.focus() })
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeStatus() })
 void refreshStatus()
