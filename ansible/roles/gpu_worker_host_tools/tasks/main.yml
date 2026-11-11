@@ -26,3 +26,19 @@
     state: present
     update_cache: true
   when: gpu_worker_host_tools_enabled | bool
+
+- name: Validate i915 request timeout
+  ansible.builtin.assert:
+    that:
+      - gpu_worker_host_tools_i915_request_timeout_ms | string is match('^[0-9]+$')
+      - gpu_worker_host_tools_i915_request_timeout_ms | int >= 20000
+    fail_msg: i915 request timeout must be an integer of at least 20000 ms
+  when: gpu_worker_host_tools_i915_timeout_enabled | bool
+
+- name: Configure i915 request timeout at module load
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/i915-request-timeout.conf
+    content: "options i915 request_timeout_ms={{ gpu_worker_host_tools_i915_request_timeout_ms }}\n"
+    mode: "0644"
+  notify: Update initramfs for i915 request timeout
+  when: gpu_worker_host_tools_i915_timeout_enabled | bool
