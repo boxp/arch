@@ -22,6 +22,16 @@ resource "cloudflare_zero_trust_access_application" "stable_diffusion" {
   policies         = [{ id = cloudflare_zero_trust_access_policy.stable_diffusion_access.id }]
 }
 
+# BOXP-498: sd-webui.b0xp.io と同じ policy をそのまま使い、認証の範囲を広げない。
+resource "cloudflare_zero_trust_access_application" "comfyui" {
+  zone_id          = var.zone_id
+  name             = "Access application for comfyui.b0xp.io"
+  domain           = "comfyui.b0xp.io"
+  session_duration = "24h"
+  type             = "self_hosted"
+  policies         = [{ id = cloudflare_zero_trust_access_policy.stable_diffusion_access.id }]
+}
+
 data "cloudflare_zero_trust_access_identity_providers" "all" {
   account_id = var.account_id
 }
