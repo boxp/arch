@@ -197,7 +197,9 @@ window.addEventListener('offline', () => { netDown = true; show(state) })
 
 /** 再読み込み前に追っていた依頼があれば続きを追う（本文は保存していない）。 */
 async function resumeInflight() {
-  const saved = parseResume(tab.get(INFLIGHT_KEY), Date.now()); if (!saved || busy) { if (!saved) setInflight(null); return }
+  const saved = parseResume(tab.get(INFLIGHT_KEY), Date.now())
+  if (!saved) { setInflight(null); if (unconfirmed && !busy) await resumeUnconfirmed(unconfirmed); return }
+  if (busy) return
   // 初回照会を待つ間に送信されると requestId が上書きされて追跡が取り違えるため、照会前から送信を止めておく。
   busy = true; accepted = false; show(state)
   let r: Awaited<ReturnType<typeof call>> | null = null
@@ -297,6 +299,9 @@ el<HTMLFormElement>('form').addEventListener('submit', async event => {
     else { setUnconfirmed(null); payload = newOutgoing(text, Date.now(), () => crypto.randomUUID()) }
   } else payload = newOutgoing(text, Date.now(), () => crypto.randomUUID())
   requestId = payload.requestId
+  // POST 応答前に再読み込みされても BFF 受理済みの依頼を追い直せるよう、送信前に本文と受付番号を控える（再送時は同じ受付番号で BFF が冪等に扱う）。
+  const resending = payload === unconfirmed
+  setUnconfirmed(payload)
   let result: Awaited<ReturnType<typeof call>> | null = null
   try { result = await call('messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) } catch { result = null }
   if (result && result.status === 202) {
@@ -304,10 +309,11 @@ el<HTMLFormElement>('form').addEventListener('submit', async event => {
     setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true }); show(state); void poll(requestId); return
   }
   busy = false; requestId = ''
-  if (sendOutcomeUnknown(result ? result.status : null) || payload === unconfirmed) {
+  if (sendOutcomeUnknown(result ? result.status : null) || resending) {
     setUnconfirmed(payload)
     setError('送信結果を確認できません。もう一度送信すると、まず前回の受理状況を確認します（二重実行はしません）。'); show('failed'); return
   }
+  setUnconfirmed(null) // 受理されなかったことが確定したので控えを消す
   fail(result!.status, result!.data)
 })
 async function decide(choice: 'once' | 'deny') {
@@ -482,3 +488,18 @@ Object.assign(window, { __kohakoHome: { report, get player() { return rig }, get
 setBubble('おかえりなさい、ご主人さま。'); show('offline')
 void initialize()
 void startRig()
+
+/** POST 応答前に再読み込みされた送信を照会し、BFF が受理済みなら再送せずに追跡する。未受理・不明なら控えを残し、次の送信で同じ受付番号を使う。 */
+async function resumeUnconfirmed(pending: Outgoing) {
+  busy = true; accepted = false; show(state)
+  let lookup: Awaited<ReturnType<typeof call>> | null = null
+  try { lookup = await call(`requests/${pending.requestId}`) } catch { lookup = null }
+  if (lookup && lookup.status === 200 && unconfirmed === pending) {
+    setUnconfirmed(null); requestId = pending.requestId; accepted = true; started = Date.now()
+    setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true })
+    addHistory('あなた', pending.text); addHistory('お知らせ', '再読み込み前の送信は受理済みでした。再送せずに結果を追います。'); show('thinking'); void poll(requestId); return
+  }
+  busy = false
+  if (unconfirmed === pending) { message.value = pending.text; addHistory('お知らせ', '再読み込み前の送信の受理を確認できませんでした。もう一度送信すると、同じ受付番号で確認してから送ります（二重実行はしません）。') }
+  show(state)
+}

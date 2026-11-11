@@ -13,14 +13,14 @@ async function scenario(name, plan, reload = null) {
     api.push(q.method() + ' ' + p)
     if (p === 'me') return j(200, { user: 'verify' })
     if (p === 'conversation') return j(200, { enabled: true, stt: false })
-    if (p === 'messages') { posts++; return j(202, { status: 'accepted' }) }
+    if (p === 'messages') { posts++; if (reload?.postHang && posts === 1) { await new Promise(res => setTimeout(res, 20000)); return j(202, { status: 'accepted' }).catch(() => {}) } return j(202, { status: 'accepted' }) }
     if (p.startsWith('requests/')) { gets++; const [s, o, wait] = plan(gets, reload); if (wait) await new Promise(res => setTimeout(res, wait)); if (s === 0) return r.abort('connectionreset'); return j(s, o) }
     return j(404, {})
   })
   await page.goto('http://localhost:8766/kohako/home.html')
   await page.waitForFunction(() => document.getElementById('connection').textContent.startsWith('接続中'), null, { timeout: 30000 })
   await page.fill('#message', 'テスト'); await page.press('#message', 'Enter').catch(() => {}); await page.evaluate(() => document.getElementById('form').requestSubmit())
-  if (reload) { await page.waitForTimeout(2500); gets = 0; reload.active = true; await page.reload(); await page.waitForFunction(() => document.getElementById('connection').textContent.startsWith('接続中'), null, { timeout: 30000 })
+  if (reload) { await page.waitForTimeout(reload.postHang ? 1000 : 2500); gets = 0; reload.active = true; await page.reload(); await page.waitForFunction(() => document.getElementById('connection').textContent.startsWith('接続中'), null, { timeout: 30000 })
     if (reload.submitDuringLookup) { await page.fill('#message', '割り込み'); out[name + ':sendDisabledDuringLookup'] = await page.evaluate(() => document.getElementById('send').disabled); await page.evaluate(() => document.getElementById('form').requestSubmit()) } }
   await page.waitForTimeout(14000)
   out[name] = await page.evaluate(() => ({ state: window.__kohakoHome.state, reply: document.getElementById('reply').textContent, error: document.getElementById('error').textContent, conn: document.getElementById('connection').textContent, inflight: sessionStorage.length, history: window.__kohakoHome.history.map(h => h.who + ': ' + h.text.slice(0, 60)) }))
@@ -33,6 +33,10 @@ await scenario('transient502', n => n <= 3 ? [502, { error: 'bad_gateway' }] : n
 await scenario('reloadAbort', (n, rl) => !rl.active ? [200, { status: 'pending' }] : n === 1 ? [0] : n === 2 ? [200, { status: 'pending' }] : [200, { status: 'done', reply: { text: '再読込のあとでも届きました、ご主人さま。' } }], { active: false })
 // 再読込後の初回照会が遅い間に新規送信を試みる → 送信できず（POST 1 回のまま）、元の依頼の結果を受け取る（P1: requestId の上書き防止）
 await scenario('reloadSlowLookup', (n, rl) => !rl.active ? [200, { status: 'pending' }] : n === 1 ? [200, { status: 'pending' }, 4000] : [200, { status: 'done', reply: { text: '元の依頼の返答です、ご主人さま。' } }], { active: false, submitDuringLookup: true })
+// POST の応答前に再読込（BFF は受理済み）→ 再読込後の照会で受理済みと分かり再送せずに結果を受け取る（P1: 送信前に控えを保存）
+await scenario('reloadBeforePostReply', (n, rl) => !rl.active ? [200, { status: 'pending' }] : n === 1 ? [200, { status: 'pending' }] : [200, { status: 'done', reply: { text: '送信直後の再読込でも届きました、ご主人さま。' } }], { active: false, postHang: true })
+// POST の応答前に再読込し BFF 未受理（404）→ 自動再送せず本文を入力欄へ戻す（再送時は同じ受付番号）
+await scenario('reloadBeforePostUnaccepted', (n, rl) => [404, { error: 'unknown_request' }], { active: false, postHang: true })
 // 404 → 終了
 await scenario('gone404', n => [404, { error: 'not_found' }])
 console.log(JSON.stringify(out, null, 1))
