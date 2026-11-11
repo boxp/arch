@@ -242,10 +242,12 @@ test_home_inbox_copy_is_independent_of_telegram() {
   # Home down: Telegram delivery is still accepted, the home copy waits for a retry.
   echo 500 >"${CASE_TMP}/home-mode"
   record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress blocked blocked >/dev/null
+  mkdir -p "${CASE_VAULT}/Projects/task-board-events/delivered-copies"
+  printf '{"event":"BOXP-901-r1-blocked","text":"Telegram report"}' >"${CASE_VAULT}/Projects/task-board-events/delivered-copies/BOXP-901-r1-blocked.md"
   run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" \
     CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
   assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-blocked.edn" ':status :accepted'
-  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-901-r1-blocked.edn" ':status :retry'
+  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-901-r1-blocked.report.edn" ':status :retry'
 
   # Home back after the backoff: stored once with ids and the ticket title; later ticks never resend.
   rm -f "${CASE_TMP}/home-mode"
@@ -255,18 +257,83 @@ test_home_inbox_copy_is_independent_of_telegram() {
       CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
   done
   [[ "$(grep -c '^stored ' "${CASE_TMP}/home.log")" -eq 1 ]] || fail "home copy must be stored exactly once"
-  assert_file_contains "${CASE_TMP}/home.log" '"eventId":"BOXP-901-r1-blocked"'
+  assert_file_contains "${CASE_TMP}/home.log" '"eventId":"BOXP-901-r1-blocked.report"'
   assert_file_contains "${CASE_TMP}/home.log" '"ticketId":"BOXP-901"'
-  assert_file_contains "${CASE_TMP}/home.log" '"source":"task-board"'
-  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-901-r1-blocked.edn" ':status :sent'
+  assert_file_contains "${CASE_TMP}/home.log" '"source":"task-board-report"'
+  assert_file_contains "${CASE_TMP}/home.log" '"body":"Telegram report"'
+  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-901-r1-blocked.report.edn" ':status :sent'
   assert_file_not_contains "${CASE_TMP}/home.log" 'unauthorized'
+
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-903 r3 in-progress blocked blocked >/dev/null
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-904 r4 in-progress blocked blocked >/dev/null
+  mkdir -p "${CASE_VAULT}/Projects/task-board-events/delivery-receipts"
+  printf '{"event":"BOXP-903-r3-blocked","state":"silent"}' >"${CASE_VAULT}/Projects/task-board-events/delivery-receipts/BOXP-903-r3-blocked.md"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-903-r3-blocked.report.edn" ':status :skipped'
+  assert_file_not_contains "${CASE_TMP}/home.log" 'BOXP-903'
+  [[ ! -e "${CASE_STATE}/outbox/home/BOXP-904-r4-blocked.report.edn" ]] || fail "missing copy must wait"
+
+  # A reconciliation notice is shown under its own ID; the later formal report of the
+  # same event still reaches the inbox instead of being deduplicated against the notice.
+  printf '{"event":"BOXP-904-r4-blocked","text":"reconcile notice"}' >"${CASE_VAULT}/Projects/task-board-events/delivered-copies/BOXP-904-r4-blocked.notice.md"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  assert_file_contains "${CASE_TMP}/home.log" '"eventId":"BOXP-904-r4-blocked.notice"'
+  [[ ! -e "${CASE_STATE}/outbox/home/BOXP-904-r4-blocked.report.edn" ]] || fail "report must keep waiting after a notice"
+  printf '{"event":"BOXP-904-r4-blocked","text":"formal report"}' >"${CASE_VAULT}/Projects/task-board-events/delivered-copies/BOXP-904-r4-blocked.md"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  assert_file_contains "${CASE_TMP}/home.log" '"eventId":"BOXP-904-r4-blocked.report"'
+  assert_file_contains "${CASE_TMP}/home.log" '"body":"formal report"'
+  [[ "$(grep -c 'BOXP-904-r4-blocked.notice' "${CASE_TMP}/home.log")" -eq 1 ]] || fail "notice must be sent once"
+
+  # A report copy synced before its notice must not cut the notice off.
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-906 r6 in-progress blocked blocked >/dev/null
+  printf '{"event":"BOXP-906-r6-blocked","text":"report first"}' >"${CASE_VAULT}/Projects/task-board-events/delivered-copies/BOXP-906-r6-blocked.md"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  assert_file_contains "${CASE_TMP}/home.log" '"eventId":"BOXP-906-r6-blocked.report"'
+  printf '{"event":"BOXP-906-r6-blocked","text":"notice later"}' >"${CASE_VAULT}/Projects/task-board-events/delivered-copies/BOXP-906-r6-blocked.notice.md"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  assert_file_contains "${CASE_TMP}/home.log" '"eventId":"BOXP-906-r6-blocked.notice"'
+  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-906-r6-blocked.notice.edn" ':status :sent'
+
+  # quiet-held is not final: the report delivered after the quiet window still reaches home.
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-907 r7 in-progress blocked blocked >/dev/null
+  printf '{"event":"BOXP-907-r7-blocked","state":"quiet-held"}' >"${CASE_VAULT}/Projects/task-board-events/delivery-receipts/BOXP-907-r7-blocked.md"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  [[ ! -e "${CASE_STATE}/outbox/home/BOXP-907-r7-blocked.report.edn" ]] || fail "quiet-held report must keep waiting"
+  printf '{"event":"BOXP-907-r7-blocked","state":"sent"}' >"${CASE_VAULT}/Projects/task-board-events/delivery-receipts/BOXP-907-r7-blocked.md"
+  printf '{"event":"BOXP-907-r7-blocked","text":"after quiet","sent_at":"%s"}' "$(date -u +%Y-%m-%dT%H:%M:%S.000000+00:00)" >"${CASE_VAULT}/Projects/task-board-events/delivered-copies/BOXP-907-r7-blocked.md"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  assert_file_contains "${CASE_TMP}/home.log" '"body":"after quiet"'
+  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-907-r7-blocked.report.edn" ':status :sent'
+
+  # An event older than the normal home window, whose "sent" receipt (after a quiet hold)
+  # synced before its copy, keeps waiting and forwards the late copy instead of skipping.
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-908 r8 in-progress blocked blocked >/dev/null
+  old_event="$(grep -rl ':event-id "BOXP-908-r8-blocked"' "${CASE_STATE}/outbox" | grep -v '/home/' | head -1)"
+  [[ -n "${old_event}" ]] || fail "BOXP-908 event file missing"
+  sed -i -E "s/:created-at \"[^\"]+\"/:created-at \"$(date -u -d '-8 hours' +%Y-%m-%dT%H:%M:%SZ)\"/" "${old_event}"
+  printf '{"event":"BOXP-908-r8-blocked","state":"sent"}' >"${CASE_VAULT}/Projects/task-board-events/delivery-receipts/BOXP-908-r8-blocked.md"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  [[ ! -e "${CASE_STATE}/outbox/home/BOXP-908-r8-blocked.report.edn" ]] || fail "sent receipt before its copy must keep waiting"
+  printf '{"event":"BOXP-908-r8-blocked","text":"late sync","sent_at":"%s"}' "$(date -u +%Y-%m-%dT%H:%M:%S.000000+00:00)" >"${CASE_VAULT}/Projects/task-board-events/delivered-copies/BOXP-908-r8-blocked.md"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  assert_file_contains "${CASE_TMP}/home.log" '"body":"late sync"'
+  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-908-r8-blocked.report.edn" ':status :sent'
+
+  # Legacy raw lane-change state (old <event>.edn :sent) must not block the delivered copy.
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-905 r5 in-progress blocked blocked >/dev/null
+  printf '{:event-id "BOXP-905-r5-blocked" :status :sent}' >"${CASE_STATE}/outbox/home/BOXP-905-r5-blocked.edn"
+  printf '{"event":"BOXP-905-r5-blocked","text":"late telegram copy"}' >"${CASE_VAULT}/Projects/task-board-events/delivered-copies/BOXP-905-r5-blocked.md"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  assert_file_contains "${CASE_TMP}/home.log" '"eventId":"BOXP-905-r5-blocked.report"'
+  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-905-r5-blocked.report.edn" ':status :sent'
 
   # Unset URL = rollback: nothing is sent to the home inbox.
   record "${CASE_VAULT}" "${CASE_STATE}" BOXP-902 r2 in-progress done done >/dev/null
   run_events "${CASE_VAULT}" "${CASE_STATE}" env \
     CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
   assert_file_not_contains "${CASE_TMP}/home.log" 'BOXP-902'
-  [[ ! -e "${CASE_STATE}/outbox/home/BOXP-902-r2-done.edn" ]] || fail "disabled home copy must not write state"
+  [[ ! -e "${CASE_STATE}/outbox/home/BOXP-902-r2-done.report.edn" ]] || fail "disabled home copy must not write state"
   kill "${home_pid}" 2>/dev/null || true; wait "${home_pid}" 2>/dev/null || true
   stop_receiver
 }

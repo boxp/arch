@@ -35,3 +35,19 @@
 ## 既存契約
 - 02:00–09:00 JST 静音、Task Board の defer/quiet-held、Alertmanager critical 例外、サンライズ例外は変えない。
 - Telegram は一括停止しない。家とTelegramの会話履歴は統合しない。
+
+## 段階3' (TD-02): Telegram 実配信本文の複製
+
+Hermes は Telegram への送信成功後、receipt より先に実送信本文を delivered-copies に原子的に保存する。dispatcher は同期された本文をそのまま家の受信箱へ転送し、選択肢を抽出する。silent、quiet-held および未送信の event は家へ出さず、静音中の内容は朝 digest の実配信本文で届ける。コピーが未着の場合は期限まで待つ。BFF は同一 event ID の重複を防ぎ、旧方式の raw 項目を一覧と未読数から除外する。cron、Alertmanager、サンライズは未接続で、Telegram を維持し次段階で扱う。
+
+### ビルド障害対応: Ubuntu 取得先の国内ミラー切替 (2026-11-11, Owner 承認済み)
+
+- 理由: archive.ubuntu.com が GitHub runner と cluster の両方で名前解決できず、Codex Workspace Image の `apt-get update` が失敗した。
+- 変更: `docker/codex-workspace/Dockerfile` で本体 archive の `URIs` だけを `http://linux.yz.yamagata-u.ac.jp/ubuntu/` へ置き換える。security.ubuntu.com、OS 版、署名検証の設定は変えない。
+- 確認: resolute-updates の InRelease は公式の security.ubuntu.com 上の同じファイルと日時が一致した。Ubuntu Archive 署名鍵で正しい署名と確認した。digest を固定した base image (26.04/amd64) で apt update とパッケージ取得が成功した。
+- 戻し方: build-arg `UBUNTU_ARCHIVE_MIRROR=http://archive.ubuntu.com/ubuntu/` を渡すか、ARG の既定値を戻す。
+
+### 家宛てIDの分離 (codex-review P1 対応)
+- 家の受信箱へは `<event>.report`(Telegramへ送った正式報告) と `<event>.notice`(照合通知) を別IDで送る。照合通知が先に届いても後の正式報告が重複扱いで消えない。
+- 旧方式(票の変更一覧を送っていた頃)の家宛て状態 `<event>.edn` とBFF項目 `<event>` は参照しないため、旧方式で送信済みの event も実配信本文があれば受信箱に表示される。
+- 家からの返信でHermesへ渡す event ID は接尾辞を除いた元の event ID。

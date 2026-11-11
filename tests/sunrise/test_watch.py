@@ -355,7 +355,9 @@ class WatchTest(unittest.TestCase):
             p = Path(d)
             (p / "config").write_text(json.dumps(cfg()))
             args = ["watch.py", str(p / "config"), str(p / "state")]
-            with patch.object(w.sys, "argv", args), patch.object(w.signal, "alarm"):
+            # main() reads the wall clock; keep the test outside the 01:50-05:30 JST closed hours.
+            with patch.object(w.sys, "argv", args), patch.object(w.signal, "alarm"), \
+                    patch.object(w, "closed_hours", return_value=False):
                 for _ in range(2):
                     out = io.StringIO()
                     with contextlib.redirect_stdout(out):

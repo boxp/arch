@@ -12,7 +12,7 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
   const open = async (id: string) => { selected = id; panel.hidden = false; await call(`notifications/${encodeURIComponent(id)}/read`, 'POST'); await refresh() }
   function render() {
     list.replaceChildren(); detail.replaceChildren()
-    for (const i of items) list.append(button(`${i.title}｜${i.source} ${i.ticketId ?? ''}｜${i.eventId.slice(0, 16)}｜${formatReceived(i.receivedAt)}｜${stateLabel(i)}`, () => { void open(i.eventId) }))
+    for (const i of items) list.append(button(`${i.title}｜${i.source === 'task-board-report' ? 'Task Board' : i.source} ${i.ticketId ?? ''}｜${i.eventId.slice(0, 16)}｜${formatReceived(i.receivedAt)}｜${stateLabel(i)}`, () => { void open(i.eventId) }))
     const i = items.find(x => x.eventId === selected); if (!i) return
     line(detail, i.title); line(detail, i.body); line(detail, `${i.source} ${i.ticketId ?? ''} ${i.eventId} ${formatReceived(i.receivedAt)} ${stateLabel(i)}`)
     detail.append(button('処理済みにする', () => { void call(`notifications/${encodeURIComponent(i.eventId)}/handled`, 'POST').then(refresh) }))

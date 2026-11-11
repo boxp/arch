@@ -5,8 +5,12 @@ import { join } from 'node:path'
 import { createNotifications } from './notifications.js'
 import { createPush } from './push.js'
 import { atomic, load } from './storage.js'
-const payload = { eventId: 'event-123456', source: 'task-board', eventType: 'ready', title: '題', body: '本文', choices: ['はい'], createdAt: '2026-01-01T00:00:00Z' }
+const payload = { eventId: 'event-123456', source: 'task-board-report', eventType: 'ready', title: '題', body: '本文', choices: ['はい'], createdAt: '2026-01-01T00:00:00Z' }
 describe('notifications', () => {
+  it('hides legacy items without deleting them or changing deduplication', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'inbox-'))
+    try { const store = await createNotifications(dir, async () => ({})); const legacy = { ...payload, eventId: 'legacy-123456', source: 'task-board' }; await store.ingest(legacy); await store.ingest(payload); expect(store.list().items.map(i => i.eventId)).toEqual([payload.eventId]); expect(store.list().unread).toBe(1); expect(await store.ingest({ ...legacy, source: 'task-board-report' })).toBe('duplicate'); expect((await load<any[]>(join(dir, 'notifications.json'), [])).length).toBe(2) } finally { await rm(dir, { recursive: true, force: true }) }
+  })
   it('deduplicates, persists, and claims replies before submission with retry', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'inbox-')), push = vi.fn(async () => ({ pushSkipped: 'quiet' as const }))
     try {
