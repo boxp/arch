@@ -1,7 +1,7 @@
 // BOXP-500: コハコの家（kohako-home）。Studio と同じ BFF・認証・Web 専用会話を使う全画面 UI。
 // 会話の送信・重複防止・停止・承認・追跡は Studio（src/studio/main.ts）と同じ規則。人格・判断・記憶は Hermes だけが持つ。
 import './style.css'
-import { formatPool, formatTasks, summaryLine, upstreamUnavailable, type Status } from './status'
+import { formatPool, formatTasks, gaugeOf, taskBadgeOf, upstreamUnavailable, type Status } from './status'
 import { clipHold, isPetting, petFollow, petShown, zeroPet } from './petfollow'
 import { makeVisemes, visemeAt, boundaryTime, spokenSeconds, type VisemeSequence } from '../live2d/viseme'
 import { interpretRequest, newOutgoing, pcm16, presentation, resolveUnconfirmed, rigStateOf, sendOutcomeUnknown, silentSpeechSeconds, studioRigModelId, wantsActing, wantsRig, type Outgoing, type State } from '../studio/model'
@@ -185,8 +185,19 @@ let statusValue: Status | null = null, statusDelay = 60000, statusTimer = 0, sta
 function renderStatus() {
   const lines = statusValue ? [...statusValue.quota.pools.map(p => formatPool(p)), formatTasks(statusValue.tasks), `更新 ${new Date(statusValue.generatedAt).toLocaleString('ja-JP')}`] : []
   if (statusFailed) lines.unshift(statusValue ? '取得できません（前回の古い情報）' : '取得できません')
-  el('status-open').textContent = statusValue ? `${summaryLine(statusValue)}${statusFailed ? '・古い情報' : ''}` : statusFailed ? '枠・進行中 取得できません' : '枠・進行中を確認中'
-  for (const id of ['status-detail', 'status-clock']) { const host = el(id); host.replaceChildren(); for (const line of lines) { const p = document.createElement('p'); p.textContent = line; host.append(p) } }
+  const detail = el('status-detail'); detail.replaceChildren(); for (const line of lines) { const p = document.createElement('p'); p.textContent = line; detail.append(p) }
+  const host = el('status-widget'); host.replaceChildren()
+  if (!statusValue) { host.textContent = statusFailed ? '利用枠・進行中 取得できません' : '利用枠・進行中を確認中'; return }
+  const tag = document.createElement('span'); tag.className = 'status-tag'; tag.textContent = statusFailed ? '古い情報' : '利用枠と進行中'; host.append(tag)
+  const row = document.createElement('span'); row.className = 'status-row'; host.append(row)
+  for (const [id, label] of [['claude_shared', 'Claude共有'], ['codex_shared', 'Codex共有']]) {
+    const g = gaugeOf(statusValue.quota.pools.find(p => p.id === id)), box = document.createElement('span'); box.className = `status-gauge ${g.cls}`; box.dataset.pool = id
+    const title = document.createElement('span'); title.className = 'gauge-title'; title.textContent = label
+    const ring = document.createElement('span'); ring.className = 'gauge-ring'; const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 100 100'); svg.innerHTML = '<circle class="ring-track" cx="50" cy="50" r="43"/><circle class="ring-value" cx="50" cy="50" r="43" pathLength="100"/>'; const arc = svg.lastElementChild as SVGElement; const amount = Math.max(0, Math.min(100, g.percent ?? 100)); const dashes: number[] = []; if (g.cls === 'stale' || g.percent === null) { for (let n = 0; n < amount; n += 6) dashes.push(Math.min(2, amount - n), Math.min(4, Math.max(0, amount - n - 2))); dashes.push(0, 100) } arc.style.strokeDasharray = dashes.length ? dashes.join(' ') : `${amount} 100`; const value = document.createElement('span'); value.className = 'gauge-value'; value.textContent = g.percent === null ? '—' : `${g.percent}%`; ring.append(svg, value)
+    const caption = document.createElement('span'); caption.className = 'gauge-caption'; caption.textContent = [g.label, g.stateText].filter(Boolean).join('・'); box.append(title, ring, caption); row.append(box)
+  }
+  const t = taskBadgeOf(statusValue.tasks), task = document.createElement('span'); task.className = 'status-task'; const total = document.createElement('strong'); total.className = 'task-total'; total.textContent = t.total === null ? '—' : String(t.total); const text = document.createElement('span'); text.textContent = `進行中${t.suffix}${t.stateText ? `・${t.stateText}` : ''}`; const chips = document.createElement('span'); chips.className = 'task-chips'; for (const a of t.agents) { const chip = document.createElement('span'); chip.textContent = `${a.agent} ${a.count}`; chips.append(chip) } task.append(total, text, chips); row.append(task)
+  for (const pool of statusValue.quota.pools.filter(p => !['claude_shared', 'codex_shared'].includes(p.id))) { const g = gaugeOf(pool); if (g.percent === null) continue; const mini = document.createElement('span'); mini.className = `status-mini ${g.cls}`; const text = document.createElement('span'); text.textContent = `${pool.id === 'claude_fable' ? 'Fable専用' : pool.label} ${g.percent}% ${g.stateText}`; const track = document.createElement('span'); track.className = 'mini-track'; const fill = document.createElement('span'); fill.style.width = `${Math.max(0, Math.min(100, g.percent))}%`; track.append(fill); mini.append(text, track); host.append(mini) }
 }
 async function refreshStatus() {
   clearTimeout(statusTimer); if (document.hidden || statusLoading) return
@@ -200,8 +211,8 @@ async function refreshStatus() {
   finally { statusLoading = false; renderStatus(); if (!backoff) statusDelay = 60000; if (!document.hidden) { statusTimer = window.setTimeout(() => void refreshStatus(), statusDelay); if (backoff) statusDelay = Math.min(600000, statusDelay * 2) } }
 }
 document.addEventListener('visibilitychange', () => { clearTimeout(statusTimer); if (!document.hidden) void refreshStatus() })
-const statusOpen = el<HTMLButtonElement>('status-open'), statusPanel = el('status-panel')
-function setStatusShown(shown: boolean) { statusPanel.hidden = !shown; document.body.classList.toggle('status-shown', shown); statusOpen.setAttribute('aria-expanded', String(shown)) }
+const statusOpen = el<HTMLButtonElement>('status-widget'), statusPanel = el('status-panel')
+function setStatusShown(shown: boolean) { statusPanel.hidden = !shown; statusOpen.setAttribute('aria-expanded', String(shown)) }
 function closeStatus() { setStatusShown(false) }
 statusOpen.addEventListener('click', () => setStatusShown(statusPanel.hidden))
 el('status-close').addEventListener('click', () => { closeStatus(); statusOpen.focus() })

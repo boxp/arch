@@ -18,3 +18,5 @@ Playwright コンテナ（`mcr.microsoft.com/playwright:v1.56.1-noble`、`npm i 
 `pat.mjs` は同じ条件で頭を右・左になでたときの petFollow 値と顔周辺の画像（静止 / 右 / 左 / 離した後）を /out に保存します（Playwright のパッケージ解決のため /pw/node_modules/playwright-core へのリンクが必要です）。
 
 `petvisible.mjs`（BOXP-505 TD-01）は、頭をなでたときに**最終描画で**頭が傾いて見え、離すと戻ることを画素から確かめる回帰検査です。petFollow や setParameter の値ではなく、スクリーンショットの左右の瞳（青）の重心を結ぶ線の傾き（度）と首肩のずれ（px）を測ります。待機クリップも頭を揺らすため、最初に触らずに 8 回測った待機の平均・揺れ幅と比べます。PC（実マウス）と Pixel 7（touch）で右側・左側・中央をまたぐ往復・縦（PC のみ。touch の縦は `touch-action: pan-y` でスクロールになる）のなでを行い、右なでと左なでの差が 10° 以上、各なでが待機から 3° 以上、ふれあい OFF と動きを減らす設定では 3° 以内、ホバーでは追従しないこと、離して 3 秒後に待機の揺れの内側へ戻ることを確かめ、失敗があれば終了コード 1 にします。`node petvisible.mjs <build の dist> <出力先>`（Playwright 1.56.1、BFF は完全にモック、token 不要）。`ONLY=pc,pixel7,reduced,touchoff` で絞れます。連続フレーム（なで中・離して 0.4 秒・3 秒）の画像を出力先に保存します。
+
+`statusview.mjs` は `STATUS_JSON` の実データ写しと BFF モックを使い、舞台内ウィジェットの数値、詳細の開閉、各画面サイズの重なり、取得失敗時の表示を確認し、スクリーンショットを保存します。

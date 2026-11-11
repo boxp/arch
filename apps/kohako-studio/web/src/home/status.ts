@@ -20,3 +20,15 @@ export function summaryLine(status: Status): string {
 }
 /** BFF は上流の取得失敗も HTTP 200 の unavailable で返すため、どちらかが取れていなければ再取得を間引く対象にする。 */
 export function upstreamUnavailable(status: Status): boolean { return status.quota.state === 'unavailable' || status.tasks.state === 'unavailable' }
+
+// 表示できる窓のうち、最も使用率の高いものを選ぶ。
+export function gaugeOf(pool?: Pool) {
+  const ws = pool?.windows.filter(w => w.usedPercent !== null && Number.isFinite(w.usedPercent) && !['unavailable', 'unobserved', 'not_provided'].includes(w.state)) ?? []
+  if (!ws.length) return { percent: null, label: '', stateText: pool?.state === 'unavailable' || pool?.windows.some(w => w.state === 'unavailable') ? '取得できません' : '不明', cls: 'unknown' }
+  const w = ws.reduce((a, b) => b.usedPercent! > a.usedPercent! ? b : a), cls = ['stale', 'expired'].includes(w.state) ? 'stale' : ['near_limit', 'exhausted', 'freshness_unknown'].includes(w.state) ? w.state : 'ok'
+  return { percent: w.usedPercent, label: w.label, stateText: ({ stale: '古い', near_limit: '上限間近', exhausted: '上限到達', freshness_unknown: '時刻不明', ok: '正常' } as Record<string, string>)[cls], cls }
+}
+export function taskBadgeOf(tasks?: Tasks) {
+  if (!tasks || tasks.state !== 'ok' || tasks.inProgress.total === null) return { total: null, suffix: '', stateText: '取得できません', agents: [] as Tasks['inProgress']['byAgent'] }
+  const t = tasks.inProgress; return { total: t.total, suffix: t.complete ? '' : '以上', stateText: t.conflicts.length ? '整合不明' : '', agents: t.byAgent }
+}
