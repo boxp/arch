@@ -382,15 +382,15 @@ function hushNow() { if (actingEnabled) interruptActing(); else if (synthesis) w
 hush.addEventListener('click', hushNow)
 
 // ---- 送信待ち（BOXP-508） ----
-/** 入力欄からの送信を送信待ちへ積むか。応答待ち中・送信中、または送信待ち（保留を含む）が残っている間は順序を守るため積む。 */
-function queueing(): boolean { return busy || queue.size > 0 || pendingFromQueue }
+/** 入力欄からの送信を送信待ちへ積むか。応答待ち中・送信中・読み上げ中、または送信待ち（保留を含む）が残っている間は順序を守るため積む（読み上げを新しい発言で中断しない）。 */
+function queueing(): boolean { return busy || state === 'speaking' || queue.size > 0 || pendingFromQueue }
 /** 自動送信を止める理由（なければ null）。正常終了（done）と待機（idle）以外では送らない。 */
 function holdFor(): HoldReason | null {
   if (!enabled) return 'auth'
   if (unconfirmed) return 'unknown'
+  if (netDown || state === 'offline') return 'offline'
   if (state === 'stopped') return 'stopped'
   if (state === 'failed') return 'failed'
-  if (state === 'offline') return 'offline'
   return null
 }
 function renderQueue() {
@@ -421,7 +421,10 @@ function renderQueue() {
 function scheduleDispatch() { if (!dispatchTimer) dispatchTimer = window.setTimeout(() => { dispatchTimer = 0; tryDispatch(false) }, 0) }
 /** 送信待ちの先頭を 1 件だけ送る。force は「再開」の明示操作（失敗・停止の後でも送る）。 */
 function tryDispatch(force: boolean) {
-  if (!queue.size || busy || dispatching) return
+  if (!queue.size) return
+  // 通信切れは応答待ち中でもその場で保留にする（再接続後に明示の「再開」なしで自動送信しないため）。
+  if (!force && netDown && !queue.held && queue.hold('offline')) { addHistory('お知らせ', `${holdLabel.offline}、送信待ち ${queue.size} 件の自動送信を止めました。`); renderQueue() }
+  if (busy || dispatching) return
   if (!force) {
     if (queue.held) return
     const reason = holdFor()
@@ -444,6 +447,8 @@ function enqueue(text: string): boolean {
 queueResume.addEventListener('click', () => {
   if (busy) return
   if (!enabled) { queueNote.textContent = '認証が切れています。再ログイン後に「再接続」してから再開してください。'; renderQueue(); return }
+  // 通信が戻るまでは保留を解かない（解くと再接続時に明示の再開なしで自動送信されるため）。
+  if (netDown) { queueNote.textContent = '通信が切れています。接続が戻ってから「再開」してください。'; renderQueue(); return }
   queueNote.textContent = ''; queue.resume()
   if (unconfirmed) { const pending = unconfirmed; void sendText(pending.text, 'pending'); return }
   tryDispatch(true)
