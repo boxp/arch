@@ -186,3 +186,17 @@ it('denies a pending approval before stopping and denies approvals that arrive a
     expect(calls.at(-1)).toEqual(['approve', 'run', 'deny', 'p2', 2])
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
 })
+it('waits for an in-flight deny before stopping on concurrent cancel (BOXP-503)', async () => {
+  const { createConversation } = await import('./conversation.js')
+  const calls: any[] = []
+  let releaseDeny: (v: 'ok') => void = () => {}
+  const hermes = { run: (_id: string, _text: string, _session: string, _i: string, onApproval: any, _a: any, onRun: any) => { onRun('run'); onApproval('run', { requestId: 'p1', generation: 1, description: 'test', command: 'echo hi', choices: ['once', 'deny'] }); return new Promise(() => {}) }, approve: (...args: any[]) => { calls.push(['approve', ...args]); return new Promise(r => { releaseDeny = r }) }, stop: async (id: string) => { calls.push(['stop', id]); return 'ok' } } as unknown as ReturnType<typeof createHermes>
+  const conv = createConversation({ now: Date.now, hermes, prefix: 'kohako-web' })
+  conv.submit({ requestId: 'owner-951', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }, 'i')
+  const first = conv.cancel('owner-951'), second = conv.cancel('owner-951')
+  await new Promise(r => setTimeout(r, 10))
+  expect(calls).toEqual([['approve', 'run', 'deny', 'p1', 1]])
+  releaseDeny('ok')
+  await Promise.all([first, second])
+  expect(calls.slice(1)).toEqual([['stop', 'run'], ['stop', 'run']])
+})

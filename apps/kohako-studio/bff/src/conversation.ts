@@ -101,7 +101,11 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
         pending.consumed = true
         pending.choice = 'deny'
         pending.pendingResult = hermes.approve(pending.runId, 'deny', pending.hermesRequestId, pending.generation)
-        pending.result = await pending.pendingResult.catch(() => 'unknown' as const)
+      }
+      // 並行する cancel・自動 deny・Owner の回答で承認が送信中なら、その完了を待ってから stop する（拒否より先に停止しない）。
+      if (pending?.pendingResult) {
+        const result = await pending.pendingResult.catch(() => 'unknown' as const)
+        pending.result ??= result
       }
       return entry.runId ? hermes.stop(entry.runId) : 'ok'
     },
