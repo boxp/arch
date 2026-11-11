@@ -8,7 +8,7 @@ export function normalizeChome(address: string): string | null {
   return n > 0 && n < 100 ? `${match[1]}${kanji(n)}丁目` : null
 }
 
-export function createGeocoder({ fetcher = fetch, url = process.env.KOHAKO_GEOCODE_URL ?? 'https://nominatim.openstreetmap.org/search', intervalMs = 1000, timeoutMs = 4000 }: { fetcher?: typeof fetch; url?: string; intervalMs?: number; timeoutMs?: number } = {}) {
+export function createGeocoder({ fetcher = fetch, url = process.env.KOHAKO_GEOCODE_URL ?? 'https://nominatim.openstreetmap.org/search', intervalMs = 1000, timeoutMs = 4000, deadlineMs = 7000 }: { fetcher?: typeof fetch; url?: string; intervalMs?: number; timeoutMs?: number; deadlineMs?: number } = {}) {
   const cache = new Map<string, { at: number; value: Geo | null }>()
   let queue = Promise.resolve(), last = 0
   const query = async (q: string, requested: Geo['precision']): Promise<Geo | null> => {
@@ -48,15 +48,32 @@ export function createGeocoder({ fetcher = fetch, url = process.env.KOHAKO_GEOCO
     }).catch(() => resolve(null))
     return result
   }
+  // 住所が与えられた時は住所由来の位置を正とし、名称検索の結果はその範囲内にある時だけ採用する（同名の別店舗を避ける）。
+  // deadlineMs を過ぎたら、それまでに得た最良の位置（概略でも）を返す。
+  const resolveView = async (view: Extract<View, { kind: 'map' }>, best: { geo: Geo | null }): Promise<Geo | null> => {
+    const { address, name } = view.destination
+    if (address) {
+      const exact = await query(address, 'exact'); best.geo = exact
+      if (exact?.precision === 'exact') return exact
+      const chome = normalizeChome(address)
+      const area = exact ?? (chome && chome !== address ? await query(chome, 'area') : null); best.geo = area
+      if (!area || !name || name === address) return area
+      const named = await query(name, 'exact')
+      const m = .002, [w, s, e, n] = area.bbox
+      return named?.precision === 'exact' && named.lon >= w - m && named.lon <= e + m && named.lat >= s - m && named.lat <= n + m ? named : area
+    }
+    const named = await query(name, 'exact'); best.geo = named
+    return named
+  }
   return async (views: View[]): Promise<View[]> => {
     if (url === 'off') return views
     return Promise.all(views.map(async view => {
       if (view.kind !== 'map') return view
-      const address = view.destination.address, candidates: [string | null | undefined, Geo['precision']][] = [[address, 'exact'], [view.destination.name, 'exact'], [address && normalizeChome(address), 'area']]
-      const seen = new Set<string>()
-      let fallback: Geo | null = null
-      for (const [q, precision] of candidates) if (q && !seen.has(q)) { seen.add(q); const geo = await query(q, precision); if (geo?.precision === 'exact') return { ...view, geo }; fallback ??= geo }
-      return fallback ? { ...view, geo: fallback } : view
+      const best: { geo: Geo | null } = { geo: null }
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const geo = await Promise.race([resolveView(view, best).catch(() => best.geo), new Promise<Geo | null>(r => { timer = setTimeout(() => r(best.geo), deadlineMs); timer.unref?.() })])
+      clearTimeout(timer)
+      return geo ? { ...view, geo } : view
     }))
   }
 }
