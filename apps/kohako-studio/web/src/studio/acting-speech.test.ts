@@ -32,3 +32,15 @@ describe('文単位の発話', () => {
     } finally { vi.useRealTimers() }
   })
 })
+
+it('forwards boundary positions for the active utterance only', () => {
+  const utterances: { onstart: unknown; onend: unknown; onerror: unknown; onboundary?: unknown }[] = []
+  const speaker = createSentenceSpeaker({ synth: { speak() {}, cancel() {} }, makeUtterance: () => { const u = { onstart: null, onend: null, onerror: null, onboundary: null }; utterances.push(u); return u } })
+  const onBoundary = vi.fn()
+  speaker.speak(['あいう'], { onSentence() {}, onEnd() {}, onError() {}, onBoundary })
+  ;(utterances[0].onboundary as (event: { charIndex: number }) => void)({ charIndex: 2 })
+  expect(onBoundary).toHaveBeenCalledWith(0, 2)
+  speaker.cancel()
+  ;(utterances[0].onboundary as (event: { charIndex: number }) => void)({ charIndex: 1 })
+  expect(onBoundary).toHaveBeenCalledTimes(1)
+})

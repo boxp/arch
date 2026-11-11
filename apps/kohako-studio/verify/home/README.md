@@ -12,3 +12,7 @@ Playwright コンテナ（`mcr.microsoft.com/playwright:v1.56.1-noble`、`npm i 
 `touchgate.mjs` は BFF を完全にモックし、平常時はなでると接触 event を 1 回送り、読み上げ中やなでた直後に録音を始めた場合は送らないことを確かめます（`node touchgate.mjs`、token 不要）。
 
 `poll502.mjs` は BFF を完全にモックし、依頼のポーリング中に一時的な 502 が返っても、また再読込後の初回照会が通信例外になっても、初回照会の応答待ちの間に新規送信しようとしても、POST の応答前に再読込しても（送信前に受付番号を控える）追跡を続けて結果を受け取ること（再送しない）と、404 では終了すること、再読込後の初回照会が 401 なら（POST 応答前の再読込を含め）未認証表示で送信を止め控えを残すことを確かめます。ローカル build を `/site/kohako/` に置いて `node poll502.mjs` で実行します（token 不要）。
+
+`mouthpet.mjs` はローカル build と完全な BFF モックで、無音再生中の推定口形と PC / Pixel 7 の頭追従を記録します。Playwright 1.56.1 の node_modules を /pw、build を /site/kohako、出力先を /out に置いて実行します。動きを減らす設定では口の幅変形と頭追従を無効にし、口の開閉のみ残します。口形は文字ベースの近似で、漢字の読みや実際の音素は認識しません。
+
+`pat.mjs` は同じ条件で頭を右・左になでたときの petFollow 値と顔周辺の画像（静止 / 右 / 左 / 離した後）を /out に保存します（Playwright のパッケージ解決のため /pw/node_modules/playwright-core へのリンクが必要です）。

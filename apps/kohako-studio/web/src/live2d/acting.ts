@@ -3,7 +3,7 @@ export type Gesture = 'none' | 'nod' | 'tilt' | 'joy' | 'greet' | 'guide' | 'shy
 export const emotions: readonly Emotion[] = ['neutral', 'smile', 'shy', 'troubled', 'surprised', 'serious']
 export const gestures: readonly Gesture[] = ['none', 'nod', 'tilt', 'joy', 'greet', 'guide', 'shyHand', 'halt']
 export type Cue = { emotion: Emotion; gesture: Gesture }
-export interface ActingStage { setEmotion(e: Emotion): void; playGesture(g: Gesture): void; reset(): void }
+export interface ActingStage { setEmotion(e: Emotion): void; playGesture(g: Gesture): void; reset(): void; setViseme?(v: { open: number; width: number } | null): void; setPetOffset?(v: { headX: number; headY: number; headZ: number }): void }
 export type OperationalState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'approval' | 'failed'
 
 export function splitSentences(text: string): string[] {
