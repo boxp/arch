@@ -115,9 +115,11 @@ export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 
       const stopped = entry.runId ? await hermes.stop(entry.runId) : 'ok'
       // stop と行き違いで届く承認があるので、run の終了を一定時間待ち、その間に届いた承認の deny 結果も確かめる。
       if (entry.status === 'pending' && entry.settled) await Promise.race([entry.settled, new Promise<void>((r) => setTimeout(r, cancelSettleMs).unref?.())])
+      // run の終了を確認できなければ、この後に届く承認の deny 成否を確かめられないので停止成功とはしない。
+      const runEnded = entry.status !== 'pending'
       const late = await Promise.all(entry.lateDenies ?? [])
       // 承認の拒否を Hermes で確認できなかった場合は、停止を依頼しても承認が残りうるので停止成功とはしない。
-      return denyResult === 'unknown' || late.includes('unknown') || entry.cancelUnconfirmed ? 'unknown' : stopped
+      return !runEnded || denyResult === 'unknown' || late.includes('unknown') || entry.cancelUnconfirmed ? 'unknown' : stopped
     },
     submit(input: Input, instructions: string, onSettled?: (status: 'done' | 'failed' | 'unknown') => void): Entry | { error: 'request_conflict' | 'busy' } {
       const existing = this.check(input)
@@ -148,7 +150,10 @@ export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 
           }
           if (input.kind === 'touch') {
             touchApproval = true
-            void hermes.approve(runId, 'deny', approval.requestId, approval.generation).catch(() => {})
+            // 自動 deny も消費済み承認として記録する（並行する cancel が deny の完了を待ち、結果が unknown なら停止成功としない）。
+            const result = hermes.approve(runId, 'deny', approval.requestId, approval.generation).catch(() => 'unknown' as const)
+            entry.approval = { approvalId: randomBytes(8).toString('hex'), runId, hermesRequestId: approval.requestId, generation: approval.generation, summary: '', expiresAt: now(), consumed: true, choice: 'deny', active: false, denyOnly: true, pendingResult: result }
+            void result.then((r) => { if (entry.approval?.pendingResult === result) entry.approval.result = r })
             return
           }
           // 同じ prompt_id でも execution_generation が変われば新しい承認として表示し直す（古い generation を送ると失敗するため）。

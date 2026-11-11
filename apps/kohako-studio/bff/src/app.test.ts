@@ -191,7 +191,7 @@ it('waits for an in-flight deny before stopping on concurrent cancel (BOXP-503)'
   const calls: any[] = []
   let releaseDeny: (v: 'ok') => void = () => {}
   const hermes = { run: (_id: string, _text: string, _session: string, _i: string, onApproval: any, _a: any, onRun: any) => { onRun('run'); onApproval('run', { requestId: 'p1', generation: 1, description: 'test', command: 'echo hi', choices: ['once', 'deny'] }); return new Promise(() => {}) }, approve: (...args: any[]) => { calls.push(['approve', ...args]); return new Promise(r => { releaseDeny = r }) }, stop: async (id: string) => { calls.push(['stop', id]); return 'ok' } } as unknown as ReturnType<typeof createHermes>
-  const conv = createConversation({ now: Date.now, hermes, prefix: 'kohako-web' })
+  const conv = createConversation({ now: Date.now, hermes, prefix: 'kohako-web', cancelSettleMs: 20 })
   conv.submit({ requestId: 'owner-951', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }, 'i')
   const first = conv.cancel('owner-951'), second = conv.cancel('owner-951')
   await new Promise(r => setTimeout(r, 10))
@@ -229,4 +229,30 @@ it('does not report cancel as successful when a deny for an approval arriving af
   // 窓の外で届いた場合も、記録された未確認状態により後続の cancel は成功を返さない。
   cb('run', { requestId: 'p3', generation: 3, description: 'test', command: 'echo later', choices: ['once', 'deny'] })
   expect(await conv.cancel('owner-953')).toBe('unknown')
+})
+it('does not report cancel as successful while the run end is unconfirmed (BOXP-503)', async () => {
+  const { createConversation } = await import('./conversation.js')
+  let settle: (v: any) => void = () => {}
+  const hermes = { run: (_id: string, _text: string, _session: string, _i: string, _onApproval: any, _a: any, onRun: any) => { onRun('run'); return new Promise(r => { settle = r }) }, approve: async () => 'ok', stop: async () => 'ok' } as unknown as ReturnType<typeof createHermes>
+  const conv = createConversation({ now: Date.now, hermes, prefix: 'kohako-web', cancelSettleMs: 20 })
+  conv.submit({ requestId: 'owner-954', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }, 'i')
+  expect(await conv.cancel('owner-954')).toBe('unknown')
+  const second = conv.submit({ requestId: 'owner-955', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }, 'i')
+  expect(second).toEqual({ error: 'busy' })
+  settle({ status: 'failed', error: 'x' }); await new Promise(r => setTimeout(r, 5))
+  expect(conv.get('owner-954')!.status).toBe('failed')
+})
+it('waits for the touch auto-deny before stopping and reports its unknown result (BOXP-503)', async () => {
+  const { createConversation } = await import('./conversation.js')
+  const calls: any[] = []
+  let releaseDeny: (v: 'unknown') => void = () => {}, settle: (v: any) => void = () => {}
+  const hermes = { run: (_id: string, _text: string, _session: string, _i: string, onApproval: any, _a: any, onRun: any) => { onRun('run'); onApproval('run', { requestId: 'p1', generation: 1, description: 'x', command: 'echo x', choices: ['once', 'deny'] }); return new Promise(r => { settle = r }) }, approve: (...args: any[]) => { calls.push(['approve', ...args]); return new Promise(r => { releaseDeny = r }) }, stop: async (id: string) => { calls.push(['stop', id]); settle({ status: 'failed', error: 'stopped' }); return 'ok' } } as unknown as ReturnType<typeof createHermes>
+  const conv = createConversation({ now: Date.now, hermes, prefix: 'kohako-web', cancelSettleMs: 20 })
+  conv.submit({ requestId: 'touch-956', kind: 'touch', touch: { zone: 'head', action: 'pat', count: 1 }, expiresAt: Date.now() + 60000 }, 'i')
+  const cancelled = conv.cancel('touch-956')
+  await new Promise(r => setTimeout(r, 10))
+  expect(calls).toEqual([['approve', 'run', 'deny', 'p1', 1]])
+  releaseDeny('unknown')
+  expect(await cancelled).toBe('unknown')
+  expect(calls.slice(1)).toEqual([['stop', 'run']])
 })
