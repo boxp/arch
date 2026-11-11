@@ -70,6 +70,17 @@ describe('notifications', () => {
   })
   it('skips quiet hours and removes expired subscriptions', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'push-')); let now = Date.parse('2026-01-01T18:00:00Z'); const sender = vi.fn(async () => { throw { statusCode: 410 } })
-    try { const push = await createPush(dir, { subject: 'https://example.com', quietHours: '2-9', now: () => now, sender: sender as any }); const sub = { endpoint: 'https://example.com/push', keys: { p256dh: Buffer.alloc(65).toString('base64url'), auth: Buffer.alloc(16).toString('base64url') } }; expect(await push.add(sub)).toBe(true); expect(await push.send('event-123456')).toEqual({ pushSkipped: 'quiet' }); now = Date.parse('2026-01-01T04:00:00Z'); expect(await push.send('event-123456')).toEqual({ pushSkipped: 'error' }); expect(await push.send('event-123456')).toEqual({ pushSkipped: 'no-subscriptions' }) } finally { await rm(dir, { recursive: true, force: true }) }
+    try { const push = await createPush(dir, { subject: 'https://example.com', quietHours: '2-9', now: () => now, sender: sender as any }); const sub = { endpoint: 'https://example.com/push', keys: { p256dh: Buffer.alloc(65).toString('base64url'), auth: Buffer.alloc(16).toString('base64url') } }; expect(await push.add(sub)).toBe(true); expect(await push.send({ ...payload, receivedAt: new Date().toISOString(), deliveries: 1 })).toEqual({ pushSkipped: 'quiet' }); now = Date.parse('2026-01-01T04:00:00Z'); expect(await push.send({ ...payload, receivedAt: new Date().toISOString(), deliveries: 1 })).toEqual({ pushSkipped: 'error' }); expect(await push.send({ ...payload, receivedAt: new Date().toISOString(), deliveries: 1 })).toEqual({ pushSkipped: 'no-subscriptions' }) } finally { await rm(dir, { recursive: true, force: true }) }
   })
+})
+
+it('伏字と本文の短縮、空本文と minimal を扱う', async () => {
+  const { summarizePush } = await import('./push.js')
+  const item = { title: '題'.repeat(90), eventType: 'run-finished', body: 'URL https://example.com/a パス /home/user/file ~/secret/file token abcdefghijklmnopqrstuvwxyz123 mail user@example.com\n 次' }
+  const result = summarizePush(item); expect(result.title).toHaveLength(80); expect(result.body).toBe('URL (リンク) パス (パス) (パス) token (省略) mail (メール) 次')
+  expect(summarizePush({ ...item, body: 'あ'.repeat(121) }).body).toBe('あ'.repeat(119) + '…')
+  expect(summarizePush({ ...item, body: '**BOXP-1 完了**\n# 結果\n`ok`' }).body).toBe('BOXP-1 完了 結果 ok')
+  expect(summarizePush({ ...item, body: '  ' }).body).toBe('完了しました')
+  expect(summarizePush({ ...item, body: '', eventType: 'unknown' }).body).toBe('新しいお知らせがあります')
+  expect(summarizePush(item, true)).toEqual({ title: 'コハコ', body: 'コハコからお知らせがあります' })
 })

@@ -28,7 +28,7 @@
 ## Web Push
 - VAPID 鍵は初回起動時に BFF が生成し `KOHAKO_DATA_DIR` に 0600 で保存(値は API/ログに出さない。公開鍵のみ返す)。
 - 購読: Owner がボタンを押したときだけ `Notification.requestPermission()`。拒否/未許可時は再 prompt せず inbox と Telegram fallback を案内。端末ごとに OFF(購読解除)。push service が 404/410 を返した購読は削除。
-- payload は最小: タイトル「コハコ」、本文「コハコからお知らせがあります」、tag=eventId、url=`/kohako/home.html?notification=<eventId>`。ロック画面に ticket 詳細や本文を出さない。
+- payload は題名と伏字済みの短い本文を表示する（TD-01）。`KOHAKO_PUSH_CONTENT=minimal` で従来の固定文に戻せる。tag=eventId、url=`/kohako/home.html?notification=<eventId>`。
 - 静音 02:00–09:00 JST は push しない(inbox には保存)。TTL 24h。
 - 対応: Chrome/Edge/Firefox(デスクトップ/Android)、iOS/iPadOS Safari 16.4+ はホーム画面に追加した PWA のみ。ブラウザ完全終了・OS 省電力・push service 側の都合では配信を保証できない。
 
@@ -51,3 +51,7 @@ Hermes は Telegram への送信成功後、receipt より先に実送信本文�
 - 家の受信箱へは `<event>.report`(Telegramへ送った正式報告) と `<event>.notice`(照合通知) を別IDで送る。照合通知が先に届いても後の正式報告が重複扱いで消えない。
 - 旧方式(票の変更一覧を送っていた頃)の家宛て状態 `<event>.edn` とBFF項目 `<event>` は参照しないため、旧方式で送信済みの event も実配信本文があれば受信箱に表示される。
 - 家からの返信でHermesへ渡す event ID は接尾辞を除いた元の event ID。
+
+### TD-01: foreground案内と内容のあるWeb Push
+- Web Push は題名と短い本文を表示し、URL、2階層以上の絶対パスやホームパス、長いトークン、メールアドレスを伏字にする。`KOHAKO_PUSH_CONTENT=minimal` で固定文に戻せる。
+- 家を開いているときは未読・未処理の新しい通知を案内し、案内済み状態をサーバーに保存する。返信・選択は受信箱と同じ経路で送る。

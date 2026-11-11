@@ -1,9 +1,17 @@
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import webPush from 'web-push'
+import type { Item } from './notifications.js'
 import { atomic, load } from './storage.js'
 type Subscription = { endpoint: string; keys: { p256dh: string; auth: string } }
-export async function createPush(dir: string, opts: { subject: string; quietHours: string; now?: () => number; sender?: typeof webPush.sendNotification }) {
+export function summarizePush(item: Pick<Item, 'title' | 'body' | 'eventType'>, minimal = false) {
+  if (minimal) return { title: 'コハコ', body: 'コハコからお知らせがあります' }
+  const fallback: Record<string, string> = { 'run-finished': '完了しました', 'lane-changed': '確認が必要です', 'morning-digest': 'お知らせがあります', 'run-stopped': '止まっています' }
+  let body = item.body.replace(/https?:\/\/[^\s]+/gi, '(リンク)').replace(/[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '(メール)').replace(/(?:~\/[^\s]+|\/(?:[^\s/]+\/)+[^\s/]+)/g, '(パス)').replace(/[A-Za-z0-9_+\/=-]{20,}/g, '(省略)').replace(/[*`#>|]+/g, '').replace(/\s+/g, ' ').trim() || fallback[item.eventType] || '新しいお知らせがあります'
+  if (body.length > 120) body = body.slice(0, 119) + '…'
+  return { title: item.title.slice(0, 80), body }
+}
+export async function createPush(dir: string, opts: { subject: string; quietHours: string; minimal?: boolean; now?: () => number; sender?: typeof webPush.sendNotification }) {
   const keyPath = join(dir, 'vapid.json'), path = join(dir, 'push-subscriptions.json'), now = opts.now ?? Date.now
   let keys = await load<{ publicKey: string; privateKey: string } | null>(keyPath, null)
   if (!keys) { keys = webPush.generateVAPIDKeys(); await atomic(keyPath, keys) }
@@ -15,12 +23,12 @@ export async function createPush(dir: string, opts: { subject: string; quietHour
   return { publicKey: keys.publicKey,
     add: (x: any) => mutate(async () => { if (!valid(x)) return false; const id = hash(x.endpoint); if (!subscriptions[id] && Object.keys(subscriptions).length >= 20) return false; subscriptions[id] = { endpoint: x.endpoint, keys: x.keys }; await atomic(path, subscriptions); return true }),
     remove: (endpoint: string) => mutate(async () => { delete subscriptions[hash(endpoint)]; await atomic(path, subscriptions) }),
-    send: (id: string) => mutate(async () => {
+    send: (item: Item) => mutate(async () => {
       const hour = Number(new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Tokyo', hour: 'numeric', hourCycle: 'h23' }).format(now()))
       if (start < end ? hour >= start && hour < end : start > end && (hour >= start || hour < end)) return { pushSkipped: 'quiet' as const }
       const list = Object.entries(subscriptions); if (!list.length) return { pushSkipped: 'no-subscriptions' as const }
       let errors = 0, sent = 0, changed = false
-      for (const [key, sub] of list) try { await (opts.sender ?? webPush.sendNotification)(sub, JSON.stringify({ title: 'コハコ', body: 'コハコからお知らせがあります', tag: id, url: `/kohako/home.html?notification=${encodeURIComponent(id)}` }), { TTL: 86400, urgency: 'normal', vapidDetails: { subject: opts.subject, ...keys! } }); sent++ } catch (e) { errors++; if ([404,410].includes((e as { statusCode?: number }).statusCode ?? 0)) { delete subscriptions[key]; changed = true } }
+      for (const [key, sub] of list) try { await (opts.sender ?? webPush.sendNotification)(sub, JSON.stringify({ ...summarizePush(item, opts.minimal), tag: item.eventId, url: `/kohako/home.html?notification=${encodeURIComponent(item.eventId)}` }), { TTL: 86400, urgency: 'normal', vapidDetails: { subject: opts.subject, ...keys! } }); sent++ } catch (e) { errors++; if ([404,410].includes((e as { statusCode?: number }).statusCode ?? 0)) { delete subscriptions[key]; changed = true } }
       if (changed) await atomic(path, subscriptions)
       return sent ? { pushedAt: new Date(now()).toISOString() } : { pushSkipped: 'error' as const }
     })

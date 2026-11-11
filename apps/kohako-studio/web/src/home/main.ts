@@ -92,6 +92,8 @@ let touchLineTimer = 0
 function setBubble(text: string, touch = false) {
   clearTimeout(touchLineTimer)
   reply.textContent = text; bubble.classList.toggle('touch', touch); bubbleTag.hidden = !touch; bubble.scrollTop = 0
+  // 吹き出しが別の内容に変わったら、前のお知らせの操作欄は閉じる（通知は受信箱に未読で残る）。
+  el('notice-actions').hidden = true; el('notice-status').textContent = ''
 }
 function renderCards(next: Card[], views: View[] = []) {
   cards = next; cardsOpen = next.length > 0 || views.length > 0; cardList.replaceChildren()
@@ -783,4 +785,15 @@ function followRequest(id: string, text: string): boolean {
   setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true }); show('thinking'); void poll(requestId)
   return true
 }
-initInbox(followRequest)
+const inbox = initInbox(followRequest, { canAnnounce: () => enabled && !busy && !unconfirmed && !queue.size && !netDown && !recording && !starting && !touchActive && !CONVERSING.includes(state), announce: (item, actions, more) => {
+  const body = item.body.length > 300 ? item.body.slice(0, 300) + '… 続きは受信箱で' : item.body
+  const text = `ご主人さま、お知らせです。${item.title}\n${body}${more ? `\nほかに ${more} 件のお知らせは受信箱にあります` : ''}`
+  setBubble(text); addHistory('お知らせ', text)
+  const box = el('notice-actions'), status = el('notice-status'); box.replaceChildren(); status.textContent = ''; box.hidden = false
+  const button = (label: string, fn: () => void) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.addEventListener('click', fn); box.append(b) }
+  const sendNotice = async (kind: 'choice' | 'text', value: string) => { if (await actions.send(kind, value)) { box.hidden = true; status.textContent = '' } }
+  if (item.choices?.length) for (const choice of item.choices) button(choice, () => void sendNotice('choice', choice))
+  else { const input = document.createElement('textarea'); input.maxLength = 500; input.placeholder = '返信を入力'; box.append(input); button('返信する', () => { if (input.value.trim()) void sendNotice('text', input.value) }) }
+  button('受信箱で見る', () => { box.hidden = true; actions.open() }); button('あとで', () => { box.hidden = true; actions.later() })
+} })
+window.setInterval(() => inbox.retry(), 2000)

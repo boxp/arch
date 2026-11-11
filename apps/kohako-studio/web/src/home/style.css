@@ -148,3 +148,5 @@ body[data-shape="landscape"] .viewer iframe{height:min(300px,55vh)}
 .queue p{margin:2px 0}.queue p:empty{display:none}.queue .actions button[hidden]{display:none}
 
 #inbox-detail p { white-space: pre-wrap; }
+
+body[data-scene="relax"] .bubble:has(#notice-actions:not([hidden])){opacity:1;pointer-events:auto} #notice-actions{white-space:normal} #notice-actions button{margin:.2rem} #notice-actions textarea{width:100%} #notice-status:empty{display:none}
