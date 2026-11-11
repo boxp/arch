@@ -697,7 +697,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Copy only text actually sent to Telegram, using the synced delivered copy.
 ;; Home state and retries remain independent; unsetting the URL disables delivery.
-;; Silent and digest-folded events are skipped, while missing copies wait for sync.
+;; Silent events are skipped; missing copies wait for sync (quiet-held/digest-folded wait longer).
 ;; Home IDs are <event>.report / <event>.notice: a reconciliation notice never shadows the
 ;; later formal report, and legacy raw lane-change items (home state <event>.edn, BFF item
 ;; <event>) neither block nor deduplicate the delivered copy.
@@ -780,38 +780,56 @@
 (defn home-waiting? [state]
   (and (:next-attempt-at state) (.isAfter (Instant/parse (:next-attempt-at state)) (now))))
 
+(defn home-quiet-max-age-seconds [] (env-long "CODEX_TASK_BOARD_EVENT_HOME_QUIET_MAX_AGE_SECONDS" "64800"))
+
+(defn copy-age-seconds
+  "Age of a delivered copy measured from its Telegram send time (falls back to the event)."
+  [event copy]
+  (or (try (when (string? (:sent_at copy))
+              (- (.getEpochSecond (now)) (.getEpochSecond (.toInstant (java.time.OffsetDateTime/parse (:sent_at copy))))))
+            (catch Exception _ nil))
+      (seconds-since (:created-at event))))
+
+(defn flush-home-copy
+  "One home ID (report or notice) of one event. Each ID advances independently, so a
+  notice is never cut off by the report (or vice versa)."
+  [acc event home-id copy-kind skip-reason]
+  (let [state (read-home-state home-id)
+        copy (delivered-copy event copy-kind)]
+    (cond
+      (contains? #{:sent :failed :skipped} (:status state)) acc
+      copy (cond
+             (home-waiting? state) acc
+             (> (copy-age-seconds event copy) (home-max-age-seconds))
+             (do (write-event! (home-dir) {:event-id home-id :status :skipped :reason "stale-copy" :updated-at (now-str)}) acc)
+             :else (send-home-copy! acc event home-id state copy))
+      skip-reason (do (write-event! (home-dir) {:event-id home-id :status :skipped :reason skip-reason :updated-at (now-str)}) acc)
+      :else acc)))
+
 (defn flush-home!
-  "Copy each event's Telegram-delivered report (and any reconciliation notice) to the home inbox once."
+  "Copy each event's Telegram-delivered report and reconciliation notice to the home inbox once."
   []
   (if (str/blank? (home-url))
     {:home-sent 0}
     (reduce
      (fn [acc event]
-       (let [id (:event-id event)
-             report-id (str id ".report")
-             notice-id (str id ".notice")
-             state (when id (read-home-state report-id))
-             notice-state (when id (read-home-state notice-id))
-             copy (when id (delivered-copy event ""))
-             notice (when (and id (not copy)) (delivered-copy event ".notice"))
-             receipt (when id (receipt-state event))
-             expired? (and id (> (seconds-since (:created-at event)) (home-max-age-seconds)))
-             reason (cond
-                      (and (not copy) (= receipt "silent")) "silent"
-                      (and (not copy) (or (= receipt "quiet-held") (:digest-id event))) "quiet-held"
-                      (and (not copy) expired?) "no-telegram-copy")]
-         (cond
-           (or (nil? id) (contains? #{:sent :failed :skipped} (:status state))) acc
-           ;; A notice went to Telegram but the report may still follow: show the notice now,
-           ;; keep waiting for the report under its own ID.
-           (and notice (not expired?) (not (contains? #{:sent :failed} (:status notice-state)))
-                (not (home-waiting? notice-state)))
-           (send-home-copy! acc event notice-id notice-state notice)
-           reason (do (write-event! (home-dir) {:event-id report-id :status :skipped :reason reason :updated-at (now-str)}) acc)
-           (or (nil? copy) expired? (home-waiting? state)) acc
-           :else (send-home-copy! acc event report-id state copy))))
+       (if-let [id (:event-id event)]
+         (let [receipt (receipt-state event)
+               age (seconds-since (:created-at event))
+               ;; quiet-held / digest-folded reports can still reach Telegram after the
+               ;; quiet window, so they keep waiting longer instead of being skipped.
+               held? (or (= receipt "quiet-held") (:digest-id event))
+               no-copy-reason (cond
+                                (= receipt "silent") "silent"
+                                (> age (if held? (home-quiet-max-age-seconds) (home-max-age-seconds))) "no-telegram-copy")
+               notice-reason (when (> age (home-quiet-max-age-seconds)) "no-telegram-copy")]
+           (-> acc
+               (flush-home-copy event (str id ".notice") ".notice" notice-reason)
+               (flush-home-copy event (str id ".report") "" no-copy-reason)))
+         acc))
      {:home-sent 0}
      (sort-by :created-at (all-events)))))
+
 
 (defn prune-home! []
   (let [max-age (* 86400 (done-retention-days))]
