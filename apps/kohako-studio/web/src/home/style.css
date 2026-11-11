@@ -134,3 +134,12 @@ body[data-shape="landscape"][data-viewer="open"] .bubble{left:23%;width:29%;top:
 body[data-viewer="open"] .character,body[data-viewer="open"] .bubble{transition:none;box-sizing:border-box}
 body[data-viewer="open"] .viewer{box-sizing:border-box}
 #inbox-list { display: grid; gap: .4rem; } #inbox-list button { text-align: left; } #inbox-detail { white-space: pre-wrap; overflow-wrap: anywhere; } #inbox-detail textarea { width: 100%; }
+/* BOXP-508: 送信待ち。操作帯の真上に重ね、キャラクター・吹き出しより手前、確認カードより奥。 */
+.queue{position:absolute;left:12px;width:min(720px,calc(100% - 24px));bottom:100%;margin-bottom:6px;max-height:min(40vh,320px);overflow:auto;overscroll-behavior:contain;background:#fffdfb;border:1px solid #cdbbe6;border-radius:14px;padding:8px 12px;box-shadow:0 4px 14px rgba(60,40,90,.15);font-size:.9rem}
+.queue[hidden]{display:none}
+.queue-head{display:flex;flex-wrap:wrap;gap:2px 8px;align-items:baseline}.queue-head .muted{font-size:.75rem}
+.queue ol{list-style:none;margin:6px 0;padding:0;display:grid;gap:4px}
+.queue li{display:flex;gap:8px;align-items:center;background:#f6f1fb;border-radius:10px;padding:4px 4px 4px 8px}
+.queue li.unconfirmed{background:#fbf1dc}
+.q-state{flex:none;font-size:.75rem;color:var(--muted)}.q-text{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.queue p{margin:2px 0}.queue p:empty{display:none}.queue .actions button[hidden]{display:none}
