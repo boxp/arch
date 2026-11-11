@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import threading
 from pathlib import Path
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -214,6 +215,8 @@ def recover_copies(vault, root):
     except OSError:
         return
     for path in paths:
+        if not copy_pending(path):
+            continue  # only lock receipts that still hold an undelivered home copy
         try:
             lock = (Path(root) / (path.name.split(".")[0] + ".lock")).open("a")
         except OSError:
@@ -224,6 +227,14 @@ def recover_copies(vault, root):
             except BlockingIOError:
                 continue  # an in-flight send of this event owns its receipt
             recover_copy(vault, path)
+
+
+def copy_pending(path):
+    try:
+        previous = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(previous, dict) and previous.get("state") == "sent" and "copy_text" in previous
 
 
 def recover_copy(vault, path):
@@ -252,6 +263,67 @@ def recover_copy(vault, path):
         os.replace(temporary, path)
     except OSError:
         logger.warning("task-board delivered copy receipt update failed event=%s", event)
+
+def default_receipt_root():
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "task-board-delivery-receipts"
+
+
+def recovery_interval_seconds():
+    try:
+        return max(0, int(os.getenv("BOXP_TASK_BOARD_COPY_RECOVERY_SECONDS", "300")))
+    except ValueError:
+        return 300
+
+
+_recovery_worker = None
+_recovery_worker_lock = threading.Lock()
+
+
+def recovery_pass(vault=VAULT, root=None):
+    """One background pass; never raises. Returns False when no receipt root exists."""
+    try:
+        root = Path(root) if root is not None else default_receipt_root()
+    except ImportError:
+        return False  # outside the gateway (unit tests, build checks)
+    try:
+        if not root.is_dir():
+            return False
+        recover_copies(vault, root)
+        return True
+    except Exception:
+        logger.warning("task-board delivered copy recovery pass failed")
+        return False
+
+
+def start_copy_recovery(vault=VAULT, root=None, interval=None, stop=None):
+    """Retry pending home copies periodically, independent of later sends.
+
+    A copy whose write failed after Telegram egress would otherwise wait for the
+    next task-board send. The worker is a daemon thread started once per process
+    when this module is imported (the gateway imports it on every turn and send),
+    so a pending copy is also retried after a restart without a new notification.
+    """
+    global _recovery_worker
+    interval = recovery_interval_seconds() if interval is None else interval
+    if interval <= 0:
+        return None
+    with _recovery_worker_lock:
+        if _recovery_worker is not None and _recovery_worker.is_alive():
+            return _recovery_worker
+
+        halt = stop or threading.Event()
+
+        def run():
+            while True:
+                recovery_pass(vault, root)
+                if halt.wait(interval):
+                    return
+
+        _recovery_worker = threading.Thread(target=run, name="boxp-task-board-copy-recovery", daemon=True)
+        _recovery_worker.start()
+        return _recovery_worker
+
 
 def receipt_shows_egress(vault, event, root=None):
     """True when a send of this event happened or may have happened."""
@@ -399,3 +471,6 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
         # Never fall through to unguarded egress on corrupt/missing evidence/storage.
         logger.warning("task-board delivery event=%s state=storage_or_destination_error", event)
         return SendResult(success=False, error=f"Receipt/destination unavailable; reconcile event={event}")
+
+
+start_copy_recovery()

@@ -287,6 +287,41 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads((copies / (EVENT + ".md")).read_text())["text"], text)
         self.assertEqual(json.loads((copies / (other + ".md")).read_text())["text"], "other report")
 
+    async def test_pending_home_copy_is_recovered_without_another_send(self):
+        self.note("notified")
+        text = "【Task Board 通知】SFW fixture"
+        with patch.object(delivery, "delivered_copy", return_value=False):
+            self.assertTrue((await self.send(text)).success)
+        copy = self.vault.parent / "Projects/task-board-events/delivered-copies" / (EVENT + ".md")
+        self.assertFalse(copy.exists())
+        # The periodic worker pass alone (no later notification) writes the copy once.
+        self.assertTrue(delivery.recovery_pass(self.vault, self.root))
+        self.assertEqual(json.loads(copy.read_text())["text"], text)
+        self.assertEqual(self.calls, [text])
+        local = json.loads(next(self.root.glob("*.json")).read_text())
+        self.assertNotIn("copy_text", local)
+        self.assertFalse(delivery.recovery_pass(self.vault, Path(self.tmp.name) / "missing"))
+
+    def test_copy_recovery_worker_runs_in_background_once(self):
+        import threading
+        import time
+        passes = []
+        stop = threading.Event()
+        with patch.object(delivery, "_recovery_worker", None), \
+             patch.object(delivery, "recovery_pass", side_effect=lambda v, r: passes.append(r)):
+            worker = delivery.start_copy_recovery(self.vault, self.root, interval=0.01, stop=stop)
+            self.assertTrue(worker.daemon)
+            self.assertIs(delivery.start_copy_recovery(self.vault, self.root, interval=0.01, stop=stop), worker)
+            for _ in range(200):
+                if len(passes) >= 2:
+                    break
+                time.sleep(0.01)
+            stop.set()
+            worker.join(1)
+            self.assertFalse(worker.is_alive())
+        self.assertGreaterEqual(len(passes), 2)
+        self.assertIsNone(delivery.start_copy_recovery(self.vault, self.root, interval=0))
+
     async def test_proven_silent_has_no_warning_or_egress(self):
         self.note("silent")
         self.assertEqual(self.shape("[SILENT]", marker=True), ("[SILENT]", True))

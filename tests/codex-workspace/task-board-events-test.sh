@@ -306,6 +306,20 @@ test_home_inbox_copy_is_independent_of_telegram() {
   assert_file_contains "${CASE_TMP}/home.log" '"body":"after quiet"'
   assert_file_contains "${CASE_STATE}/outbox/home/BOXP-907-r7-blocked.report.edn" ':status :sent'
 
+  # An event older than the normal home window, whose "sent" receipt (after a quiet hold)
+  # synced before its copy, keeps waiting and forwards the late copy instead of skipping.
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-908 r8 in-progress blocked blocked >/dev/null
+  old_event="$(grep -rl ':event-id "BOXP-908-r8-blocked"' "${CASE_STATE}/outbox" | grep -v '/home/' | head -1)"
+  [[ -n "${old_event}" ]] || fail "BOXP-908 event file missing"
+  sed -i -E "s/:created-at \"[^\"]+\"/:created-at \"$(date -u -d '-8 hours' +%Y-%m-%dT%H:%M:%SZ)\"/" "${old_event}"
+  printf '{"event":"BOXP-908-r8-blocked","state":"sent"}' >"${CASE_VAULT}/Projects/task-board-events/delivery-receipts/BOXP-908-r8-blocked.md"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  [[ ! -e "${CASE_STATE}/outbox/home/BOXP-908-r8-blocked.report.edn" ]] || fail "sent receipt before its copy must keep waiting"
+  printf '{"event":"BOXP-908-r8-blocked","text":"late sync","sent_at":"%s"}' "$(date -u +%Y-%m-%dT%H:%M:%S.000000+00:00)" >"${CASE_VAULT}/Projects/task-board-events/delivered-copies/BOXP-908-r8-blocked.md"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  assert_file_contains "${CASE_TMP}/home.log" '"body":"late sync"'
+  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-908-r8-blocked.report.edn" ':status :sent'
+
   # Legacy raw lane-change state (old <event>.edn :sent) must not block the delivered copy.
   record "${CASE_VAULT}" "${CASE_STATE}" BOXP-905 r5 in-progress blocked blocked >/dev/null
   printf '{:event-id "BOXP-905-r5-blocked" :status :sent}' >"${CASE_STATE}/outbox/home/BOXP-905-r5-blocked.edn"

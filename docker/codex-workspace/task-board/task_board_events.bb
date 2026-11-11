@@ -816,12 +816,14 @@
        (if-let [id (:event-id event)]
          (let [receipt (receipt-state event)
                age (seconds-since (:created-at event))
-               ;; quiet-held / digest-folded reports can still reach Telegram after the
-               ;; quiet window, so they keep waiting longer instead of being skipped.
-               held? (or (= receipt "quiet-held") (:digest-id event))
+               ;; A report can reach Telegram after the quiet window (quiet-held / digest),
+               ;; and its later "sent" receipt may sync before the copy itself. The receipt
+               ;; seen now does not tell whether the event was ever held, so every non-silent
+               ;; event waits for its copy over the quiet window; freshness of a copy that
+               ;; does arrive is still judged by its Telegram send time.
                no-copy-reason (cond
                                 (= receipt "silent") "silent"
-                                (> age (if held? (home-quiet-max-age-seconds) (home-max-age-seconds))) "no-telegram-copy")
+                                (> age (home-quiet-max-age-seconds)) "no-telegram-copy")
                notice-reason (when (> age (home-quiet-max-age-seconds)) "no-telegram-copy")]
            (-> acc
                (flush-home-copy event (str id ".notice") ".notice" notice-reason)
