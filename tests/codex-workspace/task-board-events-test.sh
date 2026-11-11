@@ -200,6 +200,77 @@ new_case() {
   write_ticket "${CASE_VAULT}" BOXP-902 in-progress
 }
 
+write_fake_home() {
+  cat >"$1" <<'CLJ'
+(require '[org.httpkit.server :as srv] '[cheshire.core :as json] '[clojure.string :as str] '[babashka.fs :as fs])
+(def seen (atom #{}))
+(def log-path (System/getenv "FAKE_LOG"))
+(def mode-file (System/getenv "FAKE_MODE_FILE"))
+(defn handler [req]
+  (let [body (json/parse-string (slurp (:body req)) true)
+        mode (when (fs/exists? mode-file) (str/trim (slurp mode-file)))
+        auth (get-in req [:headers "authorization"])]
+    (cond
+      (= mode "500") (do (spit log-path (str "server-error " (:eventId body) "\n") :append true) {:status 500 :body "{}"})
+      (not= auth "Bearer home-token") (do (spit log-path "unauthorized\n" :append true) {:status 403 :body "{}"})
+      :else (let [dup? (contains? @seen (:eventId body))]
+              (swap! seen conj (:eventId body))
+              (spit log-path (str (if dup? "duplicate " "stored ") (json/generate-string body) "\n") :append true)
+              {:status 200 :headers {"content-type" "application/json"}
+               :body (json/generate-string {:status (if dup? "duplicate" "stored")})}))))
+(srv/run-server handler {:port (Long/parseLong (System/getenv "FAKE_PORT"))})
+(println "home listening")
+@(promise)
+CLJ
+}
+
+test_home_inbox_copy_is_independent_of_telegram() {
+  new_case
+  start_receiver "${CASE_TMP}" "${CASE_PORT}"
+  local home_port home_pid
+  home_port="$(free_port)"
+  write_fake_home "${CASE_TMP}/home.clj"
+  : >"${CASE_TMP}/home.log"
+  printf 'home-token\n' >"${CASE_TMP}/token"
+  FAKE_PORT="${home_port}" FAKE_LOG="${CASE_TMP}/home.log" FAKE_MODE_FILE="${CASE_TMP}/home-mode" \
+    bb "${CASE_TMP}/home.clj" >"${CASE_TMP}/home.out" 2>&1 &
+  home_pid=$!
+  for _ in $(seq 1 50); do grep -q listening "${CASE_TMP}/home.out" 2>/dev/null && break; sleep 0.2; done
+  local home_env=(CODEX_TASK_BOARD_EVENT_HOME_URL="http://127.0.0.1:${home_port}/kohako/api/v1/notifications/ingest"
+                  CODEX_TASK_BOARD_EVENT_HOME_TOKEN_FILE="${CASE_TMP}/token")
+
+  # Home down: Telegram delivery is still accepted, the home copy waits for a retry.
+  echo 500 >"${CASE_TMP}/home-mode"
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress blocked blocked >/dev/null
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" \
+    CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-blocked.edn" ':status :accepted'
+  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-901-r1-blocked.edn" ':status :retry'
+
+  # Home back after the backoff: stored once with ids and the ticket title; later ticks never resend.
+  rm -f "${CASE_TMP}/home-mode"
+  for _ in 1 2; do
+    run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" \
+      CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="$(date -u -d '+2 minutes' +%Y-%m-%dT%H:%M:%SZ)" \
+      CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  done
+  [[ "$(grep -c '^stored ' "${CASE_TMP}/home.log")" -eq 1 ]] || fail "home copy must be stored exactly once"
+  assert_file_contains "${CASE_TMP}/home.log" '"eventId":"BOXP-901-r1-blocked"'
+  assert_file_contains "${CASE_TMP}/home.log" '"ticketId":"BOXP-901"'
+  assert_file_contains "${CASE_TMP}/home.log" '"source":"task-board"'
+  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-901-r1-blocked.edn" ':status :sent'
+  assert_file_not_contains "${CASE_TMP}/home.log" 'unauthorized'
+
+  # Unset URL = rollback: nothing is sent to the home inbox.
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-902 r2 in-progress done done >/dev/null
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env \
+    CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  assert_file_not_contains "${CASE_TMP}/home.log" 'BOXP-902'
+  [[ ! -e "${CASE_STATE}/outbox/home/BOXP-902-r2-done.edn" ]] || fail "disabled home copy must not write state"
+  kill "${home_pid}" 2>/dev/null || true; wait "${home_pid}" 2>/dev/null || true
+  stop_receiver
+}
+
 test_signed_delivery_is_accepted() {
   new_case
   start_receiver "${CASE_TMP}" "${CASE_PORT}"
@@ -1060,5 +1131,6 @@ test_quiet_held_digest_is_reissued_under_a_new_id
 test_notified_marker_needs_gate_evidence
 test_receipt_written_before_the_response_counts
 test_delivery_start_survives_retry_and_is_cleared_for_a_new_delivery
+test_home_inbox_copy_is_independent_of_telegram
 
 echo "task-board-events tests passed"

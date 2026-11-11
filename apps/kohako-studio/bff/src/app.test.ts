@@ -350,3 +350,26 @@ it('returns cleaned replies and only valid views', async () => {
     expect((await fetch(base + 'messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId: 'studio-456', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000, views: 'yes' }) })).status).toBe(400)
   } finally { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())) }
 })
+it('separates notifier and verifier audiences including cached reviews', async () => {
+  const a = createAuth({ jwks: { getKey: async () => publicKey.export({ format: 'jwk' }) }, issuer: 'https://access.example.test', audience: 'abc', ownerEmails: ['owner@example.test'], verifierEnabled: true, verifierUsername: 'sa', notifierEnabled: true, notifierUsername: 'sa', now: Date.now, review: async (token, audience) => ({ status: { authenticated: token === audience, user: { username: 'sa' }, audiences: [audience] } }) })
+  expect(await a({ authorization: 'Bearer kohako-bff-verifier' })).toBe('verifier')
+  expect(await a({ authorization: 'Bearer kohako-bff-notifier' })).toBe('notifier')
+  expect(await a({ authorization: 'Bearer kohako-bff-verifier' })).toBe('verifier')
+  expect(await a({ authorization: 'Bearer other' })).toBeNull()
+})
+it('disables notification routes without storage and restricts verifier', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises'), { tmpdir } = await import('node:os'), { join } = await import('node:path'), { createPush } = await import('./push.js'), { createNotifications } = await import('./notifications.js')
+  const dir = await mkdtemp(join(tmpdir(), 'routes-')), push = await createPush(dir, { subject: 'https://example.com', quietHours: '2-9' }), notifications = await createNotifications(dir, push.send)
+  const authenticate = async (h: any) => h.authorization === 'verifier' ? 'verifier' as const : h.authorization === 'notifier' ? 'notifier' as const : 'owner' as const
+  const server = createServer(createApp({ authenticate, notifications, push })), disabled = createServer(createApp({ authenticate }))
+  await Promise.all([server, disabled].map(s => new Promise<void>(r => s.listen(0, '127.0.0.1', r))))
+  try {
+    const base = (s: typeof server) => `http://127.0.0.1:${(s.address() as { port: number }).port}/kohako/api/v1/`
+    const post = (path: string, who: string) => fetch(base(server) + path, { method: 'POST', headers: { authorization: who, 'content-type': 'application/json' }, body: '{}' })
+    expect((await fetch(base(disabled) + 'notifications')).status).toBe(503)
+    expect((await post('notifications/ingest', 'verifier')).status).toBe(403)
+    expect((await post('notifications/ingest', 'owner')).status).toBe(403)
+    expect((await post('notifications/event-123456/reply', 'verifier')).status).toBe(403)
+    expect((await fetch(base(server) + 'notifications', { headers: { authorization: 'verifier' } })).status).toBe(200)
+  } finally { for (const s of [server, disabled]) { s.closeAllConnections(); await new Promise<void>(r => s.close(() => r())) }; await rm(dir, { recursive: true, force: true }) }
+})

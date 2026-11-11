@@ -133,3 +133,4 @@ body[data-shape="landscape"][data-viewer="open"] .character{left:0;width:22%;hei
 body[data-shape="landscape"][data-viewer="open"] .bubble{left:23%;width:29%;top:2%;max-height:70%}
 body[data-viewer="open"] .character,body[data-viewer="open"] .bubble{transition:none;box-sizing:border-box}
 body[data-viewer="open"] .viewer{box-sizing:border-box}
+#inbox-list { display: grid; gap: .4rem; } #inbox-list button { text-align: left; } #inbox-detail { white-space: pre-wrap; overflow-wrap: anywhere; } #inbox-detail textarea { width: 100%; }
