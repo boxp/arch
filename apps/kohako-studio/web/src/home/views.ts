@@ -21,7 +21,11 @@ export function mapsUrl(view: Extract<View, { kind: 'map' }>, useOrigin: boolean
 // 生成HTMLはスクリプトを実行させず（sandbox="" と script-src 'none'）、さらに遷移・外部参照につながる要素と属性を除く。
 const DROP = 'script,noscript,meta,base,link,iframe,frame,frameset,object,embed,applet,form,input,button,textarea,select,portal,template,animate,set,animatemotion,animatetransform,foreignobject'
 const URL_ATTRS = new Set(['href', 'xlink:href', 'src', 'srcset', 'action', 'formaction', 'background', 'poster', 'ping', 'data', 'codebase', 'cite', 'longdesc', 'usemap'])
+// 解析は閲覧文脈を持たない文書（DOMParser の結果, defaultView === null）でだけ行う。この文書では img/srcset/video/link/style
+// 等の取得もスクリプトも走らないため、属性を除く前に外部URLへ通信しない（document 上の要素の innerHTML は取得が走るので使わない）。
+// 確認: apps/kohako-studio/verify/home/inertparse.mjs（Chromium/Firefox/WebKit で通信0、対照の div.innerHTML は通信あり）。
 export function sanitizeHtml(html: string, doc: Document = new DOMParser().parseFromString(`<body>${html}</body>`, 'text/html')): string {
+  if (doc.defaultView !== null) throw new Error('sanitizeHtml: browsing context を持つ文書では解析しない')
   doc.body.querySelectorAll(DROP).forEach(e => e.remove())
   for (const e of Array.from(doc.body.querySelectorAll('*'))) for (const a of Array.from(e.attributes)) {
     const n = a.name.toLowerCase(), v = a.value.trim()
