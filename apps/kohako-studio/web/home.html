@@ -8,7 +8,6 @@
   <span id="state" class="pill state" role="status">未接続</span>
   <span id="elapsed" class="pill" hidden></span>
   <time id="clock-small" class="small-clock"></time>
-  <button id="status-open" class="ghost status-summary" type="button" aria-expanded="false" aria-controls="status-panel">枠・進行中を確認中</button>
   <span class="spacer"></span>
   <label class="toggle"><input id="speech" type="checkbox"> 読み上げ</label>
   <button id="touch-open" type="button" class="ghost" aria-haspopup="true" aria-expanded="false">ふれあい</button>
@@ -16,10 +15,10 @@
   <button id="settings-open" type="button" class="ghost">⚙ 設定</button>
   <a class="ghost link" href="studio.html">Studio（開発用）</a>
 </header>
-<aside id="status-panel" class="status-panel" aria-label="利用枠と進行中" hidden><button id="status-close" type="button" class="ghost">閉じる</button><div id="status-detail"></div></aside>
 <div id="touch-menu" class="menu" hidden><button id="touch-pat" type="button">頭をなでる</button><button id="touch-hand" type="button">ハイタッチ</button></div>
 <main class="stage">
-  <section class="clock-face" aria-label="時計"><p id="date" class="date"></p><p id="clock" class="clock"></p><p id="greeting" class="greeting"></p><div id="status-clock" class="status-clock"></div></section>
+  <div class="status-anchor"><button id="status-widget" class="status-widget" type="button" aria-expanded="false" aria-controls="status-panel"><span class="status-loading">利用枠・進行中を確認中</span></button><aside id="status-panel" class="status-panel" aria-label="利用枠と進行中" hidden><button id="status-close" type="button" class="ghost">閉じる</button><div id="status-detail"></div></aside></div>
+  <section class="clock-face" aria-label="時計"><p id="date" class="date"></p><p id="clock" class="clock"></p><p id="greeting" class="greeting"></p></section>
   <div id="character" class="character"><img id="face" src="./kohako/studio/c48v6-idle-color.png" alt="コハコ"><canvas id="rig" aria-label="コハコ（頭をなでる・手にタッチできます）" hidden></canvas></div>
   <div id="bubble" class="bubble"><span id="bubble-tag" class="tag" hidden>ふれあい</span><div id="reply" aria-live="polite">おかえりなさい、ご主人さま。</div></div>
   <section id="cards" class="cards" aria-label="結果カード" hidden><div class="cards-head"><strong>コハコが見つけたもの</strong><button id="cards-close" type="button" class="ghost">閉じる</button></div><div id="card-list"></div></section>
