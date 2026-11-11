@@ -47,7 +47,9 @@ RUN python3 -m venv /opt/comfyui/venv \
     && python -c 'import torch, torchvision, av; assert torch.__version__.startswith("2.12.0+xpu")' \
     && grep -q 'class MiniMaxH3ImageToVideo' /app/comfy_extras/nodes_minimax_h3.py \
     && mkdir -p /scratch/tmp /scratch/cache /scratch/huggingface /scratch/temp /data \
-    && python main.py --quick-test-for-ci --cpu --offline --disable-all-custom-nodes --base-directory /data --temp-directory /scratch/temp \
+    # The builder has no GPU, and enumerating Level Zero without one crashes;
+    # the selector keeps the SYCL runtime away from it for this start-up test only.
+    && ONEAPI_DEVICE_SELECTOR=opencl:cpu python main.py --quick-test-for-ci --cpu --offline --disable-all-custom-nodes --base-directory /data --temp-directory /scratch/temp \
     && rm -rf /data \
     && mkdir -p /data \
     && rm -f /tmp/constraints.txt \
