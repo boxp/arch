@@ -1,15 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { atomic, load } from './storage.js'
-export type Item = { eventId: string; source: string; eventType: string; ticketId?: string; runId?: string; title: string; body: string; choices?: string[]; createdAt: string; receivedAt: string; deliveries: number; readAt?: string; handledAt?: string; pushedAt?: string; pushSkipped?: 'quiet' | 'no-subscriptions' | 'error'; reply?: { replyId: string; kind: 'choice' | 'text'; value: string; requestId: string; claimedAt: string; status: 'claimed' | 'submitted' | 'submit_failed'; sessionId?: string; runId?: string } }
+export type Item = { eventId: string; source: string; eventType: string; ticketId?: string; runId?: string; title: string; body: string; choices?: string[]; createdAt: string; receivedAt: string; deliveries: number; readAt?: string; announcedAt?: string; handledAt?: string; pushedAt?: string; pushSkipped?: 'quiet' | 'no-subscriptions' | 'error'; reply?: { replyId: string; kind: 'choice' | 'text'; value: string; requestId: string; claimedAt: string; status: 'claimed' | 'submitted' | 'submit_failed'; sessionId?: string; runId?: string } }
 const string = (v: unknown, max: number) => typeof v === 'string' && v.length > 0 && v.length <= max
 export function validPayload(x: any): boolean {
   return !!x && typeof x === 'object' && !Array.isArray(x) && Object.keys(x).every(k => ['eventId','source','eventType','ticketId','runId','title','body','choices','createdAt'].includes(k)) && typeof x.eventId === 'string' && /^[A-Za-z0-9._:-]{8,200}$/.test(x.eventId) && typeof x.source === 'string' && /^[a-z0-9-]{1,40}$/.test(x.source) && string(x.eventType,80) && (x.ticketId === undefined || typeof x.ticketId === 'string' && /^[A-Z]+-\d+$/.test(x.ticketId)) && (x.runId === undefined || string(x.runId,120)) && string(x.title,200) && string(x.body,4000) && (x.choices === undefined || Array.isArray(x.choices) && x.choices.length <= 6 && x.choices.every((v: unknown) => string(v,40))) && typeof x.createdAt === 'string' && /^\d{4}-\d\d-\d\dT/.test(x.createdAt) && Number.isFinite(Date.parse(x.createdAt))
 }
-export async function createNotifications(dir: string, push: (id: string) => Promise<{ pushedAt?: string; pushSkipped?: Item['pushSkipped'] }>, now = Date.now) {
+export async function createNotifications(dir: string, push: (item: Item) => Promise<{ pushedAt?: string; pushSkipped?: Item['pushSkipped'] }>, now = Date.now) {
   const path = join(dir, 'notifications.json'), items = await load<Item[]>(path, []); let queue = Promise.resolve()
   const mutate = <T>(fn: () => Promise<T> | T): Promise<T> => { const result = queue.then(fn); queue = result.then(() => {}, () => {}); return result }
-  const save = () => atomic(path, items)
+  const save = () => atomic(path, items), leases = new Map<string, number>()
   return {
     list: () => { const visible = items.filter(i => i.source !== 'task-board'); return { items: [...visible].reverse(), unread: visible.filter(i => !i.readAt).length } },
     ingest: (x: any) => mutate(async () => {
@@ -19,9 +19,13 @@ export async function createNotifications(dir: string, push: (id: string) => Pro
       const item: Item = { ...x, receivedAt: new Date(now()).toISOString(), deliveries: 1 }; items.push(item)
       while (items.length > 500) { let idx = items.findIndex(i => i.handledAt); if (idx < 0) idx = items.findIndex(i => i.readAt); items.splice(idx < 0 ? 0 : idx, 1) }
       await save()
-      try { Object.assign(item, await push(item.eventId)) } catch { item.pushSkipped = 'error' }
+      try { Object.assign(item, await push(item)) } catch { item.pushSkipped = 'error' }
       await save(); return 'stored' as const
     }),
+    /** 吹き出し表示前の仮押さえ（30秒）。永続化しないので、表示前にページが閉じても期限後に再案内できる。複数タブの同時表示を防ぐ。 */
+    claimAnnounce: (id: string) => mutate(() => { const item = items.find(i => i.eventId === id); if (!item) return null; if (item.announcedAt || (leases.get(id) ?? 0) > now()) return false; leases.set(id, now() + 30_000); return true }),
+    /** 実際に表示した後に案内済みを永続化する。 */
+    announce: (id: string) => mutate(async () => { const item = items.find(i => i.eventId === id); if (!item) return null; if (item.announcedAt) return false; item.announcedAt = new Date(now()).toISOString(); await save(); return true }),
     mark: (id: string, field: 'readAt' | 'handledAt') => mutate(async () => { const item = items.find(i => i.eventId === id); if (!item) return false; item[field] ??= new Date(now()).toISOString(); await save(); return true }),
     /** Hermes が返した run id を返信に記録する（BFF 再起動後に再送せず、その run の追跡だけを再開するため）。 */
     setRun: (id: string, requestId: string, runId: string) => mutate(async () => { const r = items.find(i => i.eventId === id)?.reply; if (!r || r.requestId !== requestId || r.runId === runId) return; r.runId = runId; await save() }),
