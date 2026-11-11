@@ -11,7 +11,7 @@ import { SceneDirector, targetScene, type Scene } from './scene'
 import { cardsFromText, type Card } from './cards'
 import { acts, bboxOf, classifyTouch, HAND_MESHES, HEAD_MESHES, inside, toScreenRect, TouchLimiter, type Point, type Rect, type Zone } from './touch'
 import { parsePrefs, type Prefs } from './prefs'
-import { parseResume, parseUnconfirmed, type Inflight } from './resume'
+import { parseResume, parseUnconfirmed, pollVerdict, type Inflight } from './resume'
 
 const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
 const body = document.body, face = el<HTMLImageElement>('face'), rigCanvas = el<HTMLCanvasElement>('rig'), character = el('character')
@@ -200,7 +200,8 @@ async function resumeInflight() {
   const saved = parseResume(tab.get(INFLIGHT_KEY), Date.now()); if (!saved || busy) { if (!saved) setInflight(null); return }
   let r: Awaited<ReturnType<typeof call>> | null = null
   try { r = await call(`requests/${saved.requestId}`) } catch { r = null }
-  if (r && r.status === 200) { requestId = saved.requestId; accepted = true; busy = true; started = Date.now(); addHistory('お知らせ', '再読み込み前の依頼の続きを追っています。'); show('thinking'); void poll(requestId, saved.expiresAt); return }
+  // 200 に加え一時的な失敗（502 など）でも追跡を再開し、poll 側で問い合わせを続ける。
+  if (r && pollVerdict(r.status, !!r.data) !== 'terminal') { requestId = saved.requestId; accepted = true; busy = true; started = Date.now(); addHistory('お知らせ', '再読み込み前の依頼の続きを追っています。'); show('thinking'); void poll(requestId, saved.expiresAt); return }
   if (r && r.status === 404) { setInflight(null); addHistory('お知らせ', '前回の依頼は見つかりませんでした（新しい会話になった可能性があります）。') }
 }
 async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
@@ -208,10 +209,14 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
   while (requestId === id && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, 1800))
     let result
-    try { result = await call(`requests/${id}`) } catch { if (++misses >= 2 && !netDown) { netDown = true; connection.textContent = '通信が切れています（自動で問い合わせ中）'; show(state) } continue }
-    if (netDown || misses) { misses = 0; netDown = false; connection.textContent = '接続中・Web 専用の会話'; error.textContent = ''; show(state) }
+    const lost = () => { if (++misses >= 2 && !netDown) { netDown = true; connection.textContent = '通信が切れています（自動で問い合わせ中）'; show(state) } }
+    try { result = await call(`requests/${id}`) } catch { lost(); continue }
     if (requestId !== id) return
-    if (result.status !== 200 || !result.data) { busy = false; requestId = ''; setInflight(null); fail(result.status, result.data); return }
+    // 一時的な失敗（502 など）では追跡と控えを残して問い合わせを続ける。消すと BFF 側で続く依頼の結果を取れず、再送で二重実行になり得る。
+    const verdict = pollVerdict(result.status, !!result.data)
+    if (verdict === 'retry') { lost(); continue }
+    if (netDown || misses) { misses = 0; netDown = false; connection.textContent = '接続中・Web 専用の会話'; error.textContent = ''; show(state) }
+    if (verdict === 'terminal' || !result.data) { busy = false; requestId = ''; setInflight(null); fail(result.status, result.data); return }
     const next = interpretRequest(result.data)
     if (next.state === 'approval' && next.approval) {
       if (approvalId !== next.approval.approvalId) { approvalId = next.approval.approvalId; approvalExpires = next.approval.expiresAt; el('approval-summary').textContent = next.approval.summary; el('approval-error').textContent = ''; addHistory('お知らせ', `確認が必要です: ${next.approval.summary}`); setBubble('実行する前に確認させてください、ご主人さま。') }

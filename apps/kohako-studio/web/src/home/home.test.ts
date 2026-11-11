@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { SceneDirector, targetScene, type SceneInput } from './scene'
 import { cardsFromText } from './cards'
 import { bboxOf, classifyTouch, TouchLimiter, toScreenRect, type Point } from './touch'
-import { parseResume, parseUnconfirmed } from './resume'
+import { parseResume, parseUnconfirmed, pollVerdict } from './resume'
 import { parsePrefs } from './prefs'
 
 const base: SceneInput = { state: 'idle', thinkingMs: 0, cardsOpen: false, idleMs: 0, hasReply: false, netDown: false }
@@ -99,5 +99,16 @@ describe('home.html', () => {
     for (const id of ['rig', 'reply', 'approval', 'allow', 'deny', 'message', 'send', 'stop', 'record', 'cards', 'history', 'settings', 'touch-open', 'reconnect', 'clock', 'state']) expect(html).toContain(`id="${id}"`)
     expect(html).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/)
     expect(html).toContain('href="studio.html"')
+  })
+})
+
+describe('pollVerdict', () => {
+  it('一時的な失敗では追跡を続ける', () => {
+    for (const s of [502, 503, 504, 500, 429, 408]) expect(pollVerdict(s, true)).toBe('retry')
+    expect(pollVerdict(200, false)).toBe('retry')
+  })
+  it('成功と終了条件を区別する', () => {
+    expect(pollVerdict(200, true)).toBe('ok')
+    for (const s of [401, 403, 404, 400]) expect(pollVerdict(s, true)).toBe('terminal')
   })
 })
