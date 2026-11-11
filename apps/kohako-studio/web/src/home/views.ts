@@ -1,13 +1,26 @@
-export type View = { kind: 'usage'; title?: string } | { kind: 'map'; title: string; destination: { name: string; address?: string }; origin?: string; mode?: 'transit' | 'walking' | 'driving' | 'bicycling' } | { kind: 'html'; title: string; html: string }
+export type Geo = { lat: number; lon: number; bbox: [number, number, number, number]; precision: 'exact' | 'area'; label: string; source: 'openstreetmap' }
+export type View = { kind: 'usage'; title?: string } | { kind: 'map'; title: string; destination: { name: string; address?: string }; origin?: string; geo?: Geo; mode?: 'transit' | 'walking' | 'driving' | 'bicycling' } | { kind: 'html'; title: string; html: string }
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const keys = (v: Record<string, unknown>, allowed: string[]) => Object.keys(v).every(k => allowed.includes(k))
 const str = (v: unknown, max: number, html = false) => typeof v === 'string' && v.length > 0 && v.length <= max && !(html ? /[\x00-\x08\x0b-\x1f\x7f-\x9f]/ : /[\x00-\x1f\x7f-\x9f]/).test(v)
+const numberIn = (v: unknown, min: number, max: number): v is number => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max
+function validGeo(v: unknown): v is Geo {
+  if (!object(v) || !keys(v, ['lat', 'lon', 'bbox', 'precision', 'label', 'source']) || !numberIn(v.lat, -90, 90) || !numberIn(v.lon, -180, 180) || !Array.isArray(v.bbox) || v.bbox.length !== 4) return false
+  const [west, south, east, north] = v.bbox
+  return numberIn(west, -180, 180) && numberIn(east, -180, 180) && numberIn(south, -90, 90) && numberIn(north, -90, 90) && west < east && south < north && v.lon >= west && v.lon <= east && v.lat >= south && v.lat <= north && (v.precision === 'exact' || v.precision === 'area') && str(v.label, 120) && v.source === 'openstreetmap'
+}
+export function osmUrl(geo: Geo): string {
+  if (!validGeo(geo)) throw new Error('invalid geo')
+  const p = new URLSearchParams({ bbox: geo.bbox.join(','), layer: 'mapnik' })
+  if (geo.precision === 'exact') p.set('marker', `${geo.lat},${geo.lon}`)
+  return `https://www.openstreetmap.org/export/embed.html?${p}`
+}
 export function validateView(v: unknown): View | null {
   if (!object(v)) return null
   if (v.kind === 'usage') return keys(v, ['kind', 'title']) && (v.title === undefined || str(v.title, 60)) ? v as View : null
   if (!str(v.title, 60)) return null
   if (v.kind === 'html') return keys(v, ['kind', 'title', 'html']) && str(v.html, 20000, true) ? v as View : null
-  if (v.kind === 'map' && keys(v, ['kind', 'title', 'destination', 'origin', 'mode']) && object(v.destination) && keys(v.destination, ['name', 'address']) && str(v.destination.name, 80) && (v.destination.address === undefined || str(v.destination.address, 120)) && (v.origin === undefined || str(v.origin, 120)) && (v.mode === undefined || ['transit', 'walking', 'driving', 'bicycling'].includes(v.mode as string))) return v as View
+  if (v.kind === 'map' && keys(v, ['kind', 'title', 'destination', 'origin', 'mode', 'geo']) && object(v.destination) && keys(v.destination, ['name', 'address']) && str(v.destination.name, 80) && (v.destination.address === undefined || str(v.destination.address, 120)) && (v.origin === undefined || str(v.origin, 120)) && (v.geo === undefined || validGeo(v.geo)) && (v.mode === undefined || ['transit', 'walking', 'driving', 'bicycling'].includes(v.mode as string))) return v as View
   return null
 }
 

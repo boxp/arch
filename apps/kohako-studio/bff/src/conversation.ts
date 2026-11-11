@@ -49,7 +49,7 @@ export function approvalSummary(approval: { description: string; command: string
   lines.push(command ? `実行内容: ${command}${fullyShown ? '' : '（全文を表示できないため拒否のみ可能）'}` : '実行内容: （不明のため拒否のみ可能）')
   return { summary: lines.join('\n'), fullyShown }
 }
-export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 }: { now: () => number; hermes: ReturnType<typeof createHermes>; prefix: string; cancelSettleMs?: number }) {
+export function createConversation({ now, hermes, prefix, geocode = async (views: View[]) => views, cancelSettleMs = 2000 }: { now: () => number; hermes: ReturnType<typeof createHermes>; prefix: string; geocode?: (views: View[]) => Promise<View[]>; cancelSettleMs?: number }) {
   const entries = new Map<string, Entry>()
   let sessionStartedAt = now(),
     lastUse = sessionStartedAt,
@@ -190,18 +190,19 @@ export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 
           }, 280_000).unref?.()
         }
       const onRun = (runId: string) => { entry.runId = runId; if (entry.cancelRequested) void hermes.stop(runId) }
-      const applyResult = (settled: Awaited<ReturnType<typeof hermes.run>>) => {
+      const applyResult = async (settled: Awaited<ReturnType<typeof hermes.run>>) => {
           const result = touchApproval ? { status: 'failed' as const, error: 'touch_approval_denied' } : entry.cancelRequested && settled.status === 'failed' ? { status: 'failed' as const, error: 'cancelled' } : settled
-          entry.status = result.status
           // run 終了の確認は Hermes の実結果で行う（unknown/internal_error は終了未確認）。
           entry.upstreamEnded = settled.status === 'done' || (settled.status === 'failed' && settled.error !== 'internal_error')
           // 終了した run の承認待ちは無効化する（ポーリング失敗/タイムアウトで approval が残り承認待ちを返し続けないように）。
           if (entry.approval) entry.approval.active = false
           if (result.status === 'done') {
             const extracted = input.kind === 'touch' || input.views ? extractViews(result.text) : { text: result.text, views: [] }, reply = extracted.text.slice(0, 1000)
-            entry.reply = { text: reply, at: now(), ...(extracted.views.length ? { views: extracted.views } : {}) }
+            const views = input.kind === 'text' && input.views ? await geocode(extracted.views) : extracted.views
+            entry.reply = { text: reply, at: now(), ...(views.length ? { views } : {}) }
             lastExchange = { kind: input.kind, text: text.slice(0, 500), reply }
           }
+          entry.status = result.status
           if (result.status !== 'done' && result.error) entry.error = result.error
           // 共有 claim の保存失敗（容量不足等）で process を落とさない。claim file は claimed のまま残り、再実行はされない。
           markSettled()
@@ -230,13 +231,13 @@ export function createConversation({ now, hermes, prefix, cancelSettleMs = 2000 
           if (result.status === 'failed' && result.error === 'unknown_execution') result = { status: 'failed', error: 'session_paused' }
         }
         await releaseUpstream(result)
-        applyResult(result)
+        await applyResult(result)
       })().catch(async (e) => {
         console.error('conversation settle failed', e instanceof Error ? e.message : 'unknown')
         if (entry.status !== 'pending') return
         const result = { status: 'failed' as const, error: 'internal_error' }
         try { await releaseUpstream(result) } catch { /* rotate 済み */ }
-        applyResult(result)
+        await applyResult(result)
       })
       return entry
     },
