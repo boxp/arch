@@ -75,6 +75,7 @@ export function sendOutcomeUnknown(status: number | null): boolean {
   return status === null || status >= 500
 }
 
+/** 表情・動作の演技（BOXP-476 表現セット）。2026-11-11 Owner 承認で既定を有効にした。?acting=0 は演技なしの旧通常版 v11r（復旧用）。 */
 export function wantsActing(search: string): boolean {
-  return new URLSearchParams(search).get('acting') === '1'
+  return new URLSearchParams(search).get('acting') !== '0'
 }

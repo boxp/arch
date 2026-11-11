@@ -91,10 +91,11 @@ describe('送信の再送', () => {
 })
 
 describe('演技フラグ', () => {
-  it('acting=1 のときだけ有効', async () => {
+  it('既定で有効、acting=0 のときだけ旧通常版（演技なし）', async () => {
     const { wantsActing } = await import('./model')
     expect(wantsActing('?acting=1')).toBe(true)
-    expect(wantsActing('')).toBe(false)
-    expect(wantsActing('?acting=true')).toBe(false)
+    expect(wantsActing('')).toBe(true)
+    expect(wantsActing('?model=kohako-full-v11r')).toBe(true)
+    expect(wantsActing('?acting=0')).toBe(false)
   })
 })
