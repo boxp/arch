@@ -26,6 +26,15 @@ ENV CODEX_TASK_BOARD_CLAUDE_BIN=/usr/bin/claude
 ENV CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID=P1809F7CD0C75ACF3
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+# BOXP-501: archive.ubuntu.com が DNS で引けない障害 (2026-11-11, CI/cluster 両方で再現) を受け、
+# Owner 承認のうえ本体 archive の取得先だけを公式国内ミラー (山形大学) へ切り替える。
+# security.ubuntu.com は変更しない。署名 (InRelease) 検証は apt 既定のまま有効。
+# base image に ca-certificates が無いため http を使う (完全性は Ubuntu archive 署名で担保)。
+# 戻し方: --build-arg UBUNTU_ARCHIVE_MIRROR=http://archive.ubuntu.com/ubuntu/ または本 ARG 既定値を戻す。
+ARG UBUNTU_ARCHIVE_MIRROR=http://linux.yz.yamagata-u.ac.jp/ubuntu/
+RUN sed -i "s|http://archive.ubuntu.com/ubuntu/\\?|${UBUNTU_ARCHIVE_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources \
+    && grep -q "^URIs: ${UBUNTU_ARCHIVE_MIRROR}$" /etc/apt/sources.list.d/ubuntu.sources
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       bash-completion \
