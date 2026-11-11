@@ -2236,7 +2236,12 @@
           path
           (str (fs/path repo-path path)))))))
 
-(declare try-reuse-repo-worktree!)
+(declare try-reuse-repo-worktree! record-workspace-prepare!)
+
+;; BOXP-494: the localllm coder resets its worktree to the remote base before
+;; and after a run, which would discard a carried-over dirty worktree, so its
+;; runs never take the carryover path (they keep the legacy clean-only reuse).
+(def ^:dynamic *workspace-carryover-allowed?* true)
 
 (defn prepare-repo-worktree! [workspace-dir ticket-id run-id repo]
   (let [source (local-repo-path repo)
@@ -2272,11 +2277,12 @@
   (let [workspace-dir (run-workspace-dir ticket-id run-id)
         repos (ticket-repos ticket-id)]
     (fs/create-dirs workspace-dir)
-    (let [worktrees (mapv #(prepare-repo-worktree! workspace-dir ticket-id run-id %) repos)]
+    (let [worktrees (mapv #(prepare-repo-worktree! workspace-dir ticket-id run-id %) repos)
+          metrics (mapv #(record-workspace-prepare! ticket-id run-id %) worktrees)]
       (try
         (fs/create-dirs (run-dir ticket-id run-id))
         (spit (str (fs/path (run-dir ticket-id run-id) "workspace-reuse.edn"))
-              (pr-str (mapv #(select-keys % [:repo :reused-from :reuse-base :reuse-base-reason :reuse-fallback :worktree-failed]) worktrees)))
+              (pr-str (mapv #(select-keys % [:repo :reused-from :reuse-base :reuse-base-reason :reuse-fallback :worktree-failed :carryover :carryover-head :carryover-dirty :branch :detached? :mode :new-bytes-est :new-bytes-basis :moved]) (map merge worktrees metrics))))
         (catch Exception e (log! (str "workspace-reuse: audit-write-failed " (.getMessage e)))))
       {:workspace-dir (str workspace-dir) :repo-worktrees worktrees})))
 
@@ -2287,9 +2293,10 @@
     (str "Ticket run workspace: " (:workspace-dir workspace) "\n"
          (if (seq prepared)
            (str "Repository worktrees for this run:\n"
-                (str/join "" (map (fn [{:keys [repo path branch reused-from reuse-base reuse-base-reason]}]
-                                    (str "- " repo " -> " path " (branch " branch ")\n"
-                                         (when reused-from (str "  Reused from previous run " reused-from "; tracked files are clean "
+                (str/join "" (map (fn [{:keys [repo path branch reused-from reuse-base reuse-base-reason carryover carryover-head carryover-dirty]}]
+                                    (str "- " repo " -> " path " (branch " (or branch "detached") ")\n"
+                                         (when carryover (str "  Carried over from previous run " reused-from " as-is (HEAD " carryover-head ", branch " (or branch "detached") "; " (:modified carryover-dirty) " modified, " (:untracked carryover-dirty) " untracked, " (:unpushed carryover-dirty) " unpushed commits). This is the continuation of the same ticket's work: inspect `git status` and `git log` first and do NOT run git reset --hard, git clean, git checkout -- . or git stash drop to discard it. Create or switch branches only after committing or deliberately preserving these changes.\n"))
+                                         (when (and reused-from (not carryover)) (str "  Reused from previous run " reused-from "; tracked files are clean "
                                                                 (if reuse-base-reason
                                                                   (str "at the previous run's own HEAD (" reuse-base "), kept to preserve its verified studio dist; it can include that run's already-pushed commits, so switch to the correct base or PR branch before committing.")
                                                                   (str "at " reuse-base " on a new branch (source HEAD, or the previous run's default-branch base when that is newer)."))
@@ -3878,7 +3885,7 @@
 
 (defn run-localllm-coder! [ticket-id action lane agent lock]
   (let [run (:run-id lock) dir (run-dir ticket-id run)
-        workspace (prepare-run-workspace! ticket-id run)
+        workspace (binding [*workspace-carryover-allowed?* false] (prepare-run-workspace! ticket-id run))
         prompt-path (fs/path dir "prompt.md") events-path (fs/path dir "events.jsonl")
         stderr-path (fs/path dir "stderr.log") last-path (fs/path dir "last-message.md")
         patch-path (fs/path dir "localllm-coder.patch")
@@ -5510,6 +5517,37 @@
      (catch Exception e
        {:exit -1 :out "" :err (str (.getMessage e))}))))
 
+(defn workspace-metrics-enabled? []
+  (prune-setting "CODEX_TASK_BOARD_WORKSPACE_METRICS" parse-prune-enabled))
+
+(defn workspace-metrics-write! [event]
+  (when (workspace-metrics-enabled?)
+    (try
+      (let [path (fs/path (root) "metrics" "workspace-capacity.edn")]
+        (fs/create-dirs (fs/parent path))
+        (spit (str path) (str (pr-str (assoc event :at (now-str))) "\n") :append true))
+      (catch Exception e (log! (str "workspace-metrics: warning " (.getMessage e)))))))
+
+(defn record-workspace-prepare! [ticket-id run-id worktree]
+  (when (workspace-metrics-enabled?)
+    (try
+      (let [mode (cond (:carryover worktree) :carryover (:reused-from worktree) :reuse
+                       (:missing worktree) :missing (:worktree-failed worktree) :failed :else :new-checkout)
+            tree (when (= mode :new-checkout)
+                   (command-result ["git" "-C" (:path worktree) "ls-tree" "-r" "-l" "-z" "HEAD"] {:timeout-seconds 60}))
+            sizes (when (and tree (zero? (:exit tree)))
+                    (map #(when-let [[_ n] (re-find #"^\d+ blob [0-9a-f]+\s+(\d+)\t" %)] (Long/parseLong n))
+                         (filter #(re-find #"^\d+ blob " %) (str/split (:out tree) #"\u0000"))))
+            bytes (cond (contains? #{:carryover :reuse} mode) 0
+                        (and tree (zero? (:exit tree)) (every? some? sizes)) (reduce + 0 sizes)
+                        :else nil)]
+        (let [metrics {:mode mode :new-bytes-est bytes :new-bytes-basis (cond (contains? #{:carryover :reuse} mode) "worktree-move-no-copy" (some? bytes) "git-ls-tree-blob-sum" :else "unavailable")
+                       :moved (boolean (:reused-from worktree))}]
+          (workspace-metrics-write! (merge {:event :workspace-prepare :ticket ticket-id :run run-id :repo (:repo worktree)
+                                           :reason (:reuse-fallback worktree) :reused-from (:reused-from worktree)} metrics))
+          metrics))
+      (catch Exception e (log! (str "workspace-metrics: warning " (.getMessage e)))))))
+
 (defn one-line [text]
   ;; Keeps every prune log entry on a single line.
   (str/trim (str/replace (str text) #"\s+" " ")))
@@ -5735,6 +5773,57 @@
       (some #(not= "Done" %) card-lanes) {:eligible? false :reason "not-done"}
       :else (prune-ticket-decision (ticket-frontmatter-or-nil ticket-id) today-date retention-days))))
 
+(def unmeasured-workspace {:apparent-bytes nil :allocated-bytes nil :measured? false :basis "unmeasured"})
+
+(defn measure-workspace!
+  ;; du allocated bytes are an upper bound on reclaimed space when files share blocks.
+  ;; Callers that hold the ticket lock guard pass a short timeout so a new claim
+  ;; of the ticket is never delayed for long; a timeout records `unmeasured`.
+  ([ctx path cached?] (measure-workspace! ctx path cached? 120))
+  ([ctx path cached? timeout-seconds]
+  (try
+    (let [cache-path (fs/path (root) "metrics" "workspace-size-cache.edn")
+          cache (if cached? (read-edn-file cache-path {}) {})
+          entry (get cache (str path))
+          valid? (and entry (try (.isAfter (java.time.Instant/parse (:measured-at entry))
+                                            (.minus (now) (java.time.Duration/ofHours 6)))
+                                 (catch Exception _ false)))]
+      (cond
+        valid? {:apparent-bytes (:apparent entry) :allocated-bytes (:allocated entry) :measured? true :basis "du-sxk-cached"}
+        (or (not (workspace-metrics-enabled?)) (>= @(:measure-count ctx) (:measure-limit ctx))) unmeasured-workspace
+        :else
+        (do
+          (swap! (:measure-count ctx) inc)
+          (let [prefix (if (zero? (:exit (command-result ["sh" "-c" "command -v nice >/dev/null && command -v ionice >/dev/null"]))) ["nice" "-n" "19" "ionice" "-c3"] [])
+                measure (fn [apparent?]
+                          (let [r (command-result (into prefix (concat ["du" "-sxk"] (when apparent? ["--apparent-size"]) [(str path)])) {:timeout-seconds timeout-seconds})]
+                            (when (zero? (:exit r))
+                              (when-let [[_ n] (re-find #"^(\d+)" (:out r))] (* 1024 (Long/parseLong n))))))
+                apparent (measure true) allocated (measure false)]
+            (if (and apparent allocated)
+              (do (when cached?
+                    ;; Drop entries of runs that no longer exist so the cache stays small.
+                    (write-edn-file! cache-path (assoc (into {} (filter (fn [[k _]] (fs/exists? k {:nofollow-links true}))) cache)
+                                                       (str path) {:apparent apparent :allocated allocated :measured-at (now-str)})))
+                  {:apparent-bytes apparent :allocated-bytes allocated :measured? true :basis (if cached? "du-sxk" "du-sxk-before-delete")})
+              unmeasured-workspace)))))
+    (catch Exception e
+      (log! (str "workspace-metrics: warning " (.getMessage e)))
+      unmeasured-workspace))))
+
+(defn record-prune-result! [ctx ticket-id run-id result reason mode measurement]
+  (when (workspace-metrics-enabled?)
+    (try
+      (let [m (or measurement unmeasured-workspace)
+            prefix (first (str/split (or reason "unknown") #" " 2))]
+        (workspace-metrics-write! (merge {:event :prune-run :ticket ticket-id :run run-id :result result :reason reason :mode mode} m))
+        (if (= result :deleted)
+          (if (:measured? m) (swap! (:capacity ctx) update :reclaimed-allocated-bytes-est + (:allocated-bytes m))
+              (swap! (:capacity ctx) update :deleted-unmeasured inc))
+          (if (:measured? m) (swap! (:capacity ctx) update-in [:held-bytes-by-reason prefix] (fnil + 0) (:allocated-bytes m))
+              (swap! (:capacity ctx) update :held-unmeasured inc))))
+      (catch Exception e (log! (str "workspace-metrics: warning " (.getMessage e)))))))
+
 (defn prune-run-under-guard!
   "Must run inside with-ticket-lock-guard so no run of the ticket can start
   between the lock check and the deletion. Returns {:result ...}.
@@ -5753,7 +5842,7 @@
         run-ids (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))
         run (if (= mode :done) (prune-run-decision run-id now-instant retention-days)
                 (stale-run-decision run-id run-ids now-instant (stale-retention-hours) (keep-latest-runs)))
-        hold (fn [reason] {:result :held :reason reason})]
+        hold (fn [reason] {:result :held :reason reason :mode mode})]
     (cond
       (not (fs/exists? run-path {:nofollow-links true})) {:result :gone}
       ;; The lock went away or became unreadable since the caller looked; the
@@ -5800,7 +5889,7 @@
             (log! (str "prune: delete " run-path " (dry-run)"))
             (doseq [[common-dir repo] branch-repos]
               (prune-run-branch! ctx common-dir repo branch))
-            {:result :deleted :mode mode})
+            {:result :deleted :mode mode :measurement (when (and (workspace-metrics-enabled?) (not locked-unguarded?)) (measure-workspace! ctx run-path false 30))})
 
           (or (and (= mode :done) (not (:eligible? @recheck)))
               (and (= mode :stale)
@@ -5814,13 +5903,14 @@
           {:result :ticket-skipped :reason (:reason @recheck)}
 
           :else
+          (let [measurement (when (and (workspace-metrics-enabled?) (not locked-unguarded?)) (measure-workspace! ctx run-path false 30))]
           (if-let [reason (delete-run-workspace! ctx run-path checkouts)]
             (hold reason)
             (do
               (log! (str "prune: delete " run-path))
               (doseq [[common-dir repo] branch-repos]
                 (prune-run-branch! ctx common-dir repo branch))
-              {:result :deleted :mode mode})))))))
+              {:result :deleted :mode mode :measurement measurement}))))))))
 
 (defn child-directories [dir]
   (if (fs/directory? dir)
@@ -5843,7 +5933,7 @@
       (loop [[run-id & more] run-ids]
         (when (and run-id (not (stop?)))
           (let [run-path (run-workspace-dir ticket-id run-id)
-                {:keys [result reason mode]}
+                {:keys [result reason mode measurement]}
                 (try
                   (if (= "locked-active" (:reason pre))
                     ;; Holding the guard here would stall the live run's
@@ -5854,6 +5944,9 @@
                      #(prune-run-under-guard! ctx ticket-id run-id)))
                   (catch Exception e
                     {:result :held :reason (str "error " (one-line (.getMessage e)))}))]
+            (when (and (contains? #{:deleted :held} result) (workspace-metrics-enabled?))
+              (record-prune-result! ctx ticket-id run-id result reason mode
+                                    (if (= result :held) (measure-workspace! ctx run-path true) measurement)))
             (case result
               :deleted (do (swap! stats update :deleted inc)
                            (when (= mode :stale) (swap! stats update :stale-deleted inc)))
@@ -5892,7 +5985,8 @@
 (defn prune-workspaces!
   ([] (prune-workspaces! {}))
   ([{:keys [dry-run? stop?] :or {dry-run? false stop? (constantly false)}}]
-   (let [retention-days (workspace-retention-days)
+   (let [started-nanos (System/nanoTime)
+         retention-days (workspace-retention-days)
          ctx {:dry-run? dry-run?
               :stop? stop?
               :retention-days retention-days
@@ -5901,6 +5995,9 @@
               :gh-cache (atom {})
               :affected-repos (atom #{})
               :planned (atom #{})
+              :measure-count (atom 0)
+              :measure-limit (if (workspace-metrics-enabled?) (prune-setting "CODEX_TASK_BOARD_WORKSPACE_METRICS_MAX_MEASURE" #(parse-bounded-long % 20 0)) 0)
+              :capacity (atom {:reclaimed-allocated-bytes-est 0 :deleted-unmeasured 0 :held-bytes-by-reason {} :held-unmeasured 0})
               :stats (atom {:stale-deleted 0 :deleted 0 :held 0 :recent 0 :branches 0 :empty-dirs 0 :skipped {}})}
          guarded (fn [label path f]
                    (try
@@ -5923,6 +6020,13 @@
      (when (stop?)
        (log! "prune: stopped early because the runner is draining"))
      (let [{:keys [deleted stale-deleted held recent branches empty-dirs skipped]} @(:stats ctx)]
+       (when (workspace-metrics-enabled?)
+         (try
+           (let [store (let [dir (java.io.File. (str (workspaces-dir)))] (when (.isDirectory dir) dir))
+                 capacity (assoc @(:capacity ctx) :fs-free-bytes (when store (.getUsableSpace store)) :fs-total-bytes (when store (.getTotalSpace store))
+                                 :duration-ms (quot (- (System/nanoTime) started-nanos) 1000000))]
+             (workspace-metrics-write! (merge {:event :prune-summary} @(:stats ctx) capacity)))
+           (catch Exception e (log! (str "workspace-metrics: warning " (.getMessage e))))))
        (log! (str "prune: summary deleted=" deleted
                   " stale-deleted=" stale-deleted
                   " held=" held
@@ -5934,11 +6038,119 @@
                   (when (seq skipped)
                     (str " skipped-detail="
                          (str/join "," (map (fn [[reason n]] (str reason ":" n))
-                                            (sort-by key skipped)))))))
+                                            (sort-by key skipped)))))
+                  (when (workspace-metrics-enabled?)
+                    (str " reclaimed-est-bytes=" (:reclaimed-allocated-bytes-est @(:capacity ctx))
+                         " held-bytes=" (reduce + 0 (vals (:held-bytes-by-reason @(:capacity ctx))))))))
        @(:stats ctx)))))
+
+(defn print-workspace-metrics! [hours]
+  (let [path (fs/path (root) "metrics" "workspace-capacity.edn")
+        cutoff (.minus (now) (java.time.Duration/ofHours hours))
+        events (if (fs/exists? path)
+                 (keep (fn [line] (try (let [event (edn/read-string line)]
+                                          (when (and (map? event) (not (.isBefore (java.time.Instant/parse (:at event)) cutoff))) event))
+                                       (catch Exception _ nil))) (str/split-lines (slurp (str path)))) [])
+        prepares (filter #(= :workspace-prepare (:event %)) events)
+        runs (filter #(= :prune-run (:event %)) events)
+        latest (last (filter #(= :prune-summary (:event %)) events))
+        generated (reduce + 0 (keep #(when (= :new-checkout (:mode %)) (:new-bytes-est %)) prepares))
+        reclaimed (reduce + 0 (keep #(when (= :deleted (:result %)) (:allocated-bytes %)) runs))]
+    (println "prepare-by-mode=" (pr-str (frequencies (map :mode prepares))))
+    (println "fallback-by-reason=" (pr-str (frequencies (keep :reason prepares))))
+    (println "generated-bytes-est=" generated)
+    (println "moved-count=" (count (filter :moved prepares)))
+    (println "reclaimed-allocated-bytes-est=" reclaimed)
+    (println "net-bytes-est=" (- generated reclaimed))
+    (println "held-bytes-by-reason=" (pr-str (or (:held-bytes-by-reason latest) {})))
+    (println "fs-free-bytes=" (pr-str (:fs-free-bytes latest)))
+    (println "deleted-unmeasured=" (count (filter #(and (= :deleted (:result %)) (not (:measured? %))) runs)))
+    (println "held-unmeasured=" (count (filter #(and (= :held (:result %)) (not (:measured? %))) runs)))))
 
 (defn workspace-reuse-enabled? []
   (prune-setting "CODEX_TASK_BOARD_WORKSPACE_REUSE" parse-prune-enabled))
+
+(def warned-carryover-config (atom #{}))
+
+(defn workspace-carryover-mode [ticket-id]
+  (let [path (fs/path (root) "workspace-carryover.edn")
+        file? (fs/exists? path)
+        raw (if file? (str path) (System/getenv "CODEX_TASK_BOARD_WORKSPACE_CARRYOVER"))]
+    (try
+      (let [config (if file?
+                     (edn/read-string (slurp (str path)))
+                     {:mode (keyword (str/lower-case (or raw "off")))
+                      :tickets (remove str/blank? (map str/trim (str/split (or (System/getenv "CODEX_TASK_BOARD_WORKSPACE_CARRYOVER_TICKETS") "") #",")))})
+            mode (:mode config) tickets (:tickets config)]
+        (when-not (and (map? config) (contains? #{:off :on :canary} mode)
+                       (or (nil? tickets) (and (sequential? tickets) (every? string? tickets))))
+          (throw (ex-info "invalid config" {})))
+        (if (or (= mode :on) (and (= mode :canary) (some #{ticket-id} tickets))) :on :off))
+      (catch Exception _
+        (when-not (contains? @warned-carryover-config raw)
+          (swap! warned-carryover-config conj raw)
+          (log! (str "workspace-carryover: warning invalid config " (pr-str raw))))
+        :off))))
+
+(defn carryover-worktree! [source target ticket-id run-id repo previous old-run old reject failed moved?]
+  (let [git (fn [& args] (command-result (into ["git" "-C" (str old)] args)))
+        top (git "rev-parse" "--show-toplevel")
+        head (git "rev-parse" "HEAD")
+        status (git "status" "--porcelain=v1" "-z" "--untracked-files=all")
+        ignored (git "ls-files" "--others" "--ignored" "--exclude-standard" "-z")
+        remote (git "remote" "get-url" "origin")
+        branch-result (git "symbolic-ref" "--short" "-q" "HEAD")
+        common-path (git-path old "--git-common-dir")
+        git-dir (git-path old "--git-dir")
+        source-common (git-path source "--git-common-dir")
+        hold (stale-process-hold (fs/real-path old-run))
+        entries (loop [[entry & more] (str/split (:out status) #"\u0000") acc []]
+                  (if (str/blank? entry) acc
+                    (recur (if (and (>= (count entry) 2) (some #{\R \C} (take 2 entry))) (rest more) more) (conj acc entry))))
+        ignored-entries (str/split (:out ignored) #"\u0000")
+        venv? (some #(some #{".venv"} (str/split % #"/")) ignored-entries)
+        common (when (and common-path (fs/exists? common-path)) (str (fs/real-path common-path)))
+        source-real (when (and source-common (fs/exists? source-common)) (str (fs/real-path source-common)))
+        remote-repo (github-repo-from-remote-url (:out remote))]
+    (cond
+      (or (some #(not (zero? (:exit %))) [top head status ignored remote])
+          (not (contains? #{0 1} (:exit branch-result)))) (reject "git-error")
+      venv? (reject "path-bound-ignored")
+      hold (reject hold)
+      (or (nil? git-dir) (nil? common) (nil? source-real)
+          (not (fs/regular-file? (fs/path old ".git")))
+          (not= (str (fs/real-path old)) (str/trim (:out top)))
+          (not= common source-real)) (reject "common-dir-mismatch")
+      (nil? remote-repo) (reject "origin-not-github")
+      (not= repo remote-repo) (reject "repo-mismatch")
+      (some #(fs/exists? (fs/path git-dir %) {:nofollow-links true}) ["MERGE_HEAD" "rebase-merge" "rebase-apply" "CHERRY_PICK_HEAD" "REVERT_HEAD" "BISECT_LOG" "index.lock"]) (reject "git-operation-in-progress")
+      :else
+      (let [sha (str/trim (:out head))
+            branch (when (zero? (:exit branch-result)) (str/trim (:out branch-result)))
+            unpushed (git "rev-list" "--count" "HEAD" "--not" "--remotes")
+            dirty {:modified (count (filter #(and (>= (count %) 3) (not (str/starts-with? % "?? "))) entries))
+                   :untracked (count (filter #(str/starts-with? % "?? ") entries))
+                   :ignored-present (boolean (some (complement str/blank?) ignored-entries))
+                   :unpushed (if (zero? (:exit unpushed)) (try (Long/parseLong (str/trim (:out unpushed))) (catch Exception _ :unknown)) :unknown)}]
+        (fs/create-dirs (fs/parent target))
+        (let [move (with-ticket-lock-guard ticket-id
+                     #(cond
+                        (not= run-id (:run-id (try (read-edn-file (lock-path ticket-id) nil) (catch Exception _ nil)))) {:reason "lock-not-owned"}
+                        (fs/exists? target {:nofollow-links true}) {:reason "target-exists"}
+                        :else (let [r (command-result ["git" "--git-dir" common "worktree" "move" (str old) (str target)] {:timeout-seconds 30})]
+                                (if (zero? (:exit r)) {:moved true} {:reason "move-failed"}))))]
+          (if-not (:moved move) (reject (:reason move))
+            (do (reset! moved? true)
+                (let [new-head (command-result ["git" "-C" (str target) "rev-parse" "HEAD"])
+                      new-status (command-result ["git" "-C" (str target) "status" "--porcelain=v1" "-z" "--untracked-files=all"])]
+                  (if-not (and (zero? (:exit new-head)) (= sha (str/trim (:out new-head)))
+                               (zero? (:exit new-status)) (= (:out status) (:out new-status)))
+                    (let [back (with-ticket-lock-guard ticket-id #(command-result ["git" "--git-dir" common "worktree" "move" (str target) (str old)] {:timeout-seconds 30}))]
+                      (if (zero? (:exit back)) (do (reset! moved? false) (reject "verification-failed"))
+                        (failed "Could not roll back carryover worktree move")))
+                    (do (log! (str "workspace-reuse: carryover ticket=" ticket-id " repo=" repo " from=" previous " to=" run-id " head=" sha " modified=" (:modified dirty) " untracked=" (:untracked dirty) " unpushed=" (:unpushed dirty)))
+                        {:repo repo :path (str target) :branch branch :detached? (nil? branch) :reused-from previous :carryover true :carryover-head sha :carryover-dirty dirty
+                         :git-dirs (vec (distinct (remove str/blank? [(git-path target "--git-dir") (git-path target "--git-common-dir")]))) }))))))))))
 
 ;; The shared source checkout can sit far behind the default branch. Switching a
 ;; reused worktree back to it deletes tracked files that the run re-expands when
@@ -5984,6 +6196,7 @@
                     (= (fs/real-path old) (fs/path (fs/real-path old-run) "ghq/github.com" repo)))) (reject "unsafe-path")
           (fs/exists? target {:nofollow-links true}) (reject "target-exists")
           (not= [(str old)] (mapv str (find-checkouts old))) (reject "nested-checkout")
+          (and *workspace-carryover-allowed?* (= :on (workspace-carryover-mode ticket-id))) (carryover-worktree! source target ticket-id run-id repo previous old-run old reject failed moved?)
           :else
           (let [real-run (fs/real-path old-run)
                 ignored (inspect-ignored old repo)
@@ -6203,7 +6416,7 @@
     (recur)))
 
 (defn usage []
-  (println "usage: task_board_runner.bb <tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|localllm-migrate-markers [--apply]|gate-budget-status BOXP-N|gate-budget-exclude-pr BOXP-N owner/repo#N --by NAME|gate-budget-grant <BOXP-N|owner/repo#N> --amount N --by NAME>")
+  (println "usage: task_board_runner.bb <tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|workspace-metrics [--since-hours N]|localllm-migrate-markers [--apply]|gate-budget-status BOXP-N|gate-budget-exclude-pr BOXP-N owner/repo#N --by NAME|gate-budget-grant <BOXP-N|owner/repo#N> --amount N --by NAME>")
   (System/exit 2))
 
 (defn arg-value [args flag]
@@ -7562,6 +7775,12 @@
                        (when-not (contains? #{[] ["--dry-run"]} (vec args))
                          (usage))
                        (prune-workspaces! {:dry-run? (= ["--dry-run"] (vec args))}))
+  "workspace-metrics" (let [args (vec (rest *command-line-args*))
+                            hours (if (empty? args) 48
+                                    (when (and (= 2 (count args)) (= "--since-hours" (first args)))
+                                      (try (Long/parseLong (second args)) (catch Exception _ nil))))]
+                        (when-not (and hours (pos? hours)) (usage))
+                        (print-workspace-metrics! hours))
   "gate-budget-status" (let [[ticket-id] (rest *command-line-args*)]
                          (when-not (and ticket-id (re-matches #"[A-Z]+-\d+" ticket-id)) (usage))
                          (let [budget (read-gate-failure-budget)

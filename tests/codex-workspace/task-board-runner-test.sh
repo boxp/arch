@@ -3668,7 +3668,7 @@ test_prune_workspaces() {
   assert_file_contains "${out}" "^prune: delete-empty ${ws}/BOXP-301 \\(dry-run\\)$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-305/${old} reason=uncommitted-changes checkout=ghq/github.com/boxp/example$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-306/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
-  assert_file_contains "${out}" '^prune: summary deleted=2 stale-deleted=0 held=6 skipped=4 recent-runs=1 branches=1 empty-dirs=3 dry-run=true skipped-detail=locked:1,not-done:1,ticket-missing:1,within-retention:1$'
+  assert_file_contains "${out}" '^prune: summary deleted=2 stale-deleted=0 held=6 skipped=4 recent-runs=1 branches=1 empty-dirs=3 dry-run=true skipped-detail=locked:1,not-done:1,ticket-missing:1,within-retention:1( reclaimed-est-bytes=[0-9]+ held-bytes=[0-9]+)?$'
 
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" GH_FAKE_API_LOG="${tmp}/api.log" \
     run_prune "${vault}" "${state}" >"${out}" || fail "prune-workspaces failed"
@@ -3987,7 +3987,7 @@ test_prune_respects_board_lane() {
     || fail "prune-workspaces with a reopened card failed"
   [[ -d "${ws}/BOXP-361/${old}" ]] || fail "expected run of a ticket whose card left Done to remain"
   [[ ! -e "${ws}/BOXP-362" ]] || fail "expected run of a ticket whose card is in Done to be deleted"
-  assert_file_contains "${out}" '^prune: summary deleted=1 stale-deleted=0 held=0 skipped=1 .* skipped-detail=not-done:1$'
+  assert_file_contains "${out}" '^prune: summary deleted=1 stale-deleted=0 held=0 skipped=1 .* skipped-detail=not-done:1( reclaimed-est-bytes=[0-9]+ held-bytes=[0-9]+)?$'
 
   # Without a readable board nothing is deleted.
   write_prune_ticket "${vault}" BOXP-363 done 2020-01-01
@@ -3996,7 +3996,7 @@ test_prune_respects_board_lane() {
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
     || fail "prune-workspaces without a board failed"
   [[ -d "${ws}/BOXP-363/${old}" ]] || fail "expected run to remain when the board is missing"
-  assert_file_contains "${out}" '^prune: summary deleted=0 stale-deleted=0 held=0 skipped=2 .* skipped-detail=board-unreadable:2$'
+  assert_file_contains "${out}" '^prune: summary deleted=0 stale-deleted=0 held=0 skipped=2 .* skipped-detail=board-unreadable:2( reclaimed-est-bytes=[0-9]+ held-bytes=[0-9]+)?$'
 }
 
 test_prune_invalid_settings_fall_back_to_defaults() {
@@ -5331,6 +5331,9 @@ reuse_prepare() {
       (let [workspace (prepare-run-workspace! (System/getenv "TEST_TICKET") (System/getenv "TEST_RUN"))
             result (first (:repo-worktrees workspace))
             prompt (workspace-prompt workspace)]
+        (when (:carryover result)
+          (assert (clojure.string/includes? prompt "Carried over from previous run"))
+          (assert (not (clojure.string/includes? prompt "private-untracked"))))
         (when (:reuse-base-reason result)
           (assert (clojure.string/includes? prompt "kept to preserve its verified studio dist"))
           (assert (clojure.string/includes? prompt "switch to the correct base or PR branch before committing")))
@@ -5347,6 +5350,238 @@ reuse_fixture() {
 }
 
 reuse_lock() { printf '{:ticket "%s" :run-id "%s"}\n' "$2" "$3" >"$1/state/locks/$2.edn"; }
+
+test_workspace_carryover_preserves_work() {
+  local tmp old new before head branch
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  echo initial >"$tmp/source/tracked"; git -C "$tmp/source" add tracked; prune_git -C "$tmp/source" commit -qm tracked
+  old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z)"
+  git -C "$old" switch -c custom-carryover >/dev/null
+  echo committed >"$old/committed"; git -C "$old" add committed; prune_git -C "$old" commit -qm unpushed
+  echo modified >"$old/tracked"
+  printf '#!/bin/sh\necho called >>"%s"\nexit 99\n' "$tmp/gh-called" >"$tmp/bin/gh"; chmod +x "$tmp/bin/gh"
+  echo staged >"$old/staged"; git -C "$old" add staged
+  echo untracked >"$old/private-untracked"
+  echo 'ignored/' >>"$(git -C "$old" rev-parse --git-path info/exclude)"
+  mkdir "$old/ignored"; echo ignored >"$old/ignored/data"
+  head="$(git -C "$old" rev-parse HEAD)"; branch="$(git -C "$old" branch --show-current)"
+  before="$(git -C "$old" status --porcelain=v1 --untracked-files=all)"
+  local hashes staged_before
+  hashes="$(cd "$old" && find . -path ./.git -prune -o -type f -print0 | sort -z | xargs -0 sha256sum)"
+  staged_before="$(git -C "$old" diff --cached)"
+  printf '{:mode :on}\n' >"$tmp/state/workspace-carryover.edn"
+  reuse_lock "$tmp" BOXP-901 20200102T000000Z
+  reuse_prepare "$tmp" BOXP-901 20200102T000000Z >"$tmp/out"
+  new="$tmp/state/workspaces/BOXP-901/20200102T000000Z/ghq/github.com/boxp/example"
+  assert_file_contains "$tmp/out" ':carryover true'
+  [[ ! -e "$old" && -f "$new/ignored/data" && -f "$new/private-untracked" ]] || fail 'carryover files missing'
+  [[ "$(git -C "$new" rev-parse HEAD)" == "$head" && "$(git -C "$new" branch --show-current)" == "$branch" ]] || fail 'carryover changed HEAD or branch'
+  [[ "$(git -C "$new" status --porcelain=v1 --untracked-files=all)" == "$before" ]] || fail 'carryover changed status'
+  [[ "$(cd "$new" && find . -path ./.git -prune -o -type f -print0 | sort -z | xargs -0 sha256sum)" == "$hashes" ]] || fail 'carryover changed file contents'
+  [[ "$(git -C "$new" diff --cached)" == "$staged_before" ]] || fail 'carryover changed the index'
+  [[ "$(git -C "$new" log -1 --format=%s)" == unpushed ]] || fail 'unpushed commit lost'
+  [[ ! -e "$tmp/gh-called" ]] || fail 'carryover called GitHub'
+  [[ "$(git -C "$tmp/source" worktree list --porcelain | grep -c "^worktree .*BOXP-901")" == 1 ]] || fail 'carryover left more than one worktree'
+  assert_file_contains "$tmp/state/runs/BOXP-901/20200102T000000Z/workspace-reuse.edn" ':carryover-dirty \{:modified 2, :untracked 1, :ignored-present true, :unpushed [1-9][0-9]*\}'
+  git -C "$new" switch --detach >/dev/null
+  reuse_lock "$tmp" BOXP-901 20200103T000000Z
+  reuse_prepare "$tmp" BOXP-901 20200103T000000Z >"$tmp/detached"
+  assert_file_contains "$tmp/detached" ':detached\? true'
+  [[ "$(git -C "$tmp/state/workspaces/BOXP-901/20200103T000000Z/ghq/github.com/boxp/example" rev-parse HEAD)" == "$head" ]] || fail 'detached HEAD changed'
+}
+
+test_workspace_carryover_safety_fallbacks() {
+  local case_name tmp old head
+  for case_name in merge venv lock process mount nested; do
+    tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+    old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z)"
+    head="$(git -C "$old" rev-parse HEAD)"
+    printf '{:mode :on}\n' >"$tmp/state/workspace-carryover.edn"
+    reuse_lock "$tmp" BOXP-901 20200102T000000Z
+    case "$case_name" in
+      merge) echo "$head" >"$(git -C "$old" rev-parse --git-path MERGE_HEAD)"; expected=git-operation-in-progress ;;
+      venv) echo '.venv/' >>"$(git -C "$old" rev-parse --git-path info/exclude)"; mkdir "$old/.venv"; echo x >"$old/.venv/x"; expected=path-bound-ignored ;;
+      lock) reuse_lock "$tmp" BOXP-901 20200103T000000Z; expected=lock-not-owned ;;
+      process) mkdir "$tmp/proc/101"; ln -s "$old" "$tmp/proc/101/cwd"; expected=process-active ;;
+      mount) echo "23 22 0:22 / $old rw - ext4 /dev/root rw" >>"$tmp/mountinfo"; expected=mount-present ;;
+      nested) git init -q "$old/nested"; expected=nested-checkout ;;
+    esac
+    reuse_prepare "$tmp" BOXP-901 20200102T000000Z >"$tmp/out"
+    assert_file_contains "$tmp/out" ":reuse-fallback \"$expected\""
+    [[ "$(git -C "$old" rev-parse HEAD)" == "$head" ]] || fail 'safety fallback changed old worktree'
+    [[ -e "$tmp/state/workspaces/BOXP-901/20200102T000000Z/ghq/github.com/boxp/example/.git" ]] || fail 'safety fallback did not create a fresh checkout'
+  done
+}
+
+test_workspace_carryover_flag_modes_and_rollback() {
+  local tmp old carried
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z)"
+  echo keep >"$old/untracked"
+  printf '{:mode :canary :tickets ["BOXP-901"]}\n' >"$tmp/state/workspace-carryover.edn"
+  reuse_lock "$tmp" BOXP-901 20200102T000000Z
+  reuse_prepare "$tmp" BOXP-901 20200102T000000Z >"$tmp/out1"
+  assert_file_contains "$tmp/out1" ':carryover true'
+  carried="$tmp/state/workspaces/BOXP-901/20200102T000000Z/ghq/github.com/boxp/example"
+  printf '{:mode :off}\n' >"$tmp/state/workspace-carryover.edn"
+  reuse_lock "$tmp" BOXP-901 20200103T000000Z
+  reuse_prepare "$tmp" BOXP-901 20200103T000000Z >"$tmp/out2"
+  assert_file_contains "$tmp/out2" ':reuse-fallback "uncommitted-changes"'
+  [[ -f "$carried/untracked" ]] || fail 'rollback lost work'
+  printf '{:mode :canary :tickets ["BOXP-999"]}\n' >"$tmp/state/workspace-carryover.edn"
+  CODEX_TASK_BOARD_ROOT="$tmp/state" TEST_RUNNER="$RUNNER" bb -e '
+    (System/setProperty "babashka.file" "/tmp/load-runner.bb") (load-file (System/getenv "TEST_RUNNER"))
+    (assert (= :off (workspace-carryover-mode "BOXP-901")))' >"$tmp/mode"
+  printf '{:mode :invalid}\n' >"$tmp/state/workspace-carryover.edn"
+  CODEX_TASK_BOARD_ROOT="$tmp/state" TEST_RUNNER="$RUNNER" bb -e '
+    (System/setProperty "babashka.file" "/tmp/load-runner.bb") (load-file (System/getenv "TEST_RUNNER"))
+    (assert (= :off (workspace-carryover-mode "BOXP-901")))' >"$tmp/mode" 2>&1
+  assert_file_contains "$tmp/mode" 'workspace-carryover: warning invalid config'
+  rm "$tmp/state/workspace-carryover.edn"
+  CODEX_TASK_BOARD_WORKSPACE_CARRYOVER=on CODEX_TASK_BOARD_ROOT="$tmp/state" TEST_RUNNER="$RUNNER" bb -e '
+    (System/setProperty "babashka.file" "/tmp/load-runner.bb") (load-file (System/getenv "TEST_RUNNER"))
+    (assert (= :on (workspace-carryover-mode "BOXP-901")))'
+}
+
+test_workspace_carryover_skips_localllm_coder() {
+  local tmp old head
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z)"
+  echo keep >"$old/untracked"; head="$(git -C "$old" rev-parse HEAD)"
+  printf '{:mode :on}\n' >"$tmp/state/workspace-carryover.edn"
+  reuse_lock "$tmp" BOXP-901 20200102T000000Z
+  PATH="$tmp/bin:$PATH" GH_FAKE_KNOWN_SHAS="$tmp/known" CODEX_TASK_BOARD_ROOT="$tmp/state" \
+    CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo" \
+    TEST_RUNNER="$RUNNER" TEST_SOURCE="$tmp/source" bb -e '
+      (System/setProperty "babashka.file" "/tmp/load-runner.bb")
+      (load-file (System/getenv "TEST_RUNNER"))
+      (alter-var-root (var local-repo-path) (constantly (fn [_] (System/getenv "TEST_SOURCE"))))
+      (alter-var-root (var ticket-repos) (constantly (fn [_] ["boxp/example"])))
+      (let [r (first (:repo-worktrees (binding [*workspace-carryover-allowed?* false] (prepare-run-workspace! "BOXP-901" "20200102T000000Z"))))]
+        (assert (not (:carryover r)))
+        (assert (= "uncommitted-changes" (:reuse-fallback r))))' || fail 'localllm coder took the carryover path'
+  [[ -f "$old/untracked" && "$(git -C "$old" rev-parse HEAD)" == "$head" ]] || fail 'coder fallback touched the old worktree'
+}
+
+
+test_workspace_carryover_skips_localllm_coder() {
+  local tmp old head
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z)"
+  echo keep >"$old/untracked"; head="$(git -C "$old" rev-parse HEAD)"
+  printf '{:mode :on}\n' >"$tmp/state/workspace-carryover.edn"
+  reuse_lock "$tmp" BOXP-901 20200102T000000Z
+  PATH="$tmp/bin:$PATH" GH_FAKE_KNOWN_SHAS="$tmp/known" CODEX_TASK_BOARD_ROOT="$tmp/state" \
+    CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo" \
+    TEST_RUNNER="$RUNNER" TEST_SOURCE="$tmp/source" bb -e '
+      (System/setProperty "babashka.file" "/tmp/load-runner.bb")
+      (load-file (System/getenv "TEST_RUNNER"))
+      (alter-var-root (var local-repo-path) (constantly (fn [_] (System/getenv "TEST_SOURCE"))))
+      (alter-var-root (var ticket-repos) (constantly (fn [_] ["boxp/example"])))
+      (let [r (first (:repo-worktrees (binding [*workspace-carryover-allowed?* false] (prepare-run-workspace! "BOXP-901" "20200102T000000Z"))))]
+        (assert (not (:carryover r)))
+        (assert (= "uncommitted-changes" (:reuse-fallback r))))' >/dev/null || fail 'localllm coder took the carryover path'
+  [[ -f "$old/untracked" && "$(git -C "$old" rev-parse HEAD)" == "$head" ]] || fail 'coder fallback touched the old worktree'
+}
+test_workspace_carryover_chain_and_restart() {
+  local tmp old second third
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z)"
+  echo keep >"$old/untracked"
+  printf '{:mode :on}\n' >"$tmp/state/workspace-carryover.edn"
+  reuse_lock "$tmp" BOXP-901 20200102T000000Z
+  reuse_prepare "$tmp" BOXP-901 20200102T000000Z >"$tmp/out1"
+  second="$tmp/state/workspaces/BOXP-901/20200102T000000Z/ghq/github.com/boxp/example"
+  rm "$tmp/state/runs/BOXP-901/20200102T000000Z/workspace-reuse.edn"
+  reuse_lock "$tmp" BOXP-901 20200103T000000Z
+  reuse_prepare "$tmp" BOXP-901 20200103T000000Z >"$tmp/out2"
+  third="$tmp/state/workspaces/BOXP-901/20200103T000000Z/ghq/github.com/boxp/example"
+  assert_file_contains "$tmp/out2" ':reused-from "20200102T000000Z"'
+  [[ ! -e "$second" && -f "$third/untracked" ]] || fail 'chain did not preserve work'
+}
+
+test_workspace_metrics_ledger() {
+  local tmp old ledger
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  echo payload >"$tmp/source/tracked"; git -C "$tmp/source" add tracked; prune_git -C "$tmp/source" commit -qm payload
+  reuse_lock "$tmp" BOXP-901 20200101T000000Z
+  reuse_prepare "$tmp" BOXP-901 20200101T000000Z >"$tmp/out1"
+  printf '{:mode :on}\n' >"$tmp/state/workspace-carryover.edn"
+  reuse_lock "$tmp" BOXP-901 20200102T000000Z
+  reuse_prepare "$tmp" BOXP-901 20200102T000000Z >"$tmp/out2"
+  ledger="$tmp/state/metrics/workspace-capacity.edn"
+  assert_file_contains "$ledger" ':mode :new-checkout'
+  assert_file_contains "$ledger" ':mode :carryover'
+  assert_file_contains "$ledger" ':moved true'
+  CODEX_TASK_BOARD_ROOT="$tmp/state" bb "$RUNNER" workspace-metrics --since-hours 48 >"$tmp/summary"
+  assert_file_contains "$tmp/summary" 'generated-bytes-est='
+  assert_file_contains "$tmp/summary" 'net-bytes-est='
+
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  write_board "$tmp/vault" ""
+  write_prune_ticket "$tmp/vault" BOXP-901 done 2020-01-01
+  write_prune_ticket "$tmp/vault" BOXP-902 done 2020-01-01
+  add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z >/dev/null
+  old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-902 20200101T000000Z)"
+  echo keep >"$old/untracked"
+  PATH="$tmp/bin:$PATH" GH_FAKE_KNOWN_SHAS="$tmp/known" run_prune "$tmp/vault" "$tmp/state" >"$tmp/prune1"
+  ledger="$tmp/state/metrics/workspace-capacity.edn"
+  assert_file_contains "$ledger" ':result :deleted.*:measured\? true'
+  assert_file_contains "$ledger" ':result :held.*:measured\? true'
+  PATH="$tmp/bin:$PATH" GH_FAKE_KNOWN_SHAS="$tmp/known" run_prune "$tmp/vault" "$tmp/state" >"$tmp/prune2"
+  assert_file_contains "$ledger" ':basis "du-sxk-cached"'
+  PATH="$tmp/bin:$PATH" GH_FAKE_KNOWN_SHAS="$tmp/known" CODEX_TASK_BOARD_WORKSPACE_METRICS_MAX_MEASURE=0 \
+    run_prune "$tmp/vault" "$tmp/state" >"$tmp/prune3"
+
+  # Metrics never change prune decisions, and an unwritable ledger is harmless.
+  local mode summary_on summary_off summary_ro summary_zero
+  for mode in on off ro zero; do
+    tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+    write_board "$tmp/vault" ""
+    write_prune_ticket "$tmp/vault" BOXP-901 done 2020-01-01
+    write_prune_ticket "$tmp/vault" BOXP-902 done 2020-01-01
+    add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z >/dev/null
+    old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-902 20200101T000000Z)"
+    echo keep >"$old/untracked"
+    if [[ "$mode" == ro ]]; then echo blocker >"$tmp/state/metrics"; fi
+    PATH="$tmp/bin:$PATH" GH_FAKE_KNOWN_SHAS="$tmp/known" CODEX_TASK_BOARD_WORKSPACE_METRICS="$([[ "$mode" == off ]] && echo off || echo on)" \
+      CODEX_TASK_BOARD_WORKSPACE_METRICS_MAX_MEASURE="$([[ "$mode" == zero ]] && echo 0 || echo 20)" \
+      run_prune "$tmp/vault" "$tmp/state" >"$tmp/prune" || fail "prune failed with metrics $mode"
+    grep -o '^prune: summary deleted=[0-9]* stale-deleted=[0-9]* held=[0-9]* skipped=[0-9]* recent-runs=[0-9]* branches=[0-9]* empty-dirs=[0-9]*' "$tmp/prune" >"$tmp/summary-$mode"
+    [[ -s "$tmp/summary-$mode" ]] || fail "no prune summary with metrics $mode"
+    [[ -d "$tmp/state/workspaces/BOXP-902/20200101T000000Z" && ! -e "$tmp/state/workspaces/BOXP-901/20200101T000000Z" ]] || fail "prune decision changed with metrics $mode"
+    if [[ "$mode" == off ]]; then [[ ! -e "$tmp/state/metrics" ]] || fail 'metrics off wrote files'; fi
+    if [[ "$mode" == ro ]]; then assert_file_contains "$tmp/prune" 'workspace-metrics: warning'; fi
+    if [[ "$mode" == zero ]]; then
+      assert_file_contains "$tmp/state/metrics/workspace-capacity.edn" ':result :deleted.*:measured\? false'
+      assert_file_contains "$tmp/state/metrics/workspace-capacity.edn" ':held-unmeasured 1'
+      assert_file_contains "$tmp/state/metrics/workspace-capacity.edn" ':fs-free-bytes [1-9]'
+      [[ ! -e "$tmp/state/metrics/workspace-size-cache.edn" ]] || fail 'MAX_MEASURE=0 measured'
+    fi
+    eval "summary_$mode=\"\$(cat \"$tmp/summary-$mode\")\""
+  done
+  [[ "$summary_on" == "$summary_off" && "$summary_on" == "$summary_ro" && "$summary_on" == "$summary_zero" ]] || fail "metrics changed prune summary: $summary_on / $summary_off / $summary_ro"
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  reuse_lock "$tmp" BOXP-901 20200101T000000Z
+  CODEX_TASK_BOARD_WORKSPACE_METRICS=off reuse_prepare "$tmp" BOXP-901 20200101T000000Z >"$tmp/out"
+  [[ ! -e "$tmp/state/metrics" ]] || fail 'disabled metrics wrote files'
+}
+
+test_workspace_carryover_prune_interplay() {
+  local tmp old vault
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"; vault="$tmp/vault"
+  write_board "$vault" ""
+  write_prune_ticket "$vault" BOXP-901 in-progress 2020-01-01
+  old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z)"
+  echo keep >"$old/untracked"
+  printf '{:mode :on}\n' >"$tmp/state/workspace-carryover.edn"
+  reuse_lock "$tmp" BOXP-901 20200102T000000Z
+  reuse_prepare "$tmp" BOXP-901 20200102T000000Z >"$tmp/prepared"
+  PATH="$tmp/bin:$PATH" GH_FAKE_KNOWN_SHAS="$tmp/known" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true \
+    CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo" \
+    run_prune "$vault" "$tmp/state" >"$tmp/prune"
+  [[ -f "$tmp/state/workspaces/BOXP-901/20200102T000000Z/ghq/github.com/boxp/example/untracked" ]] || fail 'prune lost carried work'
+}
 
 test_workspace_reuse_interplay() {
   local tmp ws old new dist out
