@@ -2,7 +2,7 @@
 // 会話の送信・重複防止・停止・承認・追跡は Studio（src/studio/main.ts）と同じ規則。人格・判断・記憶は Hermes だけが持つ。
 import './style.css'
 import { petFollow, zeroPet } from './petfollow'
-import { makeVisemes, visemeAt, boundaryTime, type VisemeSequence } from '../live2d/viseme'
+import { makeVisemes, visemeAt, boundaryTime, spokenSeconds, type VisemeSequence } from '../live2d/viseme'
 import { interpretRequest, newOutgoing, pcm16, presentation, resolveUnconfirmed, rigStateOf, sendOutcomeUnknown, silentSpeechSeconds, studioRigModelId, wantsActing, wantsRig, type Outgoing, type State } from '../studio/model'
 import { clipIdFor, clipName, lookFor, modelFor, mouthLevel, poseFor, type RigState } from '../live2d/model'
 import { applyPose, loadRig, type Player } from '../live2d/rig'
@@ -55,8 +55,8 @@ speech.disabled = !synthesis
 // ---- リグと演技（476 の規則をそのまま使う） ----
 const rigModel = modelFor(`?model=${studioRigModelId(location.search)}`)
 let rig: Player | null = null, stage: (ActingStage & { report(): Record<string, unknown> }) | null = null, acting: ActingDirector | null = null, speakingSince = 0, mouthTimer = 0
-let visemes: VisemeSequence | null = null, visemeAnchor = 0
-function startViseme(text: string, duration = silentSpeechSeconds(text)) { visemes = makeVisemes(text, duration); speakingSince = performance.now(); visemeAnchor = 0 }
+let visemes: VisemeSequence | null = null, visemeAnchor = 0, visemeLive = false
+function startViseme(text: string, duration = silentSpeechSeconds(text), live = false) { visemes = makeVisemes(text, duration); visemeLive = live; speakingSince = performance.now(); visemeAnchor = 0 }
 function syncViseme(charIndex: number) { if (visemes) { visemeAnchor = boundaryTime(visemes, charIndex); speakingSince = performance.now() } }
 const actingEnabled = wantsActing(location.search)
 const speaker = synthesis && actingEnabled ? createSentenceSpeaker({ synth: { speak: u => window.speechSynthesis.speak(u as SpeechSynthesisUtterance), cancel: () => window.speechSynthesis.cancel() }, makeUtterance: text => { const u = new SpeechSynthesisUtterance(text); u.lang = 'ja-JP'; return u } }) : null
@@ -256,10 +256,10 @@ function deliver(text: string) {
     const sentences = splitSentences(text)
     acting?.beginReply(); show('speaking')
     let current = 0
-    const sentenceDuration = (s: string) => { const total = sentences.reduce((n, v) => n + Array.from(v.replace(/\s/g, '')).length, 0); return speech.checked ? silentSpeechSeconds(s) : total ? silentSpeechSeconds(text) * Array.from(s.replace(/\s/g, '')).length / total : 0 }
+    const sentenceDuration = (s: string) => { const total = sentences.reduce((n, v) => n + Array.from(v.replace(/\s/g, '')).length, 0); return speech.checked && speaker ? spokenSeconds(s) : total ? silentSpeechSeconds(text) * Array.from(s.replace(/\s/g, '')).length / total : 0 }
     const events = {
       onBoundary: (_index: number, charIndex: number) => syncViseme(charIndex),
-      onSentence: (index: number, sentence: string) => { current = index; startViseme(sentence, sentenceDuration(sentence)); acting?.sentence(cueForSentence(sentence)); if (acting) report.acting = acting.snapshot },
+      onSentence: (index: number, sentence: string) => { current = index; startViseme(sentence, sentenceDuration(sentence), !!(speech.checked && speaker)); acting?.sentence(cueForSentence(sentence)); if (acting) report.acting = acting.snapshot },
       onEnd: () => { if (state === 'speaking') show('done') },
       onError: () => { if (state === 'speaking') mouthOnly(sentences.slice(current).join('')) },
     }
@@ -270,7 +270,7 @@ function deliver(text: string) {
     }
   } else if (!actingEnabled && speech.checked && synthesis && text) {
     const u = new SpeechSynthesisUtterance(text); u.lang = 'ja-JP'
-    u.onstart = () => { startViseme(text) }; u.onboundary = e => syncViseme(e.charIndex); u.onend = () => { if (state === 'speaking') show('done') }
+    u.onstart = () => { startViseme(text, spokenSeconds(text), true) }; u.onboundary = e => syncViseme(e.charIndex); u.onend = () => { if (state === 'speaking') show('done') }
     u.onerror = e => { if (state !== 'speaking') return; if (e.error === 'interrupted' || e.error === 'canceled') show('done'); else mouthOnly(text) }
     show('speaking'); window.speechSynthesis.speak(u)
   } else if (text) mouthOnly(text)
@@ -510,7 +510,7 @@ function rigTick(now: number) {
   const dt = petTick ? Math.min(0.1, (now - petTick) / 1000) : 0; petTick = now
   petOffset = petFollow(petOffset, track?.zone === 'head' && track.headRect ? { points: track.points, rect: track.headRect } : null, dt, { enabled: !touchBlocked(), reduced: reduced(), subtle: prefs.intensity === 'subtle' })
   stage?.setPetOffset?.(petOffset); report.petFollow = { ...petOffset }
-  const v = visemes && state === 'speaking' && speakingSince ? visemeAt(visemes, visemeAnchor + (now - speakingSince) / 1000) : { vowel: 'closed', open: 0, width: 1 }
+  const v = visemes && state === 'speaking' && speakingSince ? visemeAt(visemes, visemeAnchor + (now - speakingSince) / 1000, visemeLive) : { vowel: 'closed', open: 0, width: 1 }
   const mouth = mouthLevel(rigModel, v.open)
   stage?.setViseme?.(v.vowel === 'closed' ? null : { open: v.open, width: reduced() ? 1 : v.width })
   rig.lipSync(mouth); report.mouth = mouth; report.viseme = v.vowel
@@ -523,6 +523,7 @@ async function startRig() {
     rig = loaded.player; rig.start()
     const ids = (rig as Player & { meshIds?: string[] }).meshIds ?? []
     headIdx = HEAD_MESHES.map(n => ids.indexOf(n)).filter(i => i >= 0); handIdx = HAND_MESHES.map(n => ids.indexOf(n)).filter(i => i >= 0)
+    // stage は ?acting=0 でも作る（なで追従の ParamAngle と母音口形は stage の update フックで毎フレーム反映される）。
     stage = createActingStage(rig, rigModel)
     if (actingEnabled) acting = new ActingDirector(calmStage(stage))
     face.hidden = true; rigCanvas.hidden = false

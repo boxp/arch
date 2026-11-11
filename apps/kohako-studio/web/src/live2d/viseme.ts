@@ -35,7 +35,13 @@ export function makeVisemes(text: string, duration: number): VisemeSequence {
 export function boundaryTime(seq: VisemeSequence, charIndex: number): number {
   return [...seq.morae].reverse().find(m => m.index <= charIndex)?.start ?? 0
 }
-export function visemeAt(seq: VisemeSequence, seconds: number): Viseme {
+/** 実際の読み上げ音声用の推定秒数（無音口パクの 10 秒上限は掛けない）。 */
+export function spokenSeconds(text: string): number {
+  return Math.max(1.5, [...text.replace(/\s+/g, '')].length / 8)
+}
+/** live: 実音声が続く間は推定時間を過ぎても口形列を繰り返し、終了・停止イベントで閉じる（boundary の無い音声向け）。 */
+export function visemeAt(seq: VisemeSequence, seconds: number, live = false): Viseme {
+  if (live && seq.duration > 0 && seconds >= seq.duration) seconds %= seq.duration
   if (seconds < 0 || seconds >= seq.duration) return shapes.closed
   const index = seq.morae.findIndex(m => seconds >= m.start && seconds < m.end)
   if (index < 0) return shapes.closed

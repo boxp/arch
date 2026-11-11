@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { boundaryTime, makeVisemes, visemeAt } from './viseme'
+import { boundaryTime, makeVisemes, spokenSeconds, visemeAt } from './viseme'
 describe('text visemes', () => {
   it('distinguishes vowels and closes at the end', () => {
     const seq = makeVisemes('いうお', 3)
@@ -17,5 +17,13 @@ describe('text visemes', () => {
   it('resynchronizes to a character index', () => {
     const seq = makeVisemes('あいう', 3)
     expect(visemeAt(seq, boundaryTime(seq, 2) + 0.2).vowel).toBe('u')
+  })
+  it('keeps moving past the estimate while real speech continues (no 10s cap)', () => {
+    const text = 'あ'.repeat(160)
+    expect(spokenSeconds(text)).toBe(20)
+    const seq = makeVisemes('あいう', 3)
+    expect(visemeAt(seq, 12.5).vowel).toBe('closed')
+    expect(visemeAt(seq, 12.5, true).vowel).toBe('a')
+    expect(visemeAt(seq, 13.5, true).vowel).toBe('i')
   })
 })
