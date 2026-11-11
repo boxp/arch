@@ -1,4 +1,4 @@
-type WindowState = 'ok' | 'near_limit' | 'exhausted' | 'stale' | 'expired' | 'not_provided' | 'unobserved' | 'unavailable'
+type WindowState = 'ok' | 'near_limit' | 'exhausted' | 'stale' | 'freshness_unknown' | 'expired' | 'not_provided' | 'unobserved' | 'unavailable'
 type Window = { name: string; label: string; state: WindowState; usedPercent: number | null; resetsAt: string | null; observedAt: string | null; status: string | null }
 type Pool = { id: string; label: string; agents: string[]; windows: Window[]; state?: 'not_provided' | 'not_applicable'; note?: string }
 const definitions = [
@@ -35,7 +35,7 @@ export function parseQuota(text: string, now: number) {
     const value = get('window_used_percent', match), reset = get('window_resets_at_seconds', match), observed = get('window_observed_timestamp_seconds', match), expired = get('window_expired', match)
     const status = series.find(s => s.metric === 'ai_subscription_window_status' && s.value === 1)?.labels.status ?? null
     w.usedPercent = value ?? null; w.resetsAt = iso(reset); w.observedAt = iso(observed); w.status = status
-    w.state = present === 0 ? 'not_provided' : !series.length ? 'unobserved' : expired === 1 || (reset !== undefined && reset * 1000 <= now) ? 'expired' : status === 'rejected' ? 'exhausted' : observed !== undefined && observed * 1000 < now - 86400000 ? 'stale' : status === 'allowed_warning' || (value !== undefined && value >= 90) ? 'near_limit' : value !== undefined ? 'ok' : 'unobserved'
+    w.state = present === 0 ? 'not_provided' : !series.length ? 'unobserved' : expired === 1 || (reset !== undefined && reset * 1000 <= now) ? 'expired' : status === 'rejected' ? 'exhausted' : observed === undefined || !Number.isFinite(observed) ? (value !== undefined || status !== null ? 'freshness_unknown' : 'unobserved') : observed * 1000 < now - 86400000 ? 'stale' : status === 'allowed_warning' || (value !== undefined && value >= 90) ? 'near_limit' : value !== undefined ? 'ok' : 'unobserved'
   }
   const up = (provider: string) => { const n = get('source_up', { provider }); return n === undefined ? null : n === 1 }
   return { state: 'ok' as const, fetchedAt: new Date(now).toISOString(), generatedAt: iso(get('generated_timestamp_seconds')), fileAgeSeconds: get('metrics_file_age_seconds') ?? null, sourceUp: { claude: up('claude'), codex: up('codex') }, pools: result }

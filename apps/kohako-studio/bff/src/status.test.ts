@@ -16,14 +16,14 @@ const board = (items: object[], truncated = false) => ({ schema: 'kohako-board/v
 it('parses real exposition, absent present series, and fixed pools', () => {
   const q = parseQuota(metrics, now); expect(q.pools.map(p => p.id)).toEqual(['claude_shared', 'claude_fable', 'claude_opus', 'codex_shared', 'localllm'])
   expect(q.pools[0].windows[0].state).toBe('not_provided'); expect(q.pools[0].windows[0].usedPercent).toBeNull()
-  expect(q.pools[0].windows[1]).toMatchObject({ state: 'ok', usedPercent: 67 }); expect(q.pools[3].windows[0]).toMatchObject({ state: 'ok', usedPercent: 59 })
+  expect(q.pools[0].windows[1]).toMatchObject({ state: 'ok', usedPercent: 67 }); expect(q.pools[3].windows[0]).toMatchObject({ state: 'freshness_unknown', usedPercent: 59, observedAt: null })
 })
 it('classifies stale, expired, rejected and ignores invalid enum labels', () => {
   const w = (suffix: string, at = now) => parseQuota(metrics + '\n' + suffix, at).pools[3].windows[0]
-  expect(w('', now + 90000000).state).toBe('ok') // no observation timestamp
+  expect(w('', now + 90000000).state).toBe('freshness_unknown') // no observation timestamp: never shown as ok
   expect(w('ai_subscription_window_observed_timestamp_seconds{provider="codex",limit="primary",name="primary",window="7d"} 1794000000').state).toBe('stale')
   expect(w('ai_subscription_window_expired{provider="codex",limit="primary",name="primary",window="7d"} 1').state).toBe('expired')
-  expect(w('ai_subscription_window_status{provider="codex",limit="primary",name="primary",window="7d",status="rejected"} 1').state).toBe('ok') // first active status is allowed
+  expect(w('ai_subscription_window_status{provider="codex",limit="primary",name="primary",window="7d",status="rejected"} 1').state).toBe('freshness_unknown') // first active status is allowed, but observation time is missing
   expect(parseQuota(metrics.replace('status="allowed"', 'status="rejected"'), now).pools[3].windows[0].state).toBe('exhausted')
   expect(parseQuota(metrics.replace('window="7d"} 59', 'window="bad"} 59'), now).pools[3].windows[0].usedPercent).toBeNull()
 })
