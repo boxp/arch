@@ -145,12 +145,36 @@ export function addQuad(p: PartsPlayer, uvs: Float32Array, texture: number): { i
   p.meshes.push({ vertices: 4, uvs, indices, texture, uvBuffer, indexBuffer, blend: 0, alphaBlend: 0, culling: false, fixed: true, masks: [], invertMask: false })
   return { index: p.meshes.length - 1, pointer }
 }
+/**
+ * cols×rows の格子の追加メッシュ（UV は 0〜1 の等間隔）。1 枚の絵の一部だけを滑らかに曲げるために使う（挨拶の手振り、BOXP-476）。
+ * 頂点は行優先で (cols+1)×(rows+1) 個、呼び出し側が毎フレーム pointer へ書く。
+ */
+export function addGrid(p: PartsPlayer, cols: number, rows: number, texture: number): { index: number; pointer: number; uv: [number, number][] } {
+  const gl = p.gl, uv: [number, number][] = [], tri: number[] = []
+  for (let r = 0; r <= rows; r++) for (let c = 0; c <= cols; c++) uv.push([c / cols, r / rows])
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) { const a = r * (cols + 1) + c, b = a + 1, d = a + cols + 1, e = d + 1; tri.push(a, b, e, a, e, d) }
+  const uvs = new Float32Array(uv.flat()), indices = new (p.indexType === gl.UNSIGNED_SHORT ? Uint16Array : Uint32Array)(tri), pointer = p.rt.p2l_alloc(uv.length * 8), uvBuffer = gl.createBuffer(), indexBuffer = gl.createBuffer()
+  gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer); gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW)
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW)
+  p.meshes.push({ vertices: uv.length, uvs, indices, texture, uvBuffer, indexBuffer, blend: 0, alphaBlend: 0, culling: false, fixed: true, masks: [], invertMask: false })
+  return { index: p.meshes.length - 1, pointer, uv }
+}
 /** メッシュと同じ形の追加メッシュ（頂点は元のメッシュと共有する）。 */
 export function addShared(p: PartsPlayer, base: number, split: Split, texture: number): number {
   const gl = p.gl, info = p.meshes[base] as Mesh, indexBuffer = gl.createBuffer()
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, info.indices, gl.STATIC_DRAW)
   p.meshes.push({ vertices: info.vertices, uvs: split.uvs, indices: info.indices, texture, uvBuffer: split.uvBuffer, indexBuffer, blend: 0, alphaBlend: 0, culling: false, fixed: true, masks: [], invertMask: false })
   return p.meshes.length - 1
+}
+/**
+ * メッシュの元の絵（テクスチャ・UV・三角形）を、別の頂点バッファで描く追加メッシュ。腕セットの切替で、待機の腕を
+ * 新しい腕の裏にフェードで残すために使う（BOXP-476 TD-06 Y'）。頂点は呼び出し側が pointer へ毎フレーム書く。
+ */
+export function addGhost(p: PartsPlayer, base: number): { index: number; pointer: number } {
+  const gl = p.gl, info = p.meshes[base] as Mesh, indexBuffer = gl.createBuffer(), indices = info.indices.slice(), pointer = p.rt.p2l_alloc(info.vertices * 8)
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW)
+  p.meshes.push({ vertices: info.vertices, uvs: info.uvs, indices, texture: info.texture, uvBuffer: info.uvBuffer, indexBuffer, blend: info.blend ?? 0, alphaBlend: info.alphaBlend ?? 0, culling: info.culling ?? false, fixed: true, masks: info.masks ?? [], invertMask: info.invertMask ?? false })
+  return { index: p.meshes.length - 1, pointer }
 }
 export function addTexture(p: PartsPlayer, texture?: WebGLTexture): number { p.textures.push(texture); return p.textures.length - 1 }
 export async function loadTexture(gl: WebGLRenderingContext, url: string): Promise<WebGLTexture> {
