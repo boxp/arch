@@ -1,0 +1,5 @@
+export const defaults = { touch: true, lines: true, intensity: 'normal', pinned: false, reducedMotion: false } as const
+export type Prefs = { touch: boolean; lines: boolean; intensity: 'normal' | 'subtle'; pinned: boolean; reducedMotion: boolean }
+export function parsePrefs(raw: string | null): Prefs {
+  try { const p: unknown = JSON.parse(raw ?? '{}'); if (!p || typeof p !== 'object' || Array.isArray(p)) return { ...defaults }; const v = p as Record<string, unknown>; return { touch: typeof v.touch === 'boolean' ? v.touch : defaults.touch, lines: typeof v.lines === 'boolean' ? v.lines : defaults.lines, intensity: v.intensity === 'subtle' || v.intensity === 'normal' ? v.intensity : defaults.intensity, pinned: typeof v.pinned === 'boolean' ? v.pinned : defaults.pinned, reducedMotion: typeof v.reducedMotion === 'boolean' ? v.reducedMotion : defaults.reducedMotion } } catch { return { ...defaults } }
+}
