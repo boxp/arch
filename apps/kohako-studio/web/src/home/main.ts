@@ -384,8 +384,11 @@ for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) record.ad
 // ---- ふれあい ----
 const limiter = new TouchLimiter(), touchBatcher = new TouchBatcher()
 let touchActive = false, touchDebounce = 0
+// 会話中（考え中・読み上げ中・聞き取り中・録音中/録音開始中）や承認待ち・失敗・未接続では接触 event を Hermes へ送らない
+const CONVERSING: State[] = ['thinking', 'speaking', 'listening', 'approval', 'failed', 'offline']
+function touchSendable(): boolean { return prefs.lines && enabled && !busy && !unconfirmed && !netDown && !recording && !starting && !CONVERSING.includes(state) }
 async function sendTouch() {
-  const batch = touchBatcher.take(Date.now(), prefs.lines && enabled && !busy && !unconfirmed && !netDown && !['approval', 'failed', 'offline'].includes(state))
+  const batch = touchBatcher.take(Date.now(), touchSendable())
   if (!batch) return
   touchActive = true; show(state)
   const id = crypto.randomUUID(), expiresAt = Date.now() + 60000
@@ -398,7 +401,7 @@ async function sendTouch() {
       if (result.status !== 200 || !result.data) throw new Error('poll failed')
       const next = interpretRequest(result.data)
       if (next.state === 'done' && next.text) {
-        if (prefs.lines && !busy && !netDown && !['approval', 'failed', 'offline'].includes(state)) {
+        if (touchSendable()) {
           const before = reply.textContent ?? '', wasTouch = bubble.classList.contains('touch')
           setBubble(next.text, true)
           clearTimeout(touchLineTimer)
@@ -449,7 +452,7 @@ function touchReact(zone: Zone, kind: 'tap' | 'pat', via: 'pointer' | 'menu') {
   }
   const words = zone === 'hand' ? 'ハイタッチしました' : kind === 'pat' ? '頭をなでました' : '頭にタッチしました'
   el('touch-live').textContent = `${words}。`
-  if (prefs.lines && !busy && !touchActive && !unconfirmed && !netDown && !['approval', 'failed', 'offline'].includes(state)) {
+  if (!touchActive && touchSendable()) {
     touchBatcher.add(zone, kind, now)
     clearTimeout(touchDebounce)
     touchDebounce = window.setTimeout(() => void sendTouch(), 1200)
