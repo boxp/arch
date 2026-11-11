@@ -200,8 +200,8 @@ async function resumeInflight() {
   const saved = parseResume(tab.get(INFLIGHT_KEY), Date.now()); if (!saved || busy) { if (!saved) setInflight(null); return }
   let r: Awaited<ReturnType<typeof call>> | null = null
   try { r = await call(`requests/${saved.requestId}`) } catch { r = null }
-  // 200 に加え一時的な失敗（502 など）でも追跡を再開し、poll 側で問い合わせを続ける。
-  if (r && pollVerdict(r.status, !!r.data) !== 'terminal') { requestId = saved.requestId; accepted = true; busy = true; started = Date.now(); addHistory('お知らせ', '再読み込み前の依頼の続きを追っています。'); show('thinking'); void poll(requestId, saved.expiresAt); return }
+  // 200 に加え一時的な失敗（502 など）や通信例外でも追跡を再開し、poll 側で問い合わせを続ける（送信可能に戻すと再送で二重実行になり得る）。
+  if (!r || pollVerdict(r.status, !!r.data) !== 'terminal') { requestId = saved.requestId; accepted = true; busy = true; started = Date.now(); addHistory('お知らせ', '再読み込み前の依頼の続きを追っています。'); show('thinking'); void poll(requestId, saved.expiresAt); return }
   if (r && r.status === 404) { setInflight(null); addHistory('お知らせ', '前回の依頼は見つかりませんでした（新しい会話になった可能性があります）。') }
 }
 async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
