@@ -42,3 +42,28 @@ it('吹き出しを表示した後にだけ案内済みを保存し、表示前�
     expect(calls.indexOf('SHOW')).toBeLessThan(calls.indexOf('POST notifications/event-123456/announced'))
   } finally { vi.unstubAllGlobals() }
 })
+
+it('まとめて案内する時は対象全件を仮押さえし、他タブが押さえた通知は案内・保存しない', async () => {
+  const { initInbox } = await import('./inbox'), { vi } = await import('vitest')
+  const els: Record<string, any> = {}, el = () => ({ hidden: false, textContent: '', replaceChildren() {}, append() {}, addEventListener() {} })
+  const items = [1, 2, 3, 4, 5].map(n => ({ eventId: `event-00000${n}`, source: 'task-board-report', title: `題${n}`, body: '本文', receivedAt: new Date(Date.now() - n * 60_000).toISOString() }))
+  const otherTab = new Set(['event-000002', 'event-000004']) // 他タブが既に仮押さえ済み
+  const calls: string[] = [], shown: { id: string; more: number }[] = [], answers: boolean[] = []
+  vi.stubGlobal('document', { hidden: false, getElementById: (id: string) => els[id] ??= el(), addEventListener() {}, createElement: () => el() })
+  vi.stubGlobal('location', { search: '' }); vi.stubGlobal('navigator', {}); vi.stubGlobal('window', { setTimeout: () => 0, setInterval: () => 0 })
+  vi.stubGlobal('fetch', async (url: string, init?: { method?: string }) => {
+    const path = url.replace('/kohako/api/v1/', ''); calls.push(`${init?.method ?? 'GET'} ${path}`)
+    const id = path.split('/')[1]
+    const data = path === 'notifications' ? { items, unread: 5 } : path.endsWith('/announcing') ? { claimed: !otherTab.has(id) } : { announced: true }
+    return { status: 200, json: async () => data }
+  })
+  try {
+    const inbox = initInbox(() => false, { canAnnounce: () => answers.shift() ?? false, announce: (item, _a, more) => { shown.push({ id: item.eventId, more }) } })
+    await vi.waitFor(() => expect(calls).toContain('GET notifications'))
+    await new Promise(r => setTimeout(r, 10)); answers.push(true, true); inbox.retry()
+    await vi.waitFor(() => expect(calls.filter(c => c.endsWith('/announced'))).toHaveLength(3))
+    for (const n of [1, 2, 3, 4, 5]) expect(calls).toContain(`POST notifications/event-00000${n}/announcing`)
+    expect(shown).toEqual([{ id: 'event-000001', more: 2 }])
+    for (const id of otherTab) expect(calls).not.toContain(`POST notifications/${id}/announced`)
+  } finally { vi.unstubAllGlobals() }
+})

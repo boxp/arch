@@ -100,4 +100,6 @@ it('伏字と本文の短縮、空本文と minimal を扱う', async () => {
   expect(summarizePush({ ...item, title: 'BOXP-1: https://x.example/a を user@example.com へ /home/u/secret.txt abcdefghijklmnopqrstuvwxyz123' }).title).toBe('BOXP-1: (リンク) を (メール) へ (パス) (省略)')
   expect(summarizePush({ ...item, title: '**' }).title).toBe('コハコ')
   expect(summarizePush(item, true)).toEqual({ title: 'コハコ', body: 'コハコからお知らせがあります' })
+  // ハイフン等で区切った各部分が短くても、連続した英数字・記号列が20文字以上なら伏せる
+  expect(summarizePush({ ...item, body: 'token abc-def-ghi-jkl-mno-pqr-stu 次', title: 'BOXP-1: abc.def.ghi.jkl.mno.pqr' })).toEqual({ title: 'BOXP-1: (省略)', body: 'token (省略) 次' })
 })

@@ -4,8 +4,12 @@ export const stateLabel = (i: Pick<Item, 'readAt' | 'handledAt'>) => i.handledAt
 export function formatReceived(value: string, now = Date.now()) { const date = new Date(value), minutes = Math.max(0, Math.floor((now - date.getTime()) / 60000)); return `${date.toLocaleString('ja-JP')}（${minutes < 60 ? `${minutes}分` : `${Math.floor(minutes / 60)}時間`}前）` }
 export function notificationParam(search: string) { const id = new URLSearchParams(search).get('notification'); return id && /^[A-Za-z0-9._:-]{8,200}$/.test(id) ? id : null }
 export function pickAnnouncements(items: Item[], now = Date.now()) {
-  const candidates = items.filter(i => !i.readAt && !i.handledAt && !i.announcedAt && !i.reply && Number.isFinite(Date.parse(i.receivedAt)) && now - Date.parse(i.receivedAt) <= 86400_000 && Date.parse(i.receivedAt) <= now).sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt))
+  const candidates = announcementCandidates(items, now)
   return { item: candidates.length >= 4 ? candidates[candidates.length - 1] : candidates[0], more: candidates.length >= 4 ? candidates.length - 1 : 0 }
+}
+/** 案内対象の未提示通知（受信時刻の古い順） */
+export function announcementCandidates(items: Item[], now = Date.now()) {
+  return items.filter(i => !i.readAt && !i.handledAt && !i.announcedAt && !i.reply && Number.isFinite(Date.parse(i.receivedAt)) && now - Date.parse(i.receivedAt) <= 86400_000 && Date.parse(i.receivedAt) <= now).sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt))
 }
 type Announcer = { canAnnounce: () => boolean; announce: (item: Item, actions: { send: (kind: 'choice' | 'text', value: string) => Promise<boolean>; open: () => void; later: () => void }, more: number) => void }
 export function initInbox(follow: (requestId: string, text: string) => boolean = () => false, announcer?: Announcer) {
@@ -31,20 +35,25 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
   }
   async function tryAnnounce() {
     if (!announcer || waiting || active || opening || document.hidden || !announcer.canAnnounce()) return
-    const { item, more } = pickAnnouncements(items); if (!item) return
+    const picked = pickAnnouncements(items); if (!picked.item) return
     waiting = true
     try {
       // 表示前は短時間の仮押さえだけ（複数タブの同時表示防止）。案内済みは実際に表示した後に保存するので、
       // 仮押さえ後に表示できずページが閉じられても、期限後に再び案内される。
-      const result = await call(`notifications/${encodeURIComponent(item.eventId)}/announcing`, 'POST')
-      if (result.status !== 200) return
-      if (!result.data.claimed) { item.announcedAt = new Date().toISOString(); return } // 他タブが表示中/表示済み。次の一覧更新でサーバー状態に戻る
+      // まとめて案内する場合は対象全件を仮押さえし、このタブが押さえた通知だけを案内する（他タブとの二重表示防止）。
+      const targets = picked.more ? announcementCandidates(items) : [picked.item], claimed: Item[] = []
+      for (const t of targets) {
+        const result = await call(`notifications/${encodeURIComponent(t.eventId)}/announcing`, 'POST')
+        if (result.status !== 200) continue
+        if (result.data.claimed) claimed.push(t); else t.announcedAt = new Date().toISOString() // 他タブが表示中/表示済み。次の一覧更新でサーバー状態に戻る
+      }
+      if (!claimed.length) return
+      const item = picked.more ? claimed[claimed.length - 1] : claimed[0], more = picked.more ? claimed.length - 1 : 0
       if (document.hidden || opening || active || !announcer.canAnnounce() || items.find(i => i.eventId === item.eventId)?.readAt) return
       active = item.eventId; holdTimer = window.setTimeout(release, 20000)
       const status = document.getElementById('notice-status')!
       announcer.announce(item, { send: async (kind, value) => { const ok = await send(item, kind, value, status); if (ok) release(); return ok }, open: () => { opening = true; release(); void open(item.eventId).finally(() => { opening = false }) }, later: release }, more)
-      const shown = more ? items.filter(i => pickAnnouncements([i]).item) : [item]
-      for (const i of shown) { const r = await call(`notifications/${encodeURIComponent(i.eventId)}/announced`, 'POST'); if (r.status === 200) i.announcedAt = new Date().toISOString() }
+      for (const i of claimed) { const r = await call(`notifications/${encodeURIComponent(i.eventId)}/announced`, 'POST'); if (r.status === 200) i.announcedAt = new Date().toISOString() }
     } catch { /* 次回更新で再試行 */ } finally { waiting = false }
   }
   function render() {

@@ -15,7 +15,7 @@ export function summarizePush(item: Pick<Item, 'title' | 'body' | 'eventType'>, 
 }
 /** ロック画面に出してよい形へ: URL・メール・パス・長い英数字列（トークン等）を伏せ、Markdown記号を除く */
 export function redact(text: string) {
-  return text.replace(/https?:\/\/[^\s]+/gi, '(リンク)').replace(/[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '(メール)').replace(/(?:~\/[^\s]+|\/(?:[^\s/]+\/)+[^\s/]+)/g, '(パス)').replace(/[A-Za-z0-9_+\/=-]{20,}/g, '(省略)').replace(/[*`#>|]+/g, '').replace(/\s+/g, ' ').trim()
+  return text.replace(/https?:\/\/[^\s]+/gi, '(リンク)').replace(/[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '(メール)').replace(/(?:~\/[^\s]+|\/(?:[^\s/]+\/)+[^\s/]+)/g, '(パス)').replace(/[A-Za-z0-9_+\/=.:~-]{20,}/g, '(省略)').replace(/[*`#>|]+/g, '').replace(/\s+/g, ' ').trim()
 }
 export async function createPush(dir: string, opts: { subject: string; quietHours: string; minimal?: boolean; now?: () => number; sender?: typeof webPush.sendNotification }) {
   const keyPath = join(dir, 'vapid.json'), path = join(dir, 'push-subscriptions.json'), now = opts.now ?? Date.now
