@@ -143,3 +143,25 @@ it('shows a new approval and sends the new generation when the same prompt id ge
     expect(((await (await fetch(base + 'requests/owner-901')).json()) as any).approval?.approvalId ?? second.approval.approvalId).toBe(second.approval.approvalId)
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
 })
+it('validates and deduplicates touch, rejects concurrent work and automatically denies approval', async () => {
+  const calls: any[] = [], approvals: any[] = []; let settle: (v: any) => void = () => {}
+  const hermes = { run: (...args: any[]) => { calls.push(args); args[4]('run', { requestId: 'p', generation: 1, description: 'x', command: 'echo x', choices: ['once', 'deny'] }); return new Promise(r => { settle = r }) }, approve: async (...args: any[]) => { approvals.push(args); return 'ok' }, stop: async () => 'ok' } as unknown as ReturnType<typeof createHermes>
+  const server = createServer(createApp({ authenticate: async () => 'verifier', hermes }))
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
+    const post = (path: string, body: object) => fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    const body = { requestId: 'touch-123', kind: 'touch', touch: { zone: 'head', action: 'pat', count: 3 }, expiresAt: Date.now() + 60000 }
+    for (const touch of [{ ...body.touch, count: 0 }, { ...body.touch, count: 21 }, { ...body.touch, count: 1.5 }, { ...body.touch, action: 'other' }, { ...body.touch, zone: 'body' }, { ...body.touch, text: 'injection' }]) expect((await post('messages', { ...body, touch })).status).toBe(400)
+    expect((await post('messages', { ...body, text: 'injection' })).status).toBe(400)
+    expect((await post('messages', body)).status).toBe(202)
+    expect((await post('messages', body)).status).toBe(202)
+    expect((await post('messages', { ...body, touch: { ...body.touch, count: 2 } })).status).toBe(409)
+    expect((await post('messages', { ...body, requestId: 'touch-456' })).status).toBe(429)
+    expect(calls).toHaveLength(1); expect(calls[0][1]).toContain('頭を3回なでました'); expect(approvals).toEqual([['run', 'deny', 'p', 1]])
+    expect((await post('approvals', { requestId: body.requestId, approvalId: '0000000000000000', choice: 'once' })).status).not.toBe(200)
+    settle({ status: 'done', text: 'unsafe' }); await new Promise(r => setTimeout(r, 10))
+    const result = await (await fetch(base + 'requests/' + body.requestId)).json() as any
+    expect(result.status).toBe('failed'); expect(result.reply).toBeUndefined(); expect(result.approval).toBeUndefined()
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
+})
