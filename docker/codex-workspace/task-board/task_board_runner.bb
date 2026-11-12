@@ -6092,9 +6092,9 @@
     (let [path (fs/path (root) "generated-reclaim.edn")
           file? (fs/exists? path {:nofollow-links true})
           settings (if file? (read-edn-file path ::invalid) {})]
+      ;; Only an effective :on mode deletes; :dry-run, :off and invalid modes keep dist.
       (and (map? settings)
-           (not= :off (if (contains? settings :mode) (:mode settings)
-                          (when-not file? (generated-reclaim-mode))))
+           (= :on (generated-reclaim-mode))
            (true? (get settings :reuse-drop-dist true))))
     (catch Exception _ false)))
 

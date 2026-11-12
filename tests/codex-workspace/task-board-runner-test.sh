@@ -5808,7 +5808,7 @@ test_workspace_reuse_interplay() {
 
   # Verified dist is dropped on a public change unless disabled or unknown.
   local dist_case
-  for dist_case in enabled disabled unknown late-unknown lock mode-off invalid; do
+  for dist_case in enabled disabled unknown late-unknown lock mode-off mode-dry-run mode-invalid invalid; do
   tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"
   git -C "$tmp/source" remote set-url origin https://github.com/boxp/arch.git
   mkdir -p "$tmp/source/apps/kohako-studio/web/public"
@@ -5835,6 +5835,8 @@ test_workspace_reuse_interplay() {
   case "$dist_case" in
     disabled) printf '{:reuse-drop-dist false}\n' >"$tmp/state/generated-reclaim.edn" ;;
     mode-off) printf '{:mode :off}\n' >"$tmp/state/generated-reclaim.edn" ;;
+    mode-dry-run) printf '{:mode :dry-run}\n' >"$tmp/state/generated-reclaim.edn" ;;
+    mode-invalid) printf '{:mode :bogus}\n' >"$tmp/state/generated-reclaim.edn" ;;
     invalid) printf '{:reuse-drop-dist :invalid}\n' >"$tmp/state/generated-reclaim.edn" ;;
     unknown) printf notes >"$old/apps/kohako-studio/web/dist/notes.txt" ;;
   esac
