@@ -896,9 +896,11 @@ async function resumeUnconfirmed(pending: Outgoing) {
     addHistory('あなた', pending.text + (pending.attachmentNames ?? []).map(x => `\n📎 ${x}`).join('')); if (pending.attachments) { for (let i = chips.length - 1; i >= 0; i--) if (chips[i].id && pending.attachments.includes(chips[i].id!)) chips.splice(i, 1); renderChips() } addHistory('お知らせ', '再読み込み前の送信は受理済みでした。再送せずに結果を追います。'); show('thinking'); void poll(requestId); return
   }
   busy = false
+  // 照会を待つ間に利用者が控えと同じ本文を手入力したなら、それは別の発言。控えの写しとして扱うと、次の再認証で退避されず失われる。
+  const handTyped = () => typedSinceLoad && composerEcho !== message.value
   // 401/403 は認証切れ。控えを残したまま未認証表示にして送信を止め、再ログイン後の再接続で受理状況を確認し直す。
-  if (lookup && (lookup.status === 401 || lookup.status === 403) && unconfirmed === pending) { if (!message.value) putComposer(pending.text); fail(lookup.status, lookup.data); return }
-  if (unconfirmed === pending) { const kept = !!message.value && message.value !== pending.text; if (!kept) putComposer(pending.text); addHistory('お知らせ', (kept ? `入力欄の文は残しています。受理を確認できなかった前回の送信「${pending.text}」は控えに残っています。` : '') + '再読み込み前の送信の受理を確認できませんでした。もう一度送信すると、同じ受付番号で確認してから送ります（二重実行はしません）。') }
+  if (lookup && (lookup.status === 401 || lookup.status === 403) && unconfirmed === pending) { if (!message.value || (message.value === pending.text && !handTyped())) putComposer(pending.text); fail(lookup.status, lookup.data); return }
+  if (unconfirmed === pending) { const kept = !!message.value && (message.value !== pending.text || handTyped()); if (!kept) putComposer(pending.text); addHistory('お知らせ', (kept ? `入力欄の文は残しています。受理を確認できなかった前回の送信「${pending.text}」は控えに残っています。` : '') + '再読み込み前の送信の受理を確認できませんでした。もう一度送信すると、同じ受付番号で確認してから送ります（二重実行はしません）。') }
   show(state)
 }
 
