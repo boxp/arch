@@ -767,7 +767,8 @@
   [acc event home-id state copy]
   (let [{:keys [ok? permanent? status home-status home-push error]} (send-home! event home-id copy)
         attempts (inc (:attempts state 0))
-        base {:event-id home-id :attempts attempts :last-http-status status :updated-at (now-str)}]
+        base (cond-> (merge state {:event-id home-id :attempts attempts :last-http-status status :updated-at (now-str)})
+               (= "home" (:primary copy)) (assoc :primary "home"))]
     (cond
       ok? (do (write-event! (home-dir) (cond-> (assoc base :status :sent :home-status home-status :sent-at (now-str)) (seq home-push) (assoc :home-push home-push)))
               (log! (str "home inbox " home-id " http=" status " status=" home-status
@@ -814,12 +815,106 @@
       skip-reason (do (write-event! (home-dir) {:event-id home-id :status :skipped :reason skip-reason :updated-at (now-str)}) acc)
       :else acc)))
 
+
+(defn reminder-url [] (System/getenv "CODEX_TASK_BOARD_HOME_REMINDER_URL"))
+
+(defn home-status [home-id]
+  (try
+    (let [token (str/trim (slurp (home-token-path)))
+          url (str (str/replace (home-url) #"/ingest$" "/status") "?ids=" (java.net.URLEncoder/encode home-id "UTF-8"))
+          response (http/get url {:headers {"authorization" (str "Bearer " token)} :throw false
+                                  :timeout (* 1000 (env-long "CODEX_TASK_BOARD_EVENT_HTTP_TIMEOUT_SECONDS" "15"))})
+          item (get-in (json/parse-string (:body response)) ["items" home-id])]
+      (when (and (<= 200 (:status response) 299) (map? item)
+                 (every? boolean? (map item ["exists" "read" "handled" "replied"]))) item))
+    (catch Exception _ nil)))
+
+(defn flush-home-reminder! [event]
+  (let [home-id (str (:event-id event) ".report")
+        copy (delivered-copy event "")
+        state (read-home-state home-id)]
+    ;; 催促・fallback は送信から一定時間内の通知だけ。保存期限で状態が prune された古い通知へ再送しない。
+    (when (and (= "home" (:primary copy)) (not (str/blank? (reminder-url)))
+               (< (copy-age-seconds event copy) (* 3600 (env-long "CODEX_TASK_BOARD_HOME_REMINDER_MAX_AGE_HOURS" "24")))
+               (not (contains? #{:sent :failed :unneeded} (:reminder-status state))))
+      (let [state (assoc (or state {:event-id home-id}) :primary "home")
+            stored? (and (= :sent (:status state)) (contains? #{"stored" "duplicate"} (:home-status state)))
+            ;; home URL が外れた後は家への転送も状態確認もできないため、家主配信の通知は本文付き fallback で必ず Telegram へ出す。
+            home-gone? (str/blank? (home-url))
+            fallback? (or home-gone?
+                          (and (not stored?) (or (= :failed (:status state))
+                               (>= (copy-age-seconds event copy) (* 60 (env-long "CODEX_TASK_BOARD_HOME_FALLBACK_MINUTES" "20"))))))
+            due? (and stored? (:sent-at state)
+                      (>= (seconds-since (:sent-at state)) (* 60 (env-long "CODEX_TASK_BOARD_HOME_REMINDER_MINUTES" "30"))))]
+        (when (and (not (quiet-now?)) (or fallback? due?))
+          (let [status (when (and due? (not home-gone?)) (home-status home-id))
+                checks (inc (:reminder-check-attempts state 0))
+                checked (cond-> state due? (assoc :reminder-check-attempts checks))
+                ;; 家から通知が消えている(exists=false)なら本文なしの催促では内容が分からないため本文付き fallback にする。
+                missing? (and status (false? (get status "exists")))
+                fallback? (or fallback? missing?)
+                done? (and status (not missing?) (some true? (map status ["read" "handled" "replied"])))
+                ready? (or fallback? status (>= checks (home-max-attempts)))]
+            (cond
+              done? (write-event! (home-dir) (assoc checked :reminder-status :unneeded :updated-at (now-str)))
+              (not ready?) (write-event! (home-dir) (assoc checked :updated-at (now-str)))
+              :else
+              (let [kind (if fallback? "fallback" "reminder")
+                    id (str (:event-id event) "." kind)
+                    url (str "https://kohako-home.b0xp.io/?notification=" (java.net.URLEncoder/encode home-id "UTF-8"))
+                    title (:title (home-payload event home-id copy))
+                    message (if fallback? (str "【家へ届かなかったためTelegramで送ります】\n" (:text copy))
+                                (str "【家の通知】" title " — 家の受信箱に未読の通知があります。" url))
+                    body (json/generate-string {:kind kind :event_id (:event-id event) :ticket_id (:ticket-id event)
+                                                :title title :text message :url url})
+                    attempts (inc (:reminder-attempts state 0))
+                    ok? (try (when-not (str/blank? (webhook-secret))
+                               (let [resp (http/post (reminder-url) {:headers (assoc (signed-headers (webhook-secret) body)
+                                                                                   "x-request-id" id "x-delivery-id" id)
+                                                                     :body body :throw false
+                                                                     :timeout (* 1000 (env-long "CODEX_TASK_BOARD_EVENT_HTTP_TIMEOUT_SECONDS" "15"))})]
+                                 (<= 200 (:status resp) 299)))
+                             (catch Exception _ false))
+                    result (cond ok? :sent (>= attempts (home-max-attempts)) :failed :else :retry)]
+                (write-event! (home-dir) (assoc checked :reminder-status result :reminder-kind kind
+                                                :reminder-attempts attempts :updated-at (now-str)))
+                (when (= result :failed) (log! (str "home reminder gave up on " home-id)))))))))))
+
+;; dispatcher と Hermes は別 PVC で、Obsidian Sync が同期するのは .md なので JSON 本文でも拡張子は .md にする。
+(defn home-reminder-ready-path [] (str (fs/path (vault) "Projects/task-board-events/home-reminder-ready.md")))
+
+(defn publish-home-reminder-ready!
+  "Hermes の配信 gate は、この heartbeat が新しく reminder_ready=true の間だけ家主配信を有効にする。
+  催促 URL/secret が無い dispatcher では false を書き、gate は Telegram 主配信のまま(fail safe)。"
+  []
+  (let [ready? (and (not (str/blank? (home-url))) (not (str/blank? (reminder-url))) (not (str/blank? (webhook-secret))))
+        path (home-reminder-ready-path)
+        current (try (json/parse-string (slurp path) true) (catch Exception _ nil))
+        refresh (* 60 (env-long "CODEX_TASK_BOARD_HOME_READY_REFRESH_MINUTES" "10"))]
+    (when (or (not= ready? (:reminder_ready current))
+              (not (:checked_at current))
+              (>= (or (try (seconds-since (:checked_at current)) (catch Exception _ nil)) refresh) refresh))
+      (try
+        (fs/create-dirs (fs/parent path))
+        (let [temporary (str path ".tmp")]
+          (spit temporary (json/generate-string {:reminder_ready ready? :checked_at (now-str)}))
+          (fs/move temporary path {:replace-existing true :atomic-move true}))
+        (catch Exception e (log! (str "home reminder heartbeat failed: " (.getMessage e))))))
+    ready?))
+
 (defn flush-home!
   "Copy each event's Telegram-delivered report and reconciliation notice to the home inbox once."
   []
+  ;; home URL が外れた時も heartbeat を false に更新し、Hermes gate を即 Telegram 主配信へ戻す。
+  (publish-home-reminder-ready!)
   (if (str/blank? (home-url))
-    {:home-sent 0}
-    (reduce
+    ;; 家主配信で受付済み(Telegram未送信)の通知を取りこぼさないよう、URL が外れても fallback は走らせる。
+    (do (doseq [event (sort-by :created-at (all-events)) :when (:event-id event)]
+          (try (flush-home-reminder! event)
+               (catch Exception e (log! (str "home fallback failed for " (:event-id event) ": " (.getMessage e))))))
+        {:home-sent 0})
+    (do
+     (reduce
      (fn [acc event]
        (if-let [id (:event-id event)]
          (let [receipt (receipt-state event)
@@ -833,12 +928,14 @@
                                 (= receipt "silent") "silent"
                                 (> age (home-quiet-max-age-seconds)) "no-telegram-copy")
                notice-reason (when (> age (home-quiet-max-age-seconds)) "no-telegram-copy")]
-           (-> acc
-               (flush-home-copy event (str id ".notice") ".notice" notice-reason)
-               (flush-home-copy event (str id ".report") "" no-copy-reason)))
+           (let [result (-> acc
+                            (flush-home-copy event (str id ".notice") ".notice" notice-reason)
+                            (flush-home-copy event (str id ".report") "" no-copy-reason))]
+             (flush-home-reminder! event)
+             result))
          acc))
      {:home-sent 0}
-     (sort-by :created-at (all-events)))))
+     (sort-by :created-at (all-events))))))
 
 
 (defn cron-copy-dir [] (str (fs/path (vault) "Projects/cron-deliveries/delivered-copies")))

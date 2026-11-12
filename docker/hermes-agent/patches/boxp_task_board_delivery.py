@@ -171,7 +171,59 @@ def vault_receipt(vault, event, state, classification):
 
 
 
-def delivered_copy(vault, event, content, classification, kind=""):
+def requested_routing(vault=VAULT):
+    try:
+        for line in (Path(vault).parent / "Projects/task-board-events/delivery-routing.md").read_text().splitlines():
+            match = re.fullmatch(r"\s*task-board:\s*(\S+)\s*", line)
+            if match:
+                return match[1] if match[1] in {"home", "telegram"} else "telegram"
+    except (OSError, UnicodeError):
+        pass
+    return "telegram"
+
+
+REMINDER_ROUTE = "kohako-home-reminder"
+
+
+def reminder_route_registered(path=None):
+    """The Telegram reminder/fallback route must be registered and enabled here."""
+    try:
+        if path is None:
+            from hermes_constants import get_hermes_home
+            path = get_hermes_home() / "webhook_subscriptions.json"
+        route = json.loads(Path(path).read_text()).get(REMINDER_ROUTE)
+        return isinstance(route, dict) and route.get("enabled", True) is not False
+    except Exception:
+        return False
+
+
+def reminder_dispatcher_ready(vault=VAULT):
+    """The dispatcher publishes a heartbeat only while its reminder URL and secret are set."""
+    try:
+        path = Path(vault).parent / "Projects/task-board-events/home-reminder-ready.md"
+        ready = json.loads(path.read_text())
+        checked = datetime.fromisoformat(str(ready["checked_at"]).replace("Z", "+00:00"))
+        limit = int(os.environ.get("BOXP_TASK_BOARD_HOME_READY_MAX_AGE_SECONDS", "3600"))
+        age = (clock() - checked).total_seconds()
+        return ready.get("reminder_ready") is True and -300 <= age <= limit
+    except Exception:
+        return False
+
+
+def delivery_routing(vault=VAULT, subscriptions=None):
+    """Home becomes primary only while the unread reminder and Telegram fallback can run.
+    Without the dispatcher heartbeat or the registered reminder route, a home-primary
+    report would never reach Telegram, so the gate stays on Telegram (fail safe)."""
+    requested = requested_routing(vault)
+    if requested != "home":
+        return requested
+    if reminder_route_registered(subscriptions) and reminder_dispatcher_ready(vault):
+        return "home"
+    logger.warning("task-board home routing requested but reminder/fallback is not ready; using telegram")
+    return "telegram"
+
+
+def delivered_copy(vault, event, content, classification, kind="", primary=None):
     """Save the text Telegram received. A reconciliation notice uses its own
     ``.notice`` copy so that a later formal report of the same event is never
     shadowed by (or deduplicated against) the notice in the home inbox."""
@@ -182,8 +234,11 @@ def delivered_copy(vault, event, content, classification, kind=""):
         fd, temporary = tempfile.mkstemp(prefix=".copy-", dir=directory)
         try:
             with os.fdopen(fd, "w") as stream:
-                json.dump({"event": event, "classification": classification, "text": content,
-                           "sent_at": clock().isoformat()}, stream)
+                payload = {"event": event, "classification": classification, "text": content,
+                           "sent_at": clock().isoformat()}
+                if primary:
+                    payload["primary"] = primary
+                json.dump(payload, stream)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, directory / (event + kind + ".md"))
@@ -447,6 +502,13 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
                     os.close(directory)
 
             save("intent")
+            if (delivery_routing(vault) == "home" and suffix != ".notice.json"
+                    and not content.startswith(NOTICE) and classification != "unresolved"
+                    and delivered_copy(vault, event, content, classification, primary="home")):
+                save("sent", channel="home", copied=True)
+                vault_receipt(vault, event, "sent", classification)
+                logger.info("task-board delivery event=%s classification=%s state=sent channel=home", event, classification)
+                return SendResult(success=True)
             try:
                 sent = await adapter._deliver_to(delivery, chat_id, content)
             except Exception:

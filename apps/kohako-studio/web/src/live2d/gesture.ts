@@ -336,6 +336,14 @@ export const irisScale = (amount: number): number => 1 - 0.2 * Math.max(0, Math.
 
 export const closedEyeTarget = (emotion: Emotion): number => emotion === 'smileClosed' ? 1 : 0
 
+// BOXP-525: なでの閉眼は表情とは独立して滑らかに戻す。
+export function petEyeStep(current: number, on: boolean, dt: number): number {
+  if (dt <= 0) return current
+  const value = Math.max(0, Math.min(1, current))
+  return Math.max(0, Math.min(1, value + ((on ? 1 : 0) - value) * (1 - Math.exp(-dt / (on ? 0.115 : 0.18)))))
+}
+export const eyeOpenFor = (blinkOpen: number, emotionClosed: number, petClosed: number): number => Math.min(blinkOpen, 1 - Math.max(emotionClosed, petClosed))
+
 export function createActingStage(player: Player, model: RigModel): ActingStage & { report(): Record<string, unknown> } {
   if (model.id !== 'kohako-full-v11r') {
     const names: Partial<Record<Emotion, string>> = { smile: 'smile', smileClosed: 'smile', shy: 'shy', troubled: 'sad', surprised: 'surprised', serious: 'angry' }
@@ -344,6 +352,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const p = player as Internal, rt = p.rt, rests = new Map<number, Float32Array>(), done = new Map<number, number>()
   let facePatch: Record<string, unknown>
   try { facePatch = patchFaceTexture(p as unknown as Parameters<typeof patchFaceTexture>[0]) } catch (e) { facePatch = { patched: false, error: e instanceof Error ? e.message : String(e) } }
+  let petEyes = false, petClosed = 0
   let blush = 0, eyeClosed = 0, surprised = 0, troubled = 0, speaking = false, mouthOverride = false
   let generation = 0, target = faces.neutral, face = { ...faces.neutral }, clip: Clip | null = null, clipName: Gesture = 'none', clipTime = 0, emotion: Emotion = 'neutral'
   let pose: ReturnType<typeof sample> = { right: REST, left: REST, body: NO_BODY }, armBlend = 0
@@ -605,7 +614,9 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       p.setParameter(PARAMS[key], headCurrent[key])
     }
     blush = lerp(blush, emotion === 'shy' ? 1 : 0, k)
+    const wasClosed = Math.max(eyeClosed, petClosed)
     eyeClosed = lerp(eyeClosed, closedEyeTarget(emotion), k)
+    petClosed = petEyeStep(petClosed, petEyes, dt)
     surprised = lerp(surprised, emotionWeight(emotion, 'surprised', 1), k)
     troubled = lerp(troubled, emotionWeight(emotion, 'troubled', 1), k)
     ;(facePatch.setBlush as ((amount: number, wet: number) => void) | undefined)?.(blush, troubled)
@@ -613,13 +624,21 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     const updateMouth = !speaking && (surprised > 0.001 || mouthOverride)
     if (updateMouth) p.lipSync(surprised > 0.001 ? 0.28 * surprised : 0)
     mouthOverride = !speaking && surprised > 0.001
-    baseUpdate(dt)
-    // 自動まばたきの評価後に閉眼を適用し、笑顔の保持中も目を閉じる。
-    if (eyeClosed > 0.001) {
-      p.setParameter('ParamEyeLOpen', 1 - eyeClosed)
-      p.setParameter('ParamEyeROpen', 1 - eyeClosed)
+    // BOXP-525: 待機クリップ停止中も前フレームの閉眼値を引きずらず、まばたきを再評価する。
+    if (Math.max(wasClosed, eyeClosed, petClosed) > 0.001) {
+      p.setParameter('ParamEyeLOpen', 1); p.setParameter('ParamEyeROpen', 1)
     }
-    if (eyeClosed > 0.001) rt.p2l_update_stages(p.rig, 0, 0)
+    baseUpdate(dt)
+    // BOXP-525: 自動まばたきの途中でも目が逆に開かないよう閉眼を重ねる。
+    const closed = Math.max(eyeClosed, petClosed)
+    if (closed > 0.001) {
+      const values = typeof p.parameterValues === 'function' ? p.parameterValues() : []
+      for (const id of ['ParamEyeLOpen', 'ParamEyeROpen']) {
+        const index = p.parameters?.indexOf(id) ?? -1, blink = values[index]
+        p.setParameter(id, typeof blink === 'number' && Number.isFinite(blink) ? eyeOpenFor(blink, eyeClosed, petClosed) : 1 - closed)
+      }
+      rt.p2l_update_stages(p.rig, 0, 0)
+    }
   }
   // 今の腕を待機の腕へフェードで戻す（姿勢は止めたまま）。then はフェード後に呼ぶ。
   function switchOut(then?: () => void) {
@@ -640,6 +659,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   return {
     setViseme(v) { speaking = v !== null; visemeWant = v ? Math.max(0.78, Math.min(1.15, v.width)) : 1 },
     setPetOffset(v) { petOffset = v },
+    setPetEyes(on) { petEyes = on },
     setEmotion(next) { emotion = next; target = faces[next]; player.expression(target.expression && player.expressions.includes(target.expression) ? target.expression : null) },
     playGesture(next) {
       if (next === 'none') return
@@ -661,6 +681,6 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       clip = clips[next]; clipName = next; clipTime = plan.at; armBlend = 1
     },
     reset() { emotion = 'neutral'; target = faces.neutral; player.expression(null); if (switched || sw) { switchOut(); return } if (clip) startFade(); clip = null; clipName = 'none' },
-    report: () => ({ supported: true, parts: partsStatus, facePatch, emotion, gesture: clipName, armBlend, armSwitch: sw ? { phase: sw.phase, t: sw.t, posedAlpha } : null, switched, haltSet: haltOn(), greetSet: greetSet && haltOn(), guideSet: guideOn(), shySet: shyOn(), clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
+    report: () => ({ supported: true, petEyes: petClosed, parts: partsStatus, facePatch, emotion, gesture: clipName, armBlend, armSwitch: sw ? { phase: sw.phase, t: sw.t, posedAlpha } : null, switched, haltSet: haltOn(), greetSet: greetSet && haltOn(), guideSet: guideOn(), shySet: shyOn(), clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
   }
 }
