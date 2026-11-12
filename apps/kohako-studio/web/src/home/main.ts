@@ -25,7 +25,7 @@ import { acts, bboxOf, classifyTouch, HAND_MESHES, HEAD_MESHES, inside, toScreen
 import { parsePrefs, type Prefs } from './prefs'
 import { blendLook, followWeightFor, lookTarget, smoothLook, type Look } from './lookfollow'
 import { parseResume, parseUnconfirmed, pollVerdict, type Inflight } from './resume'
-import { addErrorText, holdLabel, MessageQueue, QUEUE_MAX_ITEMS, type HoldReason, type QueueItem } from './queue'
+import { addErrorText, holdLabel, MessageQueue, QUEUE_MAX_CHARS, QUEUE_MAX_ITEMS, type HoldReason, type QueueItem } from './queue'
 import { classifyFailure, parseReauth, recentlyReloaded, REAUTH_KEY, serializeReauth } from './reauth'
 
 // BOXP-510 TD-03: 家を開いた時点で SW を登録し、PWA としてインストール可能にする（Push と同じ SW・scope）。
@@ -62,6 +62,9 @@ applyPrefs()
 // ---- 会話の状態（Studio と同じ） ----
 let state: State = 'offline', enabled = false, stt = false, requestId = '', started = 0, approvalId = '', approvalExpires = 0, busy = false, accepted = false, netDown = false
 let authExpired = false, intentionalReload = false
+// 入力欄の文が受理未確認の控えを画面が戻したもの（ご主人さまの別の発言ではない）なら、その本文。手で入力したら外す。
+let composerEcho: string | null = null
+const putComposer = (text: string) => { message.value = text; composerEcho = unconfirmed && unconfirmed.text === text ? text : null }
 const reconnect = el<HTMLButtonElement>('reconnect')
 const rawReauth = tab.get(REAUTH_KEY)
 let reauth = parseReauth(rawReauth, Date.now())
@@ -236,7 +239,7 @@ function refreshScene(force = false) {
 const sceneNow = () => body.dataset.scene as Scene
 window.addEventListener('resize', () => refreshScene())
 window.visualViewport?.addEventListener('resize', () => refreshScene())
-message.addEventListener('input', () => { typingUntil = Date.now() + 2000; message.style.height = 'auto'; message.style.height = `${Math.min(message.scrollHeight, window.innerHeight * 0.3)}px` })
+message.addEventListener('input', () => { composerEcho = null; typingUntil = Date.now() + 2000; message.style.height = 'auto'; message.style.height = `${Math.min(message.scrollHeight, window.innerHeight * 0.3)}px` })
 message.addEventListener('focus', () => setTimeout(() => refreshScene(), 300)); message.addEventListener('blur', () => setTimeout(() => refreshScene(), 300))
 message.addEventListener('keydown', e => { if (shouldSubmit(e)) { e.preventDefault(); el<HTMLFormElement>('form').requestSubmit() } })
 for (const box of [bubble, cardsBox]) box.addEventListener('scroll', () => { scrollingUntil = Date.now() + 1000 }, { passive: true })
@@ -333,7 +336,7 @@ async function initialize() {
     reauth = parseReauth(tab.get(REAUTH_KEY), Date.now())
     if (!reauth) tab.set(REAUTH_KEY, null)
     if (reauth) {
-      if (!message.value) message.value = reauth.draft
+      if (!message.value) putComposer(reauth.draft)
       let restored = 0
       // 送信待ちの本文は送り出した時点で受理未確認の控えへ移り queue から外れるため、退避分は控えと同じ本文でも別の発言として全件戻す。
       for (const text of reauth.queue) if (queue.add(text, Date.now()).ok) restored++
@@ -352,7 +355,11 @@ async function initialize() {
 reconnect.addEventListener('click', () => {
   if (!authExpired) { error.textContent = ''; connection.textContent = '接続を確認中'; void initialize(); return }
   if (chips.length && !window.confirm('添付ファイルは再読み込みで外れます。再認証後に追加し直してください。再読み込みしますか？')) return
-  const now = Date.now(), previous = parseReauth(tab.get(REAUTH_KEY), now), draft = message.value || previous?.draft || '', texts = queue.size ? queue.list().map(x => x.text) : previous?.queue ?? []
+  const now = Date.now(), previous = parseReauth(tab.get(REAUTH_KEY), now), texts = queue.size ? queue.list().map(x => x.text) : previous?.queue ?? []
+  let draft = message.value || previous?.draft || ''
+  // 控えと同じ本文を手で入力した草稿は別の発言。入力欄に戻すと控えの再確認として送られて消えるため、送信待ちの末尾へ退避する（自動では送らない）。
+  const separate = draft.trim()
+  if (message.value && unconfirmed && separate === unconfirmed.text && composerEcho !== message.value && separate.length <= QUEUE_MAX_CHARS && texts.length < QUEUE_MAX_ITEMS) { texts.push(separate); draft = '' }
   const saved = serializeReauth({ v: 1, draft, queue: texts, at: now, reloadAt: now })
   if (parseReauth(saved, now)) tab.set(REAUTH_KEY, saved); else tab.set(REAUTH_KEY, null)
   if (tab.get(REAUTH_KEY) !== saved && (draft || texts.length) && !window.confirm(`入力中の文と送信待ち ${texts.length} 件は再読み込みで消えます。再読み込みしますか？`)) return
@@ -563,7 +570,7 @@ el<HTMLFormElement>('form').addEventListener('submit', event => {
 async function sendText(text: string, from: 'composer' | 'pending' | QueueItem): Promise<void> {
   const giveBack = () => {
     if (typeof from === 'object') queue.putBack(from)
-    else if (from === 'composer') { if (!message.value.trim()) message.value = text; else queue.putBack({ id: -Date.now(), text, addedAt: Date.now() }) }
+    else if (from === 'composer') { if (!message.value.trim()) putComposer(text); else queue.putBack({ id: -Date.now(), text, addedAt: Date.now() }) }
   }
   if (actingEnabled) interruptActing(); else if (synthesis) window.speechSynthesis.cancel()
   error.textContent = ''; busy = true; accepted = false; started = Date.now(); lastActivity = Date.now(); typingUntil = 0; delete reply.dataset.reply
@@ -600,7 +607,7 @@ async function sendText(text: string, from: 'composer' | 'pending' | QueueItem):
   busy = false; requestId = ''
   if (sendOutcomeUnknown(result ? result.status : null) || resending) {
     // 受理されたか不明。本文は控え（同じ受付番号）に残し、送信待ちには戻さない（戻すと二重に送り得る）。
-    setUnconfirmed(payload); if (from === 'composer' && !message.value.trim()) message.value = text
+    setUnconfirmed(payload); if (from === 'composer' && !message.value.trim()) putComposer(text)
     setError('送信結果を確認できません。もう一度送信すると、まず前回の受理状況を確認します（二重実行はしません）。'); show('failed'); return
   }
   const wasQueued = pendingFromQueue
@@ -873,8 +880,8 @@ async function resumeUnconfirmed(pending: Outgoing) {
   }
   busy = false
   // 401/403 は認証切れ。控えを残したまま未認証表示にして送信を止め、再ログイン後の再接続で受理状況を確認し直す。
-  if (lookup && (lookup.status === 401 || lookup.status === 403) && unconfirmed === pending) { if (!message.value) message.value = pending.text; fail(lookup.status, lookup.data); return }
-  if (unconfirmed === pending) { const kept = !!message.value && message.value !== pending.text; if (!kept) message.value = pending.text; addHistory('お知らせ', (kept ? `入力欄の文は残しています。受理を確認できなかった前回の送信「${pending.text}」は控えに残っています。` : '') + '再読み込み前の送信の受理を確認できませんでした。もう一度送信すると、同じ受付番号で確認してから送ります（二重実行はしません）。') }
+  if (lookup && (lookup.status === 401 || lookup.status === 403) && unconfirmed === pending) { if (!message.value) putComposer(pending.text); fail(lookup.status, lookup.data); return }
+  if (unconfirmed === pending) { const kept = !!message.value && message.value !== pending.text; if (!kept) putComposer(pending.text); addHistory('お知らせ', (kept ? `入力欄の文は残しています。受理を確認できなかった前回の送信「${pending.text}」は控えに残っています。` : '') + '再読み込み前の送信の受理を確認できませんでした。もう一度送信すると、同じ受付番号で確認してから送ります（二重実行はしません）。') }
   show(state)
 }
 
