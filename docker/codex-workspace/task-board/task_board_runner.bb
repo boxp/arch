@@ -5398,6 +5398,7 @@
 
 (def bff-dist "apps/kohako-studio/bff/dist/")
 (def bff-src "apps/kohako-studio/bff/src/")
+(def bff-web "apps/kohako-studio/bff/")
 (def bff-inputs ["apps/kohako-studio/bff/package.json"
                  "apps/kohako-studio/bff/package-lock.json"
                  "apps/kohako-studio/bff/tsconfig.json"])
@@ -6178,15 +6179,21 @@
                                 (when kind
                                   (let [path (fs/path co rel)
                                         display (str (fs/relativize run-path path))
-                                        input-hold (case kind
-                                                     :node-modules (generated-input-hold co (mapv #(str prefix %) ["package.json" "package-lock.json" "npm-shrinkwrap.json" "pnpm-lock.yaml" "yarn.lock"]) true)
-                                                     :studio-dist (or (studio-dist-hold co) (generated-input-hold co (conj studio-inputs studio-public) false))
-                                                     :bff-dist (or (bff-dist-hold co) (generated-input-hold co (conj bff-inputs bff-src) false)))
-                                        hold (or input-hold (generated-candidate-hold run-real co rel checkouts))
+                                        ;; Re-run in full under the ticket lock right before delete so
+                                        ;; inputs, tracked files, hardlinks, nested Git and external
+                                        ;; symlinks added after the first scan still protect the path.
+                                        ;; Studio/BFF watch the whole package dir (HTML entries, src,
+                                        ;; scripts, configs); ignored dist/node_modules are not listed.
+                                        safety-hold #(or (case kind
+                                                           :node-modules (generated-input-hold co (mapv (fn [n] (str prefix n)) ["package.json" "package-lock.json" "npm-shrinkwrap.json" "pnpm-lock.yaml" "yarn.lock"]) true)
+                                                           :studio-dist (or (studio-dist-hold co) (generated-input-hold co [studio-web] false))
+                                                           :bff-dist (or (bff-dist-hold co) (generated-input-hold co [bff-web] false)))
+                                                         (generated-candidate-hold run-real co rel (find-checkouts run-path)))
+                                        hold (safety-hold)
                                         bytes (when-not hold (generated-measure path))
                                         hold (or hold (when (nil? bytes) "measurement-failed"))
                                         recheck (when-not hold (with-ticket-lock-guard ticket-id
-                                                   #(if-let [reason (generated-recheck ticket-id run-id hours path)] reason
+                                                   #(if-let [reason (or (generated-recheck ticket-id run-id hours path) (safety-hold))] reason
                                                         (when (= mode :on)
                                                           (try (fs/delete-tree path) nil
                                                                (catch Exception e (str "delete-failed " (one-line (.getMessage e)))))))))

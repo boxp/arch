@@ -5976,6 +5976,30 @@ test_generated_reclaim_basic() {
   [[ -f "${old}/node_modules/a" ]] || fail 'reopened ticket deleted after measurement'
   assert_file_contains "${out}" 'reason=not-done'
   sed -i 's/^status: blocked/status: done/' "${vault}/Tickets/BOXP-519.md"
+  # Safety facts that change between the first scan and the locked delete
+  # (input edit, hardlink, nested Git, external symlink) must be re-detected.
+  for mutation in input hardlink git symlink; do
+    CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" CODEX_TASK_BOARD_GENERATED_RECLAIM=on TEST_RUNNER="${RUNNER}" TEST_CO="${old}" TEST_TMP="${tmp}" TEST_MUTATION="${mutation}" bb -e '
+      (System/setProperty "babashka.file" "/tmp/load-runner.bb")
+      (load-file (System/getenv "TEST_RUNNER"))
+      (let [original generated-measure co (System/getenv "TEST_CO") tmp (System/getenv "TEST_TMP")]
+        (alter-var-root (var generated-measure)
+          (constantly (fn [path] (let [n (original path)]
+                                   (case (System/getenv "TEST_MUTATION")
+                                     "input" (spit (str co "/package-lock.json") "changed\n" :append true)
+                                     "hardlink" (babashka.process/shell "ln" (str co "/node_modules/a") (str tmp "/late-hardlink"))
+                                     "git" (babashka.fs/create-dirs (str co "/node_modules/.git"))
+                                     "symlink" (babashka.fs/create-sym-link (str co "/late-link") (str co "/node_modules/a")))
+                                   n)))))
+      (reclaim-generated-outputs! {})' >"${out}"
+    [[ -f "${old}/node_modules/a" ]] || fail "late ${mutation} change deleted output"
+    case "${mutation}" in
+      input) assert_file_contains "${out}" 'reason=inputs-modified'; git -C "${old}" checkout -- package-lock.json ;;
+      hardlink) assert_file_contains "${out}" 'reason=nested-git-or-hardlink'; rm "${tmp}/late-hardlink" ;;
+      git) assert_file_contains "${out}" 'reason=nested-(checkout|git-or-hardlink)'; rmdir "${old}/node_modules/.git" ;;
+      symlink) assert_file_contains "${out}" 'reason=symlink-dependency'; rm "${old}/late-link" ;;
+    esac
+  done
   echo changed >>"${old}/package-lock.json"
   CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
   [[ -f "${old}/node_modules/a" ]] || fail 'dirty input deleted'
@@ -6014,7 +6038,7 @@ test_generated_reclaim_studio() {
   touch "${source}/apps/kohako-studio/web/"{package.json,package-lock.json,vite.config.ts,candidates.html}
   git -C "${source}" add .; prune_git -C "${source}" commit -qm fixture
   write_board "${vault}" ''
-  for ticket in BOXP-520 BOXP-521; do
+  for ticket in BOXP-520 BOXP-521 BOXP-522; do
     echo "- [x] [[Tickets/${ticket}|${ticket}: done]] #ticket status::done" >>"${vault}/Boards/Task Board.md"
     write_prune_ticket "${vault}" "${ticket}" done "$(date -u +%Y-%m-%d)"
     for i in 3 2 1; do
@@ -6023,12 +6047,16 @@ test_generated_reclaim_studio() {
       dist="${co}/apps/kohako-studio/web/dist"; mkdir -p "${dist}"
       cp "${co}/apps/kohako-studio/web/public/copied.txt" "${dist}/copied.txt"
       if [[ "${i}" == 3 && "${ticket}" == BOXP-521 ]]; then printf wxyz >"${dist}/copied.txt"; fi
+      # An uncommitted change to a tracked Vite HTML entry makes dist non-regenerable.
+      if [[ "${i}" == 3 && "${ticket}" == BOXP-522 ]]; then echo '<p>local</p>' >>"${co}/apps/kohako-studio/web/candidates.html"; fi
     done
   done
   CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" CODEX_TASK_BOARD_GENERATED_RECLAIM=on bb "${RUNNER}" reclaim-generated >"${tmp}/out"
   [[ "$(find "${state}/workspaces/BOXP-520" -name copied.txt -path '*/dist/*' | wc -l)" == 2 ]] || fail 'matching studio dist not reclaimed'
   [[ "$(find "${state}/workspaces/BOXP-521" -name copied.txt -path '*/dist/*' | wc -l)" == 3 ]] || fail 'mismatched studio dist deleted'
   assert_file_contains "${tmp}/out" 'generated-reclaim: hold .*copied.txt'
+  [[ "$(find "${state}/workspaces/BOXP-522" -name copied.txt -path '*/dist/*' | wc -l)" == 3 ]] || fail 'studio dist with modified HTML entry deleted'
+  assert_file_contains "${tmp}/out" 'generated-reclaim: hold .*web/dist.* reason=inputs-modified'
 }
 
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a
