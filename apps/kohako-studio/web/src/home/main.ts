@@ -359,7 +359,11 @@ reconnect.addEventListener('click', () => {
   let draft = message.value || previous?.draft || ''
   // 控えと同じ本文を手で入力した草稿は別の発言。入力欄に戻すと控えの再確認として送られて消えるため、送信待ちの末尾へ退避する（自動では送らない）。
   const separate = draft.trim()
-  if (message.value && unconfirmed && separate === unconfirmed.text && composerEcho !== message.value && separate.length <= QUEUE_MAX_CHARS && texts.length < QUEUE_MAX_ITEMS) { texts.push(separate); draft = '' }
+  if (message.value && unconfirmed && separate === unconfirmed.text && composerEcho !== message.value) {
+    if (separate.length <= QUEUE_MAX_CHARS && texts.length < QUEUE_MAX_ITEMS) { texts.push(separate); draft = '' }
+    // 送信待ちが満杯（または長すぎる）で退避できないときは、別の発言として残せないことを再読み込み前に明示して確認する（黙って控えへ吸収させない）。
+    else if (!window.confirm(`入力中の文は受理を確認できていない前回の送信と同じ本文ですが、送信待ちが${texts.length >= QUEUE_MAX_ITEMS ? `満杯（${QUEUE_MAX_ITEMS} 件）` : `の上限 ${QUEUE_MAX_CHARS} 文字を超えている`}ため別の発言として残せません。再読み込み後は前回の送信の確認として扱われ、この入力は別には送られません。再読み込みしますか？`)) return
+  }
   const saved = serializeReauth({ v: 1, draft, queue: texts, at: now, reloadAt: now })
   if (parseReauth(saved, now)) tab.set(REAUTH_KEY, saved); else tab.set(REAUTH_KEY, null)
   if (tab.get(REAUTH_KEY) !== saved && (draft || texts.length) && !window.confirm(`入力中の文と送信待ち ${texts.length} 件は再読み込みで消えます。再読み込みしますか？`)) return
