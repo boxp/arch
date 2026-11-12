@@ -155,7 +155,9 @@ body[data-shape="landscape"] .viewer iframe{height:min(300px,55vh)}
 
 body[data-scene="relax"] .bubble:has(#notice-actions:not([hidden])){opacity:1;pointer-events:auto} #notice-actions{white-space:normal} #notice-actions button{margin:.2rem} #notice-actions textarea{width:100%} #notice-status:empty{display:none}
 
-#inbox-list{max-height:45vh;overflow:auto;flex-shrink:0}
+#inbox-list{max-height:45vh;overflow:auto;flex-shrink:0;overscroll-behavior:contain}
+/* BOXP-501 TD-04: 縦flexの受信箱で項目が縮められ重ならないよう、カードは内容の高さを保ちリスト側をスクロールさせる。 */
+#inbox-list>.inbox-row{flex:0 0 auto;height:auto}
 .md{white-space:normal;overflow-wrap:anywhere}.md p,.md ul,.md ol,.md pre,.md blockquote{margin:.3em 0}.md ul,.md ol{padding-left:1.4em}.md pre{overflow-x:auto;white-space:pre;max-width:100%}.md code{font-family:monospace}.md a{overflow-wrap:anywhere}.md h3,.md h4,.md h5,.md h6{font-size:1em;margin:.4em 0;font-weight:700}
 
 .bar{flex-wrap:wrap}.attachment-chips{flex-basis:100%;display:flex;gap:4px;flex-wrap:wrap}.attachment-chips:empty{display:none}.attachment-chips span{background:#eee4f7;border-radius:8px;padding:4px;font-size:12px}.attachment-chips button{padding:2px 5px;margin-left:4px}
