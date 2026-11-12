@@ -11,7 +11,7 @@ import './menus.css'
 import { buildRoomV1, daypartOf, roomOptions } from './room'
 import { states, formatPool, formatTasks, gaugeOf, taskBadgeOf, upstreamUnavailable, type Status } from './status'
 import { validateViews, mapsUrl, osmUrl, htmlSrcdoc, sanitizeHtml, type View } from './views'
-import { clipHold, isPetting, petFollow, petShown, zeroPet } from './petfollow'
+import { clipHold, isPetting, petEyesWanted, petFollow, petShown, zeroPet } from './petfollow'
 import { makeVisemes, visemeAt, boundaryTime, spokenSeconds, type VisemeSequence } from '../live2d/viseme'
 import { interpretRequest, newOutgoing, pcm16, presentation, resolveUnconfirmed, rigStateOf, sendOutcomeUnknown, silentSpeechSeconds, studioRigModelId, wantsActing, wantsRig, type Outgoing, type State } from '../studio/model'
 import { clipIdFor, clipName, lookFor, modelFor, mouthLevel, poseFor, type RigState } from '../live2d/model'
@@ -736,7 +736,7 @@ function touchReact(zone: Zone, kind: 'tap' | 'pat', via: 'pointer' | 'menu') {
     touchDebounce = window.setTimeout(() => void sendTouch(), 1200)
   }
 }
-let track: { id: number; zone: Zone; points: Point[]; headRect: Rect | null } | null = null
+let track: { id: number; zone: Zone; points: Point[]; headRect: Rect | null; outside?: boolean } | null = null
 let petOffset = zeroPet(), petTick = 0
 let holdClipForPet: (on: boolean) => void = () => {}
 rigCanvas.addEventListener('pointerdown', e => {
@@ -756,6 +756,9 @@ rigCanvas.addEventListener('pointerup', e => {
   if (kind) touchReact(zone, kind, 'pointer')
 })
 rigCanvas.addEventListener('pointercancel', () => { track = null })
+// BOXP-525: 押したままキャンバスの外へ出た（PC マウスは外の move が届かない）間は、なでの閉眼を解く。戻れば再開する。
+rigCanvas.addEventListener('pointerleave', e => { if (track && e.pointerId === track.id) track.outside = true })
+rigCanvas.addEventListener('pointerenter', e => { if (track && e.pointerId === track.id) track.outside = false })
 rigCanvas.addEventListener('lostpointercapture', () => { track = null })
 document.addEventListener('visibilitychange', () => { if (document.hidden) track = null })
 // キャンバスの外で離したときも追跡を解放する（以後のふれあいが止まらないように）。
@@ -793,6 +796,8 @@ function rigTick(now: number) {
   if (!rig) return
   const dt = petTick ? Math.min(0.1, (now - petTick) / 1000) : 0; petTick = now
   const petTrack = track?.zone === 'head' && track.headRect ? { points: track.points, rect: track.headRect, now } : null, petOptions = { enabled: !touchBlocked(), reduced: reduced(), subtle: prefs.intensity === 'subtle' }
+  const petEyes = !track?.outside && petEyesWanted(petTrack, petOptions)
+  stage?.setPetEyes?.(petEyes); report.petEyes = petEyes
   petOffset = petFollow(petOffset, petTrack, dt, petOptions)
   if (stage?.setPetOffset) { stage.setPetOffset(petOffset); holdClipForPet(isPetting(petTrack, petOptions) || petShown(petOffset)) }
   report.petFollow = { ...petOffset }

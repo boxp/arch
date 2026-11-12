@@ -49,3 +49,16 @@ it('treats pressing without moving as not petting and reports when the head has 
   expect(isPetting({ rect, points: [point(50, 40), point(50, 50)] }, { ...options, enabled: false })).toBe(false)
   expect(petShown({ headX: 0, headY: 0, headZ: 0.2 })).toBe(false); expect(petShown({ headX: 0, headY: 0, headZ: 2 })).toBe(true)
 })
+
+it('なでている手が頭の内側にある間だけ閉眼する', async () => {
+  const { petEyesWanted } = await import('./petfollow')
+  const track = { rect, points: strokes(20, 80) }
+  expect(petEyesWanted(null, options)).toBe(false)
+  expect(petEyesWanted({ rect, points: [point(50)] }, options)).toBe(false)
+  expect(petEyesWanted({ rect, points: [point(50), point(50)] }, options)).toBe(false)
+  expect(petEyesWanted(track, { ...options, enabled: false })).toBe(false)
+  expect(petEyesWanted(track, { ...options, reduced: true })).toBe(false)
+  expect(petEyesWanted(track, options)).toBe(true)
+  expect(petEyesWanted({ rect, points: [point(50), point(100)] }, options)).toBe(true)
+  expect(petEyesWanted({ rect, points: [point(50), point(101)] }, options)).toBe(false)
+})

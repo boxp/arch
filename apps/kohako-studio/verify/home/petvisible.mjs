@@ -1,5 +1,5 @@
 // BOXP-505 TD-01: 頭をなでたとき、最終描画で頭が見て分かるほど傾き、離すと戻ることを画素から確かめる回帰検査。
-// setParameter や petFollow の数値ではなく、画面のスクリーンショットから顔の傾き（度）と首肩のずれ（px）を推定する。
+// setParameter や petFollow の数値ではなく、画面のスクリーンショットから頭の傾き（度。BOXP-525 でなで中は目を閉じるため、瞳の線ではなく頭全体を待機画像へ回転照合して求める）と首肩のずれ（px）を推定する。
 // 実行: Playwright 1.56.1 のコンテナで `node petvisible.mjs <build の dist> <出力先>`（BFF は完全にモック、token 不要）。
 // 失敗した項目があれば終了コード 1。連続フレームの画像と測定値を出力先に保存する。
 import { chromium, devices } from 'playwright'
@@ -25,19 +25,28 @@ async function open(name, config, prefs) {
     window.__eyes = (B, box) => { const mid = box.x + box.w / 2, acc = [[0, 0, 0], [0, 0, 0]]; for (let y = box.y; y < box.y + box.h; y++) for (let x = box.x; x < box.x + box.w; x++) { const i = 4 * (y * B.w + x), r = B.rgba[i], g = B.rgba[i + 1], b = B.rgba[i + 2]; if (b > 110 && b > r + 45 && b > g + 25) { const s = acc[x < mid ? 0 : 1]; s[0] += x; s[1] += y; s[2]++ } } const [L, R] = acc; if (L[2] < 4 || R[2] < 4) return null; const l = [L[0] / L[2], L[1] / L[2]], r = [R[0] / R[2], R[1] / R[2]]; return +(Math.atan2(r[1] - l[1], r[0] - l[0]) * 180 / Math.PI).toFixed(1) }
     const at = (B, x, y) => { const xi = Math.round(x), yi = Math.round(y); return xi < 0 || yi < 0 || xi >= B.w || yi >= B.h ? null : B.gray[yi * B.w + xi] }
     window.__shift = (A, B, box, R = 6) => { let best = { dx: 0, dy: 0, e: Infinity }; for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) { let e = 0, n = 0; for (let y = box.y; y < box.y + box.h; y += 2) for (let x = box.x; x < box.x + box.w; x += 2) { const v = at(B, x + dx, y + dy); if (v == null) continue; e += Math.abs(A.gray[y * A.w + x] - v); n++ } e /= n; if (e < best.e) best = { dx, dy, e } } return best }
+    // BOXP-525: なで中は目を閉じるので、瞳の線ではなく、頭全体（前髪・輪郭・顔）を待機画像に回転・平行移動で重ねて最も合う角度（度、時計回り正）を傾きとする。
+    window.__rot = (A, B, box, c) => {
+      const err = (deg, dx, dy) => { const t = -deg * Math.PI / 180, cs = Math.cos(t), sn = Math.sin(t); let e = 0, n = 0; for (let y = box.y; y < box.y + box.h; y += 3) for (let x = box.x; x < box.x + box.w; x += 3) { const px = x - c[0] - dx, py = y - c[1] - dy, v = at(A, cs * px - sn * py + c[0], sn * px + cs * py + c[1]); if (v == null) continue; e += Math.abs(B.gray[y * B.w + x] - v); n++ } return n ? e / n : Infinity }
+      let best = { deg: 0, dx: 0, dy: 0, e: Infinity }
+      for (let deg = -14; deg <= 14; deg += 1) for (let dy = -8; dy <= 8; dy += 2) for (let dx = -8; dx <= 8; dx += 2) { const e = err(deg, dx, dy); if (e < best.e) best = { deg, dx, dy, e } }
+      const c0 = best; for (let deg = c0.deg - 1; deg <= c0.deg + 1; deg += 0.25) for (let dy = c0.dy - 1; dy <= c0.dy + 1; dy++) for (let dx = c0.dx - 1; dx <= c0.dx + 1; dx++) { const e = err(deg, dx, dy); if (e < best.e) best = { deg, dx, dy, e } }
+      return +best.deg.toFixed(2)
+    }
   })
   const a = await page.evaluate(() => window.__kohakoHome.hitAreas().head), pad = 40
   const clip = { x: Math.round(a.x - pad), y: Math.round(a.y - pad), width: Math.round(a.w + 2 * pad), height: Math.round(a.h * 2 + pad) }
   // 顔（目・口・前髪）と、その下の首肩。
   const face = { x: pad + Math.round(a.w * 0.2), y: pad + Math.round(a.h * 0.3), w: Math.round(a.w * 0.6), h: Math.round(a.h * 0.55) }
   const shoulder = { x: pad, y: pad + Math.round(a.h * 1.3), w: Math.round(a.w), h: Math.round(a.h * 0.4) }
+  const head = { x: pad, y: pad, w: Math.round(a.w), h: Math.round(a.h) }
   const shot = async () => (await page.screenshot({ clip, scale: 'css' })).toString('base64')
   await page.evaluate(async b => { window.__rest = await window.__img(b) }, await shot())
   const measure = async (label, file) => {
     const b = await shot(); if (file) fs.writeFileSync(`${OUT}/${name}-${file}.png`, Buffer.from(b, 'base64'))
-    const m = await page.evaluate(async ([b, face, shoulder]) => { const B = await window.__img(b); return { tilt: window.__eyes(B, face), shoulder: window.__shift(window.__rest, B, shoulder) } }, [b, face, shoulder])
+    const m = await page.evaluate(async ([b, face, shoulder, head]) => { const B = await window.__img(b); return { tilt: window.__rot(window.__rest, B, head, [head.x + head.w / 2, head.y + head.h]), eyeTilt: window.__eyes(B, face), shoulder: window.__shift(window.__rest, B, shoulder) } }, [b, face, shoulder, head])
     const pet = await page.evaluate(() => window.__kohakoHome.report.petFollow)
-    return { label, tilt: m.tilt, shoulderDx: m.shoulder.dx, shoulderDy: m.shoulder.dy, headZ: pet && +pet.headZ.toFixed(2) }
+    return { label, tilt: m.tilt, eyeTilt: m.eyeTilt, shoulderDx: m.shoulder.dx, shoulderDy: m.shoulder.dy, headZ: pet && +pet.headZ.toFixed(2) }
   }
   return { context, page, a, measure }
 }

@@ -579,3 +579,30 @@ it('表情の重みと虹彩縮小は 0 で元に戻る', async () => {
   expect(irisScale(0)).toBe(1)
   expect(irisScale(1)).toBeCloseTo(0.8)
 })
+
+it('なで閉眼は滑らかに閉じて開き、まばたきを妨げない', async () => {
+  const { petEyeStep, eyeOpenFor } = await import('./gesture')
+  let v = 0
+  for (let i = 0; i < 21; i++) { const next = petEyeStep(v, true, 1 / 60); expect(next).toBeGreaterThanOrEqual(v); expect(next).toBeLessThanOrEqual(1); v = next }
+  expect(v).toBeGreaterThan(0.95)
+  expect(petEyeStep(v, false, 0)).toBe(v)
+  for (let i = 0; i < 36; i++) { const next = petEyeStep(v, false, 1 / 60); expect(next).toBeLessThanOrEqual(v); expect(next).toBeGreaterThanOrEqual(0); v = next }
+  expect(v).toBeLessThan(0.05)
+  expect(eyeOpenFor(0.2, 0, 0.5)).toBe(0.2)
+  expect(eyeOpenFor(1, 1, 0)).toBe(0)
+  expect(eyeOpenFor(0.6, 0, 0)).toBe(0.6)
+})
+
+it('待機クリップ停止中でもなで解除後に閉眼値が残らない', () => {
+  const values = [1, 1], memory = new WebAssembly.Memory({ initial: 1 })
+  const player = {
+    rig: 0, expressions: [], parameters: ['ParamEyeLOpen', 'ParamEyeROpen'], meshes: Array.from({ length: 33 }, () => ({ vertices: 0 })),
+    expression() {}, parameterValues: () => [...values], setParameter(id: string, value: number) { const i = this.parameters.indexOf(id); if (i >= 0) values[i] = value }, update(_dt: number) {},
+    rt: { memory, p2l_render_commands: () => 0, p2l_mesh_vertices: () => 0, p2l_update_stages() {} },
+  }
+  const stage = createActingStage(player as unknown as Player, { id: 'kohako-full-v11r' } as RigModel)
+  stage.setPetEyes?.(true); for (let i = 0; i < 60; i++) player.update(1 / 60)
+  expect(values[0]).toBeLessThan(0.05)
+  stage.setPetEyes?.(false); for (let i = 0; i < 120; i++) player.update(1 / 60)
+  expect(values[0]).toBeGreaterThan(0.95); expect(values[1]).toBeGreaterThan(0.95)
+})
