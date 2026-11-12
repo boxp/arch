@@ -7,7 +7,7 @@ import { chromium } from 'playwright'
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
-const out = process.argv[2] || '/out', site = process.env.SITE || '/site', port = Number(process.env.PORT || 8773), bleed = process.env.BLEED !== '0'
+const out = process.argv[2] || '/out', site = process.env.SITE || '/site', port = Number(process.env.PORT || 8773), bleed = process.env.BLEED !== '0', repeat = Math.max(1, Number(process.env.REPEAT || 3))
 fs.mkdirSync(out, { recursive: true })
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.json': 'application/json', '.wasm': 'application/wasm' }
 const server = http.createServer((req, res) => { const p = decodeURIComponent(new URL(req.url, 'http://localhost').pathname); fs.readFile(path.join(site, p), (err, data) => { if (err) { res.writeHead(404); res.end(); return } res.writeHead(200, { 'content-type': types[path.extname(p)] || 'application/octet-stream' }); res.end(data) }) }).listen(port)
@@ -73,9 +73,15 @@ for (const c of CASES) {
     await page.waitForTimeout(800)
     r.rest = await frameEdges(page)
     for (const g of GESTURES) {
-      await page.evaluate(g => window.__kohakoHome.stage.playGesture(g), g)
-      const frames = [], t0 = Date.now()
-      while (Date.now() - t0 < 2200) { frames.push(await frameEdges(page)); await page.waitForTimeout(60) }
+      // 撮影の位相で最大の振りを取り逃がさないよう、同じ身振りを repeat 回（既定 3）再生し、回ごとに撮影開始を 20ms ずつずらす。
+      const frames = []
+      for (let k = 0; k < repeat; k++) {
+        await page.evaluate(g => window.__kohakoHome.stage.playGesture(g), g)
+        if (k) await page.waitForTimeout(20 * k)
+        const t0 = Date.now()
+        while (Date.now() - t0 < 2200) { frames.push(await frameEdges(page)); await page.waitForTimeout(60) }
+        await page.waitForTimeout(300)
+      }
       const max = k => Math.max(0, ...frames.map(f => f[k] ?? 0)), widest = frames.reduce((a, f) => f.drawn && (!a || f.drawn.r - f.drawn.l > a.drawn.r - a.drawn.l) ? f : a, null)
       const g0 = r.gestures[g] = { frames: frames.length, canvasLeftMax: max('canvasLeft'), canvasRightMax: max('canvasRight'), stageLeftMax: max('stageLeft'), stageRightMax: max('stageRight'), widest: widest && { drawn: widest.drawn, box: widest.box, canvas: widest.canvas, frame: widest.frame, mini: widest.mini } }
       // 余白なしの枠（.character の箱）より外へ描けた幅: 修正が効いている（以前なら切れていた部分が見える）ことの記録
