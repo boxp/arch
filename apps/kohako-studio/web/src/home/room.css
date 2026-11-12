@@ -79,6 +79,8 @@ body[data-shape="landscape"] .room{--wx:18cqw;--wy:54cqh;--wd:92cqh;--hz:86cqh}
 
 /* 止める条件 */
 body.bg-still .room *,body.bg-still .room *::before,body.tab-hidden .room *,body.tab-hidden .room *::before{animation-play-state:paused}
+/* 背景OFFでは場面替わりの丸窓・床の光の移動(transition)も止め、即座に位置を替える */
+body.bg-still .room *,body.bg-still .room *::before,body.bg-still .room *::after{transition:none!important}
 body.reduce .room *,body.reduce .room *::before{animation:none!important;transition:none!important}
 @media (prefers-reduced-motion:reduce){.room *,.room *::before{animation:none!important;transition:none!important}}
 
