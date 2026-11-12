@@ -1,9 +1,10 @@
 export type Approval = { requestId?: string; generation?: number; description: string; command: string; commandTruncated?: boolean; choices: ('once' | 'deny')[] }
 type Result = { status: 'done'; text: string; model?: string } | { status: 'failed'; error: string } | { status: 'unknown'; error?: string }
 export const APPROVAL_COMMAND_MAX = 2000
+export type HermesInput = string | { role: 'user'; content: ({ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } })[] }[]
 export type RunOptions = {
   idempotencyKey: string
-  input: string
+  input: HermesInput
   sessionId: string
   instructions: string
   route?: { provider: string; model: string }
@@ -183,7 +184,7 @@ export function createHermes({
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(runId)) return Promise.resolve({ status: 'unknown', error: 'hermes_schema' })
       return poll(runId, { onApproval })
     },
-    run(requestId: string, text: string, sessionId: string, instructions: string, onApproval?: RunOptions['onApproval'], attempt?: number, onRun?: RunOptions['onRun'], stableKey?: string): Promise<Result> {
+    run(requestId: string, text: HermesInput, sessionId: string, instructions: string, onApproval?: RunOptions['onApproval'], attempt?: number, onRun?: RunOptions['onRun'], stableKey?: string): Promise<Result> {
       // stableKey は session を跨いで同じ返信を一度だけ受理させるための鍵（通知返信の再送用）。
       return execute({ idempotencyKey: stableKey ?? `kohako-web-${sessionId}-${requestId}${attempt && attempt > 0 ? `-retry${attempt}` : ''}`, input: text, sessionId, instructions, onApproval, onRun })
     },

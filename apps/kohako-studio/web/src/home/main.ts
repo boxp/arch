@@ -1,3 +1,4 @@
+import { attachmentValidation } from './attachments'
 import { shouldSubmit } from './keys'
 import { atBottom } from './scroll'
 import { renderMarkdown, plainText } from './markdown'
@@ -256,6 +257,11 @@ function problem(status: number, data: Record<string, unknown> | null): string {
   if (status === 401 || status === 403) return 'Cloudflare Access でログインし直してください。'
   if (status === 429) return 'いま別の依頼を処理中です（Studio など別の画面からの依頼の可能性があります）。終わってからもう一度お試しください。'
   if (data?.error === 'conversation_disabled' || data?.error === 'stt_disabled') return 'この機能は現在無効です。'
+  if (data?.error === 'unknown_attachment') return '添付ファイルの期限が切れたか、別の会話のファイルです。追加し直してください。'
+  if (data?.error === 'pdf_no_text') return 'PDFから文字を抽出できませんでした。'
+  if (data?.error === 'pdf_unreadable') return 'PDFを読み取れませんでした。'
+  if (status === 413) return 'サイズ超過です。'
+  if (status === 415) return '未対応の形式、またはファイル形式が一致しません。'
   if (status === 422 || data?.error === 'no_speech') return '音声を認識できませんでした。'
   return `処理に失敗しました（${status}）。`
 }
@@ -488,8 +494,18 @@ queueClear.addEventListener('click', () => { const n = queue.size; queue.clear()
 // 送信待ちはメモリだけに持つため、再読み込み・タブを閉じる前にブラウザの確認を出す（黙って再送・保存はしない）。
 window.addEventListener('beforeunload', e => { if (queue.size) { e.preventDefault(); e.returnValue = '' } })
 
+type Chip = { name: string; size: number; state: string; id?: string }
+const chips: Chip[] = [], chipBox = el('attachment-chips'), fileInput = el<HTMLInputElement>('attachment-file'), form = el<HTMLFormElement>('form')
+function renderChips() { chipBox.replaceChildren(); for (const chip of chips) { const span = document.createElement('span'), cancel = document.createElement('button'); span.textContent = `${chip.name} (${chip.size} bytes) ${chip.state}`; cancel.type = 'button'; cancel.textContent = '×取消'; cancel.setAttribute('aria-label', `${chip.name}を取消`); cancel.onclick = () => { const i = chips.indexOf(chip); if (i >= 0) chips.splice(i, 1); renderChips() }; span.append(cancel); chipBox.append(span) } }
+async function addFiles(files: FileList | File[]) { for (const file of Array.from(files)) { const validation = attachmentValidation(file, chips.length); if (validation) { setError(validation); if (chips.length >= 3) break; continue } const chip: Chip = { name: file.name, size: file.size, state: 'アップロード中' }; chips.push(chip); renderChips(); try { const result = await call('attachments', { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-Kohako-Filename': encodeURIComponent(file.name) }, body: file }); if (result.status !== 201 || typeof result.data?.attachmentId !== 'string') { chip.state = '失敗'; setError(problem(result.status, result.data)); } else { chip.id = result.data.attachmentId; chip.name = String(result.data.name); chip.state = result.data.truncated ? '一部省略' : '' } } catch { chip.state = '失敗'; setError('アップロードに失敗しました。取り消して再度追加してください。') } renderChips() } }
+el<HTMLButtonElement>('attach').onclick = () => fileInput.click()
+fileInput.onchange = () => { if (fileInput.files) void addFiles(fileInput.files); fileInput.value = '' }
+form.addEventListener('dragover', e => e.preventDefault())
+form.addEventListener('drop', e => { e.preventDefault(); if (e.dataTransfer?.files) void addFiles(e.dataTransfer.files) })
 el<HTMLFormElement>('form').addEventListener('submit', event => {
-  event.preventDefault(); const text = message.value.trim(); if (!text || touchActive || !enabled || recording || starting) return
+  event.preventDefault(); const text = message.value.trim() || (chips.length ? '添付ファイルを見てください' : ''); if (!text || touchActive || !enabled || recording || starting) return
+  if (chips.length && chips.some(x => !x.id)) { setError('添付のアップロード完了を待つか、失敗した添付を取り消してください。'); return }
+  if (chips.length && (queueing() || unconfirmed)) { setError('添付付きの発言は送信待ちに追加できません。前の依頼が終わってから送信してください。'); return }
   if (queueing()) { enqueue(text); return }
   if (unconfirmed && unconfirmed.text !== text) {
     // 受理未確認の前回の発言がある間は、新しい本文を送信待ちへ積んでから前回分を同じ受付番号で確認・再送する（入力を消さず、順序も守る）。
@@ -522,15 +538,15 @@ async function sendText(text: string, from: 'composer' | 'pending' | QueueItem):
     if (decision === 'attach') {
       setUnconfirmed(null); requestId = pending.requestId; accepted = true
       setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true })
-      addHistory('あなた', pending.text); addHistory('お知らせ', '前回の送信は受理済みでした。再送せずに結果を追います。'); show('thinking'); void poll(requestId); return
+      addHistory('あなた', pending.text + (pending.attachmentNames ?? []).map(x => `\n📎 ${x}`).join('')); if (pending.attachments) { for (let i = chips.length - 1; i >= 0; i--) if (chips[i].id && pending.attachments.includes(chips[i].id!)) chips.splice(i, 1); renderChips() } addHistory('お知らせ', '前回の送信は受理済みでした。再送せずに結果を追います。'); show('thinking'); void poll(requestId); return
     }
     if (decision === 'wait') {
       busy = false; if (from === 'composer') giveBack()
       setError('前回の送信が受理されたか確認できません。二重実行を避けるため、確認できるまで新しい送信は行いません。しばらくしてから再度送信してください。'); show('failed'); return
     }
     if (decision === 'resend') payload = pending
-    else { const fromQueue = pendingFromQueue; setUnconfirmed(null); pendingFromQueue = fromQueue; payload = newOutgoing(pending.text, Date.now(), () => crypto.randomUUID()) }
-  } else payload = newOutgoing(text, Date.now(), () => crypto.randomUUID())
+    else { const fromQueue = pendingFromQueue; setUnconfirmed(null); pendingFromQueue = fromQueue; payload = { ...newOutgoing(pending.text, Date.now(), () => crypto.randomUUID()), ...(pending.attachments ? { attachments: pending.attachments, attachmentNames: pending.attachmentNames } : {}) } }
+  } else { payload = newOutgoing(text, Date.now(), () => crypto.randomUUID()); if (from === 'composer' && chips.length) { payload.attachments = chips.map(x => x.id!); payload.attachmentNames = chips.map(x => x.name) } }
   requestId = payload.requestId
   // POST 応答前に再読み込みされても BFF 受理済みの依頼を追い直せるよう、送信前に本文と受付番号を控える（再送時は同じ受付番号で BFF が冪等に扱う）。
   const resending = payload === unconfirmed
@@ -538,7 +554,7 @@ async function sendText(text: string, from: 'composer' | 'pending' | QueueItem):
   let result: Awaited<ReturnType<typeof call>> | null = null
   try { result = await call('messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, views: true }) }) } catch { result = null }
   if (result && result.status === 202) {
-    setUnconfirmed(null); accepted = true; addHistory('あなた', payload.text)
+    setUnconfirmed(null); accepted = true; addHistory('あなた', payload.text + (payload.attachmentNames ?? []).map(x => `\n📎 ${x}`).join('')); if (payload.attachments) { for (let i = chips.length - 1; i >= 0; i--) if (chips[i].id && payload.attachments.includes(chips[i].id!)) chips.splice(i, 1); renderChips() }
     setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true }); show(state); void poll(requestId); return
   }
   busy = false; requestId = ''
@@ -784,7 +800,7 @@ async function resumeUnconfirmed(pending: Outgoing) {
   if (lookup && lookup.status === 200 && unconfirmed === pending) {
     setUnconfirmed(null); requestId = pending.requestId; accepted = true; started = Date.now()
     setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true })
-    addHistory('あなた', pending.text); addHistory('お知らせ', '再読み込み前の送信は受理済みでした。再送せずに結果を追います。'); show('thinking'); void poll(requestId); return
+    addHistory('あなた', pending.text + (pending.attachmentNames ?? []).map(x => `\n📎 ${x}`).join('')); if (pending.attachments) { for (let i = chips.length - 1; i >= 0; i--) if (chips[i].id && pending.attachments.includes(chips[i].id!)) chips.splice(i, 1); renderChips() } addHistory('お知らせ', '再読み込み前の送信は受理済みでした。再送せずに結果を追います。'); show('thinking'); void poll(requestId); return
   }
   busy = false
   // 401/403 は認証切れ。控えを残したまま未認証表示にして送信を止め、再ログイン後の再接続で受理状況を確認し直す。

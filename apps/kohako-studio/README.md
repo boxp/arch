@@ -31,3 +31,5 @@ Push は Chrome・Edge・Firefox のデスクトップと Android に対応し�
 ## 可用性（BOXP-511）
 
 web はステートレスな複数レプリカ、BFF は単一 writer の 1 レプリカで動作する。BFF は停止時に処理と書き込みを待ち、会話追跡を保存する。再起動時は既存 run を追跡し、再送しない。通知返信は通知側で復元するため会話ファイルには保存しない。BFF 再起動中は nginx が JSON 503 を返す。`kohako-upstream.conf` は Kubernetes の ConfigMap で上書きする。
+
+家の会話では画像、PDF、UTF-8 テキストを最大3件添付できます（各5 MiBまで）。PDFの画像だけのページは文字を抽出できません。添付は会話に紐付けて最大24時間保存されます。

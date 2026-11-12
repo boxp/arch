@@ -1,3 +1,4 @@
+import { createAttachments, AttachmentError } from './attachments.js'
 import { createGeocoder } from './geocode.js'
 import type { createNotifications } from './notifications.js'
 import type { createPush } from './push.js'
@@ -21,8 +22,9 @@ export const studioInstructions = BASE_INSTRUCTIONS
 // 完了・停止・本人判断待ちを silent にし、家にも Telegram にも届かない。Telegram 経由の依頼と同じ登録を Owner の発言 turn だけに求める。
 export const ownerTaskInstructions = ' ご主人さまの依頼でこの会話から Task Board に起票・再依頼・担当への引き継ぎをした場合は、Telegram 経由の依頼と同じく /opt/data/kohako-task-supervision.md に既存の書式で report-only の監督登録（家経由の依頼と明記）を追加して読み戻し、返答で票 ID を伝えてください。登録が無いと、その票の完了・停止・本人判断待ちの通知が家にも Telegram にも届きません。起票や引き継ぎをしていない turn では登録しません。'
 type Principal = 'owner' | 'verifier' | 'notifier'
-export function createApp(opts: { authenticate: (headers: IncomingMessage['headers']) => Promise<Principal | null>; hermes?: ReturnType<typeof createHermes>; notifications?: Awaited<ReturnType<typeof createNotifications>>; push?: Awaited<ReturnType<typeof createPush>>; sttUrl?: string; conversations?: { owner: ReturnType<typeof createConversation>; verifier: ReturnType<typeof createConversation> }; status?: { get: () => Promise<StatusPayload> }; now?: () => number; fetch?: typeof fetch }) {
+export function createApp(opts: { authenticate: (headers: IncomingMessage['headers']) => Promise<Principal | null>; hermes?: ReturnType<typeof createHermes>; notifications?: Awaited<ReturnType<typeof createNotifications>>; push?: Awaited<ReturnType<typeof createPush>>; sttUrl?: string; conversations?: { owner: ReturnType<typeof createConversation>; verifier: ReturnType<typeof createConversation> }; status?: { get: () => Promise<StatusPayload> }; now?: () => number; fetch?: typeof fetch; attachments?: ReturnType<typeof createAttachments> }) {
   const now = opts.now ?? Date.now, fetcher = opts.fetch ?? fetch
+  const attachments = opts.attachments ?? createAttachments(undefined, now)
   const geocode = createGeocoder({ fetcher })
   const conversations = opts.conversations ?? (opts.hermes ? { owner: createConversation({ now, hermes: opts.hermes, prefix: 'kohako-web', geocode }), verifier: createConversation({ now, hermes: opts.hermes, prefix: 'kohako-verify', geocode }) } : undefined)
   const awaitingApproval = (e: NonNullable<ReturnType<NonNullable<typeof conversations>['owner']['get']>>) => e.status === 'pending' && !!e.approval?.active && !e.approval.consumed
@@ -70,6 +72,13 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
         }
       }
       if (principal === 'notifier') return json(403, { error: 'forbidden' })
+      if (method === 'POST' && route === 'attachments') {
+        if (!conv) return json(503, { error: 'conversation_disabled' })
+        const chunks: Buffer[] = []; let size = 0
+        for await (const chunk of req) { const b = Buffer.from(chunk); size += b.length; if (size > 5 * 1024 * 1024) return json(413, { error: 'too_large' }); chunks.push(b) }
+        let name: string; try { name = decodeURIComponent(String(req.headers['x-kohako-filename'] ?? 'file')) } catch { return json(400, { error: 'invalid' }) }
+        try { const item = await attachments.upload(Buffer.concat(chunks), req.headers['content-type'] ?? '', name, principal, conv.sessionStartedAt); return json(201, { attachmentId: item.id, kind: item.kind, name: item.displayName, size: item.size, truncated: item.truncated }) } catch (e) { if (e instanceof AttachmentError) return json(e.status, { error: e.code }); throw e }
+      }
       if (method === 'GET' && route === 'status') return opts.status ? json(200, await opts.status.get()) : json(503, { error: 'status_disabled' })
       if (method === 'GET' && route === 'me') return json(200, { authenticated: true })
       if (method === 'GET' && route === 'conversation') return json(200, { enabled: !!conv, stt: opts.sttUrl ? 'whisper' : null, sessionStartedAt: conv?.sessionStartedAt })
@@ -102,7 +111,13 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
       }
       if (typeof x.expiresAt !== 'number' || !Number.isFinite(x.expiresAt) || x.expiresAt > now() + 600000) return json(400, { error: 'invalid' })
       let input: Input
-      if (x.kind === 'text' && typeof x.text === 'string' && x.text.trim() && x.text.length <= 500 && (x.views === undefined || x.views === true)) input = { kind: 'text', requestId: x.requestId, text: x.text, expiresAt: x.expiresAt, ...(x.views === true ? { views: true } : {}) }
+      const files: NonNullable<Extract<Input, { kind: 'text' }>['attachments']> = []
+      if (x.attachments !== undefined) {
+        if (x.kind !== 'text' || !Array.isArray(x.attachments) || x.attachments.length > 3 || !x.attachments.every((id: unknown) => typeof id === 'string' && /^[a-f0-9]{32}$/.test(id))) return json(400, { error: 'invalid' })
+        for (const id of x.attachments) { const item = await attachments.get(id, principal, conv.sessionStartedAt); if (!item) return json(404, { error: 'unknown_attachment' }); files.push(item) }
+        if (files.reduce((n, f) => n + (f.meta.kind === 'image' ? Math.ceil(f.data.length / 3) * 4 : Buffer.byteLength(f.meta.extractedText ?? '') * 2), 0) > 7_800_000) return json(413, { error: 'too_large' })
+      }
+      if (x.kind === 'text' && typeof x.text === 'string' && (x.text.trim() || files.length) && x.text.length <= 500 && (x.views === undefined || x.views === true)) input = { kind: 'text', requestId: x.requestId, text: x.text.trim() ? x.text : '添付ファイルを見てください', expiresAt: x.expiresAt, ...(files.length ? { attachments: files } : {}), ...(x.views === true ? { views: true } : {}) }
       else if (x.kind === 'touch' && Object.keys(x).every(k => ['requestId', 'kind', 'touch', 'expiresAt'].includes(k)) && x.touch && typeof x.touch === 'object' && !Array.isArray(x.touch) && Object.keys(x.touch).length === 3 && ['head', 'hand'].includes(x.touch.zone) && ['pat', 'tap'].includes(x.touch.action) && Number.isInteger(x.touch.count) && x.touch.count >= 1 && x.touch.count <= 20) input = { kind: 'touch', requestId: x.requestId, touch: { zone: x.touch.zone, action: x.touch.action, count: x.touch.count }, expiresAt: x.expiresAt }
       else return json(400, { error: 'invalid' })
       if (x.expiresAt <= now()) return json(410, { error: 'expired' })
