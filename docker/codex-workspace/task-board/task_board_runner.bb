@@ -2297,8 +2297,8 @@
                                     (str "- " repo " -> " path " (branch " (or branch "detached") ")\n"
                                          (when carryover (str "  Carried over from previous run " reused-from " as-is (HEAD " carryover-head ", branch " (or branch "detached") "; " (:modified carryover-dirty) " modified, " (:untracked carryover-dirty) " untracked, " (:unpushed carryover-dirty) " unpushed commits). This is the continuation of the same ticket's work: inspect `git status` and `git log` first and do NOT run git reset --hard, git clean, git checkout -- . or git stash drop to discard it. Create or switch branches only after committing or deliberately preserving these changes.\n"))
                                          (when (and reused-from (not carryover)) (str "  Reused from previous run " reused-from "; tracked files are clean "
-                                                                (if reuse-base-reason
-                                                                  (str "at the previous run's own HEAD (" reuse-base "), kept to preserve its verified studio dist; it can include that run's already-pushed commits, so switch to the correct base or PR branch before committing.")
+                                                                (if (contains? #{"studio-dist-keep-head" "bff-dist-keep-head"} reuse-base-reason)
+                                                                  (str "at the previous run's own HEAD (" reuse-base "), kept to preserve its verified dist; it can include that run's already-pushed commits, so switch to the correct base or PR branch before committing.")
                                                                   (str "at " reuse-base " on a new branch (source HEAD, or the previous run's default-branch base when that is newer)."))
                                                                 " Regenerable ignored outputs (node_modules, dist, ...) may remain; reinstall or rebuild when relevant.\n"))))
                                   prepared))
@@ -6087,6 +6087,32 @@
               (log! "generated-reclaim: warning invalid mode, using off"))
             :off))))
 
+(defn reuse-drop-dist-enabled? []
+  (try
+    (let [path (fs/path (root) "generated-reclaim.edn")
+          file? (fs/exists? path {:nofollow-links true})
+          settings (if file? (read-edn-file path ::invalid) {})]
+      ;; Only an effective :on mode deletes; :dry-run, :off and invalid modes keep dist.
+      (and (map? settings)
+           (= :on (generated-reclaim-mode))
+           (true? (get settings :reuse-drop-dist true))))
+    (catch Exception _ false)))
+
+(defn reuse-drop-dist! [old repo path verifier reason ticket-id]
+  (try
+    (let [dir (fs/path old path)
+          hold (or (when-not (fs/directory? dir {:nofollow-links true}) "not-a-directory")
+                   (verifier old)
+                   (inspect-ignored old repo))]
+      (if hold
+        (do (log! (str "workspace-reuse: dist-drop-held ticket=" ticket-id " repo=" repo " reason=" reason " hold=" hold)) reason)
+        (do (fs/delete-tree dir)
+            (log! (str "workspace-reuse: dist-dropped ticket=" ticket-id " repo=" repo " path=" path))
+            nil)))
+    (catch Exception e
+      (log! (str "workspace-reuse: dist-drop-failed ticket=" ticket-id " repo=" repo " reason=" reason " error=" (one-line (.getMessage e))))
+      reason)))
+
 (defn generated-ticket-hold [ticket-id]
   (let [lanes (board-card-lanes ticket-id)
         ticket (ticket-frontmatter-or-nil ticket-id)]
@@ -6647,7 +6673,11 @@
                     old-head-result (when keep-head? (command-result ["git" "-C" (str old) "rev-parse" "HEAD"]))
                     old-head (some-> old-head-result :out str/trim)
                     base (if keep-head? old-head base)
-                    reuse-base-reason (when keep-head? (if public-diff? "studio-dist-keep-head" "bff-dist-keep-head"))]
+                    drop-studio? (and public-diff? (not keep-head?))
+                    drop-bff? (and bff-diff? (not keep-head?))
+                    reuse-base-reason (cond keep-head? (if public-diff? "studio-dist-keep-head" "bff-dist-keep-head")
+                                            drop-studio? "studio-dist-dropped"
+                                            drop-bff? "bff-dist-dropped")]
                 (cond
                   (:hold inspection) (reject (:hold inspection))
                   (not= repo (:repo inspection)) (reject "repo-mismatch")
@@ -6656,8 +6686,8 @@
                   (and keep-head? (or (not (zero? (:exit old-head-result))) (str/blank? old-head))) (reject "git-error")
                   ;; Keep the run's HEAD when its own commits account for the
                   ;; difference; otherwise switching would make the verified dist stale.
-                  (and public-diff? (not keep-head?)) (reject "studio-dist-public-diff")
-                  (and bff-diff? (not keep-head?)) (reject "bff-dist-src-diff")
+                  (and drop-studio? (not (reuse-drop-dist-enabled?))) (reject "studio-dist-public-diff")
+                  (and drop-bff? (not (reuse-drop-dist-enabled?))) (reject "bff-dist-src-diff")
                   :else
                   (do
                     (fs/create-dirs (fs/parent target))
@@ -6665,8 +6695,11 @@
                                  #(cond
                                     (not= run-id (:run-id (try (read-edn-file (lock-path ticket-id) nil) (catch Exception _ nil)))) {:reason "lock-not-owned"}
                                     (fs/exists? target {:nofollow-links true}) {:reason "target-exists"}
-                                    :else (let [r (command-result ["git" "--git-dir" common "worktree" "move" (str old) (str target)] {:timeout-seconds 30})]
-                                            (if (zero? (:exit r)) {:moved true} {:reason (str "move-failed " (:err r))}))))]
+                                    :else (if-let [reason (or (when drop-studio? (reuse-drop-dist! old repo studio-dist studio-dist-hold "studio-dist-public-diff" ticket-id))
+                                                             (when drop-bff? (reuse-drop-dist! old repo bff-dist bff-dist-hold "bff-dist-src-diff" ticket-id)))]
+                                            {:reason reason}
+                                            (let [r (command-result ["git" "--git-dir" common "worktree" "move" (str old) (str target)] {:timeout-seconds 30})]
+                                              (if (zero? (:exit r)) {:moved true} {:reason (str "move-failed " (:err r))})))))]
                       (if-not (:moved move)
                         (reject (:reason move))
                         (do
