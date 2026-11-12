@@ -77,7 +77,7 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
         const chunks: Buffer[] = []; let size = 0
         for await (const chunk of req) { const b = Buffer.from(chunk); size += b.length; if (size > 5 * 1024 * 1024) return json(413, { error: 'too_large' }); chunks.push(b) }
         let name: string; try { name = decodeURIComponent(String(req.headers['x-kohako-filename'] ?? 'file')) } catch { return json(400, { error: 'invalid' }) }
-        try { const item = await attachments.upload(Buffer.concat(chunks), req.headers['content-type'] ?? '', name, principal, conv.sessionStartedAt); return json(201, { attachmentId: item.id, kind: item.kind, name: item.displayName, size: item.size, truncated: item.truncated }) } catch (e) { if (e instanceof AttachmentError) return json(e.status, { error: e.code }); throw e }
+        try { const item = await attachments.upload(Buffer.concat(chunks), req.headers['content-type'] ?? '', name, principal, conv.attachmentSessionKey()); return json(201, { attachmentId: item.id, kind: item.kind, name: item.displayName, size: item.size, truncated: item.truncated }) } catch (e) { if (e instanceof AttachmentError) return json(e.status, { error: e.code }); throw e }
       }
       if (method === 'GET' && route === 'status') return opts.status ? json(200, await opts.status.get()) : json(503, { error: 'status_disabled' })
       if (method === 'GET' && route === 'me') return json(200, { authenticated: true })
@@ -114,7 +114,7 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
       const files: NonNullable<Extract<Input, { kind: 'text' }>['attachments']> = []
       if (x.attachments !== undefined) {
         if (x.kind !== 'text' || !Array.isArray(x.attachments) || x.attachments.length > 3 || !x.attachments.every((id: unknown) => typeof id === 'string' && /^[a-f0-9]{32}$/.test(id))) return json(400, { error: 'invalid' })
-        for (const id of x.attachments) { const item = await attachments.get(id, principal, conv.sessionStartedAt); if (!item) return json(404, { error: 'unknown_attachment' }); files.push(item) }
+        for (const id of x.attachments) { const item = await attachments.get(id, principal, conv.attachmentSessionKey()); if (!item) return json(404, { error: 'unknown_attachment' }); files.push(item) }
         if (files.reduce((n, f) => n + (f.meta.kind === 'image' ? Math.ceil(f.data.length / 3) * 4 : Buffer.byteLength(f.meta.extractedText ?? '') * 2), 0) > 7_800_000) return json(413, { error: 'too_large' })
       }
       if (x.kind === 'text' && typeof x.text === 'string' && (x.text.trim() || files.length) && x.text.length <= 500 && (x.views === undefined || x.views === true)) input = { kind: 'text', requestId: x.requestId, text: x.text.trim() ? x.text : '添付ファイルを見てください', expiresAt: x.expiresAt, ...(files.length ? { attachments: files } : {}), ...(x.views === true ? { views: true } : {}) }

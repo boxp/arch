@@ -101,6 +101,10 @@ export function createConversation({ now, hermes, prefix, store, geocode = async
       }
     },
     get sessionStartedAt() {
+      return sessionStartedAt
+    },
+    /** 添付の紐付け先。6 時間無操作で次の発言が新 session になる場合は、添付も新 session に紐付けるため先に切り替える。 */
+    attachmentSessionKey() {
       if (now() - lastUse > 6 * 3600_000 && ![...entries.values()].some(e => e.status === 'pending')) { sessionStartedAt = now(); lastUse = now(); lastExchange = persistedExchange = null; save() }
       return sessionStartedAt
     },
