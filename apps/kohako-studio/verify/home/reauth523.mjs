@@ -14,9 +14,9 @@ try {
   browser = await chromium.launch({ ...(process.env.CHROME ? { executablePath: process.env.CHROME } : {}), args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] })
   for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, false], ['mobile', { width: 412, height: 915 }, true]]) {
     results[device] = {}
-    for (const scenario of ['a', 'b', 'c', 'd', 'e', 'f', 'g']) {
+    for (const scenario of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']) {
       const ctx = await browser.newContext({ viewport, isMobile: mobile, hasTouch: mobile, serviceWorkers: 'block' }), page = await ctx.newPage()
-      let mode = scenario === 'b' ? 'abort' : scenario === 'a' || scenario === 'e' ? 'ok' : 'auth', navigations = 0, meCalls = 0
+      let mode = scenario === 'b' ? 'abort' : scenario === 'a' || scenario === 'e' || scenario === 'h' ? 'ok' : 'auth', navigations = 0, meCalls = 0, lookupAuth = scenario === 'h'
       const posts = [], gets = []
       page.on('framenavigated', frame => { if (frame === page.mainFrame()) navigations++ })
       await ctx.route('**/kohako/api/v1/**', async route => {
@@ -25,7 +25,7 @@ try {
         if (p === 'conversation') return json(200, { enabled: true, stt: false })
         if (p === 'status') return json(200, { schema: 'kohako-home-status/v1', quota: { state: 'ok', pools: [] }, tasks: { state: 'ok', inProgress: { total: 0, complete: true, byAgent: [], conflicts: [] } } })
         if (p === 'messages') { posts.push(req.postDataJSON()); return json(202, {}) }
-        if (p.startsWith('requests/')) { gets.push(p); if (mode === 'auth') return json(401, {}); if (scenario === 'e' || scenario === 'f' || scenario === 'g') return json(503, {}); return json(200, { status: 'pending' }) }
+        if (p.startsWith('requests/')) { gets.push(p); if (mode === 'auth' || lookupAuth) return json(401, {}); if (scenario === 'e' || scenario === 'f' || scenario === 'g') return json(503, {}); return json(200, { status: 'pending' }) }
         return json(404, {})
       })
       const url = `http://localhost:${port}/kohako/home.html?acting=0&face=static`
@@ -34,6 +34,8 @@ try {
         if (scenario === 'f') await ctx.addInitScript(() => { if (sessionStorage.getItem('f523')) return; sessionStorage.setItem('f523', '1'); sessionStorage.setItem('kohako-home-unconfirmed', JSON.stringify({ kind: 'text', text: '同文', requestId: 'pending-f523', expiresAt: Date.now() + 600000 })) })
         // g: 送信待ちが満杯で控えと同じ本文の手入力草稿を退避できないときは、再読み込み前に明示の確認を出し、取り消せば再読み込みしないこと。
         if (scenario === 'g') await ctx.addInitScript(() => { if (sessionStorage.getItem('g523')) return; sessionStorage.setItem('g523', '1'); const now = Date.now(); sessionStorage.setItem('kohako-home-unconfirmed', JSON.stringify({ kind: 'text', text: '同文', requestId: 'pending-g523', expiresAt: now + 600000 })); sessionStorage.setItem('kohako-home-reauth', JSON.stringify({ v: 1, draft: '', queue: ['q1', 'q2', 'q3', 'q4', 'q5'], at: now - 1000, reloadAt: now - 1000 })) })
+        // h: 控えの照会が 401 で控えの写しが入力欄に戻った状態から再認証し、照会が 200（受理済み）になったら写しを入力欄に残さないこと（新しい受付番号での重複送信を防ぐ）。
+        if (scenario === 'h') await ctx.addInitScript(() => { if (sessionStorage.getItem('h523')) return; sessionStorage.setItem('h523', '1'); sessionStorage.setItem('kohako-home-unconfirmed', JSON.stringify({ kind: 'text', text: '同文', requestId: 'pending-h523', expiresAt: Date.now() + 600000 })) })
         if (scenario === 'd') await ctx.addInitScript(() => sessionStorage.setItem('kohako-home-unconfirmed', JSON.stringify({ kind: 'text', text: '未確認', requestId: 'pending-523', expiresAt: Date.now() + 600000 })))
         // e: 受理未確認の控えと同じ本文の送信待ち・草稿を退避済みで再読込後に戻し、控えの照会が 200 以外でも草稿と送信待ちを失わないこと。
         if (scenario === 'e') await ctx.addInitScript(() => { if (sessionStorage.getItem('e523')) return; sessionStorage.setItem('e523', '1'); const now = Date.now(); sessionStorage.setItem('kohako-home-unconfirmed', JSON.stringify({ kind: 'text', text: '同文', requestId: 'pending-e523', expiresAt: now + 600000 })); sessionStorage.setItem('kohako-home-reauth', JSON.stringify({ v: 1, draft: '下書き', queue: ['同文'], at: now - 1000, reloadAt: now - 1000 })) })
@@ -45,6 +47,14 @@ try {
           assert((await page.locator('#reconnect').textContent()) === '再接続', '通常切断のボタン'); const before = meCalls; await page.locator('#reconnect').click(); await page.waitForTimeout(700); assert(navigations === 1 && meCalls > before, '通常切断で再読込または再接続なし')
         } else {
           assert((await page.locator('#reconnect').textContent()) === '再認証のため再読み込み', '認証切れのボタン')
+          if (scenario === 'h') {
+            assert(await page.locator('#message').inputValue() === '同文', '控えの写しが入力欄にない')
+            lookupAuth = false; await page.route('**/kohako/home.html**', route => route.continue())
+            await Promise.all([page.waitForNavigation(), page.locator('#reconnect').click()])
+            await page.waitForFunction(() => document.querySelector('#history')?.textContent.includes('受理済みでした')); await page.waitForTimeout(800)
+            assert(gets.filter(x => x === 'requests/pending-h523').length >= 2, '再認証後の照会なし'); assert(await page.locator('#message').inputValue() === '', '受理済みの控えの写しが入力欄に残った'); assert(await page.evaluate(() => sessionStorage.getItem('kohako-home-reauth')) === null, '退避が残存'); assert(posts.length === 0, '予期しない POST')
+            results[device][scenario] = { pass: true, navigations, posts: posts.length, gets }; continue
+          }
           await page.locator('#message').fill(scenario === 'f' || scenario === 'g' ? '同文' : '下書き')
           if (scenario === 'g') {
             const dialogs = []; page.once('dialog', d => { dialogs.push(d.message()); void d.dismiss() })

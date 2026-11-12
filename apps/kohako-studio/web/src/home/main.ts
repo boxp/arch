@@ -356,7 +356,8 @@ reconnect.addEventListener('click', () => {
   if (!authExpired) { error.textContent = ''; connection.textContent = '接続を確認中'; void initialize(); return }
   if (chips.length && !window.confirm('添付ファイルは再読み込みで外れます。再認証後に追加し直してください。再読み込みしますか？')) return
   const now = Date.now(), previous = parseReauth(tab.get(REAUTH_KEY), now), texts = queue.size ? queue.list().map(x => x.text) : previous?.queue ?? []
-  let draft = message.value || previous?.draft || ''
+  // 入力欄が受理未確認の控えを画面が戻した写しなら草稿として退避しない（控えは sessionStorage に残り、照会結果に応じて戻す）。受理済みと判明した後に写しが残ると重複送信になり得る。
+  let draft = message.value && composerEcho === message.value ? '' : message.value || previous?.draft || ''
   // 控えと同じ本文を手で入力した草稿は別の発言。入力欄に戻すと控えの再確認として送られて消えるため、送信待ちの末尾へ退避する（自動では送らない）。
   const separate = draft.trim()
   if (message.value && unconfirmed && separate === unconfirmed.text && composerEcho !== message.value) {
@@ -878,6 +879,8 @@ async function resumeUnconfirmed(pending: Outgoing) {
   let lookup: Awaited<ReturnType<typeof call>> | null = null
   try { lookup = await call(`requests/${pending.requestId}`) } catch { lookup = null }
   if (lookup && lookup.status === 200 && unconfirmed === pending) {
+    // 入力欄に残る控えの写しは受理済みの発言そのもの。残すと新しい受付番号で二重に送れるため外す（手入力の文は残す）。
+    if (composerEcho !== null && composerEcho === pending.text && message.value === composerEcho) { message.value = ''; composerEcho = null }
     setUnconfirmed(null); requestId = pending.requestId; accepted = true; started = Date.now()
     setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true })
     addHistory('あなた', pending.text + (pending.attachmentNames ?? []).map(x => `\n📎 ${x}`).join('')); if (pending.attachments) { for (let i = chips.length - 1; i >= 0; i--) if (chips[i].id && pending.attachments.includes(chips[i].id!)) chips.splice(i, 1); renderChips() } addHistory('お知らせ', '再読み込み前の送信は受理済みでした。再送せずに結果を追います。'); show('thinking'); void poll(requestId); return
