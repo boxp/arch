@@ -26,3 +26,8 @@
 - 配備後、更新を跨いで実 URL（Access 経由は codex-workspace verifier 経路）を 1 秒間隔で計測し、静的 HTTP 停止・API 503・接続切断・会話追跡の継続/欠落・通知重複を区別して記録。
 - rollback: lolice PR revert（旧単一 Pod 構成）。arch 側変更は旧構成互換。
 - 移行時の一回限りの API 停止（PVC 付け替え）は事前に記録する。
+
+## 追補（2026-11-12 配備後計測）
+- 自然更新を跨いだ計測で静的は無停止、API は約 14s 停止まで短縮。ただし BFF 停止中の API は即 503 ではなく接続待ちになっていた。
+- 原因: BFF Service にエンドポイントが無い間は SYN に応答が無く、nginx の `proxy_connect_timeout` 既定 60s まで待つ。
+- 対策: `proxy_connect_timeout 2s`。nginx:1.27 で到達不能 upstream に対し 60.06s → 2.00s で JSON 503 + `Retry-After: 5`。
