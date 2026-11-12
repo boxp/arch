@@ -1,8 +1,11 @@
+// CPU ローカル合成は実時間より遅く(本番相当 2〜4 CPU で音声 8.8 秒に約 20〜40 秒)、120 字文をそのまま送ると
+// nginx/Cloudflare の応答待ち上限を超え得る。1 要求を短く保ち、合成待ちと初回再生までの時間を抑える。
+export const VOICE_CHUNK_MAX = 60
 export function splitVoiceSentences(sentences: string[]): string[] {
   const result: string[] = []
   for (const sentence of sentences) {
     let rest = sentence
-    while (rest.length > 300) { let cut = rest.lastIndexOf('、', 299) + 1; if (!cut) cut = 300; if (cut < rest.length && /[\uD800-\uDBFF]/.test(rest[cut - 1]) && /[\uDC00-\uDFFF]/.test(rest[cut])) cut--; result.push(rest.slice(0, cut)); rest = rest.slice(cut) }
+    while (rest.length > VOICE_CHUNK_MAX) { let cut = rest.lastIndexOf('、', VOICE_CHUNK_MAX - 1) + 1; if (!cut) cut = VOICE_CHUNK_MAX; if (cut < rest.length && /[\uD800-\uDBFF]/.test(rest[cut - 1]) && /[\uDC00-\uDFFF]/.test(rest[cut])) cut--; result.push(rest.slice(0, cut)); rest = rest.slice(cut) }
     if (rest) result.push(rest)
   }
   return result

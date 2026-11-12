@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { createVoicePlayer, splitVoiceSentences } from './voice'
+import { createVoicePlayer, splitVoiceSentences, VOICE_CHUNK_MAX } from './voice'
 import { splitSentences } from '../live2d/acting'
 const tick = () => new Promise(r => setTimeout(r, 0))
 function setup(fetcher: typeof fetch) {
@@ -23,13 +23,13 @@ it('cancel prevents stale fetch and playback', async () => {
 it('reports errors and splits long sentences', async () => {
   const { player, events } = setup((async () => new Response('', { status: 500 })) as typeof fetch)
   player.speak(['x'], events); await tick(); expect(events.onError).toHaveBeenCalledWith('fetch_failed', 0)
-  const text = 'あ'.repeat(200) + '、' + 'い'.repeat(350); const chunks = splitVoiceSentences([text]); expect(chunks.join('')).toBe(text); expect(chunks.every(x => x.length <= 300)).toBe(true); expect(chunks[0].endsWith('、')).toBe(true)
+  const text = 'あ'.repeat(40) + '、' + 'い'.repeat(350); const chunks = splitVoiceSentences([text]); expect(chunks.join('')).toBe(text); expect(chunks.every(x => x.length <= VOICE_CHUNK_MAX)).toBe(true); expect(chunks[0].endsWith('、')).toBe(true)
 })
 
 it('preserves a long novel through both splitters', () => {
   const text = ('「第123話！」彼女は驚いた……！？\n数字42と記号＠。\n'.repeat(80) + '長'.repeat(400)).trim()
   const sentences = splitSentences(text), chunks = splitVoiceSentences(sentences)
-  expect(chunks.join('')).toBe(text); expect(sentences.every(s => Array.from(s).length <= 120)).toBe(true); expect(chunks.every(s => s.length <= 300)).toBe(true)
+  expect(chunks.join('')).toBe(text); expect(sentences.every(s => Array.from(s).length <= 120)).toBe(true); expect(chunks.every(s => s.length <= VOICE_CHUNK_MAX)).toBe(true)
 })
 it('retries once, tracks completion and resumes without earlier fetches', async () => {
   const calls: string[] = []
