@@ -28,3 +28,9 @@ Playwright コンテナ（`mcr.microsoft.com/playwright:v1.56.1-noble`、`npm i 
 `usability510.mjs`（BOXP-510）は token 不要の完全な BFF モックで、PC と Pixel 7 相当の Enter 改行・Shift+Enter 送信、Markdown の安全な描画（script・javascript: リンク・画像を無効化し外部通信 0 件）、本文表示中の利用枠ウィジェット非表示、履歴・受信箱の昇順、背景の動きと OS の reduced-motion・「背景を動かす」OFF での静止を確かめます。ビルドを `SITE`（既定 `/site`）の `kohako/` に置き、Playwright 1.56.1 で `node usability510.mjs /out` を実行します。
 
 `arms510.mjs`（BOXP-510 TD-02）は token 不要の完全な BFF モックで、腕を動かしたとき左右端で腕・袖が切れないことを最終描画の画素で確かめます。PC（通常・幅縮小・ビューアー表示・履歴表示）と Pixel 7 相当（縦・横・横＋ビューアー・横＋設定）で各身振り（joy / greet / guide / halt / shyHand / tilt / nod）を再生しながら連続でスクリーンショットを撮り、キャラ以外を透明にした画像で描画面（canvas）の左右端の列と画面（舞台）の左右端の列に不透明画素が接していないかを数え、どちらかが 0 でなければ失敗にします。入力欄・送信がキャラの描画面に覆われていないことも確かめます。`BLEED=0` で修正前の余白なし描画面を再現できます（Pixel 7 横などで失敗する）。ビルドを `SITE`（既定 `/site`）の `kohako/` に置き、Playwright 1.56.1 で `node arms510.mjs /out` を実行します。腕が最も外へ出る区間の実画面を `<ケース>-joy.png` / `<ケース>-greet.png` に保存します。
+
+### BOXP-510 PWA
+
+`pwa510.mjs` は SITE の `kohako/` に web ビルドを置き、`node pwa510.mjs /out` で実行します。BFF をローカルで完全にモックし、PC / Pixel 7 相当の manifest、アイコン、SW、キャッシュ、オフライン・復帰、Chromium のインストール可能性を検証します。結果は `/out/result.json` に保存し、失敗時は終了コード 1 を返します。Playwright 1.56.1 を使用します。
+
+アイコンの再生成は `cd apps/kohako-studio/web && npm install --no-save --package-lock=false sharp && node scripts/generate-pwa-icons.mjs`。既存の `c48v6-idle-color.png` から顔を切り出し、nearest-neighbor で拡大します。maskable は 512px 中央の 288px（対角線が直径の 80% 以内） に配置します。

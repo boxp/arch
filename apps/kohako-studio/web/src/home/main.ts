@@ -1,3 +1,7 @@
+if ('serviceWorker' in navigator) {
+  void navigator.serviceWorker.register('/kohako/sw.js', { scope: '/kohako/' }).catch(() => {})
+}
+
 import { shouldSubmit } from './keys'
 import { atBottom } from './scroll'
 import { renderMarkdown, plainText } from './markdown'
