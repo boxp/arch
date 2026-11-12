@@ -5663,6 +5663,8 @@
     ;; Deepest first so a nested worktree is detached before its parent goes.
     (vec (sort-by (fn [path] [(- (count (seq (fs/path path)))) (str path)]) @found))))
 
+(declare dehydrated-marker dehydrated-present?)
+
 (defn inspect-checkout
   "Returns {:hold reason} when the checkout must be kept, otherwise its repo
   and, for a worktree of a repository outside the run, :external-common-dir."
@@ -5677,6 +5679,10 @@
 
       (not= (fs/real-path (str/trim (:out toplevel))) (fs/real-path checkout))
       {:hold "git-toplevel-mismatch"}
+
+      (let [marker (dehydrated-marker checkout)]
+        (and marker (fs/exists? marker {:nofollow-links true}) (dehydrated-present? checkout marker)))
+      {:hold "dehydrated-path-present"}
 
       :else
       (let [git-dir (fs/real-path git-dir)
@@ -6141,6 +6147,131 @@
       (generated-run-hold ticket-id run-id hours)
       (when-not (fs/directory? path {:nofollow-links true}) "not-real-directory")))
 
+(defn dehydrated-marker [co]
+  (when-let [dir (git-path co "--git-dir")]
+    (fs/path dir "codex-task-board-dehydrated")))
+
+(defn dehydrated-paths [marker]
+  (remove str/blank? (str/split (slurp (str marker)) #"\u0000")))
+
+(defn dehydrated-present? [co marker]
+  (some #(fs/exists? (fs/path co %) {:nofollow-links true}) (dehydrated-paths marker)))
+
+(defn git-with-paths [co args paths]
+  (try
+    @(p/process (into ["git" "-C" (str co)] args)
+                {:in (str (str/join "\u0000" paths) "\u0000") :out :string :err :string})
+    (catch Exception _ {:exit -1})))
+
+(defn rehydrate-checkout! [co]
+  (try
+    (when-let [marker (dehydrated-marker co)]
+      (when (fs/exists? marker {:nofollow-links true})
+        (let [paths (vec (dehydrated-paths marker))]
+          (if (dehydrated-present? co marker)
+            "dehydrated-path-present"
+            (if (and (zero? (:exit (git-with-paths co ["update-index" "-z" "--no-skip-worktree" "--stdin"] paths)))
+                     (zero? (:exit (git-with-paths co ["checkout-index" "-z" "-f" "--stdin"] paths)))
+                     (every? #(fs/exists? (fs/path co %) {:nofollow-links true}) paths)
+                     (let [status (generated-git co "status" "--porcelain")]
+                       (and (zero? (:exit status)) (str/blank? (:out status)))))
+              (do (fs/delete marker) nil)
+              "rehydrate-failed verification")))))
+    (catch Exception e (str "rehydrate-failed " (one-line (.getMessage e))))))
+
+(defn dehydrate-run-hold [ticket-id run-id hours]
+  (let [started (run-id-instant run-id) path (run-workspace-dir ticket-id run-id)]
+    (cond (nil? started) "run-id-timestamp-unparseable"
+          (.isAfter started (.minus (now) (java.time.Duration/ofHours hours))) "within-stale-retention"
+          (not (safe-run-workspace-path? ticket-id run-id path)) "unsafe-path"
+          :else (stale-process-hold (fs/real-path path)))))
+
+(defn dehydrate-scan [run co checkouts min-bytes]
+  (let [marker (dehydrated-marker co)
+        status (generated-git co "status" "--porcelain" "-z" "--untracked-files=all")
+        nested? (some #(and (not= (str %) (str co))
+                            (or (fs/starts-with? % co) (fs/starts-with? co %))) checkouts)]
+    (cond
+      (nil? marker) {:hold "git-error"}
+      nested? {:hold "nested-checkout"}
+      (fs/exists? marker {:nofollow-links true}) {:already true}
+      (not (zero? (:exit status))) {:hold "git-error"}
+      (not (str/blank? (:out status))) {:hold "uncommitted-changes"}
+      (some #(fs/exists? (fs/path (fs/parent marker) %) {:nofollow-links true})
+            ["MERGE_HEAD" "rebase-merge" "rebase-apply" "CHERRY_PICK_HEAD" "REVERT_HEAD" "BISECT_LOG" "index.lock"]) {:hold "git-operation-in-progress"}
+      :else
+      (let [index (generated-git co "ls-files" "-s" "-z")
+            tags (generated-git co "ls-files" "-t" "-z")
+            links (command-result ["find" "-P" (str run) "-name" ".git" "-prune" "-o" "-type" "l" "-print0"] {:timeout-seconds 60})]
+        (if (some #(not (zero? (:exit %))) [index tags links])
+          {:hold "git-error"}
+          (let [mismatches (volatile! 0)
+                skipped (set (map #(subs % 2) (filter #(str/starts-with? % "S ") (str/split (:out tags) #"\u0000"))))
+                targets (set (keep #(try (str (fs/real-path %)) (catch java.nio.file.NoSuchFileException _ nil)) (remove str/blank? (str/split (:out links) #"\u0000"))))
+                files (keep (fn [entry]
+                              (when-let [[_ mode sha stage rel] (re-matches #"(?s)(100644|100755) ([0-9a-f]+) ([0-9])\t(.*)" entry)]
+                                (let [path (fs/path co rel)]
+                                  (when (and (= stage "0") (not (skipped rel))
+                                             (fs/regular-file? path {:nofollow-links true})
+                                             (>= (fs/get-attribute path "basic:size" {:nofollow-links true}) min-bytes)
+                                             (= 1 (fs/get-attribute path "unix:nlink" {:nofollow-links true}))
+                                             (fs/starts-with? (fs/real-path path) (fs/real-path co))
+                                             (not (targets (str (fs/real-path path))))
+                                             (let [hash (try @(p/process ["git" "-C" (str co) "hash-object" "--stdin-paths"]
+                                                                        {:in (str (pr-str rel) "\n") :out :string :err :string})
+                                                             (catch Exception _ {:exit -1}))]
+                                               (if (and (zero? (:exit hash)) (= sha (str/trim (:out hash)))) true
+                                                   (do (vswap! mismatches inc) false))))
+                                    rel)))) (str/split (:out index) #"\u0000"))
+                bytes (reduce (fn [n rel] (let [v (generated-measure (fs/path co rel))] (if (and n v) (+ n v) (reduced nil)))) 0 files)]
+            (if (nil? bytes) {:hold "measurement-failed"} {:files (vec files) :bytes bytes :marker marker :hash-mismatches @mismatches})))))))
+
+(defn dehydrate-pass! [mode hours cap stop? stats count-done]
+  (let [flag (fs/path (root) "generated-reclaim.edn")
+        enabled? (and (not= "off" (some-> (System/getenv "CODEX_TASK_BOARD_GENERATED_RECLAIM_DEHYDRATE") str/trim str/lower-case))
+                      (not= false (try (:dehydrate (read-edn-file flag nil)) (catch Exception _ false))))
+        min-bytes (prune-setting "CODEX_TASK_BOARD_DEHYDRATE_MIN_BYTES" #(parse-bounded-long % 262144 1))]
+    (when enabled?
+      (doseq [ticket-dir (child-directories (workspaces-dir)) :while (and (not (stop?)) (< (count-done) cap))
+              :let [ticket (fs/file-name ticket-dir)] :when (nil? (generated-ticket-hold ticket))
+              run (child-directories ticket-dir) :while (and (not (stop?)) (< (count-done) cap))
+              :let [run-id (fs/file-name run)] :when (nil? (dehydrate-run-hold ticket run-id hours))]
+        (try
+          (let [checkouts (find-checkouts run)]
+            (doseq [co checkouts :while (and (not (stop?)) (< (count-done) cap))]
+              (let [{:keys [hold already files bytes hash-mismatches]} (dehydrate-scan run co checkouts min-bytes)
+                    display (str (fs/relativize run co))
+                    recheck (when (and (not hold) (seq files) (= mode :on))
+                              (with-ticket-lock-guard ticket
+                                #(or (generated-ticket-hold ticket) (dehydrate-run-hold ticket run-id hours)
+                                     (let [fresh (dehydrate-scan run co (find-checkouts run) min-bytes)]
+                                       (cond (:hold fresh) (:hold fresh)
+                                             (not= files (:files fresh)) "candidates-changed"
+                                             :else (try
+                                                     (let [marker (:marker fresh)
+                                                           temp (fs/create-temp-file {:dir (fs/parent marker) :prefix "dehydrate-"})]
+                                                       (spit (str temp) (str (str/join "\u0000" files) "\u0000"))
+                                                       (fs/move temp marker {:replace-existing true :atomic-move true})
+                                                       (if-not (zero? (:exit (git-with-paths co ["update-index" "-z" "--skip-worktree" "--stdin"] files)))
+                                                         "update-index-failed"
+                                                         (do (doseq [rel files] (fs/delete (fs/path co rel)))
+                                                             (let [status (generated-git co "status" "--porcelain")]
+                                                               (when (or (not (zero? (:exit status))) (not (str/blank? (:out status)))) "post-verify-failed")))))
+                                                     (catch Exception e (str "dehydrate-failed " (one-line (.getMessage e))))))))))
+                    result (cond hold :held (= recheck "post-verify-failed") :held recheck :skipped-recheck (and (seq files) (= mode :on)) :reclaimed (seq files) :would-reclaim :else nil)
+                    reason (or hold recheck)]
+                (when already (swap! stats update :already-dehydrated inc))
+                (when hash-mismatches (swap! stats update :dehydrate-hash-mismatches + hash-mismatches))
+                (when result
+                  (workspace-metrics-write! {:event :generated-reclaim :kind :tracked-dehydrate :ticket ticket :run run-id :path display :files (count files) :allocated-bytes bytes :result result :reason reason})
+                  (if reason
+                    (do (swap! stats update :held inc) (swap! stats update-in [:held-by-reason reason] (fnil inc 0)) (log! (str "generated-reclaim: hold " display " reason=" reason)))
+                    (do (swap! stats update result inc)
+                        (swap! stats update :dehydrated-files + (count files))
+                        (swap! stats update (if (= result :reclaimed) :reclaimed-allocated-bytes :would-reclaim-allocated-bytes) + bytes)
+                        (log! (str "generated-reclaim: dehydrate " display " files=" (count files) " bytes=" bytes (when (= result :would-reclaim) " (dry-run)")))))))))
+          (catch Exception e (log! (str "generated-reclaim: dehydrate error " run " " (one-line (.getMessage e))))))))))
+
 (defn reclaim-generated-outputs! [{:keys [dry-run? stop?] :or {stop? (constantly false)}}]
   (let [configured (generated-reclaim-mode)
         mode (if (and dry-run? (not= :off configured)) :dry-run configured)
@@ -6148,7 +6279,7 @@
         cap (prune-setting "CODEX_TASK_BOARD_GENERATED_RECLAIM_MAX_PER_PASS" #(parse-bounded-long % 50 1))
         free #(try (.getUsableSpace (java.io.File. (str (workspaces-dir)))) (catch Exception _ nil))
         before (free)
-        stats (atom {:reclaimed 0 :would-reclaim 0 :held 0 :reclaimed-allocated-bytes 0 :would-reclaim-allocated-bytes 0 :held-by-reason {} :skipped-tickets {} :skipped-runs {}})
+        stats (atom {:reclaimed 0 :would-reclaim 0 :held 0 :reclaimed-allocated-bytes 0 :would-reclaim-allocated-bytes 0 :dehydrated-files 0 :already-dehydrated 0 :dehydrate-hash-mismatches 0 :held-by-reason {} :skipped-tickets {} :skipped-runs {}})
         count-done #(+ (:reclaimed @stats) (:would-reclaim @stats))]
     (when (not= mode :off)
       (doseq [ticket-dir (child-directories (workspaces-dir)) :while (and (not (stop?)) (< (count-done) cap))]
@@ -6208,6 +6339,7 @@
                                           (log! (str "generated-reclaim: reclaim " display (when (= result :would-reclaim) " (dry-run)"))))))))))))))
                   (catch Exception e (log! (str "generated-reclaim: run error " run-path " " (one-line (.getMessage e))))))))
             (catch Exception e (log! (str "generated-reclaim: ticket error " ticket-id " " (one-line (.getMessage e))))))))
+      (dehydrate-pass! mode hours cap stop? stats count-done)
       (workspace-metrics-write! (merge {:event :generated-reclaim-summary :mode mode :fs-free-bytes-before before :fs-free-bytes-after (free)} @stats))
       (log! (str "generated-reclaim: summary " (one-line (pr-str (assoc @stats :mode mode))))))))
 
@@ -6427,6 +6559,7 @@
           (not (and (fs/directory? old {:nofollow-links true})
                     (= (fs/real-path old) (fs/path (fs/real-path old-run) "ghq/github.com" repo)))) (reject "unsafe-path")
           (fs/exists? target {:nofollow-links true}) (reject "target-exists")
+          (some? (reset! fallback (rehydrate-checkout! old))) (reject @fallback)
           (not= [(str old)] (mapv str (find-checkouts old))) (reject "nested-checkout")
           (and *workspace-carryover-allowed?* (= :on (workspace-carryover-mode ticket-id))) (carryover-worktree! source target ticket-id run-id repo previous old-run old reject failed moved?)
           :else
