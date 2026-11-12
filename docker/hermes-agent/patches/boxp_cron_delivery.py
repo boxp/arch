@@ -80,14 +80,55 @@ def record(job, content, for_failure, delivery):
         log.warning('cron delivered copy unavailable', exc_info=True)
 
 
+_sent = threading.local()
+
+
+def _mark_sent(t):
+    stack = getattr(_sent, 'stack', None)
+    if stack:
+        stack[-1].add(str(getattr(t, 'platform_name', '') or '').lower())
+
+
+def _wrap_live(original):
+    def wrapped_live(t, *args, **kwargs):
+        delivered = original(t, *args, **kwargs)
+        if delivered:
+            _mark_sent(t)
+        return delivered
+    wrapped_live.__name__ = 'wrapped'
+    return wrapped_live
+
+
+def _wrap_standalone(original):
+    def wrapped_standalone(t, content, media_files, target_errors, delivery_errors, *args, **kwargs):
+        before = len(target_errors)
+        result = original(t, content, media_files, target_errors, delivery_errors, *args, **kwargs)
+        # Upstream reports a failed standalone send by appending to target_errors (relay fails closed).
+        if not getattr(t, 'is_relay', False) and len(target_errors) == before:
+            _mark_sent(t)
+        return result
+    wrapped_standalone.__name__ = 'wrapped'
+    return wrapped_standalone
+
+
 def wrap(original, delivery):
+    """Copy when the Telegram target itself was delivered, even if another target failed."""
+    for name, factory in (('_deliver_via_live_adapter', _wrap_live), ('_deliver_standalone', _wrap_standalone)):
+        current = getattr(delivery, name, None)
+        if current is not None and getattr(current, '__name__', '') != 'wrapped':
+            setattr(delivery, name, factory(current))
+
     def wrapped(job, content, adapters=None, loop=None, *, for_failure=False):
-        result = original(job, content, adapters, loop, for_failure=for_failure)
+        stack = getattr(_sent, 'stack', None)
+        if stack is None:
+            stack = _sent.stack = []
+        stack.append(set())
         try:
-            external = os.environ.get('_HERMES_CRON_EXTERNAL_WORKER', '')
-            targets = delivery._resolve_delivery_targets(job, for_failure=for_failure)
-            queued = external and adapters is None and external == str(job.get('execution_id') or '') and any(t['platform'] != delivery.BOT_CHAT_PLATFORM for t in targets)
-            if result is None and not queued:
+            result = original(job, content, adapters, loop, for_failure=for_failure)
+        finally:
+            sent = stack.pop()
+        try:
+            if 'telegram' in sent:
                 record(job, content, for_failure, delivery)
         except Exception:
             log.warning('cron copy inspection failed', exc_info=True)

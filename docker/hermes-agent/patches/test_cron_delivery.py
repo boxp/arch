@@ -23,20 +23,51 @@ class CronCopyTest(unittest.TestCase):
         base = types.ModuleType('gateway.platforms.base')
         base.BasePlatformAdapter = type('Adapter', (), {'extract_media': staticmethod(lambda text: ([], text.replace('[media]', '')))})
         self.modules = patch.dict(sys.modules, {'gateway': types.ModuleType('gateway'), 'gateway.platforms': types.ModuleType('gateway.platforms'), 'gateway.platforms.base': base}); self.modules.start(); self.addCleanup(self.modules.stop)
-        self.delivery = types.SimpleNamespace(_sched=types.SimpleNamespace(_is_cron_silence_response=lambda text: text == 'SILENT'), _resolve_delivery_targets=lambda job, **kw: job.get('targets', [{'platform': 'telegram'}]), _redact_cron_payload=lambda text, what: text.replace('secret', '[redacted]'), BOT_CHAT_PLATFORM='bot-chat')
+        # Fake per-target lanes: a target's 'outcome' is live / standalone / fail / relay-fail.
+        def live(t, text, media, *, target_errors, delivery_errors, unverified_targets):
+            return t.outcome == 'live'
+        def standalone(t, content, media, target_errors, delivery_errors):
+            if t.outcome in ('fail', 'relay-fail'):
+                target_errors.append(f'{t.platform_name} failed'); delivery_errors.extend(target_errors)
+        self.delivery = types.SimpleNamespace(_sched=types.SimpleNamespace(_is_cron_silence_response=lambda text: text == 'SILENT'), _resolve_delivery_targets=lambda job, **kw: job.get('targets', [{'platform': 'telegram'}]), _redact_cron_payload=lambda text, what: text.replace('secret', '[redacted]'), BOT_CHAT_PLATFORM='bot-chat', _deliver_via_live_adapter=live, _deliver_standalone=standalone)
         self.job = {'id': 'job1', 'name': 'Test', 'execution_id': 'run1'}
-    def send(self, job=None, content='hello secret [media]', result=None, **kw):
-        return mod.wrap(lambda *a, **k: result, self.delivery)(job or self.job, content, **kw)
+    def original(self, job, content, adapters=None, loop=None, *, for_failure=False):
+        # Mirrors upstream _deliver_result: lanes are looked up on the module at call time.
+        if os.environ.get('_HERMES_CRON_EXTERNAL_WORKER') == job.get('execution_id') and adapters is None:
+            return None  # handed to the durable queue; nothing sent in this process
+        errors = []
+        for target in self.delivery._resolve_delivery_targets(job, for_failure=for_failure):
+            t = types.SimpleNamespace(platform_name=target['platform'], outcome=target.get('outcome', 'standalone'), is_relay=target.get('outcome') == 'relay-fail')
+            target_errors = []
+            if not self.delivery._deliver_via_live_adapter(t, content, [], target_errors=target_errors, delivery_errors=errors, unverified_targets=[]):
+                self.delivery._deliver_standalone(t, content, [], target_errors, errors)
+        return '; '.join(errors) or None
+    def send(self, job=None, content='hello secret [media]', **kw):
+        return mod.wrap(self.original, self.delivery)(job or self.job, content, **kw)
     def files(self): return list((self.root / 'copies').glob('*.md'))
     def test_success_and_dedupe(self):
         self.send(); self.send()
         self.assertEqual(len(self.files()), 1)
         self.assertEqual(json.loads(self.files()[0].read_text())['text'], 'hello [redacted] ')
     def test_skips(self):
-        self.send(result='error'); self.send(content=' '); self.send(content='SILENT')
+        self.send(job={**self.job, 'targets': [{'platform': 'telegram', 'outcome': 'fail'}]})
+        self.send(job={**self.job, 'targets': [{'platform': 'telegram', 'outcome': 'relay-fail'}]})
+        self.send(content=' '); self.send(content='SILENT')
         self.send(job={**self.job, '_notification_all_targets_suppressed': True})
         self.send(job={**self.job, 'targets': [{'platform': 'discord'}]})
         self.assertEqual(self.files(), [])
+    def test_telegram_success_with_other_target_failure(self):
+        job = {**self.job, 'targets': [{'platform': 'telegram', 'outcome': 'live'}, {'platform': 'discord', 'outcome': 'fail'}]}
+        self.assertEqual(self.send(job=job), 'discord failed')
+        self.assertEqual(len(self.files()), 1)
+    def test_other_target_success_with_telegram_failure(self):
+        job = {**self.job, 'targets': [{'platform': 'telegram', 'outcome': 'fail'}, {'platform': 'discord', 'outcome': 'live'}]}
+        self.send(job=job)
+        self.assertEqual(self.files(), [])
+    def test_wrap_is_idempotent(self):
+        mod.wrap(self.original, self.delivery); live = self.delivery._deliver_via_live_adapter
+        mod.wrap(self.original, self.delivery)
+        self.assertIs(self.delivery._deliver_via_live_adapter, live)
     def test_external_queue_and_gateway(self):
         with patch.dict(os.environ, {'_HERMES_CRON_EXTERNAL_WORKER': 'run1'}):
             self.send(); self.assertEqual(self.files(), [])
