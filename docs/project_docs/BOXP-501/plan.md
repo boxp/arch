@@ -55,3 +55,10 @@ Hermes は Telegram への送信成功後、receipt より先に実送信本文�
 ### TD-01: foreground案内と内容のあるWeb Push
 - Web Push は題名と短い本文を表示し、URL、2階層以上の絶対パスやホームパス、長いトークン、メールアドレスを伏字にする。`KOHAKO_PUSH_CONTENT=minimal` で固定文に戻せる。
 - 家を開いているときは未読・未処理の新しい通知を案内し、案内済み状態をサーバーに保存する。返信・選択は受信箱と同じ経路で送る。
+
+### TD-03 CRON通知
+- 方針: Telegram 配送成功後の伏字済み本文を同期し、dispatcher から家へ複製する。
+- 対象job種別: agent、no_agent/script、失敗通知、単発リマインダー、サンライズ監視。
+- 不変条件: schedule、prompt、model、配送先と Telegram 配信を維持する。
+- rollback: dispatcher の HOME URL を無効化、または配送パッチを revert する。
+- 未了: 主配信の切替は並行配送の検証後に判断する。

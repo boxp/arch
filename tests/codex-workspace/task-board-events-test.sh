@@ -328,6 +328,21 @@ test_home_inbox_copy_is_independent_of_telegram() {
   assert_file_contains "${CASE_TMP}/home.log" '"eventId":"BOXP-905-r5-blocked.report"'
   assert_file_contains "${CASE_STATE}/outbox/home/BOXP-905-r5-blocked.report.edn" ':status :sent'
 
+  # Cron copies are deduplicated, validated and aged from send time.
+  mkdir -p "${CASE_VAULT}/Projects/cron-deliveries/delivered-copies"
+  local cron_dir="${CASE_VAULT}/Projects/cron-deliveries/delivered-copies"
+  printf '%s' "{\"id\":\"cron-job1-run1\",\"job_id\":\"job1\",\"job_name\":\"test\",\"execution_id\":\"run1\",\"failure\":false,\"text\":\"report\",\"sent_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" >"${cron_dir}/cron-job1-run1.md"
+  printf '{"id":"cron-job2-run2","job_id":"job2","job_name":"old","failure":true,"text":"old","sent_at":"2020-01-01T00:00:00Z"}' >"${cron_dir}/cron-job2-run2.md"
+  printf 'not json' >"${cron_dir}/broken.md"
+  for _ in 1 2; do
+    run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  done
+  assert_file_contains "${CASE_TMP}/home.log" '"source":"hermes-cron"'
+  assert_file_contains "${CASE_TMP}/home.log" '"jobId":"job1"'
+  [[ $(grep -c '"eventId":"cron-job1-run1"' "${CASE_TMP}/home.log") == 1 ]] || fail "cron copy must be sent once"
+  assert_file_contains "${CASE_STATE}/outbox/home/cron-job2-run2.edn" ':reason "stale-copy"'
+  [[ ! -e "${CASE_STATE}/outbox/home/broken.edn" ]] || fail "malformed cron copy must be ignored"
+
   # Unset URL = rollback: nothing is sent to the home inbox.
   record "${CASE_VAULT}" "${CASE_STATE}" BOXP-902 r2 in-progress done done >/dev/null
   run_events "${CASE_VAULT}" "${CASE_STATE}" env \

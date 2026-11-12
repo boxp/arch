@@ -748,7 +748,7 @@
         (let [resp (http/post (home-url) {:headers {"content-type" "application/json"
                                                     "authorization" (str "Bearer " token)
                                                     "x-request-id" home-id}
-                                          :body (json/generate-string (home-payload event home-id copy))
+                                          :body (json/generate-string (if (= (:source copy) "hermes-cron") (:payload copy) (home-payload event home-id copy)))
                                           :timeout (* 1000 (env-long "CODEX_TASK_BOARD_EVENT_HTTP_TIMEOUT_SECONDS" "15"))
                                           :throw false})
               status (:status resp)
@@ -833,13 +833,45 @@
      (sort-by :created-at (all-events)))))
 
 
+(defn cron-copy-dir [] (str (fs/path (vault) "Projects/cron-deliveries/delivered-copies")))
+
+(defn flush-cron-home! []
+  (if (str/blank? (home-url))
+    {:home-sent 0}
+    (reduce
+     (fn [acc path]
+       (try
+         (let [copy (json/parse-string (slurp (str path)) true)
+               id (:id copy) text (:text copy) sent (:sent_at copy)
+               age (when (string? sent) (- (.getEpochSecond (now)) (.getEpochSecond (.toInstant (java.time.OffsetDateTime/parse sent)))))
+               valid (and (string? id) (re-matches #"[A-Za-z0-9_.-]{8,200}" id)
+                          (= (str id ".md") (str (fs/file-name path)))
+                          (string? text) (not (str/blank? text)) (string? (:job_name copy)) (not (str/blank? (:job_name copy)))
+                          (string? (:job_id copy)) (re-matches #"[A-Za-z0-9_-]{1,64}" (:job_id copy))
+                          (boolean? (:failure copy)) age)
+               state (when valid (read-home-state id))]
+           (cond
+             (not valid) acc
+             (contains? #{:sent :failed :skipped} (:status state)) acc
+             (home-waiting? state) acc
+             (> age (home-max-age-seconds)) (do (write-event! (home-dir) {:event-id id :status :skipped :reason "stale-copy" :updated-at (now-str)}) acc)
+             :else (let [payload (cond-> {:eventId id :source "hermes-cron" :eventType (if (:failure copy) "cron.failure" "cron.report")
+                                         :title (clip (str (if (:failure copy) "失敗: " "") (:job_name copy)) 200)
+                                         :body (clip text 4000) :createdAt sent :jobId (:job_id copy)}
+                                   (extract-choices text) (assoc :choices (extract-choices text))
+                                   (and (string? (:execution_id copy)) (not (str/blank? (:execution_id copy)))) (assoc :runId (clip (:execution_id copy) 120)))]
+                     (send-home-copy! acc nil id state {:source "hermes-cron" :payload payload}))))
+         (catch Exception _ acc)))
+     {:home-sent 0} (fs/glob (cron-copy-dir) "*.md"))))
+
+
 (defn prune-home! []
   (let [max-age (* 86400 (done-retention-days))]
     (doseq [path (event-files (home-dir))
             :let [state (read-event path)]
             :when (and state (:updated-at state) (> (seconds-since (:updated-at state)) max-age))]
       (fs/delete-if-exists path))
-    (doseq [path (fs/glob (str (fs/path (vault) "Projects/task-board-events/delivered-copies")) "*.md")
+    (doseq [path (concat (fs/glob (str (fs/path (vault) "Projects/task-board-events/delivered-copies")) "*.md") (fs/glob (cron-copy-dir) "*.md"))
             :when (> (.getSeconds (java.time.Duration/between (.toInstant (fs/last-modified-time path)) (now))) max-age)]
       (fs/delete-if-exists path))))
 
@@ -860,7 +892,8 @@
                      (catch Exception e (log! (str "flush failed: " (.getMessage e))) {}))]
     (try (prune-done!) (prune-home!) (catch Exception e (log! (str "prune failed: " (.getMessage e)))))
     {:lane-events (count changes) :reconciled reconciled :digest digest :flushed flushed
-     :home (try (flush-home!) (catch Exception e (log! (str "home inbox flush failed: " (.getMessage e))) {}))}))
+     :home (try (flush-home!) (catch Exception e (log! (str "home inbox flush failed: " (.getMessage e))) {}))
+     :cron-home (try (flush-cron-home!) (catch Exception e (log! (str "cron home flush failed: " (.getMessage e))) {}))}))
 
 (defn loop! []
   (log! (str "task-board event dispatcher started, root=" (root) ", vault=" (vault)
