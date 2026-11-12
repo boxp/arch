@@ -180,7 +180,7 @@ export function createHermes({
           return typeof poll.data?.output === 'string'
             ? {
                 status: 'done',
-                text: poll.data.output.trim().slice(0, 24000),
+                text: poll.data.output.trim(),
                 ...(typeof poll.data.model === 'string' ? { model: poll.data.model.slice(0, 64) } : {}),
               }
             : { status: 'unknown', error: 'hermes_schema' }

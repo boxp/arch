@@ -1,8 +1,8 @@
-export type SentenceEvents = { onSentence(index: number, sentence: string): void; onBoundary?(index: number, charIndex: number): void; onEnd(): void; onError(message: string): void }
+export type SentenceEvents = { onSentence(index: number, sentence: string): void; onBoundary?(index: number, charIndex: number): void; onChunkEnd?(index: number): void; onEnd(): void; onError(message: string): void }
 export function createSentenceSpeaker(deps: { synth: { speak(u: unknown): void; cancel(): void }; makeUtterance(text: string): { onstart: unknown; onend: unknown; onerror: unknown; onboundary?: unknown } }) {
   let generation = 0
   function cancel() { generation++; deps.synth.cancel() }
-  function speak(sentences: string[], events: SentenceEvents) {
+  function speak(sentences: string[], events: SentenceEvents, start = 0) {
     cancel(); const current = generation
     const next = (index: number) => {
       if (current !== generation) return
@@ -10,16 +10,15 @@ export function createSentenceSpeaker(deps: { synth: { speak(u: unknown): void; 
       const utterance = deps.makeUtterance(sentences[index])
       utterance.onstart = () => { if (current === generation) events.onSentence(index, sentences[index]) }
       utterance.onboundary = (event: { charIndex: number }) => { if (current === generation) events.onBoundary?.(index, event.charIndex) }
-      utterance.onend = () => { if (current === generation) next(index + 1) }
+      utterance.onend = () => { if (current === generation) { events.onChunkEnd?.(index); next(index + 1) } }
       utterance.onerror = (event: { error?: string }) => {
         if (current !== generation) return
         generation++
-        if (event.error === 'interrupted' || event.error === 'canceled') events.onEnd()
-        else events.onError(event.error ?? 'unknown')
+        events.onError(event.error ?? 'unknown')
       }
       try { deps.synth.speak(utterance) } catch (e) { if (current === generation) { generation++; events.onError(e instanceof Error ? e.message : String(e)) } }
     }
-    next(0)
+    next(start)
   }
   return { speak, cancel }
 }

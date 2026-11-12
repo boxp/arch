@@ -7,18 +7,19 @@ export function splitVoiceSentences(sentences: string[]): string[] {
   }
   return result
 }
-type Events = { onSentence(index: number, sentence: string, durationSeconds: number): void; onEnd(): void; onError(code: string, index: number): void }
-export function createVoicePlayer(deps: { fetcher: typeof fetch; audio: HTMLAudioElement; createUrl(blob: Blob): string; revokeUrl(url: string): void }) {
+type Events = { onSentence(index: number, sentence: string, durationSeconds: number): void; onChunkEnd?(index: number): void; onEnd(): void; onError(code: string, index: number): void }
+export function createVoicePlayer(deps: { fetcher: typeof fetch; audio: HTMLAudioElement; createUrl(blob: Blob): string; revokeUrl(url: string): void; retryDelay?(): Promise<void> }) {
   let generation = 0, controller = new AbortController(), url: string | undefined, settle: (() => void) | undefined
   const audio = deps.audio
   function cancel() { generation++; controller.abort(); settle?.(); settle = undefined; controller = new AbortController(); audio.pause(); audio.onended = null; audio.onerror = null; audio.onplaying = null; audio.removeAttribute('src'); audio.load(); if (url) deps.revokeUrl(url); url = undefined }
-  function speak(input: string[], events: Events) {
+  function speak(input: string[], events: Events, start = 0) {
     cancel(); const current = generation, signal = controller.signal, sentences = splitVoiceSentences(input)
-    const fetchSentence = async (sentence: string) => { const r = await deps.fetcher('/kohako/api/v1/tts', { method: 'POST', credentials: 'same-origin', redirect: 'manual', cache: 'no-store', headers: { 'content-type': 'application/json', 'X-Kohako-Request': '1' }, body: JSON.stringify({ text: sentence }), signal }); if (!r.ok) throw Error('fetch_failed'); return r.blob() }
-    let index = 0
+    const fetchOnce = async (sentence: string) => { const r = await deps.fetcher('/kohako/api/v1/tts', { method: 'POST', credentials: 'same-origin', redirect: 'manual', cache: 'no-store', headers: { 'content-type': 'application/json', 'X-Kohako-Request': '1' }, body: JSON.stringify({ text: sentence }), signal }); if (!r.ok) throw Error('fetch_failed'); return r.blob() }
+    const fetchSentence = async (sentence: string) => { try { return await fetchOnce(sentence) } catch (e) { if (signal.aborted || current !== generation || (e instanceof Error && e.name === 'AbortError')) throw e; await (deps.retryDelay?.() ?? new Promise<void>(resolve => setTimeout(resolve, 1000))); if (signal.aborted || current !== generation) throw e; return fetchOnce(sentence) } }
+    let index = start
     const run = async () => {
-      let pending = sentences.length ? fetchSentence(sentences[0]) : undefined
-      for (let i = 0; i < sentences.length; i++) {
+      let pending = start < sentences.length ? fetchSentence(sentences[start]) : undefined
+      for (let i = start; i < sentences.length; i++) {
         index = i; const blob = await pending; if (current !== generation || !blob) return
         pending = i + 1 < sentences.length ? fetchSentence(sentences[i + 1]) : undefined
         // 先読み失敗は再生完了まで保持し、未処理 rejection を防ぐ。
@@ -31,6 +32,7 @@ export function createVoicePlayer(deps: { fetcher: typeof fetch; audio: HTMLAudi
           try { void audio.play().catch(reject) } catch (e) { reject(e) }
         })
         if (current !== generation) return
+        events.onChunkEnd?.(i)
         if (url) deps.revokeUrl(url); url = undefined
       }
       if (current === generation) { generation++; events.onEnd() }

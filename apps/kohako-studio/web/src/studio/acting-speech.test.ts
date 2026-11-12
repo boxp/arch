@@ -13,11 +13,12 @@ describe('文単位の発話', () => {
     ;(utterances[1].onstart as () => void)(); (utterances[1].onend as () => void)()
     expect(events.onSentence).toHaveBeenCalledTimes(1); expect(events.onEnd).not.toHaveBeenCalled()
   })
-  it('中断は終了し、それ以外はエラーにする', () => {
+  it('外部の中断とその他のエラーを通知する', () => {
     let u = { onstart: null as unknown, onend: null as unknown, onerror: null as unknown }
     const speaker = createSentenceSpeaker({ synth: { speak() {}, cancel() {} }, makeUtterance: () => (u = { onstart: null, onend: null, onerror: null }) })
     const events = { onSentence: vi.fn(), onEnd: vi.fn(), onError: vi.fn() }
-    speaker.speak(['一'], events); (u.onerror as (e: object) => void)({ error: 'interrupted' }); expect(events.onEnd).toHaveBeenCalledOnce()
+    speaker.speak(['一'], events); (u.onerror as (e: object) => void)({ error: 'interrupted' }); expect(events.onError).toHaveBeenCalledWith('interrupted')
+    speaker.speak(['二'], events); const canceled = u; speaker.cancel(); (canceled.onerror as (e: object) => void)({ error: 'canceled' }); expect(events.onError).toHaveBeenCalledTimes(1)
     speaker.speak(['二'], events); (u.onerror as (e: object) => void)({ error: 'network' }); expect(events.onError).toHaveBeenCalledWith('network')
   })
   it('無音の文を順に進め、キャンセルで止める', () => {
