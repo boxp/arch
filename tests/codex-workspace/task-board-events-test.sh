@@ -10,6 +10,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 EVENTS="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_events.bb"
+export EVENTS
+bb "${ROOT_DIR}/tests/codex-workspace/task-board-reminder-test.bb"
 SECRET="test-webhook-secret-$(date +%s)"
 # The two-phase digest claim has its own test; elsewhere the digest forms on the first tick.
 export CODEX_TASK_BOARD_EVENT_DIGEST_CLAIM_GRACE_SECONDS=0
