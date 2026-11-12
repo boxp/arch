@@ -6048,6 +6048,33 @@ test_dehydrate_rehydrate_ignores_unrelated() {
   done
 }
 
+test_dehydrate_rehydrate_keeps_mode_change() {
+  local tmp vault state source co run out gitdir
+  tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
+  mkdir -p "$state/locks" "$tmp/proc/100"
+  ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+  export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
+  make_prune_source_repo "$source"
+  head -c 307200 /dev/urandom >"$source/large"
+  git -C "$source" add .; prune_git -C "$source" commit -qm large
+  write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+  write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+  run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
+  co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "$vault" "$state" >"$out"
+  gitdir="$(git -C "$co" rev-parse --absolute-git-dir)"
+  [[ ! -e "$co/large" && -f "$gitdir/codex-task-board-dehydrated" ]] || fail 'setup dehydration failed'
+  # Same blob content restored locally, but with a local executable-bit change.
+  git -C "$co" cat-file blob "$(git -C "$co" rev-parse :large)" >"$co/large"; chmod 755 "$co/large"
+  CODEX_TASK_BOARD_ROOT="$state" TEST_RUNNER="$RUNNER" TEST_CO="$co" bb -e '
+    (System/setProperty "babashka.file" "/tmp/load-runner.bb")
+    (load-file (System/getenv "TEST_RUNNER"))
+    (let [co (fs/path (System/getenv "TEST_CO"))]
+      (assert (dehydrated-present? co (dehydrated-marker co)))
+      (assert (= "dehydrated-path-present" (rehydrate-checkout! co))))' >"$out" 2>&1 || { cat "$out" >&2; fail 'mode change not treated as conflict'; }
+  [[ -x "$co/large" && -f "$gitdir/codex-task-board-dehydrated" ]] || fail 'local mode change overwritten'
+}
+
 test_dehydrate_basic() {
   local tmp vault state source co run out
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; source="${tmp}/source"; out="${tmp}/out"

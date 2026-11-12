@@ -6154,26 +6154,38 @@
 (defn dehydrated-paths [marker]
   (remove str/blank? (str/split (slurp (str marker)) #"\u0000")))
 
-(defn dehydrated-index-shas [co]
+(defn dehydrated-index-entries
+  "Map of path -> {:mode :sha} for stage-0 index entries."
+  [co]
   (let [index (generated-git co "ls-files" "-s" "-z")]
     (when (zero? (:exit index))
-      (into {} (keep #(when-let [[_ sha rel] (re-matches #"(?s)\d+ ([0-9a-f]+) 0\t(.*)" %)] [rel sha]))
+      (into {} (keep #(when-let [[_ mode sha rel] (re-matches #"(?s)(\d+) ([0-9a-f]+) 0\t(.*)" %)]
+                        [rel {:mode mode :sha sha}]))
             (str/split (:out index) #"\u0000")))))
+
+(defn owner-executable? [path]
+  (contains? (fs/posix-file-permissions path {:nofollow-links true})
+             java.nio.file.attribute.PosixFilePermission/OWNER_EXECUTE))
 
 (defn dehydrated-present?
   "True when a dehydrated path exists with content that is not the indexed
-  blob (new local data). Paths already restored to the exact blob are not a
-  conflict, so a partially or fully restored checkout stays reusable/prunable."
+  blob (new local data) or whose executable bit differs from the indexed
+  mode (a local chmod that checkout-index -f would overwrite). Paths already
+  restored to the exact blob and mode are not a conflict, so a partially or
+  fully restored checkout stays reusable/prunable."
   [co marker]
   (let [present (filter #(fs/exists? (fs/path co %) {:nofollow-links true}) (dehydrated-paths marker))
-        shas (when (seq present) (dehydrated-index-shas co))]
+        entries (when (seq present) (dehydrated-index-entries co))]
     (boolean
      (some (fn [rel]
              (let [path (fs/path co rel)
+                   {:keys [mode sha]} (get entries rel)
                    hash (when (fs/regular-file? path {:nofollow-links true})
                           (generated-git co "hash-object" "--" rel))]
-               (not (and hash (zero? (:exit hash)) (get shas rel)
-                         (= (get shas rel) (str/trim (:out hash)))))))
+               (not (and hash (zero? (:exit hash)) sha
+                         (= sha (str/trim (:out hash)))
+                         (#{"100644" "100755"} mode)
+                         (= (= mode "100755") (owner-executable? path))))))
            present))))
 
 (defn git-with-paths [co args paths]
