@@ -41,8 +41,14 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
       const route = path.slice(base.length)
       if (route === 'notifications' || route.startsWith('notifications/') || route.startsWith('push/')) {
         if (!opts.notifications || !opts.push) return json(503, { error: 'notifications_disabled' })
-        const ingest = route === 'notifications/ingest', readOnly = method === 'GET' && route === 'notifications'
-        if (ingest ? principal !== 'notifier' : readOnly ? principal === 'notifier' : principal !== 'owner') return json(403, { error: 'forbidden' })
+        const status = route === 'notifications/status', ingest = route === 'notifications/ingest', readOnly = method === 'GET' && route === 'notifications'
+        if (status || ingest ? principal !== 'notifier' : readOnly ? principal === 'notifier' : principal !== 'owner') return json(403, { error: 'forbidden' })
+        if (status && method === 'GET') {
+          const params = new URL(req.url ?? '/', 'http://localhost').searchParams, raw = params.getAll('ids')
+          const ids = raw.length === 1 ? raw[0].split(',') : []
+          if (!ids.length || ids.length > 50 || ids.some(id => !/^[A-Za-z0-9._:-]{8,200}$/.test(id))) return json(400, { error: 'invalid' })
+          return json(200, { items: opts.notifications.status(ids) })
+        }
         if (readOnly) return json(200, opts.notifications.list())
         if (method === 'GET' && route === 'push/key') return json(200, { publicKey: opts.push.publicKey })
         const match = /^notifications\/([A-Za-z0-9._:-]{8,200})\/(read|handled|reply|announced|announcing)$/.exec(route)
@@ -81,9 +87,10 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
         const chunks: Buffer[] = []; let size = 0
         for await (const chunk of req) { const b = Buffer.from(chunk); size += b.length; if (size > 4096) return json(413, { error: 'too_large' }); chunks.push(b) }
         let x: any; try { x = JSON.parse(Buffer.concat(chunks).toString()) } catch { return json(400, { error: 'invalid' }) }
-        const start = now()
-        try { const audio = await opts.tts.synthesize(x?.text); const styleId = opts.tts.styleIdFor(audio); res.writeHead(200, { 'content-type': 'audio/wav', 'cache-control': 'no-store', 'x-kohako-tts-style-id': String(styleId), 'x-kohako-tts-ms': String(now() - start) }); return res.end(audio) }
-        catch (e) { const code = e instanceof TtsError ? e.code : 'tts_failed'; return json(code === 'invalid' ? 400 : code === 'busy' ? 429 : code === 'voice_unavailable' ? 503 : 502, { error: code === 'voice_unavailable' ? 'tts_voice_unavailable' : code }) }
+        const start = now(), cancel = new AbortController(), onClose = () => { if (!res.writableEnded) cancel.abort() }
+        res.once('close', onClose)
+        try { const audio = await opts.tts.synthesize(x?.text, cancel.signal); const styleId = opts.tts.styleIdFor(audio); res.writeHead(200, { 'content-type': 'audio/wav', 'cache-control': 'no-store', 'x-kohako-tts-style-id': String(styleId), 'x-kohako-tts-ms': String(now() - start) }); return res.end(audio) }
+        catch (e) { const code = e instanceof TtsError ? e.code : 'tts_failed'; if (code === 'cancelled' || res.destroyed) return; return json(code === 'invalid' ? 400 : code === 'busy' ? 429 : code === 'voice_unavailable' ? 503 : 502, { error: code === 'voice_unavailable' ? 'tts_voice_unavailable' : code }) }
       }
       if (method === 'POST' && route === 'attachments') {
         if (!conv) return json(503, { error: 'conversation_disabled' })
