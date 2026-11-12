@@ -5901,6 +5901,164 @@ test_claude_catalog_and_hold_resolution() {
   done
 }
 
+test_generated_reclaim_basic() {
+  local tmp vault state source co run old i out
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; source="${tmp}/source"; out="${tmp}/out"
+  mkdir -p "${state}/locks" "${tmp}/proc/100"
+  ln -s / "${tmp}/proc/100/cwd"
+  echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"${tmp}/mountinfo"
+  export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo"
+  make_prune_source_repo "${source}"
+  printf '{}\n' >"${source}/package.json"; printf '{}\n' >"${source}/package-lock.json"
+  printf 'node_modules/\nnotes/\n' >"${source}/.gitignore"
+  git -C "${source}" add .; prune_git -C "${source}" commit -qm inputs
+  write_board "${vault}" ""
+  echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"${vault}/Boards/Task Board.md"
+  write_prune_ticket "${vault}" BOXP-519 done "$(date -u +%Y-%m-%d)"
+  for i in 3 2 1; do
+    run="$(date -u -d "${i} hours ago" +%Y%m%dT%H%M%SZ)"
+    co="$(add_prune_run "${state}" "${source}" BOXP-519 "${run}")"
+    mkdir -p "${co}/node_modules" "${co}/notes"; echo data >"${co}/node_modules/a"; echo keep >"${co}/notes/a"
+    [[ "${i}" != 3 ]] || old="${co}"
+  done
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=dry-run run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${old}/node_modules/a" ]] || fail 'dry-run mode deleted output'
+  assert_file_contains "${state}/metrics/workspace-capacity.edn" ':result :would-reclaim'
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" --dry-run >"${out}"
+  [[ -f "${old}/node_modules/a" ]] || fail 'prune dry run deleted output'
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on CODEX_TASK_BOARD_GENERATED_RECLAIM_MIN_AGE_HOURS=100 run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${old}/node_modules/a" ]] || fail 'young run deleted output'
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-519|BOXP-519: reopened]] #ticket status::in-progress'
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${old}/node_modules/a" ]] || fail 'non-Done card deleted output'
+  write_board "${vault}" ""
+  echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"${vault}/Boards/Task Board.md"
+  printf '{:mode :off}\n' >"${state}/generated-reclaim.edn"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${old}/node_modules/a" ]] || fail 'off mode deleted output'
+  printf '{invalid\n' >"${state}/generated-reclaim.edn"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${old}/node_modules/a" ]] || fail 'invalid mode deleted output'
+  rm "${state}/generated-reclaim.edn"
+  printf '{:mode :dry-run}\n' >"${state}/generated-reclaim.edn"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${old}/node_modules/a" ]] || fail 'flag file dry-run did not override env'
+  rm "${state}/generated-reclaim.edn"
+  echo locked >"${state}/locks/BOXP-519.edn"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${old}/node_modules/a" ]] || fail 'locked ticket deleted output'
+  rm "${state}/locks/BOXP-519.edn"
+  sed -i 's/^status: done/status: blocked/' "${vault}/Tickets/BOXP-519.md"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${old}/node_modules/a" ]] || fail 'blocked ticket deleted output'
+  sed -i 's/^status: blocked/status: done/' "${vault}/Tickets/BOXP-519.md"
+  echo '- [x] [[Tickets/BOXP-519|BOXP-519: duplicate]] #ticket status::done' >>"${vault}/Boards/Task Board.md"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${old}/node_modules/a" ]] || fail 'duplicate card deleted output'
+  sed -i '$d' "${vault}/Boards/Task Board.md"
+  mkdir "${old}/node_modules/.git"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${old}/node_modules/a" ]] || fail 'nested git deleted output'
+  rmdir "${old}/node_modules/.git"
+  ln -s "${old}/node_modules/a" "${old}/dependency"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${old}/node_modules/a" ]] || fail 'symlink dependency deleted output'
+  assert_file_contains "${out}" 'reason=symlink-dependency'
+  rm "${old}/dependency"
+  CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" CODEX_TASK_BOARD_GENERATED_RECLAIM=on TEST_RUNNER="${RUNNER}" TEST_TICKET="${vault}/Tickets/BOXP-519.md" bb -e '
+    (System/setProperty "babashka.file" "/tmp/load-runner.bb")
+    (load-file (System/getenv "TEST_RUNNER"))
+    (let [original generated-measure]
+      (alter-var-root (var generated-measure)
+        (constantly (fn [path] (let [n (original path) p (System/getenv "TEST_TICKET")]
+                                 (spit p (clojure.string/replace (slurp p) "status: done" "status: blocked")) n)))))
+    (reclaim-generated-outputs! {})' >"${out}"
+  [[ -f "${old}/node_modules/a" ]] || fail 'reopened ticket deleted after measurement'
+  assert_file_contains "${out}" 'reason=not-done'
+  sed -i 's/^status: blocked/status: done/' "${vault}/Tickets/BOXP-519.md"
+  # Safety facts that change between the first scan and the locked delete
+  # (input edit, hardlink, nested Git, external symlink) must be re-detected.
+  for mutation in input hardlink git symlink; do
+    CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" CODEX_TASK_BOARD_GENERATED_RECLAIM=on TEST_RUNNER="${RUNNER}" TEST_CO="${old}" TEST_TMP="${tmp}" TEST_MUTATION="${mutation}" bb -e '
+      (System/setProperty "babashka.file" "/tmp/load-runner.bb")
+      (load-file (System/getenv "TEST_RUNNER"))
+      (let [original generated-measure co (System/getenv "TEST_CO") tmp (System/getenv "TEST_TMP")]
+        (alter-var-root (var generated-measure)
+          (constantly (fn [path] (let [n (original path)]
+                                   (case (System/getenv "TEST_MUTATION")
+                                     "input" (spit (str co "/package-lock.json") "changed\n" :append true)
+                                     "hardlink" (babashka.process/shell "ln" (str co "/node_modules/a") (str tmp "/late-hardlink"))
+                                     "git" (babashka.fs/create-dirs (str co "/node_modules/.git"))
+                                     "symlink" (babashka.fs/create-sym-link (str co "/late-link") (str co "/node_modules/a")))
+                                   n)))))
+      (reclaim-generated-outputs! {})' >"${out}"
+    [[ -f "${old}/node_modules/a" ]] || fail "late ${mutation} change deleted output"
+    case "${mutation}" in
+      input) assert_file_contains "${out}" 'reason=inputs-modified'; git -C "${old}" checkout -- package-lock.json ;;
+      hardlink) assert_file_contains "${out}" 'reason=nested-git-or-hardlink'; rm "${tmp}/late-hardlink" ;;
+      git) assert_file_contains "${out}" 'reason=nested-(checkout|git-or-hardlink)'; rmdir "${old}/node_modules/.git" ;;
+      symlink) assert_file_contains "${out}" 'reason=symlink-dependency'; rm "${old}/late-link" ;;
+    esac
+  done
+  echo changed >>"${old}/package-lock.json"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${old}/node_modules/a" ]] || fail 'dirty input deleted'
+  assert_file_contains "${out}" 'reason=inputs-modified'
+  git -C "${old}" checkout -- package-lock.json
+  ln "${old}/node_modules/a" "${tmp}/hardlink"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${old}/node_modules/a" ]] || fail 'hardlink deleted'
+  assert_file_contains "${out}" 'reason=nested-git-or-hardlink'
+  rm "${tmp}/hardlink"
+  # A package whose manifest is not tracked cannot be regenerated from Git.
+  mkdir -p "${old}/pkg/node_modules" "${tmp}/shared-target"
+  printf '{}\n' >"${old}/pkg/package.json"; echo data >"${old}/pkg/node_modules/b"
+  # A symlinked node_modules is never a candidate and its target survives.
+  mkdir -p "${old}/linked"; echo shared >"${tmp}/shared-target/c"
+  ln -s "${tmp}/shared-target" "${old}/linked/node_modules"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
+  [[ ! -e "${old}/node_modules" && -f "${old}/notes/a" && -f "${old}/package.json" ]] || fail 'incorrect reclaimed outputs'
+  [[ -f "${old}/pkg/node_modules/b" ]] || fail 'untracked manifest output deleted'
+  [[ -L "${old}/linked/node_modules" && -f "${tmp}/shared-target/c" ]] || fail 'symlinked node_modules or its target deleted'
+  [[ "$(find "${state}/workspaces" -path '*/node_modules/a' | wc -l)" == 2 ]] || fail 'newest runs not kept'
+  assert_file_contains "${state}/metrics/workspace-capacity.edn" ':allocated-bytes [0-9]+.*:result :reclaimed'
+  assert_file_contains "${state}/metrics/workspace-capacity.edn" ':event :generated-reclaim-summary'
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
+}
+
+test_generated_reclaim_studio() {
+  local tmp vault state source ticket co run i dist
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; source="${tmp}/source"
+  mkdir -p "${state}/locks" "${tmp}/proc/100"; ln -s / "${tmp}/proc/100/cwd"
+  echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"${tmp}/mountinfo"
+  export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo"
+  make_prune_source_repo "${source}"; git -C "${source}" remote set-url origin https://github.com/boxp/arch.git
+  mkdir -p "${source}/apps/kohako-studio/web/public"
+  printf 'dist/\n' >"${source}/.gitignore"; printf abcd >"${source}/apps/kohako-studio/web/public/copied.txt"
+  touch "${source}/apps/kohako-studio/web/"{package.json,package-lock.json,vite.config.ts,candidates.html}
+  git -C "${source}" add .; prune_git -C "${source}" commit -qm fixture
+  write_board "${vault}" ''
+  for ticket in BOXP-520 BOXP-521 BOXP-522; do
+    echo "- [x] [[Tickets/${ticket}|${ticket}: done]] #ticket status::done" >>"${vault}/Boards/Task Board.md"
+    write_prune_ticket "${vault}" "${ticket}" done "$(date -u +%Y-%m-%d)"
+    for i in 3 2 1; do
+      run="$(date -u -d "${i} hours ago" +%Y%m%dT%H%M%SZ)"
+      co="$(add_prune_run "${state}" "${source}" "${ticket}" "${run}")"
+      dist="${co}/apps/kohako-studio/web/dist"; mkdir -p "${dist}"
+      cp "${co}/apps/kohako-studio/web/public/copied.txt" "${dist}/copied.txt"
+      if [[ "${i}" == 3 && "${ticket}" == BOXP-521 ]]; then printf wxyz >"${dist}/copied.txt"; fi
+      # An uncommitted change to a tracked Vite HTML entry makes dist non-regenerable.
+      if [[ "${i}" == 3 && "${ticket}" == BOXP-522 ]]; then echo '<p>local</p>' >>"${co}/apps/kohako-studio/web/candidates.html"; fi
+    done
+  done
+  CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" CODEX_TASK_BOARD_GENERATED_RECLAIM=on bb "${RUNNER}" reclaim-generated >"${tmp}/out"
+  [[ "$(find "${state}/workspaces/BOXP-520" -name copied.txt -path '*/dist/*' | wc -l)" == 2 ]] || fail 'matching studio dist not reclaimed'
+  [[ "$(find "${state}/workspaces/BOXP-521" -name copied.txt -path '*/dist/*' | wc -l)" == 3 ]] || fail 'mismatched studio dist deleted'
+  assert_file_contains "${tmp}/out" 'generated-reclaim: hold .*copied.txt'
+  [[ "$(find "${state}/workspaces/BOXP-522" -name copied.txt -path '*/dist/*' | wc -l)" == 3 ]] || fail 'studio dist with modified HTML entry deleted'
+  assert_file_contains "${tmp}/out" 'generated-reclaim: hold .*web/dist.* reason=inputs-modified'
+}
+
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a
 # deterministic subset in its own job, so vaults, processes and locks are isolated.
 mapfile -t cases < "${ROOT_DIR}/tests/codex-workspace/task-board-runner-cases.txt"

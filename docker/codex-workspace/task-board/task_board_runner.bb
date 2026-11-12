@@ -5398,6 +5398,7 @@
 
 (def bff-dist "apps/kohako-studio/bff/dist/")
 (def bff-src "apps/kohako-studio/bff/src/")
+(def bff-web "apps/kohako-studio/bff/")
 (def bff-inputs ["apps/kohako-studio/bff/package.json"
                  "apps/kohako-studio/bff/package-lock.json"
                  "apps/kohako-studio/bff/tsconfig.json"])
@@ -6066,6 +6067,150 @@
                (swap! stats update :empty-dirs inc)
                (log! (str "prune: delete-empty " ticket-dir))))))))))
 
+(def generated-reclaim-warnings (atom #{}))
+
+(defn generated-reclaim-mode []
+  (let [path (fs/path (root) "generated-reclaim.edn")
+        file? (fs/exists? path {:nofollow-links true})
+        raw (if file? (try (:mode (read-edn-file path nil)) (catch Exception _ ::invalid))
+                (let [s (some-> (System/getenv "CODEX_TASK_BOARD_GENERATED_RECLAIM") str/trim str/lower-case)]
+                  (if (str/blank? s) :on (keyword s))))]
+    (if (contains? #{:off :dry-run :on} raw) raw
+        (do (when-not (contains? @generated-reclaim-warnings [file? raw])
+              (swap! generated-reclaim-warnings conj [file? raw])
+              (log! "generated-reclaim: warning invalid mode, using off"))
+            :off))))
+
+(defn generated-ticket-hold [ticket-id]
+  (let [lanes (board-card-lanes ticket-id)
+        ticket (ticket-frontmatter-or-nil ticket-id)]
+    (cond (fs/exists? (lock-path ticket-id) {:nofollow-links true}) "locked"
+          (nil? lanes) "board-unreadable"
+          (nil? ticket) "ticket-missing"
+          (not= ["Done"] lanes) "not-single-done-card"
+          (not= "done" (str/trim (str (:status ticket)))) "not-done")))
+
+(defn generated-run-hold [ticket-id run-id hours]
+  (let [path (run-workspace-dir ticket-id run-id)
+        ids (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))
+        decision (stale-run-decision run-id ids (now) hours (keep-latest-runs))]
+    (cond (not (:eligible? decision)) (:reason decision)
+          (not (safe-run-workspace-path? ticket-id run-id path)) "unsafe-path"
+          :else (stale-process-hold (fs/real-path path)))))
+
+(defn generated-git [co & args]
+  (command-result (into ["git" "-C" (str co)] args) {:timeout-seconds 60}))
+
+(defn generated-input-hold [co paths required-lock?]
+  (let [tracked (apply generated-git co (concat ["ls-files" "-z" "--"] paths))
+        names (set (str/split (:out tracked) #"\u0000"))
+        status (apply generated-git co (concat ["status" "--porcelain" "-z" "--"] paths))]
+    (cond (or (not (zero? (:exit tracked))) (not (zero? (:exit status)))) "git-error"
+          (and required-lock? (or (not (contains? names (first paths)))
+                                  (not-any? names (rest paths)))) "inputs-untracked"
+          (not (str/blank? (:out status))) "inputs-modified")))
+
+(defn generated-candidate-hold [run-real co rel checkouts]
+  (let [path (fs/path co rel)
+        nofollow (into-array java.nio.file.LinkOption [java.nio.file.LinkOption/NOFOLLOW_LINKS])
+        tracked (generated-git co "ls-files" "-z" "--" rel)]
+    (cond
+      (not (java.nio.file.Files/isDirectory path nofollow)) "not-real-directory"
+      (not= (fs/real-path path) (fs/path (fs/real-path co) rel)) "unsafe-path"
+      (not (fs/starts-with? (fs/real-path path) run-real)) "unsafe-path"
+      (not (zero? (:exit tracked))) "git-error"
+      (not (str/blank? (:out tracked))) "tracked-files"
+      (some #(fs/starts-with? (fs/real-path %) (fs/real-path path)) checkouts) "nested-checkout"
+      :else
+      (let [scan (command-result ["find" "-P" (str path) "(" "-name" ".git" "-o" "(" "-type" "f" "-links" "+1" ")" ")" "-print0"] {:timeout-seconds 60})
+            links (command-result ["find" "-P" (str run-real) "(" "-name" ".git" "-o" "-path" (str path) ")" "-prune" "-o" "-type" "l" "-print0"] {:timeout-seconds 60})]
+        (cond (or (not (zero? (:exit scan))) (not (zero? (:exit links)))) "walk-failed"
+              (not (str/blank? (:out scan))) "nested-git-or-hardlink"
+              (some (fn [link] (try (fs/starts-with? (fs/real-path link) (fs/real-path path))
+                                    (catch java.nio.file.NoSuchFileException _ false)))
+                    (remove str/blank? (str/split (:out links) #"\u0000"))) "symlink-dependency")))))
+
+(defn generated-measure [path]
+  (let [prefix (if (zero? (:exit (command-result ["sh" "-c" "command -v nice >/dev/null && command -v ionice >/dev/null"]))) ["nice" "-n" "19" "ionice" "-c3"] [])
+        result (command-result (into prefix ["du" "-sxk" (str path)]) {:timeout-seconds 60})]
+    (when (zero? (:exit result))
+      (when-let [[_ n] (re-find #"^(\d+)" (:out result))] (* 1024 (Long/parseLong n))))))
+
+(defn generated-recheck [ticket-id run-id hours path]
+  (or (generated-ticket-hold ticket-id)
+      (generated-run-hold ticket-id run-id hours)
+      (when-not (fs/directory? path {:nofollow-links true}) "not-real-directory")))
+
+(defn reclaim-generated-outputs! [{:keys [dry-run? stop?] :or {stop? (constantly false)}}]
+  (let [configured (generated-reclaim-mode)
+        mode (if (and dry-run? (not= :off configured)) :dry-run configured)
+        hours (prune-setting "CODEX_TASK_BOARD_GENERATED_RECLAIM_MIN_AGE_HOURS" #(parse-bounded-long % 1 0))
+        cap (prune-setting "CODEX_TASK_BOARD_GENERATED_RECLAIM_MAX_PER_PASS" #(parse-bounded-long % 50 1))
+        free #(try (.getUsableSpace (java.io.File. (str (workspaces-dir)))) (catch Exception _ nil))
+        before (free)
+        stats (atom {:reclaimed 0 :would-reclaim 0 :held 0 :reclaimed-allocated-bytes 0 :would-reclaim-allocated-bytes 0 :held-by-reason {} :skipped-tickets {} :skipped-runs {}})
+        count-done #(+ (:reclaimed @stats) (:would-reclaim @stats))]
+    (when (not= mode :off)
+      (doseq [ticket-dir (child-directories (workspaces-dir)) :while (and (not (stop?)) (< (count-done) cap))]
+        (let [ticket-id (fs/file-name ticket-dir)]
+          (try
+            (if-let [reason (generated-ticket-hold ticket-id)]
+              (swap! stats update-in [:skipped-tickets reason] (fnil inc 0))
+              (doseq [run-path (child-directories ticket-dir) :while (and (not (stop?)) (< (count-done) cap))]
+                (try
+                  (let [run-id (fs/file-name run-path)]
+                    (if-let [run-reason (generated-run-hold ticket-id run-id hours)]
+                      (swap! stats update-in [:skipped-runs run-reason] (fnil inc 0))
+                      (let [run-real (fs/real-path run-path) checkouts (find-checkouts run-path)]
+                        (doseq [co checkouts :while (and (not (stop?)) (< (count-done) cap))]
+                          (let [status (generated-git co "status" "--porcelain" "-z" "--ignored=matching")
+                                origin (generated-git co "remote" "get-url" "origin")
+                                repo (when (zero? (:exit origin)) (github-repo-from-remote-url (:out origin)))]
+                            (when-not (zero? (:exit status)) (throw (ex-info "git status failed" {})))
+                            (doseq [entry (str/split (:out status) #"\u0000")
+                                    :while (and (not (stop?)) (< (count-done) cap))
+                                    :when (str/starts-with? entry "!! ")]
+                              (let [rel (subs entry 3)
+                                    node (re-matches #"((?:.*/)?)(node_modules/)" rel)
+                                    prefix (first (rest node))
+                                    kind (cond (and node (not (some #{"node_modules"} (str/split prefix #"/")))) :node-modules
+                                               (and (= repo "boxp/arch") (= rel studio-dist)) :studio-dist
+                                               (and (= repo "boxp/arch") (= rel bff-dist)) :bff-dist)]
+                                (when kind
+                                  (let [path (fs/path co rel)
+                                        display (str (fs/relativize run-path path))
+                                        ;; Re-run in full under the ticket lock right before delete so
+                                        ;; inputs, tracked files, hardlinks, nested Git and external
+                                        ;; symlinks added after the first scan still protect the path.
+                                        ;; Studio/BFF watch the whole package dir (HTML entries, src,
+                                        ;; scripts, configs); ignored dist/node_modules are not listed.
+                                        safety-hold #(or (case kind
+                                                           :node-modules (generated-input-hold co (mapv (fn [n] (str prefix n)) ["package.json" "package-lock.json" "npm-shrinkwrap.json" "pnpm-lock.yaml" "yarn.lock"]) true)
+                                                           :studio-dist (or (studio-dist-hold co) (generated-input-hold co [studio-web] false))
+                                                           :bff-dist (or (bff-dist-hold co) (generated-input-hold co [bff-web] false)))
+                                                         (generated-candidate-hold run-real co rel (find-checkouts run-path)))
+                                        hold (safety-hold)
+                                        bytes (when-not hold (generated-measure path))
+                                        hold (or hold (when (nil? bytes) "measurement-failed"))
+                                        recheck (when-not hold (with-ticket-lock-guard ticket-id
+                                                   #(if-let [reason (or (generated-recheck ticket-id run-id hours path) (safety-hold))] reason
+                                                        (when (= mode :on)
+                                                          (try (fs/delete-tree path) nil
+                                                               (catch Exception e (str "delete-failed " (one-line (.getMessage e)))))))))
+                                        result (cond hold :held recheck :skipped-recheck (= mode :on) :reclaimed :else :would-reclaim)
+                                        reason (or hold recheck)]
+                                    (workspace-metrics-write! {:event :generated-reclaim :ticket ticket-id :run run-id :path display :kind kind :result result :reason reason :allocated-bytes bytes})
+                                    (if (contains? #{:held :skipped-recheck} result)
+                                      (do (swap! stats update :held inc) (swap! stats update-in [:held-by-reason reason] (fnil inc 0))
+                                          (log! (str "generated-reclaim: hold " display " reason=" (one-line reason))))
+                                      (do (swap! stats update result inc)
+                                          (swap! stats update (if (= result :reclaimed) :reclaimed-allocated-bytes :would-reclaim-allocated-bytes) + bytes)
+                                          (log! (str "generated-reclaim: reclaim " display (when (= result :would-reclaim) " (dry-run)"))))))))))))))
+                  (catch Exception e (log! (str "generated-reclaim: run error " run-path " " (one-line (.getMessage e))))))))
+            (catch Exception e (log! (str "generated-reclaim: ticket error " ticket-id " " (one-line (.getMessage e))))))))
+      (workspace-metrics-write! (merge {:event :generated-reclaim-summary :mode mode :fs-free-bytes-before before :fs-free-bytes-after (free)} @stats))
+      (log! (str "generated-reclaim: summary " (one-line (pr-str (assoc @stats :mode mode))))))))
+
 (defn prune-workspaces!
   ([] (prune-workspaces! {}))
   ([{:keys [dry-run? stop?] :or {dry-run? false stop? (constantly false)}}]
@@ -6101,6 +6246,9 @@
        (let [pruned (command-result ["git" "--git-dir" common-dir "worktree" "prune"])]
          (when-not (zero? (:exit pruned))
            (log! (str "prune: error worktree-prune " common-dir " " (one-line (:err pruned)))))))
+     (when-not (stop?)
+       (try (reclaim-generated-outputs! ctx)
+            (catch Exception e (log! (str "generated-reclaim: error " (one-line (.getMessage e)))))))
      (when (stop?)
        (log! "prune: stopped early because the runner is draining"))
      (let [{:keys [deleted stale-deleted held recent branches empty-dirs skipped]} @(:stats ctx)]
@@ -6508,7 +6656,7 @@
     (recur)))
 
 (defn usage []
-  (println "usage: task_board_runner.bb <tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|workspace-metrics [--since-hours N]|localllm-migrate-markers [--apply]|gate-budget-status BOXP-N|gate-budget-exclude-pr BOXP-N owner/repo#N --by NAME|gate-budget-grant <BOXP-N|owner/repo#N> --amount N --by NAME>")
+  (println "usage: task_board_runner.bb <tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|reclaim-generated [--dry-run]|workspace-metrics [--since-hours N]|localllm-migrate-markers [--apply]|gate-budget-status BOXP-N|gate-budget-exclude-pr BOXP-N owner/repo#N --by NAME|gate-budget-grant <BOXP-N|owner/repo#N> --amount N --by NAME>")
   (System/exit 2))
 
 (defn arg-value [args flag]
@@ -7867,6 +8015,9 @@
                        (when-not (contains? #{[] ["--dry-run"]} (vec args))
                          (usage))
                        (prune-workspaces! {:dry-run? (= ["--dry-run"] (vec args))}))
+  "reclaim-generated" (let [args (vec (rest *command-line-args*))]
+                        (when-not (contains? #{[] ["--dry-run"]} args) (usage))
+                        (reclaim-generated-outputs! {:dry-run? (= ["--dry-run"] args)}))
   "workspace-metrics" (let [args (vec (rest *command-line-args*))
                             hours (if (empty? args) 48
                                     (when (and (= 2 (count args)) (= "--since-hours" (first args)))
