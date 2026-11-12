@@ -1,3 +1,4 @@
+import { createDictation, supportsDictation, appendDictation } from './dictation'
 import { attachmentSubmitAction, attachmentValidation } from './attachments'
 import { shouldSubmit } from './keys'
 import { atBottom } from './scroll'
@@ -13,7 +14,7 @@ import { states, formatPool, formatTasks, gaugeOf, taskBadgeOf, upstreamUnavaila
 import { validateViews, mapsUrl, osmUrl, htmlSrcdoc, sanitizeHtml, type View } from './views'
 import { clipHold, isPetting, petEyesWanted, petFollow, petShown, zeroPet } from './petfollow'
 import { makeVisemes, visemeAt, boundaryTime, spokenSeconds, type VisemeSequence } from '../live2d/viseme'
-import { interpretRequest, newOutgoing, pcm16, presentation, resolveUnconfirmed, rigStateOf, sendOutcomeUnknown, silentSpeechSeconds, studioRigModelId, wantsActing, wantsRig, type Outgoing, type State } from '../studio/model'
+import { interpretRequest, newOutgoing, presentation, resolveUnconfirmed, rigStateOf, sendOutcomeUnknown, silentSpeechSeconds, studioRigModelId, wantsActing, wantsRig, type Outgoing, type State } from '../studio/model'
 import { clipIdFor, clipName, lookFor, modelFor, mouthLevel, poseFor, type RigState } from '../live2d/model'
 import { applyPose, loadRig, type Player } from '../live2d/rig'
 import { ActingDirector, cueForSentence, splitSentences, type ActingStage } from '../live2d/acting'
@@ -74,8 +75,8 @@ const queue = new MessageQueue()
 let pendingFromQueue = false, dispatching = false, dispatchTimer = 0
 const queueBox = el('queue'), queueList = el('queue-list'), queueStatus = el('queue-status'), queueNote = el('queue-note'), queueResume = el<HTMLButtonElement>('queue-resume'), queueClear = el<HTMLButtonElement>('queue-clear')
 const setInflight = (x: Inflight | null) => tab.set(INFLIGHT_KEY, x ? JSON.stringify(x) : null)
-let recording: { stream: MediaStream; context: AudioContext; source: MediaStreamAudioSourceNode; processor: ScriptProcessorNode; chunks: Float32Array[]; size: number; timer: number } | null = null
-let starting = false, held = false
+let recording = false, starting = false
+let cancelDictation: (() => void) | undefined, syncDictationNoteHook: (() => void) | undefined
 const synthesis = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window
 const voiceAudio = new Audio()
 const voicePlayer = createVoicePlayer({ fetcher: fetch, audio: voiceAudio, createUrl: URL.createObjectURL, revokeUrl: URL.revokeObjectURL })
@@ -192,6 +193,8 @@ function show(next: State) {
   if (actingEnabled && (next === 'failed' || next === 'stopped') && state !== next) interruptActing()
   if (next === 'thinking' && state !== 'thinking') thinkingSince = Date.now()
   state = next
+  if ((!enabled || netDown) && (recording || starting)) cancelDictation?.()
+  syncDictationNoteHook?.()
   stateLabel.textContent = netDown ? '通信が切れています' : presentation[next].label
   face.src = `./kohako/studio/c48v6-${presentation[next].face}-color.png`
   if (next !== 'speaking') { speakingSince = 0; visemes = null; stage?.setViseme?.(null); rig?.lipSync(0); clearTimeout(mouthTimer) }
@@ -201,7 +204,7 @@ function show(next: State) {
   send.disabled = !enabled || touchActive || !!recording || starting
   send.textContent = queueing() ? 'キューに追加' : '送信'
   stop.hidden = !busy || !requestId || !accepted
-  record.hidden = !stt; record.disabled = !enabled || !stt || busy
+  record.hidden = !stt; record.disabled = !enabled || !stt || busy || netDown || starting || record.dataset.transcribing === 'true' || record.dataset.unsupported === 'true'
   hush.hidden = next !== 'speaking' || !speech.checked
   const showApproval = next === 'approval'
   if (showApproval && approvalBox.hidden) { approvalBox.hidden = false; el<HTMLButtonElement>('deny').focus() } else if (!showApproval) approvalBox.hidden = true
@@ -332,7 +335,7 @@ async function initialize() {
     const conv = await call('conversation'); if (conv.status !== 200 || !conv.data) return fail(conv.status, conv.data)
     enabled = conv.data.enabled === true; stt = enabled && !!conv.data.stt; netDown = false
     connection.textContent = enabled ? '接続中・Web 専用の会話' : '会話は無効です'
-    el('features').textContent = `音声認識: ${stt ? '有効' : '無効'} ／ セッション開始: ${typeof conv.data.sessionStartedAt === 'number' ? new Date(conv.data.sessionStartedAt).toLocaleString('ja-JP') : '未開始'}`
+    el('features').textContent = `音声認識: ${stt ? '有効（家サーバー内のwhisper・保存なし）' : '無効'} ／ セッション開始: ${typeof conv.data.sessionStartedAt === 'number' ? new Date(conv.data.sessionStartedAt).toLocaleString('ja-JP') : '未開始'}`
     error.textContent = ''
     show(enabled ? 'idle' : 'offline')
     if (enabled) await resumeInflight()
@@ -636,37 +639,50 @@ stop.addEventListener('click', async () => {
   stop.disabled = false
 })
 
-// ---- 録音（Studio と同じ: 押している間だけ、0.5〜30 秒、文字にして入力欄へ入れるだけ） ----
-async function finishRecording() {
-  held = false
-  const r = recording; if (!r) return
-  recording = null; clearTimeout(r.timer); r.processor.disconnect(); r.source.disconnect(); r.stream.getTracks().forEach(t => t.stop()); await r.context.close()
-  record.textContent = '押して録音'
-  const samples = new Float32Array(r.size); let offset = 0; for (const c of r.chunks) { samples.set(c, offset); offset += c.length }
-  const pcm = pcm16(samples, r.context.sampleRate).slice(0, 960000)
-  if (pcm.length < 16000) { setError('0.5秒以上録音してください。'); show('idle'); return }
-  busy = true; show('thinking')
-  try {
-    const result = await call('transcriptions', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Kohako-Transcription-Id': crypto.randomUUID() }, body: new Blob([pcm]) })
-    busy = false
-    if (result.status !== 200 || typeof result.data?.text !== 'string') { fail(result.status, result.data); return }
-    message.value = result.data.text; show('idle'); message.focus()
-  } catch { busy = false; setError('音声認識に接続できませんでした。'); show('failed') }
-}
-record.addEventListener('pointerdown', async event => {
-  if (busy || starting || recording || !stt) return
-  event.preventDefault(); held = true; starting = true; error.textContent = ''; record.setPointerCapture(event.pointerId); hushNow()
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } })
-    if (!held || busy) { stream.getTracks().forEach(t => t.stop()); return }
-    const context = new AudioContext(), source = context.createMediaStreamSource(stream), processor = context.createScriptProcessor(4096, 1, 1)
-    const r = { stream, context, source, processor, chunks: [] as Float32Array[], size: 0, timer: 0 }; recording = r
-    processor.onaudioprocess = e => { const c = new Float32Array(e.inputBuffer.getChannelData(0)); r.chunks.push(c); r.size += c.length }
-    source.connect(processor); processor.connect(context.destination); r.timer = window.setTimeout(() => void finishRecording(), 30000); record.textContent = '● 録音中（離すと止まります）'; show('listening')
-  } catch { setError('マイクを利用できません。ブラウザの権限を確認してください。'); show('failed') }
-  finally { starting = false; show(state) }
+// ---- 音声入力 ----
+const recordCancel = el<HTMLButtonElement>('record-cancel'), recordStatus = el('record-status'), dictationNote = el('dictation-note')
+const syncDictationNote = () => { dictationNote.hidden = !stt || (dictation.state === 'idle' && !recordStatus.textContent) }
+const supported = supportsDictation({ secure: window.isSecureContext, getUserMedia: navigator.mediaDevices?.getUserMedia, audioContext: window.AudioContext })
+record.dataset.unsupported = String(!supported)
+if (!supported) recordStatus.textContent = 'このブラウザでは音声入力を使えません。'
+const dictation = createDictation({
+  getUserMedia: constraints => navigator.mediaDevices.getUserMedia(constraints), createContext: () => new AudioContext(),
+  transcribe: pcm => call('transcriptions', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Kohako-Transcription-Id': crypto.randomUUID() }, body: new Blob([new Uint8Array(pcm)]) }),
+  now: () => Date.now(), setTimeout: (fn, ms) => window.setTimeout(fn, ms), clearTimeout: id => window.clearTimeout(id),
+  onState: (phase, seconds) => {
+    starting = phase === 'starting'; recording = phase === 'recording' || phase === 'transcribing'
+    record.dataset.transcribing = String(phase === 'transcribing')
+    record.textContent = phase === 'recording' ? '■ 停止' : phase === 'transcribing' ? '…' : '🎤'
+    record.setAttribute('aria-label', phase === 'recording' ? '録音を停止して文字にする' : phase === 'transcribing' ? '文字にしています' : '音声入力を始める')
+    el('form').classList.toggle('dictating', phase === 'recording' || phase === 'transcribing')
+    record.setAttribute('aria-pressed', String(phase === 'recording'))
+    recordCancel.hidden = phase === 'idle'
+    if (phase === 'recording') recordStatus.textContent = `${recordStatus.dataset.hushed === 'true' ? '録音のため読み上げを止めました（自動では再開しません） ' : ''}● 録音中 0:${String(seconds).padStart(2, '0')} / 0:30`
+    else if (phase !== 'idle') recordStatus.textContent = '文字にしています…'
+    else if (/^(● 録音中|録音のため|文字にしています)/.test(recordStatus.textContent ?? '')) recordStatus.textContent = '録音を中止しました（音声は破棄しました）。'
+    show(phase === 'idle' ? (state === 'listening' ? 'idle' : state) : (state === 'idle' || state === 'done' || state === 'stopped' || state === 'failed' ? 'listening' : state)); syncDictationNote()
+  },
+  onError: text => { setError(text); recordStatus.textContent = text; syncDictationNote() }, onAuth: (status, data) => fail(status, data),
+  onText: text => {
+    const result = appendDictation(message.value, text, message.maxLength)
+    message.value = result.value; message.focus(); message.setSelectionRange(message.value.length, message.value.length); message.dispatchEvent(new Event('input', { bubbles: true }))
+    const done = '認識した文を確認・修正してから送信してください。'; recordStatus.textContent = done
+    window.setTimeout(() => { if (recordStatus.textContent === done) { recordStatus.textContent = ''; syncDictationNote() } }, 10000)
+    if (result.truncated) setError('入力欄の上限で一部を切り詰めました。')
+    syncDictationNote()
+  }
 })
-for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) record.addEventListener(ev, () => void finishRecording())
+cancelDictation = () => { void dictation.cancel() }; syncDictationNoteHook = syncDictationNote
+record.addEventListener('click', () => {
+  if (dictation.state === 'recording') { void dictation.stop(); return }
+  if (dictation.state !== 'idle' || !enabled || !stt || busy || netDown || !supported) return
+  const wasSpeaking = state === 'speaking'; recordStatus.dataset.hushed = String(wasSpeaking); hushNow(); error.textContent = ''
+  recordStatus.textContent = wasSpeaking ? '録音のため読み上げを止めました（自動では再開しません）' : ''
+  void dictation.start()
+})
+recordCancel.addEventListener('click', () => { recordStatus.textContent = '録音を取り消しました（音声は破棄しました）。'; void dictation.cancel().then(syncDictationNote) })
+document.addEventListener('visibilitychange', () => { if (document.hidden) void dictation.cancel() })
+window.addEventListener('pagehide', () => { void dictation.cancel() })
 
 // ---- ふれあい ----
 const limiter = new TouchLimiter(), touchBatcher = new TouchBatcher()

@@ -524,3 +524,15 @@ it('does not retry polls whose response body is malformed', async () => {
   expect(await hermes.execute({ idempotencyKey: 'i', input: 'x', sessionId: 's', instructions: '' })).toEqual({ status: 'unknown', error: 'hermes_schema' })
   expect(polls).toBe(1)
 })
+
+it('returns no_speech when whisper returns only whitespace', async () => {
+  const hermes = {} as ReturnType<typeof createHermes>
+  const fetcher = vi.fn(async () => new Response(JSON.stringify({ text: ' \n ' }), { status: 200 })) as unknown as typeof fetch
+  const server = createServer(createApp({ authenticate: async () => 'owner', hermes, sttUrl: 'http://whisper', fetch: fetcher }))
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/transcriptions`
+    const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: Buffer.alloc(16000) })
+    expect(response.status).toBe(422); expect(await response.json()).toEqual({ error: 'no_speech' })
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
+})

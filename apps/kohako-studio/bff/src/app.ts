@@ -118,7 +118,7 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
         if (!opts.sttUrl) return json(503, { error: 'stt_disabled' })
         if (body.length < 16000 || body.length % 2 || !/^application\/octet-stream(?:;|$)/i.test(req.headers['content-type'] ?? '')) return json(400, { error: 'invalid' })
         const start = now(), form = new FormData(); form.append('file', new Blob([new Uint8Array(pcmToWav(body))], { type: 'audio/wav' }), 'audio.wav'); for (const [k,v] of Object.entries(STT_FINAL_FIELDS)) form.append(k,v)
-        try { const response = await fetcher(`${opts.sttUrl}/inference`, { method: 'POST', body: form, signal: AbortSignal.timeout(40000), redirect: 'error' }); if (!response.ok) throw Error(); const data = await response.json() as { text?: unknown }; if (typeof data.text !== 'string') throw Error(); return json(200, { text: data.text.trim(), audioMs: body.length / 32, ms: now() - start }) } catch { return json(502, { error: 'stt_failed' }) }
+        try { const response = await fetcher(`${opts.sttUrl}/inference`, { method: 'POST', body: form, signal: AbortSignal.timeout(40000), redirect: 'error' }); if (!response.ok) throw Error(); const data = await response.json() as { text?: unknown }; if (typeof data.text !== 'string') throw Error(); if (!data.text.trim()) return json(422, { error: 'no_speech' }); return json(200, { text: data.text.trim(), audioMs: body.length / 32, ms: now() - start }) } catch { return json(502, { error: 'stt_failed' }) }
       }
       if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] ?? '')) return json(415, { error: 'content_type' })
       let x: any; try { x = JSON.parse(body.toString()) } catch { return json(400, { error: 'invalid' }) }
