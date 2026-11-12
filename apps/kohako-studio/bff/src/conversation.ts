@@ -60,10 +60,13 @@ export function createConversation({ now, hermes, prefix, store, geocode = async
   let sessionStartedAt = now(),
     lastUse = sessionStartedAt,
     lastExchange: { kind: 'text' | 'touch'; text: string; reply: string } | null = null
+  // 会話ファイルに保存する直前の会話。通知返信（resume）の本文・返信は保存しない。
+  let persistedExchange: { kind: 'text' | 'touch'; text: string; reply: string } | null = null
   let queue = Promise.resolve()
   const save = () => {
     if (!store) return
-    const snapshot = { sessionStartedAt, lastUse, lastExchange, entries: [...entries.values()].filter(e => !e.resume).map(({ requestId, payloadHash, status, reply, error, createdAt, runId, sessionId, kind, views }) => ({ requestId, payloadHash, status, reply, error, createdAt, runId, sessionId, kind, views })) }
+    // cancelRequested も保存する: 停止処理中に再起動しても、保留中の承認を通常の承認として再表示せず拒否するため。
+    const snapshot = { sessionStartedAt, lastUse, lastExchange: persistedExchange, entries: [...entries.values()].filter(e => !e.resume).map(({ requestId, payloadHash, status, reply, error, createdAt, runId, sessionId, kind, views, cancelRequested }) => ({ requestId, payloadHash, status, reply, error, createdAt, runId, sessionId, kind, views, ...(cancelRequested ? { cancelRequested: true as const } : {}) })) }
     queue = queue.then(() => atomic(join(store, `conversations-${prefix}.json`), snapshot)).catch(e => { console.error('conversation save failed', e instanceof Error ? e.message : 'unknown') })
   }
   const hash = (input: Input) =>
@@ -81,11 +84,13 @@ export function createConversation({ now, hermes, prefix, store, geocode = async
       if (!store) return
       const state = await load<{ sessionStartedAt: number; lastUse: number; lastExchange: typeof lastExchange; entries: Entry[] } | null>(join(store, `conversations-${prefix}.json`), null)
       if (!state || !Array.isArray(state.entries)) return
-      sessionStartedAt = state.sessionStartedAt; lastUse = state.lastUse; lastExchange = state.lastExchange
+      sessionStartedAt = state.sessionStartedAt; lastUse = state.lastUse; lastExchange = persistedExchange = state.lastExchange ?? null
       for (const entry of state.entries.slice(-200)) {
         if (!entry || !entry.requestId || !entry.payloadHash) continue
         entries.set(entry.requestId, entry)
         if (entry.status === 'pending' && !entry.runId) { entry.status = 'unknown'; entry.error = 'bff_restarted'; sessionStartedAt = Math.max(now(), sessionStartedAt + 1) }
+        // 停止要求中に再起動した場合は stop を再送する（再起動前の stop が届いたか確認できないため）。追跡中に届く承認は onApproval が拒否する。
+        if (entry.status === 'pending' && entry.runId && entry.cancelRequested) { const runId = entry.runId; void Promise.resolve().then(() => hermes.stop(runId)).catch(() => undefined) }
       }
       clean(); save()
       for (const entry of entries.values()) if (entry.status === 'pending' && entry.runId) {
@@ -131,6 +136,7 @@ export function createConversation({ now, hermes, prefix, store, geocode = async
       const entry = entries.get(requestId)
       if (!entry || entry.status !== 'pending') return 'not_pending'
       entry.cancelRequested = true
+      save()
       // 停止前に未回答の承認を deny で消費する（Hermes は stop だけでは保留中の承認を解かず、停止後の once で実行されうるため）。
       const pending = entry.approval
       if (pending && pending.active && !pending.consumed) {
@@ -166,6 +172,7 @@ export function createConversation({ now, hermes, prefix, store, geocode = async
       if (!restored && now() - lastUse > 6 * 3600_000) {
         sessionStartedAt = now()
         lastExchange = null
+        persistedExchange = null
       }
       if (!restored) lastUse = now()
       const entry: Entry = restored ?? { requestId: input.requestId, payloadHash: hash(input), status: 'pending', createdAt: now(), kind: input.kind, views: input.kind === 'text' ? input.views : undefined, sessionId: resume?.sessionId ?? `${prefix}-${sessionStartedAt.toString(36)}`, resume: !!resume }
@@ -237,6 +244,7 @@ export function createConversation({ now, hermes, prefix, store, geocode = async
             const views = input.kind === 'text' && input.views ? await Promise.race([geocode(extracted.views), new Promise<View[]>(r => setTimeout(() => r(extracted.views), 9000).unref?.())]) : extracted.views
             entry.reply = { text: reply, at: now(), ...(views.length ? { views } : {}) }
             lastExchange = { kind: input.kind, text: text.slice(0, 500), reply }
+            if (!entry.resume) persistedExchange = lastExchange
           }
           entry.status = result.status
           if (result.status !== 'done' && result.error) entry.error = result.error
