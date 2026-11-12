@@ -53,3 +53,16 @@ it('drops cancelled waiting jobs from the queue and aborts the active fetch', as
   expect(texts).toEqual(['first', 'next'])
   await expect(t.synthesize('x', AbortSignal.abort())).rejects.toMatchObject({ code: 'cancelled' })
 })
+it('aborts an uncached /speakers lookup when the active request is cancelled', async () => {
+  let speakersCalls = 0
+  const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    if (url.endsWith('/speakers')) { speakersCalls++; if (speakersCalls === 1) return await new Promise<Response>((_, rej) => init?.signal?.addEventListener('abort', () => rej(Error('aborted')))); return response(speakers()) }
+    return url.includes('audio_query') ? response({}) : new Response('RIFFdata')
+  }) as unknown as typeof fetch
+  const t = createTts({ url: 'http://tts', fetcher, now: Date.now })
+  const first = new AbortController(), a = t.synthesize('first', first.signal), b = t.synthesize('next')
+  await new Promise(r => setTimeout(r, 0))
+  first.abort(); await expect(a).rejects.toMatchObject({ code: 'cancelled' })
+  expect((await b).subarray(0, 4).toString()).toBe('RIFF')
+})
