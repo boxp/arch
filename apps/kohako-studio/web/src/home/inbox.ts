@@ -5,6 +5,7 @@ export function sortAscending(items: Item[]): Item[] {
   const seen = new Set<string>()
   return items.filter(i => { if (seen.has(i.eventId)) return false; seen.add(i.eventId); return true }).sort((a, b) => { const x = Date.parse(a.receivedAt), y = Date.parse(b.receivedAt); return (Number.isFinite(x) ? x : Infinity) - (Number.isFinite(y) ? y : Infinity) || (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0) })
 }
+export const sourceLabel = (source: string) => source === 'task-board-report' ? 'Task Board' : source === 'hermes-cron' ? '定期通知' : source
 export const replyText = (i: Pick<Item, 'title' | 'ticketId'>, kind: 'choice' | 'text', value: string) => `通知「${i.title}」${i.ticketId ? `（${i.ticketId}）` : ''}への${kind === 'choice' ? '選択' : '返信'}: ${value}`
 export const stateLabel = (i: Pick<Item, 'readAt' | 'handledAt'>) => i.handledAt ? '処理済み' : i.readAt ? '既読' : '未読'
 export function formatReceived(value: string, now = Date.now()) { const date = new Date(value), minutes = Math.max(0, Math.floor((now - date.getTime()) / 60000)); return `${date.toLocaleString('ja-JP')}（${minutes < 60 ? `${minutes}分` : `${Math.floor(minutes / 60)}時間`}前）` }
@@ -69,13 +70,13 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
     for (const i of items) {
       const row = button('', () => { void open(i.eventId) }), state = stateLabel(i), part = (cls: string, text: string) => { const s = document.createElement('span'); s.className = cls; s.textContent = text; return s }
       row.className = 'inbox-row'; row.dataset.state = i.handledAt ? 'handled' : i.readAt ? 'read' : 'unread'; if (i.eventId === selected) row.setAttribute('aria-current', 'true')
-      row.append(part('row-title', i.title), part('row-sep', '｜'), part('row-chip', `${i.source === 'task-board-report' ? 'Task Board' : i.source} ${i.ticketId ?? ''}`.trim()), part('row-sep', `｜${i.eventId.slice(0, 16)}｜`), part('row-time', formatReceived(i.receivedAt)), part('row-sep', '｜'), part('row-state', state))
+      row.append(part('row-title', i.title), part('row-sep', '｜'), part('row-chip', `${sourceLabel(i.source)} ${i.ticketId ?? ''}`.trim()), part('row-sep', `｜${i.eventId.slice(0, 16)}｜`), part('row-time', formatReceived(i.receivedAt)), part('row-sep', '｜'), part('row-state', state))
       list.append(row)
     }
     if (!items.length) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = '通知はありません。'; list.append(p) }
     if (!panel.hidden) { list.scrollTop = bottom ? list.scrollHeight : top; firstOpen = false }
     const i = items.find(x => x.eventId === selected); if (!i) return
-    line(detail, i.title).className = 'detail-title'; const content = document.createElement('div'); content.className = 'md'; content.append(renderMarkdown(i.body)); detail.append(content); line(detail, `${i.source} ${i.ticketId ?? ''} ${i.eventId} ${formatReceived(i.receivedAt)} ${stateLabel(i)}`).className = 'detail-meta'
+    line(detail, i.title).className = 'detail-title'; const content = document.createElement('div'); content.className = 'md'; content.append(renderMarkdown(i.body)); detail.append(content); line(detail, `${sourceLabel(i.source)} ${i.ticketId ?? ''} ${i.eventId} ${formatReceived(i.receivedAt)} ${stateLabel(i)}`).className = 'detail-meta'
     const handled = button('処理済みにする', () => { void call(`notifications/${encodeURIComponent(i.eventId)}/handled`, 'POST').then(refresh) }); handled.className = 'secondary'; detail.append(handled)
     const status = document.createElement('p'); status.className = 'detail-status'; status.setAttribute('role', 'status'); status.textContent = notice; notice = ''; detail.append(status)
     const sendReply = (kind: 'choice' | 'text', value: string) => send(i, kind, value, status)

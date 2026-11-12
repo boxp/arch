@@ -3447,6 +3447,102 @@ test_stale_prune_studio_dist() {
   rm -rf "${tmp}"
 }
 
+test_stale_prune_bff_dist() {
+  local tmp vault state bin source other known out ws ticket run co i dist
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  source="${tmp}/source"; other="${tmp}/other"; known="${tmp}/known"; out="${tmp}/out"; ws="${state}/workspaces"
+  mkdir -p "${bin}" "${state}/locks" "${tmp}/proc/100"; ln -s / "${tmp}/proc/100/cwd"
+  echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"${tmp}/mountinfo"
+  export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo"
+  make_fake_gh "${bin}"; make_prune_source_repo "${source}"
+  git -C "${source}" remote set-url origin https://github.com/boxp/arch.git
+  mkdir -p "${source}/apps/kohako-studio/bff/src/sub"
+  printf 'dist/\n' >"${source}/.gitignore"
+  printf '{"compilerOptions":{"target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","strict":true,"skipLibCheck":true,"outDir":"dist","rootDir":"src","types":["node"]},"include":["src/**/*.ts"],"exclude":["src/**/*.test.ts","src/**/*.fixture.ts"]}' >"${source}/apps/kohako-studio/bff/tsconfig.json"
+  touch "${source}/apps/kohako-studio/bff/"{package.json,package-lock.json} "${source}/apps/kohako-studio/bff/src/"{app.ts,app.test.ts} "${source}/apps/kohako-studio/bff/src/sub/x.ts"
+  git -C "${source}" add .; prune_git -C "${source}" commit -q -m fixture
+  git -C "${source}" update-ref refs/remotes/origin/main HEAD; git -C "${source}" rev-list HEAD >"${known}"
+  git clone -q "${source}" "${other}"; git -C "${other}" remote set-url origin https://github.com/boxp/example.git
+  write_board "${vault}" ''
+  for ticket in $(seq 940 954); do
+    ticket="BOXP-${ticket}"; write_prune_ticket "${vault}" "${ticket}" blocked 2020-01-01
+    for i in 1 2 3 4; do
+      run="2020010${i}T000000Z"
+      if [[ "${ticket}" == BOXP-947 ]]; then co="$(add_prune_run "${state}" "${other}" "${ticket}" "${run}")"; else co="$(add_prune_run "${state}" "${source}" "${ticket}" "${run}")"; fi
+      dist="${co}/apps/kohako-studio/bff/dist"; mkdir -p "${dist}/sub"; touch "${dist}/app.js" "${dist}/sub/x.js"
+      if [[ "${i}" == 1 ]]; then
+        case "${ticket}" in
+          BOXP-941) touch "${dist}/extra.png" ;;
+          BOXP-942) touch "${dist}/app.test.js" ;;
+          BOXP-943) touch "${dist}/gone.js" ;;
+          BOXP-944) ln -s app.js "${dist}/link.js" ;;
+          BOXP-945) ln "${dist}/app.js" "${dist}/other.js" ;;
+          BOXP-946) mkdir -p "${co}/x/apps/kohako-studio/bff/dist"; touch "${co}/x/apps/kohako-studio/bff/dist/a" ;;
+          BOXP-948) echo dirty >"${co}/dirty" ;;
+          BOXP-949) git -C "${co}" rm -q --cached apps/kohako-studio/bff/tsconfig.json; echo apps/kohako-studio/bff/tsconfig.json >>"$(git -C "${co}" rev-parse --git-path info/exclude)" ;;
+          BOXP-950) printf '{"compilerOptions":{"outDir":"dist","rootDir":"src","sourceMap":true}}' >"${co}/apps/kohako-studio/bff/tsconfig.json"; git -C "${co}" add .; prune_git -C "${co}" commit -q -m sourcemap; git -C "${co}" rev-parse HEAD >>"${known}" ;;
+          BOXP-952) touch "${co}/apps/kohako-studio/bff/src/decl.d.ts"; git -C "${co}" add .; prune_git -C "${co}" commit -q -m declaration; git -C "${co}" rev-parse HEAD >>"${known}"; touch "${dist}/decl.d.js" ;;
+          BOXP-953) printf '{"compilerOptions":{"outDir":"dist","rootDir":"src","noEmit":true},"include":["src/**/*.ts"]}' >"${co}/apps/kohako-studio/bff/tsconfig.json"; git -C "${co}" add .; prune_git -C "${co}" commit -q -m noemit; git -C "${co}" rev-parse HEAD >>"${known}" ;;
+          BOXP-954) printf '{"compilerOptions":{"outDir":"dist","rootDir":"src"},"include":["src/sub/**/*.ts"]}' >"${co}/apps/kohako-studio/bff/tsconfig.json"; git -C "${co}" add .; prune_git -C "${co}" commit -q -m narrow-include; git -C "${co}" rev-parse HEAD >>"${known}" ;;
+        esac
+      fi
+    done
+  done
+  printf '{:ticket "BOXP-951" :run-id "20200101T000000Z"}\n' >"${state}/locks/BOXP-951.edn"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" >"${out}"
+  [[ ! -e "${ws}/BOXP-940/20200101T000000Z" && ! -e "${ws}/BOXP-940/20200102T000000Z" && -d "${ws}/BOXP-940/20200103T000000Z" && -d "${ws}/BOXP-940/20200104T000000Z" ]] || fail 'normal bff dist retention incorrect'
+  for i in $(seq 941 954); do [[ -d "${ws}/BOXP-${i}/20200101T000000Z" ]] || fail "unsafe bff run removed: ${i}"; done
+  for pair in '941 extra.png' '942 app.test.js' '943 gone.js' '944 link.js' '945 app.js' '952 decl.d.js'; do
+    read -r i path <<<"${pair}"; assert_file_contains "${out}" "BOXP-${i}/20200101T000000Z.*reason=ignored-unknown path=apps/kohako-studio/bff/dist/${path}"
+  done
+  assert_file_contains "${out}" 'BOXP-946/20200101T000000Z.*reason=ignored-unknown path=x/apps/kohako-studio/bff/dist/'
+  assert_file_contains "${out}" 'BOXP-947/20200101T000000Z.*reason=ignored-unknown path=apps/kohako-studio/bff/dist/'
+  assert_file_contains "${out}" 'BOXP-948/20200101T000000Z.*reason=uncommitted-changes'
+  assert_file_contains "${out}" 'BOXP-950/20200101T000000Z.*reason=bff-dist-tsconfig-unsupported'
+  assert_file_contains "${out}" 'BOXP-953/20200101T000000Z.*reason=bff-dist-tsconfig-unsupported'
+  assert_file_contains "${out}" 'BOXP-954/20200101T000000Z.*reason=bff-dist-tsconfig-unsupported'
+  co="${ws}/BOXP-949/20200101T000000Z/ghq/github.com/boxp/example"
+  TEST_RUNNER="${RUNNER}" TEST_CHECKOUT="${co}" bb -e '(System/setProperty "babashka.file" "/tmp/load-runner.bb") (load-file (System/getenv "TEST_RUNNER")) (println (bff-dist-hold (System/getenv "TEST_CHECKOUT")))' >"${tmp}/input-hold"
+  assert_file_contains "${tmp}/input-hold" 'bff-dist-build-input-untracked path=apps/kohako-studio/bff/tsconfig.json'
+  unset CODEX_TASK_BOARD_PRUNE_PROC_ROOT CODEX_TASK_BOARD_PRUNE_MOUNTINFO
+  rm -rf "${tmp}"
+}
+
+test_workspace_reuse_bff_dist() {
+  local tmp ws old dist
+  tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"
+  git -C "$tmp/source" remote set-url origin https://github.com/boxp/arch.git
+  mkdir -p "$tmp/source/apps/kohako-studio/bff/src"
+  printf 'dist/\n' >"$tmp/source/.gitignore"
+  printf '{"compilerOptions":{"outDir":"dist","rootDir":"src"},"include":["src/**/*.ts"]}' >"$tmp/source/apps/kohako-studio/bff/tsconfig.json"
+  touch "$tmp/source/apps/kohako-studio/bff/"{package.json,package-lock.json} "$tmp/source/apps/kohako-studio/bff/src/app.ts"
+  git -C "$tmp/source" add .; prune_git -C "$tmp/source" commit -q -m fixture
+  git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD; git -C "$tmp/source" rev-list HEAD >"$tmp/known"
+  old="$ws/BOXP-908/20200101T000000Z/ghq/github.com/boxp/arch"; mkdir -p "$(dirname "$old")"
+  git -C "$tmp/source" worktree add -q -b codex-task-board/BOXP-908-20200101T000000Z "$old" HEAD
+  dist="$old/apps/kohako-studio/bff/dist"; mkdir -p "$dist"; touch "$dist/app.js"
+  reuse_lock "$tmp" BOXP-908 20200102T000000Z
+  reuse_prepare "$tmp" BOXP-908 20200102T000000Z boxp/arch >"$tmp/o"
+  assert_file_contains "$tmp/o" ':reused-from "20200101T000000Z"'
+  old="$ws/BOXP-908/20200102T000000Z/ghq/github.com/boxp/arch"
+  [[ -f "$old/apps/kohako-studio/bff/dist/app.js" ]] || fail 'bff dist not carried over'
+  # An edited source on the new base keeps the output regenerable: reuse.
+  echo 'export {}' >"$tmp/source/apps/kohako-studio/bff/src/app.ts"; prune_git -C "$tmp/source" commit -q -am edit-source
+  git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD; git -C "$tmp/source" rev-list HEAD >"$tmp/known"
+  reuse_lock "$tmp" BOXP-908 20200103T000000Z
+  reuse_prepare "$tmp" BOXP-908 20200103T000000Z boxp/arch >"$tmp/o"
+  assert_file_contains "$tmp/o" ':reused-from "20200102T000000Z"'
+  old="$ws/BOXP-908/20200103T000000Z/ghq/github.com/boxp/arch"
+  [[ -f "$old/apps/kohako-studio/bff/dist/app.js" ]] || fail 'bff dist not carried over after source edit'
+  git -C "$tmp/source" rm -q apps/kohako-studio/bff/src/app.ts; prune_git -C "$tmp/source" commit -q -m remove-source
+  git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD; git -C "$tmp/source" rev-list HEAD >"$tmp/known"
+  reuse_lock "$tmp" BOXP-908 20200104T000000Z
+  reuse_prepare "$tmp" BOXP-908 20200104T000000Z boxp/arch >"$tmp/o"
+  assert_file_contains "$tmp/o" ':reuse-fallback "bff-dist-src-diff"'
+  [[ -f "$old/apps/kohako-studio/bff/dist/app.js" ]] || fail 'stale dist changed'
+  rm -rf "$tmp"
+}
+
 test_stale_prune() {
   local tmp vault state bin source known out ws ticket run co i
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"

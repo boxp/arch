@@ -5396,6 +5396,76 @@
                         @comparisons)))))))
     (catch Exception e (str "studio-dist-scan-failed " (one-line (.getMessage e))))))
 
+(def bff-dist "apps/kohako-studio/bff/dist/")
+(def bff-src "apps/kohako-studio/bff/src/")
+(def bff-inputs ["apps/kohako-studio/bff/package.json"
+                 "apps/kohako-studio/bff/package-lock.json"
+                 "apps/kohako-studio/bff/tsconfig.json"])
+
+(def bff-tsconfig-top-keys #{:compilerOptions :include :exclude})
+;; compilerOptions that do not change which files tsc writes under outDir.
+(def bff-tsconfig-option-keys
+  #{:target :module :moduleResolution :strict :skipLibCheck :outDir :rootDir :types
+    :esModuleInterop :forceConsistentCasingInFileNames :lib})
+(def bff-tsconfig-excludes #{"src/**/*.test.ts" "src/**/*.fixture.ts"})
+
+(defn bff-dist-hold [checkout]
+  (try
+    (let [result (command-result (into ["git" "-C" (str checkout) "ls-files" "-z" "--"]
+                                       (conj bff-inputs (subs bff-src 0 (dec (count bff-src))))))]
+      (if-not (zero? (:exit result))
+        "bff-dist-scan-failed git-ls-files"
+        (let [tracked (set (str/split (:out result) #"\u0000"))
+              missing (some #(when-not (contains? tracked %) %) bff-inputs)
+              nofollow (into-array java.nio.file.LinkOption [java.nio.file.LinkOption/NOFOLLOW_LINKS])
+              unknown (fn [rel] (str "ignored-unknown path=" (one-line (str bff-dist rel))))]
+          (if missing
+            (str "bff-dist-build-input-untracked path=" (one-line missing))
+            (let [config (json/parse-string (slurp (str (fs/path checkout (last bff-inputs)))) true)
+                  opts (:compilerOptions config)]
+              ;; Fail closed: only a config whose emit set is exactly the
+              ;; tracked src/**/*.ts (minus test/fixture/.d.ts, which the scan
+              ;; below rejects) is accepted. Unknown keys such as noEmit,
+              ;; extends, files or a narrower include could mean an existing
+              ;; dist file is not reproducible by tsc.
+              (if (or (not (map? config)) (not (map? opts))
+                      (not (every? bff-tsconfig-top-keys (keys config)))
+                      (not (every? bff-tsconfig-option-keys (keys opts)))
+                      (not= "dist" (:outDir opts)) (not= "src" (:rootDir opts))
+                      (not= ["src/**/*.ts"] (:include config))
+                      (not (every? bff-tsconfig-excludes (:exclude config []))))
+                "bff-dist-tsconfig-unsupported"
+                (letfn [(visit [path rel]
+                          (cond
+                            (java.nio.file.Files/isDirectory path nofollow)
+                            (some (fn [entry] (visit entry (str rel (when-not (empty? rel) "/") (fs/file-name entry))))
+                                  (sort-by str (fs/list-dir path)))
+                            (not (java.nio.file.Files/isRegularFile path nofollow)) (unknown rel)
+                            (not= 1 (long (java.nio.file.Files/getAttribute path "unix:nlink" nofollow))) (unknown rel)
+                            :else (let [stem (second (re-matches #"(.+)\.js" rel))]
+                                    (when-not (and stem (not (re-find #"\.(test|fixture|d)$" stem))
+                                                   (contains? tracked (str bff-src stem ".ts")))
+                                      (unknown rel)))))]
+                  (visit (fs/path checkout bff-dist) ""))))))))
+    (catch Exception e (str "bff-dist-scan-failed " (one-line (.getMessage e))))))
+
+(defn bff-dist-orphan-at?
+  "True when an output under bff/dist has no matching source in `rev`, or the
+  check cannot be made."
+  [checkout rev]
+  (try
+    (let [tree (command-result ["git" "-C" (str checkout) "ls-tree" "-r" "-z" "--name-only" rev "--" bff-src])
+          sources (set (str/split (:out tree) #"\u0000"))
+          root (fs/path checkout bff-dist)]
+      (or (not (zero? (:exit tree)))
+          (boolean (some (fn [f]
+                           (let [rel (str (fs/relativize root f))
+                                 stem (second (re-matches #"(.+)\.js" rel))]
+                             (not (and stem (contains? sources (str bff-src stem ".ts"))))))
+                         (filter #(fs/regular-file? % {:nofollow-links true})
+                                 (file-seq (fs/file root)))))))
+    (catch Exception _ true)))
+
 (defn inspect-ignored [checkout repo]
   ;; NUL output avoids ambiguity from quoted names and embedded newlines.
   (let [result (command-result ["git" "-C" (str checkout) "status" "--porcelain" "-z" "--ignored=matching"])]
@@ -5403,13 +5473,15 @@
       "git-error"
       (let [paths (keep #(when (str/starts-with? % "!! ") (subs % 3))
                         (str/split (:out result) #"\u0000"))
-            unknown (some #(when-not (or (ignored-allowed? %) (= studio-dist %)) %) paths)]
+            unknown (some #(when-not (or (ignored-allowed? %) (= studio-dist %) (= bff-dist %)) %) paths)]
         (cond
           unknown (str "ignored-unknown path=" (one-line unknown))
-          (some #{studio-dist} paths) (if (= repo "boxp/arch")
-                                       (studio-dist-hold checkout)
-                                       (str "ignored-unknown path=" studio-dist))
-          :else nil)))))
+          :else (or (when (some #{studio-dist} paths)
+                      (if (= repo "boxp/arch") (studio-dist-hold checkout)
+                          (str "ignored-unknown path=" studio-dist)))
+                    (when (some #{bff-dist} paths)
+                      (if (= repo "boxp/arch") (bff-dist-hold checkout)
+                          (str "ignored-unknown path=" bff-dist)))))))))
 
 (defn outside-checkout-hold
   "First file, symlink or special entry in the run directory that does not
@@ -6235,20 +6307,28 @@
                     public-diff? (and (not (str/blank? base))
                                       (fs/exists? (fs/path old studio-dist) {:nofollow-links true})
                                       (not (zero? (:exit (command-result ["git" "-C" (str old) "diff" "--quiet" "HEAD" base "--" studio-public])))))
-                    keep-head? (and public-diff? (zero? (:exit (command-result ["git" "-C" (str old) "merge-base" "--is-ancestor" base "HEAD"]))))
+                    ;; Edited sources only leave a stale but still regenerable
+                    ;; output; a tsconfig change or a source missing at the base
+                    ;; would turn the existing dist into unknown files.
+                    bff-diff? (and (not (str/blank? base))
+                                   (fs/exists? (fs/path old bff-dist) {:nofollow-links true})
+                                   (or (not (zero? (:exit (command-result ["git" "-C" (str old) "diff" "--quiet" "HEAD" base "--" (last bff-inputs)]))))
+                                       (bff-dist-orphan-at? old base)))
+                    keep-head? (and (or public-diff? bff-diff?) (zero? (:exit (command-result ["git" "-C" (str old) "merge-base" "--is-ancestor" base "HEAD"]))))
                     old-head-result (when keep-head? (command-result ["git" "-C" (str old) "rev-parse" "HEAD"]))
                     old-head (some-> old-head-result :out str/trim)
                     base (if keep-head? old-head base)
-                    reuse-base-reason (when keep-head? "studio-dist-keep-head")]
+                    reuse-base-reason (when keep-head? (if public-diff? "studio-dist-keep-head" "bff-dist-keep-head"))]
                 (cond
                   (:hold inspection) (reject (:hold inspection))
                   (not= repo (:repo inspection)) (reject "repo-mismatch")
                   (or (nil? common) (not= common (:external-common-dir inspection))) (reject "common-dir-mismatch")
                   (or (not (zero? (:exit base-result))) (str/blank? base)) (reject "git-error")
                   (and keep-head? (or (not (zero? (:exit old-head-result))) (str/blank? old-head))) (reject "git-error")
-                  ;; Keep the run's HEAD when its own commits account for the public
+                  ;; Keep the run's HEAD when its own commits account for the
                   ;; difference; otherwise switching would make the verified dist stale.
                   (and public-diff? (not keep-head?)) (reject "studio-dist-public-diff")
+                  (and bff-diff? (not keep-head?)) (reject "bff-dist-src-diff")
                   :else
                   (do
                     (fs/create-dirs (fs/parent target))
