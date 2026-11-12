@@ -96,7 +96,7 @@ async function desktop(name, config, prefs, expectFollow, scale = 1) {
     for (let i = 0; i < 6; i++) { await page.mouse.move(hx + 25, hy, { steps: 4 }); await page.mouse.move(hx - 25, hy, { steps: 4 }) }
     const petting = await page.evaluate(() => ({ look: window.__kohakoHome.report.lookFollow, pet: window.__kohakoHome.report.petFollow }))
     await page.mouse.up(); out.petting = petting
-    check(!petting.look.active && petting.look.weight < 0.05, `${name}: なで中に視線追従が退かない ${JSON.stringify(petting.look)}`)
+    check(petting.look && !petting.look.active && petting.look.weight < 0.05, `${name}: なで中に視線追従が退かない ${JSON.stringify(petting.look)}`)
     check(Math.abs(petting.pet.headZ) > 3, `${name}: なで中の頭の傾き（505）が出ない ${JSON.stringify(petting.pet)}`)
   } else {
     check(Math.abs(out.dx) < OFF_MAX + 1.5, `${name}: 無効なのに左右で瞳が動く (${out.dx}px)`)
