@@ -1,4 +1,4 @@
-import { it, expect } from 'vitest'
+import { it, expect, vi } from 'vitest'
 import { generateKeyPairSync, sign } from 'node:crypto'
 import { createServer } from 'node:http'
 import { createAuth } from './auth.js'
@@ -460,4 +460,25 @@ it('asks Hermes to register home-requested tickets only on owner text turns', as
       expect(seen.at(-1)).toBe(instructions)
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
   }
+})
+it('waits for a slow POST /v1/runs (image intake took 122s in production) instead of reporting an unknown outcome after 10s', async () => {
+  const { createHermes } = await import('./hermes.js')
+  vi.useFakeTimers()
+  try {
+    const json = (status: number, body: object) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+    const fetcher = (async (url: string) => {
+      if (url.endsWith('/v1/toolsets')) return json(200, { data: [] })
+      if (url.endsWith('/v1/runs')) return new Promise<Response>(r => setTimeout(() => r(json(202, { run_id: 'run1' })), 122_000))
+      return json(200, { status: 'completed', output: 'ok' })
+    }) as unknown as typeof fetch
+    const hermes = createHermes({ url: 'http://h', key: 'k', fetch: fetcher, sleep: async () => {} })
+    const pending = hermes.execute({ idempotencyKey: 'i', input: 'x', sessionId: 's', instructions: '' })
+    await vi.advanceTimersByTimeAsync(130_000)
+    expect(await pending).toEqual({ status: 'done', text: 'ok' })
+    // 作成以外（状態確認等）は従来どおり短い上限のまま
+    const stuck = createHermes({ url: 'http://h', key: 'k', fetch: (async (url: string) => url.endsWith('/v1/toolsets') ? json(200, { data: [] }) : url.endsWith('/v1/runs') ? json(202, { run_id: 'run1' }) : new Promise(() => {})) as unknown as typeof fetch, sleep: async () => {} })
+    const polled = stuck.execute({ idempotencyKey: 'i', input: 'x', sessionId: 's', instructions: '' })
+    await vi.advanceTimersByTimeAsync(11_000)
+    expect(await polled).toEqual({ status: 'unknown', error: 'hermes_unreachable' })
+  } finally { vi.useRealTimers() }
 })
