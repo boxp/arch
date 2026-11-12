@@ -26,7 +26,7 @@ export async function createPush(dir: string, opts: { subject: string; quietHour
   const hash = (s: string) => createHash('sha256').update(s).digest('hex')
   const valid = (x: any): x is Subscription => { try { return x && typeof x.endpoint === 'string' && x.endpoint.length <= 1000 && new URL(x.endpoint).protocol === 'https:' && typeof x.keys?.p256dh === 'string' && /^[A-Za-z0-9_-]+$/.test(x.keys.p256dh) && Buffer.from(x.keys.p256dh, 'base64url').length === 65 && typeof x.keys?.auth === 'string' && /^[A-Za-z0-9_-]+$/.test(x.keys.auth) && Buffer.from(x.keys.auth, 'base64url').length === 16 } catch { return false } }
   const [start, end] = opts.quietHours.split('-').map(Number)
-  return { publicKey: keys.publicKey,
+  return { flush: () => queue, publicKey: keys.publicKey,
     add: (x: any) => mutate(async () => { if (!valid(x)) return false; const id = hash(x.endpoint); if (!subscriptions[id] && Object.keys(subscriptions).length >= 20) return false; subscriptions[id] = { endpoint: x.endpoint, keys: x.keys }; await atomic(path, subscriptions); return true }),
     remove: (endpoint: string) => mutate(async () => { delete subscriptions[hash(endpoint)]; await atomic(path, subscriptions) }),
     send: (item: Item) => mutate(async () => {
