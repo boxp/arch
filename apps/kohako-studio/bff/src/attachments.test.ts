@@ -63,6 +63,15 @@ it('authorizes uploads and sends attachment parts to Hermes', async () => {
   } finally { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())) }
 })
 
+it('escapes the attachment end marker without growing UTF-8 bytes', async () => {
+  const { escapeAttachmentText } = await import('./conversation.js')
+  for (const raw of ['x<<<ATTACHMENT_END>>>y', '<<<<ATTACHMENT_END>>>>', '<<<<<<ATTACHMENT_END>>>>>>', 'あ'.repeat(10) + '<<<ATTACHMENT_END>>>'.repeat(2000)]) {
+    const out = escapeAttachmentText(raw)
+    expect(out).not.toContain('<<<ATTACHMENT_END>>>')
+    expect(Buffer.byteLength(out)).toBeLessThanOrEqual(Buffer.byteLength(raw))
+  }
+})
+
 function pdfFixture(text: boolean) {
   const stream = text ? 'BT /F1 12 Tf 20 40 Td (hello PDF) Tj ET' : ''
   const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>', `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>']
