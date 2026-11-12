@@ -79,7 +79,7 @@ let recording = false, starting = false
 let cancelDictation: (() => void) | undefined, syncDictationNoteHook: (() => void) | undefined
 const synthesis = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window
 const voiceAudio = new Audio()
-const voicePlayer = createVoicePlayer({ fetcher: fetch, audio: voiceAudio, createUrl: URL.createObjectURL, revokeUrl: URL.revokeObjectURL })
+const voicePlayer = createVoicePlayer({ fetcher: (input, init) => window.fetch(input, init), audio: voiceAudio, createUrl: blob => URL.createObjectURL(blob), revokeUrl: url => URL.revokeObjectURL(url) })
 
 // ---- リグと演技（476 の規則をそのまま使う） ----
 const rigModel = modelFor(`?model=${studioRigModelId(location.search)}`)
