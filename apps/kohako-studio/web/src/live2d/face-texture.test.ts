@@ -180,3 +180,9 @@ it('頬の赤みは左右対称で縁の外では消える', () => {
   expect(blushWeight(542, 319)).toBe(0)
   expect(blushWeight(514, 325)).toBeLessThan(blushWeight(514, 319))
 })
+
+it('潤みは虹彩下部の局所に限られる', async () => {
+  const { tearWeight } = await import('./face-texture')
+  expect(tearWeight(0, 0, 0, 0)).toBeCloseTo(0.65)
+  expect(tearWeight(4, 0, 0, 0)).toBe(0)
+})

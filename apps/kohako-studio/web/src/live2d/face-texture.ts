@@ -60,6 +60,12 @@ export function blushWeight(x: number, y: number): number {
   return d >= 1 ? 0 : (1 - d) ** 1.5 * 0.55
 }
 
+/** 虹彩下部の控えめな潤み。 */
+export function tearWeight(x: number, y: number, cx: number, cy: number): number {
+  const d = ((x - cx) / 2.3) ** 2 + ((y - cy) / 1.1) ** 2
+  return d >= 1 ? 0 : (1 - d) * 0.65
+}
+
 /** 点対 (x,y)→(u,v) の最小二乗アフィン。 */
 export function fitAffine(points: readonly (readonly [number, number, number, number])[]): { forward(x: number, y: number): [number, number]; inverse(u: number, v: number): [number, number] } {
   let sxx = 0, sxy = 0, syy = 0, sx = 0, sy = 0, n = 0, sxu = 0, syu = 0, su = 0, sxv = 0, syv = 0, sv = 0
@@ -310,11 +316,20 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
       const weight = blushWeight(x, y), i = ((v - y0) * w + u - x0) * 4
       if (weight > 0 && i >= 0 && i + 3 < output.length && output[i + 3]! > 200) blushPixels.push({ i, weight })
     })
-    let lastBlush = -1
-    const setBlush = (amount: number) => {
+    const tearPixels: { i: number; weight: number }[] = []
+    for (const spec of EYE_SPECS) {
+      const cx = (arcX(spec.left, spec.bottom - 3) + arcX(spec.right, spec.bottom - 3)) / 2, cy = spec.bottom - 3
+      eachTexel(target, of(spec.iris), { x0: cx - 3, x1: cx + 3, y0: cy - 2, y1: cy + 2 }, (u, v, x, y) => {
+        const weight = tearWeight(x, y, cx, cy), i = ((v - y0) * w + u - x0) * 4
+        if (weight > 0 && i >= 0 && i + 3 < output.length && output[i + 3]! > 200) tearPixels.push({ i, weight })
+      })
+    }
+    let lastBlush = -1, lastWet = -1
+    const setBlush = (amount: number, wet = 0) => {
       const level = Math.round(Math.max(0, Math.min(1, amount)) * 32) / 32
-      if (level === lastBlush) return
-      lastBlush = level
+      const wetLevel = Math.round(Math.max(0, Math.min(1, wet)) * 32) / 32
+      if (level === lastBlush && wetLevel === lastWet) return
+      lastBlush = level; lastWet = wetLevel
       const pixels = output.slice()
       for (const { i, weight } of blushPixels) {
         const a = weight * level * output[i + 3]! / 255
@@ -322,6 +337,7 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
         pixels[i + 1] = output[i + 1]! * (1 - weight * level) + 105 * a
         pixels[i + 2] = output[i + 2]! * (1 - weight * level) + 135 * a
       }
+      for (const { i, weight } of tearPixels) for (let c = 0; c < 3; c++) pixels[i + c] = output[i + c]! + (output[i + 3]! - output[i + c]!) * weight * wetLevel
       gl.bindTexture(gl.TEXTURE_2D, p.textures[0] as WebGLTexture)
       gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
     }
