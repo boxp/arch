@@ -41,4 +41,4 @@ Playwright コンテナ（`mcr.microsoft.com/playwright:v1.56.1-noble`、`npm i 
 
 `realpath506.mjs`（BOXP-506 TD-01）は実 BFF の build に合成の Hermes 応答（丁目のない番地の住所・同一行 JSON のブロック・利用枠）を流し、抽出とジオコード（実 Nominatim、出発地は送らない）の結果を出力します。`node realpath506.mjs <bff/dist の絶対パス>`。
 
-`variants510.mjs`（BOXP-510 TD-04）は BFF を完全にモックし、PC と Pixel 7 相当で表情の顔画像を保存し、照れの赤み、にっこりの閉眼、通常への復帰を画素から検査します。Playwright 1.56.1 でビルドを `SITE`（既定 `/site`）の `kohako/` に置き、`node variants510.mjs /out` を実行します。失敗または外部通信があれば終了コード 1 です。
+`variants510.mjs`（BOXP-510 TD-04）は BFF を完全にモックし、PC と Pixel 7 相当で頭の周りを高解像度で撮影して、全身モデル v11r の照れの頬の赤み（顔の下半分の肌の赤み R-G の中央値が通常より 2 以上増え、通常へ戻すと差 2 未満に戻る）、にっこりの閉じ目（150ms おき 6 枚すべてで青い瞳の画素が通常の 2 割未満。発話の口と頭なでを重ねても閉じたまま）、通常の笑顔・通常へ戻した後は目が開くことを画素から検査します。通常・笑顔・にっこり・照れ・困り・驚き・真剣の顔画像を保存します。Playwright 1.56.1 でビルドを `SITE`（既定 `/site`）の `kohako/` に置き、`node variants510.mjs /out` を実行します。失敗または外部通信があれば終了コード 1 です。

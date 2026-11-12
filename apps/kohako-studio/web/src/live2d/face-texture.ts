@@ -57,7 +57,7 @@ export function luma(p: Rgba): number { return p[3] < 8 ? 255 : (p[0] * 0.3 + p[
 /** 両頬の中心から縁まで連続して薄くなる赤み。 */
 export function blushWeight(x: number, y: number): number {
   const d = Math.min(...[514, 630].map(cx => ((x - cx) / 28) ** 2 + ((y - 319) / 13) ** 2))
-  return d >= 1 ? 0 : (1 - d) ** 2 * 0.32
+  return d >= 1 ? 0 : (1 - d) ** 1.5 * 0.55
 }
 
 /** 点対 (x,y)→(u,v) の最小二乗アフィン。 */
@@ -319,8 +319,8 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
       for (const { i, weight } of blushPixels) {
         const a = weight * level * output[i + 3]! / 255
         pixels[i] = output[i]! * (1 - weight * level) + 255 * a
-        pixels[i + 1] = output[i + 1]! * (1 - weight * level) + 125 * a
-        pixels[i + 2] = output[i + 2]! * (1 - weight * level) + 155 * a
+        pixels[i + 1] = output[i + 1]! * (1 - weight * level) + 105 * a
+        pixels[i + 2] = output[i + 2]! * (1 - weight * level) + 135 * a
       }
       gl.bindTexture(gl.TEXTURE_2D, p.textures[0] as WebGLTexture)
       gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
