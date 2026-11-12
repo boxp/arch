@@ -64,6 +64,8 @@ applyPrefs()
 
 // ---- 会話の状態（Studio と同じ） ----
 let voiceTrouble = false
+/** 読み上げを本人が止めて「続きから読む」を出している（送信待ちの自動送信で再開位置を消さないため）。 */
+let speechPaused = false
 let state: State = 'offline', enabled = false, stt = false, requestId = '', started = 0, approvalId = '', approvalExpires = 0, busy = false, accepted = false, netDown = false
 let unconfirmed: Outgoing | null = parseUnconfirmed(tab.get(UNCONFIRMED_KEY))
 const setUnconfirmed = (o: Outgoing | null) => { unconfirmed = o; if (!o) pendingFromQueue = false; tab.set(UNCONFIRMED_KEY, o ? JSON.stringify(o) : null) }
@@ -389,12 +391,12 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
 }
 let speechChunks: string[] = [], speechNext = 0
 const resumeSpeech = el<HTMLButtonElement>('resume-speech')
-function clearSpeechResume() { speechChunks = []; speechNext = 0; resumeSpeech.hidden = true }
+function clearSpeechResume() { speechChunks = []; speechNext = 0; speechPaused = false; resumeSpeech.hidden = true }
 function offerSpeechResume() { resumeSpeech.hidden = !speechChunks.length || speechNext >= speechChunks.length }
 function playReply() {
   if (!speechChunks.length) return
   const kohaku = prefs.voice === 'kohaku'
-  resumeSpeech.hidden = true; voiceTrouble = false; error.textContent = ''; acting?.beginReply(); show('speaking')
+  resumeSpeech.hidden = true; voiceTrouble = false; speechPaused = false; error.textContent = ''; acting?.beginReply(); show('speaking')
   const events = {
     onSentence: (_index: number, sentence: string, duration = 0) => { startViseme(sentence, duration || spokenSeconds(sentence), kohaku === false); acting?.sentence(cueForSentence(sentence)); if (acting) report.acting = acting.snapshot },
     onBoundary: (_index: number, charIndex: number) => syncViseme(charIndex),
@@ -434,9 +436,13 @@ function mouthOnly(text: string) {
   show('speaking'); startViseme(text)
   mouthTimer = window.setTimeout(() => { if (state === 'speaking') show('done') }, silentSpeechSeconds(text) * 1000)
 }
-speech.addEventListener('change', () => { if (!speech.checked) hushNow(); else { voiceAudio.src = 'data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA'; void voiceAudio.play().then(() => { if (voiceAudio.src.startsWith('data:audio/wav')) { voiceAudio.pause(); voiceAudio.removeAttribute('src'); voiceAudio.load() } }).catch(() => {}) } })
-function hushNow() { voicePlayer.cancel(); speaker?.cancel(); if (actingEnabled) interruptActing(); if (state === 'speaking') { show('done'); offerSpeechResume() } }
-hush.addEventListener('click', hushNow)
+speech.addEventListener('change', () => { if (!speech.checked) hushNow(true); else { voiceAudio.src = 'data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA'; void voiceAudio.play().then(() => { if (voiceAudio.src.startsWith('data:audio/wav')) { voiceAudio.pause(); voiceAudio.removeAttribute('src'); voiceAudio.load() } }).catch(() => {}) } })
+/** 読み上げを止める。pause は本人の「止める」/読み上げOFF で、続きが残るなら送信待ちの自動送信を止めて再開位置を守る（録音開始など新しい発言のための中断では止めない）。 */
+function hushNow(pause = false) {
+  voicePlayer.cancel(); speaker?.cancel(); if (actingEnabled) interruptActing()
+  if (state === 'speaking') { if (pause && speechChunks.length > speechNext) speechPaused = true; show('done'); offerSpeechResume() }
+}
+hush.addEventListener('click', () => hushNow(true))
 
 // ---- 送信待ち（BOXP-508） ----
 /** 入力欄からの送信を送信待ちへ積むか。応答待ち中・送信中・読み上げ中、または送信待ち（保留を含む）が残っている間は順序を守るため積む（読み上げを新しい発言で中断しない）。 */
@@ -448,8 +454,8 @@ function holdFor(): HoldReason | null {
   if (netDown || state === 'offline') return 'offline'
   if (state === 'stopped') return 'stopped'
   if (state === 'failed') return 'failed'
-  // 読み上げ失敗で「続きから読む」を出している間は、次の送信で再開位置が消えないよう自動送信を止める。
-  if (voiceTrouble && speechChunks.length > 0 && speechNext < speechChunks.length) return 'speech'
+  // 読み上げ失敗・本人の停止で「続きから読む」を出している間は、次の送信で再開位置が消えないよう自動送信を止める。
+  if ((voiceTrouble || speechPaused) && speechChunks.length > 0 && speechNext < speechChunks.length) return 'speech'
   return null
 }
 function renderQueue() {
