@@ -166,3 +166,4 @@ test_dehydrate_reuse_restores
 test_dehydrate_prune_hold
 test_dehydrate_rehydrate_ignores_unrelated
 test_dehydrate_rehydrate_keeps_mode_change
+test_dehydrate_keeps_clean_filtered_bytes

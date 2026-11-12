@@ -6075,6 +6075,34 @@ test_dehydrate_rehydrate_keeps_mode_change() {
   [[ -x "$co/large" && -f "$gitdir/codex-task-board-dehydrated" ]] || fail 'local mode change overwritten'
 }
 
+test_dehydrate_keeps_clean_filtered_bytes() {
+  local tmp vault state source co run out
+  tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
+  mkdir -p "$state/locks" "$tmp/proc/100"
+  ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+  export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
+  make_prune_source_repo "$source"
+  echo 'large.txt text' >"$source/.gitattributes"
+  head -c 307200 < <(yes 'line of text for clean filter test') >"$source/large.txt"
+  git -C "$source" add .; prune_git -C "$source" commit -qm large
+  write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+  write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+  run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
+  co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
+  # Mixed line endings: the clean filter normalizes them back to the indexed blob.
+  sed -i '1~2s/$/\r/' "$co/large.txt"
+  cp "$co/large.txt" "$tmp/expected"
+  CODEX_TASK_BOARD_ROOT="$state" TEST_RUNNER="$RUNNER" TEST_CO="$co" bb -e '
+    (System/setProperty "babashka.file" "/tmp/load-runner.bb")
+    (load-file (System/getenv "TEST_RUNNER"))
+    (let [co (fs/path (System/getenv "TEST_CO"))
+          sha (clojure.string/trim (:out (generated-git co "rev-parse" ":large.txt")))]
+      (assert (not (worktree-matches-blob? co "large.txt" sha))))' >"$out" 2>&1 || { cat "$out" >&2; fail 'clean-filtered bytes treated as blob'; }
+  git -C "$co" update-index --assume-unchanged large.txt
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "$vault" "$state" >"$out"
+  cmp -s "$co/large.txt" "$tmp/expected" || fail 'clean-filtered local bytes were dehydrated'
+}
+
 test_dehydrate_basic() {
   local tmp vault state source co run out
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; source="${tmp}/source"; out="${tmp}/out"

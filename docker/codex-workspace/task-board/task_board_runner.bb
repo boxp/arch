@@ -6167,6 +6167,20 @@
   (contains? (fs/posix-file-permissions path {:nofollow-links true})
              java.nio.file.attribute.PosixFilePermission/OWNER_EXECUTE))
 
+(defn worktree-matches-blob?
+  "True only when the worktree bytes at rel are exactly the indexed blob
+  (no clean filter / eol conversion applied while hashing) and checkout of
+  that blob reproduces the same bytes (smudge/eol/ident/encoding leave it
+  unchanged). This guarantees deleting and later restoring is lossless."
+  [co rel sha]
+  (try
+    (let [raw @(p/process ["git" "-C" (str co) "hash-object" "--no-filters" "--" rel] {:out :string :err :string})
+          smudged @(p/process ["bash" "-c" "set -o pipefail; git -C \"$1\" cat-file --filters --path=\"$2\" \"$3\" | git -C \"$1\" hash-object --no-filters --stdin" "bash" (str co) rel sha]
+                              {:out :string :err :string})]
+      (and (zero? (:exit raw)) (= sha (str/trim (:out raw)))
+           (zero? (:exit smudged)) (= sha (str/trim (:out smudged)))))
+    (catch Exception _ false)))
+
 (defn dehydrated-present?
   "True when a dehydrated path exists with content that is not the indexed
   blob (new local data) or whose executable bit differs from the indexed
@@ -6180,10 +6194,9 @@
      (some (fn [rel]
              (let [path (fs/path co rel)
                    {:keys [mode sha]} (get entries rel)
-                   hash (when (fs/regular-file? path {:nofollow-links true})
-                          (generated-git co "hash-object" "--" rel))]
-               (not (and hash (zero? (:exit hash)) sha
-                         (= sha (str/trim (:out hash)))
+                   same (and sha (fs/regular-file? path {:nofollow-links true})
+                             (worktree-matches-blob? co rel sha))]
+               (not (and same
                          (#{"100644" "100755"} mode)
                          (= (= mode "100755") (owner-executable? path))))))
            present))))
@@ -6242,7 +6255,7 @@
         (if (some #(not (zero? (:exit %))) [index tags links])
           {:hold "git-error"}
           (let [mismatches (volatile! 0)
-                skipped (set (map #(subs % 2) (filter #(str/starts-with? % "S ") (str/split (:out tags) #"\u0000"))))
+                skipped (set (map #(subs % 2) (filter #(or (str/starts-with? % "S ") (re-find #"^[a-z] " %)) (str/split (:out tags) #"\u0000"))))
                 targets (set (keep #(try (str (fs/real-path %)) (catch java.nio.file.NoSuchFileException _ nil)) (remove str/blank? (str/split (:out links) #"\u0000"))))
                 files (keep (fn [entry]
                               (when-let [[_ mode sha stage rel] (re-matches #"(?s)(100644|100755) ([0-9a-f]+) ([0-9])\t(.*)" entry)]
@@ -6253,11 +6266,8 @@
                                              (= 1 (fs/get-attribute path "unix:nlink" {:nofollow-links true}))
                                              (fs/starts-with? (fs/real-path path) (fs/real-path co))
                                              (not (targets (str (fs/real-path path))))
-                                             (let [hash (try @(p/process ["git" "-C" (str co) "hash-object" "--stdin-paths"]
-                                                                        {:in (str (pr-str rel) "\n") :out :string :err :string})
-                                                             (catch Exception _ {:exit -1}))]
-                                               (if (and (zero? (:exit hash)) (= sha (str/trim (:out hash)))) true
-                                                   (do (vswap! mismatches inc) false))))
+                                             (if (worktree-matches-blob? co rel sha) true
+                                                 (do (vswap! mismatches inc) false)))
                                     rel)))) (str/split (:out index) #"\u0000"))
                 bytes (reduce (fn [n rel] (let [v (generated-measure (fs/path co rel))] (if (and n v) (+ n v) (reduced nil)))) 0 files)]
             (if (nil? bytes) {:hold "measurement-failed"} {:files (vec files) :bytes bytes :marker marker :hash-mismatches @mismatches})))))))
