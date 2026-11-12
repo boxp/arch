@@ -62,7 +62,7 @@ for (const device of Object.keys(devices)) {
   const r = results[device] = { screenshots: {}, motion: {}, contrast: {}, performance: {} }
   for (const mode of ['morning', 'day', 'evening', 'night', 'v1']) await run(`${device} ${mode}`, async () => {
     const { ctx, page } = await setup(device, mode === 'v1' ? '&bg=v1' : `&daypart=${mode}`)
-    try { const actual = await page.evaluate(() => ({ daypart: document.body.dataset.daypart, bg: document.body.dataset.bg, circuit: !!document.querySelector('.circuit') })); r.screenshots[mode] = actual; check(mode === 'v1' ? actual.bg === 'v1' && actual.circuit : actual.daypart === mode, JSON.stringify(actual)); await snap(page, `${device}-${mode}.png`) } finally { await ctx.close() }
+    try { const actual = await page.evaluate(() => ({ daypart: document.body.dataset.daypart, bg: document.body.dataset.bg, circuit: !!document.querySelector('.circuit') })); r.screenshots[mode] = actual; check(mode === 'v1' ? actual.bg === 'v1' && actual.circuit : actual.daypart === mode, JSON.stringify(actual)); await page.waitForTimeout(1500); await snap(page, `${device}-${mode}.png`) } finally { await ctx.close() }
   })
   await run(`${device} motion/input/contrast`, async () => {
     const { ctx, page, posts } = await setup(device)

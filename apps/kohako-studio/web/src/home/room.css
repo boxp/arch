@@ -25,7 +25,7 @@ body[data-shape="landscape"] .room{--wx:18cqw;--wy:54cqh;--wd:92cqh;--hz:86cqh}
 /* 丸窓 */
 .room-window,.room-orbit{left:var(--wx);top:var(--wy);width:var(--wd);aspect-ratio:1;translate:-50% -50%;border-radius:50%;transition:left .9s cubic-bezier(.22,.7,.2,1),top .9s cubic-bezier(.22,.7,.2,1),width .9s cubic-bezier(.22,.7,.2,1)}
 .room-window{box-shadow:0 0 0 10px rgba(255,255,255,.55),0 0 90px 30px rgba(214,196,246,.55),0 40px 70px -30px rgba(92,64,150,.45)}
-.room-window .sky{inset:0;border-radius:50%;overflow:hidden;background:var(--sky);transition:background 1.2s}
+.room-window .sky{position:absolute;inset:0;border-radius:50%;overflow:hidden;background:var(--sky);transition:background 1.2s}
 .room-window .glow{width:86%;height:86%;border-radius:50%;background:radial-gradient(closest-side,var(--c),transparent);opacity:.9;will-change:translate}
 .room-window .g1{--c:var(--g1);left:-18%;top:-22%;animation:sky-drift-a 64s ease-in-out infinite alternate}
 .room-window .g2{--c:var(--g2);left:34%;top:18%;width:74%;height:74%;opacity:.7;animation:sky-drift-b 82s ease-in-out infinite alternate}
