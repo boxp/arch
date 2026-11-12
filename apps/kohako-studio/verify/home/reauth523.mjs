@@ -14,14 +14,14 @@ try {
   browser = await chromium.launch({ ...(process.env.CHROME ? { executablePath: process.env.CHROME } : {}), args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] })
   for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, false], ['mobile', { width: 412, height: 915 }, true]]) {
     results[device] = {}
-    for (const scenario of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']) {
+    for (const scenario of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']) {
       const ctx = await browser.newContext({ viewport, isMobile: mobile, hasTouch: mobile, serviceWorkers: 'block' }), page = await ctx.newPage()
-      let mode = scenario === 'b' ? 'abort' : scenario === 'a' || scenario === 'e' || scenario === 'h' ? 'ok' : 'auth', navigations = 0, meCalls = 0, lookupAuth = scenario === 'h'
+      let mode = scenario === 'b' ? 'abort' : scenario === 'a' || scenario === 'e' || scenario === 'h' || scenario === 'i' ? 'ok' : 'auth', navigations = 0, meCalls = 0, lookupAuth = scenario === 'h'
       const posts = [], gets = []
       page.on('framenavigated', frame => { if (frame === page.mainFrame()) navigations++ })
       await ctx.route('**/kohako/api/v1/**', async route => {
         const req = route.request(), p = new URL(req.url()).pathname.split('/v1/')[1], json = (status, data) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) })
-        if (p === 'me') { meCalls++; if (mode === 'abort') return route.abort(); if (mode === 'auth') return route.fulfill({ status: 302, headers: { location: 'https://example.cloudflareaccess.com/login' } }); return json(200, { authenticated: true }) }
+        if (p === 'me') { meCalls++; if (scenario === 'i') await new Promise(r => setTimeout(r, 1500)); if (mode === 'abort') return route.abort(); if (mode === 'auth') return route.fulfill({ status: 302, headers: { location: 'https://example.cloudflareaccess.com/login' } }); return json(200, { authenticated: true }) }
         if (p === 'conversation') return json(200, { enabled: true, stt: false })
         if (p === 'status') return json(200, { schema: 'kohako-home-status/v1', quota: { state: 'ok', pools: [] }, tasks: { state: 'ok', inProgress: { total: 0, complete: true, byAgent: [], conflicts: [] } } })
         if (p === 'messages') { posts.push(req.postDataJSON()); return json(202, {}) }
@@ -39,7 +39,10 @@ try {
         if (scenario === 'd') await ctx.addInitScript(() => sessionStorage.setItem('kohako-home-unconfirmed', JSON.stringify({ kind: 'text', text: '未確認', requestId: 'pending-523', expiresAt: Date.now() + 600000 })))
         // e: 受理未確認の控えと同じ本文の送信待ち・草稿を退避済みで再読込後に戻し、控えの照会が 200 以外でも草稿と送信待ちを失わないこと。
         if (scenario === 'e') await ctx.addInitScript(() => { if (sessionStorage.getItem('e523')) return; sessionStorage.setItem('e523', '1'); const now = Date.now(); sessionStorage.setItem('kohako-home-unconfirmed', JSON.stringify({ kind: 'text', text: '同文', requestId: 'pending-e523', expiresAt: now + 600000 })); sessionStorage.setItem('kohako-home-reauth', JSON.stringify({ v: 1, draft: '下書き', queue: ['同文'], at: now - 1000, reloadAt: now - 1000 })) })
+        // i: 再認証後の初期化（me 応答）を待つ間に入力欄へ別の文を入力しても、退避した草稿が上書き・破棄されず送信待ちに保留で残ること。
+        if (scenario === 'i') await ctx.addInitScript(() => { if (sessionStorage.getItem('i523')) return; sessionStorage.setItem('i523', '1'); const now = Date.now(); sessionStorage.setItem('kohako-home-reauth', JSON.stringify({ v: 1, draft: '下書き', queue: [], at: now - 1000, reloadAt: now - 1000 })) })
         await page.goto(url)
+        if (scenario === 'i') { await page.locator('#message').fill('別文'); await page.waitForFunction(() => document.querySelector('#queue-list')?.textContent.includes('下書き'), null, { timeout: 8000 }); await page.waitForTimeout(800); assert(await page.locator('#message').inputValue() === '別文', '入力中の文が上書きされた'); assert(await page.locator('#queue-resume').isVisible(), '戻した草稿が保留されていない'); assert(await page.evaluate(() => sessionStorage.getItem('kohako-home-reauth')) === null, '退避が残存'); assert(posts.length === 0, '予期しない POST'); results[device][scenario] = { pass: true, navigations, posts: posts.length, gets }; continue }
         if (scenario === 'e') { await page.waitForFunction(() => document.querySelector('#queue-list')?.textContent.includes('同文')); await page.waitForTimeout(800); assert(gets.includes('requests/pending-e523'), '控えの照会なし'); assert(await page.locator('#message').inputValue() === '下書き', '草稿が控えで上書き'); assert((await page.locator('#queue-list').textContent()).includes('同文'), '同文の送信待ちが消失'); assert(await page.evaluate(() => sessionStorage.getItem('kohako-home-reauth')) === null, '退避が残存'); assert(posts.length === 0, '予期しない POST'); results[device][scenario] = { pass: true, navigations, posts: posts.length, gets }; continue }
         if (scenario === 'a') { await page.waitForFunction(() => !document.querySelector('#send').disabled); await page.locator('#message').fill('実行'); await page.locator('#send').click(); await page.locator('#message').fill('待ち'); await page.locator('#send').click(); mode = 'auth' }
         await page.locator('#reconnect').waitFor({ state: 'visible', timeout: 15000 })

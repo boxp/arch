@@ -336,12 +336,19 @@ async function initialize() {
     reauth = parseReauth(tab.get(REAUTH_KEY), Date.now())
     if (!reauth) tab.set(REAUTH_KEY, null)
     if (reauth) {
-      if (!message.value) putComposer(reauth.draft)
       let restored = 0
       // 送信待ちの本文は送り出した時点で受理未確認の控えへ移り queue から外れるため、退避分は控えと同じ本文でも別の発言として全件戻す。
       for (const text of reauth.queue) if (queue.add(text, Date.now()).ok) restored++
+      // 認証後の初期化を待つ間に入力欄へ別の文が入力されていたら、退避した草稿で上書きも破棄もせず、送信待ちの末尾へ別の発言として戻す（保留・自動送信なし）。
+      // 送信待ちへ入らない（満杯・長すぎる）ときは入力欄の先頭へ連結して残す。
+      let merged = false
+      if (reauth.draft && !message.value) putComposer(reauth.draft)
+      else if (reauth.draft && message.value !== reauth.draft) {
+        if (queue.add(reauth.draft, Date.now()).ok) restored++
+        else { message.value = `${reauth.draft}\n${message.value}`; composerEcho = null; merged = true }
+      }
       if (restored) queue.hold('auth')
-      if (restored || reauth.draft) addHistory('お知らせ', restored ? `再認証前の入力と送信待ち ${restored} 件を戻しました（まだ送っていません）。` : '再認証前の入力を戻しました（まだ送っていません）。')
+      if (restored || reauth.draft) addHistory('お知らせ', merged ? `再認証前の入力を、いま入力中の文の前に戻しました${restored ? `（送信待ち ${restored} 件も戻しました）` : ''}（まだ送っていません）。` : restored ? `再認証前の入力と送信待ち ${restored} 件を戻しました（まだ送っていません）。` : '再認証前の入力を戻しました（まだ送っていません）。')
       tab.set(REAUTH_KEY, null); reauth = null
     }
     enabled = conv.data.enabled === true; stt = enabled && !!conv.data.stt; netDown = false
