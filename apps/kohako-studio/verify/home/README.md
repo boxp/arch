@@ -28,3 +28,5 @@ Playwright コンテナ（`mcr.microsoft.com/playwright:v1.56.1-noble`、`npm i 
 `usability510.mjs`（BOXP-510）は token 不要の完全な BFF モックで、PC と Pixel 7 相当の Enter 改行・Shift+Enter 送信、Markdown の安全な描画（script・javascript: リンク・画像を無効化し外部通信 0 件）、本文表示中の利用枠ウィジェット非表示、履歴・受信箱の昇順、背景の動きと OS の reduced-motion・「背景を動かす」OFF での静止を確かめます。ビルドを `SITE`（既定 `/site`）の `kohako/` に置き、Playwright 1.56.1 で `node usability510.mjs /out` を実行します。
 
 `background512.mjs`（BOXP-512）は BFF を完全にモックし、PC・Pixel 7 相当縦・スマホ横で時間帯と旧背景の表示、動きと各停止条件、連続画像の輝度差、文字のコントラスト、入力・ポインター操作を検証します。PC と Pixel 7 では CDP の処理時間とフレーム間隔も測定します。Playwright 1.56.1 でビルドを `SITE`（既定 `/site`）の `kohako/` に置き、`node background512.mjs /out` を実行します（`PORT` 既定 8795）。結果とスクリーンショットを出力し、assert 失敗または外部通信があれば終了コード 1 です。
+
+`menus512.mjs`（BOXP-512 TD-01）は BFF を完全にモックし、PC・Pixel 7 相当縦・スマホ横でヘッダーと、そこから開くメニュー（読み上げ・ふれあい・受信箱・履歴・設定・Studio リンク）の開閉、Esc、焦点の戻り、スイッチの保存とキーボード操作、受信箱の既読・選択返信・処理済み、履歴の並びと Markdown、面が画面内に収まることを確かめ、各状態の画像を保存します。ビルドを `SITE`（既定 `/site`）の `kohako/` に置き、Playwright 1.56.1 で `node menus512.mjs /out` を実行します（`PORT` 既定 8796、`EMPTY=1` で通知 0 件の状態）。assert 失敗または外部通信があれば終了コード 1 です。
