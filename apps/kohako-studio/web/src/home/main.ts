@@ -1,3 +1,6 @@
+import { shouldSubmit } from './keys'
+import { atBottom } from './scroll'
+import { renderMarkdown, plainText } from './markdown'
 import { initInbox } from './inbox'
 // BOXP-500: コハコの家（kohako-home）。Studio と同じ BFF・認証・Web 専用会話を使う全画面 UI。
 // 会話の送信・重複防止・停止・承認・追跡は Studio（src/studio/main.ts）と同じ規則。人格・判断・記憶は Hermes だけが持つ。
@@ -12,7 +15,7 @@ import { applyPose, loadRig, type Player } from '../live2d/rig'
 import { ActingDirector, cueForSentence, splitSentences, type ActingStage } from '../live2d/acting'
 import { createActingStage } from '../live2d/gesture'
 import { createSentenceSpeaker, createSilentSentencer } from '../studio/acting-speech'
-import { SceneDirector, targetScene, type Scene } from './scene'
+import { SceneDirector, targetScene, messageShown, type Scene } from './scene'
 import { cardsFromText, type Card } from './cards'
 import { acts, bboxOf, classifyTouch, HAND_MESHES, HEAD_MESHES, inside, toScreenRect, TouchLimiter, TouchBatcher, type Point, type Rect, type Zone } from './touch'
 import { parsePrefs, type Prefs } from './prefs'
@@ -86,15 +89,17 @@ const history: Entry[] = []
 function addHistory(who: Entry['who'], text: string) {
   history.push({ who, text, at: Date.now() }); if (history.length > 100) history.shift()
   const li = document.createElement('li'), w = document.createElement('span'), t = document.createElement('span'), time = new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
-  w.className = 'who'; w.textContent = `${who}（${time}）`; t.textContent = text; li.append(w, t); el('history-list').append(li)
+  const list = el('history-list'), scroller = el('history'), bottom = atBottom(scroller.scrollTop, scroller.clientHeight, scroller.scrollHeight)
+  w.className = 'who'; w.textContent = `${who}（${time}）`; t.className = 'md'; t.append(renderMarkdown(text)); li.append(w, t); list.append(li); if (bottom) scroller.scrollTop = scroller.scrollHeight
 }
-let touchLineTimer = 0
+let touchLineTimer = 0, bubbleText = ''
 function setBubble(text: string, touch = false) {
-  clearTimeout(touchLineTimer)
-  reply.textContent = text; bubble.classList.toggle('touch', touch); bubbleTag.hidden = !touch; bubble.scrollTop = 0
+  clearTimeout(touchLineTimer); bubbleText = text
+  reply.replaceChildren(renderMarkdown(text)); reply.classList.add('md'); bubble.classList.toggle('touch', touch); bubbleTag.hidden = !touch; bubble.scrollTop = 0
   // 吹き出しが別の内容に変わったら、前のお知らせの操作欄は閉じる（通知は受信箱に未読で残る）。
-  el('notice-actions').hidden = true; el('notice-status').textContent = ''
+  el('notice-actions').hidden = true; el('notice-status').textContent = ''; updateMessage()
 }
+function updateMessage() { body.dataset.message = messageShown({ scene: body.dataset.scene ?? 'relax', touch: bubble.classList.contains('touch'), notice: !el('notice-actions').hidden }) ? '1' : '0' }
 function renderCards(next: Card[], views: View[] = []) {
   cards = next; cardsOpen = next.length > 0 || views.length > 0; cardList.replaceChildren()
   for (const c of next) {
@@ -203,7 +208,7 @@ function refreshScene(force = false) {
   body.dataset.shape = shape; body.dataset.kbd = kbd ? '1' : '0'
   const target = targetScene({ state, thinkingMs: state === 'thinking' ? Date.now() - thinkingSince : 0, cardsOpen: cardsOpen || !viewer.hidden, idleMs: Date.now() - lastActivity, hasReply: !!lastReply, netDown })
   const scene = director.decide(target, Date.now(), { holding: holding(), pinned: prefs.pinned, force })
-  body.dataset.scene = scene
+  body.dataset.scene = scene; updateMessage()
   const upper = kbd || shape === 'landscape' || ((scene === 'show' || scene === 'work') && shape === 'pc')
   if ((character.dataset.frame === 'upper') !== upper) character.dataset.frame = upper ? 'upper' : 'full'
   character.classList.toggle('mini', kbd || (shape === 'portrait' && (scene === 'show' || scene === 'work')))
@@ -217,7 +222,7 @@ window.addEventListener('resize', () => refreshScene())
 window.visualViewport?.addEventListener('resize', () => refreshScene())
 message.addEventListener('input', () => { typingUntil = Date.now() + 2000; message.style.height = 'auto'; message.style.height = `${Math.min(message.scrollHeight, window.innerHeight * 0.3)}px` })
 message.addEventListener('focus', () => setTimeout(() => refreshScene(), 300)); message.addEventListener('blur', () => setTimeout(() => refreshScene(), 300))
-message.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); el<HTMLFormElement>('form').requestSubmit() } })
+message.addEventListener('keydown', e => { if (shouldSubmit(e)) { e.preventDefault(); el<HTMLFormElement>('form').requestSubmit() } })
 for (const box of [bubble, cardsBox]) box.addEventListener('scroll', () => { scrollingUntil = Date.now() + 1000 }, { passive: true })
 window.addEventListener('pointerdown', () => { pointerDown = true }, true); window.addEventListener('pointerup', () => { pointerDown = false }, true); window.addEventListener('pointercancel', () => { pointerDown = false }, true)
 
@@ -361,13 +366,14 @@ function deliver(text: string, views: View[] = []) {
   error.textContent = ''; trouble.hidden = true
   lastReply = text; lastActivity = Date.now(); reply.dataset.reply = '1'
   setBubble(text || '（空の返答でした）'); addHistory('コハコ', text); renderCards(cardsFromText(text), views)
+  const spoken = plainText(text)
   const map = views.find(view => view.kind === 'map'), mapButton = map && cardList.querySelector<HTMLButtonElement>('button:last-child')
   if (map && mapButton) openViewer(map, mapButton, false)
   if (actingEnabled && text) {
-    const sentences = splitSentences(text)
+    const sentences = splitSentences(spoken)
     acting?.beginReply(); show('speaking')
     let current = 0
-    const sentenceDuration = (s: string) => { const total = sentences.reduce((n, v) => n + Array.from(v.replace(/\s/g, '')).length, 0); return speech.checked && speaker ? spokenSeconds(s) : total ? silentSpeechSeconds(text) * Array.from(s.replace(/\s/g, '')).length / total : 0 }
+    const sentenceDuration = (s: string) => { const total = sentences.reduce((n, v) => n + Array.from(v.replace(/\s/g, '')).length, 0); return speech.checked && speaker ? spokenSeconds(s) : total ? silentSpeechSeconds(spoken) * Array.from(s.replace(/\s/g, '')).length / total : 0 }
     const events = {
       onBoundary: (_index: number, charIndex: number) => syncViseme(charIndex),
       onSentence: (index: number, sentence: string) => { current = index; startViseme(sentence, sentenceDuration(sentence), !!(speech.checked && speaker)); acting?.sentence(cueForSentence(sentence)); if (acting) report.acting = acting.snapshot },
@@ -377,14 +383,14 @@ function deliver(text: string, views: View[] = []) {
     if (speech.checked && speaker) speaker.speak(sentences, events)
     else {
       const total = sentences.reduce((n, s) => n + Array.from(s.replace(/\s/g, '')).length, 0)
-      sentencer.run(sentences, s => total ? silentSpeechSeconds(text) * Array.from(s.replace(/\s/g, '')).length / total : 0, events)
+      sentencer.run(sentences, s => total ? silentSpeechSeconds(spoken) * Array.from(s.replace(/\s/g, '')).length / total : 0, events)
     }
   } else if (!actingEnabled && speech.checked && synthesis && text) {
-    const u = new SpeechSynthesisUtterance(text); u.lang = 'ja-JP'
-    u.onstart = () => { startViseme(text, spokenSeconds(text), true) }; u.onboundary = e => syncViseme(e.charIndex); u.onend = () => { if (state === 'speaking') show('done') }
-    u.onerror = e => { if (state !== 'speaking') return; if (e.error === 'interrupted' || e.error === 'canceled') show('done'); else mouthOnly(text) }
+    const u = new SpeechSynthesisUtterance(spoken); u.lang = 'ja-JP'
+    u.onstart = () => { startViseme(spoken, spokenSeconds(spoken), true) }; u.onboundary = e => syncViseme(e.charIndex); u.onend = () => { if (state === 'speaking') show('done') }
+    u.onerror = e => { if (state !== 'speaking') return; if (e.error === 'interrupted' || e.error === 'canceled') show('done'); else mouthOnly(spoken) }
     show('speaking'); window.speechSynthesis.speak(u)
-  } else if (text) mouthOnly(text)
+  } else if (text) mouthOnly(spoken)
 }
 function mouthOnly(text: string) {
   show('speaking'); startViseme(text)
@@ -618,7 +624,7 @@ async function sendTouch() {
       const next = interpretRequest(result.data)
       if (next.state === 'done' && next.text) {
         if (touchSendable()) {
-          const before = reply.textContent ?? '', wasTouch = bubble.classList.contains('touch')
+          const before = bubbleText, wasTouch = bubble.classList.contains('touch')
           setBubble(next.text, true)
           clearTimeout(touchLineTimer)
           touchLineTimer = window.setTimeout(() => { if (bubble.classList.contains('touch')) setBubble(wasTouch ? '' : before) }, 4500)
@@ -709,7 +715,7 @@ el('touch-hand').addEventListener('click', () => touchReact('hand', 'tap', 'menu
 // ---- 引き出し・Esc ----
 const drawers: [string, string][] = [['history', 'history-open'], ['settings', 'settings-open']]
 for (const [id, opener] of drawers) {
-  el(opener).addEventListener('click', () => { for (const [other] of drawers) if (other !== id) el(other).hidden = true; el(id).hidden = !el(id).hidden; if (!el(id).hidden) el<HTMLButtonElement>(`${id}-close`).focus() })
+  el(opener).addEventListener('click', () => { for (const [other] of drawers) if (other !== id) el(other).hidden = true; el(id).hidden = !el(id).hidden; if (!el(id).hidden) { if (id === 'history') { const list = el('history'); list.scrollTop = list.scrollHeight }; el<HTMLButtonElement>(`${id}-close`).focus() } })
   el(`${id}-close`).addEventListener('click', () => { el(id).hidden = true; el(opener).focus() })
 }
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { for (const [id] of drawers) el(id).hidden = true; touchMenu.hidden = true; touchOpen.setAttribute('aria-expanded', 'false') } })
@@ -789,11 +795,11 @@ const inbox = initInbox(followRequest, { canAnnounce: () => enabled && !busy && 
   const body = item.body.length > 300 ? item.body.slice(0, 300) + '… 続きは受信箱で' : item.body
   const text = `ご主人さま、お知らせです。${item.title}\n${body}${more ? `\nほかに ${more} 件のお知らせは受信箱にあります` : ''}`
   setBubble(text); addHistory('お知らせ', text)
-  const box = el('notice-actions'), status = el('notice-status'); box.replaceChildren(); status.textContent = ''; box.hidden = false
+  const box = el('notice-actions'), status = el('notice-status'); box.replaceChildren(); status.textContent = ''; box.hidden = false; updateMessage()
   const button = (label: string, fn: () => void) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.addEventListener('click', fn); box.append(b) }
-  const sendNotice = async (kind: 'choice' | 'text', value: string) => { if (await actions.send(kind, value)) { box.hidden = true; status.textContent = '' } }
+  const sendNotice = async (kind: 'choice' | 'text', value: string) => { if (await actions.send(kind, value)) { box.hidden = true; status.textContent = ''; updateMessage() } }
   if (item.choices?.length) for (const choice of item.choices) button(choice, () => void sendNotice('choice', choice))
   else { const input = document.createElement('textarea'); input.maxLength = 500; input.placeholder = '返信を入力'; box.append(input); button('返信する', () => { if (input.value.trim()) void sendNotice('text', input.value) }) }
-  button('受信箱で見る', () => { box.hidden = true; actions.open() }); button('あとで', () => { box.hidden = true; actions.later() })
+  button('受信箱で見る', () => { box.hidden = true; updateMessage(); actions.open() }); button('あとで', () => { box.hidden = true; updateMessage(); actions.later() })
 } })
 window.setInterval(() => inbox.retry(), 2000)

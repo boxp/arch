@@ -1,4 +1,10 @@
+import { renderMarkdown } from './markdown'
+import { atBottom } from './scroll'
 export type Item = { eventId: string; source: string; ticketId?: string; title: string; body: string; choices?: string[]; receivedAt: string; readAt?: string; announcedAt?: string; handledAt?: string; reply?: { replyId: string; kind: 'choice' | 'text'; value: string; requestId: string; status: string } }
+export function sortAscending(items: Item[]): Item[] {
+  const seen = new Set<string>()
+  return items.filter(i => { if (seen.has(i.eventId)) return false; seen.add(i.eventId); return true }).sort((a, b) => { const x = Date.parse(a.receivedAt), y = Date.parse(b.receivedAt); return (Number.isFinite(x) ? x : Infinity) - (Number.isFinite(y) ? y : Infinity) || (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0) })
+}
 export const replyText = (i: Pick<Item, 'title' | 'ticketId'>, kind: 'choice' | 'text', value: string) => `通知「${i.title}」${i.ticketId ? `（${i.ticketId}）` : ''}への${kind === 'choice' ? '選択' : '返信'}: ${value}`
 export const stateLabel = (i: Pick<Item, 'readAt' | 'handledAt'>) => i.handledAt ? '処理済み' : i.readAt ? '既読' : '未読'
 export function formatReceived(value: string, now = Date.now()) { const date = new Date(value), minutes = Math.max(0, Math.floor((now - date.getTime()) / 60000)); return `${date.toLocaleString('ja-JP')}（${minutes < 60 ? `${minutes}分` : `${Math.floor(minutes / 60)}時間`}前）` }
@@ -15,7 +21,7 @@ type Announcer = { canAnnounce: () => boolean; announce: (item: Item, actions: {
 export function initInbox(follow: (requestId: string, text: string) => boolean = () => false, announcer?: Announcer) {
   const el = (id: string) => document.getElementById(id)!, panel = el('inbox'), list = el('inbox-list'), detail = el('inbox-detail'), message = el('push-message')
   let notice = '', items: Item[] = [], selected = notificationParam(location.search), timer = 0, waiting = false, active = '', holdTimer = 0
-  let opening = !!selected
+  let opening = !!selected, firstOpen = true
   const call = async (path: string, method = 'GET', body?: unknown) => { const r = await fetch(`/kohako/api/v1/${path}`, { method, ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }) }); return { status: r.status, data: r.status === 204 ? null : await r.json() } }
   const button = (text: string, fn: () => void) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = text; b.addEventListener('click', fn); return b }
   const line = (parent: HTMLElement, text: string) => { const p = document.createElement('p'); p.textContent = text; parent.append(p) }
@@ -57,10 +63,12 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
     } catch { /* 次回更新で再試行 */ } finally { waiting = false }
   }
   function render() {
+    const top = list.scrollTop, bottom = firstOpen || atBottom(top, list.clientHeight, list.scrollHeight)
     list.replaceChildren(); detail.replaceChildren()
     for (const i of items) list.append(button(`${i.title}｜${i.source === 'task-board-report' ? 'Task Board' : i.source} ${i.ticketId ?? ''}｜${i.eventId.slice(0, 16)}｜${formatReceived(i.receivedAt)}｜${stateLabel(i)}`, () => { void open(i.eventId) }))
+    if (!panel.hidden) { list.scrollTop = bottom ? list.scrollHeight : top; firstOpen = false }
     const i = items.find(x => x.eventId === selected); if (!i) return
-    line(detail, i.title); line(detail, i.body); line(detail, `${i.source} ${i.ticketId ?? ''} ${i.eventId} ${formatReceived(i.receivedAt)} ${stateLabel(i)}`)
+    line(detail, i.title); const content = document.createElement('div'); content.className = 'md'; content.append(renderMarkdown(i.body)); detail.append(content); line(detail, `${i.source} ${i.ticketId ?? ''} ${i.eventId} ${formatReceived(i.receivedAt)} ${stateLabel(i)}`)
     detail.append(button('処理済みにする', () => { void call(`notifications/${encodeURIComponent(i.eventId)}/handled`, 'POST').then(refresh) }))
     const status = document.createElement('p'); status.textContent = notice; notice = ''; detail.append(status)
     const sendReply = (kind: 'choice' | 'text', value: string) => send(i, kind, value, status)
@@ -69,7 +77,7 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
     else if (i.choices?.length) for (const choice of i.choices) detail.append(button(choice, () => { void sendReply('choice', choice) }))
     else { const input = document.createElement('textarea'); input.maxLength = 500; input.placeholder = '返信を入力'; detail.append(input, button('返信する', () => { if (input.value.trim()) void sendReply('text', input.value) })) }
   }
-  async function refresh() { try { const r = await call('notifications'); if (r.status === 503 && r.data?.error === 'notifications_disabled') { el('inbox-open').hidden = true; panel.hidden = true; return }; if (r.status !== 200) return; items = r.data.items; el('inbox-open').hidden = false; el('inbox-badge').textContent = r.data.unread ? `（${r.data.unread}）` : ''; render(); void tryAnnounce() } catch { /* 次回更新で再試行 */ } }
+  async function refresh() { try { const r = await call('notifications'); if (r.status === 503 && r.data?.error === 'notifications_disabled') { el('inbox-open').hidden = true; panel.hidden = true; return }; if (r.status !== 200) return; items = sortAscending(r.data.items); el('inbox-open').hidden = false; el('inbox-badge').textContent = r.data.unread ? `（${r.data.unread}）` : ''; render(); void tryAnnounce() } catch { /* 次回更新で再試行 */ } }
   el('inbox-open').addEventListener('click', () => { panel.hidden = !panel.hidden; void refresh() }); el('inbox-close').addEventListener('click', () => { panel.hidden = true })
   el('push-on').addEventListener('click', () => { void (async () => { try {
     if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) { message.textContent = 'このブラウザは通知に対応していません。'; return }
