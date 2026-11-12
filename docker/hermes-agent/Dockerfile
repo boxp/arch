@@ -96,3 +96,11 @@ RUN /opt/hermes/.venv/bin/python /opt/boxp/hermes-agent/patches/fix-task-board-d
 
 COPY sunrise/ /opt/boxp/hermes-agent/sunrise/
 RUN chmod 0755 /opt/boxp/hermes-agent/sunrise/sunrise-watch.sh /opt/boxp/hermes-agent/sunrise/watch.py
+
+# BOXP-501: retain successful Telegram cron deliveries for the home inbox.
+RUN /opt/hermes/.venv/bin/python /opt/boxp/hermes-agent/patches/fix-cron-delivery-copy.py \
+    && /opt/hermes/.venv/bin/python -m py_compile /opt/hermes/cron/scheduler_delivery.py /opt/hermes/cron/boxp_cron_delivery.py \
+    && /opt/hermes/.venv/bin/python -m unittest discover -s /opt/boxp/hermes-agent/patches -p 'test_cron_delivery.py' \
+    && for order in 'cron.scheduler cron.scheduler_delivery' 'cron.scheduler_delivery cron.scheduler'; do \
+         PYTHONPATH=/opt/hermes BOXP_CRON_COPY_RECOVERY_SECONDS=0 /opt/hermes/.venv/bin/python -c "import importlib, sys; [importlib.import_module(m) for m in sys.argv[1].split()]; import cron.scheduler as s, cron.scheduler_delivery as d; assert d._deliver_result.__name__ == 'wrapped' and s._deliver_result is d._deliver_result" "$order" || exit 1; \
+       done
