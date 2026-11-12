@@ -31,18 +31,19 @@ export function createDictation(deps: {
   async function start() {
     if (state !== 'idle') return
     const id = ++generation; update('starting')
-    let stream: MediaStream | undefined, context: AudioContext | undefined, source: MediaStreamAudioSourceNode | undefined, processor: ScriptProcessorNode | undefined
+    let stream: MediaStream | undefined, context: AudioContext | undefined, source: MediaStreamAudioSourceNode | undefined, processor: ScriptProcessorNode | undefined, mine: Resources | undefined
     try {
       stream = await deps.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } })
       if (id !== generation) { stream.getTracks().forEach(t => t.stop()); return }
       context = deps.createContext(); source = context.createMediaStreamSource(stream); processor = context.createScriptProcessor(4096, 1, 1)
-      const r: Resources = { stream, context, source, processor, chunks: [], size: 0, timer: 0, tick: 0, started: deps.now() }; resources = r
+      const r: Resources = { stream, context, source, processor, chunks: [], size: 0, timer: 0, tick: 0, started: deps.now() }; mine = r; resources = r
       processor.onaudioprocess = e => { const chunk = new Float32Array(e.inputBuffer.getChannelData(0)); r.chunks.push(chunk); r.size += chunk.length }
       source.connect(processor); processor.connect(context.destination)
       const tick = () => { if (resources !== r) return; update('recording', Math.min(30, Math.floor((deps.now() - r.started) / 1000))); r.tick = deps.setTimeout(tick, 1000) }
       r.timer = deps.setTimeout(() => void stop(), 30000); tick()
     } catch (e) {
-      if (resources) { const r = resources; resources = null; await release(r) }
+      // Release only what this attempt acquired; a stale attempt must never touch a newer recording's resources.
+      if (mine) { if (resources === mine) resources = null; await release(mine) }
       else { processor?.disconnect(); source?.disconnect(); stream?.getTracks().forEach(t => t.stop()); if (context) await context.close().catch(() => {}) }
       if (id !== generation) return
       const name = e instanceof Error || (typeof e === 'object' && e !== null && 'name' in e) ? String((e as { name: unknown }).name) : ''

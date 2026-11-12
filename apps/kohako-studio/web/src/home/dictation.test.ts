@@ -36,4 +36,12 @@ describe('dictation', () => {
   it('routes authorization and recognition errors', async () => {
     const x = setup(vi.fn(async () => ({ status: 401, data: null }))); await x.d.start(); x.audio(8000, .1); await x.d.stop(); expect(x.auth).toHaveBeenCalledWith(401, null); expect(x.d.state).toBe('idle')
   })
+  it('keeps a newer recording when a cancelled permission request rejects late', async () => {
+    const x = setup(); let reject!: (e: unknown) => void
+    x.getUserMedia.mockImplementationOnce(() => new Promise((_, r) => { reject = r }))
+    const first = x.d.start(); await x.d.cancel(); await x.d.start(); expect(x.d.state).toBe('recording')
+    reject(Object.assign(new Error('denied'), { name: 'NotAllowedError' })); await first
+    expect(x.track.stop).not.toHaveBeenCalled(); expect(x.context.close).not.toHaveBeenCalled(); expect(x.errors).toEqual([]); expect(x.d.state).toBe('recording')
+    x.audio(8000, .1); await x.d.stop(); expect(x.texts).toEqual(['認識文']); expect(x.d.state).toBe('idle')
+  })
 })
