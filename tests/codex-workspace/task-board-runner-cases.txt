@@ -116,6 +116,8 @@ test_prune_workspaces
 test_workspace_reuse
 test_workspace_reuse_fallbacks
 test_workspace_reuse_interplay
+test_generated_reclaim_basic
+test_generated_reclaim_studio
 test_stale_prune
 test_stale_prune_studio_dist
 test_stale_prune_bff_dist
