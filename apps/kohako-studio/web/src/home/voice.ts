@@ -17,26 +17,50 @@ export function createVoicePlayer(deps: { fetcher: typeof fetch; audio: HTMLAudi
   const audio = deps.audio
   function cancel() { generation++; controller.abort(); settle?.(); settle = undefined; controller = new AbortController(); audio.pause(); audio.onended = null; audio.onerror = null; audio.onplaying = null; audio.removeAttribute('src'); audio.load(); if (url) deps.revokeUrl(url); url = undefined }
   function speak(input: string[], events: Events, start = 0) {
-    cancel(); const current = generation, signal = controller.signal, sentences = splitVoiceSentences(input)
+    cancel(); const current = generation, signal = controller.signal
+    const groups: { first: number; last: number; text: string }[] = []
+    for (let i = start; i < input.length;) {
+      const first = i; let text = input[i++]
+      if (first !== start) {
+        while (i < input.length) {
+          const length = text.length + input[i].length
+          const ended = /(?:[。！？!?…][」』）]*|\n)$/.test(text)
+          if (length > 160 || (length > 120 && ended)) break
+          text += input[i++]
+        }
+      }
+      groups.push({ first, last: i - 1, text })
+    }
     const fetchOnce = async (sentence: string) => { const fetcher = deps.fetcher; const r = await fetcher('/kohako/api/v1/tts', { method: 'POST', credentials: 'same-origin', redirect: 'manual', cache: 'no-store', headers: { 'content-type': 'application/json', 'X-Kohako-Request': '1' }, body: JSON.stringify({ text: sentence }), signal }); if (!r.ok) throw Error('fetch_failed'); return r.blob() }
     const fetchSentence = async (sentence: string) => { try { return await fetchOnce(sentence) } catch (e) { if (signal.aborted || current !== generation || (e instanceof Error && e.name === 'AbortError')) throw e; await (deps.retryDelay?.() ?? new Promise<void>(resolve => setTimeout(resolve, 1000))); if (signal.aborted || current !== generation) throw e; return fetchOnce(sentence) } }
-    let index = start
+    let index = start, next = 0, started = 0, fetching = false, failed = false
+    type Result = { blob: Blob; error?: never } | { blob?: never; error: unknown }
+    const results: Promise<Result>[] = []
+    // CPU 合成は実時間より遅いため先読みを続け、文の途中での区切りも避ける。
+    const pump = () => {
+      if (fetching || failed || current !== generation || next >= groups.length || next - started >= 2) return
+      const group = groups[next++]; fetching = true
+      const result: Promise<Result> = fetchSentence(group.text).then(blob => ({ blob }), error => ({ error }))
+      results.push(result)
+      void result.then(value => { fetching = false; if ('error' in value) failed = true; else pump() })
+    }
     const run = async () => {
-      let pending = start < sentences.length ? fetchSentence(sentences[start]) : undefined
-      for (let i = start; i < sentences.length; i++) {
-        index = i; const blob = await pending; if (current !== generation || !blob) return
-        pending = i + 1 < sentences.length ? fetchSentence(sentences[i + 1]) : undefined
-        // 先読み失敗は再生完了まで保持し、未処理 rejection を防ぐ。
-        pending?.catch(() => {})
-        url = deps.createUrl(blob); audio.src = url
+      pump()
+      for (let i = 0; i < groups.length; i++) {
+        const group = groups[i]; index = group.first
+        // 前の再生開始時に pump がこのグループの要求を用意する。
+        const result = await results[i]
+        if (current !== generation) return
+        if ('error' in result) throw result.error
+        url = deps.createUrl(result.blob); audio.src = url
         await new Promise<void>((resolve, reject) => {
-          let started = false; settle = resolve
-          audio.onplaying = () => { if (!started && current === generation) { started = true; events.onSentence(i, sentences[i], Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0) } }
-          audio.onended = () => resolve(); audio.onerror = () => reject(Error('decode_failed'))
+          let playing = false; settle = resolve
+          audio.onplaying = () => { if (!playing && current === generation) { playing = true; started++; pump(); events.onSentence(group.first, group.text, Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0) } }
+          audio.onended = () => { if (!playing) { playing = true; started++; pump() } resolve() }; audio.onerror = () => reject(Error('decode_failed'))
           try { void audio.play().catch(reject) } catch (e) { reject(e) }
         })
         if (current !== generation) return
-        events.onChunkEnd?.(i)
+        settle = undefined; events.onChunkEnd?.(group.last)
         if (url) deps.revokeUrl(url); url = undefined
       }
       if (current === generation) { generation++; events.onEnd() }
