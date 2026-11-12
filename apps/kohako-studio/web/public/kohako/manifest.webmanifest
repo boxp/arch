@@ -1,1 +1,15 @@
-{"name":"コハコの家","short_name":"コハコ","start_url":"/kohako/home.html","scope":"/kohako/","display":"standalone","background_color":"#f3eef9","theme_color":"#f3eef9","icons":[{"src":"/kohako/kohako/live2d/compare/kohako-full-v10e-diagnosis.png","sizes":"1200x1200","type":"image/png"}]}
+{
+  "id": "/kohako/home.html",
+  "name": "コハコの家",
+  "short_name": "コハコ",
+  "start_url": "/kohako/home.html",
+  "scope": "/kohako/",
+  "display": "standalone",
+  "background_color": "#f3eef9",
+  "theme_color": "#f3eef9",
+  "icons": [
+    {"src":"/kohako/kohako/icons/icon-192-v1.png","sizes":"192x192","type":"image/png","purpose":"any"},
+    {"src":"/kohako/kohako/icons/icon-512-v1.png","sizes":"512x512","type":"image/png","purpose":"any"},
+    {"src":"/kohako/kohako/icons/icon-maskable-512-v1.png","sizes":"512x512","type":"image/png","purpose":"maskable"}
+  ]
+}

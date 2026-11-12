@@ -22,6 +22,9 @@ import { parsePrefs, type Prefs } from './prefs'
 import { parseResume, parseUnconfirmed, pollVerdict, type Inflight } from './resume'
 import { addErrorText, holdLabel, MessageQueue, QUEUE_MAX_ITEMS, type HoldReason, type QueueItem } from './queue'
 
+// BOXP-510 TD-03: 家を開いた時点で SW を登録し、PWA としてインストール可能にする（Push と同じ SW・scope）。
+if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/kohako/sw.js', { scope: '/kohako/' }).catch(() => {})
+
 const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
 const body = document.body, face = el<HTMLImageElement>('face'), rigCanvas = el<HTMLCanvasElement>('rig'), character = el('character')
 const stateLabel = el('state'), message = el<HTMLTextAreaElement>('message'), send = el<HTMLButtonElement>('send'), stop = el<HTMLButtonElement>('stop'), record = el<HTMLButtonElement>('record'), hush = el<HTMLButtonElement>('hush')
