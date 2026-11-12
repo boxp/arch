@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"><meta name="theme-color" content="#f3eef9"><link rel="icon" type="image/png" sizes="32x32" href="/kohako/kohako/icons/icon-32-v1.png"><link rel="apple-touch-icon" href="/kohako/kohako/icons/icon-180-v1.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="コハコの家"><link rel="manifest" href="/kohako/manifest.webmanifest" crossorigin="use-credentials"><title>コハコの家</title></head>
+<body data-scene="offline" data-shape="pc">
+<div class="room" aria-hidden="true"><div class="room-wall"></div><div class="room-orbit o2"><i></i></div><div class="room-orbit"><i></i></div><div class="room-window"><div class="sky"><i class="glow g1"></i><i class="glow g2"></i><i class="glow g3"></i><i class="stars"></i><i class="orb"></i></div><i class="lattice"></i><i class="rim"></i></div><div class="room-floor"><i class="grid"></i><i class="sheen"></i></div><div class="room-line"><i></i></div><div class="petals"><i class="petal p1"></i><i class="petal p2"></i><i class="petal p3"></i><i class="petal p4"></i><i class="petal p5"></i><i class="petal p6"></i><i class="petal p7"></i><i class="petal p8"></i><i class="petal p9"></i><i class="petal near p10"></i><i class="petal near p11"></i><i class="petal near p12"></i></div></div>
+<header class="top">
+  <span class="brand">コハコの家</span>
+  <span id="connection" class="pill">接続を確認中</span>
+  <span id="state" class="pill state" role="status">未接続</span>
+  <span id="elapsed" class="pill" hidden></span>
+  <time id="clock-small" class="small-clock"></time>
+  <span class="spacer"></span>
+  <nav class="nav" aria-label="メニュー">
+    <label class="toggle nav-item"><input id="speech" type="checkbox" class="sr-only"><span class="ico ico-voice" aria-hidden="true"></span><span class="nav-label">読み上げ</span></label>
+    <button id="touch-open" type="button" class="ghost nav-item" aria-haspopup="true" aria-expanded="false"><span class="ico ico-touch" aria-hidden="true"></span><span class="nav-label">ふれあい</span></button>
+    <button id="inbox-open" type="button" class="ghost nav-item" hidden><span class="ico ico-inbox" aria-hidden="true"></span><span class="nav-label">受信箱</span><span id="inbox-badge" class="badge"></span></button>
+    <button id="history-open" type="button" class="ghost nav-item"><span class="ico ico-history" aria-hidden="true"></span><span class="nav-label">履歴</span></button>
+    <button id="settings-open" type="button" class="ghost nav-item"><span class="ico ico-settings" aria-hidden="true"></span><span class="nav-label">設定</span></button>
+    <a class="ghost link nav-item" href="studio.html"><span class="ico ico-studio" aria-hidden="true"></span><span class="nav-label">Studio（開発用）</span></a>
+  </nav>
+</header>
+<div id="touch-menu" class="menu" role="group" aria-label="ふれあい" hidden><p class="menu-title">ふれあい</p><button id="touch-pat" type="button" class="tile"><span class="ico ico-pat" aria-hidden="true"></span>頭をなでる</button><button id="touch-hand" type="button" class="tile"><span class="ico ico-hand" aria-hidden="true"></span>ハイタッチ</button></div>
+<main class="stage">
+  <div class="status-anchor"><button id="status-widget" class="status-widget" type="button" aria-expanded="false" aria-controls="status-panel"><span class="status-loading">利用枠・進行中を確認中</span></button><aside id="status-panel" class="status-panel" aria-label="利用枠と進行中" hidden><button id="status-close" type="button" class="ghost">閉じる</button><div id="status-detail"></div></aside></div>
+  <section class="clock-face" aria-label="時計"><p id="date" class="date"></p><p id="clock" class="clock"></p><p id="greeting" class="greeting"></p></section>
+  <div id="character" class="character"><img id="face" src="./kohako/studio/c48v6-idle-color.png" alt="コハコ"><canvas id="rig" data-bleed aria-label="コハコ（頭をなでる・手にタッチできます）" hidden></canvas></div>
+  <div id="bubble" class="bubble"><span id="bubble-tag" class="tag" hidden>ふれあい</span><div id="reply" aria-live="polite">おかえりなさい、ご主人さま。</div><div id="notice-actions" hidden></div><p id="notice-status" role="status"></p></div>
+  <section id="viewer" class="viewer" role="region" aria-label="表示" hidden><div class="cards-head"><strong id="viewer-title"></strong><button id="viewer-close" type="button">閉じる</button></div><div id="viewer-body"></div></section>
+  <section id="cards" class="cards" aria-label="結果カード" hidden><div class="cards-head"><strong>コハコが見つけたもの</strong><button id="cards-close" type="button" class="ghost">閉じる</button></div><div id="card-list"></div></section>
+  <section id="trouble" class="trouble" hidden><p id="error" class="error" role="alert"></p><button id="reconnect" type="button">再接続</button></section>
+</main>
+<section id="approval" class="approval" role="dialog" aria-modal="true" aria-labelledby="approval-title" hidden><strong id="approval-title">実行前の確認</strong><p id="approval-summary"></p><p id="approval-expiry" class="muted"></p><p id="approval-error" class="error" role="alert"></p><div class="actions"><button id="allow" type="button">一度だけ許可</button><button id="deny" type="button" class="secondary">拒否</button></div></section>
+<form id="form" class="bar"><section id="queue" class="queue" aria-label="送信待ち" hidden><div class="queue-head"><strong>送信待ち</strong><span class="muted">この画面のメモリだけに保持します（再読み込み・タブを閉じると消え、自動では再送しません）</span></div><ol id="queue-list"></ol><p id="queue-status" role="status"></p><p id="queue-note" class="error" role="alert"></p><div class="actions"><button id="queue-resume" type="button" hidden>再開</button><button id="queue-clear" type="button" class="secondary" hidden>すべて取消</button></div></section><div id="attachment-chips" class="attachment-chips" aria-live="polite"></div><input id="attachment-file" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/markdown,text/csv,.txt,.md,.csv,.json,.log,.yaml,.yml,.tsv" hidden><button id="attach" type="button" class="secondary" aria-label="ファイルを添付">📎</button><label for="message" class="sr-only">メッセージ</label><textarea id="message" rows="1" maxlength="500" placeholder="コハコに話しかける（Shift+Enterで送信・Enterで改行）"></textarea><button id="record" type="button" class="secondary" hidden>押して録音</button><button id="send" type="submit" disabled>送信</button><button id="stop" type="button" class="danger" hidden>停止</button><button id="hush" type="button" class="secondary" hidden>読み上げを止める</button></form>
+<aside id="inbox" class="drawer" aria-label="受信箱" hidden><div class="drawer-head"><h2>受信箱</h2><button id="inbox-close" type="button" class="ghost close">閉じる</button></div><div id="inbox-list"></div><div id="inbox-detail"></div><section class="group"><h3>この端末への通知</h3><div class="actions"><button id="push-on" type="button">この端末で通知を受け取る</button><button id="push-off" type="button" class="secondary">この端末の通知をOFF</button></div><p id="push-message" role="status"></p></section></aside>
+<aside id="history" class="drawer" aria-label="履歴" hidden><div class="drawer-head"><h2>この画面を開いてからの履歴</h2><button id="history-close" type="button" class="ghost close">閉じる</button></div><p class="note">この会話は Web 専用です。Telegram とは別の会話・履歴・承認・停止です。人格と既存の記憶は Hermes で共有されます。タブを閉じると、この一覧は消えます。</p><ol id="history-list"></ol></aside>
+<aside id="settings" class="drawer" aria-label="設定" hidden><div class="drawer-head"><h2>設定</h2><button id="settings-close" type="button" class="ghost close">閉じる</button></div>
+  <section class="group"><h3>ふれあい</h3>
+    <label class="opt"><span class="opt-text"><b>ふれあい</b><small>頭をなでる・手にタッチ</small></span><input id="pref-touch" type="checkbox" class="switch"></label>
+    <label class="opt"><span class="opt-text"><b>カーソルを目で追う</b><small>マウスの位置に視線を向ける</small></span><input id="pref-follow" type="checkbox" class="switch"></label>
+    <label class="opt"><span class="opt-text"><b>ふれあいのひとこと</b></span><input id="pref-lines" type="checkbox" class="switch"></label>
+    <label class="opt"><span class="opt-text"><b>反応を控えめにする</b></span><input id="pref-subtle" type="checkbox" class="switch"></label>
+  </section>
+  <section class="group"><h3>画面と動き</h3>
+    <label class="opt"><span class="opt-text"><b>配置を固定</b><small>確認・エラー以外で場面を変えない</small></span><input id="pref-pinned" type="checkbox" class="switch"></label>
+    <label class="opt"><span class="opt-text"><b>動きを減らす</b></span><input id="pref-reduce" type="checkbox" class="switch"></label>
+    <label class="opt"><span class="opt-text"><b>背景を動かす</b><small>「動きを減らす」がONのときは止まります</small></span><input id="pref-bg" type="checkbox" class="switch"></label>
+  </section>
+  <p class="note">ふれあいは端末の中だけの反応です。AI を呼ばず、送信・承認・記憶にはなりません。設定はこのブラウザにだけ保存します。</p>
+  <p class="note">いまのモデルでは手のひらを合わせる・頬を染める・目を閉じ続ける動きはありません（既存の絵の範囲の反応です）。台詞は仮です。</p>
+  <section class="group facts"><h3>いまの状態</h3><p id="features" class="muted">機能を確認中</p><p id="face-mode" class="muted"></p></section>
+</aside>
+<p id="touch-live" class="sr-only" aria-live="polite"></p>
+<script type="module" src="/src/home/main.ts"></script>
+</body></html>

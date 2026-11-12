@@ -1,24 +1,37 @@
 ---
-import Layout from '../layouts/Layout.astro';
-import TitleScreen from '../components/TitleScreen.astro';
-import Menu from '../components/Menu.astro';
-import Profile from '../components/Profile.astro';
-import Allies from '../components/Allies.astro';
-import Activities from '../components/Activities.astro';
-import Archives from '../components/Archives.astro';
-import Links from '../components/Links.astro';
-import Credits from '../components/Credits.astro';
+import Layout from "../layouts/Layout.astro";
+import Hero from "../components/Hero.astro";
+import Profile from "../components/Profile.astro";
+import Archives from "../components/Archives.astro";
+import Records from "../components/Records.astro";
+import Links from "../components/Links.astro";
+import Bonus from "../components/Bonus.astro";
+import Credits from "../components/Credits.astro";
 ---
 
 <Layout>
-  <TitleScreen />
-  <Menu />
-  <main>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="wordmark" href="#top">
+        ひとはこ
+      </a>
+      <nav aria-label="メインナビゲーション">
+        <a href="#profile">プロフィール</a>
+        <a href="#archives">配信</a>
+        <a href="#records">1CC記録</a>
+        <a href="#links">リンク</a>
+      </nav>
+    </div>
+  </header>
+  <main id="main">
+    <Hero />
     <Profile />
-    <Activities />
     <Archives />
+    <Records />
     <Links />
-    <Allies />
-    <Credits />
+    <Bonus />
   </main>
+  <footer>
+    <Credits />
+  </footer>
 </Layout>

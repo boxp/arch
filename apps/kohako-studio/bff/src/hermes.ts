@@ -1,9 +1,18 @@
 export type Approval = { requestId?: string; generation?: number; description: string; command: string; commandTruncated?: boolean; choices: ('once' | 'deny')[] }
 type Result = { status: 'done'; text: string; model?: string } | { status: 'failed'; error: string } | { status: 'unknown'; error?: string }
 export const APPROVAL_COMMAND_MAX = 2000
+// POST /v1/runs は Hermes が添付画像の取込み等を終えて 202 を返すまで数十秒〜2分かかることがある
+// （2026-11-12 実測: 画像付き 122s/90s、その後ろで待たされたテキスト 65s）。10s で打ち切ると上流では
+// run が実行されるのに家では失敗・session 切替になり、返答が届かない孤立 run と二重実行を生むため、作成だけ長く待つ。
+export const CREATE_RUN_TIMEOUT_MS = 240_000
+// run 受付直後に Hermes の event loop が十数秒止まり、状態確認が 10s で打ち切られることがある
+// （2026-11-12 09:09 実測: 画像 run 開始直後に約 15 秒無応答）。1 回の失敗で結果不明とすると、
+// BFF 自身が run を止めて session を切り替え、返答を捨ててしまう。連続失敗がこの時間を超えるまでは再確認する。
+export const POLL_OUTAGE_MS = 180_000
+export type HermesInput = string | { role: 'user'; content: ({ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } })[] }[]
 export type RunOptions = {
   idempotencyKey: string
-  input: string
+  input: HermesInput
   sessionId: string
   instructions: string
   route?: { provider: string; model: string }
@@ -22,6 +31,7 @@ export function createHermes({
   now = Date.now,
   allowedToolsets = [],
   sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  createTimeoutMs = CREATE_RUN_TIMEOUT_MS,
 }: {
   url: string
   key: string
@@ -29,9 +39,10 @@ export function createHermes({
   now?: () => number
   allowedToolsets?: string[]
   sleep?: (ms: number) => Promise<void>
+  createTimeoutMs?: number
 }) {
   const auth = { Authorization: `Bearer ${key}` }
-  async function request(path: string, init: RequestInit, maxBytes = 65536) {
+  async function request(path: string, init: RequestInit, maxBytes = 65536, timeoutMs = 10_000) {
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout>
     try {
@@ -61,7 +72,7 @@ export function createHermes({
           timer = setTimeout(() => {
             controller.abort()
             reject(Error('timeout'))
-          }, 10_000)
+          }, timeoutMs)
         }),
       ])
     } finally {
@@ -86,7 +97,9 @@ export function createHermes({
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(runId)) return 'not_pending'
     try {
       const result = await request(`/v1/runs/${runId}/approval`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify(requestId && generation !== undefined ? { request_id: requestId, execution_generation: generation, choice } : { choice, ...(requestId ? { request_id: requestId } : {}) }) })
-      return result.code ? 'not_pending' : 'ok'
+      // 承認が既に無い（404/409）ことを Hermes が明示した時だけ not_pending。429/400 等は承認が残りうるので unknown。
+      if (!result.code) return 'ok'
+      return result.code === '404' || result.code === '409' ? 'not_pending' : 'unknown'
     } catch { return 'unknown' }
   }
   async function execute(options: RunOptions): Promise<Result> {
@@ -105,15 +118,36 @@ export function createHermes({
             ? { provider: options.route.provider, model: options.route.model, model_options: { reasoning_effort: 'low' } }
             : {}),
         }),
-      })
+      }, 65536, createTimeoutMs)
       if (post.code) return { status: 'failed', error: post.code }
       const id = post.data?.run_id
       if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) return { status: 'unknown', error: 'hermes_schema' }
       options.onRun?.(id)
+      return await poll(id, options)
+    } catch {
+      return { status: 'unknown', error: 'hermes_unreachable' }
+    }
+  }
+  /** 既に受理済みの run を追跡し直す（BFF 再起動後に通知返信の会話を再開する用。新しい run は作らない）。 */
+  async function poll(id: string, options: Pick<RunOptions, 'pollMs' | 'polls' | 'onApproval'>): Promise<Result> {
+    try {
       let waiting = false,
-        pollErrors = 0
+        pollErrors = 0,
+        outageSince: number | undefined
       for (let i = 0; i < (options.polls ?? 300); i++) {
-        const poll = await request(`/v1/runs/${id}`, { headers: auth })
+        let poll: Awaited<ReturnType<typeof request>>
+        try {
+          poll = await request(`/v1/runs/${id}`, { headers: auth }, 262144) // 図の HTML を含む返答（最大 24000 字）を受け取れる大きさ
+        } catch (e) {
+          // 応答の大きさ・形式の不正は待っても直らないので結果不明として返す。
+          if (e instanceof SyntaxError || (e instanceof Error && (e.message === 'oversize' || e.message === 'invalid'))) return { status: 'unknown', error: 'hermes_schema' }
+          // timeout・切断・5xx は一時的な無応答として、連続 POLL_OUTAGE_MS までは同じ run を再確認する（停止・再作成しない）。
+          outageSince ??= now()
+          if (now() - outageSince >= POLL_OUTAGE_MS) return { status: 'unknown', error: 'hermes_unreachable' }
+          await sleep(options.pollMs ?? 2000)
+          continue
+        }
+        outageSince = undefined
         // 4xx（429 等）は上流 run の終了を意味しない。429 は待って再確認し、それ以外/上限超過は結果未確認(unknown)として
         // 呼出し側に上流停止と session 切替をさせる（failed で返すと同 session で次の run が並行実行される）。
         if (poll.code) {
@@ -146,7 +180,7 @@ export function createHermes({
           return typeof poll.data?.output === 'string'
             ? {
                 status: 'done',
-                text: poll.data.output.trim().slice(0, 1000),
+                text: poll.data.output.trim().slice(0, 24000),
                 ...(typeof poll.data.model === 'string' ? { model: poll.data.model.slice(0, 64) } : {}),
               }
             : { status: 'unknown', error: 'hermes_schema' }
@@ -169,8 +203,13 @@ export function createHermes({
         return result.code ? 'not_pending' : 'ok'
       } catch { return 'unknown' }
     },
-    run(requestId: string, text: string, sessionId: string, instructions: string, onApproval?: RunOptions['onApproval'], attempt?: number, onRun?: RunOptions['onRun']): Promise<Result> {
-      return execute({ idempotencyKey: `kohako-web-${sessionId}-${requestId}${attempt && attempt > 0 ? `-retry${attempt}` : ''}`, input: text, sessionId, instructions, onApproval, onRun })
+    watch(runId: string, onApproval?: RunOptions['onApproval']): Promise<Result> {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(runId)) return Promise.resolve({ status: 'unknown', error: 'hermes_schema' })
+      return poll(runId, { onApproval })
+    },
+    run(requestId: string, text: HermesInput, sessionId: string, instructions: string, onApproval?: RunOptions['onApproval'], attempt?: number, onRun?: RunOptions['onRun'], stableKey?: string): Promise<Result> {
+      // stableKey は session を跨いで同じ返信を一度だけ受理させるための鍵（通知返信の再送用）。
+      return execute({ idempotencyKey: stableKey ?? `kohako-web-${sessionId}-${requestId}${attempt && attempt > 0 ? `-retry${attempt}` : ''}`, input: text, sessionId, instructions, onApproval, onRun })
     },
     execute,
   }

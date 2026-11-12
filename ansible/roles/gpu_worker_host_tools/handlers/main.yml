@@ -1,0 +1,5 @@
+---
+- name: Update initramfs for i915 request timeout
+  ansible.builtin.command: update-initramfs -u
+  changed_when: true
+  when: not ansible_check_mode

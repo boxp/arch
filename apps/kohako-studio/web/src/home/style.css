@@ -1,0 +1,161 @@
+/* コハコの家（BOXP-500）。上帯と下の操作帯は全場面で固定。重なり順: 確認 > エラー > 操作帯 > カード > 吹き出し > コハコ > 背景 */
+:root{--ink:#2b2638;--muted:#5e5670;--purple:#6b4fa0;--gold:#b88a2e;--sakura:#f2c4d6;--cyan:#38b6c9;--card:#fffdfb;--vh:100dvh;font-family:system-ui,"Hiragino Sans","Noto Sans JP",sans-serif;color:var(--ink)}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;overscroll-behavior:none}
+body{height:var(--vh);display:grid;grid-template-rows:auto 1fr auto;background:linear-gradient(160deg,#efe7f8 0%,#f8f3fb 45%,#fff 100%);padding:env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left)}
+button,input,textarea{font:inherit}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.muted{color:var(--muted);font-size:.85rem}
+.top{position:relative;z-index:30;display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;padding:8px 12px;background:rgba(255,255,255,.72);backdrop-filter:blur(6px);border-bottom:1px solid #e3d8ef}
+.brand{font-weight:700;color:var(--purple);letter-spacing:.06em}
+.pill{border-radius:999px;background:#ece3f5;padding:3px 10px;font-size:.8rem}.state{background:#f6ead0}
+.spacer{flex:1}.small-clock{font-variant-numeric:tabular-nums;font-size:.85rem;color:var(--muted)}
+.toggle{font-size:.85rem;display:flex;gap:4px;align-items:center}
+button{border:0;border-radius:12px;padding:10px 16px;min-height:44px;background:var(--purple);color:#fff;cursor:pointer}
+button:disabled{opacity:.45;cursor:default}
+button:focus-visible,a:focus-visible,textarea:focus-visible,input:focus-visible{outline:3px solid var(--cyan);outline-offset:2px}
+.secondary{background:#fff;color:var(--purple);border:1px solid #cdbbe6}.danger{background:#c2364a}
+.ghost{background:transparent;color:var(--purple);padding:6px 10px;min-height:36px;border:1px solid transparent}.ghost:hover{border-color:#d9cbec}
+.link{text-decoration:none;font-size:.85rem;display:inline-flex;align-items:center;border-radius:12px}
+.menu{position:fixed;z-index:35;top:52px;right:12px;display:flex;gap:6px;padding:8px;background:#fff;border-radius:14px;box-shadow:0 6px 20px rgba(60,40,90,.18)}
+.stage{position:relative;z-index:1;overflow:hidden;min-height:0}
+.character{position:absolute;z-index:2;overflow:hidden;left:3%;bottom:0;width:40%;height:100%;transition:left .3s ease,width .3s ease,height .3s ease,bottom .3s ease,right .3s ease}
+.character img{width:100%;height:100%;object-fit:contain;object-position:bottom}
+#rig{position:absolute;left:0;top:0;width:100%;height:100%;display:block;touch-action:pan-y}
+/* BOXP-510 TD-02: 腕・袖がモデル枠の外へ振れても切れないよう、canvas を左右へ広げ（拡大率は rig.ts で補正し見た目の大きさは同じ）、.character は上下だけ切る。 */
+.character{--rig-bleed:25cqw;--rig-bleed-upper:60cqh}
+.character:not(.mini){overflow:visible;clip-path:inset(0 -100vmax)}
+.character.mini{--rig-bleed:0px;--rig-bleed-upper:0px}
+#rig[data-bleed]{left:calc(-1 * var(--rig-bleed));width:calc(100% + 2 * var(--rig-bleed))}
+#rig[hidden],.character img[hidden]{display:none}
+.character{container-type:size}
+/* 上半身: キャンバスをモデルの縦横比で高さの 185% にし、上端をそろえる（頭・手の判定は canvas の実位置から計算するので追従する） */
+.character[data-frame="upper"] #rig{height:185cqh;width:calc(185cqh * 1143 / 2048 + 2 * var(--rig-bleed-upper));max-width:none;left:50%;transform:translateX(-50%)}
+.character.mini{cursor:pointer;border-radius:16px;background:rgba(255,255,255,.55);box-shadow:0 4px 14px rgba(60,40,90,.15)}
+.clock-face{position:absolute;z-index:1;right:6%;top:12%;text-align:right;transition:opacity .3s}
+.date{margin:0;font-size:clamp(1rem,2.4vw,1.5rem);color:var(--muted)}.clock{margin:0;font-size:clamp(3.5rem,12vw,9rem);font-weight:300;letter-spacing:.04em;font-variant-numeric:tabular-nums;color:var(--purple);line-height:1.05}
+.greeting{margin:12px 0 0;display:inline-block;background:var(--card);padding:10px 16px;border-radius:16px;box-shadow:0 2px 10px rgba(60,40,90,.12);font-size:1.05rem}
+.bubble{position:absolute;z-index:3;left:40%;top:8%;width:min(52%,620px);max-height:70%;overflow:auto;overscroll-behavior:contain;background:var(--card);color:var(--ink);border-radius:22px;padding:16px 20px;box-shadow:0 4px 18px rgba(60,40,90,.16);font-size:1.08rem;line-height:1.75;white-space:pre-wrap;word-break:break-word;transition:left .3s ease,top .3s ease,width .3s ease,opacity .3s}
+.bubble::before{content:"";position:absolute;left:-12px;top:28px;border:8px solid transparent;border-right:12px solid var(--card)}
+.bubble.touch{border:2px solid var(--sakura)}.tag{display:inline-block;font-size:.72rem;background:var(--sakura);color:#5a2a40;border-radius:8px;padding:0 6px;margin-bottom:4px}
+.cards{position:absolute;z-index:4;right:2%;top:3%;max-height:94%;width:46%;overflow:auto;overscroll-behavior:contain;display:flex;flex-direction:column;gap:10px;background:rgba(255,255,255,.6);border-radius:20px;padding:12px}
+.cards-head{display:flex;justify-content:space-between;align-items:center}
+.card{background:var(--card);border-radius:16px;padding:12px 16px;box-shadow:0 2px 10px rgba(60,40,90,.12);border-left:4px solid var(--gold)}
+.card ul{margin:0;padding-left:1.2em}.card pre{margin:0;white-space:pre-wrap;word-break:break-all;font-size:.9rem;background:#f4f0f8;padding:8px;border-radius:8px}
+.card a{color:#4a2f86;word-break:break-all}.card .host{display:block;font-size:.8rem;color:var(--muted)}.card-link{border-left-color:var(--cyan)}
+.trouble{position:absolute;z-index:20;right:4%;top:10%;width:min(46%,520px);background:#fff4f4;border:2px solid #e3a0aa;border-radius:18px;padding:14px 18px}
+.error{margin:0 0 10px;color:#8f1f30;white-space:pre-wrap}
+.approval{position:fixed;z-index:50;left:50%;top:50%;transform:translate(-10%,-50%);width:min(520px,92vw);max-height:70vh;overflow:auto;background:#fff;border:3px solid var(--gold);border-radius:20px;padding:18px 20px;box-shadow:0 10px 40px rgba(40,20,60,.35)}
+.approval p{white-space:pre-wrap;word-break:break-word}.actions{display:flex;gap:10px;flex-wrap:wrap}
+.bar{position:relative;z-index:30;display:flex;gap:8px;align-items:flex-end;padding:8px 12px calc(8px + env(safe-area-inset-bottom));background:rgba(255,255,255,.85);backdrop-filter:blur(6px);border-top:1px solid #e3d8ef}
+.bar textarea{flex:1;min-width:0;min-height:44px;max-height:30vh;resize:none;border:1px solid #cdbbe6;border-radius:12px;padding:10px 12px;background:#fff;color:var(--ink)}
+.drawer{position:fixed;z-index:40;top:0;right:0;bottom:0;width:min(420px,92vw);overflow:auto;background:#fff;padding:16px 18px calc(16px + env(safe-area-inset-bottom));box-shadow:-8px 0 30px rgba(40,20,60,.2);display:flex;flex-direction:column;gap:8px}
+.drawer-head{display:flex;justify-content:space-between;align-items:center}.drawer h2{font-size:1.05rem;margin:0}.drawer label{display:flex;gap:8px;align-items:center;min-height:36px}
+#history-list{padding-left:1.2em;margin:0}#history-list li{margin:6px 0;white-space:pre-wrap;word-break:break-word}#history-list .who{font-weight:700;color:var(--purple);margin-right:6px}
+[hidden]{display:none!important}
+
+/* 場面（PC 横長） */
+body:not([data-scene="relax"]) .clock-face{opacity:0;pointer-events:none}
+body[data-scene="relax"] .bubble{opacity:0;pointer-events:none}
+body[data-scene="relax"] .bubble.touch{opacity:1;pointer-events:auto;left:32%;top:4%;width:auto;max-width:min(30%,360px)}
+body[data-shape="portrait"][data-scene="relax"] .bubble.touch{left:8%;right:8%;top:auto;bottom:58%;max-width:none}
+body[data-scene="talk"] .character,body[data-scene="confirm"] .character,body[data-scene="offline"] .character{left:2%;width:36%}
+body[data-scene="show"] .character,body[data-scene="work"] .character{left:0;width:22%;height:78%}
+body[data-scene="show"] .bubble{left:22%;width:28%;max-height:60%}
+body[data-scene="work"] .bubble{left:24%;width:min(46%,560px)}
+body[data-scene="offline"] .bubble{left:38%;top:auto;bottom:6%;width:min(40%,520px);max-height:40%}
+
+/* スマホ縦: コハコは下 6 割、吹き出し・カードは上 */
+body[data-shape="portrait"] .character{left:0;right:0;width:100%;height:62%}
+body[data-shape="portrait"][data-scene="show"] .character,body[data-shape="portrait"][data-scene="work"] .character{left:auto;right:0;width:46%;height:38%}
+body[data-shape="portrait"] .bubble{left:4%;top:2%;width:92%;max-height:34%}
+body[data-shape="portrait"] .bubble::before{display:none}
+body[data-shape="portrait"][data-scene="show"] .bubble{max-height:22%}
+body[data-shape="portrait"] .cards{left:3%;right:3%;width:auto;top:25%;max-height:37%}
+body[data-shape="portrait"] .clock-face{left:0;right:0;top:3%;text-align:center}
+body[data-shape="portrait"] .trouble{left:4%;right:4%;width:auto;top:38%}
+body[data-shape="portrait"][data-scene="offline"] .bubble{top:2%;bottom:auto;left:4%;width:92%;max-height:30%}
+body[data-shape="portrait"] .approval{left:4vw;right:4vw;width:auto;top:8%;transform:none}
+body[data-shape="portrait"] .top .link,body[data-shape="portrait"] .small-clock{display:none}
+/* スマホ横: 左にコハコ（上半身）、右に吹き出し */
+body[data-shape="landscape"] .character{left:2%;width:36%;height:100%}
+body[data-shape="landscape"] .bubble,body[data-shape="landscape"] .cards,body[data-shape="landscape"] .trouble{left:38%;right:2%;width:auto;top:3%;max-height:94%}
+body[data-shape="landscape"][data-scene="show"] .bubble{max-height:30%}body[data-shape="landscape"][data-scene="show"] .cards{top:35%;max-height:62%}
+body[data-shape="landscape"] .bubble::before{display:none}
+body[data-shape="landscape"] .clock-face{right:4%;top:6%}
+body[data-shape="landscape"] .top .link,body[data-shape="landscape"] .small-clock{display:none}
+body[data-shape="landscape"] .approval{transform:translate(-50%,-50%)}
+/* キーボード表示中: コハコは小窓 */
+body[data-kbd="1"] .character{left:auto;right:2%;width:28%;height:34%;bottom:2%}
+body[data-kbd="1"] .clock-face{display:none}
+body[data-kbd="1"] .bubble{top:2%;max-height:60%}
+
+body.reduce *,body.reduce *::before{transition:none!important;animation:none!important}
+@media (prefers-reduced-motion:reduce){*,*::before{transition:none!important;animation:none!important}}
+/* 舞台の中の利用枠と進行中。数値は静止したゲージで表示する。 */
+.status-anchor{position:absolute;z-index:10;right:6%;bottom:6%;width:310px}
+.status-widget{display:block;width:100%;min-height:44px;padding:9px 12px;background:rgba(255,253,251,.94);color:var(--ink);border:1px solid #d4c4e6;border-radius:18px;box-shadow:0 4px 18px #49336322;text-align:center;font-size:.75rem;line-height:1.25}
+.status-widget:hover{border-color:var(--gold)}.status-tag{display:block;color:#745988;font-size:.625rem;margin-bottom:4px}.status-row{display:flex;align-items:center;justify-content:center;gap:10px}.status-gauge{display:flex;flex-direction:column;align-items:center;min-width:0;--gauge-color:#7655a8}.status-gauge.near_limit,.status-mini.near_limit{--gauge-color:#b08020}.status-gauge.exhausted,.status-mini.exhausted{--gauge-color:#b44257}.status-gauge.stale,.status-gauge.unknown,.status-gauge.freshness_unknown,.status-mini.stale{--gauge-color:#85808c}
+.gauge-title{font-weight:700;white-space:nowrap}.gauge-ring{position:relative;display:block;width:84px;height:84px}.gauge-ring svg{width:100%;height:100%;transform:rotate(-90deg);fill:none;stroke-width:8}.ring-track{stroke:#e8e0ef}.ring-value{stroke:var(--gauge-color);stroke-linecap:round}.stale .ring-value,.unknown .ring-value{stroke-linecap:butt}.gauge-value{position:absolute;inset:0;display:grid;place-items:center;font-size:1.125rem;font-weight:700}.gauge-caption{font-size:.625rem;color:var(--muted);white-space:nowrap}
+.status-task{display:flex;flex-direction:column;align-items:center;color:#604884;font-size:.625rem;min-width:78px}.task-total{font-size:1.8rem;line-height:1;color:#7655a8}.task-chips{display:flex;flex-direction:column;gap:2px;margin-top:4px}.task-chips span{background:#f0e8f7;border-radius:8px;padding:2px 4px;white-space:nowrap}.status-mini{display:block;margin-top:5px;font-size:.625rem;--gauge-color:#7655a8}.mini-track{display:block;height:4px;border-radius:4px;background:#ece5f2;margin-top:2px}.mini-track span{display:block;height:100%;background:var(--gauge-color);border-radius:4px}
+.status-panel{position:absolute;right:0;bottom:calc(100% + 6px);width:min(400px,90vw);max-height:min(55vh,400px);overflow:auto;overscroll-behavior:contain;background:#fff;border:1px solid #c6b5d6;border-radius:12px;padding:6px 10px;box-shadow:0 3px 12px #33224433;font-size:.8rem}.status-panel p{margin:.3em 0}
+body:not([data-scene="relax"]) .status-anchor{top:auto;bottom:3%;right:3%;width:260px}body:not([data-scene="relax"]) .gauge-ring{width:56px;height:56px}body:not([data-scene="relax"]) .gauge-value{font-size:.875rem}body:not([data-scene="relax"]) .bubble{max-height:55%}
+body[data-shape="pc"][data-scene="show"] .status-anchor{top:2%;bottom:auto;left:1%;right:auto;width:240px}body[data-shape="pc"][data-scene="show"] .status-panel{top:100%;bottom:auto;left:0;right:auto}
+body[data-shape="portrait"] .status-anchor{top:29%;bottom:auto;left:50%;right:auto;transform:translateX(-50%);width:260px}body[data-shape="portrait"] .gauge-ring{width:56px;height:56px}body[data-shape="portrait"] .gauge-value{font-size:.875rem}
+body[data-shape="portrait"]:not([data-scene="relax"]) .status-anchor{top:auto;bottom:2%;left:auto;right:1%;transform:none;width:19%}body[data-shape="portrait"]:not([data-scene="relax"]) .status-row{flex-direction:column;gap:3px}body[data-shape="portrait"]:not([data-scene="relax"]) .status-widget{padding:5px 2px}body[data-shape="portrait"]:not([data-scene="relax"]) .gauge-ring{width:40px;height:40px}body[data-shape="portrait"]:not([data-scene="relax"]) .gauge-title,body[data-shape="portrait"]:not([data-scene="relax"]) .gauge-caption{font-size:.5625rem}body[data-shape="portrait"]:not([data-scene="relax"]) .status-task{min-width:0}body[data-shape="portrait"]:not([data-scene="relax"]) .task-total{font-size:1.25rem}body[data-shape="portrait"]:not([data-scene="relax"]) .task-chips{font-size:.5rem}body[data-shape="portrait"]:not([data-scene="relax"]) .status-mini{font-size:.5rem}
+body[data-shape="landscape"] .status-anchor{top:auto;bottom:2%;right:3%;width:260px}body[data-shape="landscape"] .gauge-ring{width:48px;height:48px}body[data-shape="landscape"] .gauge-value{font-size:.875rem}body[data-shape="landscape"]:not([data-scene="relax"]) .bubble{max-height:35%}body[data-shape="landscape"][data-scene="show"] .cards{top:26%;max-height:20%}body[data-shape="portrait"][data-scene="show"] .cards{max-height:30%}
+/* 確認・キーボード・本文表示中は、開いていた詳細パネルごと隠す（承認操作や本文に重ねない）。 */
+body[data-scene="confirm"] .status-anchor,body[data-kbd="1"] .status-anchor,body[data-message="1"] .status-anchor{display:none}
+/* 小さい画面では時計とコハコの顔の間に収める。 */
+body[data-shape="portrait"][data-scene="relax"] .status-anchor{top:23%;width:250px}
+body[data-shape="portrait"][data-scene="relax"] .status-widget{padding:4px 8px}
+body[data-shape="portrait"][data-scene="relax"] .status-tag{display:none}
+body[data-shape="portrait"][data-scene="relax"] .gauge-ring{width:40px;height:40px}
+body[data-shape="portrait"][data-scene="relax"] .task-total{font-size:1.3rem}
+body[data-shape="portrait"][data-scene="relax"] .task-chips{font-size:.5625rem;margin-top:1px}
+body[data-shape="portrait"][data-scene="relax"] .status-mini{margin-top:1px}
+body[data-shape="portrait"]:not([data-scene="relax"]) .status-anchor{width:18%}
+body[data-shape="landscape"][data-scene="relax"] .clock{font-size:4rem}
+body[data-shape="landscape"][data-scene="relax"] .greeting{display:none}
+body[data-shape="portrait"]:not([data-scene="relax"]) .status-tag{display:none}
+body[data-shape="landscape"] .status-panel{bottom:0;right:calc(100% + 6px);width:min(400px,52vw);max-height:calc(var(--vh) - 125px)}
+/* スマホ縦: 待機中は詳細をウィジェットの下へ、会話中（右下の列）は左へ開く。結果表示中はコハコが右下へ寄るので左下に置く */
+body[data-shape="portrait"] .status-panel{top:calc(100% + 6px);bottom:auto;left:50%;right:auto;transform:translateX(-50%);width:min(360px,92vw);max-height:40vh}
+body[data-shape="portrait"]:not([data-scene="relax"]) .status-panel{top:auto;bottom:0;left:auto;right:calc(100% + 6px);transform:none;width:min(300px,76vw);max-height:50vh}
+body[data-shape="portrait"][data-scene="show"] .status-anchor{left:1%;right:auto}
+body[data-shape="portrait"][data-scene="show"] .status-panel{left:calc(100% + 6px);right:auto}
+.viewer{position:absolute;z-index:8;right:2%;top:3%;width:min(42%,560px);max-height:94%;overflow:auto;overscroll-behavior:contain;background:#fff;border-radius:20px;padding:16px;box-shadow:0 4px 18px rgba(60,40,90,.2)}
+.viewer[hidden]{display:none}.viewer iframe{width:100%;height:300px;border:1px solid #ddd}.viewer a{display:inline-block;margin:6px 0}.view-bar{height:12px;background:#eee;border-radius:6px}.view-bar div{height:100%;background:#8264aa;border-radius:6px}
+body[data-viewer="open"] .cards,body[data-viewer="open"] .status-anchor{visibility:hidden}
+body[data-viewer="open"] .character{left:3%;width:22%;height:78%}body[data-viewer="open"] .bubble{left:25%;top:3%;width:27%;max-height:45%}
+body[data-shape="portrait"][data-viewer="open"] .viewer{left:3%;right:3%;width:auto;top:auto;bottom:0;max-height:45%}
+body[data-shape="portrait"][data-viewer="open"] .character{left:auto;right:2%;bottom:46%;width:35%;height:25%}
+body[data-shape="portrait"][data-viewer="open"] .bubble{left:3%;top:2%;width:60%;max-height:25%}
+body[data-shape="landscape"][data-viewer="open"] .viewer{left:55%;right:2%;width:auto;top:2%;max-height:96%}
+/* BOXP-510 TD-02: 喜び joy の最大の振りで左腕が枠の左へ約 53px 出るため、左に 9%（Pixel 7 横で約 82px）空ける。 */
+body[data-shape="landscape"][data-viewer="open"] .character{left:9%;width:22%;height:90%}
+body[data-shape="landscape"][data-viewer="open"] .bubble{left:31%;width:23%;top:2%;max-height:70%}
+body[data-viewer="open"] .character,body[data-viewer="open"] .bubble{transition:none;box-sizing:border-box}
+body[data-viewer="open"] .viewer{box-sizing:border-box}
+
+body[data-shape="portrait"] .viewer iframe{height:min(300px,30vh)}
+body[data-shape="landscape"] .viewer iframe{height:min(300px,55vh)}
+#inbox-list { display: grid; gap: .4rem; } #inbox-list button { text-align: left; } #inbox-detail { white-space: pre-wrap; overflow-wrap: anywhere; } #inbox-detail textarea { width: 100%; }
+/* BOXP-508: 送信待ち。操作帯の真上に重ね、キャラクター・吹き出しより手前、確認カードより奥。 */
+.queue{position:absolute;left:12px;width:min(720px,calc(100% - 24px));bottom:100%;margin-bottom:6px;max-height:min(40vh,320px);overflow:auto;overscroll-behavior:contain;background:#fffdfb;border:1px solid #cdbbe6;border-radius:14px;padding:8px 12px;box-shadow:0 4px 14px rgba(60,40,90,.15);font-size:.9rem}
+.queue[hidden]{display:none}
+.queue-head{display:flex;flex-wrap:wrap;gap:2px 8px;align-items:baseline}.queue-head .muted{font-size:.75rem}
+.queue ol{list-style:none;margin:6px 0;padding:0;display:grid;gap:4px}
+.queue li{display:flex;gap:8px;align-items:center;background:#f6f1fb;border-radius:10px;padding:4px 4px 4px 8px}
+.queue li.unconfirmed{background:#fbf1dc}
+.q-state{flex:none;font-size:.75rem;color:var(--muted)}.q-text{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.queue p{margin:2px 0}.queue p:empty{display:none}.queue .actions button[hidden]{display:none}
+
+#inbox-detail p { white-space: pre-wrap; }
+
+body[data-scene="relax"] .bubble:has(#notice-actions:not([hidden])){opacity:1;pointer-events:auto} #notice-actions{white-space:normal} #notice-actions button{margin:.2rem} #notice-actions textarea{width:100%} #notice-status:empty{display:none}
+
+#inbox-list{max-height:45vh;overflow:auto;flex-shrink:0}
+.md{white-space:normal;overflow-wrap:anywhere}.md p,.md ul,.md ol,.md pre,.md blockquote{margin:.3em 0}.md ul,.md ol{padding-left:1.4em}.md pre{overflow-x:auto;white-space:pre;max-width:100%}.md code{font-family:monospace}.md a{overflow-wrap:anywhere}.md h3,.md h4,.md h5,.md h6{font-size:1em;margin:.4em 0;font-weight:700}
+
+.bar{flex-wrap:wrap}.attachment-chips{flex-basis:100%;display:flex;gap:4px;flex-wrap:wrap}.attachment-chips:empty{display:none}.attachment-chips span{background:#eee4f7;border-radius:8px;padding:4px;font-size:12px}.attachment-chips button{padding:2px 5px;margin-left:4px}

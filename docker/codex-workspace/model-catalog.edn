@@ -1,0 +1,5 @@
+{:version 1
+ :roles {
+  "claude-fable" {:family "fable" :model "claude-fable-5-2" :previous "claude-fable-5-1" :min-cli "2.1.321" :source "https://platform.claude.com/docs/en/about-claude/models/overview.md" :verified-at "2026-11-10T01:40:00Z" :history [{:model "claude-fable-5-1" :since "2026-09-29" :ticket "BOXP-192"} {:model "claude-fable-5-2" :since "2026-11-10" :ticket "BOXP-487"}]}
+  "claude-opus" {:family "opus" :model "claude-opus-5-5" :previous nil :min-cli "2.1.321" :source "https://platform.claude.com/docs/en/about-claude/models/overview.md" :verified-at "2026-11-10T01:40:00Z" :history [{:model "claude-opus-5-5" :since "2026-09-29" :ticket "BOXP-192"}]}
+  "claude-sonnet" {:family "sonnet" :model "claude-sonnet-5-5" :previous nil :min-cli "2.1.321" :source "https://platform.claude.com/docs/en/about-claude/models/overview.md" :verified-at "2026-11-10T01:40:00Z" :history [{:model "claude-sonnet-5-5" :since "2026-09-29" :ticket "BOXP-192"}]}}}

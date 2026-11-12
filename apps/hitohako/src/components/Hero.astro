@@ -1,0 +1,50 @@
+---
+import profile from "../data/profile.json";
+import links from "../data/links.json";
+import { heroImage, HERO_SIZES } from "../lib/hero";
+const hero = heroImage();
+const youtube = links.find((l) => l.id === "youtube")!;
+const social = ["youtube", "twitch", "x"].map((id) => links.find((l) => l.id === id)!);
+const alt =
+  "変身後のひとはこさんが紫と金の薙刀を片手に持ち、桜の花びらが舞う空と山を背景に穏やかに微笑むイラスト（黒髪ロングに三つ編み、碧眼、桜の髪飾り、紫と金の和風衣装、右へなびく長い髪とピンクの帯）";
+---
+
+<section id="top" class="hero">
+  <div class="hero-art">
+    <picture>
+      <source srcset={hero.srcset} sizes={HERO_SIZES} type="image/webp" />
+      <img
+        src={hero.src}
+        alt={alt}
+        width={hero.width}
+        height={hero.height}
+        loading="eager"
+        fetchpriority="high"
+        decoding="async"
+      />
+    </picture>
+  </div>
+  <div class="hero-copy">
+    <h1>{profile.heroineName}</h1>
+    <p class="roman">HITOHAKO</p>
+    <p class="hero-title">{profile.title}</p>
+    <p class="hero-lead">
+      YouTube と Twitch でゲーム配信をしています。
+    </p>
+    <div class="hero-actions">
+      <a class="button" href={youtube.url} target="_blank" rel="noopener noreferrer">
+        配信を見る
+      </a>
+      <a class="button button-outline" href="#archives">
+        アーカイブを見る
+      </a>
+    </div>
+    <div class="social-links">
+      {social.map((l) => (
+        <a href={l.url} target="_blank" rel="noopener noreferrer">
+          {l.label}
+        </a>
+      ))}
+    </div>
+  </div>
+</section>

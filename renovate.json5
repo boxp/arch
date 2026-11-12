@@ -23,6 +23,11 @@
   prConcurrentLimit: 10,
   branchConcurrentLimit: 20,
   customManagers: [
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/comfyui-xpu/Dockerfile$/"],
+      matchStrings: ["# renovate: datasource=(?<datasource>[^\\s]+) depName=(?<depName>[^\\s]+)\\s+ARG COMFYUI_REF=(?<currentValue>[^\\s]+)"],
+    },
     // codex (IS01 armv7 クロスビルド用)。
     // 🚨 alpha を拾わないよう ^rust-v<major>.<minor>.<patch>$ に限定する。
     //    alpha は 1 日に複数出るため、追うと PR が溢れる。

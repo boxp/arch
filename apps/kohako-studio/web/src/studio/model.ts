@@ -4,7 +4,7 @@ export const presentation: Record<State, { label: string; face: string }> = {
   idle: { label: '待機中', face: 'idle' }, listening: { label: '聞いています', face: 'listening' },
   thinking: { label: '考えています', face: 'thinking' }, speaking: { label: '話しています', face: 'guiding' },
   done: { label: '応答を表示中', face: 'happy' }, approval: { label: '承認待ち', face: 'alert' },
-  failed: { label: '失敗', face: 'offline' }, offline: { label: '未接続', face: 'offline' }, stopped: { label: '停止しました', face: 'offline' },
+  failed: { label: '失敗', face: 'failed' }, offline: { label: '未接続', face: 'offline' }, stopped: { label: '停止しました', face: 'stopped' },
 }
 type Approval = { approvalId: string; summary: string; expiresAt: number }
 export type Result = { state: State; text?: string; approval?: Approval }
@@ -48,7 +48,7 @@ export function silentSpeechSeconds(text: string): number {
   const chars = [...text.replace(/\s+/g, '')].length
   return Math.min(10, Math.max(1.5, chars / 8))
 }
-export type Outgoing = { kind: 'text'; text: string; requestId: string; expiresAt: number }
+export type Outgoing = { kind: 'text'; text: string; requestId: string; expiresAt: number; attachments?: string[]; attachmentNames?: string[] }
 /** 期限切れと判断する前に置く猶予（端末と BFF の時計ずれ・遅延到着に備える）。 */
 export const EXPIRY_GRACE_MS = 60_000
 export function newOutgoing(text: string, now: number, newId: () => string): Outgoing {
@@ -73,4 +73,9 @@ export function resolveUnconfirmed(unconfirmed: Outgoing, lookupStatus: number |
 /** POST messages の結果が「受理されたか不明」か（通信失敗または 5xx はプロキシ越しに処理済みの可能性がある）。 */
 export function sendOutcomeUnknown(status: number | null): boolean {
   return status === null || status >= 500
+}
+
+/** 表情・動作の演技（BOXP-476 表現セット）。2026-11-11 Owner 承認で既定を有効にした。?acting=0 は演技なしの旧通常版 v11r（復旧用）。 */
+export function wantsActing(search: string): boolean {
+  return new URLSearchParams(search).get('acting') !== '0'
 }

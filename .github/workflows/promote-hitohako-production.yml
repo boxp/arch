@@ -1,0 +1,123 @@
+name: Promote accepted hitohako site to production
+
+# BOXP-478: the Owner accepted stage 1c1366ffa6 and approved its production release.
+# deploy-hitohako.yml keeps sending main pushes to stage only, so a later stage change
+# reaches production only after the accepted commit below is updated by a reviewed PR.
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Inspect production, promote the accepted site, or roll back
+        required: true
+        default: inspect
+        type: choice
+        options: [inspect, promote, rollback]
+      rollback_deployment_id:
+        description: Earlier production deployment UUID (required for rollback)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hitohako-production
+  cancel-in-progress: false
+
+env:
+  ACCEPTED_COMMIT: 1c1366ffa69e904fd3cfdbfeb680c901ddba4a3a
+  PRODUCTION_PROJECT: boxp-hitohako
+  PRODUCTION_URL: https://hitohako.b0xp.io
+
+jobs:
+  production:
+    if: github.repository == 'boxp/arch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Inspect production and roll back when requested
+        env:
+          OPERATION: ${{ inputs.operation }}
+          ROLLBACK_ID: ${{ inputs.rollback_deployment_id }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          base="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${PRODUCTION_PROJECT}"
+          auth="Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
+
+          current="$(curl --fail-with-body -sS -H "$auth" "$base" | jq '.result | {
+            name, production_branch, domains,
+            deployment_id: .canonical_deployment.id,
+            url: .canonical_deployment.url,
+            commit: .canonical_deployment.deployment_trigger.metadata.commit_hash
+          }')"
+          echo "$current"
+          {
+            echo '## Production before operation'
+            echo '```json'
+            echo "$current"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$OPERATION" != rollback ]; then
+            exit 0
+          fi
+
+          echo "$ROLLBACK_ID" | grep -Eqi '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$'
+          target="$(curl --fail-with-body -sS -H "$auth" "$base/deployments/$ROLLBACK_ID")"
+          test "$(echo "$target" | jq -r '.result.environment')" = production
+          test "$(echo "$target" | jq -r '.result.latest_stage.status')" = success
+          curl --fail-with-body -sS -X POST -H "$auth" -H 'Content-Type: application/json' \
+            -d '{}' "$base/deployments/$ROLLBACK_ID/rollback" | jq '.result | {id, url}'
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.operation == 'promote'
+        with:
+          ref: ${{ env.ACCEPTED_COMMIT }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: inputs.operation == 'promote'
+        with:
+          node-version: '24'
+
+      - name: Build the accepted source with production settings
+        if: inputs.operation == 'promote'
+        working-directory: apps/hitohako
+        env:
+          SITE_URL: ${{ env.PRODUCTION_URL }}
+          PUBLIC_SITE_STAGE: 'false'
+        run: |
+          # The accepted source stays as is apart from the stage-only noindex header.
+          # Fail closed if that header no longer has the expected shape.
+          test "$(grep -c '^  X-Robots-Tag: noindex, nofollow$' public/_headers)" = 1
+          sed -i -e '/^# Stage environment: keep search engines away/d' \
+            -e '/^  X-Robots-Tag: noindex, nofollow$/d' public/_headers
+          npm ci
+          npm run build
+
+      - name: Check the build has no stage settings
+        if: inputs.operation == 'promote'
+        working-directory: apps/hitohako
+        run: |
+          if grep -rIiE 'noindex|hitohako-stage|STAGE 環境|stage-banner"' dist; then
+            echo 'Stage settings leaked into the production build' >&2
+            exit 1
+          fi
+          grep -q "property=\"og:url\" content=\"${PRODUCTION_URL}/\"" dist/index.html
+          grep -q "content=\"${PRODUCTION_URL}/illust/hitohako-profile-570eabbe64.jpg\"" dist/index.html
+          grep -q 'サイトの一部にAIを利用しています' dist/index.html
+          test -s dist/illust/hitohako-hero-570eabbe64.jpg
+
+      - name: Deploy to the production Pages project
+        if: inputs.operation == 'promote'
+        working-directory: apps/hitohako
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: >-
+          npx wrangler pages deploy dist
+          --project-name "$PRODUCTION_PROJECT"
+          --branch main
+          --commit-hash "$ACCEPTED_COMMIT"
+          --commit-dirty=true

@@ -1,17 +1,17 @@
 FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
 
 # Keep pinned versions here covered by renovate.json5 customManagers when adding new tools.
-ARG CODEX_VERSION=0.166.0
-ARG CLAUDE_CODE_VERSION=2.1.318
+ARG CODEX_VERSION=0.167.0
+ARG CLAUDE_CODE_VERSION=2.1.321
 ARG EVEN_TERMINAL_VERSION=0.10.5
 ARG PI_AGENT_VERSION=1.5.0
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.14
 ARG GH_VERSION=2.103.3
-ARG GHQ_VERSION=1.11.2
+ARG GHQ_VERSION=1.12.0
 ARG GWQ_VERSION=0.1.2
 ARG CEEKER_VERSION=0.5.0
 ARG BABASHKA_VERSION=1.13.229
-ARG LAZYGIT_VERSION=0.66.2
+ARG LAZYGIT_VERSION=0.66.3
 ARG YAZI_VERSION=26.9.1
 ARG CURSOR_AGENT_VERSION=2026.06.12-19-59-36-f6aba9a
 ARG KUBECTL_VERSION=1.37.1
@@ -25,6 +25,15 @@ ENV CODEX_TASK_BOARD_CLAUDE_BIN=/usr/bin/claude
 # lolice の deployment env へ足すと image 更新と別の rollout が増えるため image 側で既定値を持つ。
 ENV CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID=P1809F7CD0C75ACF3
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# BOXP-501: archive.ubuntu.com が DNS で引けない障害 (2026-11-11, CI/cluster 両方で再現) を受け、
+# Owner 承認のうえ本体 archive の取得先だけを公式国内ミラー (山形大学) へ切り替える。
+# security.ubuntu.com は変更しない。署名 (InRelease) 検証は apt 既定のまま有効。
+# base image に ca-certificates が無いため http を使う (完全性は Ubuntu archive 署名で担保)。
+# 戻し方: --build-arg UBUNTU_ARCHIVE_MIRROR=http://archive.ubuntu.com/ubuntu/ または本 ARG 既定値を戻す。
+ARG UBUNTU_ARCHIVE_MIRROR=http://linux.yz.yamagata-u.ac.jp/ubuntu/
+RUN sed -i "s|http://archive.ubuntu.com/ubuntu/\\?|${UBUNTU_ARCHIVE_MIRROR}|g" /etc/apt/sources.list.d/ubuntu.sources \
+    && grep -q "^URIs: ${UBUNTU_ARCHIVE_MIRROR}$" /etc/apt/sources.list.d/ubuntu.sources
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -164,6 +173,8 @@ COPY task-board/ /opt/codex-workspace/task-board/
 COPY qwen-eval/ /opt/codex-workspace/qwen-eval/
 COPY novel-board/ /opt/codex-workspace/novel-board/
 COPY recurring-events/ /opt/codex-workspace/recurring-events/
+COPY model-catalog.edn /opt/codex-workspace/model-catalog.edn
+COPY model-updates/ /opt/codex-workspace/model-updates/
 COPY infra-diagram-refresh/ /opt/codex-workspace/infra-diagram-refresh/
 COPY skills/ /opt/codex-workspace/skills/
 RUN chmod 0755 /usr/local/bin/codex-workspace-entrypoint \
@@ -173,6 +184,7 @@ RUN chmod 0755 /usr/local/bin/codex-workspace-entrypoint \
     && find /opt/codex-workspace/task-board -type f -name "*.bb" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/novel-board -type f -name "*.bb" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/recurring-events -type f -name "*.bb" -exec chmod 0755 {} + \
+    && find /opt/codex-workspace/model-updates -type f -name "*.bb" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/infra-diagram-refresh -type f \( -name "*.bb" -o -name "*.sh" \) -exec chmod 0755 {} +
 
 EXPOSE 2222 3456

@@ -7,3 +7,8 @@ output "stage_custom_domain" {
   description = "The stage custom domain for the hitohako site."
   value       = local.stage_domain
 }
+
+output "production_custom_domain" {
+  description = "The production custom domain for the hitohako site."
+  value       = local.production_domain
+}

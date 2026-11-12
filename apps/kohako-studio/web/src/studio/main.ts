@@ -1,8 +1,12 @@
+import { makeVisemes, visemeAt, boundaryTime, spokenSeconds, type VisemeSequence } from '../live2d/viseme'
 import './style.css'
-import { interpretRequest, newOutgoing, pcm16, resolveUnconfirmed, sendOutcomeUnknown, type Outgoing, presentation, rigStateOf, silentSpeechSeconds, studioRigModelId, wantsRig, type State } from './model'
-import { modelFor, modelStatus, mouthLevel, speechMouth } from '../live2d/model'
+import { interpretRequest, newOutgoing, pcm16, resolveUnconfirmed, sendOutcomeUnknown, type Outgoing, presentation, rigStateOf, silentSpeechSeconds, studioRigModelId, wantsRig, wantsActing, type State } from './model'
+import { clipIdFor, clipName, lookFor, poseFor, modelFor, modelStatus, mouthLevel, type RigState } from '../live2d/model'
 import { setupSelector } from '../live2d/selector'
 import { applyPose, loadRig, type Player } from '../live2d/rig'
+import { ActingDirector, cueForSentence, splitSentences } from '../live2d/acting'
+import { createActingStage } from '../live2d/gesture'
+import { createSentenceSpeaker, createSilentSentencer } from './acting-speech'
 
 const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 const face = el<HTMLImageElement>('face'), stateLabel = el('state'), message = el<HTMLTextAreaElement>('message'), send = el<HTMLButtonElement>('send'), record = el<HTMLButtonElement>('record'), stop = el<HTMLButtonElement>('stop'), speech = el<HTMLInputElement>('speech')
@@ -14,20 +18,35 @@ let starting = false, held = false
 let unconfirmed: Outgoing | null = null
 const synthesis = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window
 speech.disabled = !synthesis
-speech.addEventListener('change', () => { if (!speech.checked && synthesis) { window.speechSynthesis.cancel(); if (state === 'speaking') show('done') } })
+speech.addEventListener('change', () => { if (!speech.checked) { if (actingEnabled) interruptActing(); else if (synthesis) window.speechSynthesis.cancel(); if (state === 'speaking') show('done') } })
 el('speech-help').textContent = synthesis ? 'ブラウザ内蔵の音声で再生します（オフでも応答中はリグが口パクします）。' : 'このブラウザでは読み上げを利用できません（応答中はリグが口パクします）。'
 // Web リグ（既定は最新の本人モデル。PSD2Live 独自 runtime）。読めなければ従来の静止表情に戻る。
 const rigModel = modelFor(`?model=${studioRigModelId(location.search)}`), rigCanvas = el<HTMLCanvasElement>('rig')
 const lost = setupSelector(el('prototype-selector'), false)
 if (lost) { face.hidden = true; el('face-mode').textContent = '消失した試作の比較画像を表示中' }
 let rig: Player | null = null, speakingSince = 0, mouthTimer = 0
+let visemes: VisemeSequence | null = null, visemeAnchor = 0, visemeLive = false
+function startViseme(text: string, duration = silentSpeechSeconds(text), live = false) { visemes = makeVisemes(text, duration); visemeLive = live; speakingSince = performance.now(); visemeAnchor = 0 }
+function syncViseme(charIndex: number) { if (visemes) { visemeAnchor = boundaryTime(visemes, charIndex); speakingSince = performance.now() } }
+const actingEnabled = wantsActing(location.search)
+let acting: ActingDirector | null = null, stage: ReturnType<typeof createActingStage> | null = null
+const speaker = synthesis && actingEnabled ? createSentenceSpeaker({ synth: { speak: u => window.speechSynthesis.speak(u as SpeechSynthesisUtterance), cancel: () => window.speechSynthesis.cancel() }, makeUtterance: text => { const u = new SpeechSynthesisUtterance(text); u.lang = 'ja-JP'; return u } }) : null
+const sentencer = createSilentSentencer({ setTimeout: (fn, ms) => window.setTimeout(fn, ms), clearTimeout: id => window.clearTimeout(id) })
+function interruptActing() { speaker?.cancel(); sentencer.cancel(); acting?.interrupt(); if (acting) rigReport.acting = acting.snapshot }
+function actingPose(player: Player, state: RigState) {
+  const ids = player.clips, pose = poseFor(state, player.expressions, ids.map(id => clipName(rigModel, id)))
+  player.play(clipIdFor(rigModel, ids, pose.clip)); player.lookAt(...lookFor(rigModel, ...pose.look))
+  return pose
+}
 const rigReport: Record<string, unknown> = { loaded: false, errors: [] as string[] }
 function show(next: State) {
+  if (actingEnabled && (next === 'failed' || next === 'stopped') && state !== next) interruptActing()
   state = next
   stateLabel.textContent = presentation[next].label
   face.src = `./kohako/studio/c48v6-${presentation[next].face}-color.png`
-  if (next !== 'speaking') { speakingSince = 0; clearTimeout(mouthTimer) }
-  if (rig) rigReport.pose = { state: next, ...applyPose(rig, rigModel, rigStateOf[next]) }
+  if (next !== 'speaking') { speakingSince = 0; visemes = null; stage?.setViseme?.(null); rig?.lipSync(0); clearTimeout(mouthTimer) }
+  if (rig) rigReport.pose = { state: next, ...(actingEnabled ? actingPose(rig, rigStateOf[next]) : applyPose(rig, rigModel, rigStateOf[next])) }
+  if (acting) { acting.setOperational(rigStateOf[next]); rigReport.acting = acting.snapshot }
   send.disabled = !enabled || busy || !!recording || starting
   record.disabled = !enabled || !stt || busy
   stop.hidden = !busy || !requestId || !accepted
@@ -79,13 +98,29 @@ async function poll(id: string) {
       if (next.state === 'done') {
         reply.textContent = next.text ?? ''; log(`送信から応答完了: ${Date.now() - started} ms`)
         const text = next.text
-        if (speech.checked && synthesis && text) {
+        if (actingEnabled && text) {
+          const sentences = splitSentences(text)
+          acting?.beginReply(); show('speaking')
+          let currentSentence = 0
+          const sentenceDuration = (s: string) => { const total = sentences.reduce((n, v) => n + Array.from(v.replace(/\s/g, '')).length, 0); return speech.checked && speaker ? spokenSeconds(s) : total ? silentSpeechSeconds(text) * Array.from(s.replace(/\s/g, '')).length / total : 0 }
+          const events = {
+            onBoundary: (_index: number, charIndex: number) => syncViseme(charIndex),
+            onSentence: (index: number, sentence: string) => { currentSentence = index; startViseme(sentence, sentenceDuration(sentence), !!(speech.checked && speaker)); acting?.sentence(cueForSentence(sentence)); if (acting) rigReport.acting = acting.snapshot },
+            onEnd: () => { if (state === 'speaking') show('done') },
+            onError: (message: string) => { if (state === 'speaking') { log(`読み上げ失敗: ${message}（口パクのみ表示）`); mouthOnly(sentences.slice(currentSentence).join('')) } },
+          }
+          if (speech.checked && speaker) speaker.speak(sentences, events)
+          else {
+            const total = sentences.reduce((n, s) => n + Array.from(s.replace(/\s/g, '')).length, 0)
+            sentencer.run(sentences, s => total ? silentSpeechSeconds(text) * Array.from(s.replace(/\s/g, '')).length / total : 0, events)
+          }
+        } else if (!actingEnabled && speech.checked && synthesis && text) {
           const utterance = new SpeechSynthesisUtterance(text); utterance.lang = 'ja-JP'
-          utterance.onstart = () => { speakingSince = performance.now() }
-          utterance.onend = () => { if (state === 'speaking') show('done') }
+          utterance.onstart = () => { startViseme(text, spokenSeconds(text), true) }
+          utterance.onboundary = e => syncViseme(e.charIndex); utterance.onend = () => { if (state === 'speaking') show('done') }
           // 中断以外の読み上げ失敗（音声なし等）は口パクだけ続ける。
           utterance.onerror = e => { if (state !== 'speaking') return; if (e.error === 'interrupted' || e.error === 'canceled') show('done'); else { log(`読み上げ失敗: ${e.error}（口パクのみ表示）`); mouthOnly(text) } }
-          show('speaking'); speakingSince = performance.now(); window.speechSynthesis.speak(utterance)
+          show('speaking'); window.speechSynthesis.speak(utterance)
         } else if (text) mouthOnly(text)
       } else if (next.state === 'failed') error.textContent = '処理の結果を確認できませんでした。'
       return
@@ -95,7 +130,7 @@ async function poll(id: string) {
 }
 el<HTMLFormElement>('form').addEventListener('submit', async event => {
   event.preventDefault(); const text = message.value.trim(); if (!text || busy || !enabled || recording || starting) return
-  if (synthesis) window.speechSynthesis.cancel()
+  if (actingEnabled) interruptActing(); else if (synthesis) window.speechSynthesis.cancel()
   error.textContent = ''; busy = true; accepted = false; started = Date.now(); show('thinking')
   let payload: Outgoing
   if (unconfirmed) {
@@ -141,6 +176,7 @@ el('allow').addEventListener('click', () => void decide('once'))
 el('deny').addEventListener('click', () => void decide('deny'))
 stop.addEventListener('click', async () => {
   if (!requestId || !accepted) return
+  if (actingEnabled) interruptActing()
   stop.disabled = true
   try { const result = await call(`requests/${requestId}/cancel`, { method: 'POST' }); if (result.status !== 202) error.textContent = problem(result.status, result.data); else if (result.data?.status === 'cancel-unknown') error.textContent = '停止の結果を確認中です。' }
   catch { error.textContent = '停止の結果を確認できません。' }
@@ -178,13 +214,15 @@ record.addEventListener('pointerdown', async event => {
 for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) record.addEventListener(event, () => void finishRecording())
 /** 読み上げなしでも応答文の長さだけ「話しています」にして口パクする（音は出さない）。 */
 function mouthOnly(text: string) {
-  show('speaking'); speakingSince = performance.now()
+  show('speaking'); startViseme(text)
   mouthTimer = window.setTimeout(() => { if (state === 'speaking') show('done') }, silentSpeechSeconds(text) * 1000)
 }
 function rigTick(now: number) {
   if (!rig) return
-  const mouth = mouthLevel(rigModel, state === 'speaking' && speakingSince ? speechMouth((now - speakingSince) / 1000) : 0)
-  rig.lipSync(mouth); rigReport.mouth = mouth
+  const v = visemes && state === 'speaking' && speakingSince ? visemeAt(visemes, visemeAnchor + (now - speakingSince) / 1000, visemeLive) : { vowel: 'closed', open: 0, width: 1 }
+  const mouth = mouthLevel(rigModel, v.open)
+  stage?.setViseme?.(state !== 'speaking' ? null : { open: v.open, width: v.width })
+  rig.lipSync(mouth); rigReport.mouth = mouth; rigReport.viseme = v.vowel
   requestAnimationFrame(rigTick)
 }
 async function startRig() {
@@ -192,6 +230,7 @@ async function startRig() {
   try {
     const loaded = await loadRig(rigCanvas, rigModel, './kohako/live2d/sample/')
     rig = loaded.player; rig.start()
+    if (actingEnabled) { stage = createActingStage(rig, rigModel); acting = new ActingDirector(stage) }
     face.hidden = true; rigCanvas.hidden = false; rigCanvas.parentElement?.classList.add('rig')
     el('face-mode').textContent = `${rigModel.name}・${modelStatus(rigModel)}（独自 runtime・公式 Live2D ではありません）`
     Object.assign(rigReport, { loaded: true, model: rigModel.id, rig: rigModel.rig, totalMs: loaded.totalMs, rigBytes: loaded.rigBytes })

@@ -9,3 +9,27 @@ Node 22 で `cd web && npm ci && npm run typecheck && npm test && npm run build`
 BFF は Owner 認証用に `KOHAKO_ACCESS_TEAM_DOMAIN`、`KOHAKO_ACCESS_AUD`、`KOHAKO_OWNER_EMAILS`、Hermes 接続用に `KOHAKO_HERMES_URL`、`KOHAKO_HERMES_KEY`、`KOHAKO_HERMES_TOOLSETS` を環境から読みます。音声認識には `KOHAKO_STT_URL` を任意で設定します。Verifier は `KOHAKO_VERIFIER_ENABLED=true` で有効になり、`KOHAKO_VERIFIER_USERNAME` で対象 ServiceAccount を指定できます。TokenReview の権限と専用 audience の投影 token が必要です。
 
 試作は Studio と Web リグ画面の選択欄で比較できます。クエリなしでは最新の試作 v12（担当不採用・本人確認用）を表示し、v0〜v3、v5、v6、v11 に戻せます。v4、v7〜v10 は p2lrt が消失したため比較画像と不採用理由を表示します。
+
+表情と動作の比較版は `/kohako/live2d.html?acting=1`（手動）と `/kohako/studio.html?acting=1`（会話連動）で開けます。クエリなしの表示は変わりません。文単位の感情はルールベースで判定し（`web/src/live2d/acting.ts`）、腕・表情は全身 v11r の頂点出力を描画直前に変形して足します（`web/src/live2d/gesture.ts`）。別 LLM による判定や新規素材は使っていません。
+
+## 試作候補（固定版）
+
+試作は通常版や `?acting=1` を上書きせず、`candidates/candidates.json` に候補として追加します（既存 ID の commit は差し替えない）。各候補の commit はタグ `kohako-studio-candidate/<id>` で保持し、CI の `candidates/fetch.sh` がその版の `web/` を取り出し、Docker の candidates ステージが `/kohako/candidates/<id>/` 用に個別ビルドします。候補ごとの JS と acting 素材は別パスで、モデル v11r・runtime・静止表情は通常版と同じ blob であることを fetch 時に検証して共用します。API は nginx で `/kohako/api/` へ書き換え、認証は通常と同じです。一覧は `/kohako/candidates.html`（Studio のフッターからリンク）。
+
+追加手順: commit をタグ `kohako-studio-candidate/<id>` で push → `candidates.json` に id・commit・状態・試した動作・問題点を追記 → 通常の PR。
+
+コハコの家 `/kohako/home.html` は日常利用のメイン画面で、Studio は開発用プロトタイプです。同じ BFF・認証を使い、ふれあいの反応はローカルのみ、会話は Web 専用セッションです。
+
+ホームの利用枠と進行中件数は認証済みの `GET /kohako/api/v1/status` から取得します。利用枠は共有プール単位で表示し、未観測・古い情報や取得失敗を区別します。進行中はボードの In Progress を一意 ID で数え、切り詰められた場合は下限を表示します。60 秒ごとに更新し、非表示中は停止、失敗時は最大 10 分まで間隔を延ばします。上流 URL は `KOHAKO_STATUS_QUOTA_URL` と `KOHAKO_STATUS_BOARD_URL` で設定でき、空文字で各上流を無効にできます。
+
+## 通知の受信箱
+
+`KOHAKO_DATA_DIR` に絶対パスの永続ディレクトリを指定すると受信箱と Web Push が有効になります。未設定では無効です。受信口は `KOHAKO_NOTIFIER_ENABLED=true` と専用 audience `kohako-bff-notifier` の Kubernetes TokenReview が必要です。送信元 ServiceAccount は `KOHAKO_NOTIFIER_USERNAME` で指定できます。通知は最大 500 件、購読は最大 20 端末です。重複イベントは内容を上書きせず、静音時間（既定は日本時間 2〜9 時）は Push を送りません。Telegram は引き続き利用できます。
+
+Push は Chrome・Edge・Firefox のデスクトップと Android に対応します。iOS/iPadOS 16.4 以降はホーム画面に追加した PWA で利用できます。OS の省電力や Push サービスなどにより配信は保証されません。通知の許可と解除は受信箱のボタンから端末ごとに操作します。
+
+## 可用性（BOXP-511）
+
+web はステートレスな複数レプリカ、BFF は単一 writer の 1 レプリカで動作する。BFF は停止時に処理と書き込みを待ち、会話追跡を保存する。再起動時は既存 run を追跡し、再送しない。通知返信は通知側で復元するため会話ファイルには保存しない。BFF 再起動中は nginx が JSON 503 を返す。`kohako-upstream.conf` は Kubernetes の ConfigMap で上書きする。
+
+家の会話では画像、PDF、UTF-8 テキストを最大3件添付できます（各5 MiBまで。1回の送信で画像は合計5.5 MiB、PDF・テキストの抽出本文は合計48KBまで。1件の本文が48KBを超える場合は先頭だけを渡し「一部省略」と表示します）。PDFの画像だけのページは文字を抽出できません。添付は会話に紐付けて最大24時間保存されます。

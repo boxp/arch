@@ -54,3 +54,10 @@ PVC 拡張・縮小、他ディスク掃除、hold 一括解除、失敗台帳 r
 
 - stale prune で `boxp/arch` の `apps/kohako-studio/web/dist/` のみを検査し、既知の生成物と追跡済み public の同一コピーだけなら回収する。未知の ignored パス、特殊ファイル、リンク、未追跡のビルド入力、検査失敗は保持する。
 - 最新2本・12時間・active run と既存 hold 条件、done mode は変更しない。隔離 fixture で旧実装の失敗と新実装の回収・保持を検証する。
+
+## TD-08: kohako-studio BFF dist
+
+追跡済み src に対応する tsc 出力のみ再生成可能とし、不明なファイルは保護する。web/dist の candidate images、verify site、staging、retention、guard は変更しない。
+
+- stale prune: boxp/arch の `apps/kohako-studio/bff/dist/` が、追跡済み入力（package.json / package-lock.json / tsconfig.json）と outDir=dist・rootDir=src の tsconfig の下で、追跡済み `src/<x>.ts` に対応する `<x>.js`（通常ファイル・nlink=1、.test/.fixture/.d 除外）だけなら回収可能とする。それ以外は hold。
+- 同一票の worktree 再利用: 切替先で tsconfig が変わる、または既存出力に対応するソースが切替先に無い場合だけ `bff-dist-src-diff` で新規 worktree へフォールバックする。ソース内容の編集だけなら再利用する。
