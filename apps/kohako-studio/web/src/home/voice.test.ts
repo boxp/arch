@@ -44,3 +44,9 @@ it('reports the index after two failed fetches', async () => {
   const { player, audio, events } = setup(fetcher); player.speak(['a', 'b'], events); await tick(); audio.onended?.(); await tick()
   expect(fetcher).toHaveBeenCalledTimes(3); expect(events.onError).toHaveBeenCalledWith('fetch_failed', 1)
 })
+it('calls fetcher without a receiver so window.fetch does not throw Illegal invocation (BOXP-522)', async () => {
+  // Chrome の window.fetch は this が Window/undefined 以外だと送信前に TypeError: Illegal invocation を投げる。
+  const fetcher = vi.fn(function (this: unknown) { if (this !== undefined && this !== globalThis) throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation"); return Promise.resolve(new Response('wav')) }) as unknown as typeof fetch
+  const { player, events } = setup(fetcher)
+  player.speak(['one'], events); await tick(); expect(events.onError).not.toHaveBeenCalled(); expect(events.onSentence).toHaveBeenCalledWith(0, 'one', 2)
+})
