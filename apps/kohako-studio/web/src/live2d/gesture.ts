@@ -5,6 +5,7 @@ import type { ActingStage, Emotion, Gesture } from './acting'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { patchFaceTexture } from './face-texture'
+import { atBind, bindPoint, BUST, chestGrid, createChestSpring, stepChest, type Bind } from './chest'
 import { addGhost, addGrid, addQuad, addShared, addTexture, CUFF_POLY, eraseAtlas, FOREARM_POLY, isSleeveLining, isStaticUpper, loadTexture, mirrorPolygon, paintCapeCorner, splitMesh, type PartsPlayer, type Polygon, type Split } from './arm-parts'
 
 type Vec = readonly [number, number]
@@ -556,15 +557,46 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       if (parts && c === RIGHT.arm && parts.right.on) return [parts.right.stub, c, parts.right.fill, parts.right.bentElbow, parts.right.outer, parts.right.fore, parts.right.bentFore]
       if (parts && c === LEFT.arm && parts.left.on) return [parts.left.stub, c, parts.left.fill, parts.left.bentElbow, parts.left.outer, parts.left.fore, parts.left.bentFore]
       if (parts && c === RIGHT.hand && artMesh != null) return [c, artMesh, parts.cuff]
+      if (chest && c === BODY && chestShown()) return [c, chest.index]
       return [c]
     }
-    if (!front.length && !parts?.right.on && !parts?.left.on && artMesh == null && !sw) return count
+    if (!front.length && !parts?.right.on && !parts?.left.on && artMesh == null && !sw && !chestShown()) return count
     const list = Array.from(new Int32Array(rt.memory.buffer, pointer, Math.min(count, capacity)))
     // 切替中の待機の腕は元の位置（描画順）に置き、切替先の腕はその手前に重ねる。
     const ghostAt = (c: number): number[] => { const g = ghosts.get(c); return g && ghostFor(g.side) > 0.001 ? [g.index] : [] }
     const out = [...list.flatMap(c => [...ghostAt(c), ...(front.includes(c) ? [] : expand(c))]), ...front.filter(m => list.includes(m)).flatMap(expand), ...(parts && shyOn() && parts.right.on ? [shyQuads.front as number] : [])].slice(0, capacity)
     new Int32Array(rt.memory.buffer, pointer, out.length).set(out)
     return out.length
+  }
+  // BOXP-521: 胸の揺れ。体の層の胸の範囲に同じ絵の細かい格子を重ね、体の動きから遅れるばねの変位だけ動かす（chest.ts）。
+  // 変位が無いときは格子を描かない（静止時の描画は従来と画素一致）。作れない環境では何もしない。
+  const spring = createChestSpring()
+  let chestEnabled = true, chest: { index: number; count: number; anchor: NonNullable<Bind> } | null = null, chestStatus: Record<string, unknown> = { ready: false }
+  const chestShown = () => !!chest && chestEnabled && Math.hypot(...spring.offset) > 0.02
+  try {
+    const body = p.meshes[BODY] as { vertices: number; uvs: Float32Array; indices: Uint16Array | Uint32Array; texture: number; blend?: number; alphaBlend?: number; culling?: boolean; masks?: number[]; invertMask?: boolean }
+    const verts = new Float32Array(rt.memory.buffer, rt.p2l_mesh_vertices(p.rig, BODY), body.vertices * 2).slice()
+    const grid = chestGrid(verts, body.indices), anchor = bindPoint([(BUST.left[0] + BUST.right[0]) / 2, BUST.left[1]], verts, body.indices)
+    if (!anchor || grid.triangles.length < 100) throw new Error(`胸の格子を体の層に重ねられません (${grid.triangles.length / 3} 三角形)`)
+    const count = grid.points.length, uvs = new Float32Array(count * 2)
+    grid.binds.forEach((b, i) => { if (b) { uvs[2 * i] = atBind(b, body.uvs, 0); uvs[2 * i + 1] = atBind(b, body.uvs, 1) } })
+    const pp = p as unknown as PartsPlayer, alloc = rt as unknown as { p2l_alloc(n: number): number }, pointer = alloc.p2l_alloc(count * 8), uvBuffer = gl.createBuffer(), indexBuffer = gl.createBuffer()
+    const indices = new (pp.indexType === gl.UNSIGNED_SHORT ? Uint16Array : Uint32Array)(grid.triangles)
+    gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer); gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW)
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW)
+    pp.meshes.push({ vertices: count, uvs, indices, texture: body.texture, uvBuffer, indexBuffer, blend: body.blend ?? 0, alphaBlend: body.alphaBlend ?? 0, culling: body.culling ?? false, fixed: true, masks: body.masks ?? [], invertMask: body.invertMask ?? false })
+    const index = pp.meshes.length - 1
+    synth.set(index, { base: BODY, pointer, count, opacity: () => chestShown() ? 1 : 0, write(out) {
+      const v = new Float32Array(rt.memory.buffer, rt.p2l_mesh_vertices(p.rig, BODY), body.vertices * 2), [ox, oy] = spring.offset
+      grid.binds.forEach((b, i) => { if (!b) return; const w = grid.weights[i] as number; out[2 * i] = atBind(b, v, 0) + ox * w; out[2 * i + 1] = atBind(b, v, 1) + oy * w })
+    } })
+    chest = { index, count, anchor }
+    chestStatus = { ready: true, bodyVertices: body.vertices, gridPoints: count, triangles: grid.triangles.length / 3 }
+  } catch (e) { chestStatus = { ready: false, error: e instanceof Error ? e.message : String(e) } }
+  const stepChestSpring = (dt: number) => {
+    if (!chest) return
+    const v = new Float32Array(rt.memory.buffer, rt.p2l_mesh_vertices(p.rig, BODY), (p.meshes[BODY] as { vertices: number }).vertices * 2)
+    stepChest(spring, [atBind(chest.anchor, v, 0), atBind(chest.anchor, v, 1)], dt, chestEnabled)
   }
   const hookOpacity = (rig: number, mesh: number) => {
     const extra = synth.get(mesh)
@@ -639,6 +671,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       }
       rt.p2l_update_stages(p.rig, 0, 0)
     }
+    stepChestSpring(dt)
   }
   // 今の腕を待機の腕へフェードで戻す（姿勢は止めたまま）。then はフェード後に呼ぶ。
   function switchOut(then?: () => void) {
@@ -660,6 +693,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     setViseme(v) { speaking = v !== null; visemeWant = v ? Math.max(0.78, Math.min(1.15, v.width)) : 1 },
     setPetOffset(v) { petOffset = v },
     setPetEyes(on) { petEyes = on },
+    setChestMotion(on) { chestEnabled = on },
     setEmotion(next) { emotion = next; target = faces[next]; player.expression(target.expression && player.expressions.includes(target.expression) ? target.expression : null) },
     playGesture(next) {
       if (next === 'none') return
@@ -681,6 +715,6 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       clip = clips[next]; clipName = next; clipTime = plan.at; armBlend = 1
     },
     reset() { emotion = 'neutral'; target = faces.neutral; player.expression(null); if (switched || sw) { switchOut(); return } if (clip) startFade(); clip = null; clipName = 'none' },
-    report: () => ({ supported: true, petEyes: petClosed, parts: partsStatus, facePatch, emotion, gesture: clipName, armBlend, armSwitch: sw ? { phase: sw.phase, t: sw.t, posedAlpha } : null, switched, haltSet: haltOn(), greetSet: greetSet && haltOn(), guideSet: guideOn(), shySet: shyOn(), clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
+    report: () => ({ supported: true, petEyes: petClosed, chest: { ...chestStatus, enabled: chestEnabled, shown: chestShown(), offset: [...spring.offset], anchor: spring.anchor }, parts: partsStatus, facePatch, emotion, gesture: clipName, armBlend, armSwitch: sw ? { phase: sw.phase, t: sw.t, posedAlpha } : null, switched, haltSet: haltOn(), greetSet: greetSet && haltOn(), guideSet: guideOn(), shySet: shyOn(), clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
   }
 }

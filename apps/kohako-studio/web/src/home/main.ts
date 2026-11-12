@@ -44,7 +44,7 @@ const local = storage(() => localStorage), tab = storage(() => sessionStorage)
 let prefs: Prefs = parsePrefs(local.get(PREFS_KEY))
 const systemReduce = matchMedia('(prefers-reduced-motion: reduce)')
 const reduced = () => prefs.reducedMotion || systemReduce.matches
-const prefBoxes: [keyof Prefs, HTMLInputElement][] = [['touch', el('pref-touch')], ['follow', el('pref-follow')], ['lines', el('pref-lines')], ['pinned', el('pref-pinned')], ['reducedMotion', el('pref-reduce')], ['bgMotion', el('pref-bg')]]
+const prefBoxes: [keyof Prefs, HTMLInputElement][] = [['touch', el('pref-touch')], ['follow', el('pref-follow')], ['lines', el('pref-lines')], ['pinned', el('pref-pinned')], ['reducedMotion', el('pref-reduce')], ['bgMotion', el('pref-bg')], ['chestSway', el('pref-chest')]]
 const voiceSelect = el<HTMLSelectElement>('pref-voice')
 const subtleBox = el<HTMLInputElement>('pref-subtle')
 function applyPrefs() {
@@ -90,6 +90,8 @@ const actingEnabled = wantsActing(location.search)
 const speaker = synthesis ? createSentenceSpeaker({ synth: { speak: u => window.speechSynthesis.speak(u as SpeechSynthesisUtterance), cancel: () => window.speechSynthesis.cancel() }, makeUtterance: text => { const u = new SpeechSynthesisUtterance(text); u.lang = 'ja-JP'; return u } }) : null
 const sentencer = createSilentSentencer({ setTimeout: (fn, ms) => window.setTimeout(fn, ms), clearTimeout: id => window.clearTimeout(id) })
 const report: Record<string, unknown> = { loaded: false, errors: [] as string[], touches: [] as unknown[] }
+// 胸の揺れの状態は検査から読むときだけ求める（毎フレーム report を作らない）。
+Object.defineProperty(report, 'chest', { enumerable: true, get: () => stage?.report().chest ?? null })
 function interruptActing() { voicePlayer.cancel(); speaker?.cancel(); sentencer.cancel(); acting?.interrupt(); if (acting) report.acting = acting.snapshot }
 function actingPose(player: Player, s: RigState) {
   const ids = player.clips, pose = poseFor(s, player.expressions, ids.map(id => clipName(rigModel, id)))
@@ -810,6 +812,8 @@ function rigTick(now: number) {
   petOffset = petFollow(petOffset, petTrack, dt, petOptions)
   if (stage?.setPetOffset) { stage.setPetOffset(petOffset); holdClipForPet(isPetting(petTrack, petOptions) || petShown(petOffset)) }
   report.petFollow = { ...petOffset }
+  // BOXP-521: 胸の揺れは設定 OFF と「動きを減らす」（アプリ設定・OS）で止める。
+  stage?.setChestMotion?.(prefs.chestSway && !reduced())
   if (!document.hidden) {
     // なで中・離して戻る途中・ふれあいや演技の身振り中は、505 のなで追従や身振りの頭の角度と二重にならないよう追従を退かせる。
     const blocked = !!track || isPetting(petTrack, petOptions) || petShown(petOffset) || touchGesture !== 'none' || (!!acting?.snapshot.gesture && acting.snapshot.gesture !== 'none')
