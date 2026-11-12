@@ -132,8 +132,9 @@ body[data-shape="portrait"][data-viewer="open"] .viewer{left:3%;right:3%;width:a
 body[data-shape="portrait"][data-viewer="open"] .character{left:auto;right:2%;bottom:46%;width:35%;height:25%}
 body[data-shape="portrait"][data-viewer="open"] .bubble{left:3%;top:2%;width:60%;max-height:25%}
 body[data-shape="landscape"][data-viewer="open"] .viewer{left:55%;right:2%;width:auto;top:2%;max-height:96%}
-body[data-shape="landscape"][data-viewer="open"] .character{left:6%;width:22%;height:90%}
-body[data-shape="landscape"][data-viewer="open"] .bubble{left:28%;width:26%;top:2%;max-height:70%}
+/* BOXP-510 TD-02: 喜び joy の最大の振りで左腕が枠の左へ約 53px 出るため、左に 9%（Pixel 7 横で約 82px）空ける。 */
+body[data-shape="landscape"][data-viewer="open"] .character{left:9%;width:22%;height:90%}
+body[data-shape="landscape"][data-viewer="open"] .bubble{left:31%;width:23%;top:2%;max-height:70%}
 body[data-viewer="open"] .character,body[data-viewer="open"] .bubble{transition:none;box-sizing:border-box}
 body[data-viewer="open"] .viewer{box-sizing:border-box}
 
