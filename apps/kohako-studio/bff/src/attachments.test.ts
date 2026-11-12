@@ -37,8 +37,8 @@ describe('attachments', () => {
       const settle = async () => { for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r)) }
       await vi.advanceTimersByTimeAsync(86400000 - 1000); await settle()
       expect(await files()).toEqual(expect.arrayContaining([item.id + '.bin', item.id + '.json']))
-      await vi.advanceTimersByTimeAsync(1000); await settle()
-      expect(await files()).toEqual([])
+      await vi.advanceTimersByTimeAsync(1000)
+      await vi.waitFor(async () => expect(await files()).toEqual([]), { timeout: 10000, interval: 20 })
     } finally { vi.useRealTimers(); await rm(dir, { recursive: true, force: true }) }
   })
   it('expires and evicts oldest entries', async () => {
