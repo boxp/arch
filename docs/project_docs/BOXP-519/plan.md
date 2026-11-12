@@ -41,3 +41,37 @@ prune-workspaces! の通常パス後に `generated-reclaim` パスを追加し�
 - 現存 Done 票の run は既存 stale prune（12h・最新2本）と BOXP-518 応急回収で最新2本のみ残存しており、本パスの現時点の対象は 0（成功の捏造ではなく対象不在）。
 - 残存 dist/node_modules は 非Done 票（BOXP-407/276/425/391 等）、checkout 外の検証素材（pwarms/pwv 等）、検証規則の無い `apps/hitohako/dist` で、いずれも設計どおり保持。
 - 効果が出るのは Done 後 12h 以内に古い run が複数残る局面（BOXP-510 の 13 run のような burst）。配備後の複数 tick で gross 生成/回収/純増を観察する。
+
+---
+
+## TD-01 再計画（2026-11-12 Owner「再計画して対応して」）
+
+### 再測定（2026-11-12 10:20 UTC, codex-workspace-home ext4 98.3G）
+- 使用 80.66GiB / 空き 17.6GiB。上位: `.codex-task-board/workspaces` 40.84GiB、`b441work` 10.22GiB（既知保護）、`ghq` 7.54GiB、`.codex` 6.56GiB、`Documents` 5.92GiB。
+- workspaces 内訳（票status別）: done 203 run 31.75GiB（>100MB の 49 run で 30.16GiB）、blocked 102 run 8.41GiB、ready 0.94GiB。
+- 増加元: boxp/arch の run worktree 1本あたり追跡ファイル約 0.52GB。うち `apps/kohako-studio/web/public`（Live2D/png）497MB、
+  256KiB 以上の追跡ファイル 384 個で 497MB。run ごとに Git object と同一内容の複製が作られ、Done 票の最新run保護（latest-run, keep 2）の間ずっと残る。
+- 旧 generated-reclaim（dist/node_modules, 非最新run限定）は対象 0。Done 票の非最新 run は既存 stale prune が丸ごと削除済みのため。
+
+### 方針: 完了票 run の大きな追跡ファイルの「脱水」（run/worktree の保持本数・期間は変えない）
+- 対象: generated-reclaim と同じ票条件（lock 無し・Board の Done 単一カード・status done）、run は safe path・process hold 無し・
+  開始から MIN_AGE 以上。**latest-run でも対象**（worktree/branch/ignored/untracked は残し、再開時に自動復元するため）。
+- checkout 条件: `git status --porcelain --untracked-files=all` が空、merge/rebase 等の進行中操作なし、nested checkout 内でない。
+- ファイル条件: 追跡の通常ファイル（mode 100644/100755、symlink/submodule 除外）、サイズ >= `CODEX_TASK_BOARD_DEHYDRATE_MIN_BYTES`（既定 262144）、
+  link 数 1、既に skip-worktree でない、`git hash-object` が index blob と一致（内容一致の証明＝正本は共有 Git object。gc は worktree index を到達根として扱う）、
+  run 内 symlink の参照先でない。
+- 実行（ticket lock guard 下で全条件を再確認後）: per-worktree git dir に marker `codex-task-board-dehydrated`（NUL区切りパス一覧）を書く →
+  `git update-index --skip-worktree` → ファイル削除。`git status` は clean のまま。
+- 復元: reuse / carryover の前に marker があれば、パスが存在しない場合のみ `--no-skip-worktree` + `git checkout-index` で復元し、
+  status clean と marker 削除を確認。存在するパスがあれば上書きせず reuse を reject（新規 worktree に fallback）。
+- prune: marker のあるcheckoutで脱水パスにファイルが存在する場合は `dehydrated-path-present` で保持（skip-worktree が新規内容を隠すのを防ぐ）。
+- フラグ: `generated-reclaim.edn` の `:mode`（off/dry-run/on）に従う。追加で `:dehydrate false` で脱水のみ無効化可能。rollback は `{:mode :off}` または `:dehydrate false`。
+  既に脱水済みの run は再開時に自動復元されるため rollback 後も業務影響なし。
+- 計測: `:generated-reclaim` イベントに `:kind :tracked-dehydrate`、`:files`、`:allocated-bytes`、サマリに前後 df。
+
+### 期待効果と検証
+- Done 票の arch run（約 49 run）× 約 0.5GB ≒ 20GiB 前後を、保持本数/期間を変えずに回収見込み（dry-run で実数確定）。
+- 生成重複抑制: 完了後に複製を即時脱水し、再開時のみ復元するため、Done 票の保持期間中に複製が残らない。新規 run 作成時の取得は変えない（作業に必要なため）。
+- RedGreen: 脱水→status clean→reuse で復元・status clean、dirty/untracked/hash 不一致/hardlink/symlink 参照/lock/非Done/active は保持、
+  脱水パス存在時の prune 保持・reuse reject、dry-run 非削除、冪等（2回目は対象0）。
+- 対象外: b441work、blocked/in-progress/ready 票、秘密/session、共有 repo の設定変更（sparse-checkout/worktreeConfig は使わない）、保持期間/本数短縮、Longhorn/拡張。
