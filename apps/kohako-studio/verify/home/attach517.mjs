@@ -12,7 +12,7 @@ const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/cs
 const server = http.createServer((req, res) => { const p = decodeURIComponent(new URL(req.url, 'http://localhost').pathname); fs.readFile(path.join(site, p), (err, data) => { if (err) { res.writeHead(404); res.end(); return } res.writeHead(200, { 'content-type': types[path.extname(p)] || 'application/octet-stream' }); res.end(data) }) }).listen(port)
 const browser = await chromium.launch({ ...(process.env.CHROME ? { executablePath: process.env.CHROME } : {}), args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] })
 const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082', 'hex')
-const files = { img: { name: 'synthetic-517.png', mimeType: 'image/png', buffer: png }, pdf: { name: 'note.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n') }, txt: { name: 'memo.txt', mimeType: 'text/plain', buffer: Buffer.from('ID-517') }, exe: { name: 'tool.exe', mimeType: 'application/octet-stream', buffer: Buffer.from('MZ') }, big: { name: 'big.txt', mimeType: 'text/plain', buffer: Buffer.alloc(5 * 1024 * 1024 + 1, 0x61) } }
+const files = { img: { name: 'synthetic-517.png', mimeType: 'image/png', buffer: png }, pdf: { name: 'note.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n') }, txt: { name: 'memo.txt', mimeType: 'text/plain', buffer: Buffer.from('ID-517') }, exe: { name: 'tool.exe', mimeType: 'application/octet-stream', buffer: Buffer.from('MZ') }, big: { name: 'big.txt', mimeType: 'text/plain', buffer: Buffer.alloc(5 * 1024 * 1024 + 1, 0x61) }, img3a: { name: 'a3.png', mimeType: 'image/png', buffer: Buffer.concat([png, Buffer.alloc(3 * 1024 * 1024)]) }, img3b: { name: 'b3.png', mimeType: 'image/png', buffer: Buffer.concat([png, Buffer.alloc(3 * 1024 * 1024)]) } }
 const results = {}, failures = []
 for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, false], ['pixel7', { width: 412, height: 915 }, true]]) {
   const r = results[device] = {}, posts = []
@@ -47,6 +47,9 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     r.pdfChip = await page.locator('#attachment-chips').textContent(); check(/失敗/.test(r.pdfChip), 'pdf chip failed state'); await shot('failed-chip')
     await page.locator('#attachment-chips button').first().click(); check(await page.locator('#attachment-chips > span').count() === 0, 'cancel removes chip')
     // 画像とテキストを選び、1 件取り消してから送る
+    // 画像は1回の送信で合計5.5 MiBまで。超過分はチップを作らず理由を明示する
+    await page.setInputFiles('#attachment-file', [files.img3a, files.img3b]); await page.waitForTimeout(800); r.imageTotal = await error(); check(/合計5\.5 MiB/.test(r.imageTotal), `image total msg ${r.imageTotal}`)
+    check(await page.locator('#attachment-chips > span').count() === 1, 'only first large image chip'); await page.locator('#attachment-chips button').first().click()
     await page.setInputFiles('#attachment-file', [files.img, files.txt]); await page.waitForTimeout(600)
     check(await page.locator('#attachment-chips > span').count() === 2, 'two chips'); await shot('chips')
     for (const id of ['message', 'send']) check(await inside(id), `${id} inside with chips`)
