@@ -64,6 +64,8 @@ let state: State = 'offline', enabled = false, stt = false, requestId = '', star
 let authExpired = false, intentionalReload = false
 // 入力欄の文が受理未確認の控えを画面が戻したもの（ご主人さまの別の発言ではない）なら、その本文。手で入力したら外す。
 let composerEcho: string | null = null
+// 読み込み後に利用者が入力欄へ入力したか（ブラウザのフォーム復元では input は発火しない）。再認証後の草稿復元で、手入力の同文を復元済みと取り違えないために使う。
+let typedSinceLoad = false
 const putComposer = (text: string) => { message.value = text; composerEcho = unconfirmed && unconfirmed.text === text ? text : null }
 const reconnect = el<HTMLButtonElement>('reconnect')
 const rawReauth = tab.get(REAUTH_KEY)
@@ -239,7 +241,7 @@ function refreshScene(force = false) {
 const sceneNow = () => body.dataset.scene as Scene
 window.addEventListener('resize', () => refreshScene())
 window.visualViewport?.addEventListener('resize', () => refreshScene())
-message.addEventListener('input', () => { composerEcho = null; typingUntil = Date.now() + 2000; message.style.height = 'auto'; message.style.height = `${Math.min(message.scrollHeight, window.innerHeight * 0.3)}px` })
+message.addEventListener('input', () => { typedSinceLoad = true; composerEcho = null; typingUntil = Date.now() + 2000; message.style.height = 'auto'; message.style.height = `${Math.min(message.scrollHeight, window.innerHeight * 0.3)}px` })
 message.addEventListener('focus', () => setTimeout(() => refreshScene(), 300)); message.addEventListener('blur', () => setTimeout(() => refreshScene(), 300))
 message.addEventListener('keydown', e => { if (shouldSubmit(e)) { e.preventDefault(); el<HTMLFormElement>('form').requestSubmit() } })
 for (const box of [bubble, cardsBox]) box.addEventListener('scroll', () => { scrollingUntil = Date.now() + 1000 }, { passive: true })
@@ -343,7 +345,8 @@ async function initialize() {
       // 送信待ちへ入らない（満杯・長すぎる）ときは入力欄の先頭へ連結して残す。
       let merged = false
       if (reauth.draft && !message.value) putComposer(reauth.draft)
-      else if (reauth.draft && message.value !== reauth.draft) {
+      // 同じ本文でも利用者が入力したものなら別の発言として扱う（等値だけで復元済みとみなすと 2 件の入力が 1 件に失われる）。ブラウザのフォーム復元で同じ草稿が入っただけなら重複させない。
+      else if (reauth.draft && (message.value !== reauth.draft || typedSinceLoad)) {
         if (queue.add(reauth.draft, Date.now()).ok) restored++
         else { message.value = `${reauth.draft}\n${message.value}`; composerEcho = null; merged = true }
       }
