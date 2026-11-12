@@ -14,9 +14,9 @@ export function validateView(v: unknown): View | null {
 }
 export function extractViews(text: string): { text: string; views: View[] } {
   const views: View[] = []
-  const cleaned = text.replace(/```kohako-view[^\S\r\n]*\r?\n[\s\S]*?(?:```|$)/g, block => {
-    if (block.endsWith('```') && !views.length) { try { const v = validateView(JSON.parse(block.replace(/^```kohako-view[^\S\r\n]*\r?\n/, '').slice(0, -3))); if (v) views.push(v) } catch { /* 不正なブロックは捨てる */ } }
+  const cleaned = text.replace(/```kohako-view(?=[\s{]|```|$)[^\S\r\n]*([\s\S]*?)(?:```|$)/gi, (block, content: string) => {
+    if (block.endsWith('```') && !views.length) { try { const v = validateView(JSON.parse(content)); if (v) views.push(v) } catch { /* 不正なブロックは捨てる */ } }
     return ''
-  }).replace(/```kohako-view[^\n]*$/g, '')
+  })
   return { text: cleaned.trim(), views }
 }

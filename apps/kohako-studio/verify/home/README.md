@@ -34,3 +34,5 @@ Playwright コンテナ（`mcr.microsoft.com/playwright:v1.56.1-noble`、`npm i 
 `pwa510.mjs` は SITE の `kohako/` に web ビルドを置き、`node pwa510.mjs /out` で実行します。BFF をローカルで完全にモックし、PC / Pixel 7 相当の manifest、アイコン、SW、キャッシュ、オフライン・復帰、Chromium のインストール可能性を検証します。結果は `/out/result.json` に保存し、失敗時は終了コード 1 を返します。Playwright 1.56.1 を使用します。
 
 アイコンの再生成は `cd apps/kohako-studio/web && npm install --no-save --package-lock=false sharp && node scripts/generate-pwa-icons.mjs`。既存の `c48v6-idle-color.png` から顔を切り出し、nearest-neighbor で拡大します。maskable は 512px 中央の 288px（対角線が直径の 80% 以内） に配置します。
+
+`realpath506.mjs`（BOXP-506 TD-01）は実 BFF の build に合成の Hermes 応答（丁目のない番地の住所・同一行 JSON のブロック・利用枠）を流し、抽出とジオコード（実 Nominatim、出発地は送らない）の結果を出力します。`node realpath506.mjs <bff/dist の絶対パス>`。

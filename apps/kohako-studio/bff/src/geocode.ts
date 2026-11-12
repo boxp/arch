@@ -8,12 +8,21 @@ export function normalizeChome(address: string): string | null {
   return n > 0 && n < 100 ? `${match[1]}${kanji(n)}丁目` : null
 }
 
+// 都道府県を含む住所から自治体までを取り出す。政令市の区と郡内の町村も含める。
+function municipality(address: string): string | null {
+  return address.match(/^((?:北海道|東京都|京都府|大阪府|.{2,3}県)(?:[^市区町村郡]+郡[^市区町村郡]+[町村]|[^市区町村郡]+市(?:[^市区町村郡]+区)?|[^市区町村郡]+[区町村]))/)?.[1] ?? null
+}
+function town(address: string): string | null {
+  const match = address.match(/^(.+?)[\s　]*[0-9０-９〇零一二三四五六七八九十百千]+(?:丁目|番地|番|号|[-−ー－‐‑–—―]|\s|　|$)/)
+  return match?.[1].trim() || null
+}
+
 export function createGeocoder({ fetcher = fetch, url = process.env.KOHAKO_GEOCODE_URL ?? 'https://nominatim.openstreetmap.org/search', intervalMs = 1000, timeoutMs = 4000, deadlineMs = 7000 }: { fetcher?: typeof fetch; url?: string; intervalMs?: number; timeoutMs?: number; deadlineMs?: number } = {}) {
   const cache = new Map<string, { at: number; value: Geo | null }>()
   let queue = Promise.resolve(), last = 0
-  const queryRaw = async (q: string, requested: Geo['precision'], deadline?: AbortSignal): Promise<Geo | null> => {
+  const queryRaw = async (q: string, requested: Geo['precision'], deadline?: AbortSignal, municipal = false): Promise<Geo | null> => {
     if (deadline?.aborted) return null
-    const key = `${requested}:${q}`, cached = cache.get(key)
+    const key = `${requested}:${municipal}:${q}`, cached = cache.get(key)
     if (cached && Date.now() - cached.at < 86400_000) return cached.value
     let resolve!: (v: Geo | null) => void
     const result = new Promise<Geo | null>(r => { resolve = r })
@@ -44,7 +53,7 @@ export function createGeocoder({ fetcher = fetch, url = process.env.KOHAKO_GEOCO
           let bbox: [number, number, number, number] = [Math.max(-180, lon - delta), Math.max(-90, lat - delta), Math.min(180, lon + delta), Math.min(90, lat + delta)]
           if (precision === 'area' && Array.isArray(item.boundingbox) && item.boundingbox.length === 4) {
             const [south, north, west, east] = item.boundingbox.map(Number)
-            if ([south, north, west, east].every(Number.isFinite) && south >= -90 && north <= 90 && west >= -180 && east <= 180 && south < north && west < east && north - south <= .05 && east - west <= .05 && lat >= south && lat <= north && lon >= west && lon <= east) bbox = [west, south, east, north]
+            if ([south, north, west, east].every(Number.isFinite) && south >= -90 && north <= 90 && west >= -180 && east <= 180 && south < north && west < east && north - south <= (municipal ? .3 : .05) && east - west <= (municipal ? .3 : .05) && lat >= south && lat <= north && lon >= west && lon <= east) bbox = [west, south, east, north]
           }
           value = { lat, lon, bbox, precision, label: q.slice(0, 120), source: 'openstreetmap' }
         }
@@ -58,12 +67,20 @@ export function createGeocoder({ fetcher = fetch, url = process.env.KOHAKO_GEOCO
   // deadlineMs を過ぎたら、それまでに得た最良の位置（概略でも）を返す。
   const resolveView = async (view: Extract<View, { kind: 'map' }>, best: { geo: Geo | null }, deadline: AbortSignal): Promise<Geo | null> => {
     const { address, name } = view.destination
-    const query = (q: string, p: Geo['precision']) => queryRaw(q, p, deadline)
+    const query = (q: string, p: Geo['precision'], municipal = false) => queryRaw(q, p, deadline, municipal)
     if (address) {
       const exact = await query(address, 'exact'); best.geo = exact
       if (exact?.precision === 'exact') return exact
-      const chome = normalizeChome(address)
-      const area = exact ?? (chome && chome !== address ? await query(chome, 'area') : null); best.geo = area
+      let area = exact
+      const city = municipality(address)
+      const seen = new Set([address])
+      for (const candidate of [normalizeChome(address), town(address), city]) {
+        if (area || deadline.aborted) break
+        if (!candidate || seen.has(candidate)) continue
+        seen.add(candidate)
+        area = await query(candidate, 'area', candidate === city)
+        best.geo = area
+      }
       if (!area || !name || name === address) return area
       const named = await query(name, 'exact')
       const m = .002, [w, s, e, n] = area.bbox
