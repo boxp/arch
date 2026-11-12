@@ -164,3 +164,4 @@ test_dehydrate_basic
 test_dehydrate_holds
 test_dehydrate_reuse_restores
 test_dehydrate_prune_hold
+test_dehydrate_rehydrate_ignores_unrelated

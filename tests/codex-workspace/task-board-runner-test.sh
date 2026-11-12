@@ -6009,6 +6009,45 @@ test_dehydrate_prune_hold() {
   [[ ! -e "$co" ]] || fail 'prune did not remove dehydrated run'
 }
 
+test_dehydrate_rehydrate_ignores_unrelated() {
+  local tmp vault state source co run out mode gitdir
+  for mode in unrelated leftover; do
+    tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
+    mkdir -p "$state/locks" "$tmp/proc/100"
+    ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+    export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
+    make_prune_source_repo "$source"
+    head -c 307200 /dev/urandom >"$source/large"; echo small >"$source/small"
+    git -C "$source" add .; prune_git -C "$source" commit -qm large
+    write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+    write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+    run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
+    co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
+    CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "$vault" "$state" >"$out"
+    gitdir="$(git -C "$co" rev-parse --absolute-git-dir)"
+    [[ ! -e "$co/large" && -f "$gitdir/codex-task-board-dehydrated" ]] || fail 'setup dehydration failed'
+    if [[ "$mode" == unrelated ]]; then
+      echo extra >"$co/untracked"; echo change >>"$co/small"
+    else
+      # A previous restore left the exact blob in place but kept the marker.
+      git -C "$co" update-index --no-skip-worktree large; git -C "$co" checkout-index -f large
+    fi
+    CODEX_TASK_BOARD_ROOT="$state" TEST_RUNNER="$RUNNER" TEST_CO="$co" bb -e '
+      (System/setProperty "babashka.file" "/tmp/load-runner.bb")
+      (load-file (System/getenv "TEST_RUNNER"))
+      (let [co (fs/path (System/getenv "TEST_CO"))]
+        (assert (not (dehydrated-present? co (dehydrated-marker co))))
+        (assert (nil? (rehydrate-checkout! co)))
+        (assert (nil? (rehydrate-checkout! co))))' >"$out" 2>&1 || { cat "$out" >&2; fail "rehydrate failed: $mode"; }
+    [[ "$(sha256sum "$source/large" | cut -d' ' -f1)" == "$(sha256sum "$co/large" | cut -d' ' -f1)" ]] || fail "restored content differs: $mode"
+    [[ ! -e "$gitdir/codex-task-board-dehydrated" ]] || fail "marker retained: $mode"
+    [[ -z "$(git -C "$co" ls-files -t large | grep '^S ')" ]] || fail "skip-worktree retained: $mode"
+    if [[ "$mode" == unrelated ]]; then
+      [[ -f "$co/untracked" && "$(tail -n1 "$co/small")" == change ]] || fail 'unrelated changes not preserved'
+    fi
+  done
+}
+
 test_dehydrate_basic() {
   local tmp vault state source co run out
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; source="${tmp}/source"; out="${tmp}/out"

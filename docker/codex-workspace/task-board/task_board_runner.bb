@@ -6154,8 +6154,27 @@
 (defn dehydrated-paths [marker]
   (remove str/blank? (str/split (slurp (str marker)) #"\u0000")))
 
-(defn dehydrated-present? [co marker]
-  (some #(fs/exists? (fs/path co %) {:nofollow-links true}) (dehydrated-paths marker)))
+(defn dehydrated-index-shas [co]
+  (let [index (generated-git co "ls-files" "-s" "-z")]
+    (when (zero? (:exit index))
+      (into {} (keep #(when-let [[_ sha rel] (re-matches #"(?s)\d+ ([0-9a-f]+) 0\t(.*)" %)] [rel sha]))
+            (str/split (:out index) #"\u0000")))))
+
+(defn dehydrated-present?
+  "True when a dehydrated path exists with content that is not the indexed
+  blob (new local data). Paths already restored to the exact blob are not a
+  conflict, so a partially or fully restored checkout stays reusable/prunable."
+  [co marker]
+  (let [present (filter #(fs/exists? (fs/path co %) {:nofollow-links true}) (dehydrated-paths marker))
+        shas (when (seq present) (dehydrated-index-shas co))]
+    (boolean
+     (some (fn [rel]
+             (let [path (fs/path co rel)
+                   hash (when (fs/regular-file? path {:nofollow-links true})
+                          (generated-git co "hash-object" "--" rel))]
+               (not (and hash (zero? (:exit hash)) (get shas rel)
+                         (= (get shas rel) (str/trim (:out hash)))))))
+           present))))
 
 (defn git-with-paths [co args paths]
   (try
@@ -6173,8 +6192,13 @@
             (if (and (zero? (:exit (git-with-paths co ["update-index" "-z" "--no-skip-worktree" "--stdin"] paths)))
                      (zero? (:exit (git-with-paths co ["checkout-index" "-z" "-f" "--stdin"] paths)))
                      (every? #(fs/exists? (fs/path co %) {:nofollow-links true}) paths)
-                     (let [status (generated-git co "status" "--porcelain")]
-                       (and (zero? (:exit status)) (str/blank? (:out status)))))
+                     ;; Verify only the restored paths: unrelated local
+                     ;; changes elsewhere must not leave the marker behind.
+                     (let [status (generated-git co "status" "--porcelain" "-z" "--untracked-files=no")
+                           wanted (set paths)]
+                       (and (zero? (:exit status))
+                            (not-any? #(and (> (count %) 3) (wanted (subs % 3)))
+                                      (str/split (:out status) #"\u0000")))))
               (do (fs/delete marker) nil)
               "rehydrate-failed verification")))))
     (catch Exception e (str "rehydrate-failed " (one-line (.getMessage e))))))
