@@ -20,3 +20,9 @@
 ## 検証 / rollback
 - CI・codex review → merge → kohako-studio image 追従の readback。実画像送信の E2E は Owner Access JWT が必要なため Owner 操作で確認。
 - rollback: 本 PR を revert。
+
+## 追記 (2026-11-12 09:15 UTC): 240秒延長後も失敗した件
+- 本人再試験 09:09:33（画像、session kohako-web-mwdaqvrk, run_a6e18c00）。POST /v1/runs は 3.4 秒で 202（延長は効いた）。
+- 直後の 09:09:37.4〜09:09:52 に Hermes の aiohttp が約 15 秒無応答（agent.log に access ログなし）。BFF の状態ポーリング（10 秒 timeout）が 1 回失敗しただけで unknown となり、releaseUpstream が session を切り替えて自ら stop（09:09:53）を送信し、turn は interrupted で終了した。
+- 修正: ポーリングの一時失敗（timeout・切断・5xx）は、連続 180 秒（POLL_OUTAGE_MS）を超えるまで同じ run を再確認する。停止も run の再作成もしない。応答形式の不正は従来どおり結果不明（hermes_schema）とする。
+- Hermes 側の原因（Codex による read-only 調査）: 画像受付時の同期 fsync/ファイル I/O と authority ロックによる直列化。上流の問題なので今回は修正しない。

@@ -5,6 +5,10 @@ export const APPROVAL_COMMAND_MAX = 2000
 // （2026-11-12 実測: 画像付き 122s/90s、その後ろで待たされたテキスト 65s）。10s で打ち切ると上流では
 // run が実行されるのに家では失敗・session 切替になり、返答が届かない孤立 run と二重実行を生むため、作成だけ長く待つ。
 export const CREATE_RUN_TIMEOUT_MS = 240_000
+// run 受付直後に Hermes の event loop が十数秒止まり、状態確認が 10s で打ち切られることがある
+// （2026-11-12 09:09 実測: 画像 run 開始直後に約 15 秒無応答）。1 回の失敗で結果不明とすると、
+// BFF 自身が run を止めて session を切り替え、返答を捨ててしまう。連続失敗がこの時間を超えるまでは再確認する。
+export const POLL_OUTAGE_MS = 180_000
 export type HermesInput = string | { role: 'user'; content: ({ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } })[] }[]
 export type RunOptions = {
   idempotencyKey: string
@@ -128,9 +132,22 @@ export function createHermes({
   async function poll(id: string, options: Pick<RunOptions, 'pollMs' | 'polls' | 'onApproval'>): Promise<Result> {
     try {
       let waiting = false,
-        pollErrors = 0
+        pollErrors = 0,
+        outageSince: number | undefined
       for (let i = 0; i < (options.polls ?? 300); i++) {
-        const poll = await request(`/v1/runs/${id}`, { headers: auth }, 262144) // 図の HTML を含む返答（最大 24000 字）を受け取れる大きさ
+        let poll: Awaited<ReturnType<typeof request>>
+        try {
+          poll = await request(`/v1/runs/${id}`, { headers: auth }, 262144) // 図の HTML を含む返答（最大 24000 字）を受け取れる大きさ
+        } catch (e) {
+          // 応答の大きさ・形式の不正は待っても直らないので結果不明として返す。
+          if (e instanceof SyntaxError || (e instanceof Error && (e.message === 'oversize' || e.message === 'invalid'))) return { status: 'unknown', error: 'hermes_schema' }
+          // timeout・切断・5xx は一時的な無応答として、連続 POLL_OUTAGE_MS までは同じ run を再確認する（停止・再作成しない）。
+          outageSince ??= now()
+          if (now() - outageSince >= POLL_OUTAGE_MS) return { status: 'unknown', error: 'hermes_unreachable' }
+          await sleep(options.pollMs ?? 2000)
+          continue
+        }
+        outageSince = undefined
         // 4xx（429 等）は上流 run の終了を意味しない。429 は待って再確認し、それ以外/上限超過は結果未確認(unknown)として
         // 呼出し側に上流停止と session 切替をさせる（failed で返すと同 session で次の run が並行実行される）。
         if (poll.code) {
