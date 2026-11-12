@@ -35,3 +35,21 @@ it('enforces route auth and maps errors and conversation flag', async () => {
     expect(await (await fetch(base + 'conversation', { headers: { authorization: 'owner' } })).json()).toMatchObject({ tts: true })
   } finally { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())) }
 })
+it('drops cancelled waiting jobs from the queue and aborts the active fetch', async () => {
+  let release!: () => void
+  const gate = new Promise<void>(r => { release = r }), texts: string[] = []
+  const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input); if (url.endsWith('/speakers')) return response(speakers())
+    if (url.includes('audio_query')) { texts.push(new URL(url).searchParams.get('text') ?? ''); if (texts.length === 1) await Promise.race([gate, new Promise((_, rej) => init?.signal?.addEventListener('abort', () => rej(Error('aborted'))))]); return response({}) }
+    return new Response('RIFFdata')
+  }) as unknown as typeof fetch
+  const t = createTts({ url: 'http://tts', fetcher, now: Date.now })
+  const first = new AbortController(), waiting = new AbortController()
+  const a = t.synthesize('first', first.signal), b = t.synthesize('stale', waiting.signal), c = t.synthesize('next')
+  await new Promise(r => setTimeout(r, 0))
+  waiting.abort(); await expect(b).rejects.toMatchObject({ code: 'cancelled' })
+  first.abort(); await expect(a).rejects.toMatchObject({ code: 'cancelled' })
+  expect((await c).subarray(0, 4).toString()).toBe('RIFF'); release()
+  expect(texts).toEqual(['first', 'next'])
+  await expect(t.synthesize('x', AbortSignal.abort())).rejects.toMatchObject({ code: 'cancelled' })
+})
