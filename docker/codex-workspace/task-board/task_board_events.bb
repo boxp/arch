@@ -839,12 +839,15 @@
                (not (contains? #{:sent :failed :unneeded} (:reminder-status state))))
       (let [state (assoc (or state {:event-id home-id}) :primary "home")
             stored? (and (= :sent (:status state)) (contains? #{"stored" "duplicate"} (:home-status state)))
-            fallback? (and (not stored?) (or (= :failed (:status state))
-                           (>= (copy-age-seconds event copy) (* 60 (env-long "CODEX_TASK_BOARD_HOME_FALLBACK_MINUTES" "20")))))
+            ;; home URL が外れた後は家への転送も状態確認もできないため、家主配信の通知は本文付き fallback で必ず Telegram へ出す。
+            home-gone? (str/blank? (home-url))
+            fallback? (or home-gone?
+                          (and (not stored?) (or (= :failed (:status state))
+                               (>= (copy-age-seconds event copy) (* 60 (env-long "CODEX_TASK_BOARD_HOME_FALLBACK_MINUTES" "20"))))))
             due? (and stored? (:sent-at state)
                       (>= (seconds-since (:sent-at state)) (* 60 (env-long "CODEX_TASK_BOARD_HOME_REMINDER_MINUTES" "30"))))]
         (when (and (not (quiet-now?)) (or fallback? due?))
-          (let [status (when due? (home-status home-id))
+          (let [status (when (and due? (not home-gone?)) (home-status home-id))
                 checks (inc (:reminder-check-attempts state 0))
                 checked (cond-> state due? (assoc :reminder-check-attempts checks))
                 ;; 家から通知が消えている(exists=false)なら本文なしの催促では内容が分からないため本文付き fallback にする。
@@ -904,7 +907,11 @@
   ;; home URL が外れた時も heartbeat を false に更新し、Hermes gate を即 Telegram 主配信へ戻す。
   (publish-home-reminder-ready!)
   (if (str/blank? (home-url))
-    {:home-sent 0}
+    ;; 家主配信で受付済み(Telegram未送信)の通知を取りこぼさないよう、URL が外れても fallback は走らせる。
+    (do (doseq [event (sort-by :created-at (all-events)) :when (:event-id event)]
+          (try (flush-home-reminder! event)
+               (catch Exception e (log! (str "home fallback failed for " (:event-id event) ": " (.getMessage e))))))
+        {:home-sent 0})
     (do
      (reduce
      (fn [acc event]

@@ -11,7 +11,10 @@
 (defn check [label condition]
   (when-not condition (throw (ex-info label {})))
   (println (str "PASS: " label)))
+(def home (atom "http://example.invalid/ingest"))
 (with-redefs [delivered-copy (fn [& _] @copy)
+              home-url (fn [] @home)
+              all-events (fn [] [event])
               read-home-state (fn [& _] @state)
               write-event! (fn [_ value] (reset! state value))
               reminder-url (fn [] @url)
@@ -68,7 +71,22 @@
   (reset! state nil)
   (with-redefs [copy-age-seconds (fn [& _] (* 25 3600))]
     (flush-home-reminder! event))
-  (check "状態が無い古い通知へは再送しない" (empty? @calls)))
+  (check "状態が無い古い通知へは再送しない" (empty? @calls))
+  ;; 家主配信で受付済みの通知が未転送のまま home URL を外しても、flush-home! は本文付き fallback を一度だけ送る。
+  (reset! calls [])
+  (reset! state nil)
+  (reset! home nil)
+  (with-redefs [copy-age-seconds (fn [& _] 60)
+                publish-home-reminder-ready! (fn [] false)]
+    (flush-home!)
+    (flush-home!))
+  (check "home URL を外しても未転送の家主配信通知は本文付き fallback を一度だけ" (and (= 1 (count @calls)) (= "fallback" (:kind (first @calls))) (str/includes? (:text (first @calls)) "秘密の本文")))
+  (reset! calls [])
+  (reset! state {:event-id "BOXP-1-example-done.report" :status :sent :home-status "stored" :sent-at "t"})
+  (with-redefs [publish-home-reminder-ready! (fn [] false)]
+    (flush-home!))
+  (check "home URL を外した後は保存済みでも状態確認せず本文付き fallback" (and (= 1 (count @calls)) (= "fallback" (:kind (first @calls)))))
+  (reset! home "http://example.invalid/ingest"))
 
 ;; 催促 URL/secret が揃っている時だけ Hermes gate 向け heartbeat を ready=true にする(fail safe)。
 (let [dir (str (fs/create-temp-dir))
