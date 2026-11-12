@@ -260,6 +260,8 @@ function problem(status: number, data: Record<string, unknown> | null): string {
   if (data?.error === 'unknown_attachment') return '添付ファイルの期限が切れたか、別の会話のファイルです。追加し直してください。'
   if (data?.error === 'pdf_no_text') return 'PDFから文字を抽出できませんでした。'
   if (data?.error === 'pdf_unreadable') return 'PDFを読み取れませんでした。'
+  if (data?.error === 'attachments_too_large') return 'サイズ超過：画像は1回の送信で合計5.5 MiBまでです。添付を減らしてください。'
+  if (data?.error === 'attachment_text_too_large') return 'サイズ超過：PDF・テキストの本文は1回の送信で合計約48KBまでです。添付を分けて送ってください。'
   if (status === 413) return 'サイズ超過です。'
   if (status === 415) return '未対応の形式、またはファイル形式が一致しません。'
   if (status === 422 || data?.error === 'no_speech') return '音声を認識できませんでした。'
@@ -494,10 +496,10 @@ queueClear.addEventListener('click', () => { const n = queue.size; queue.clear()
 // 送信待ちはメモリだけに持つため、再読み込み・タブを閉じる前にブラウザの確認を出す（黙って再送・保存はしない）。
 window.addEventListener('beforeunload', e => { if (queue.size) { e.preventDefault(); e.returnValue = '' } })
 
-type Chip = { name: string; size: number; state: string; id?: string }
+type Chip = { name: string; size: number; type: string; state: string; id?: string }
 const chips: Chip[] = [], chipBox = el('attachment-chips'), fileInput = el<HTMLInputElement>('attachment-file'), form = el<HTMLFormElement>('form')
 function renderChips() { chipBox.replaceChildren(); for (const chip of chips) { const span = document.createElement('span'), cancel = document.createElement('button'); span.textContent = `${chip.name} (${chip.size} bytes) ${chip.state}`; cancel.type = 'button'; cancel.textContent = '×取消'; cancel.setAttribute('aria-label', `${chip.name}を取消`); cancel.onclick = () => { const i = chips.indexOf(chip); if (i >= 0) chips.splice(i, 1); renderChips() }; span.append(cancel); chipBox.append(span) } }
-async function addFiles(files: FileList | File[]) { for (const file of Array.from(files)) { const validation = attachmentValidation(file, chips.length); if (validation) { setError(validation); if (chips.length >= 3) break; continue } const chip: Chip = { name: file.name, size: file.size, state: 'アップロード中' }; chips.push(chip); renderChips(); try { const result = await call('attachments', { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-Kohako-Filename': encodeURIComponent(file.name) }, body: file }); if (result.status !== 201 || typeof result.data?.attachmentId !== 'string') { chip.state = '失敗'; setError(problem(result.status, result.data)); } else { chip.id = result.data.attachmentId; chip.name = String(result.data.name); chip.state = result.data.truncated ? '一部省略' : '' } } catch { chip.state = '失敗'; setError('アップロードに失敗しました。取り消して再度追加してください。') } renderChips() } }
+async function addFiles(files: FileList | File[]) { for (const file of Array.from(files)) { const validation = attachmentValidation(file, chips); if (validation) { setError(validation); if (chips.length >= 3) break; continue } const chip: Chip = { name: file.name, size: file.size, type: file.type, state: 'アップロード中' }; chips.push(chip); renderChips(); try { const result = await call('attachments', { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-Kohako-Filename': encodeURIComponent(file.name) }, body: file }); if (result.status !== 201 || typeof result.data?.attachmentId !== 'string') { chip.state = '失敗'; setError(problem(result.status, result.data)); } else { chip.id = result.data.attachmentId; chip.name = String(result.data.name); chip.state = result.data.truncated ? '一部省略' : '' } } catch { chip.state = '失敗'; setError('アップロードに失敗しました。取り消して再度追加してください。') } renderChips() } }
 el<HTMLButtonElement>('attach').onclick = () => fileInput.click()
 fileInput.onchange = () => { if (fileInput.files) void addFiles(fileInput.files); fileInput.value = '' }
 form.addEventListener('dragover', e => e.preventDefault())

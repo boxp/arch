@@ -1,4 +1,4 @@
-import { createAttachments, AttachmentError } from './attachments.js'
+import { createAttachments, AttachmentError, ATTACHMENT_IMAGE_TOTAL, ATTACHMENT_TEXT_TOTAL } from './attachments.js'
 import { createGeocoder } from './geocode.js'
 import type { createNotifications } from './notifications.js'
 import type { createPush } from './push.js'
@@ -115,7 +115,9 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
       if (x.attachments !== undefined) {
         if (x.kind !== 'text' || !Array.isArray(x.attachments) || x.attachments.length > 3 || !x.attachments.every((id: unknown) => typeof id === 'string' && /^[a-f0-9]{32}$/.test(id))) return json(400, { error: 'invalid' })
         for (const id of x.attachments) { const item = await attachments.get(id, principal, conv.attachmentSessionKey()); if (!item) return json(404, { error: 'unknown_attachment' }); files.push(item) }
-        if (files.reduce((n, f) => n + (f.meta.kind === 'image' ? Math.ceil(f.data.length / 3) * 4 : Buffer.byteLength(f.meta.extractedText ?? '') * 2), 0) > 7_800_000) return json(413, { error: 'too_large' })
+        // Hermes は要求全体 10MB・正規化テキスト 64KB が上限。画像は base64 で約 4/3 倍になるため合計で制限し、超過は成功を装わず明示する。
+        if (files.reduce((n, f) => n + (f.meta.kind === 'image' ? f.data.length : 0), 0) > ATTACHMENT_IMAGE_TOTAL) return json(413, { error: 'attachments_too_large' })
+        if (files.reduce((n, f) => n + Buffer.byteLength(f.meta.extractedText ?? ''), 0) > ATTACHMENT_TEXT_TOTAL) return json(413, { error: 'attachment_text_too_large' })
       }
       if (x.kind === 'text' && typeof x.text === 'string' && (x.text.trim() || files.length) && x.text.length <= 500 && (x.views === undefined || x.views === true)) input = { kind: 'text', requestId: x.requestId, text: x.text.trim() ? x.text : '添付ファイルを見てください', expiresAt: x.expiresAt, ...(files.length ? { attachments: files } : {}), ...(x.views === true ? { views: true } : {}) }
       else if (x.kind === 'touch' && Object.keys(x).every(k => ['requestId', 'kind', 'touch', 'expiresAt'].includes(k)) && x.touch && typeof x.touch === 'object' && !Array.isArray(x.touch) && Object.keys(x.touch).length === 3 && ['head', 'hand'].includes(x.touch.zone) && ['pat', 'tap'].includes(x.touch.action) && Number.isInteger(x.touch.count) && x.touch.count >= 1 && x.touch.count <= 20) input = { kind: 'touch', requestId: x.requestId, touch: { zone: x.touch.zone, action: x.touch.action, count: x.touch.count }, expiresAt: x.expiresAt }

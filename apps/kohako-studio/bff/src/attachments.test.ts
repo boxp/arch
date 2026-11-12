@@ -93,3 +93,32 @@ it('keeps plain string input without attachments and rejects attachments from a 
     expect((await send('request-att2', { attachments: [t.attachmentId] })).status).toBe(404)
   } finally { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())) }
 })
+
+it('keeps each message within Hermes text (64KB) and request (10MB) limits', async () => {
+  const { createServer } = await import('node:http'), { createApp } = await import('./app.js')
+  const calls: unknown[][] = []
+  const hermes = { run: async (...args: unknown[]) => { calls.push(args); return { status: 'done', text: 'ok' } }, stop: async () => 'ok', approve: async () => 'ok' } as unknown as ReturnType<typeof import('./hermes.js').createHermes>
+  const server = createServer(createApp({ authenticate: async h => h.authorization === 'owner' ? 'owner' : null, hermes }))
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+  try {
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
+    const upload = async (type: string, data: string | Buffer) => { const r = await fetch(base + 'attachments', { method: 'POST', headers: { authorization: 'owner', 'content-type': type, 'x-kohako-filename': 'a' }, body: data as BodyInit }); expect(r.status).toBe(201); return (await r.json() as { attachmentId: string; truncated: boolean }) }
+    let n = 0
+    const message = async (ids: string[]) => { const r = await fetch(base + 'messages', { method: 'POST', headers: { authorization: 'owner', 'content-type': 'application/json' }, body: JSON.stringify({ requestId: `request-limit-${n++}`, kind: 'text', text: 'あ'.repeat(500), expiresAt: Date.now() + 60000, attachments: ids }) }); return { status: r.status, data: await r.json() as { error?: string } } }
+    // 40,000 文字の日本語テキストは 1 件でも 64KB を超えるため、1 件の抽出上限で切り詰め「一部省略」を返す。
+    const a = await upload('text/plain', 'あ'.repeat(40000)), b = await upload('text/plain', 'い'.repeat(40000))
+    expect(a.truncated).toBe(true)
+    expect(await message([a.attachmentId, b.attachmentId])).toEqual({ status: 413, data: { error: 'attachment_text_too_large' } })
+    expect((await message([a.attachmentId])).status).toBe(202)
+    await new Promise(r => setTimeout(r, 20))
+    const parts = (calls[0][1] as { content: { type: string; text?: string }[] }[])[0].content
+    expect(parts.reduce((s, p) => s + Buffer.byteLength(p.text ?? ''), 0)).toBeLessThan(65536)
+    // 画像は合計 5.5 MiB まで（base64 でも 10MB 未満）。超過は送信前に明示して拒否する。
+    const png = (size: number) => Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(size - 8)])
+    const i1 = await upload('image/png', png(2.5 * 1024 * 1024)), i2 = await upload('image/png', png(2.5 * 1024 * 1024)), i3 = await upload('image/png', png(5 * 1024 * 1024))
+    expect((await message([i1.attachmentId, i2.attachmentId])).status).toBe(202)
+    await new Promise(r => setTimeout(r, 20))
+    expect(JSON.stringify(calls[1][1]).length).toBeLessThan(10_000_000)
+    expect(await message([i1.attachmentId, i3.attachmentId])).toEqual({ status: 413, data: { error: 'attachments_too_large' } })
+  } finally { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())) }
+})

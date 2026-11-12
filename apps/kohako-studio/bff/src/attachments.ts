@@ -2,6 +2,10 @@ import { randomBytes } from 'node:crypto'
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { atomic } from './storage.js'
+/** 1 メッセージの画像合計（生バイト）。base64 化後も Hermes の要求上限 10MB に収まる値。 */
+export const ATTACHMENT_IMAGE_TOTAL = 5.5 * 1024 * 1024
+/** 1 メッセージの抽出テキスト合計（UTF-8 バイト）。枠・本文込みで Hermes の正規化テキスト上限 64KB に収まる値。1 件の上限も同じ。 */
+export const ATTACHMENT_TEXT_TOTAL = 48000
 
 type Kind = 'image' | 'pdf' | 'text'
 export type Attachment = { id: string; principal: string; sessionKey: number; kind: Kind; mime: string; size: number; displayName: string; createdAt: number; truncated: boolean; extractedText?: string }
@@ -59,7 +63,7 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
       } catch (e) { if (e instanceof AttachmentError) throw e; return fail('pdf_unreadable', 422) }
     }
     if (extractedText && extractedText.length > 40000) { extractedText = extractedText.slice(0, 40000); truncated = true }
-    if (extractedText && Buffer.byteLength(extractedText) > 55000) { let low = 0, high = extractedText.length; while (low < high) { const mid = Math.ceil((low + high) / 2); if (Buffer.byteLength(extractedText.slice(0, mid)) <= 55000) low = mid; else high = mid - 1 } extractedText = extractedText.slice(0, low); truncated = true }
+    if (extractedText && Buffer.byteLength(extractedText) > ATTACHMENT_TEXT_TOTAL) { let low = 0, high = extractedText.length; while (low < high) { const mid = Math.ceil((low + high) / 2); if (Buffer.byteLength(extractedText.slice(0, mid)) <= ATTACHMENT_TEXT_TOTAL) low = mid; else high = mid - 1 } extractedText = extractedText.slice(0, low); truncated = true }
     const displayName = filename.replace(/[\x00-\x1f\x7f-\x9f/\\]/g, '_').slice(0, 120) || 'file'
     const meta: Attachment = { id: randomBytes(16).toString('hex'), principal, sessionKey, kind, mime: detected, size: data.length, displayName, createdAt: now(), truncated, ...(extractedText !== undefined ? { extractedText } : {}) }
     const work = lock.then(async () => { await clean(data.length); if (folder) { await writeFile(join(folder, meta.id + '.bin'), data, { mode: 0o600, flag: 'wx' }); await atomic(join(folder, meta.id + '.json'), meta) } else memory.set(meta.id, { meta, data }) })
