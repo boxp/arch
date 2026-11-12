@@ -89,10 +89,31 @@ def _mark_sent(t):
         stack[-1].add(str(getattr(t, 'platform_name', '') or '').lower())
 
 
+def _wrap_live_text(original):
+    def wrapped_live_text(t, *args, **kwargs):
+        result = original(t, *args, **kwargs)
+        # Upstream returns (True, True, None) after a confirmation timeout and (True, False, None)
+        # after a partial split send. Only a returned message_id proves the whole text reached
+        # Telegram, so only that counts for the home copy.
+        try:
+            adapter_ok, timed_out, message_id = result
+            _sent.live_text_confirmed = bool(adapter_ok) and not timed_out and message_id is not None
+        except Exception:
+            _sent.live_text_confirmed = False
+        return result
+    wrapped_live_text.__name__ = 'wrapped'
+    return wrapped_live_text
+
+
 def _wrap_live(original):
     def wrapped_live(t, *args, **kwargs):
-        delivered = original(t, *args, **kwargs)
-        if delivered:
+        _sent.live_text_confirmed = False
+        try:
+            delivered = original(t, *args, **kwargs)
+            confirmed = _sent.live_text_confirmed
+        finally:
+            _sent.live_text_confirmed = False
+        if delivered and confirmed:
             _mark_sent(t)
         return delivered
     wrapped_live.__name__ = 'wrapped'
@@ -113,7 +134,7 @@ def _wrap_standalone(original):
 
 def wrap(original, delivery):
     """Copy when the Telegram target itself was delivered, even if another target failed."""
-    for name, factory in (('_deliver_via_live_adapter', _wrap_live), ('_deliver_standalone', _wrap_standalone)):
+    for name, factory in (('_live_send_text', _wrap_live_text), ('_deliver_via_live_adapter', _wrap_live), ('_deliver_standalone', _wrap_standalone)):
         current = getattr(delivery, name, None)
         if current is not None and getattr(current, '__name__', '') != 'wrapped':
             setattr(delivery, name, factory(current))

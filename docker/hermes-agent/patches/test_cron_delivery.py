@@ -24,12 +24,20 @@ class CronCopyTest(unittest.TestCase):
         base.BasePlatformAdapter = type('Adapter', (), {'extract_media': staticmethod(lambda text: ([], text.replace('[media]', '')))})
         self.modules = patch.dict(sys.modules, {'gateway': types.ModuleType('gateway'), 'gateway.platforms': types.ModuleType('gateway.platforms'), 'gateway.platforms.base': base}); self.modules.start(); self.addCleanup(self.modules.stop)
         # Fake per-target lanes: a target's 'outcome' is live / standalone / fail / relay-fail.
+        # Like upstream, the live lane reports delivered=True after a confirmation timeout or a
+        # partial split send; only _live_send_text's message_id tells a confirmed full text send.
+        live_text = {'live': (True, False, 42), 'live-timeout': (True, True, None), 'live-partial': (True, False, None), 'live-fail': (False, False, None)}
+        def live_send_text(t, text, *a, **kw):
+            return live_text[t.outcome]
         def live(t, text, media, *, target_errors, delivery_errors, unverified_targets):
-            return t.outcome == 'live'
+            if not t.outcome.startswith('live'):
+                return False
+            adapter_ok, _, _ = self.delivery._live_send_text(t, text, None, {})
+            return adapter_ok
         def standalone(t, content, media, target_errors, delivery_errors):
             if t.outcome in ('fail', 'relay-fail'):
                 target_errors.append(f'{t.platform_name} failed'); delivery_errors.extend(target_errors)
-        self.delivery = types.SimpleNamespace(_sched=types.SimpleNamespace(_is_cron_silence_response=lambda text: text == 'SILENT'), _resolve_delivery_targets=lambda job, **kw: job.get('targets', [{'platform': 'telegram'}]), _redact_cron_payload=lambda text, what: text.replace('secret', '[redacted]'), BOT_CHAT_PLATFORM='bot-chat', _deliver_via_live_adapter=live, _deliver_standalone=standalone)
+        self.delivery = types.SimpleNamespace(_sched=types.SimpleNamespace(_is_cron_silence_response=lambda text: text == 'SILENT'), _resolve_delivery_targets=lambda job, **kw: job.get('targets', [{'platform': 'telegram'}]), _redact_cron_payload=lambda text, what: text.replace('secret', '[redacted]'), BOT_CHAT_PLATFORM='bot-chat', _live_send_text=live_send_text, _deliver_via_live_adapter=live, _deliver_standalone=standalone)
         self.job = {'id': 'job1', 'name': 'Test', 'execution_id': 'run1'}
     def original(self, job, content, adapters=None, loop=None, *, for_failure=False):
         # Mirrors upstream _deliver_result: lanes are looked up on the module at call time.
@@ -63,6 +71,10 @@ class CronCopyTest(unittest.TestCase):
     def test_other_target_success_with_telegram_failure(self):
         job = {**self.job, 'targets': [{'platform': 'telegram', 'outcome': 'fail'}, {'platform': 'discord', 'outcome': 'live'}]}
         self.send(job=job)
+        self.assertEqual(self.files(), [])
+    def test_live_timeout_or_partial_send_is_not_copied(self):
+        for outcome in ('live-timeout', 'live-partial'):
+            self.send(job={**self.job, 'execution_id': outcome, 'targets': [{'platform': 'telegram', 'outcome': outcome}]})
         self.assertEqual(self.files(), [])
     def test_wrap_is_idempotent(self):
         mod.wrap(self.original, self.delivery); live = self.delivery._deliver_via_live_adapter
