@@ -847,7 +847,10 @@
           (let [status (when due? (home-status home-id))
                 checks (inc (:reminder-check-attempts state 0))
                 checked (cond-> state due? (assoc :reminder-check-attempts checks))
-                done? (and status (some true? (map status ["read" "handled" "replied"])))
+                ;; 家から通知が消えている(exists=false)なら本文なしの催促では内容が分からないため本文付き fallback にする。
+                missing? (and status (false? (get status "exists")))
+                fallback? (or fallback? missing?)
+                done? (and status (not missing?) (some true? (map status ["read" "handled" "replied"])))
                 ready? (or fallback? status (>= checks (home-max-attempts)))]
             (cond
               done? (write-event! (home-dir) (assoc checked :reminder-status :unneeded :updated-at (now-str)))
@@ -880,7 +883,7 @@
   "Hermes の配信 gate は、この heartbeat が新しく reminder_ready=true の間だけ家主配信を有効にする。
   催促 URL/secret が無い dispatcher では false を書き、gate は Telegram 主配信のまま(fail safe)。"
   []
-  (let [ready? (and (not (str/blank? (reminder-url))) (not (str/blank? (webhook-secret))))
+  (let [ready? (and (not (str/blank? (home-url))) (not (str/blank? (reminder-url))) (not (str/blank? (webhook-secret))))
         path (home-reminder-ready-path)
         current (try (json/parse-string (slurp path) true) (catch Exception _ nil))
         refresh (* 60 (env-long "CODEX_TASK_BOARD_HOME_READY_REFRESH_MINUTES" "10"))]
@@ -898,10 +901,11 @@
 (defn flush-home!
   "Copy each event's Telegram-delivered report and reconciliation notice to the home inbox once."
   []
+  ;; home URL が外れた時も heartbeat を false に更新し、Hermes gate を即 Telegram 主配信へ戻す。
+  (publish-home-reminder-ready!)
   (if (str/blank? (home-url))
     {:home-sent 0}
     (do
-     (publish-home-reminder-ready!)
      (reduce
      (fn [acc event]
        (if-let [id (:event-id event)]
