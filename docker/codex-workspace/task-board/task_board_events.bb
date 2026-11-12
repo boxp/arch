@@ -880,7 +880,8 @@
                                                 :reminder-attempts attempts :updated-at (now-str)))
                 (when (= result :failed) (log! (str "home reminder gave up on " home-id)))))))))))
 
-(defn home-reminder-ready-path [] (str (fs/path (vault) "Projects/task-board-events/home-reminder-ready.json")))
+;; dispatcher と Hermes は別 PVC で、Obsidian Sync が同期するのは .md なので JSON 本文でも拡張子は .md にする。
+(defn home-reminder-ready-path [] (str (fs/path (vault) "Projects/task-board-events/home-reminder-ready.md")))
 
 (defn publish-home-reminder-ready!
   "Hermes の配信 gate は、この heartbeat が新しく reminder_ready=true の間だけ家主配信を有効にする。

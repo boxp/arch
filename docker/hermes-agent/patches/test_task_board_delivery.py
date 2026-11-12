@@ -81,7 +81,7 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
             patch.object(delivery, "reminder_route_registered", return_value=True).start()
 
     def heartbeat(self, checked_at=None, ready=True):
-        path = self.vault.parent / "Projects/task-board-events/home-reminder-ready.json"
+        path = self.vault.parent / "Projects/task-board-events/home-reminder-ready.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         checked_at = checked_at or delivery.clock().isoformat()
         path.write_text(json.dumps({"reminder_ready": ready, "checked_at": checked_at}))

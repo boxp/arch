@@ -93,7 +93,7 @@
       ready-url (atom "http://example.invalid/reminder")
       secret (atom "fixture-secret")
       ready-home (atom "http://example.invalid/ingest")
-      read-ready #(json/parse-string (slurp (str (fs/path dir "Projects/task-board-events/home-reminder-ready.json"))) true)]
+      read-ready #(json/parse-string (slurp (str (fs/path dir "Projects/task-board-events/home-reminder-ready.md"))) true)]
   (with-redefs [vault (fn [] dir)
                 reminder-url (fn [] @ready-url)
                 webhook-secret (fn [] @secret)
@@ -111,6 +111,7 @@
     (reset! secret "fixture-secret")
     (publish-home-reminder-ready!)
     (check "再び ready" (true? (:reminder_ready (read-ready))))
+    (check "heartbeat は Obsidian Sync が同期する .md に置く" (str/ends-with? (home-reminder-ready-path) ".md"))
     (reset! ready-home nil)
     (flush-home!)
     (check "home URL 未設定でも flush-home! が即座に ready=false へ更新" (false? (:reminder_ready (read-ready))))))

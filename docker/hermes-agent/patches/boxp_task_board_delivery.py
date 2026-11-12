@@ -200,7 +200,7 @@ def reminder_route_registered(path=None):
 def reminder_dispatcher_ready(vault=VAULT):
     """The dispatcher publishes a heartbeat only while its reminder URL and secret are set."""
     try:
-        path = Path(vault).parent / "Projects/task-board-events/home-reminder-ready.json"
+        path = Path(vault).parent / "Projects/task-board-events/home-reminder-ready.md"
         ready = json.loads(path.read_text())
         checked = datetime.fromisoformat(str(ready["checked_at"]).replace("Z", "+00:00"))
         limit = int(os.environ.get("BOXP_TASK_BOARD_HOME_READY_MAX_AGE_SECONDS", "3600"))
