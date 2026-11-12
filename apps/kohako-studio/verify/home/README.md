@@ -40,3 +40,5 @@ Playwright コンテナ（`mcr.microsoft.com/playwright:v1.56.1-noble`、`npm i 
 アイコンの再生成は `cd apps/kohako-studio/web && npm install --no-save --package-lock=false sharp && node scripts/generate-pwa-icons.mjs`。既存の `c48v6-idle-color.png` から顔を切り出し、nearest-neighbor で拡大します。maskable は 512px 中央の 288px（対角線が直径の 80% 以内） に配置します。
 
 `realpath506.mjs`（BOXP-506 TD-01）は実 BFF の build に合成の Hermes 応答（丁目のない番地の住所・同一行 JSON のブロック・利用枠）を流し、抽出とジオコード（実 Nominatim、出発地は送らない）の結果を出力します。`node realpath506.mjs <bff/dist の絶対パス>`。
+
+`variants510.mjs`（BOXP-510 TD-04）は BFF を完全にモックし、PC と Pixel 7 相当で表情の顔画像を保存し、照れの赤み、にっこりの閉眼、通常への復帰を画素から検査します。Playwright 1.56.1 でビルドを `SITE`（既定 `/site`）の `kohako/` に置き、`node variants510.mjs /out` を実行します。失敗または外部通信があれば終了コード 1 です。

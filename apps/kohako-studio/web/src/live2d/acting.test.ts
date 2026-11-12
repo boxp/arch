@@ -12,7 +12,7 @@ describe('文と演技', () => {
   it.each([
     ['危険です、すみません', 'serious', 'halt'], ['失敗しました、嬉しい', 'troubled', 'tilt'],
     ['えへ、ありがとうございます', 'shy', 'shyHand'], ['褒めてくれた', 'shy', 'shyHand'], ['ありがとうございます', 'smile', 'nod'],
-    ['えっ、成功', 'surprised', 'none'], ['成功しました', 'smile', 'joy'], ['こんにちは', 'smile', 'greet'],
+    ['えっ、成功', 'surprised', 'none'], ['成功しました', 'smileClosed', 'joy'], ['こんにちは', 'smile', 'greet'],
     ['こちらをご覧ください', 'smile', 'guide'], ['いいですか？', 'neutral', 'tilt'], ['普通です。', 'neutral', 'none'],
   ] as const)('%s', (text, emotion, gesture) => expect(cueForSentence(text)).toEqual({ emotion, gesture }))
   it('呼称は判定を変えない', () => { expect(cueForSentence('お客様、成功しました')).toEqual(cueForSentence('成功しました')); expect(cueForSentence('お客様、こんにちは')).toEqual(cueForSentence('こんにちは')) })

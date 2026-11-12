@@ -171,3 +171,12 @@ describe('ハイライトの穴', () => {
     expect(target.get(2, 2)).toEqual(blue)
   })
 })
+
+import { blushWeight } from './face-texture'
+
+it('頬の赤みは左右対称で縁の外では消える', () => {
+  expect(blushWeight(514, 319)).toBeGreaterThan(0)
+  expect(blushWeight(514, 319)).toBe(blushWeight(630, 319))
+  expect(blushWeight(542, 319)).toBe(0)
+  expect(blushWeight(514, 325)).toBeLessThan(blushWeight(514, 319))
+})
