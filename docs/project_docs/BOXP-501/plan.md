@@ -62,3 +62,10 @@ Hermes は Telegram への送信成功後、receipt より先に実送信本文�
 - 不変条件: schedule、prompt、model、配送先と Telegram 配信を維持する。
 - rollback: dispatcher の HOME URL を無効化、または配送パッチを revert する。
 - 未了: 主配信の切替は並行配送の検証後に判断する。
+
+## TD-01 追補: 家経由で依頼した票の通知欠落（2026-11-12）
+
+- 原因: Task Board webhook の prefilter（lolice `task_board_webhook_filter.clj`）と route prompt 手順2は、監督 runbook `/opt/data/kohako-task-supervision.md` に登録が無い票の event を `result=silent` にする。Telegram 経由の依頼は Hermes が runbook へ登録していたが、家（kohako-web session）経由の依頼は登録されず、BOXP-506/510/511/514 の停止・完了 event が silent になり、Telegram 実送信本文コピーも生まれないため家にも届かなかった。
+- 修正: BFF が Owner の発言 turn（家/Studio のテキスト・通知への返信）にだけ「起票・再依頼・引き継ぎをしたら Telegram と同じ書式で report-only 登録し読み戻す」指示を付ける。verifier・なでる turn には付けない。prefilter・route prompt・silent 判定は変えない（一律解除しない）。
+- 既存票の回復: runbook は Hermes PVC 上で他 profile から編集しないため、Kohako への引継ぎ（vault `Projects/kohako-home/home-task-registration-handoff.md`）で登録と未配信の必要分だけの一回回復を依頼する。
+- 戻し方: `ownerTaskInstructions` の付与を外す revert。

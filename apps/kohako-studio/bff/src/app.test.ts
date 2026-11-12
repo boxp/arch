@@ -2,7 +2,7 @@ import { it, expect } from 'vitest'
 import { generateKeyPairSync, sign } from 'node:crypto'
 import { createServer } from 'node:http'
 import { createAuth } from './auth.js'
-import { createApp, instructions, studioInstructions } from './app.js'
+import { createApp, instructions, ownerTaskInstructions, studioInstructions } from './app.js'
 import type { createHermes } from './hermes.js'
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
 const jwt = () => { const h = Buffer.from(JSON.stringify({ alg: 'RS256', kid: 'k' })).toString('base64url'), p = Buffer.from(JSON.stringify({ iss: 'https://access.example.test', aud: 'abc', email: 'owner@example.test', exp: Date.now() / 1000 + 60 })).toString('base64url'); return `${h}.${p}.${sign('RSA-SHA256', Buffer.from(`${h}.${p}`), privateKey).toString('base64url')}` }
@@ -340,12 +340,12 @@ it('returns cleaned replies and only valid views', async () => {
       expect(item.reply.text).toBe('返答'); expect(item.reply.views).toEqual(valid ? [{ kind: 'usage' }] : undefined)
     }
     // Studio（views 未指定）では view 形式を指示せず、本文もそのまま返す（ブロックを消して結果を失わない）。
-    expect(seen.at(-1)).toBe(instructions)
+    expect(seen.at(-1)).toBe(instructions + ownerTaskInstructions)
     output = "返答\n```kohako-view\n{\"kind\":\"usage\"}\n```"
     await fetch(base + 'messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId: 'studio-123', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }) })
     await new Promise(r => setTimeout(r, 10))
     const studio = await (await fetch(base + 'requests/studio-123')).json() as any
-    expect(seen.at(-1)).toBe(studioInstructions); expect(studioInstructions).not.toContain('kohako-view')
+    expect(seen.at(-1)).toBe(studioInstructions + ownerTaskInstructions); expect(studioInstructions).not.toContain('kohako-view')
     expect(studio.reply.text).toBe(output); expect(studio.reply.views).toBeUndefined()
     expect((await fetch(base + 'messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId: 'studio-456', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000, views: 'yes' }) })).status).toBe(400)
   } finally { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())) }
@@ -430,4 +430,21 @@ it('resumes a notification reply after a BFF restart without executing it twice 
     await until(async () => (await (await api(s, `requests/${first.requestId}`)).json() as { status: string }).status === 'done')
     expect(posts).toHaveLength(2); expect(new Set(posts).size).toBe(1); expect(executions).toBe(1)
   } finally { await stop(s); await rm(dir, { recursive: true, force: true }) }
+})
+
+it('asks Hermes to register home-requested tickets only on owner text turns', async () => {
+  const seen: string[] = [], hermes = { run: async (_i: string, _t: string, _s: string, ins: string) => { seen.push(ins); return { status: 'done', text: 'ok' } } } as unknown as ReturnType<typeof createHermes>
+  expect(ownerTaskInstructions).toContain('/opt/data/kohako-task-supervision.md')
+  for (const principal of ['owner', 'verifier'] as const) {
+    const server = createServer(createApp({ authenticate: async () => principal, hermes }))
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+    try {
+      const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
+      const post = (body: object) => fetch(base + 'messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ expiresAt: Date.now() + 60000, ...body }) })
+      await post({ requestId: `${principal}-text-1`, kind: 'text', text: 'これを票にして', views: true }); await new Promise(r => setTimeout(r, 10))
+      expect(seen.at(-1)).toBe(principal === 'owner' ? instructions + ownerTaskInstructions : instructions)
+      await post({ requestId: `${principal}-touch-1`, kind: 'touch', touch: { zone: 'head', action: 'pat', count: 1 } }); await new Promise(r => setTimeout(r, 10))
+      expect(seen.at(-1)).toBe(instructions)
+    } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
+  }
 })
