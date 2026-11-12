@@ -35,14 +35,14 @@ async function measure(page, clip) {
 async function shots(page, clip, name, n = 6) {
   const list = []
   for (let k = 0; k < n; k++) { list.push(await measure(page, clip)); await page.waitForTimeout(150) }
-  fs.writeFileSync(`${out}/${name}.png`, list[list.length - 1].png)
+  fs.writeFileSync(`${out}/${name}.png`, list.reduce((best, item) => item.blue > best.blue ? item : best).png)
   const blues = list.map(s => s.blue)
   return { blueMax: Math.max(...blues), blueMin: Math.min(...blues), redness: median(list.map(s => s.redness)), skin: median(list.map(s => s.skin)) }
 }
 
 const CASES = [
-  { name: 'pc', viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 },
-  { name: 'pixel7', viewport: { width: 412, height: 915 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2.625 },
+  { name: 'pc', viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2, reducedMotion: 'reduce' },
+  { name: 'pixel7', viewport: { width: 412, height: 915 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2.625, reducedMotion: 'reduce' },
 ]
 for (const c of CASES) {
   const { name, ...config } = c, ctx = await browser.newContext(config), page = await ctx.newPage()
@@ -58,6 +58,7 @@ for (const c of CASES) {
     const clip = { x: Math.max(0, Math.floor(a.x)), y: Math.max(0, Math.floor(a.y)), width: Math.ceil(a.w), height: Math.ceil(a.h) }
     const set = e => page.evaluate(e => window.__kohakoHome.stage.setEmotion(e), e)
     for (const e of ['neutral', 'smile', 'smileClosed', 'shy', 'troubled', 'surprised', 'serious']) { await set(e); await page.waitForTimeout(1500); s[e] = await shots(page, clip, `${name}-${e}`) }
+    for (const e of ['troubled', 'surprised']) { await set(e); await page.waitForTimeout(1200); await set('neutral'); await page.waitForTimeout(1800); s[`${e}After`] = await shots(page, clip, `${name}-${e}-after`) }
     // にっこりのまま発話の口と頭なでを重ねる
     await set('smileClosed'); await page.waitForTimeout(1200)
     await page.evaluate(() => { const st = window.__kohakoHome.stage; st.setViseme?.({ open: 0.7, width: 1 }); st.setPetOffset?.({ headX: 8, headY: 0, headZ: 5 }) })
@@ -69,7 +70,15 @@ for (const c of CASES) {
     await set('neutral'); await page.waitForTimeout(2000)
     s.neutralAfter = await shots(page, clip, `${name}-neutral-after`)
     s.facePatch = await page.evaluate(() => { const f = window.__kohakoHome.stage.report?.().facePatch; return f && { patched: f.patched, blush: typeof f.setBlush } })
+    const diff = async (a, b) => page.evaluate(async ([a, b]) => {
+      const read = async s => { const i = new Image(); i.src = `data:image/png;base64,${s}`; await i.decode(); const c = document.createElement('canvas'); c.width = i.width; c.height = i.height; const g = c.getContext('2d'); g.drawImage(i, 0, 0); return g.getImageData(0, 0, i.width, i.height).data }
+      const x = await read(a), y = await read(b); let sum = 0; for (let i = 0; i < x.length; i += 4) sum += Math.abs(x[i] - y[i]) + Math.abs(x[i + 1] - y[i + 1]) + Math.abs(x[i + 2] - y[i + 2]); return sum / (x.length / 4 * 3)
+    }, [fs.readFileSync(`${out}/${name}-${a}.png`).toString('base64'), fs.readFileSync(`${out}/${name}-${b}.png`).toString('base64')])
+    s.differences = { troubled: await diff('neutral', 'troubled'), surprised: await diff('neutral', 'surprised'), troubledAfter: await diff('neutral', 'troubled-after'), surprisedAfter: await diff('neutral', 'surprised-after') }
     const n = s.neutral
+    if (!(s.surprised.blueMax < n.blueMax * .9)) failures.push(`${name}: 驚きの虹彩が小さく見えない (${n.blueMax} → ${s.surprised.blueMax})`)
+    if (!(s.differences.troubled > 5 && s.troubled.blueMax < n.blueMax * .95 && Math.abs(s.troubledAfter.blueMax - n.blueMax) < n.blueMax * .15)) failures.push(`${name}: 困りの差分または復帰が不十分 (${JSON.stringify(s.differences)})`)
+    if (!(s.differences.surprised > 5 && Math.abs(s.surprisedAfter.blueMax - n.blueMax) < n.blueMax * .15)) failures.push(`${name}: 驚きからの復帰が不十分 (${JSON.stringify(s.differences)})`)
     if (s.facePatch?.blush !== 'function') failures.push(`${name}: 頬の赤みを付ける処理が使えない (${JSON.stringify(s.facePatch)})`)
     if (!(s.shy.redness > n.redness + 2)) failures.push(`${name}: 照れの頬の赤みが足りない (通常 ${n.redness.toFixed(1)} 照れ ${s.shy.redness.toFixed(1)})`)
     if (!(Math.abs(s.neutralAfter.redness - n.redness) < 2)) failures.push(`${name}: 通常へ戻しても赤みが残る (通常 ${n.redness.toFixed(1)} 戻した後 ${s.neutralAfter.redness.toFixed(1)})`)

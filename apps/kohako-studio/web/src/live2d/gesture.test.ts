@@ -569,3 +569,13 @@ describe('v11r 以外のモデルの表情', () => {
     expect(calls).toEqual(['smile', null])
   })
 })
+
+it('表情の重みと虹彩縮小は 0 で元に戻る', async () => {
+  const { emotionWeight, irisScale } = await import('./gesture')
+  expect(emotionWeight('surprised', 'surprised', 0)).toBe(0)
+  expect(emotionWeight('surprised', 'surprised', 1)).toBe(1)
+  expect(emotionWeight('neutral', 'surprised', 1)).toBe(0)
+  expect(emotionWeight('smile', 'troubled', 1)).toBe(0)
+  expect(irisScale(0)).toBe(1)
+  expect(irisScale(1)).toBeCloseTo(0.8)
+})

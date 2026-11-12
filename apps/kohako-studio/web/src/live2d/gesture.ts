@@ -44,7 +44,7 @@ export const faces: Record<Emotion, Face> = {
   smile: { browOuter: -3, browInner: -5, browY: -2, eyeSX: 1.01, eyeSY: 0.97, mouth: 0.75, mouthCorner: -2.5, mouthWidth: 1.14, head: { headZ: 3 }, expression: 'smile' },
   smileClosed: { browOuter: -3, browInner: -5, browY: -2, eyeSX: 1.01, eyeSY: 0.97, mouth: 0.75, mouthCorner: -2.5, mouthWidth: 1.14, head: { headZ: 3 }, expression: 'smile' },
   shy: { browOuter: 4, browInner: -7, browY: 0, eyeSX: 1, eyeSY: 0.95, mouth: 0.35, mouthCorner: -0.5, mouthWidth: 0.8, head: { headX: -10, headY: -7, headZ: -4, eyeX: -0.8, eyeY: -0.5 }, expression: null },
-  troubled: { browOuter: 6, browInner: -11, browY: 0, eyeSX: 1, eyeSY: 0.97, mouth: -0.45, mouthCorner: 11, mouthWidth: 0.86, head: { headZ: -5, headY: -4, eyeY: -0.25 }, expression: null },
+  troubled: { browOuter: 6, browInner: -11, browY: 0, eyeSX: 1, eyeSY: 0.82, mouth: -0.45, mouthCorner: 11, mouthWidth: 0.86, head: { headZ: -5, headY: -4, eyeY: -0.25 }, expression: null },
   surprised: { browOuter: -11, browInner: -4, browY: -4, eyeSX: 1.06, eyeSY: 1.14, mouth: -0.2, mouthCorner: 7, mouthWidth: 0.62, head: { headY: 4, lean: -2 }, expression: null },
   serious: { browOuter: -3, browInner: 11, browY: 3, eyeSX: 1, eyeSY: 0.91, mouth: -0.35, mouthCorner: 12, mouthWidth: 0.92, head: { headY: -3 }, expression: null },
 }
@@ -331,6 +331,9 @@ type Runtime = { memory: WebAssembly.Memory; p2l_mesh_vertices(rig: number, mesh
 type Internal = Player & { rt: Runtime; update(dt: number): void; rig: number }
 const PARAMS: Record<keyof BodyPose, string> = { headX: 'ParamAngleX', headY: 'ParamAngleY', headZ: 'ParamAngleZ', bodyX: 'ParamBodyAngleX', bodyZ: 'ParamBodyAngleZ', lean: 'ParamBodyLean', eyeX: 'ParamEyeBallX', eyeY: 'ParamEyeBallY' }
 
+export const emotionWeight = (emotion: Emotion, wanted: Emotion, amount: number): number => emotion === wanted ? Math.max(0, Math.min(1, amount)) : 0
+export const irisScale = (amount: number): number => 1 - 0.2 * Math.max(0, Math.min(1, amount))
+
 export const closedEyeTarget = (emotion: Emotion): number => emotion === 'smileClosed' ? 1 : 0
 
 export function createActingStage(player: Player, model: RigModel): ActingStage & { report(): Record<string, unknown> } {
@@ -341,7 +344,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const p = player as Internal, rt = p.rt, rests = new Map<number, Float32Array>(), done = new Map<number, number>()
   let facePatch: Record<string, unknown>
   try { facePatch = patchFaceTexture(p as unknown as Parameters<typeof patchFaceTexture>[0]) } catch (e) { facePatch = { patched: false, error: e instanceof Error ? e.message : String(e) } }
-  let blush = 0, eyeClosed = 0
+  let blush = 0, eyeClosed = 0, surprised = 0, troubled = 0, speaking = false, mouthOverride = false
   let generation = 0, target = faces.neutral, face = { ...faces.neutral }, clip: Clip | null = null, clipName: Gesture = 'none', clipTime = 0, emotion: Emotion = 'neutral'
   let pose: ReturnType<typeof sample> = { right: REST, left: REST, body: NO_BODY }, armBlend = 0
   const headCurrent = { ...NO_BODY }
@@ -498,6 +501,10 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     const v = new Float32Array(rt.memory.buffer, pointer, count * 2)
     if (!rests.has(mesh)) rests.set(mesh, v.slice())
     const rest = rests.get(mesh) as Float32Array
+    // 虹彩の現在の中心を使い、視線やまばたきの変形に追従させる。
+    let irisX = 0, irisY = 0
+    if (mesh === 11 || mesh === 14) for (let i = 0; i < count; i++) { irisX += v[2 * i] as number; irisY += v[2 * i + 1] as number }
+    if (count) { irisX /= count; irisY /= count }
     const ghost = ghosts.get(mesh); if (ghost) new Float32Array(rt.memory.buffer, ghost.pointer, count * 2).set(v)
     if (mesh === RIGHT.arm || mesh === LEFT.arm || mesh === RIGHT.hand) { let dx = 0, dy = 0; for (let i = 0; i < count; i++) { dx += (v[2 * i] as number) - (rest[2 * i] as number); dy += (v[2 * i + 1] as number) - (rest[2 * i + 1] as number) } sway.set(mesh, count ? [dx / count, dy / count] : [0, 0]) }
     for (let i = 0; i < count; i++) {
@@ -506,8 +513,8 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       if (armBlend > 0.001 && (mesh === RIGHT.arm || mesh === LEFT.arm)) { const b = mesh === RIGHT.arm ? RIGHT : LEFT; const armPose = mesh === RIGHT.arm ? pose.right : pose.left; if (parts && (b === RIGHT ? parts.right.on : parts.left.on)) out = deformSleeve(b, sleeveAngle(b, armPose), x, y, rx, ry); else { const d = deformArm(b, armPose, x, y, rx, ry); out = [lerp(x, d[0], armBlend), lerp(y, d[1], armBlend)] } }
       else if (armBlend > 0.001 && (mesh === RIGHT.hand || mesh === LEFT.hand)) { const b = mesh === RIGHT.hand ? RIGHT : LEFT; const d = deformHand(b, mesh === RIGHT.hand ? pose.right : pose.left, x, y); out = [lerp(x, d[0], armBlend), lerp(y, d[1], armBlend)] }
       else if (mesh === BROW) { const outer = Math.min(1, Math.abs(rx - CX) / 75); out = [x, y + (face.browY + lerp(face.browInner, face.browOuter, smooth(0.15, 0.95, outer))) * browPin(outer)] }
-      else if (mesh === MOUTH) { const u = Math.min(1, Math.abs(rx - MOUTH_C[0]) / 30); out = [MOUTH_C[0] + (x - MOUTH_C[0]) * face.mouthWidth * visemeWidth, y + face.mouthCorner * (u * u - 0.35)] }
-      else if (EYES.has(mesh)) { const c = rx < CX ? EYE_L : EYE_R; out = [c[0] + (x - c[0]) * face.eyeSX, c[1] + (y - c[1]) * face.eyeSY] }
+      else if (mesh === MOUTH) { const u = Math.min(1, Math.abs(rx - MOUTH_C[0]) / 30); out = [MOUTH_C[0] + (x - MOUTH_C[0]) * (speaking ? lerp(face.mouthWidth, 1, surprised) : face.mouthWidth) * visemeWidth, y + face.mouthCorner * (speaking ? 1 - surprised : 1) * (u * u - 0.35)] }
+      else if (EYES.has(mesh)) { const c = rx < CX ? EYE_L : EYE_R; const scale = mesh === 11 || mesh === 14 ? irisScale(surprised) : 1; const ix = irisX + (x - irisX) * scale, iy = irisY + (y - irisY) * scale; out = [c[0] + (ix - c[0]) * face.eyeSX, c[1] + (iy - c[1]) * face.eyeSY] }
       v[2 * i] = out[0]; v[2 * i + 1] = out[1]
     }
   }
@@ -599,15 +606,20 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     }
     blush = lerp(blush, emotion === 'shy' ? 1 : 0, k)
     eyeClosed = lerp(eyeClosed, closedEyeTarget(emotion), k)
-    ;(facePatch.setBlush as ((amount: number) => void) | undefined)?.(blush)
+    surprised = lerp(surprised, emotionWeight(emotion, 'surprised', 1), k)
+    troubled = lerp(troubled, emotionWeight(emotion, 'troubled', 1), k)
+    ;(facePatch.setBlush as ((amount: number, wet: number) => void) | undefined)?.(blush, troubled)
     p.setParameter('ParamMouthForm', face.mouth)
+    const updateMouth = !speaking && (surprised > 0.001 || mouthOverride)
+    if (updateMouth) p.lipSync(surprised > 0.001 ? 0.28 * surprised : 0)
+    mouthOverride = !speaking && surprised > 0.001
     baseUpdate(dt)
     // 自動まばたきの評価後に閉眼を適用し、笑顔の保持中も目を閉じる。
     if (eyeClosed > 0.001) {
       p.setParameter('ParamEyeLOpen', 1 - eyeClosed)
       p.setParameter('ParamEyeROpen', 1 - eyeClosed)
-      rt.p2l_update_stages(p.rig, 0, 0)
     }
+    if (eyeClosed > 0.001) rt.p2l_update_stages(p.rig, 0, 0)
   }
   // 今の腕を待機の腕へフェードで戻す（姿勢は止めたまま）。then はフェード後に呼ぶ。
   function switchOut(then?: () => void) {
@@ -626,7 +638,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   }
   const atRest = () => !sw && !fadeFrom && (armBlend < 0.001 || !posed(pose.right) && !posed(pose.left))
   return {
-    setViseme(v) { visemeWant = v ? Math.max(0.78, Math.min(1.15, v.width)) : 1 },
+    setViseme(v) { speaking = v !== null; visemeWant = v ? Math.max(0.78, Math.min(1.15, v.width)) : 1 },
     setPetOffset(v) { petOffset = v },
     setEmotion(next) { emotion = next; target = faces[next]; player.expression(target.expression && player.expressions.includes(target.expression) ? target.expression : null) },
     playGesture(next) {

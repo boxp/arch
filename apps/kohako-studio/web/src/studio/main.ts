@@ -221,7 +221,7 @@ function rigTick(now: number) {
   if (!rig) return
   const v = visemes && state === 'speaking' && speakingSince ? visemeAt(visemes, visemeAnchor + (now - speakingSince) / 1000, visemeLive) : { vowel: 'closed', open: 0, width: 1 }
   const mouth = mouthLevel(rigModel, v.open)
-  stage?.setViseme?.(v.vowel === 'closed' ? null : { open: v.open, width: v.width })
+  stage?.setViseme?.(state !== 'speaking' ? null : { open: v.open, width: v.width })
   rig.lipSync(mouth); rigReport.mouth = mouth; rigReport.viseme = v.vowel
   requestAnimationFrame(rigTick)
 }
