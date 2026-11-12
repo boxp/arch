@@ -558,3 +558,14 @@ it('にっこりだけ閉眼し、通常へ戻すと開く', () => {
   expect(closedEyeTarget('smile')).toBe(0)
   expect(closedEyeTarget('neutral')).toBe(0)
 })
+
+describe('v11r 以外のモデルの表情', () => {
+  it('にっこりはモデルの smile 表情へフォールバックする', () => {
+    const calls: (string | null)[] = []
+    const player = { expressions: ['smile', 'sad'], expression: (name: string | null) => { calls.push(name) } }
+    const stage = createActingStage(player as unknown as Player, { id: 'kohako-full-v9' } as RigModel)
+    stage.setEmotion('smileClosed')
+    stage.setEmotion('surprised')
+    expect(calls).toEqual(['smile', null])
+  })
+})

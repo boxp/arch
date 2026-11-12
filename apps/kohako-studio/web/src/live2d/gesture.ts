@@ -335,7 +335,7 @@ export const closedEyeTarget = (emotion: Emotion): number => emotion === 'smileC
 
 export function createActingStage(player: Player, model: RigModel): ActingStage & { report(): Record<string, unknown> } {
   if (model.id !== 'kohako-full-v11r') {
-    const names: Partial<Record<Emotion, string>> = { smile: 'smile', shy: 'shy', troubled: 'sad', surprised: 'surprised', serious: 'angry' }
+    const names: Partial<Record<Emotion, string>> = { smile: 'smile', smileClosed: 'smile', shy: 'shy', troubled: 'sad', surprised: 'surprised', serious: 'angry' }
     return { setEmotion(e) { player.expression(names[e] && player.expressions.includes(names[e]) ? names[e] : null) }, playGesture() {}, reset() { player.expression(null) }, report: () => ({ supported: false }) }
   }
   const p = player as Internal, rt = p.rt, rests = new Map<number, Float32Array>(), done = new Map<number, number>()
