@@ -27,3 +27,7 @@ BFF は Owner 認証用に `KOHAKO_ACCESS_TEAM_DOMAIN`、`KOHAKO_ACCESS_AUD`、`
 `KOHAKO_DATA_DIR` に絶対パスの永続ディレクトリを指定すると受信箱と Web Push が有効になります。未設定では無効です。受信口は `KOHAKO_NOTIFIER_ENABLED=true` と専用 audience `kohako-bff-notifier` の Kubernetes TokenReview が必要です。送信元 ServiceAccount は `KOHAKO_NOTIFIER_USERNAME` で指定できます。通知は最大 500 件、購読は最大 20 端末です。重複イベントは内容を上書きせず、静音時間（既定は日本時間 2〜9 時）は Push を送りません。Telegram は引き続き利用できます。
 
 Push は Chrome・Edge・Firefox のデスクトップと Android に対応します。iOS/iPadOS 16.4 以降はホーム画面に追加した PWA で利用できます。OS の省電力や Push サービスなどにより配信は保証されません。通知の許可と解除は受信箱のボタンから端末ごとに操作します。
+
+## 可用性（BOXP-511）
+
+web はステートレスな複数レプリカ、BFF は単一 writer の 1 レプリカで動作する。BFF は停止時に処理と書き込みを待ち、会話追跡を保存する。再起動時は既存 run を追跡し、再送しない。通知返信は通知側で復元するため会話ファイルには保存しない。BFF 再起動中は nginx が JSON 503 を返す。`kohako-upstream.conf` は Kubernetes の ConfigMap で上書きする。

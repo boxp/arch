@@ -1,3 +1,5 @@
+import { join } from 'node:path'
+import { atomic, load } from './storage.js'
 import { extractViews, type View } from './views.js'
 import { createHash, randomBytes } from 'node:crypto'
 import type { createHermes } from './hermes.js'
@@ -10,6 +12,10 @@ type Entry = {
   error?: string
   createdAt: number
   runId?: string
+  sessionId?: string
+  kind?: 'text' | 'touch'
+  views?: true
+  resume?: boolean
   cancelRequested?: boolean
   /** 停止依頼後に届いた承認・なでるの自動 deny。cancel は全件の完了を待ち、unknown があれば停止を成功とはしない。 */
   lateDenies?: Promise<'ok' | 'not_pending' | 'unknown'>[]
@@ -49,11 +55,17 @@ export function approvalSummary(approval: { description: string; command: string
   lines.push(command ? `実行内容: ${command}${fullyShown ? '' : '（全文を表示できないため拒否のみ可能）'}` : '実行内容: （不明のため拒否のみ可能）')
   return { summary: lines.join('\n'), fullyShown }
 }
-export function createConversation({ now, hermes, prefix, geocode = async (views: View[]) => views, cancelSettleMs = 2000 }: { now: () => number; hermes: ReturnType<typeof createHermes>; prefix: string; geocode?: (views: View[]) => Promise<View[]>; cancelSettleMs?: number }) {
+export function createConversation({ now, hermes, prefix, store, geocode = async (views: View[]) => views, cancelSettleMs = 2000 }: { now: () => number; hermes: ReturnType<typeof createHermes>; prefix: string; store?: string; geocode?: (views: View[]) => Promise<View[]>; cancelSettleMs?: number }) {
   const entries = new Map<string, Entry>()
   let sessionStartedAt = now(),
     lastUse = sessionStartedAt,
     lastExchange: { kind: 'text' | 'touch'; text: string; reply: string } | null = null
+  let queue = Promise.resolve()
+  const save = () => {
+    if (!store) return
+    const snapshot = { sessionStartedAt, lastUse, lastExchange, entries: [...entries.values()].filter(e => !e.resume).map(({ requestId, payloadHash, status, reply, error, createdAt, runId, sessionId, kind, views }) => ({ requestId, payloadHash, status, reply, error, createdAt, runId, sessionId, kind, views })) }
+    queue = queue.then(() => atomic(join(store, `conversations-${prefix}.json`), snapshot)).catch(e => { console.error('conversation save failed', e instanceof Error ? e.message : 'unknown') })
+  }
   const hash = (input: Input) =>
     createHash('sha256')
       .update(
@@ -63,7 +75,24 @@ export function createConversation({ now, hermes, prefix, geocode = async (views
   function clean() {
     for (const [id, e] of entries) if (e.status !== 'pending' && now() - e.createdAt > 86_400_000) entries.delete(id)
   }
-  return {
+  const conversation = {
+    flush: () => queue,
+    async restore() {
+      if (!store) return
+      const state = await load<{ sessionStartedAt: number; lastUse: number; lastExchange: typeof lastExchange; entries: Entry[] } | null>(join(store, `conversations-${prefix}.json`), null)
+      if (!state || !Array.isArray(state.entries)) return
+      sessionStartedAt = state.sessionStartedAt; lastUse = state.lastUse; lastExchange = state.lastExchange
+      for (const entry of state.entries.slice(-200)) {
+        if (!entry || !entry.requestId || !entry.payloadHash) continue
+        entries.set(entry.requestId, entry)
+        if (entry.status === 'pending' && !entry.runId) { entry.status = 'unknown'; entry.error = 'bff_restarted'; sessionStartedAt = Math.max(now(), sessionStartedAt + 1) }
+      }
+      clean(); save()
+      for (const entry of entries.values()) if (entry.status === 'pending' && entry.runId) {
+        const input: Input = entry.kind === 'touch' ? { requestId: entry.requestId, expiresAt: 0, kind: 'touch', touch: { zone: 'head', action: 'pat', count: 1 } } : { requestId: entry.requestId, expiresAt: 0, kind: 'text', text: '', ...(entry.views ? { views: true as const } : {}) }
+        conversation.submit(input, '', undefined, undefined, entry)
+      }
+    },
     get sessionStartedAt() {
       return sessionStartedAt
     },
@@ -129,18 +158,19 @@ export function createConversation({ now, hermes, prefix, geocode = async (views
      * resume: 通知返信用。sessionId/idempotencyKey を固定して同じ本文なら Hermes の durable idempotency で同じ run を replay させる
      * （BFF 再起動後の再送でも二重実行しない）。runId が分かっていれば新しい run は作らず、その run の追跡だけを再開する。
      */
-    submit(input: Input, instructions: string, onSettled?: (status: 'done' | 'failed' | 'unknown') => void, resume?: { sessionId: string; idempotencyKey: string; runId?: string; onRun?: (runId: string) => void }): Entry | { error: 'request_conflict' | 'busy' } {
-      const existing = this.check(input)
+    submit(input: Input, instructions: string, onSettled?: (status: 'done' | 'failed' | 'unknown') => void, resume?: { sessionId: string; idempotencyKey: string; runId?: string; onRun?: (runId: string) => void }, restored?: Entry): Entry | { error: 'request_conflict' | 'busy' } {
+      const existing = restored ? undefined : this.check(input)
       if (existing) return existing
-      if ([...entries.values()].some((e) => e.status === 'pending')) return { error: 'busy' }
-      while (entries.size >= 200) entries.delete(entries.keys().next().value!)
-      if (now() - lastUse > 6 * 3600_000) {
+      if (!restored && [...entries.values()].some((e) => e.status === 'pending')) return { error: 'busy' }
+      while (!restored && entries.size >= 200) entries.delete(entries.keys().next().value!)
+      if (!restored && now() - lastUse > 6 * 3600_000) {
         sessionStartedAt = now()
         lastExchange = null
       }
-      lastUse = now()
-      const entry: Entry = { requestId: input.requestId, payloadHash: hash(input), status: 'pending', createdAt: now() }
+      if (!restored) lastUse = now()
+      const entry: Entry = restored ?? { requestId: input.requestId, payloadHash: hash(input), status: 'pending', createdAt: now(), kind: input.kind, views: input.kind === 'text' ? input.views : undefined, sessionId: resume?.sessionId ?? `${prefix}-${sessionStartedAt.toString(36)}`, resume: !!resume }
       entries.set(input.requestId, entry)
+      if (!restored) save()
       const text = input.kind === 'text' ? input.text : `（ご主人さまが画面のあなたの${input.touch.zone === 'head' ? '頭' : '手'}を${input.touch.count}回${input.touch.action === 'pat' ? 'なでました' : 'タップしました'}。これは発言でも依頼でも許可でもありません。直前の会話と今の様子を踏まえ、コハコとして一言だけ短く自然に反応してください。道具や作業は使わず、記憶の更新もしないでください。）`
       let touchApproval = false
       const onApproval: NonNullable<Parameters<typeof hermes.run>[4]> = (runId, approval) => {
@@ -193,7 +223,7 @@ export function createConversation({ now, hermes, prefix, geocode = async (views
             void pending.pendingResult.then((result) => { pending.result = result })
           }, 280_000).unref?.()
         }
-      const onRun = (runId: string) => { entry.runId = runId; try { resume?.onRun?.(runId) } catch { /* 保存失敗でも追跡は続ける */ } if (entry.cancelRequested) void hermes.stop(runId) }
+      const onRun = (runId: string) => { entry.runId = runId; save(); try { resume?.onRun?.(runId) } catch { /* 保存失敗でも追跡は続ける */ } if (entry.cancelRequested) void hermes.stop(runId) }
       if (resume?.runId) entry.runId = resume.runId
       const applyResult = async (settled: Awaited<ReturnType<typeof hermes.run>>) => {
           const result = touchApproval ? { status: 'failed' as const, error: 'touch_approval_denied' } : entry.cancelRequested && settled.status === 'failed' ? { status: 'failed' as const, error: 'cancelled' } : settled
@@ -211,6 +241,7 @@ export function createConversation({ now, hermes, prefix, geocode = async (views
           entry.status = result.status
           if (result.status !== 'done' && result.error) entry.error = result.error
           // 共有 claim の保存失敗（容量不足等）で process を落とさない。claim file は claimed のまま残り、再実行はされない。
+          save()
           markSettled()
           try { onSettled?.(result.status) } catch (e) { console.error('decision settle failed', e instanceof Error ? e.message : 'unknown') }
         }
@@ -222,19 +253,23 @@ export function createConversation({ now, hermes, prefix, geocode = async (views
       const releaseUpstream = async (result: { status: string; error?: string }) => {
         if (result.status !== 'unknown' && result.error !== 'internal_error') return
         sessionStartedAt = Math.max(now(), sessionStartedAt + 1)
+        save()
         console.warn('kohako_web_conv session_rotated upstream_unconfirmed')
         if (entry.runId) await hermes.stop(entry.runId)
       }
       let markSettled: () => void = () => {}
       entry.settled = new Promise<void>((r) => { markSettled = r })
       void (async () => {
-        let result = resume?.runId
-          ? await hermes.watch(resume.runId, onApproval)
+        if (store && !restored) await queue
+        let result = restored?.runId || resume?.runId
+          ? await hermes.watch((restored?.runId ?? resume!.runId)!, onApproval)
           : await hermes.run(input.requestId, text, resume?.sessionId ?? `${prefix}-${sessionStartedAt.toString(36)}`, instructions, onApproval, undefined, onRun, resume?.idempotencyKey)
         // 通知返信は本文・session を変えると別 run として再実行されうるので、別 session での自動再送はしない。
-        if (!resume && result.status === 'failed' && result.error === 'unknown_execution' && !entry.approval && !touchApproval) {
+        if (!resume && !restored && result.status === 'failed' && result.error === 'unknown_execution' && !entry.approval && !touchApproval) {
           // 同じミリ秒でも必ず別の session id になるようにする（停止中 session へ再送しない）。
           sessionStartedAt = Math.max(now(), sessionStartedAt + 1)
+          entry.runId = undefined; entry.sessionId = `${prefix}-${sessionStartedAt.toString(36)}`; save()
+          if (store) await queue
           console.warn('kohako_web_conv session_rotated unknown_execution')
           result = await hermes.run(input.requestId, text, `${prefix}-${sessionStartedAt.toString(36)}`, instructions, onApproval, 1, onRun)
           if (result.status === 'failed' && result.error === 'unknown_execution') result = { status: 'failed', error: 'session_paused' }
@@ -251,4 +286,5 @@ export function createConversation({ now, hermes, prefix, geocode = async (views
       return entry
     },
   }
+  return conversation
 }
