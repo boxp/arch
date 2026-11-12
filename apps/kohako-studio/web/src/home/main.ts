@@ -6,6 +6,7 @@ import { initInbox } from './inbox'
 // 会話の送信・重複防止・停止・承認・追跡は Studio（src/studio/main.ts）と同じ規則。人格・判断・記憶は Hermes だけが持つ。
 import './style.css'
 import './room.css'
+import './menus.css'
 import { buildRoomV1, daypartOf, roomOptions } from './room'
 import { states, formatPool, formatTasks, gaugeOf, taskBadgeOf, upstreamUnavailable, type Status } from './status'
 import { validateViews, mapsUrl, osmUrl, htmlSrcdoc, sanitizeHtml, type View } from './views'
@@ -93,7 +94,7 @@ function addHistory(who: Entry['who'], text: string) {
   history.push({ who, text, at: Date.now() }); if (history.length > 100) history.shift()
   const li = document.createElement('li'), w = document.createElement('span'), t = document.createElement('span'), time = new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
   const list = el('history-list'), scroller = el('history'), bottom = atBottom(scroller.scrollTop, scroller.clientHeight, scroller.scrollHeight)
-  w.className = 'who'; w.textContent = `${who}（${time}）`; t.className = 'md'; t.append(renderMarkdown(text)); li.append(w, t); list.append(li); if (bottom) scroller.scrollTop = scroller.scrollHeight
+  li.dataset.who = who; w.className = 'who'; w.textContent = `${who}（${time}）`; t.className = 'md'; t.append(renderMarkdown(text)); li.append(w, t); list.append(li); if (bottom) scroller.scrollTop = scroller.scrollHeight
 }
 let touchLineTimer = 0, bubbleText = ''
 function setBubble(text: string, touch = false) {

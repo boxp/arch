@@ -24,7 +24,7 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
   let opening = !!selected, firstOpen = true
   const call = async (path: string, method = 'GET', body?: unknown) => { const r = await fetch(`/kohako/api/v1/${path}`, { method, ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }) }); return { status: r.status, data: r.status === 204 ? null : await r.json() } }
   const button = (text: string, fn: () => void) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = text; b.addEventListener('click', fn); return b }
-  const line = (parent: HTMLElement, text: string) => { const p = document.createElement('p'); p.textContent = text; parent.append(p) }
+  const line = (parent: HTMLElement, text: string) => { const p = document.createElement('p'); p.textContent = text; parent.append(p); return p }
   const open = async (id: string) => { if (active === id) { active = ''; clearTimeout(holdTimer) }; selected = id; panel.hidden = false; await call(`notifications/${encodeURIComponent(id)}/read`, 'POST'); await refresh() }
   const release = () => { active = ''; clearTimeout(holdTimer); void refresh() }
   const send = async (i: Item, kind: 'choice' | 'text', value: string, status: HTMLElement) => {
@@ -65,19 +65,26 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
   function render() {
     const top = list.scrollTop, bottom = firstOpen || atBottom(top, list.clientHeight, list.scrollHeight)
     list.replaceChildren(); detail.replaceChildren()
-    for (const i of items) list.append(button(`${i.title}｜${i.source === 'task-board-report' ? 'Task Board' : i.source} ${i.ticketId ?? ''}｜${i.eventId.slice(0, 16)}｜${formatReceived(i.receivedAt)}｜${stateLabel(i)}`, () => { void open(i.eventId) }))
+    // 一覧の行: 状態の印・題名・出どころ・受信時刻。区切りの「｜」と受付 ID は読み上げ・検証用に文字として残し、見た目は CSS で整える。
+    for (const i of items) {
+      const row = button('', () => { void open(i.eventId) }), state = stateLabel(i), part = (cls: string, text: string) => { const s = document.createElement('span'); s.className = cls; s.textContent = text; return s }
+      row.className = 'inbox-row'; row.dataset.state = i.handledAt ? 'handled' : i.readAt ? 'read' : 'unread'; if (i.eventId === selected) row.setAttribute('aria-current', 'true')
+      row.append(part('row-title', i.title), part('row-sep', '｜'), part('row-chip', `${i.source === 'task-board-report' ? 'Task Board' : i.source} ${i.ticketId ?? ''}`.trim()), part('row-sep', `｜${i.eventId.slice(0, 16)}｜`), part('row-time', formatReceived(i.receivedAt)), part('row-sep', '｜'), part('row-state', state))
+      list.append(row)
+    }
+    if (!items.length) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = '通知はありません。'; list.append(p) }
     if (!panel.hidden) { list.scrollTop = bottom ? list.scrollHeight : top; firstOpen = false }
     const i = items.find(x => x.eventId === selected); if (!i) return
-    line(detail, i.title); const content = document.createElement('div'); content.className = 'md'; content.append(renderMarkdown(i.body)); detail.append(content); line(detail, `${i.source} ${i.ticketId ?? ''} ${i.eventId} ${formatReceived(i.receivedAt)} ${stateLabel(i)}`)
-    detail.append(button('処理済みにする', () => { void call(`notifications/${encodeURIComponent(i.eventId)}/handled`, 'POST').then(refresh) }))
-    const status = document.createElement('p'); status.textContent = notice; notice = ''; detail.append(status)
+    line(detail, i.title).className = 'detail-title'; const content = document.createElement('div'); content.className = 'md'; content.append(renderMarkdown(i.body)); detail.append(content); line(detail, `${i.source} ${i.ticketId ?? ''} ${i.eventId} ${formatReceived(i.receivedAt)} ${stateLabel(i)}`).className = 'detail-meta'
+    const handled = button('処理済みにする', () => { void call(`notifications/${encodeURIComponent(i.eventId)}/handled`, 'POST').then(refresh) }); handled.className = 'secondary'; detail.append(handled)
+    const status = document.createElement('p'); status.className = 'detail-status'; status.setAttribute('role', 'status'); status.textContent = notice; notice = ''; detail.append(status)
     const sendReply = (kind: 'choice' | 'text', value: string) => send(i, kind, value, status)
     if (i.reply && i.reply.status === 'submitted') { const r = i.reply; line(detail, `返信済み。受付番号: ${r.requestId}`); detail.append(button('会話で続きを見る', () => { void sendReply(r.kind, r.value) })) }
     else if (i.reply) { const r = i.reply; line(detail, `「${r.value}」の送信を確認できませんでした（受付番号: ${r.requestId}）。同じ受付番号で再送できます。`); detail.append(button('同じ返信を再送', () => { void sendReply(r.kind, r.value) })) }
     else if (i.choices?.length) for (const choice of i.choices) detail.append(button(choice, () => { void sendReply('choice', choice) }))
     else { const input = document.createElement('textarea'); input.maxLength = 500; input.placeholder = '返信を入力'; detail.append(input, button('返信する', () => { if (input.value.trim()) void sendReply('text', input.value) })) }
   }
-  async function refresh() { try { const r = await call('notifications'); if (r.status === 503 && r.data?.error === 'notifications_disabled') { el('inbox-open').hidden = true; panel.hidden = true; return }; if (r.status !== 200) return; items = sortAscending(r.data.items); el('inbox-open').hidden = false; el('inbox-badge').textContent = r.data.unread ? `（${r.data.unread}）` : ''; render(); void tryAnnounce() } catch { /* 次回更新で再試行 */ } }
+  async function refresh() { try { const r = await call('notifications'); if (r.status === 503 && r.data?.error === 'notifications_disabled') { el('inbox-open').hidden = true; panel.hidden = true; return }; if (r.status !== 200) return; items = sortAscending(r.data.items); el('inbox-open').hidden = false; el('inbox-badge').textContent = r.data.unread ? String(r.data.unread) : ''; el('inbox-open').setAttribute('aria-label', r.data.unread ? `受信箱（未読 ${r.data.unread} 件）` : '受信箱'); render(); void tryAnnounce() } catch { /* 次回更新で再試行 */ } }
   el('inbox-open').addEventListener('click', () => { panel.hidden = !panel.hidden; void refresh() }); el('inbox-close').addEventListener('click', () => { panel.hidden = true })
   el('push-on').addEventListener('click', () => { void (async () => { try {
     if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) { message.textContent = 'このブラウザは通知に対応していません。'; return }
