@@ -22,6 +22,7 @@ import { SceneDirector, targetScene, messageShown, type Scene } from './scene'
 import { cardsFromText, type Card } from './cards'
 import { acts, bboxOf, classifyTouch, HAND_MESHES, HEAD_MESHES, inside, toScreenRect, TouchLimiter, TouchBatcher, type Point, type Rect, type Zone } from './touch'
 import { parsePrefs, type Prefs } from './prefs'
+import { blendLook, followWeightFor, lookTarget, smoothLook, type Look } from './lookfollow'
 import { parseResume, parseUnconfirmed, pollVerdict, type Inflight } from './resume'
 import { addErrorText, holdLabel, MessageQueue, QUEUE_MAX_ITEMS, type HoldReason, type QueueItem } from './queue'
 
@@ -41,7 +42,7 @@ const local = storage(() => localStorage), tab = storage(() => sessionStorage)
 let prefs: Prefs = parsePrefs(local.get(PREFS_KEY))
 const systemReduce = matchMedia('(prefers-reduced-motion: reduce)')
 const reduced = () => prefs.reducedMotion || systemReduce.matches
-const prefBoxes: [keyof Prefs, HTMLInputElement][] = [['touch', el('pref-touch')], ['lines', el('pref-lines')], ['pinned', el('pref-pinned')], ['reducedMotion', el('pref-reduce')], ['bgMotion', el('pref-bg')]]
+const prefBoxes: [keyof Prefs, HTMLInputElement][] = [['touch', el('pref-touch')], ['follow', el('pref-follow')], ['lines', el('pref-lines')], ['pinned', el('pref-pinned')], ['reducedMotion', el('pref-reduce')], ['bgMotion', el('pref-bg')]]
 const subtleBox = el<HTMLInputElement>('pref-subtle')
 function applyPrefs() {
   for (const [key, box] of prefBoxes) box.checked = prefs[key] as boolean
@@ -732,6 +733,18 @@ for (const [id, opener] of drawers) {
 }
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { for (const [id] of drawers) el(id).hidden = true; touchMenu.hidden = true; touchOpen.setAttribute('aria-expanded', 'false') } })
 
+// BOXP-516: Studio と同じくカーソルの方向へ視線（目と頭の向き）を向ける。マウス／ペンの hover だけを対象にし、touch・スクロールには触れない。
+// イベントでは座標を控えるだけで、描画への反映は既存の描画ループで行う（通信はしない）。
+let lookPointer: Look | null = null, lookCurrent: Look = { x: 0, y: 0 }, lookWeight = 0, lookApplied = false, lookFace: Look | null = null, lookFaceAt = 0
+// ペンは画面に触れていない hover（buttons === 0）のときだけ追う。接触中（描く・スクロール・操作）は追従を止めて中立へ戻す。
+window.addEventListener('pointermove', e => { if (e.pointerType === 'mouse' || (e.pointerType === 'pen' && e.buttons === 0)) lookPointer = { x: e.clientX, y: e.clientY }; else if (e.pointerType === 'pen') lookPointer = null }, { passive: true })
+window.addEventListener('pointerdown', e => { if (e.pointerType === 'pen') lookPointer = null }, { passive: true })
+// 窓の外へ出た（relatedTarget なし）・窓が非アクティブ・非表示になったら中立へ戻す。
+document.addEventListener('mouseout', e => { if (!e.relatedTarget) lookPointer = null }, { passive: true })
+window.addEventListener('blur', () => { lookPointer = null })
+document.addEventListener('visibilitychange', () => { if (document.hidden) lookPointer = null })
+window.addEventListener('resize', () => { lookFaceAt = 0 })
+
 // ---- リグの読込と描画ループ ----
 function rigTick(now: number) {
   if (!rig) return
@@ -740,6 +753,23 @@ function rigTick(now: number) {
   petOffset = petFollow(petOffset, petTrack, dt, petOptions)
   if (stage?.setPetOffset) { stage.setPetOffset(petOffset); holdClipForPet(isPetting(petTrack, petOptions) || petShown(petOffset)) }
   report.petFollow = { ...petOffset }
+  if (!document.hidden) {
+    // なで中・離して戻る途中・ふれあいや演技の身振り中は、505 のなで追従や身振りの頭の角度と二重にならないよう追従を退かせる。
+    const blocked = !!track || isPetting(petTrack, petOptions) || petShown(petOffset) || touchGesture !== 'none' || (!!acting?.snapshot.gesture && acting.snapshot.gesture !== 'none')
+    const enabled = prefs.follow && !reduced(), active = !!lookPointer && enabled && !blocked
+    // 顔の中心は頭のメッシュから求める。視線で頭が動くと中心も動いて揺れ返すので、毎フレームではなく 0.5 秒ごと（リサイズ時は即時）に取り直す。
+    if (active && (!lookFace || now - lookFaceAt > 500)) {
+      computeAreas(); const rect = rigCanvas.getBoundingClientRect(), head = areas.head
+      lookFace = head ? { x: rect.left + head.x + head.w / 2, y: rect.top + head.y + head.h * 0.45 } : { x: rect.left + rect.width / 2, y: rect.top + rect.height * 0.2 }; lookFaceAt = now
+    }
+    const target = lookTarget(lookPointer, lookFace ?? { x: innerWidth / 2, y: innerHeight / 3 }, { left: 0, top: 0, width: innerWidth, height: innerHeight }, enabled, blocked, prefs.intensity === 'subtle')
+    const poseLook = poseFor(rigStateOf[state], rig.expressions, rig.clips.map(id => clipName(rigModel, id))).look
+    lookCurrent = smoothLook(lookCurrent, target, dt); lookWeight += ((active ? followWeightFor(poseLook) : 0) - lookWeight) * (1 - Math.exp(-dt / 0.3))
+    // 効いている間だけ毎フレーム lookAt する。戻り切ったら一度だけ状態の視線を置き直し、以後は既存の演技（actingPose / applyPose）に任せる。
+    if (active || lookWeight > 0.002) { rig.lookAt(...blendLook(lookFor(rigModel, ...poseLook), lookCurrent, lookWeight)); lookApplied = true }
+    else if (lookApplied) { lookWeight = 0; lookCurrent = { x: 0, y: 0 }; rig.lookAt(...lookFor(rigModel, ...poseLook)); lookApplied = false }
+    report.lookFollow = { target, current: { ...lookCurrent }, weight: lookWeight, active }
+  }
   const v = visemes && state === 'speaking' && speakingSince ? visemeAt(visemes, visemeAnchor + (now - speakingSince) / 1000, visemeLive) : { vowel: 'closed', open: 0, width: 1 }
   const mouth = mouthLevel(rigModel, v.open)
   stage?.setViseme?.(state !== 'speaking' ? null : { open: v.open, width: reduced() ? 1 : v.width })
