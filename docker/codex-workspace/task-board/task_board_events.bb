@@ -874,12 +874,35 @@
                                                 :reminder-attempts attempts :updated-at (now-str)))
                 (when (= result :failed) (log! (str "home reminder gave up on " home-id)))))))))))
 
+(defn home-reminder-ready-path [] (str (fs/path (vault) "Projects/task-board-events/home-reminder-ready.json")))
+
+(defn publish-home-reminder-ready!
+  "Hermes の配信 gate は、この heartbeat が新しく reminder_ready=true の間だけ家主配信を有効にする。
+  催促 URL/secret が無い dispatcher では false を書き、gate は Telegram 主配信のまま(fail safe)。"
+  []
+  (let [ready? (and (not (str/blank? (reminder-url))) (not (str/blank? (webhook-secret))))
+        path (home-reminder-ready-path)
+        current (try (json/parse-string (slurp path) true) (catch Exception _ nil))
+        refresh (* 60 (env-long "CODEX_TASK_BOARD_HOME_READY_REFRESH_MINUTES" "10"))]
+    (when (or (not= ready? (:reminder_ready current))
+              (not (:checked_at current))
+              (>= (or (try (seconds-since (:checked_at current)) (catch Exception _ nil)) refresh) refresh))
+      (try
+        (fs/create-dirs (fs/parent path))
+        (let [temporary (str path ".tmp")]
+          (spit temporary (json/generate-string {:reminder_ready ready? :checked_at (now-str)}))
+          (fs/move temporary path {:replace-existing true :atomic-move true}))
+        (catch Exception e (log! (str "home reminder heartbeat failed: " (.getMessage e))))))
+    ready?))
+
 (defn flush-home!
   "Copy each event's Telegram-delivered report and reconciliation notice to the home inbox once."
   []
   (if (str/blank? (home-url))
     {:home-sent 0}
-    (reduce
+    (do
+     (publish-home-reminder-ready!)
+     (reduce
      (fn [acc event]
        (if-let [id (:event-id event)]
          (let [receipt (receipt-state event)
@@ -900,7 +923,7 @@
              result))
          acc))
      {:home-sent 0}
-     (sort-by :created-at (all-events)))))
+     (sort-by :created-at (all-events))))))
 
 
 (defn cron-copy-dir [] (str (fs/path (vault) "Projects/cron-deliveries/delivered-copies")))

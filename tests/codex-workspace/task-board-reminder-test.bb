@@ -61,3 +61,21 @@
   (with-redefs [copy-age-seconds (fn [& _] (* 25 3600))]
     (flush-home-reminder! event))
   (check "状態が無い古い通知へは再送しない" (empty? @calls)))
+
+;; 催促 URL/secret が揃っている時だけ Hermes gate 向け heartbeat を ready=true にする(fail safe)。
+(let [dir (str (fs/create-temp-dir))
+      ready-url (atom "http://example.invalid/reminder")
+      secret (atom "fixture-secret")
+      read-ready #(json/parse-string (slurp (str (fs/path dir "Projects/task-board-events/home-reminder-ready.json"))) true)]
+  (with-redefs [vault (fn [] dir)
+                reminder-url (fn [] @ready-url)
+                webhook-secret (fn [] @secret)]
+    (publish-home-reminder-ready!)
+    (check "URL と secret があれば ready" (true? (:reminder_ready (read-ready))))
+    (reset! ready-url nil)
+    (publish-home-reminder-ready!)
+    (check "URL 未設定なら即座に ready=false" (false? (:reminder_ready (read-ready))))
+    (reset! ready-url "http://example.invalid/reminder")
+    (reset! secret "")
+    (publish-home-reminder-ready!)
+    (check "secret 未設定なら ready=false" (false? (:reminder_ready (read-ready))))))

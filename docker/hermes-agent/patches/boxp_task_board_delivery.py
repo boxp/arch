@@ -171,7 +171,7 @@ def vault_receipt(vault, event, state, classification):
 
 
 
-def delivery_routing(vault=VAULT):
+def requested_routing(vault=VAULT):
     try:
         for line in (Path(vault).parent / "Projects/task-board-events/delivery-routing.md").read_text().splitlines():
             match = re.fullmatch(r"\s*task-board:\s*(\S+)\s*", line)
@@ -179,6 +179,47 @@ def delivery_routing(vault=VAULT):
                 return match[1] if match[1] in {"home", "telegram"} else "telegram"
     except (OSError, UnicodeError):
         pass
+    return "telegram"
+
+
+REMINDER_ROUTE = "kohako-home-reminder"
+
+
+def reminder_route_registered(path=None):
+    """The Telegram reminder/fallback route must be registered and enabled here."""
+    try:
+        if path is None:
+            from hermes_constants import get_hermes_home
+            path = get_hermes_home() / "webhook_subscriptions.json"
+        route = json.loads(Path(path).read_text()).get(REMINDER_ROUTE)
+        return isinstance(route, dict) and route.get("enabled", True) is not False
+    except Exception:
+        return False
+
+
+def reminder_dispatcher_ready(vault=VAULT):
+    """The dispatcher publishes a heartbeat only while its reminder URL and secret are set."""
+    try:
+        path = Path(vault).parent / "Projects/task-board-events/home-reminder-ready.json"
+        ready = json.loads(path.read_text())
+        checked = datetime.fromisoformat(str(ready["checked_at"]).replace("Z", "+00:00"))
+        limit = int(os.environ.get("BOXP_TASK_BOARD_HOME_READY_MAX_AGE_SECONDS", "3600"))
+        age = (clock() - checked).total_seconds()
+        return ready.get("reminder_ready") is True and -300 <= age <= limit
+    except Exception:
+        return False
+
+
+def delivery_routing(vault=VAULT, subscriptions=None):
+    """Home becomes primary only while the unread reminder and Telegram fallback can run.
+    Without the dispatcher heartbeat or the registered reminder route, a home-primary
+    report would never reach Telegram, so the gate stays on Telegram (fail safe)."""
+    requested = requested_routing(vault)
+    if requested != "home":
+        return requested
+    if reminder_route_registered(subscriptions) and reminder_dispatcher_ready(vault):
+        return "home"
+    logger.warning("task-board home routing requested but reminder/fallback is not ready; using telegram")
     return "telegram"
 
 

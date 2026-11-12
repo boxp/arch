@@ -72,16 +72,50 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
     def shape(self, text, *, marker=False, failed=False):
         return delivery.shape(self.source, {"failed": failed}, text, marker, self.vault)
 
-    def routing(self, value):
+    def routing(self, value, ready=True):
         path = self.vault.parent / "Projects/task-board-events/delivery-routing.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("task-board: " + value + "\n")
+        if ready:
+            self.heartbeat()
+            patch.object(delivery, "reminder_route_registered", return_value=True).start()
+
+    def heartbeat(self, checked_at=None, ready=True):
+        path = self.vault.parent / "Projects/task-board-events/home-reminder-ready.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        checked_at = checked_at or delivery.clock().isoformat()
+        path.write_text(json.dumps({"reminder_ready": ready, "checked_at": checked_at}))
 
     def test_routing_defaults_and_values(self):
         self.assertEqual(delivery.delivery_routing(self.vault), "telegram")
         for value, expected in [("home", "home"), ("telegram", "telegram"), ("bad", "telegram")]:
             self.routing(value)
             self.assertEqual(delivery.delivery_routing(self.vault), expected)
+
+    def test_home_routing_requires_reminder_route_and_dispatcher(self):
+        subs = Path(self.tmp.name) / "webhook_subscriptions.json"
+        self.routing("home", ready=False)
+        # Neither the route nor the dispatcher heartbeat: stay on Telegram.
+        self.assertEqual(delivery.delivery_routing(self.vault, subs), "telegram")
+        subs.write_text(json.dumps({"kohako-home-reminder": {"enabled": True}}))
+        self.assertEqual(delivery.delivery_routing(self.vault, subs), "telegram")
+        self.heartbeat()
+        self.assertEqual(delivery.delivery_routing(self.vault, subs), "home")
+        subs.write_text(json.dumps({"kohako-home-reminder": {"enabled": False}}))
+        self.assertEqual(delivery.delivery_routing(self.vault, subs), "telegram")
+        subs.write_text(json.dumps({"task-board": {"enabled": True}}))
+        self.assertEqual(delivery.delivery_routing(self.vault, subs), "telegram")
+        subs.write_text(json.dumps({"kohako-home-reminder": {"enabled": True}}))
+        self.heartbeat(ready=False)
+        self.assertEqual(delivery.delivery_routing(self.vault, subs), "telegram")
+        self.heartbeat(checked_at="2000-01-01T00:00:00+00:00")
+        self.assertEqual(delivery.delivery_routing(self.vault, subs), "telegram")
+
+    async def test_home_requested_without_fallback_sends_telegram(self):
+        self.routing("home", ready=False)
+        self.note("notified")
+        self.assertTrue((await self.send("report")).success)
+        self.assertEqual(self.calls, ["report"])
 
     async def test_home_report_and_duplicate(self):
         self.routing("home")

@@ -84,3 +84,6 @@ Hermes は Telegram への送信成功後、receipt より先に実送信本文�
 - BFF: notifier だけが読める `GET /kohako/api/v1/notifications/status?ids=…`（既読・処理済み・返信の有無だけ。本文は返さない）。
 - rollback（種類単位）: `delivery-routing.md` を `task-board: telegram` に戻すと、次の通知から Hermes が Telegram へ本文を送る（再配備不要）。切替済みで未読の通知の催促は続く。
 - 催促・fallback は Telegram 相当の送信時刻から `CODEX_TASK_BOARD_HOME_REMINDER_MAX_AGE_HOURS`(既定 24) 時間以内の通知だけを対象にし、保存期限で状態が消えた古い通知へ再送しない。保存期限(prune)は既存と同じ。
+- fail safe（codex-review P1 対応）: 催促 URL と催促 route は lolice 側の設定なので、arch だけ配備された・route が未登録・dispatcher に URL/secret が無い状態で `task-board: home` にすると、家主配信の通知が Telegram に一度も出ない。これを防ぐため、Hermes gate は次の 2 つが揃っている時だけ `home` を有効にし、どちらか欠けたら Telegram 主配信のまま送る（ログに警告）。
+  - Hermes の `webhook_subscriptions.json` に `kohako-home-reminder` route が登録済みで無効化されていない。
+  - dispatcher が vault `Projects/task-board-events/home-reminder-ready.json` に書く heartbeat が `reminder_ready: true` で、`BOXP_TASK_BOARD_HOME_READY_MAX_AGE_SECONDS`(既定 3600) 秒以内。dispatcher は家宛て転送の各 tick で、催促 URL と webhook secret が揃っていれば true、欠けていれば即 false を書く（10 分ごとに更新）。
