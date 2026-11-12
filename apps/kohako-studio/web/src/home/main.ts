@@ -1,4 +1,4 @@
-import { attachmentValidation } from './attachments'
+import { attachmentSubmitAction, attachmentValidation } from './attachments'
 import { shouldSubmit } from './keys'
 import { atBottom } from './scroll'
 import { renderMarkdown, plainText } from './markdown'
@@ -507,7 +507,16 @@ form.addEventListener('drop', e => { e.preventDefault(); if (e.dataTransfer?.fil
 el<HTMLFormElement>('form').addEventListener('submit', event => {
   event.preventDefault(); const text = message.value.trim() || (chips.length ? '添付ファイルを見てください' : ''); if (!text || touchActive || !enabled || recording || starting) return
   if (chips.length && chips.some(x => !x.id)) { setError('添付のアップロード完了を待つか、失敗した添付を取り消してください。'); return }
-  if (chips.length && (queueing() || unconfirmed)) { setError('添付付きの発言は送信待ちに追加できません。前の依頼が終わってから送信してください。'); return }
+  const attachAction = attachmentSubmitAction(chips.length > 0, queueing(), !!unconfirmed)
+  if (attachAction === 'reject-queue') { setError('添付付きの発言は送信待ちに追加できません。前の依頼が終わってから送信してください。'); return }
+  if (attachAction === 'confirm-pending' && unconfirmed) {
+    // 受理未確認の前回発言（添付付きの同じ依頼を含む）を同じ受付番号で先に確認・再送する。チップは残し、受理されたら外す。
+    if (busy || dispatching) { setError('前回の送信の受理状況を確認中です。少し待ってから再度送信してください。'); return }
+    const pending = unconfirmed, same = !!pending.attachments && chips.every(x => x.id && pending.attachments!.includes(x.id))
+    if (same && message.value.trim() === pending.text) { message.value = ''; message.style.height = '' }
+    addHistory('お知らせ', same ? '受理未確認の添付付き発言を同じ受付番号で確認します（重複実行防止）。' : '受理未確認の前回メッセージを先に同じ受付番号で確認します（重複実行防止）。添付と入力はそのまま残しています。')
+    void sendText(pending.text, 'pending'); return
+  }
   if (queueing()) { enqueue(text); return }
   if (unconfirmed && unconfirmed.text !== text) {
     // 受理未確認の前回の発言がある間は、新しい本文を送信待ちへ積んでから前回分を同じ受付番号で確認・再送する（入力を消さず、順序も守る）。

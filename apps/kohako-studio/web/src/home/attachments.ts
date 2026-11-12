@@ -8,3 +8,12 @@ export function attachmentValidation(file: Pick<File, 'size' | 'type' | 'name'>,
   if (IMAGE.test(file.type) && current.filter(x => IMAGE.test(x.type)).reduce((n, x) => n + x.size, file.size) > IMAGE_TOTAL) return 'サイズ超過：画像は1回の送信で合計5.5 MiBまでです。'
   return null
 }
+/**
+ * 添付チップがある状態での送信操作の扱い。受理未確認の前回発言（添付付きの同じ依頼を含む）があれば、
+ * 新規送信を拒否せず、まず同じ受付番号で受理状況の確認・再送を行う（チップと入力は残し、二重実行もしない）。
+ */
+export function attachmentSubmitAction(hasChips: boolean, queueing: boolean, unconfirmed: boolean): 'send' | 'reject-queue' | 'confirm-pending' {
+  if (!hasChips) return 'send'
+  if (unconfirmed) return 'confirm-pending'
+  return queueing ? 'reject-queue' : 'send'
+}
