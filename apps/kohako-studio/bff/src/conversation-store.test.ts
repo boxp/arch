@@ -76,3 +76,18 @@ it('persists cancelRequested and denies approvals after restart instead of showi
   expect(await conv2.approve('request', approval!.approvalId, 'once')).toBe('approval_conflict')
   await conv2.flush()
 })
+
+it('keeps long replies and bounds the context, marking truncation on a code point boundary', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'kohako-conv-')); dirs.push(dir)
+  const novel = ('「第123話！」記号＠、彼女は言った。'.repeat(150)).slice(0, 2600)
+  const long = 'あ'.repeat(23999) + '😀' + 'い'.repeat(6000)
+  const run = vi.fn().mockResolvedValueOnce({ status: 'done', text: novel }).mockResolvedValueOnce({ status: 'done', text: long })
+  const conv = createConversation({ now: () => 200, prefix: 'test', store: dir, hermes: { run, watch: vi.fn(), stop: vi.fn() } as unknown as ReturnType<typeof createHermes> })
+  conv.submit({ requestId: 'one', kind: 'text', text: 'x', expiresAt: 500 }, '')
+  await vi.waitFor(() => expect(conv.get('one')?.status).toBe('done'))
+  expect(conv.get('one')?.reply?.text).toBe(novel); expect(conv.lastExchange!.reply.length).toBeLessThanOrEqual(1000)
+  conv.submit({ requestId: 'two', kind: 'text', text: 'x', expiresAt: 500 }, '')
+  await vi.waitFor(() => expect(conv.get('two')?.status).toBe('done'))
+  expect(conv.get('two')?.reply?.text).toBe('あ'.repeat(23999) + '\n（返答が長すぎるため、ここから先は省略されました）')
+  await conv.flush(); expect(JSON.parse(await readFile(join(dir, 'conversations-test.json'), 'utf8')).lastExchange.reply.length).toBeLessThanOrEqual(1000)
+})
