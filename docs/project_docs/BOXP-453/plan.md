@@ -54,3 +54,7 @@ PVC 拡張・縮小、他ディスク掃除、hold 一括解除、失敗台帳 r
 
 - stale prune で `boxp/arch` の `apps/kohako-studio/web/dist/` のみを検査し、既知の生成物と追跡済み public の同一コピーだけなら回収する。未知の ignored パス、特殊ファイル、リンク、未追跡のビルド入力、検査失敗は保持する。
 - 最新2本・12時間・active run と既存 hold 条件、done mode は変更しない。隔離 fixture で旧実装の失敗と新実装の回収・保持を検証する。
+
+## TD-08: kohako-studio BFF dist
+
+追跡済み src に対応する tsc 出力のみ再生成可能とし、不明なファイルは保護する。web/dist の candidate images、verify site、staging、retention、guard は変更しない。
