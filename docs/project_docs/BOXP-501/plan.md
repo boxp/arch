@@ -69,3 +69,17 @@ Hermes は Telegram への送信成功後、receipt より先に実送信本文�
 - 修正: BFF が Owner の発言 turn（家/Studio のテキスト・通知への返信）にだけ「起票・再依頼・引き継ぎをしたら Telegram と同じ書式で report-only 登録し読み戻す」指示を付ける。verifier・なでる turn には付けない。prefilter・route prompt・silent 判定は変えない（一律解除しない）。
 - 既存票の回復: runbook は Hermes PVC 上で他 profile から編集しないため、Kohako への引継ぎ（vault `Projects/kohako-home/home-task-registration-handoff.md`）で登録と未配信の必要分だけの一回回復を依頼する。
 - 戻し方: `ownerTaskInstructions` の付与を外す revert。
+
+## TD-05: 種類単位の主配信切替・Telegram へ戻す手順・未読催促（2026-11-12, Owner 本人受入後）
+
+前提: Owner が家の通知(event BOXP-501-20261112T121502Z-…-blocked)へ「全部大丈夫です」と返信し、地図・受信箱・閉タブ Push を本人確認済み。承認範囲は「家の実配信確認後の主配信移行」(2026-11-12 01:10 UTC Notes)。Telegram の一括停止・新権限・新課金は含まない。
+
+- 切替の正本: vault `Projects/task-board-events/delivery-routing.md` の行 `task-board: home|telegram`（無い・読めない・不正は telegram）。**既定は telegram**（配備しただけでは挙動不変）。この PR の対象は Task Board 通知だけ。cron 要約は同じ仕組みで後から評価し、Alertmanager critical とサンライズは Telegram 維持。
+- Hermes 配信 gate（`boxp_task_board_delivery.py`）: `task-board: home` のとき、Task Board の正式報告は Telegram へ送らず、実配信本文コピー（`primary: home` 付き）を保存できた時だけ送信済み扱いにする。コピーの保存に失敗したら従来どおり Telegram へ送る。照合通知（【Task Board 配送要確認】）と静音保留・digest の扱いは変えない。
+- dispatcher（`task_board_events.bb`）: `primary: home` のコピーは家へ転送したうえで、
+  - 家への保存が恒久失敗・期限内に保存できない → Telegram へ本文をそのまま送る（fallback、1 回だけ）。
+  - 保存後 `CODEX_TASK_BOARD_HOME_REMINDER_MINUTES`(既定 30) 分たっても既読・処理済み・返信が無い → Telegram へ短い催促（題名と家の URL のみ、1 回だけ）。
+  - 静音 02:00–09:00 JST は送らず 09:00 以降へ持ち越す。状態は `outbox/home/<event>.report.edn` に永続化し二重送信しない。
+- Telegram への送信は Hermes の新しい deliver_only webhook route `kohako-home-reminder`（LLM なし、既存の task-board と同じ global WEBHOOK_SECRET の HMAC 署名、lolice で登録）で行う。
+- BFF: notifier だけが読める `GET /kohako/api/v1/notifications/status?ids=…`（既読・処理済み・返信の有無だけ。本文は返さない）。
+- rollback（種類単位）: `delivery-routing.md` を `task-board: telegram` に戻すと、次の通知から Hermes が Telegram へ本文を送る（再配備不要）。切替済みで未読の通知の催促は続く。
