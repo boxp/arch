@@ -5901,6 +5901,264 @@ test_claude_catalog_and_hold_resolution() {
   done
 }
 
+test_dehydrate_holds() {
+  local tmp vault state source co run out mode
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; source="${tmp}/source"; out="${tmp}/out"
+  mkdir -p "${state}/locks" "${tmp}/proc/100"
+  ln -s / "${tmp}/proc/100/cwd"
+  echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"${tmp}/mountinfo"
+  export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo"
+  make_prune_source_repo "${source}"
+  head -c 307200 /dev/urandom >"${source}/large"; echo small >"${source}/small"
+  git -C "${source}" add .; prune_git -C "${source}" commit -qm large
+  write_board "${vault}" ""
+  echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"${vault}/Boards/Task Board.md"
+  write_prune_ticket "${vault}" BOXP-519 done "$(date -u +%Y-%m-%d)"
+  run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
+  co="$(add_prune_run "${state}" "${source}" BOXP-519 "${run}")"
+  for mode in dirty untracked locked blocked nondone hardlink symlink flag envflag age operation hash; do
+    case "$mode" in
+      dirty) echo change >>"$co/small" ;;
+      untracked) echo x >"$co/untracked" ;;
+      locked) echo locked >"$state/locks/BOXP-519.edn" ;;
+      blocked) sed -i 's/^status: done/status: blocked/' "$vault/Tickets/BOXP-519.md" ;;
+      nondone) write_board "$vault" '- [ ] [[Tickets/BOXP-519|BOXP-519: reopened]] #ticket status::in-progress' ;;
+      hardlink) ln "$co/large" "$tmp/hardlink" ;;
+      symlink) ln -s "$co/large" "$state/workspaces/BOXP-519/$run/link" ;;
+      flag) echo '{:mode :on :dehydrate false}' >"$state/generated-reclaim.edn" ;;
+      operation) touch "$(git -C "$co" rev-parse --absolute-git-dir)/MERGE_HEAD" ;;
+      hash) git -C "$co" update-index --assume-unchanged large; printf changed >>"$co/large" ;;
+    esac
+    CODEX_TASK_BOARD_GENERATED_RECLAIM=on CODEX_TASK_BOARD_GENERATED_RECLAIM_DEHYDRATE="$([[ "$mode" == envflag ]] && echo off || echo on)" CODEX_TASK_BOARD_GENERATED_RECLAIM_MIN_AGE_HOURS="$([[ "$mode" == age ]] && echo 100 || echo 1)" run_prune "$vault" "$state" >"$out"
+    [[ -f "$co/large" ]] || fail "dehydrate hold failed: $mode"
+    case "$mode" in
+      dirty) git -C "$co" checkout -- small ;;
+      untracked) rm "$co/untracked" ;;
+      locked) rm "$state/locks/BOXP-519.edn" ;;
+      blocked) sed -i 's/^status: blocked/status: done/' "$vault/Tickets/BOXP-519.md" ;;
+      nondone) write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md" ;;
+      hardlink) rm "$tmp/hardlink" ;;
+      symlink) rm "$state/workspaces/BOXP-519/$run/link" ;;
+      flag) rm "$state/generated-reclaim.edn" ;;
+      operation) rm "$(git -C "$co" rev-parse --absolute-git-dir)/MERGE_HEAD" ;;
+      hash) git -C "$co" update-index --no-assume-unchanged large; git -C "$co" checkout -- large ;;
+    esac
+  done
+}
+
+test_dehydrate_reuse_restores() {
+  local tmp vault state source co run new out bin known mode
+  for mode in restore present; do
+    tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"; bin="$tmp/bin"; known="$tmp/known"
+    mkdir -p "$state/locks" "$tmp/proc/100" "$bin"
+    ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+    export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
+    make_fake_gh "$bin"; make_prune_source_repo "$source"
+    head -c 307200 /dev/urandom >"$source/large"; git -C "$source" add .; prune_git -C "$source" commit -qm large
+    git -C "$source" rev-parse HEAD >"$known"
+    write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+    write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+    run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
+    co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
+    CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "$vault" "$state" >"$out"
+    [[ ! -e "$co/large" ]] || fail 'setup dehydration failed'
+    [[ "$mode" != present ]] || echo preserve >"$co/large"
+    printf '{:run-id "20990101T000000Z"}\n' >"$state/locks/BOXP-519.edn"
+    new="$state/workspaces/BOXP-519/20990101T000000Z/ghq/github.com/boxp/example"
+    PATH="$bin:$PATH" GH_FAKE_KNOWN_SHAS="$known" CODEX_TASK_BOARD_ROOT="$state" TEST_RUNNER="$RUNNER" TEST_SOURCE="$source" TEST_MODE="$mode" TEST_RUN="$run" bb -e '
+      (System/setProperty "babashka.file" "/tmp/load-runner.bb")
+      (load-file (System/getenv "TEST_RUNNER"))
+      (alter-var-root (var local-repo-path) (constantly (fn [_] (System/getenv "TEST_SOURCE"))))
+      (let [r (prepare-repo-worktree! (run-workspace-dir "BOXP-519" "20990101T000000Z") "BOXP-519" "20990101T000000Z" "boxp/example")]
+        (if (= "restore" (System/getenv "TEST_MODE"))
+          (assert (= (System/getenv "TEST_RUN") (:reused-from r)))
+          (assert (= "dehydrated-path-present" (:reuse-fallback r)))))' >"$out"
+    if [[ "$mode" == restore ]]; then
+      [[ "$(sha256sum "$source/large" | cut -d' ' -f1)" == "$(sha256sum "$new/large" | cut -d' ' -f1)" ]] || fail 'restored content differs'
+      [[ -z "$(git -C "$new" status --porcelain)" ]] || fail 'restored checkout dirty'
+      [[ ! -e "$(git -C "$new" rev-parse --absolute-git-dir)/codex-task-board-dehydrated" ]] || fail 'marker retained'
+    else
+      [[ "$(cat "$co/large")" == preserve ]] || fail 'present file overwritten'
+      assert_file_contains "$out" 'dehydrated-path-present'
+    fi
+  done
+}
+
+test_dehydrate_prune_hold() {
+  local tmp vault state source co run out bin known
+  tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"; bin="$tmp/bin"; known="$tmp/known"
+  mkdir -p "$state/locks" "$tmp/proc/100" "$bin"
+  ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+  export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
+  make_fake_gh "$bin"; make_prune_source_repo "$source"
+  head -c 307200 /dev/urandom >"$source/large"; git -C "$source" add .; prune_git -C "$source" commit -qm large
+  git -C "$source" rev-parse HEAD >"$known"
+  write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+  write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+  run="20200101T000000Z"
+  co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "$vault" "$state" >"$out"
+  [[ ! -e "$co/large" ]] || fail 'setup dehydration failed'
+  echo preserve >"$co/large"
+  write_prune_ticket "$vault" BOXP-519 done 2020-01-01
+  PATH="$bin:$PATH" GH_FAKE_KNOWN_SHAS="$known" run_prune "$vault" "$state" >"$out"
+  [[ -f "$co/large" ]] || fail 'prune removed dehydrated path'
+  assert_file_contains "$out" 'dehydrated-path-present'
+  rm "$co/large"
+  PATH="$bin:$PATH" GH_FAKE_KNOWN_SHAS="$known" run_prune "$vault" "$state" >"$out"
+  [[ ! -e "$co" ]] || fail 'prune did not remove dehydrated run'
+}
+
+test_dehydrate_rehydrate_ignores_unrelated() {
+  local tmp vault state source co run out mode gitdir
+  for mode in unrelated leftover; do
+    tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
+    mkdir -p "$state/locks" "$tmp/proc/100"
+    ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+    export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
+    make_prune_source_repo "$source"
+    head -c 307200 /dev/urandom >"$source/large"; echo small >"$source/small"
+    git -C "$source" add .; prune_git -C "$source" commit -qm large
+    write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+    write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+    run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
+    co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
+    CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "$vault" "$state" >"$out"
+    gitdir="$(git -C "$co" rev-parse --absolute-git-dir)"
+    [[ ! -e "$co/large" && -f "$gitdir/codex-task-board-dehydrated" ]] || fail 'setup dehydration failed'
+    if [[ "$mode" == unrelated ]]; then
+      echo extra >"$co/untracked"; echo change >>"$co/small"
+    else
+      # A previous restore left the exact blob in place but kept the marker.
+      git -C "$co" update-index --no-skip-worktree large; git -C "$co" checkout-index -f large
+    fi
+    CODEX_TASK_BOARD_ROOT="$state" TEST_RUNNER="$RUNNER" TEST_CO="$co" bb -e '
+      (System/setProperty "babashka.file" "/tmp/load-runner.bb")
+      (load-file (System/getenv "TEST_RUNNER"))
+      (let [co (fs/path (System/getenv "TEST_CO"))]
+        (assert (not (dehydrated-present? co (dehydrated-marker co))))
+        (assert (nil? (rehydrate-checkout! co)))
+        (assert (nil? (rehydrate-checkout! co))))' >"$out" 2>&1 || { cat "$out" >&2; fail "rehydrate failed: $mode"; }
+    [[ "$(sha256sum "$source/large" | cut -d' ' -f1)" == "$(sha256sum "$co/large" | cut -d' ' -f1)" ]] || fail "restored content differs: $mode"
+    [[ ! -e "$gitdir/codex-task-board-dehydrated" ]] || fail "marker retained: $mode"
+    [[ -z "$(git -C "$co" ls-files -t large | grep '^S ')" ]] || fail "skip-worktree retained: $mode"
+    if [[ "$mode" == unrelated ]]; then
+      [[ -f "$co/untracked" && "$(tail -n1 "$co/small")" == change ]] || fail 'unrelated changes not preserved'
+    fi
+  done
+}
+
+test_dehydrate_rehydrate_keeps_mode_change() {
+  local tmp vault state source co run out gitdir
+  tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
+  mkdir -p "$state/locks" "$tmp/proc/100"
+  ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+  export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
+  make_prune_source_repo "$source"
+  head -c 307200 /dev/urandom >"$source/large"
+  git -C "$source" add .; prune_git -C "$source" commit -qm large
+  write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+  write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+  run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
+  co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "$vault" "$state" >"$out"
+  gitdir="$(git -C "$co" rev-parse --absolute-git-dir)"
+  [[ ! -e "$co/large" && -f "$gitdir/codex-task-board-dehydrated" ]] || fail 'setup dehydration failed'
+  # Same blob content restored locally, but with a local executable-bit change.
+  git -C "$co" cat-file blob "$(git -C "$co" rev-parse :large)" >"$co/large"; chmod 755 "$co/large"
+  CODEX_TASK_BOARD_ROOT="$state" TEST_RUNNER="$RUNNER" TEST_CO="$co" bb -e '
+    (System/setProperty "babashka.file" "/tmp/load-runner.bb")
+    (load-file (System/getenv "TEST_RUNNER"))
+    (let [co (fs/path (System/getenv "TEST_CO"))]
+      (assert (dehydrated-present? co (dehydrated-marker co)))
+      (assert (= "dehydrated-path-present" (rehydrate-checkout! co))))' >"$out" 2>&1 || { cat "$out" >&2; fail 'mode change not treated as conflict'; }
+  [[ -x "$co/large" && -f "$gitdir/codex-task-board-dehydrated" ]] || fail 'local mode change overwritten'
+}
+
+test_dehydrate_keeps_clean_filtered_bytes() {
+  local tmp vault state source co run out
+  tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
+  mkdir -p "$state/locks" "$tmp/proc/100"
+  ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+  export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
+  make_prune_source_repo "$source"
+  echo 'large.txt text' >"$source/.gitattributes"
+  head -c 307200 < <(yes 'line of text for clean filter test') >"$source/large.txt"
+  git -C "$source" add .; prune_git -C "$source" commit -qm large
+  write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+  write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+  run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
+  co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
+  # Mixed line endings: the clean filter normalizes them back to the indexed blob.
+  sed -i '1~2s/$/\r/' "$co/large.txt"
+  cp "$co/large.txt" "$tmp/expected"
+  CODEX_TASK_BOARD_ROOT="$state" TEST_RUNNER="$RUNNER" TEST_CO="$co" bb -e '
+    (System/setProperty "babashka.file" "/tmp/load-runner.bb")
+    (load-file (System/getenv "TEST_RUNNER"))
+    (let [co (fs/path (System/getenv "TEST_CO"))
+          sha (clojure.string/trim (:out (generated-git co "rev-parse" ":large.txt")))]
+      (assert (not (worktree-matches-blob? co "large.txt" sha))))' >"$out" 2>&1 || { cat "$out" >&2; fail 'clean-filtered bytes treated as blob'; }
+  git -C "$co" update-index --assume-unchanged large.txt
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "$vault" "$state" >"$out"
+  cmp -s "$co/large.txt" "$tmp/expected" || fail 'clean-filtered local bytes were dehydrated'
+}
+
+test_dehydrate_keeps_symlinked_dir_files() {
+  local tmp vault state source co run out
+  tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
+  mkdir -p "$state/locks" "$tmp/proc/100"
+  ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+  export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
+  make_prune_source_repo "$source"
+  mkdir -p "$source/assets"
+  head -c 307200 /dev/urandom >"$source/assets/linked"
+  head -c 307200 /dev/urandom >"$source/plain"
+  git -C "$source" add .; prune_git -C "$source" commit -qm assets
+  write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+  write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+  run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
+  co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
+  # A symlink elsewhere in the run points at the directory, not the file.
+  ln -s "$co/assets" "$state/workspaces/BOXP-519/$run/assets-link"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "$vault" "$state" >"$out"
+  [[ -f "$state/workspaces/BOXP-519/$run/assets-link/linked" ]] || fail 'file under symlinked directory was dehydrated'
+  [[ ! -e "$co/plain" ]] || fail 'unrelated file not dehydrated'
+}
+
+test_dehydrate_basic() {
+  local tmp vault state source co run out
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; source="${tmp}/source"; out="${tmp}/out"
+  mkdir -p "${state}/locks" "${tmp}/proc/100"
+  ln -s / "${tmp}/proc/100/cwd"
+  echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"${tmp}/mountinfo"
+  export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo"
+  make_prune_source_repo "${source}"
+  head -c 307200 /dev/urandom >"${source}/large"
+  echo small >"${source}/small"
+  git -C "${source}" add .; prune_git -C "${source}" commit -qm large
+  write_board "${vault}" ""
+  echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"${vault}/Boards/Task Board.md"
+  write_prune_ticket "${vault}" BOXP-519 done "$(date -u +%Y-%m-%d)"
+  run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
+  co="$(add_prune_run "${state}" "${source}" BOXP-519 "${run}")"
+  local second
+  second="$(add_prune_run "${state}" "${source}" BOXP-519 "$(date -u -d '3 hours ago' +%Y%m%dT%H%M%SZ)")"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=dry-run run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${second}/large" ]] || fail 'dry-run deleted second tracked file'
+  [[ -f "${co}/large" ]] || fail 'dry-run deleted tracked file'
+  assert_file_contains "${state}/metrics/workspace-capacity.edn" ':kind :tracked-dehydrate'
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
+  [[ ! -e "${second}/large" && -f "${second}/small" ]] || fail 'second latest run not dehydrated'
+  [[ ! -e "${co}/large" && -f "${co}/small" ]] || fail 'tracked file not dehydrated'
+  [[ -z "$(git -C "${co}" status --porcelain)" ]] || fail 'dehydrated checkout dirty'
+  [[ -f "$(git -C "${co}" rev-parse --absolute-git-dir)/codex-task-board-dehydrated" ]] || fail 'marker missing'
+  assert_file_contains "${state}/metrics/workspace-capacity.edn" ':result :reclaimed'
+  local reclaimed_before; reclaimed_before="$(grep -c ':result :reclaimed' "${state}/metrics/workspace-capacity.edn")"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
+  [[ "$(grep -c ':result :reclaimed' "${state}/metrics/workspace-capacity.edn")" == "${reclaimed_before}" ]] || fail 'duplicate reclaim event'
+  [[ ! -e "${co}/large" ]] || fail 'dehydration not idempotent'
+}
+
 test_generated_reclaim_basic() {
   local tmp vault state source co run old i out
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; source="${tmp}/source"; out="${tmp}/out"
