@@ -31,12 +31,13 @@ export async function createPush(dir: string, opts: { subject: string; quietHour
     remove: (endpoint: string) => mutate(async () => { delete subscriptions[hash(endpoint)]; await atomic(path, subscriptions) }),
     send: (item: Item) => mutate(async () => {
       const hour = Number(new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Tokyo', hour: 'numeric', hourCycle: 'h23' }).format(now()))
-      if (start < end ? hour >= start && hour < end : start > end && (hour >= start || hour < end)) return { pushSkipped: 'quiet' as const }
-      const list = Object.entries(subscriptions); if (!list.length) return { pushSkipped: 'no-subscriptions' as const }
-      let errors = 0, sent = 0, changed = false
-      for (const [key, sub] of list) try { await (opts.sender ?? webPush.sendNotification)(sub, JSON.stringify({ ...summarizePush(item, opts.minimal), tag: item.eventId, url: `/kohako/home.html?notification=${encodeURIComponent(item.eventId)}` }), { TTL: 86400, urgency: 'normal', vapidDetails: { subject: opts.subject, ...keys! } }); sent++ } catch (e) { errors++; if ([404,410].includes((e as { statusCode?: number }).statusCode ?? 0)) { delete subscriptions[key]; changed = true } }
+      const list = Object.entries(subscriptions), pushStats = { subscriptions: list.length, sent: 0, errors: 0, removed: 0 }
+      if (start < end ? hour >= start && hour < end : start > end && (hour >= start || hour < end)) return { pushSkipped: 'quiet' as const, pushStats }
+      if (!list.length) return { pushSkipped: 'no-subscriptions' as const, pushStats }
+      let changed = false
+      for (const [key, sub] of list) try { await (opts.sender ?? webPush.sendNotification)(sub, JSON.stringify({ ...summarizePush(item, opts.minimal), tag: item.eventId, url: `/kohako/home.html?notification=${encodeURIComponent(item.eventId)}` }), { TTL: 86400, urgency: 'normal', vapidDetails: { subject: opts.subject, ...keys! } }); pushStats.sent++ } catch (e) { pushStats.errors++; if ([404,410].includes((e as { statusCode?: number }).statusCode ?? 0)) { delete subscriptions[key]; pushStats.removed++; changed = true } }
       if (changed) await atomic(path, subscriptions)
-      return sent ? { pushedAt: new Date(now()).toISOString() } : { pushSkipped: 'error' as const }
+      return pushStats.sent ? { pushedAt: new Date(now()).toISOString(), pushStats } : { pushSkipped: 'error' as const, pushStats }
     })
   }
 }

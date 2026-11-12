@@ -217,7 +217,7 @@ write_fake_home() {
               (swap! seen conj (:eventId body))
               (spit log-path (str (if dup? "duplicate " "stored ") (json/generate-string body) "\n") :append true)
               {:status 200 :headers {"content-type" "application/json"}
-               :body (json/generate-string {:status (if dup? "duplicate" "stored")})}))))
+               :body (json/generate-string (cond-> {:status (if dup? "duplicate" "stored")} (and (not dup?) (not= mode "old")) (assoc :push {:subscriptions 2 :sent 2 :errors 0 :removed 0})))}))))
 (srv/run-server handler {:port (Long/parseLong (System/getenv "FAKE_PORT"))})
 (println "home listening")
 @(promise)
@@ -254,8 +254,11 @@ test_home_inbox_copy_is_independent_of_telegram() {
   for _ in 1 2; do
     run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" \
       CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="$(date -u -d '+2 minutes' +%Y-%m-%dT%H:%M:%SZ)" \
-      CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+      CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >>"${CASE_TMP}/events.log"
   done
+  assert_file_contains "${CASE_TMP}/events.log" 'push=sent:2/2 errors:0 removed:0'
+  assert_file_contains "${CASE_STATE}/outbox/home/BOXP-901-r1-blocked.report.edn" ':home-push'
+  echo old >"${CASE_TMP}/home-mode"
   [[ "$(grep -c '^stored ' "${CASE_TMP}/home.log")" -eq 1 ]] || fail "home copy must be stored exactly once"
   assert_file_contains "${CASE_TMP}/home.log" '"eventId":"BOXP-901-r1-blocked.report"'
   assert_file_contains "${CASE_TMP}/home.log" '"ticketId":"BOXP-901"'

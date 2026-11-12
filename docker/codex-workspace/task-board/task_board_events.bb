@@ -752,8 +752,12 @@
                                           :timeout (* 1000 (env-long "CODEX_TASK_BOARD_EVENT_HTTP_TIMEOUT_SECONDS" "15"))
                                           :throw false})
               status (:status resp)
-              parsed (try (json/parse-string (:body resp) true) (catch Exception _ nil))]
-          (cond (<= 200 status 299) {:ok? true :status status :home-status (:status parsed)}
+              parsed (try (json/parse-string (:body resp) true) (catch Exception _ nil))
+              push (:push parsed)
+              home-push (when (map? push)
+                          (cond-> (into {} (filter (fn [[_ v]] (and (integer? v) (<= 0 v))) (select-keys push [:subscriptions :sent :errors :removed])))
+                            (#{"quiet" "no-subscriptions" "error"} (:pushSkipped push)) (assoc :pushSkipped (:pushSkipped push))))]
+          (cond (<= 200 status 299) {:ok? true :status status :home-status (:status parsed) :home-push home-push}
                 (and (<= 400 status 499) (not= 429 status) (not= 401 status)) {:ok? false :permanent? true :status status :error (str "http " status)}
                 :else {:ok? false :status status :error (str "http " status)}))
         (catch Exception e {:ok? false :error (str "transport: " (.getMessage e))})))))
@@ -761,12 +765,16 @@
 (defn send-home-copy!
   "Send one delivered copy under its home ID, recording per-ID state. Returns acc."
   [acc event home-id state copy]
-  (let [{:keys [ok? permanent? status home-status error]} (send-home! event home-id copy)
+  (let [{:keys [ok? permanent? status home-status home-push error]} (send-home! event home-id copy)
         attempts (inc (:attempts state 0))
         base {:event-id home-id :attempts attempts :last-http-status status :updated-at (now-str)}]
     (cond
-      ok? (do (write-event! (home-dir) (assoc base :status :sent :home-status home-status :sent-at (now-str)))
-              (log! (str "home inbox " home-id " http=" status " status=" home-status))
+      ok? (do (write-event! (home-dir) (cond-> (assoc base :status :sent :home-status home-status :sent-at (now-str)) (seq home-push) (assoc :home-push home-push)))
+              (log! (str "home inbox " home-id " http=" status " status=" home-status
+                         (when (seq home-push)
+                           (if-let [skipped (:pushSkipped home-push)]
+                             (str " push=skipped:" skipped " subs:" (:subscriptions home-push))
+                             (str " push=sent:" (:sent home-push) "/" (:subscriptions home-push) " errors:" (:errors home-push) " removed:" (:removed home-push))))))
               (update acc :home-sent inc))
       (or permanent? (>= attempts (home-max-attempts)))
       (do (write-event! (home-dir) (assoc base :status :failed :last-error error))

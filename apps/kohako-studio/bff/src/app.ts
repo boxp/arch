@@ -51,7 +51,7 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
         const chunks: Buffer[] = []; let size = 0
         for await (const chunk of req) { const b = Buffer.from(chunk); size += b.length; if (size > 16384) return json(413, { error: 'too_large' }); chunks.push(b) }
         let x: any; try { x = JSON.parse(Buffer.concat(chunks).toString()) } catch { return json(400, { error: 'invalid' }) }
-        if (ingest) { const status = await opts.notifications.ingest(x); return status === 'invalid' ? json(400, { error: 'invalid' }) : json(200, { status }) }
+        if (ingest) { const result = await opts.notifications.ingest(x); return result.status === 'invalid' ? json(400, { error: 'invalid' }) : json(200, result) }
         if (route === 'push/subscriptions') {
           if (method === 'DELETE') { if (typeof x?.endpoint !== 'string' || x.endpoint.length > 1000) return json(400, { error: 'invalid' }); await opts.push.remove(x.endpoint); res.writeHead(204); return res.end() }
           return await opts.push.add(x) ? json(201, { status: 'ok' }) : json(400, { error: 'invalid' })

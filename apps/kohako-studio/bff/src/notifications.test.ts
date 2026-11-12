@@ -18,8 +18,8 @@ describe('notifications', () => {
     const dir = await mkdtemp(join(tmpdir(), 'cron-')), push = vi.fn(async () => ({}))
     try {
       const store = await createNotifications(dir, push), cron = { ...payload, source: 'hermes-cron', jobId: 'job_1' }
-      expect(await store.ingest({ ...cron, jobId: 'bad/id' })).toBe('invalid')
-      expect(await store.ingest(cron)).toBe('stored')
+      expect(await store.ingest({ ...cron, jobId: 'bad/id' })).toEqual({ status: 'invalid' })
+      expect(await store.ingest(cron)).toMatchObject({ status: 'stored' })
       expect(store.list().items[0]).toMatchObject({ source: 'hermes-cron', jobId: 'job_1' })
       expect(push).toHaveBeenCalledOnce(); expect(await store.claimAnnounce(cron.eventId)).toBe(true)
     } finally { await rm(dir, { recursive: true, force: true }) }
@@ -44,13 +44,13 @@ describe('notifications', () => {
   })
   it('hides legacy items without deleting them or changing deduplication', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'inbox-'))
-    try { const store = await createNotifications(dir, async () => ({})); const legacy = { ...payload, eventId: 'legacy-123456', source: 'task-board' }; await store.ingest(legacy); await store.ingest(payload); expect(store.list().items.map(i => i.eventId)).toEqual([payload.eventId]); expect(store.list().unread).toBe(1); expect(await store.ingest({ ...legacy, source: 'task-board-report' })).toBe('duplicate'); expect((await load<any[]>(join(dir, 'notifications.json'), [])).length).toBe(2) } finally { await rm(dir, { recursive: true, force: true }) }
+    try { const store = await createNotifications(dir, async () => ({})); const legacy = { ...payload, eventId: 'legacy-123456', source: 'task-board' }; await store.ingest(legacy); await store.ingest(payload); expect(store.list().items.map(i => i.eventId)).toEqual([payload.eventId]); expect(store.list().unread).toBe(1); expect(await store.ingest({ ...legacy, source: 'task-board-report' })).toEqual({ status: 'duplicate' }); expect((await load<any[]>(join(dir, 'notifications.json'), [])).length).toBe(2) } finally { await rm(dir, { recursive: true, force: true }) }
   })
   it('deduplicates, persists, and claims replies before submission with retry', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'inbox-')), push = vi.fn(async () => ({ pushSkipped: 'quiet' as const }))
     try {
       const store = await createNotifications(dir, push)
-      expect(await store.ingest(payload)).toBe('stored'); expect(await store.ingest({ ...payload, title: '別' })).toBe('duplicate'); expect(push).toHaveBeenCalledTimes(1)
+      expect(await store.ingest(payload)).toMatchObject({ status: 'stored' }); expect(await store.ingest({ ...payload, title: '別' })).toEqual({ status: 'duplicate' }); expect(push).toHaveBeenCalledTimes(1)
       const restart = await createNotifications(dir, push); expect(restart.list().items[0]).toMatchObject({ title: '題', deliveries: 2 })
       const reply = { replyId: 'reply-123456', kind: 'choice', value: 'はい' }, submit = vi.fn(() => false)
       const first = await restart.reply(payload.eventId, reply, submit); expect(first.status).toBe('submit_failed')
@@ -103,9 +103,23 @@ describe('notifications', () => {
       expect((await restart.reply(payload.eventId, { ...reply, replyId: 'other-123456' }, submit, () => false)).error).toBe('already_replied')
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
+  it('counts delivery to all subscriptions and persists the summary', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'push-')), sender = vi.fn(async () => ({}))
+    try {
+      const push = await createPush(dir, { subject: 'https://example.com', quietHours: '0-0', sender: sender as any })
+      const keys = { p256dh: Buffer.alloc(65).toString('base64url'), auth: Buffer.alloc(16).toString('base64url') }
+      await push.add({ endpoint: 'https://example.com/one', keys }); await push.add({ endpoint: 'https://example.com/two', keys })
+      const store = await createNotifications(dir, push.send), stats = { subscriptions: 2, sent: 2, errors: 0, removed: 0 }
+      expect(await store.ingest(payload)).toEqual({ status: 'stored', push: { pushSkipped: undefined, ...stats } })
+      expect(store.list().items[0].pushStats).toEqual(stats); expect(sender).toHaveBeenCalledTimes(2)
+      expect(await store.ingest(payload)).toEqual({ status: 'duplicate' }); expect(sender).toHaveBeenCalledTimes(2)
+      sender.mockImplementationOnce(async () => { throw { statusCode: 410 } })
+      expect(await push.send({ ...payload, receivedAt: payload.createdAt, deliveries: 1 })).toMatchObject({ pushStats: { subscriptions: 2, sent: 1, errors: 1, removed: 1 } })
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
   it('skips quiet hours and removes expired subscriptions', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'push-')); let now = Date.parse('2026-01-01T18:00:00Z'); const sender = vi.fn(async () => { throw { statusCode: 410 } })
-    try { const push = await createPush(dir, { subject: 'https://example.com', quietHours: '2-9', now: () => now, sender: sender as any }); const sub = { endpoint: 'https://example.com/push', keys: { p256dh: Buffer.alloc(65).toString('base64url'), auth: Buffer.alloc(16).toString('base64url') } }; expect(await push.add(sub)).toBe(true); expect(await push.send({ ...payload, receivedAt: new Date().toISOString(), deliveries: 1 })).toEqual({ pushSkipped: 'quiet' }); now = Date.parse('2026-01-01T04:00:00Z'); expect(await push.send({ ...payload, receivedAt: new Date().toISOString(), deliveries: 1 })).toEqual({ pushSkipped: 'error' }); expect(await push.send({ ...payload, receivedAt: new Date().toISOString(), deliveries: 1 })).toEqual({ pushSkipped: 'no-subscriptions' }) } finally { await rm(dir, { recursive: true, force: true }) }
+    try { const push = await createPush(dir, { subject: 'https://example.com', quietHours: '2-9', now: () => now, sender: sender as any }); const sub = { endpoint: 'https://example.com/push', keys: { p256dh: Buffer.alloc(65).toString('base64url'), auth: Buffer.alloc(16).toString('base64url') } }; expect(await push.add(sub)).toBe(true); expect(await push.send({ ...payload, receivedAt: new Date().toISOString(), deliveries: 1 })).toEqual({ pushSkipped: 'quiet', pushStats: { subscriptions: 1, sent: 0, errors: 0, removed: 0 } }); now = Date.parse('2026-01-01T04:00:00Z'); expect(await push.send({ ...payload, receivedAt: new Date().toISOString(), deliveries: 1 })).toEqual({ pushSkipped: 'error', pushStats: { subscriptions: 1, sent: 0, errors: 1, removed: 1 } }); expect(await push.send({ ...payload, receivedAt: new Date().toISOString(), deliveries: 1 })).toEqual({ pushSkipped: 'no-subscriptions', pushStats: { subscriptions: 0, sent: 0, errors: 0, removed: 0 } }) } finally { await rm(dir, { recursive: true, force: true }) }
   })
 })
 
