@@ -135,6 +135,23 @@ async function mobile() {
   result.pixel7 = out; await o.context.close()
 }
 
+// ペン: 画面に触れていない hover（buttons=0）だけを追い、接触中（pointerdown・buttons≠0 の move）は追従を止める。
+async function pen() {
+  if (ONLY && !ONLY.includes('pen')) return
+  const o = await open(pc(1280, 800)), { page, a } = o, cx = a.x + a.w / 2, cy = a.y + a.h * 0.45, out = {}
+  const send = (type, x, buttons) => page.evaluate(([type, x, y, buttons]) => window.dispatchEvent(new PointerEvent(type, { pointerType: 'pen', pointerId: 7, isPrimary: true, clientX: x, clientY: y, buttons, bubbles: true })), [type, x, cy, buttons])
+  await send('pointermove', cx + 300, 0); await page.waitForTimeout(900); out.hover = await o.follow()
+  await send('pointerdown', cx + 300, 1); await page.waitForTimeout(900); out.down = await o.follow()
+  for (const x of [cx - 300, cx - 200, cx - 320]) await send('pointermove', x, 1)
+  await page.waitForTimeout(900); out.contact = await o.follow()
+  await send('pointerup', cx - 320, 0); await send('pointermove', cx - 300, 0); await page.waitForTimeout(900); out.hoverAgain = await o.follow()
+  result.pen = out
+  check(out.hover?.active && out.hover.current.x > 0.15, `pen: hover で追従しない ${JSON.stringify(out.hover)}`)
+  check(out.down && !out.down.active && out.contact && !out.contact.active && Math.abs(out.contact.current.x) < 0.05, `pen: 接触中に追従した ${JSON.stringify({ down: out.down, contact: out.contact })}`)
+  check(out.hoverAgain?.active && out.hoverAgain.current.x < -0.15, `pen: 離して hover に戻っても再開しない ${JSON.stringify(out.hoverAgain)}`)
+  await o.context.close()
+}
+
 // 瞳の画素が十分あるよう、PC は画面倍率 2 で描画する（測定は CSS px）。
 const pc = (width, height, extra = {}) => ({ viewport: { width, height }, deviceScaleFactor: 2, ...extra })
 await desktop('pc', pc(1280, 800), null, true)
@@ -143,7 +160,7 @@ await desktop('narrow', pc(820, 720), null, true)
 await desktop('subtle', pc(1280, 800), { intensity: 'subtle' }, true, 0.6)
 await desktop('off', pc(1280, 800), { follow: false }, false)
 await desktop('reduced', pc(1280, 800, { reducedMotion: 'reduce' }), null, false)
-await resize(); await mobile()
+await resize(); await pen(); await mobile()
 check(external.length === 0, `外部通信: ${external.join(', ')}`)
 fs.writeFileSync(`${OUT}/result.json`, JSON.stringify({ result, failures, external }, null, 2))
 console.log(failures.length ? `FAIL\n- ${failures.join('\n- ')}` : 'PASS'); await browser.close(); srv.close(); process.exit(failures.length ? 1 : 0)

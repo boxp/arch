@@ -736,7 +736,9 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') { for (const
 // BOXP-516: Studio と同じくカーソルの方向へ視線（目と頭の向き）を向ける。マウス／ペンの hover だけを対象にし、touch・スクロールには触れない。
 // イベントでは座標を控えるだけで、描画への反映は既存の描画ループで行う（通信はしない）。
 let lookPointer: Look | null = null, lookCurrent: Look = { x: 0, y: 0 }, lookWeight = 0, lookApplied = false, lookFace: Look | null = null, lookFaceAt = 0
-window.addEventListener('pointermove', e => { if (e.pointerType === 'mouse' || e.pointerType === 'pen') lookPointer = { x: e.clientX, y: e.clientY } }, { passive: true })
+// ペンは画面に触れていない hover（buttons === 0）のときだけ追う。接触中（描く・スクロール・操作）は追従を止めて中立へ戻す。
+window.addEventListener('pointermove', e => { if (e.pointerType === 'mouse' || (e.pointerType === 'pen' && e.buttons === 0)) lookPointer = { x: e.clientX, y: e.clientY }; else if (e.pointerType === 'pen') lookPointer = null }, { passive: true })
+window.addEventListener('pointerdown', e => { if (e.pointerType === 'pen') lookPointer = null }, { passive: true })
 // 窓の外へ出た（relatedTarget なし）・窓が非アクティブ・非表示になったら中立へ戻す。
 document.addEventListener('mouseout', e => { if (!e.relatedTarget) lookPointer = null }, { passive: true })
 window.addEventListener('blur', () => { lookPointer = null })
