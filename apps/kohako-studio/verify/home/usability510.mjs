@@ -46,16 +46,18 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
       await page.evaluate(() => { const box = document.getElementById('pref-bg'); box.click() }); await page.waitForTimeout(300); const c = await petal(); await page.waitForTimeout(1200); const d = await petal()
       assert(c === d && await page.evaluate(() => document.body.classList.contains('bg-still')), `bg off still moving ${c} ${d}`)
       await page.evaluate(() => document.getElementById('pref-bg').click()); r.background = { moving: [a, b], off: [c, d] }
+      // 利用枠の詳細を開いたまま会話へ進み、本文表示中は詳細パネルごと隠れることを確かめる（Codex P1）
+      await page.locator('#status-widget').click(); await wait(() => page.evaluate(() => document.getElementById('status-panel').checkVisibility()), 'status panel did not open')
       // 入力
       const m = page.locator('#message'); await m.click(); await m.type('一行目'); await m.press('Enter'); await m.type('二行目')
       assert(posts.length === 0 && (await m.inputValue()) === '一行目\n二行目', `enter sent or no newline: ${posts.length} ${JSON.stringify(await m.inputValue())}`)
       await m.press('Shift+Enter'); await wait(() => posts.length === 1, 'shift+enter did not send'); assert(posts[0].text === '一行目\n二行目', 'sent text'); r.input = { sent: posts[0].text }
       // Markdown と状態表示
       await wait(() => page.evaluate(() => !!document.querySelector('#reply h3')), 'markdown heading not rendered', 20000)
-      const md = await page.evaluate(() => ({ h: document.querySelector('#reply h3')?.textContent, strong: document.querySelector('#reply strong')?.textContent, li: document.querySelectorAll('#reply li').length, pre: document.querySelector('#reply pre')?.textContent, scripts: document.querySelectorAll('#reply script').length, imgs: document.querySelectorAll('#reply img').length, links: [...document.querySelectorAll('#reply a')].map(a => a.href), xss: window.__xss ?? null, literal: document.querySelector('#reply').textContent.includes('<script>'), message: document.body.dataset.message, widget: getComputedStyle(document.getElementById('status-widget')).display }))
+      const md = await page.evaluate(() => ({ h: document.querySelector('#reply h3')?.textContent, strong: document.querySelector('#reply strong')?.textContent, li: document.querySelectorAll('#reply li').length, pre: document.querySelector('#reply pre')?.textContent, scripts: document.querySelectorAll('#reply script').length, imgs: document.querySelectorAll('#reply img').length, links: [...document.querySelectorAll('#reply a')].map(a => a.href), xss: window.__xss ?? null, literal: document.querySelector('#reply').textContent.includes('<script>'), message: document.body.dataset.message, widget: document.getElementById('status-widget').checkVisibility(), panel: document.getElementById('status-panel').checkVisibility(), panelOpen: !document.getElementById('status-panel').hidden }))
       assert(md.h === '見出し' && md.strong === '太字' && md.li === 2 && md.pre === 'const a = 1' && md.scripts === 0 && md.imgs === 0 && md.xss === null && md.literal, `markdown ${JSON.stringify(md)}`)
       assert(md.links.every(h => h.startsWith('https://example.com/')) && md.links.length === 2, `links ${md.links}`)
-      assert(md.message === '1' && md.widget === 'none', `status widget visible while message shown ${JSON.stringify(md)}`)
+      assert(md.message === '1' && md.panelOpen && !md.widget && !md.panel, `status widget/panel visible while message shown ${JSON.stringify(md)}`)
       r.markdown = md; await page.screenshot({ path: `${out}/${device}-markdown.png` })
       // 履歴は昇順で最下部
       await page.locator('#history-open').click(); await page.waitForTimeout(300)
