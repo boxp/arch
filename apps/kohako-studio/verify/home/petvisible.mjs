@@ -66,7 +66,8 @@ async function scenario(name, config, prefs, touch, expectMotion) {
   const kinds = [['right', [cx + a.w * 0.1, cy], [cx + a.w * 0.4, cy]], ['left', [cx - a.w * 0.4, cy], [cx - a.w * 0.1, cy]], ['across', [cx - a.w * 0.3, cy], [cx + a.w * 0.3, cy]], ...(touch ? [] : [['vertical', [cx, cy - a.h * 0.25], [cx, cy + a.h * 0.2]]])]
   for (const [kind, f, t] of kinds) {
     const s = await stroke(page, touch, f, t, 8), during = await s.frames(measure, 'during', `${kind}-1-during`)
-    await s.up(); if (!touch) await page.mouse.move(5, 5)
+    // 離したらカーソルを窓の外へ出す（BOXP-516 の視線追従で隅を見たまま測らないよう、待機と同じ「カーソルなし」の状態で比べる）。
+    await s.up(); if (!touch) { await page.mouse.move(5, 5); await page.evaluate(() => document.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: null }))) }
     await page.waitForTimeout(400); const release = await measure('after0.4', `${kind}-2-release`)
     await page.waitForTimeout(2600); const after = await measure('after3', `${kind}-3-after`)
     out[kind] = { during, release, after, shift: r1(mean(during.map(d => d.tilt)) - idle) }
