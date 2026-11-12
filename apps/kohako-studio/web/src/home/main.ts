@@ -335,7 +335,8 @@ async function initialize() {
     if (reauth) {
       if (!message.value) message.value = reauth.draft
       let restored = 0
-      for (const text of reauth.queue) if (text !== unconfirmed?.text && queue.add(text, Date.now()).ok) restored++
+      // 送信待ちの本文は送り出した時点で受理未確認の控えへ移り queue から外れるため、退避分は控えと同じ本文でも別の発言として全件戻す。
+      for (const text of reauth.queue) if (queue.add(text, Date.now()).ok) restored++
       if (restored) queue.hold('auth')
       if (restored || reauth.draft) addHistory('お知らせ', restored ? `再認証前の入力と送信待ち ${restored} 件を戻しました（まだ送っていません）。` : '再認証前の入力を戻しました（まだ送っていません）。')
       tab.set(REAUTH_KEY, null); reauth = null
@@ -872,8 +873,8 @@ async function resumeUnconfirmed(pending: Outgoing) {
   }
   busy = false
   // 401/403 は認証切れ。控えを残したまま未認証表示にして送信を止め、再ログイン後の再接続で受理状況を確認し直す。
-  if (lookup && (lookup.status === 401 || lookup.status === 403) && unconfirmed === pending) { message.value = pending.text; fail(lookup.status, lookup.data); return }
-  if (unconfirmed === pending) { message.value = pending.text; addHistory('お知らせ', '再読み込み前の送信の受理を確認できませんでした。もう一度送信すると、同じ受付番号で確認してから送ります（二重実行はしません）。') }
+  if (lookup && (lookup.status === 401 || lookup.status === 403) && unconfirmed === pending) { if (!message.value) message.value = pending.text; fail(lookup.status, lookup.data); return }
+  if (unconfirmed === pending) { const kept = !!message.value && message.value !== pending.text; if (!kept) message.value = pending.text; addHistory('お知らせ', (kept ? `入力欄の文は残しています。受理を確認できなかった前回の送信「${pending.text}」は控えに残っています。` : '') + '再読み込み前の送信の受理を確認できませんでした。もう一度送信すると、同じ受付番号で確認してから送ります（二重実行はしません）。') }
   show(state)
 }
 
