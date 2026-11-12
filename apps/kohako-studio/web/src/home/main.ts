@@ -22,6 +22,7 @@ import { createSentenceSpeaker, createSilentSentencer } from '../studio/acting-s
 import { SceneDirector, targetScene, messageShown, type Scene } from './scene'
 import { cardsFromText, type Card } from './cards'
 import { acts, bboxOf, classifyTouch, HAND_MESHES, HEAD_MESHES, inside, toScreenRect, TouchLimiter, TouchBatcher, type Point, type Rect, type Zone } from './touch'
+import { createVoicePlayer, splitVoiceSentences } from './voice'
 import { parsePrefs, type Prefs } from './prefs'
 import { blendLook, followWeightFor, lookTarget, smoothLook, type Look } from './lookfollow'
 import { parseResume, parseUnconfirmed, pollVerdict, type Inflight } from './resume'
@@ -44,21 +45,25 @@ let prefs: Prefs = parsePrefs(local.get(PREFS_KEY))
 const systemReduce = matchMedia('(prefers-reduced-motion: reduce)')
 const reduced = () => prefs.reducedMotion || systemReduce.matches
 const prefBoxes: [keyof Prefs, HTMLInputElement][] = [['touch', el('pref-touch')], ['follow', el('pref-follow')], ['lines', el('pref-lines')], ['pinned', el('pref-pinned')], ['reducedMotion', el('pref-reduce')], ['bgMotion', el('pref-bg')]]
+const voiceSelect = el<HTMLSelectElement>('pref-voice')
 const subtleBox = el<HTMLInputElement>('pref-subtle')
 function applyPrefs() {
   for (const [key, box] of prefBoxes) box.checked = prefs[key] as boolean
+  voiceSelect.value = prefs.voice
   subtleBox.checked = prefs.intensity === 'subtle'
   body.classList.toggle('reduce', reduced()); body.classList.toggle('bg-still', !prefs.bgMotion || reduced())
   el('touch-open').hidden = !prefs.touch
   local.set(PREFS_KEY, JSON.stringify(prefs))
 }
 for (const [key, box] of prefBoxes) box.addEventListener('change', () => { prefs = { ...prefs, [key]: box.checked }; applyPrefs(); refreshScene() })
+voiceSelect.addEventListener('change', () => { prefs = { ...prefs, voice: voiceSelect.value === 'browser' ? 'browser' : 'kohaku' }; applyPrefs() })
 subtleBox.addEventListener('change', () => { prefs = { ...prefs, intensity: subtleBox.checked ? 'subtle' : 'normal' }; applyPrefs() })
 systemReduce.addEventListener?.('change', applyPrefs)
 document.addEventListener('visibilitychange', () => body.classList.toggle('tab-hidden', document.hidden))
 applyPrefs()
 
 // ---- 会話の状態（Studio と同じ） ----
+let voiceTrouble = false
 let state: State = 'offline', enabled = false, stt = false, requestId = '', started = 0, approvalId = '', approvalExpires = 0, busy = false, accepted = false, netDown = false
 let unconfirmed: Outgoing | null = parseUnconfirmed(tab.get(UNCONFIRMED_KEY))
 const setUnconfirmed = (o: Outgoing | null) => { unconfirmed = o; if (!o) pendingFromQueue = false; tab.set(UNCONFIRMED_KEY, o ? JSON.stringify(o) : null) }
@@ -70,7 +75,8 @@ const setInflight = (x: Inflight | null) => tab.set(INFLIGHT_KEY, x ? JSON.strin
 let recording: { stream: MediaStream; context: AudioContext; source: MediaStreamAudioSourceNode; processor: ScriptProcessorNode; chunks: Float32Array[]; size: number; timer: number } | null = null
 let starting = false, held = false
 const synthesis = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window
-speech.disabled = !synthesis
+const voiceAudio = new Audio()
+const voicePlayer = createVoicePlayer({ fetcher: fetch, audio: voiceAudio, createUrl: URL.createObjectURL, revokeUrl: URL.revokeObjectURL })
 
 // ---- リグと演技（476 の規則をそのまま使う） ----
 const rigModel = modelFor(`?model=${studioRigModelId(location.search)}`)
@@ -82,7 +88,7 @@ const actingEnabled = wantsActing(location.search)
 const speaker = synthesis && actingEnabled ? createSentenceSpeaker({ synth: { speak: u => window.speechSynthesis.speak(u as SpeechSynthesisUtterance), cancel: () => window.speechSynthesis.cancel() }, makeUtterance: text => { const u = new SpeechSynthesisUtterance(text); u.lang = 'ja-JP'; return u } }) : null
 const sentencer = createSilentSentencer({ setTimeout: (fn, ms) => window.setTimeout(fn, ms), clearTimeout: id => window.clearTimeout(id) })
 const report: Record<string, unknown> = { loaded: false, errors: [] as string[], touches: [] as unknown[] }
-function interruptActing() { speaker?.cancel(); sentencer.cancel(); acting?.interrupt(); if (acting) report.acting = acting.snapshot }
+function interruptActing() { voicePlayer.cancel(); speaker?.cancel(); sentencer.cancel(); acting?.interrupt(); if (acting) report.acting = acting.snapshot }
 function actingPose(player: Player, s: RigState) {
   const ids = player.clips, pose = poseFor(s, player.expressions, ids.map(id => clipName(rigModel, id)))
   player.play(clipIdFor(rigModel, ids, pose.clip)); player.lookAt(...lookFor(rigModel, ...pose.look))
@@ -197,7 +203,7 @@ function show(next: State) {
   hush.hidden = next !== 'speaking' || !speech.checked
   const showApproval = next === 'approval'
   if (showApproval && approvalBox.hidden) { approvalBox.hidden = false; el<HTMLButtonElement>('deny').focus() } else if (!showApproval) approvalBox.hidden = true
-  trouble.hidden = !(next === 'failed' || next === 'offline' || netDown) || !error.textContent
+  trouble.hidden = !(next === 'failed' || next === 'offline' || netDown || voiceTrouble) || !error.textContent
   refreshScene()
   renderQueue(); scheduleDispatch()
 }
@@ -274,6 +280,7 @@ async function call(path: string, init: RequestInit = {}): Promise<{ status: num
   const data: unknown = await response.json().catch(() => null)
   return { status: response.status, data: data && typeof data === 'object' && !Array.isArray(data) ? data as Record<string, unknown> : null }
 }
+void call('tts').then(result => { el('voice-unavailable').hidden = result.status === 200 && result.data?.available === true }).catch(() => { el('voice-unavailable').hidden = false })
 // 利用枠とボードは会話の有効・無効に関係なく取得する。
 let statusValue: Status | null = null, statusDelay = 60000, statusTimer = 0, statusLoading = false, statusFailed = false
 function renderStatus() {
@@ -383,14 +390,23 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
 /** 返答を吹き出し・カード・履歴へ出し、演技と読み上げを始める（Studio と同じ）。 */
 function deliver(text: string, views: View[] = []) {
   closeViewer(false)
-  error.textContent = ''; trouble.hidden = true
+  voiceTrouble = false; error.textContent = ''; trouble.hidden = true
   lastReply = text; lastActivity = Date.now(); reply.dataset.reply = '1'
   setBubble(text || '（空の返答でした）'); addHistory('コハコ', text); renderCards(cardsFromText(text), views)
   const spoken = plainText(text)
   // 地図・利用枠グラフ・図はボタンを押さなくても返答と同時に開く（ボタンは閉じた後の再表示用）。
   const first = views[0], firstButton = first && cardList.querySelector<HTMLButtonElement>('button[data-view]')
   if (first && firstButton) openViewer(first, firstButton, false)
-  if (actingEnabled && text) {
+  if (speech.checked && prefs.voice === 'kohaku' && text) {
+    const sentences = splitVoiceSentences(splitSentences(spoken))
+    if (actingEnabled) acting?.beginReply()
+    show('speaking')
+    voicePlayer.speak(sentences, {
+      onSentence: (_index, sentence, duration) => { startViseme(sentence, duration || silentSpeechSeconds(sentence), false); acting?.sentence(cueForSentence(sentence)); if (acting) report.acting = acting.snapshot },
+      onEnd: () => { if (state === 'speaking') show('done') },
+      onError: (_code, index) => { if (state !== 'speaking') return; mouthOnly(sentences.slice(index).join('')); voiceTrouble = true; error.textContent = 'コハクの声で読めませんでした。設定の「読み上げの声」で端末の声に戻せます。'; trouble.hidden = false },
+    })
+  } else if (actingEnabled && text) {
     const sentences = splitSentences(spoken)
     acting?.beginReply(); show('speaking')
     let current = 0
@@ -417,8 +433,8 @@ function mouthOnly(text: string) {
   show('speaking'); startViseme(text)
   mouthTimer = window.setTimeout(() => { if (state === 'speaking') show('done') }, silentSpeechSeconds(text) * 1000)
 }
-speech.addEventListener('change', () => { if (!speech.checked) hushNow() })
-function hushNow() { if (actingEnabled) interruptActing(); else if (synthesis) window.speechSynthesis.cancel(); if (state === 'speaking') show('done') }
+speech.addEventListener('change', () => { if (!speech.checked) hushNow(); else { voiceAudio.src = 'data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA'; void voiceAudio.play().then(() => { if (voiceAudio.src.startsWith('data:audio/wav')) { voiceAudio.pause(); voiceAudio.removeAttribute('src'); voiceAudio.load() } }).catch(() => {}) } })
+function hushNow() { voicePlayer.cancel(); if (actingEnabled) interruptActing(); else if (synthesis) window.speechSynthesis.cancel(); if (state === 'speaking') show('done') }
 hush.addEventListener('click', hushNow)
 
 // ---- 送信待ち（BOXP-508） ----
@@ -537,8 +553,8 @@ async function sendText(text: string, from: 'composer' | 'pending' | QueueItem):
     if (typeof from === 'object') queue.putBack(from)
     else if (from === 'composer') { if (!message.value.trim()) message.value = text; else queue.putBack({ id: -Date.now(), text, addedAt: Date.now() }) }
   }
-  if (actingEnabled) interruptActing(); else if (synthesis) window.speechSynthesis.cancel()
-  error.textContent = ''; busy = true; accepted = false; started = Date.now(); lastActivity = Date.now(); typingUntil = 0; delete reply.dataset.reply
+  voicePlayer.cancel(); if (actingEnabled) interruptActing(); else if (synthesis) window.speechSynthesis.cancel()
+  voiceTrouble = false; error.textContent = ''; busy = true; accepted = false; started = Date.now(); lastActivity = Date.now(); typingUntil = 0; delete reply.dataset.reply
   setBubble('…'); show('thinking')
   let payload: Outgoing
   if (unconfirmed) {
@@ -854,8 +870,8 @@ async function resumeUnconfirmed(pending: Outgoing) {
 function followRequest(id: string, text: string): boolean {
   if (requestId === id) return true
   if (busy || unconfirmed || !enabled) return false
-  if (actingEnabled) interruptActing(); else if (synthesis) window.speechSynthesis.cancel()
-  error.textContent = ''; busy = true; accepted = true; started = Date.now(); lastActivity = Date.now(); delete reply.dataset.reply
+  voicePlayer.cancel(); if (actingEnabled) interruptActing(); else if (synthesis) window.speechSynthesis.cancel()
+  voiceTrouble = false; error.textContent = ''; busy = true; accepted = true; started = Date.now(); lastActivity = Date.now(); delete reply.dataset.reply
   requestId = id; addHistory('あなた', text); setBubble('…')
   setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true }); show('thinking'); void poll(requestId)
   return true
