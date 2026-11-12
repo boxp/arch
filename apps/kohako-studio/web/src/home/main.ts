@@ -139,12 +139,12 @@ function openViewer(view: View, opener: HTMLElement, focus = true) {
     if (view.geo) {
       const frame = document.createElement('iframe'); frame.src = osmUrl(view.geo); frame.setAttribute('sandbox', 'allow-scripts allow-same-origin'); frame.referrerPolicy = 'no-referrer'; frame.setAttribute('allow', ''); frame.loading = 'eager'; frame.title = view.title; viewerBody.append(frame)
       line('© OpenStreetMap contributors')
-    } else line('地図の位置を特定できませんでした')
+    } else line('地図の位置を特定できませんでした。下の Google マップで開けます')
     line([view.destination.name, view.destination.address].filter(Boolean).join(' '))
     if (view.mode) line(`移動手段: ${{ transit: '公共交通', walking: '徒歩', driving: '車', bicycling: '自転車' }[view.mode]}`)
     if (view.origin) line(`出発地: ${view.origin}`)
     if (view.geo) {
-      line(view.geo.precision === 'area' ? `番地まで特定できなかったため『${view.geo.label}』付近を表示しています` : `『${view.geo.label}』の位置（OpenStreetMap の検索結果）`)
+      line(view.geo.precision === 'area' ? `番地まで特定できなかったため『${view.geo.label}』付近を表示しています（目的地の正確な位置ではありません）` : `『${view.geo.label}』の位置（OpenStreetMap の検索結果）`)
       line('地図は OpenStreetMap から読み込みます（目的地付近の位置だけが送られ、出発地は送りません）。経路はこの地図には描かれません。')
     }
     const link = (text: string, origin: boolean) => { const a = document.createElement('a'); a.href = mapsUrl(view, origin); a.target = '_blank'; a.rel = 'noopener noreferrer'; a.referrerPolicy = 'no-referrer'; a.textContent = text; viewerBody.append(a, document.createElement('br')) }

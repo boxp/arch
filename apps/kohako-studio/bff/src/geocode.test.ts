@@ -1,5 +1,5 @@
 import { it, expect, vi } from 'vitest'
-import { createGeocoder, normalizeChome } from './geocode.js'
+import { createGeocoder, normalizeChome, municipality } from './geocode.js'
 import { validateView, type View } from './views.js'
 const map: View = { kind: 'map', title: '地図', destination: { name: '店名', address: '港区芝5-16-14' }, origin: '秘密の出発地' }
 const hit = [{ lat: '35.65', lon: '139.75', place_rank: 30, boundingbox: ['35.64', '35.66', '139.74', '139.76'] }], areaHit = [{ ...hit[0], place_rank: 22 }]
@@ -43,8 +43,8 @@ it('ignores a same-name exact match outside the address area and does not trust 
   const fetcher = vi.fn().mockResolvedValueOnce(response(areaHit)).mockResolvedValueOnce(response(far))
   const [result] = await createGeocoder({ fetcher, intervalMs: 0 })([map])
   expect(result.kind === 'map' && result.geo).toMatchObject({ precision: 'area', lat: 35.65 })
-  const none = vi.fn().mockResolvedValueOnce(response([])).mockResolvedValueOnce(response([])).mockResolvedValue(response(hit))
-  expect(await createGeocoder({ fetcher: none, intervalMs: 0 })([map])).toEqual([map]); expect(none).toHaveBeenCalledTimes(2)
+  const none = vi.fn().mockResolvedValue(response([]))
+  expect(await createGeocoder({ fetcher: none, intervalMs: 0 })([map])).toEqual([map]); expect(none).toHaveBeenCalledTimes(3)
 })
 it('keeps an already found area when later searches time out at the deadline', async () => {
   const fetcher = vi.fn().mockResolvedValueOnce(response(areaHit)).mockImplementation(() => new Promise<Response>(() => {}))
@@ -70,4 +70,53 @@ it('drops queued searches after the deadline so timed-out lookups do not block l
   expect(Date.now() - started).toBeLessThan(200)
   expect(after.kind === 'map' && after.geo?.precision).toBe('exact')
   expect(fetcher.mock.calls.length).toBe(calls + 1)
+})
+
+it('falls back through town and municipality without searching the origin', async () => {
+  const view: View = { kind: 'map', title: '地図', destination: { name: 'ゲームアルカナ', address: '愛知県稲沢市朝府町2-33' }, origin: '秘密の出発地' }
+  const townHit = [{ lat: '35.25', lon: '136.78', place_rank: 20, boundingbox: ['35.24', '35.26', '136.77', '136.79'] }]
+  const cityHit = [{ lat: '35.25', lon: '136.78', place_rank: 16, boundingbox: ['35.17', '35.33', '136.70', '136.86'] }]
+  for (const [townResult, expected, bbox] of [[townHit, '愛知県稲沢市朝府町', [136.77, 35.24, 136.79, 35.26]], [[], '愛知県稲沢市', [136.70, 35.17, 136.86, 35.33]]] as const) {
+    const fetcher = vi.fn(async (url: string | URL | Request) => {
+      const q = new URL(String(url)).searchParams.get('q')
+      return response(q === '愛知県稲沢市朝府町' ? townResult : q === '愛知県稲沢市' ? cityHit : [])
+    })
+    const [result] = await createGeocoder({ fetcher, intervalMs: 0 })([view])
+    const queries = fetcher.mock.calls.map(c => new URL(String(c[0])).searchParams.get('q'))
+    expect(queries.slice(0, expected === '愛知県稲沢市' ? 4 : 3)).toEqual(['愛知県稲沢市朝府町2-33', '愛知県稲沢市朝府町二丁目', '愛知県稲沢市朝府町', ...(expected === '愛知県稲沢市' ? ['愛知県稲沢市'] : [])])
+    expect(JSON.stringify(fetcher.mock.calls)).not.toContain('秘密の出発地')
+    expect(result.kind === 'map' && result.geo).toMatchObject({ precision: 'area', label: expected, bbox })
+  }
+})
+it('falls back to ward and county municipality names without duplicate queries', async () => {
+  for (const [address, city] of [['東京都港区芝5丁目1番2号', '東京都港区'], ['北海道虻田郡倶知安町北一条西2丁目', '北海道虻田郡倶知安町']]) {
+    const fetcher = vi.fn(async (url: string | URL | Request) => response(new URL(String(url)).searchParams.get('q') === city ? areaHit : []))
+    const [result] = await createGeocoder({ fetcher, intervalMs: 0 })([{ kind: 'map', title: '地図', destination: { name: '目的地', address } }])
+    const queries = fetcher.mock.calls.map(c => new URL(String(c[0])).searchParams.get('q'))
+    expect(queries).toContain(city)
+    expect(new Set(queries).size).toBe(queries.length)
+    expect(result.kind === 'map' && result.geo?.label).toBe(city)
+  }
+})
+it('extracts municipalities whose names contain 市・区・町・村・郡', () => {
+  const cases: Array<[string, string]> = [
+    ['千葉県市川市八幡1-1-1', '千葉県市川市'],
+    ['愛知県名古屋市中村区名駅1-1-4', '愛知県名古屋市中村区'],
+    ['愛知県稲沢市朝府町2-33', '愛知県稲沢市'],
+    ['東京都町田市原町田6-1-1', '東京都町田市'],
+    ['東京都東村山市本町1-2-3', '東京都東村山市'],
+    ['東京都武蔵村山市本町1-1-1', '東京都武蔵村山市'],
+    ['東京都港区芝5丁目1番2号', '東京都港区'],
+    ['新潟県十日町市千歳町3-3', '新潟県十日町市'],
+    ['三重県四日市市諏訪町1-5', '三重県四日市市'],
+    ['奈良県大和郡山市北郡山町248-4', '奈良県大和郡山市'],
+    ['福島県郡山市朝日1-23-7', '福島県郡山市'],
+    ['北海道余市郡余市町朝日町26', '北海道余市郡余市町'],
+    ['北海道虻田郡倶知安町北一条西2丁目', '北海道虻田郡倶知安町'],
+    ['栃木県芳賀郡市貝町市塙1280', '栃木県芳賀郡市貝町'],
+    ['神奈川県横浜市中区本町6-50-10', '神奈川県横浜市中区'],
+    ['三重県津市広明町13', '三重県津市'],
+    ['東京都大島町元町1-1-14', '東京都大島町'],
+  ]
+  for (const [address, expected] of cases) expect(municipality(address), address).toBe(expected)
 })
