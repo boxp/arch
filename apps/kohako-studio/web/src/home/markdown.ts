@@ -2,7 +2,7 @@ export type Inline = { type: 'text' | 'code' | 'bold' | 'italic' | 'strike' | 'l
 export type Block = { type: 'paragraph' | 'heading' | 'list' | 'quote' | 'code' | 'rule'; text?: string; level?: number; ordered?: boolean; items?: string[]; indents?: number[]; inline?: Inline[] }
 const safeUrl = (url: string) => { try { const u = new URL(url); return ['http:', 'https:', 'mailto:'].includes(u.protocol) ? u.href : undefined } catch { return undefined } }
 export function parseInline(src: string): Inline[] {
-  const result: Inline[] = [], re = /(!?)\[([^\]]*)\]\(([^\s)]+)\)|https:\/\/[^\s<>]+|`([^`]+)`|\*\*([^*]+)\*\*|~~([^~]+)~~|\*([^*]+)\*|_([^_]+)_/g
+  const result: Inline[] = [], re = /(!?)\[([^\]]*)\]\(([^\s)]+)\)|https:\/\/[A-Za-z0-9\-._~:/?#@!$&'*+,;=%]*[A-Za-z0-9\-_~/#=&%+]|`([^`]+)`|\*\*([^*]+)\*\*|~~([^~]+)~~|\*([^*\s][^*]*)\*|(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])/g
   let pos = 0, m: RegExpExecArray | null
   while ((m = re.exec(src))) {
     if (m.index > pos) result.push({ type: 'text', text: src.slice(pos, m.index) })

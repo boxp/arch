@@ -35,18 +35,19 @@ const local = storage(() => localStorage), tab = storage(() => sessionStorage)
 let prefs: Prefs = parsePrefs(local.get(PREFS_KEY))
 const systemReduce = matchMedia('(prefers-reduced-motion: reduce)')
 const reduced = () => prefs.reducedMotion || systemReduce.matches
-const prefBoxes: [keyof Prefs, HTMLInputElement][] = [['touch', el('pref-touch')], ['lines', el('pref-lines')], ['pinned', el('pref-pinned')], ['reducedMotion', el('pref-reduce')]]
+const prefBoxes: [keyof Prefs, HTMLInputElement][] = [['touch', el('pref-touch')], ['lines', el('pref-lines')], ['pinned', el('pref-pinned')], ['reducedMotion', el('pref-reduce')], ['bgMotion', el('pref-bg')]]
 const subtleBox = el<HTMLInputElement>('pref-subtle')
 function applyPrefs() {
   for (const [key, box] of prefBoxes) box.checked = prefs[key] as boolean
   subtleBox.checked = prefs.intensity === 'subtle'
-  body.classList.toggle('reduce', reduced())
+  body.classList.toggle('reduce', reduced()); body.classList.toggle('bg-still', !prefs.bgMotion || reduced())
   el('touch-open').hidden = !prefs.touch
   local.set(PREFS_KEY, JSON.stringify(prefs))
 }
 for (const [key, box] of prefBoxes) box.addEventListener('change', () => { prefs = { ...prefs, [key]: box.checked }; applyPrefs(); refreshScene() })
 subtleBox.addEventListener('change', () => { prefs = { ...prefs, intensity: subtleBox.checked ? 'subtle' : 'normal' }; applyPrefs() })
 systemReduce.addEventListener?.('change', applyPrefs)
+document.addEventListener('visibilitychange', () => body.classList.toggle('tab-hidden', document.hidden))
 applyPrefs()
 
 // ---- 会話の状態（Studio と同じ） ----

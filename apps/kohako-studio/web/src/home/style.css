@@ -154,3 +154,12 @@ body[data-scene="relax"] .bubble:has(#notice-actions:not([hidden])){opacity:1;po
 body[data-message="1"] .status-widget{display:none}
 #inbox-list{max-height:45vh;overflow:auto;flex-shrink:0}
 .md{white-space:normal;overflow-wrap:anywhere}.md p,.md ul,.md ol,.md pre,.md blockquote{margin:.3em 0}.md ul,.md ol{padding-left:1.4em}.md pre{overflow-x:auto;white-space:pre;max-width:100%}.md code{font-family:monospace}.md a{overflow-wrap:anywhere}.md h3,.md h4,.md h5,.md h6{font-size:1em;margin:.4em 0;font-weight:700}
+/* BOXP-510: 背景の穏やかな動き。点滅や明滅はせず、花びらがゆっくり漂い回路を光がゆっくり流れる。動きを減らす/背景を止める設定・OS の reduced-motion・非表示タブでは止める。 */
+.p4{top:82%;left:30%;transform:rotate(40deg)}.p5{top:8%;left:44%;transform:rotate(-30deg)}
+.petal{animation:petal-drift 26s ease-in-out infinite alternate}.p2{animation-duration:31s;animation-delay:-9s}.p3{animation-duration:23s;animation-delay:-5s}.p4{animation-duration:34s;animation-delay:-14s}.p5{animation-duration:29s;animation-delay:-20s}
+@keyframes petal-drift{0%{translate:0 0;rotate:0deg}50%{translate:-18px 22px;rotate:18deg}100%{translate:12px 44px;rotate:-10deg}}
+.circuit path{stroke-dasharray:6 10;animation:circuit-flow 40s linear infinite}.circuit circle{animation:node-glow 9s ease-in-out infinite alternate}.circuit circle:nth-of-type(2){animation-delay:-3s}.circuit circle:nth-of-type(3){animation-delay:-6s}.circuit circle:nth-of-type(4){animation-delay:-4.5s}
+@keyframes circuit-flow{to{stroke-dashoffset:-320}}
+@keyframes node-glow{from{opacity:.45}to{opacity:.7}}
+body.bg-still .room *,body.tab-hidden .room *{animation-play-state:paused}
+@media (prefers-reduced-motion:reduce){.room *{animation:none!important}}
