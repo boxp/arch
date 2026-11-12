@@ -478,7 +478,41 @@ it('waits for a slow POST /v1/runs (image intake took 122s in production) instea
     // 作成以外（状態確認等）は従来どおり短い上限のまま
     const stuck = createHermes({ url: 'http://h', key: 'k', fetch: (async (url: string) => url.endsWith('/v1/toolsets') ? json(200, { data: [] }) : url.endsWith('/v1/runs') ? json(202, { run_id: 'run1' }) : new Promise(() => {})) as unknown as typeof fetch, sleep: async () => {} })
     const polled = stuck.execute({ idempotencyKey: 'i', input: 'x', sessionId: 's', instructions: '' })
-    await vi.advanceTimersByTimeAsync(11_000)
+    // 状態確認が返らない状態が続けば（POLL_OUTAGE_MS 超）結果不明として返す
+    await vi.advanceTimersByTimeAsync(200_000)
     expect(await polled).toEqual({ status: 'unknown', error: 'hermes_unreachable' })
   } finally { vi.useRealTimers() }
+})
+it('keeps tracking the same run when Hermes stops answering status polls for ~15s right after an image run starts (2026-11-12 09:09)', async () => {
+  const { createHermes } = await import('./hermes.js')
+  vi.useFakeTimers()
+  try {
+    const json = (status: number, body: object) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+    const start = Date.now(); const posts: string[] = []; let stops = 0
+    const fetcher = (async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/v1/toolsets')) return json(200, { data: [] })
+      if (url.endsWith('/stop')) { stops++; return json(200, {}) }
+      if (url.endsWith('/v1/runs')) { posts.push(String(init?.body)); return json(202, { run_id: 'run1' }) }
+      const t = Date.now() - start
+      // 4〜19 秒は event loop が止まって応答しない（abort されるまで返らない）、途中で 503 も挟む
+      if (t >= 4_000 && t < 12_000) return new Promise<Response>(() => {})
+      if (t >= 12_000 && t < 14_000) return json(503, {})
+      if (t >= 14_000 && t < 19_000) return new Promise<Response>(() => {})
+      return json(200, t < 40_000 ? { status: 'running' } : { status: 'completed', output: 'それは猫です' })
+    }) as unknown as typeof fetch
+    const hermes = createHermes({ url: 'http://h', key: 'k', fetch: fetcher })
+    const pending = hermes.execute({ idempotencyKey: 'i', input: 'x', sessionId: 's', instructions: '', pollMs: 2000 })
+    await vi.advanceTimersByTimeAsync(4_000)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(await pending).toEqual({ status: 'done', text: 'それは猫です' })
+    expect(posts).toHaveLength(1); expect(stops).toBe(0)
+  } finally { vi.useRealTimers() }
+})
+it('does not retry polls whose response body is malformed', async () => {
+  const { createHermes } = await import('./hermes.js')
+  let polls = 0
+  const fetcher = (async (url: string) => url.endsWith('/v1/toolsets') ? new Response(JSON.stringify({ data: [] }), { status: 200 }) : url.endsWith('/v1/runs') ? new Response(JSON.stringify({ run_id: 'run1' }), { status: 202 }) : (polls++, new Response('not json', { status: 200 }))) as unknown as typeof fetch
+  const hermes = createHermes({ url: 'http://h', key: 'k', fetch: fetcher, sleep: async () => {} })
+  expect(await hermes.execute({ idempotencyKey: 'i', input: 'x', sessionId: 's', instructions: '' })).toEqual({ status: 'unknown', error: 'hermes_schema' })
+  expect(polls).toBe(1)
 })
