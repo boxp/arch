@@ -31,7 +31,7 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     const env = { page, posts, gets, approvals, states, setFail: text => { failText = text }, set404: id => { lookup404 = id },
       set: (i, status, extra = {}) => states.set(posts[i].requestId, { status, ...extra }),
       screenshot: async name => page.screenshot({ path: `${out}/${device}-${name}.png` }),
-      submit: async (text, method = 'button') => { await page.locator('#message').fill(text); if (method === 'enter') await page.locator('#message').press('Enter'); else await page.locator('#send').click() },
+      submit: async (text, method = 'button') => { await page.locator('#message').fill(text); if (method === 'enter') await page.locator('#message').press('Shift+Enter'); else await page.locator('#send').click() },
       count: async n => wait(() => posts.length === n, `POST count expected ${n}, got ${posts.length}`),
       rows: () => page.locator('#queue-list li'),
       settle: () => page.waitForTimeout(2200),

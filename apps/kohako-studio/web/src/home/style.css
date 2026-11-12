@@ -102,7 +102,8 @@ body[data-shape="pc"][data-scene="show"] .status-anchor{top:2%;bottom:auto;left:
 body[data-shape="portrait"] .status-anchor{top:29%;bottom:auto;left:50%;right:auto;transform:translateX(-50%);width:260px}body[data-shape="portrait"] .gauge-ring{width:56px;height:56px}body[data-shape="portrait"] .gauge-value{font-size:.875rem}
 body[data-shape="portrait"]:not([data-scene="relax"]) .status-anchor{top:auto;bottom:2%;left:auto;right:1%;transform:none;width:19%}body[data-shape="portrait"]:not([data-scene="relax"]) .status-row{flex-direction:column;gap:3px}body[data-shape="portrait"]:not([data-scene="relax"]) .status-widget{padding:5px 2px}body[data-shape="portrait"]:not([data-scene="relax"]) .gauge-ring{width:40px;height:40px}body[data-shape="portrait"]:not([data-scene="relax"]) .gauge-title,body[data-shape="portrait"]:not([data-scene="relax"]) .gauge-caption{font-size:.5625rem}body[data-shape="portrait"]:not([data-scene="relax"]) .status-task{min-width:0}body[data-shape="portrait"]:not([data-scene="relax"]) .task-total{font-size:1.25rem}body[data-shape="portrait"]:not([data-scene="relax"]) .task-chips{font-size:.5rem}body[data-shape="portrait"]:not([data-scene="relax"]) .status-mini{font-size:.5rem}
 body[data-shape="landscape"] .status-anchor{top:auto;bottom:2%;right:3%;width:260px}body[data-shape="landscape"] .gauge-ring{width:48px;height:48px}body[data-shape="landscape"] .gauge-value{font-size:.875rem}body[data-shape="landscape"]:not([data-scene="relax"]) .bubble{max-height:35%}body[data-shape="landscape"][data-scene="show"] .cards{top:26%;max-height:20%}body[data-shape="portrait"][data-scene="show"] .cards{max-height:30%}
-body[data-scene="confirm"] .status-anchor,body[data-kbd="1"] .status-anchor{display:none}
+/* 確認・キーボード・本文表示中は、開いていた詳細パネルごと隠す（承認操作や本文に重ねない）。 */
+body[data-scene="confirm"] .status-anchor,body[data-kbd="1"] .status-anchor,body[data-message="1"] .status-anchor{display:none}
 /* 小さい画面では時計とコハコの顔の間に収める。 */
 body[data-shape="portrait"][data-scene="relax"] .status-anchor{top:23%;width:250px}
 body[data-shape="portrait"][data-scene="relax"] .status-widget{padding:4px 8px}
@@ -150,3 +151,15 @@ body[data-shape="landscape"] .viewer iframe{height:min(300px,55vh)}
 #inbox-detail p { white-space: pre-wrap; }
 
 body[data-scene="relax"] .bubble:has(#notice-actions:not([hidden])){opacity:1;pointer-events:auto} #notice-actions{white-space:normal} #notice-actions button{margin:.2rem} #notice-actions textarea{width:100%} #notice-status:empty{display:none}
+
+#inbox-list{max-height:45vh;overflow:auto;flex-shrink:0}
+.md{white-space:normal;overflow-wrap:anywhere}.md p,.md ul,.md ol,.md pre,.md blockquote{margin:.3em 0}.md ul,.md ol{padding-left:1.4em}.md pre{overflow-x:auto;white-space:pre;max-width:100%}.md code{font-family:monospace}.md a{overflow-wrap:anywhere}.md h3,.md h4,.md h5,.md h6{font-size:1em;margin:.4em 0;font-weight:700}
+/* BOXP-510: 背景の穏やかな動き。点滅や明滅はせず、花びらがゆっくり漂い回路を光がゆっくり流れる。動きを減らす/背景を止める設定・OS の reduced-motion・非表示タブでは止める。 */
+.p4{top:82%;left:30%;transform:rotate(40deg)}.p5{top:8%;left:44%;transform:rotate(-30deg)}
+.petal{animation:petal-drift 26s ease-in-out infinite alternate}.p2{animation-duration:31s;animation-delay:-9s}.p3{animation-duration:23s;animation-delay:-5s}.p4{animation-duration:34s;animation-delay:-14s}.p5{animation-duration:29s;animation-delay:-20s}
+@keyframes petal-drift{0%{translate:0 0;rotate:0deg}50%{translate:-18px 22px;rotate:18deg}100%{translate:12px 44px;rotate:-10deg}}
+.circuit path{stroke-dasharray:6 10;animation:circuit-flow 40s linear infinite}.circuit circle{animation:node-glow 9s ease-in-out infinite alternate}.circuit circle:nth-of-type(2){animation-delay:-3s}.circuit circle:nth-of-type(3){animation-delay:-6s}.circuit circle:nth-of-type(4){animation-delay:-4.5s}
+@keyframes circuit-flow{to{stroke-dashoffset:-320}}
+@keyframes node-glow{from{opacity:.45}to{opacity:.7}}
+body.bg-still .room *,body.tab-hidden .room *{animation-play-state:paused}
+@media (prefers-reduced-motion:reduce){.room *{animation:none!important}}

@@ -26,3 +26,5 @@ export class SceneDirector {
     return this.scene
   }
 }
+
+export function messageShown({ scene, touch, notice }: { scene: string; touch: boolean; notice: boolean }): boolean { return scene !== 'relax' || touch || notice }

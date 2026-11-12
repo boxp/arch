@@ -7,6 +7,10 @@ import { createPush } from './push.js'
 import { atomic, load } from './storage.js'
 const payload = { eventId: 'event-123456', source: 'task-board-report', eventType: 'ready', title: '題', body: '本文', choices: ['はい'], createdAt: '2026-01-01T00:00:00Z' }
 describe('notifications', () => {
+  it('通知を受信順に返す', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'inbox-'))
+    try { let t = Date.parse('2026-01-01'); const store = await createNotifications(dir, async () => ({}), () => t); await store.ingest(payload); t += 1000; await store.ingest({ ...payload, eventId: 'event-234567' }); expect(store.list().items.map(i => i.eventId)).toEqual([payload.eventId, 'event-234567']) } finally { await rm(dir, { recursive: true, force: true }) }
+  })
   it('案内の仮押さえは期限切れ・再起動で解け、表示後の案内済みだけが永続化される', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'inbox-'))
     try {
