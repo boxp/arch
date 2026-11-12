@@ -75,3 +75,10 @@ prune-workspaces! の通常パス後に `generated-reclaim` パスを追加し�
 - RedGreen: 脱水→status clean→reuse で復元・status clean、dirty/untracked/hash 不一致/hardlink/symlink 参照/lock/非Done/active は保持、
   脱水パス存在時の prune 保持・reuse reject、dry-run 非削除、冪等（2回目は対象0）。
 - 対象外: b441work、blocked/in-progress/ready 票、秘密/session、共有 repo の設定変更（sparse-checkout/worktreeConfig は使わない）、保持期間/本数短縮、Longhorn/拡張。
+
+## 追加: reuse時の検証済みdist破棄による生成重複抑制 (2026-11-12 13:20 UTC)
+
+- 実測: 脱水配備後 df avail 19.95GB(12:18)→9.34GB(13:20)。主因は同一票(BOXP-523)の連続runが毎回 `mode=:new-checkout reason=studio-dist-public-diff` で約1.09GB(追跡public 498MB + 検証済みdist 498MB)の新規checkoutを作り、旧runが最新保護/stale保持で残ること。
+- 対策: `try-reuse-repo-worktree!` で `studio-dist-public-diff` / `bff-dist-src-diff` となる場合、ticket lock所有を確認し `studio-dist-hold`/`bff-dist-hold`/`inspect-ignored` で全再生成可能を再検証できたときだけ旧worktreeのdistを削除し、通常reuse(worktree move + base switch)を行う。結果は新規checkoutと同じ「distなし」状態で、追跡ファイル・未知/固有ファイル・branchは不変。
+- 監査: `:reuse-base-reason "studio-dist-dropped"` / `"bff-dist-dropped"` を workspace-reuse.edn に残す。
+- rollback: `~/.codex-task-board/generated-reclaim.edn` に `{:reuse-drop-dist false}`（または `{:mode :off}`）で従来の拒否動作に戻る。

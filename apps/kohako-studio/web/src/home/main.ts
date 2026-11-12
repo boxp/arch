@@ -65,6 +65,8 @@ applyPrefs()
 
 // ---- 会話の状態（Studio と同じ） ----
 let voiceTrouble = false
+/** 読み上げを本人が止めて「続きから読む」を出している（送信待ちの自動送信で再開位置を消さないため）。 */
+let speechPaused = false
 let state: State = 'offline', enabled = false, stt = false, requestId = '', started = 0, approvalId = '', approvalExpires = 0, busy = false, accepted = false, netDown = false
 let unconfirmed: Outgoing | null = parseUnconfirmed(tab.get(UNCONFIRMED_KEY))
 const setUnconfirmed = (o: Outgoing | null) => { unconfirmed = o; if (!o) pendingFromQueue = false; tab.set(UNCONFIRMED_KEY, o ? JSON.stringify(o) : null) }
@@ -86,7 +88,7 @@ let visemes: VisemeSequence | null = null, visemeAnchor = 0, visemeLive = false
 function startViseme(text: string, duration = silentSpeechSeconds(text), live = false) { visemes = makeVisemes(text, duration); visemeLive = live; speakingSince = performance.now(); visemeAnchor = 0 }
 function syncViseme(charIndex: number) { if (visemes) { visemeAnchor = boundaryTime(visemes, charIndex); speakingSince = performance.now() } }
 const actingEnabled = wantsActing(location.search)
-const speaker = synthesis && actingEnabled ? createSentenceSpeaker({ synth: { speak: u => window.speechSynthesis.speak(u as SpeechSynthesisUtterance), cancel: () => window.speechSynthesis.cancel() }, makeUtterance: text => { const u = new SpeechSynthesisUtterance(text); u.lang = 'ja-JP'; return u } }) : null
+const speaker = synthesis ? createSentenceSpeaker({ synth: { speak: u => window.speechSynthesis.speak(u as SpeechSynthesisUtterance), cancel: () => window.speechSynthesis.cancel() }, makeUtterance: text => { const u = new SpeechSynthesisUtterance(text); u.lang = 'ja-JP'; return u } }) : null
 const sentencer = createSilentSentencer({ setTimeout: (fn, ms) => window.setTimeout(fn, ms), clearTimeout: id => window.clearTimeout(id) })
 const report: Record<string, unknown> = { loaded: false, errors: [] as string[], touches: [] as unknown[] }
 function interruptActing() { voicePlayer.cancel(); speaker?.cancel(); sentencer.cancel(); acting?.interrupt(); if (acting) report.acting = acting.snapshot }
@@ -390,9 +392,31 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
   }
   if (requestId === id) { busy = false; requestId = ''; setInflight(null); setError('応答の確認がタイムアウトしました。'); show('failed') }
 }
+let speechChunks: string[] = [], speechNext = 0
+const resumeSpeech = el<HTMLButtonElement>('resume-speech')
+function clearSpeechResume() { speechChunks = []; speechNext = 0; speechPaused = false; resumeSpeech.hidden = true }
+function offerSpeechResume() { resumeSpeech.hidden = !speechChunks.length || speechNext >= speechChunks.length }
+function playReply() {
+  if (!speechChunks.length) return
+  const kohaku = prefs.voice === 'kohaku'
+  resumeSpeech.hidden = true; voiceTrouble = false; speechPaused = false; error.textContent = ''; acting?.beginReply(); show('speaking')
+  const events = {
+    onSentence: (_index: number, sentence: string, duration = 0) => { startViseme(sentence, duration || spokenSeconds(sentence), kohaku === false); acting?.sentence(cueForSentence(sentence)); if (acting) report.acting = acting.snapshot },
+    onBoundary: (_index: number, charIndex: number) => syncViseme(charIndex),
+    onChunkEnd: (index: number) => { speechNext = index + 1 },
+    // 読み上げ失敗で止めた送信待ちは、続きを読み終えたら元どおり自動送信へ戻す。
+    onEnd: () => { clearSpeechResume(); if (queue.held === 'speech') queue.resume(); if (state === 'speaking') show('done') },
+    onError: () => { if (state !== 'speaking') return; voiceTrouble = true; error.textContent = kohaku ? 'コハクの声で読めませんでした。「続きから読む」で読み直せます。設定の「読み上げの声」で端末の声に戻せます。' : '読み上げが途中で止まりました。「続きから読む」で続きを読めます。'; offerSpeechResume(); show('done') },
+  }
+  if (kohaku) voicePlayer.speak(speechChunks, events, speechNext)
+  else if (speaker) speaker.speak(speechChunks, events, speechNext)
+  else { show('done'); offerSpeechResume() }
+}
+resumeSpeech.addEventListener('click', () => { speech.checked = true; playReply() })
+
 /** 返答を吹き出し・カード・履歴へ出し、演技と読み上げを始める（Studio と同じ）。 */
 function deliver(text: string, views: View[] = []) {
-  closeViewer(false)
+  clearSpeechResume(); closeViewer(false)
   voiceTrouble = false; error.textContent = ''; trouble.hidden = true
   lastReply = text; lastActivity = Date.now(); reply.dataset.reply = '1'
   setBubble(text || '（空の返答でした）'); addHistory('コハコ', text); renderCards(cardsFromText(text), views)
@@ -400,45 +424,28 @@ function deliver(text: string, views: View[] = []) {
   // 地図・利用枠グラフ・図はボタンを押さなくても返答と同時に開く（ボタンは閉じた後の再表示用）。
   const first = views[0], firstButton = first && cardList.querySelector<HTMLButtonElement>('button[data-view]')
   if (first && firstButton) openViewer(first, firstButton, false)
-  if (speech.checked && prefs.voice === 'kohaku' && text) {
-    const sentences = splitVoiceSentences(splitSentences(spoken))
-    if (actingEnabled) acting?.beginReply()
-    show('speaking')
-    voicePlayer.speak(sentences, {
-      onSentence: (_index, sentence, duration) => { startViseme(sentence, duration || silentSpeechSeconds(sentence), false); acting?.sentence(cueForSentence(sentence)); if (acting) report.acting = acting.snapshot },
-      onEnd: () => { if (state === 'speaking') show('done') },
-      onError: (_code, index) => { if (state !== 'speaking') return; mouthOnly(sentences.slice(index).join('')); voiceTrouble = true; error.textContent = 'コハクの声で読めませんでした。設定の「読み上げの声」で端末の声に戻せます。'; trouble.hidden = false },
-    })
+  if (speech.checked && text && (prefs.voice === 'kohaku' || speaker)) {
+    speechChunks = splitVoiceSentences(splitSentences(spoken)); speechNext = 0; playReply()
   } else if (actingEnabled && text) {
-    const sentences = splitSentences(spoken)
+    const sentences = splitSentences(spoken), total = sentences.reduce((n, v) => n + Array.from(v.replace(/\s/g, '')).length, 0)
     acting?.beginReply(); show('speaking')
-    let current = 0
-    const sentenceDuration = (s: string) => { const total = sentences.reduce((n, v) => n + Array.from(v.replace(/\s/g, '')).length, 0); return speech.checked && speaker ? spokenSeconds(s) : total ? silentSpeechSeconds(spoken) * Array.from(s.replace(/\s/g, '')).length / total : 0 }
-    const events = {
-      onBoundary: (_index: number, charIndex: number) => syncViseme(charIndex),
-      onSentence: (index: number, sentence: string) => { current = index; startViseme(sentence, sentenceDuration(sentence), !!(speech.checked && speaker)); acting?.sentence(cueForSentence(sentence)); if (acting) report.acting = acting.snapshot },
-      onEnd: () => { if (state === 'speaking') show('done') },
-      onError: () => { if (state === 'speaking') mouthOnly(sentences.slice(current).join('')) },
-    }
-    if (speech.checked && speaker) speaker.speak(sentences, events)
-    else {
-      const total = sentences.reduce((n, s) => n + Array.from(s.replace(/\s/g, '')).length, 0)
-      sentencer.run(sentences, s => total ? silentSpeechSeconds(spoken) * Array.from(s.replace(/\s/g, '')).length / total : 0, events)
-    }
-  } else if (!actingEnabled && speech.checked && synthesis && text) {
-    const u = new SpeechSynthesisUtterance(spoken); u.lang = 'ja-JP'
-    u.onstart = () => { startViseme(spoken, spokenSeconds(spoken), true) }; u.onboundary = e => syncViseme(e.charIndex); u.onend = () => { if (state === 'speaking') show('done') }
-    u.onerror = e => { if (state !== 'speaking') return; if (e.error === 'interrupted' || e.error === 'canceled') show('done'); else mouthOnly(spoken) }
-    show('speaking'); window.speechSynthesis.speak(u)
+    sentencer.run(sentences, sentence => total ? silentSpeechSeconds(spoken) * Array.from(sentence.replace(/\s/g, '')).length / total : 0, {
+      onSentence: (_index, sentence) => { startViseme(sentence); acting?.sentence(cueForSentence(sentence)); if (acting) report.acting = acting.snapshot },
+      onEnd: () => { if (state === 'speaking') show('done') }, onError: () => {},
+    })
   } else if (text) mouthOnly(spoken)
 }
 function mouthOnly(text: string) {
   show('speaking'); startViseme(text)
   mouthTimer = window.setTimeout(() => { if (state === 'speaking') show('done') }, silentSpeechSeconds(text) * 1000)
 }
-speech.addEventListener('change', () => { if (!speech.checked) hushNow(); else { voiceAudio.src = 'data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA'; void voiceAudio.play().then(() => { if (voiceAudio.src.startsWith('data:audio/wav')) { voiceAudio.pause(); voiceAudio.removeAttribute('src'); voiceAudio.load() } }).catch(() => {}) } })
-function hushNow() { voicePlayer.cancel(); if (actingEnabled) interruptActing(); else if (synthesis) window.speechSynthesis.cancel(); if (state === 'speaking') show('done') }
-hush.addEventListener('click', hushNow)
+speech.addEventListener('change', () => { if (!speech.checked) hushNow(true); else { voiceAudio.src = 'data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA'; void voiceAudio.play().then(() => { if (voiceAudio.src.startsWith('data:audio/wav')) { voiceAudio.pause(); voiceAudio.removeAttribute('src'); voiceAudio.load() } }).catch(() => {}) } })
+/** 読み上げを止める。pause は本人の「止める」/読み上げOFF で、続きが残るなら送信待ちの自動送信を止めて再開位置を守る（録音開始など新しい発言のための中断では止めない）。 */
+function hushNow(pause = false) {
+  voicePlayer.cancel(); speaker?.cancel(); if (actingEnabled) interruptActing()
+  if (state === 'speaking') { if (pause && speechChunks.length > speechNext) speechPaused = true; show('done'); offerSpeechResume() }
+}
+hush.addEventListener('click', () => hushNow(true))
 
 // ---- 送信待ち（BOXP-508） ----
 /** 入力欄からの送信を送信待ちへ積むか。応答待ち中・送信中・読み上げ中、または送信待ち（保留を含む）が残っている間は順序を守るため積む（読み上げを新しい発言で中断しない）。 */
@@ -450,6 +457,8 @@ function holdFor(): HoldReason | null {
   if (netDown || state === 'offline') return 'offline'
   if (state === 'stopped') return 'stopped'
   if (state === 'failed') return 'failed'
+  // 読み上げ失敗・本人の停止で「続きから読む」を出している間は、次の送信で再開位置が消えないよう自動送信を止める。
+  if ((voiceTrouble || speechPaused) && speechChunks.length > 0 && speechNext < speechChunks.length) return 'speech'
   return null
 }
 function renderQueue() {
@@ -556,7 +565,7 @@ async function sendText(text: string, from: 'composer' | 'pending' | QueueItem):
     if (typeof from === 'object') queue.putBack(from)
     else if (from === 'composer') { if (!message.value.trim()) message.value = text; else queue.putBack({ id: -Date.now(), text, addedAt: Date.now() }) }
   }
-  voicePlayer.cancel(); if (actingEnabled) interruptActing(); else if (synthesis) window.speechSynthesis.cancel()
+  clearSpeechResume(); voicePlayer.cancel(); speaker?.cancel(); if (actingEnabled) interruptActing()
   voiceTrouble = false; error.textContent = ''; busy = true; accepted = false; started = Date.now(); lastActivity = Date.now(); typingUntil = 0; delete reply.dataset.reply
   setBubble('…'); show('thinking')
   let payload: Outgoing
@@ -891,7 +900,7 @@ async function resumeUnconfirmed(pending: Outgoing) {
 function followRequest(id: string, text: string): boolean {
   if (requestId === id) return true
   if (busy || unconfirmed || !enabled) return false
-  voicePlayer.cancel(); if (actingEnabled) interruptActing(); else if (synthesis) window.speechSynthesis.cancel()
+  clearSpeechResume(); voicePlayer.cancel(); speaker?.cancel(); if (actingEnabled) interruptActing()
   voiceTrouble = false; error.textContent = ''; busy = true; accepted = true; started = Date.now(); lastActivity = Date.now(); delete reply.dataset.reply
   requestId = id; addHistory('あなた', text); setBubble('…')
   setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true }); show('thinking'); void poll(requestId)

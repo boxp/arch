@@ -249,11 +249,11 @@ export function createConversation({ now, hermes, prefix, store, geocode = async
           // 終了した run の承認待ちは無効化する（ポーリング失敗/タイムアウトで approval が残り承認待ちを返し続けないように）。
           if (entry.approval) entry.approval.active = false
           if (result.status === 'done') {
-            const extracted = input.kind === 'touch' || input.views ? extractViews(result.text) : { text: result.text, views: [] }, reply = extracted.text.slice(0, 1000)
+            const extracted = input.kind === 'touch' || input.views ? extractViews(result.text) : { text: result.text, views: [] }, reply = extracted.text.length > 24000 ? extracted.text.slice(0, /[\uD800-\uDBFF]/.test(extracted.text[23999]) && /[\uDC00-\uDFFF]/.test(extracted.text[24000]) ? 23999 : 24000) + '\n（返答が長すぎるため、ここから先は省略されました）' : extracted.text
             // 打ち切りは geocoder 側(7秒)で取得済みの位置を残して行う。ここは異常時の保険。
             const views = input.kind === 'text' && input.views ? await Promise.race([geocode(extracted.views), new Promise<View[]>(r => setTimeout(() => r(extracted.views), 9000).unref?.())]) : extracted.views
             entry.reply = { text: reply, at: now(), ...(views.length ? { views } : {}) }
-            lastExchange = { kind: input.kind, text: text.slice(0, 500), reply }
+            lastExchange = { kind: input.kind, text: text.slice(0, 500), reply: reply.slice(0, 1000) }
             if (!entry.resume) persistedExchange = lastExchange
           }
           entry.status = result.status

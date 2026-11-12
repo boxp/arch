@@ -3509,18 +3509,28 @@ test_stale_prune_bff_dist() {
 }
 
 test_workspace_reuse_bff_dist() {
-  local tmp ws old dist
+  local tmp ws old dist mode
+  for mode in enabled disabled both; do
   tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"
   git -C "$tmp/source" remote set-url origin https://github.com/boxp/arch.git
   mkdir -p "$tmp/source/apps/kohako-studio/bff/src"
   printf 'dist/\n' >"$tmp/source/.gitignore"
   printf '{"compilerOptions":{"outDir":"dist","rootDir":"src"},"include":["src/**/*.ts"]}' >"$tmp/source/apps/kohako-studio/bff/tsconfig.json"
   touch "$tmp/source/apps/kohako-studio/bff/"{package.json,package-lock.json} "$tmp/source/apps/kohako-studio/bff/src/app.ts"
+  if [[ "$mode" == both ]]; then
+    mkdir -p "$tmp/source/apps/kohako-studio/web/public"
+    printf abcd >"$tmp/source/apps/kohako-studio/web/public/copied.txt"
+    touch "$tmp/source/apps/kohako-studio/web/"{package.json,package-lock.json,vite.config.ts}
+  fi
   git -C "$tmp/source" add .; prune_git -C "$tmp/source" commit -q -m fixture
   git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD; git -C "$tmp/source" rev-list HEAD >"$tmp/known"
   old="$ws/BOXP-908/20200101T000000Z/ghq/github.com/boxp/arch"; mkdir -p "$(dirname "$old")"
   git -C "$tmp/source" worktree add -q -b codex-task-board/BOXP-908-20200101T000000Z "$old" HEAD
   dist="$old/apps/kohako-studio/bff/dist"; mkdir -p "$dist"; touch "$dist/app.js"
+  if [[ "$mode" == both ]]; then
+    mkdir -p "$old/apps/kohako-studio/web/dist"
+    printf abcd >"$old/apps/kohako-studio/web/dist/copied.txt"
+  fi
   reuse_lock "$tmp" BOXP-908 20200102T000000Z
   reuse_prepare "$tmp" BOXP-908 20200102T000000Z boxp/arch >"$tmp/o"
   assert_file_contains "$tmp/o" ':reused-from "20200101T000000Z"'
@@ -3534,13 +3544,27 @@ test_workspace_reuse_bff_dist() {
   assert_file_contains "$tmp/o" ':reused-from "20200102T000000Z"'
   old="$ws/BOXP-908/20200103T000000Z/ghq/github.com/boxp/arch"
   [[ -f "$old/apps/kohako-studio/bff/dist/app.js" ]] || fail 'bff dist not carried over after source edit'
+  if [[ "$mode" == disabled ]]; then printf '{:reuse-drop-dist false}\n' >"$tmp/state/generated-reclaim.edn"; fi
+  if [[ "$mode" == both ]]; then printf efgh >"$tmp/source/apps/kohako-studio/web/public/copied.txt"; git -C "$tmp/source" add apps/kohako-studio/web/public/copied.txt; fi
   git -C "$tmp/source" rm -q apps/kohako-studio/bff/src/app.ts; prune_git -C "$tmp/source" commit -q -m remove-source
   git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD; git -C "$tmp/source" rev-list HEAD >"$tmp/known"
   reuse_lock "$tmp" BOXP-908 20200104T000000Z
   reuse_prepare "$tmp" BOXP-908 20200104T000000Z boxp/arch >"$tmp/o"
-  assert_file_contains "$tmp/o" ':reuse-fallback "bff-dist-src-diff"'
-  [[ -f "$old/apps/kohako-studio/bff/dist/app.js" ]] || fail 'stale dist changed'
+  if [[ "$mode" == disabled ]]; then
+    assert_file_contains "$tmp/o" ':reuse-fallback "bff-dist-src-diff"'
+    [[ -f "$old/apps/kohako-studio/bff/dist/app.js" ]] || fail 'disabled bff dist changed'
+  else
+    assert_file_contains "$tmp/o" ':reused-from "20200103T000000Z"'
+    if [[ "$mode" == both ]]; then
+      assert_file_contains "$tmp/o" ':reuse-base-reason "studio-dist-dropped"'
+      [[ ! -e "$ws/BOXP-908/20200104T000000Z/ghq/github.com/boxp/arch/apps/kohako-studio/web/dist" ]] || fail 'studio dist not dropped'
+    else
+      assert_file_contains "$tmp/o" ':reuse-base-reason "bff-dist-dropped"'
+    fi
+    [[ ! -e "$old" && ! -e "$ws/BOXP-908/20200104T000000Z/ghq/github.com/boxp/arch/apps/kohako-studio/bff/dist" ]] || fail 'bff dist not dropped'
+  fi
   rm -rf "$tmp"
+  done
 }
 
 test_stale_prune() {
@@ -5424,14 +5448,20 @@ reuse_prepare() {
                           (fn [& args]
                             (spit (str (lock-path (System/getenv "TEST_TICKET"))) other-lock)
                             (apply original args)))))
+      (when (System/getenv "TEST_DROP_LATE_UNKNOWN")
+        (alter-var-root (var reuse-drop-dist!)
+                        (fn [original]
+                          (fn [old & args]
+                            (spit (str (babashka.fs/path old studio-dist "notes.txt")) "late")
+                            (apply original old args)))))
       (let [workspace (prepare-run-workspace! (System/getenv "TEST_TICKET") (System/getenv "TEST_RUN"))
             result (first (:repo-worktrees workspace))
             prompt (workspace-prompt workspace)]
         (when (:carryover result)
           (assert (clojure.string/includes? prompt "Carried over from previous run"))
           (assert (not (clojure.string/includes? prompt "private-untracked"))))
-        (when (:reuse-base-reason result)
-          (assert (clojure.string/includes? prompt "kept to preserve its verified studio dist"))
+        (when (contains? #{"studio-dist-keep-head" "bff-dist-keep-head"} (:reuse-base-reason result))
+          (assert (clojure.string/includes? prompt "kept to preserve its verified dist"))
           (assert (clojure.string/includes? prompt "switch to the correct base or PR branch before committing")))
         (prn (:repo-worktrees workspace)))'
 }
@@ -5776,7 +5806,9 @@ test_workspace_reuse_interplay() {
   [[ "$(git -C "$new" rev-parse HEAD)" == "$(git -C "$tmp/source" rev-parse HEAD)" ]] || fail 'prune damaged the reused worktree'
   git -C "$tmp/source" worktree list --porcelain | grep -Fq "$new" || fail 'worktree entry lost'
 
-  # A verified studio dist moves with the worktree only while it still matches public.
+  # Verified dist is dropped on a public change unless disabled or unknown.
+  local dist_case
+  for dist_case in enabled disabled unknown late-unknown lock mode-off mode-dry-run mode-invalid invalid; do
   tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"
   git -C "$tmp/source" remote set-url origin https://github.com/boxp/arch.git
   mkdir -p "$tmp/source/apps/kohako-studio/web/public"
@@ -5800,11 +5832,43 @@ test_workspace_reuse_interplay() {
   git -C "$tmp/source" add .; prune_git -C "$tmp/source" commit -q -m public
   git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD
   git -C "$tmp/source" rev-list HEAD >"$tmp/known"
-  local before_stale; before_stale="$(git -C "$old" rev-parse HEAD) $(git -C "$old" branch --show-current) $(git -C "$old" status --porcelain)"
+  case "$dist_case" in
+    disabled) printf '{:reuse-drop-dist false}\n' >"$tmp/state/generated-reclaim.edn" ;;
+    mode-off) printf '{:mode :off}\n' >"$tmp/state/generated-reclaim.edn" ;;
+    mode-dry-run) printf '{:mode :dry-run}\n' >"$tmp/state/generated-reclaim.edn" ;;
+    mode-invalid) printf '{:mode :bogus}\n' >"$tmp/state/generated-reclaim.edn" ;;
+    invalid) printf '{:reuse-drop-dist :invalid}\n' >"$tmp/state/generated-reclaim.edn" ;;
+    unknown) printf notes >"$old/apps/kohako-studio/web/dist/notes.txt" ;;
+  esac
   reuse_lock "$tmp" BOXP-908 20200103T000000Z
-  reuse_prepare "$tmp" BOXP-908 20200103T000000Z boxp/arch >"$tmp/o"
-  assert_file_contains "$tmp/o" ':reuse-fallback "studio-dist-public-diff"'
-  [[ -f "$old/apps/kohako-studio/web/dist/copied.txt" && "$before_stale" == "$(git -C "$old" rev-parse HEAD) $(git -C "$old" branch --show-current) $(git -C "$old" status --porcelain)" ]] || fail 'run with stale dist changed'
+  if [[ "$dist_case" == late-unknown ]]; then
+    TEST_DROP_LATE_UNKNOWN=1 reuse_prepare "$tmp" BOXP-908 20200103T000000Z boxp/arch >"$tmp/o"
+  elif [[ "$dist_case" == lock ]]; then
+    TEST_LOCK_SWAP='{:ticket "BOXP-908" :run-id "20200104T000000Z"}' reuse_prepare "$tmp" BOXP-908 20200103T000000Z boxp/arch >"$tmp/o"
+  else
+    reuse_prepare "$tmp" BOXP-908 20200103T000000Z boxp/arch >"$tmp/o"
+  fi
+  if [[ "$dist_case" == enabled ]]; then
+    new="$ws/BOXP-908/20200103T000000Z/ghq/github.com/boxp/arch"
+    assert_file_contains "$tmp/o" ':reused-from "20200102T000000Z"'
+    assert_file_contains "$tmp/o" ':reuse-base-reason "studio-dist-dropped"'
+    assert_file_contains "$tmp/state/runs/BOXP-908/20200103T000000Z/workspace-reuse.edn" ':reuse-base-reason "studio-dist-dropped"'
+    [[ ! -e "$old" && ! -e "$new/apps/kohako-studio/web/dist" && "$(cat "$new/apps/kohako-studio/web/public/copied.txt")" == efgh && "$(git -C "$new" rev-parse HEAD)" == "$(git -C "$tmp/source" rev-parse origin/main)" ]] || fail 'studio dist drop or reuse failed'
+  else
+    if [[ "$dist_case" == unknown ]]; then
+      assert_file_contains "$tmp/o" ':reuse-fallback "ignored-unknown'
+      [[ -f "$old/apps/kohako-studio/web/dist/notes.txt" ]] || fail 'unknown file deleted'
+    elif [[ "$dist_case" == lock ]]; then
+      assert_file_contains "$tmp/o" ':reuse-fallback "lock-not-owned"'
+    else
+      assert_file_contains "$tmp/o" ':reuse-fallback "studio-dist-public-diff"'
+      if [[ "$dist_case" == late-unknown ]]; then
+        [[ -f "$old/apps/kohako-studio/web/dist/notes.txt" ]] || fail 'late unknown file deleted'
+      fi
+    fi
+    [[ -f "$old/apps/kohako-studio/web/dist/copied.txt" ]] || fail 'old dist changed'
+  fi
+  done
 
   # A pushed run commit that changes public keeps its matching verified dist.
   tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"
