@@ -550,3 +550,11 @@ describe('喜びの手の大きさ（BOXP-476 Owner 指摘）', () => {
     expect(clips.joy.keys[clips.joy.keys.length - 1].right!.haS).toBe(1)
   })
 })
+
+import { closedEyeTarget } from './gesture'
+
+it('にっこりだけ閉眼し、通常へ戻すと開く', () => {
+  expect(closedEyeTarget('smileClosed')).toBe(1)
+  expect(closedEyeTarget('smile')).toBe(0)
+  expect(closedEyeTarget('neutral')).toBe(0)
+})

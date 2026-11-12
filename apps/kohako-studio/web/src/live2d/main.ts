@@ -86,7 +86,7 @@ async function load() {
 }
 
 // BOXP-476: `?acting=1` のときだけ、表情と動作を手動で比較するボタンを出す。通常表示は変えない。
-const emotionLabels: Record<Emotion, string> = { neutral: '通常', smile: '笑顔', shy: '照れ', troubled: '困り', surprised: '驚き', serious: '真剣' }
+const emotionLabels: Record<Emotion, string> = { neutral: '通常', smile: '笑顔', smileClosed: 'にっこり', shy: '照れ', troubled: '困り', surprised: '驚き', serious: '真剣' }
 const gestureLabels: Record<Gesture, string> = { none: '動作なし', nod: '頷き', tilt: '首かしげ', joy: '喜び', greet: '挨拶（手を振る）', guide: '案内（UI を示す）', shyHand: '照れ（口元を隠す）', halt: '制止' }
 function setupActing(p: Player) {
   const stage: ActingStage & { report(): Record<string, unknown> } = createActingStage(p, model)

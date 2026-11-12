@@ -54,6 +54,12 @@ const mix = (a: Rgba, b: Rgba, t: number): Rgba => [a[0] + (b[0] - a[0]) * t, a[
 /** 事前乗算を戻した輝度。透明は 255 扱い。 */
 export function luma(p: Rgba): number { return p[3] < 8 ? 255 : (p[0] * 0.3 + p[1] * 0.59 + p[2] * 0.11) * 255 / p[3] }
 
+/** 両頬の中心から縁まで連続して薄くなる赤み。 */
+export function blushWeight(x: number, y: number): number {
+  const d = Math.min(...[514, 630].map(cx => ((x - cx) / 28) ** 2 + ((y - 319) / 13) ** 2))
+  return d >= 1 ? 0 : (1 - d) ** 1.5 * 0.55
+}
+
 /** 点対 (x,y)→(u,v) の最小二乗アフィン。 */
 export function fitAffine(points: readonly (readonly [number, number, number, number])[]): { forward(x: number, y: number): [number, number]; inverse(u: number, v: number): [number, number] } {
   let sxx = 0, sxy = 0, syy = 0, sx = 0, sy = 0, n = 0, sxu = 0, syu = 0, su = 0, sxv = 0, syv = 0, sv = 0
@@ -272,7 +278,7 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
   try {
     if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('アトラスを読めません')
     // 必要な矩形だけ読む（顔の周りのみ）。
-    const models = [{ x: 480, y: 200 }, { x: 680, y: 320 }]
+    const models = [{ x: 480, y: 200 }, { x: 680, y: 350 }]
     const span = [...layers.values()].flatMap(l => models.map(m => l.forward(m.x, m.y)))
     const x0 = Math.max(0, Math.floor(Math.min(...span.map(s => s[0]))) - 8), y0 = Math.max(0, Math.floor(Math.min(...span.map(s => s[1]))) - 8)
     const x1 = Math.min(width, Math.ceil(Math.max(...span.map(s => s[0]))) + 8), y1 = Math.min(height, Math.ceil(Math.max(...span.map(s => s[1]))) + 8)
@@ -298,6 +304,27 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
     gl.bindTexture(gl.TEXTURE_2D, p.textures[0] as WebGLTexture)
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
     gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, output)
+    // 顔レイヤーの画素だけを保存し、元の色から毎回合成する。
+    const blushPixels: { i: number; weight: number }[] = []
+    eachTexel(target, of(FACE_MESH), { x0: 486, y0: 306, x1: 658, y1: 332 }, (u, v, x, y) => {
+      const weight = blushWeight(x, y), i = ((v - y0) * w + u - x0) * 4
+      if (weight > 0 && i >= 0 && i + 3 < output.length && output[i + 3]! > 200) blushPixels.push({ i, weight })
+    })
+    let lastBlush = -1
+    const setBlush = (amount: number) => {
+      const level = Math.round(Math.max(0, Math.min(1, amount)) * 32) / 32
+      if (level === lastBlush) return
+      lastBlush = level
+      const pixels = output.slice()
+      for (const { i, weight } of blushPixels) {
+        const a = weight * level * output[i + 3]! / 255
+        pixels[i] = output[i]! * (1 - weight * level) + 255 * a
+        pixels[i + 1] = output[i + 1]! * (1 - weight * level) + 105 * a
+        pixels[i + 2] = output[i + 2]! * (1 - weight * level) + 135 * a
+      }
+      gl.bindTexture(gl.TEXTURE_2D, p.textures[0] as WebGLTexture)
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+    }
     // テクスチャの差し替えが通ってから穴をふさぐ（途中で失敗したら元のメッシュのまま）。
     for (const { iris, loops } of holes) {
       const info = p.meshes[iris] as GlPlayer['meshes'][number], Indices = info.indices.constructor as new (a: number[]) => Uint16Array | Uint32Array
@@ -309,7 +336,7 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
       info.indices = new Indices([...info.indices, ...triangles])
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, info.indexBuffer); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, info.indices, gl.STATIC_DRAW)
     }
-    return { patched: true, brows, eyes, highlightHoles: holes.map(h => h.loops.length), slitTriangles: stitches.map(s => s.triangles.length / 3), rect: [x0, y0, x1, y1] }
+    return { setBlush, patched: true, brows, eyes, highlightHoles: holes.map(h => h.loops.length), slitTriangles: stitches.map(s => s.triangles.length / 3), rect: [x0, y0, x1, y1] }
   } finally {
     gl.bindFramebuffer(gl.FRAMEBUFFER, previous)
     gl.deleteFramebuffer(framebuffer)

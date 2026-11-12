@@ -1,6 +1,6 @@
-export type Emotion = 'neutral' | 'smile' | 'shy' | 'troubled' | 'surprised' | 'serious'
+export type Emotion = 'neutral' | 'smile' | 'smileClosed' | 'shy' | 'troubled' | 'surprised' | 'serious'
 export type Gesture = 'none' | 'nod' | 'tilt' | 'joy' | 'greet' | 'guide' | 'shyHand' | 'halt'
-export const emotions: readonly Emotion[] = ['neutral', 'smile', 'shy', 'troubled', 'surprised', 'serious']
+export const emotions: readonly Emotion[] = ['neutral', 'smile', 'smileClosed', 'shy', 'troubled', 'surprised', 'serious']
 export const gestures: readonly Gesture[] = ['none', 'nod', 'tilt', 'joy', 'greet', 'guide', 'shyHand', 'halt']
 export type Cue = { emotion: Emotion; gesture: Gesture }
 export interface ActingStage { setEmotion(e: Emotion): void; playGesture(g: Gesture): void; reset(): void; setViseme?(v: { open: number; width: number } | null): void; setPetOffset?(v: { headX: number; headY: number; headZ: number }): void }
@@ -30,7 +30,7 @@ export function cueForSentence(s: string): Cue {
   if (/照れ|恥ずかし|褒めすぎ|褒め/.test(s) || (/ありがとうございます/.test(s) && /えへ|そんな|でも/.test(s))) return { emotion: 'shy', gesture: 'shyHand' }
   if (/ありがとうございます/.test(s)) return { emotion: 'smile', gesture: 'nod' }
   if (/えっ|わっ|驚|びっくり|まさか/.test(s)) return { emotion: 'surprised', gesture: 'none' }
-  if (/よかった|嬉しい|うれしい|おめでとう|やった|できました|成功/.test(s)) return { emotion: 'smile', gesture: 'joy' }
+  if (/よかった|嬉しい|うれしい|おめでとう|やった|できました|成功/.test(s)) return { emotion: 'smileClosed', gesture: 'joy' }
   if (/^(こんにちは|おはよう|こんばんは|ようこそ|お疲れさま|おつかれさま|はじめまして)/.test(s.trimStart().replace(/^[^、,\s]{1,20}(?:さま|様)[、,\s]+/, ''))) return { emotion: 'smile', gesture: 'greet' }
   if (/こちら|ご案内|確認できます|開きますね|表示します|お見せします|メール|ノート|予定/.test(s)) return { emotion: 'smile', gesture: 'guide' }
   if (/[？?]$|(?:ですか|ますか)[。！？!?…]*$/.test(s.trim())) return { emotion: 'neutral', gesture: 'tilt' }
