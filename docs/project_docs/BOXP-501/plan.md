@@ -83,3 +83,4 @@ Hermes は Telegram への送信成功後、receipt より先に実送信本文�
 - Telegram への送信は Hermes の新しい deliver_only webhook route `kohako-home-reminder`（LLM なし、既存の task-board と同じ global WEBHOOK_SECRET の HMAC 署名、lolice で登録）で行う。
 - BFF: notifier だけが読める `GET /kohako/api/v1/notifications/status?ids=…`（既読・処理済み・返信の有無だけ。本文は返さない）。
 - rollback（種類単位）: `delivery-routing.md` を `task-board: telegram` に戻すと、次の通知から Hermes が Telegram へ本文を送る（再配備不要）。切替済みで未読の通知の催促は続く。
+- 催促・fallback は Telegram 相当の送信時刻から `CODEX_TASK_BOARD_HOME_REMINDER_MAX_AGE_HOURS`(既定 24) 時間以内の通知だけを対象にし、保存期限で状態が消えた古い通知へ再送しない。保存期限(prune)は既存と同じ。

@@ -171,7 +171,18 @@ def vault_receipt(vault, event, state, classification):
 
 
 
-def delivered_copy(vault, event, content, classification, kind=""):
+def delivery_routing(vault=VAULT):
+    try:
+        for line in (Path(vault).parent / "Projects/task-board-events/delivery-routing.md").read_text().splitlines():
+            match = re.fullmatch(r"\s*task-board:\s*(\S+)\s*", line)
+            if match:
+                return match[1] if match[1] in {"home", "telegram"} else "telegram"
+    except (OSError, UnicodeError):
+        pass
+    return "telegram"
+
+
+def delivered_copy(vault, event, content, classification, kind="", primary=None):
     """Save the text Telegram received. A reconciliation notice uses its own
     ``.notice`` copy so that a later formal report of the same event is never
     shadowed by (or deduplicated against) the notice in the home inbox."""
@@ -182,8 +193,11 @@ def delivered_copy(vault, event, content, classification, kind=""):
         fd, temporary = tempfile.mkstemp(prefix=".copy-", dir=directory)
         try:
             with os.fdopen(fd, "w") as stream:
-                json.dump({"event": event, "classification": classification, "text": content,
-                           "sent_at": clock().isoformat()}, stream)
+                payload = {"event": event, "classification": classification, "text": content,
+                           "sent_at": clock().isoformat()}
+                if primary:
+                    payload["primary"] = primary
+                json.dump(payload, stream)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, directory / (event + kind + ".md"))
@@ -447,6 +461,13 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
                     os.close(directory)
 
             save("intent")
+            if (delivery_routing(vault) == "home" and suffix != ".notice.json"
+                    and not content.startswith(NOTICE) and classification != "unresolved"
+                    and delivered_copy(vault, event, content, classification, primary="home")):
+                save("sent", channel="home", copied=True)
+                vault_receipt(vault, event, "sent", classification)
+                logger.info("task-board delivery event=%s classification=%s state=sent channel=home", event, classification)
+                return SendResult(success=True)
             try:
                 sent = await adapter._deliver_to(delivery, chat_id, content)
             except Exception:

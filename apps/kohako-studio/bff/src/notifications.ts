@@ -14,6 +14,7 @@ export async function createNotifications(dir: string, push: (item: Item) => Pro
   return {
     flush: () => queue,
     list: () => { const visible = items.filter(i => i.source !== 'task-board'); return { items: visible, unread: visible.filter(i => !i.readAt).length } },
+    status: (ids: string[]) => Object.fromEntries(ids.map(id => { const item = items.find(i => i.eventId === id); return [id, { exists: !!item, read: !!item?.readAt, handled: !!item?.handledAt, replied: !!item?.reply }] })),
     ingest: (x: any) => mutate(async () => {
       if (!validPayload(x)) return { status: 'invalid' as const }
       const old = items.find(i => i.eventId === x.eventId)

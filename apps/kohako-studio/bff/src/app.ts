@@ -40,8 +40,14 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
       const route = path.slice(base.length)
       if (route === 'notifications' || route.startsWith('notifications/') || route.startsWith('push/')) {
         if (!opts.notifications || !opts.push) return json(503, { error: 'notifications_disabled' })
-        const ingest = route === 'notifications/ingest', readOnly = method === 'GET' && route === 'notifications'
-        if (ingest ? principal !== 'notifier' : readOnly ? principal === 'notifier' : principal !== 'owner') return json(403, { error: 'forbidden' })
+        const status = route === 'notifications/status', ingest = route === 'notifications/ingest', readOnly = method === 'GET' && route === 'notifications'
+        if (status || ingest ? principal !== 'notifier' : readOnly ? principal === 'notifier' : principal !== 'owner') return json(403, { error: 'forbidden' })
+        if (status && method === 'GET') {
+          const params = new URL(req.url ?? '/', 'http://localhost').searchParams, raw = params.getAll('ids')
+          const ids = raw.length === 1 ? raw[0].split(',') : []
+          if (!ids.length || ids.length > 50 || ids.some(id => !/^[A-Za-z0-9._:-]{8,200}$/.test(id))) return json(400, { error: 'invalid' })
+          return json(200, { items: opts.notifications.status(ids) })
+        }
         if (readOnly) return json(200, opts.notifications.list())
         if (method === 'GET' && route === 'push/key') return json(200, { publicKey: opts.push.publicKey })
         const match = /^notifications\/([A-Za-z0-9._:-]{8,200})\/(read|handled|reply|announced|announcing)$/.exec(route)

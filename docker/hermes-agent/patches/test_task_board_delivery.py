@@ -72,6 +72,44 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
     def shape(self, text, *, marker=False, failed=False):
         return delivery.shape(self.source, {"failed": failed}, text, marker, self.vault)
 
+    def routing(self, value):
+        path = self.vault.parent / "Projects/task-board-events/delivery-routing.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("task-board: " + value + "\n")
+
+    def test_routing_defaults_and_values(self):
+        self.assertEqual(delivery.delivery_routing(self.vault), "telegram")
+        for value, expected in [("home", "home"), ("telegram", "telegram"), ("bad", "telegram")]:
+            self.routing(value)
+            self.assertEqual(delivery.delivery_routing(self.vault), expected)
+
+    async def test_home_report_and_duplicate(self):
+        self.routing("home")
+        self.note("notified")
+        self.assertTrue((await self.send("report")).success)
+        self.assertTrue((await self.send("report")).success)
+        self.assertEqual(self.calls, [])
+        copy = self.vault.parent / "Projects/task-board-events/delivered-copies" / (EVENT + ".md")
+        self.assertEqual(json.loads(copy.read_text())["primary"], "home")
+        receipt = json.loads(next(self.root.glob("*.json")).read_text())
+        self.assertEqual((receipt["state"], receipt["channel"], receipt["copied"]), ("sent", "home", True))
+
+    async def test_home_copy_failure_falls_back(self):
+        self.routing("home")
+        self.note("notified")
+        with patch.object(delivery, "delivered_copy", return_value=False):
+            self.assertTrue((await self.send("report")).success)
+        self.assertEqual(self.calls, ["report"])
+
+    async def test_home_keeps_unresolved_notice_and_quiet(self):
+        self.routing("home")
+        with self.quiet():
+            self.assertTrue((await self.send("report")).success)
+            self.assertEqual(self.calls, [])
+        self.assertTrue((await self.send("report")).success)
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn(delivery.NOTICE, self.calls[0])
+
     async def test_quiet_hold_and_daytime_redelivery(self):
         self.note("notified")
         with patch.object(delivery, "clock", return_value=datetime(2026, 10, 29, 23, 59, tzinfo=timezone.utc)):
