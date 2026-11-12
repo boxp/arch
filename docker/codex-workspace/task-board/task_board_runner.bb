@@ -6256,7 +6256,9 @@
           {:hold "git-error"}
           (let [mismatches (volatile! 0)
                 skipped (set (map #(subs % 2) (filter #(or (str/starts-with? % "S ") (re-find #"^[a-z] " %)) (str/split (:out tags) #"\u0000"))))
-                targets (set (keep #(try (str (fs/real-path %)) (catch java.nio.file.NoSuchFileException _ nil)) (remove str/blank? (str/split (:out links) #"\u0000"))))
+                ;; Symlink targets may be files or directories; a link to a
+                ;; directory protects every tracked file underneath it.
+                targets (vec (distinct (keep #(try (fs/real-path %) (catch java.nio.file.NoSuchFileException _ nil)) (remove str/blank? (str/split (:out links) #"\u0000")))))
                 files (keep (fn [entry]
                               (when-let [[_ mode sha stage rel] (re-matches #"(?s)(100644|100755) ([0-9a-f]+) ([0-9])\t(.*)" entry)]
                                 (let [path (fs/path co rel)]
@@ -6265,7 +6267,7 @@
                                              (>= (fs/get-attribute path "basic:size" {:nofollow-links true}) min-bytes)
                                              (= 1 (fs/get-attribute path "unix:nlink" {:nofollow-links true}))
                                              (fs/starts-with? (fs/real-path path) (fs/real-path co))
-                                             (not (targets (str (fs/real-path path))))
+                                             (let [real (fs/real-path path)] (not-any? #(fs/starts-with? real %) targets))
                                              (if (worktree-matches-blob? co rel sha) true
                                                  (do (vswap! mismatches inc) false)))
                                     rel)))) (str/split (:out index) #"\u0000"))

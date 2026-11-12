@@ -6103,6 +6103,28 @@ test_dehydrate_keeps_clean_filtered_bytes() {
   cmp -s "$co/large.txt" "$tmp/expected" || fail 'clean-filtered local bytes were dehydrated'
 }
 
+test_dehydrate_keeps_symlinked_dir_files() {
+  local tmp vault state source co run out
+  tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
+  mkdir -p "$state/locks" "$tmp/proc/100"
+  ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+  export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
+  make_prune_source_repo "$source"
+  mkdir -p "$source/assets"
+  head -c 307200 /dev/urandom >"$source/assets/linked"
+  head -c 307200 /dev/urandom >"$source/plain"
+  git -C "$source" add .; prune_git -C "$source" commit -qm assets
+  write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+  write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+  run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
+  co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
+  # A symlink elsewhere in the run points at the directory, not the file.
+  ln -s "$co/assets" "$state/workspaces/BOXP-519/$run/assets-link"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "$vault" "$state" >"$out"
+  [[ -f "$state/workspaces/BOXP-519/$run/assets-link/linked" ]] || fail 'file under symlinked directory was dehydrated'
+  [[ ! -e "$co/plain" ]] || fail 'unrelated file not dehydrated'
+}
+
 test_dehydrate_basic() {
   local tmp vault state source co run out
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; source="${tmp}/source"; out="${tmp}/out"
