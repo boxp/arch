@@ -399,8 +399,9 @@ function playReply() {
     onSentence: (_index: number, sentence: string, duration = 0) => { startViseme(sentence, duration || spokenSeconds(sentence), kohaku === false); acting?.sentence(cueForSentence(sentence)); if (acting) report.acting = acting.snapshot },
     onBoundary: (_index: number, charIndex: number) => syncViseme(charIndex),
     onChunkEnd: (index: number) => { speechNext = index + 1 },
-    onEnd: () => { clearSpeechResume(); if (state === 'speaking') show('done') },
-    onError: () => { if (state !== 'speaking') return; voiceTrouble = true; error.textContent = kohaku ? 'コハクの声で読めませんでした。「続きから読む」で読み直せます。設定の「読み上げの声」で端末の声に戻せます。' : '読み上げが途中で止まりました。「続きから読む」で続きを読めます。'; show('done'); offerSpeechResume() },
+    // 読み上げ失敗で止めた送信待ちは、続きを読み終えたら元どおり自動送信へ戻す。
+    onEnd: () => { clearSpeechResume(); if (queue.held === 'speech') queue.resume(); if (state === 'speaking') show('done') },
+    onError: () => { if (state !== 'speaking') return; voiceTrouble = true; error.textContent = kohaku ? 'コハクの声で読めませんでした。「続きから読む」で読み直せます。設定の「読み上げの声」で端末の声に戻せます。' : '読み上げが途中で止まりました。「続きから読む」で続きを読めます。'; offerSpeechResume(); show('done') },
   }
   if (kohaku) voicePlayer.speak(speechChunks, events, speechNext)
   else if (speaker) speaker.speak(speechChunks, events, speechNext)
@@ -447,6 +448,8 @@ function holdFor(): HoldReason | null {
   if (netDown || state === 'offline') return 'offline'
   if (state === 'stopped') return 'stopped'
   if (state === 'failed') return 'failed'
+  // 読み上げ失敗で「続きから読む」を出している間は、次の送信で再開位置が消えないよう自動送信を止める。
+  if (voiceTrouble && speechChunks.length > 0 && speechNext < speechChunks.length) return 'speech'
   return null
 }
 function renderQueue() {

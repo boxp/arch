@@ -7,7 +7,7 @@ export const QUEUE_MAX_CHARS = 500
 
 export type QueueItem = { id: number; text: string; addedAt: number }
 /** 自動送信を止めた理由。止まっている間は先頭を送らず、明示的な「再開」か「取消」を待つ。 */
-export type HoldReason = 'failed' | 'stopped' | 'auth' | 'unknown' | 'offline' | 'timeout'
+export type HoldReason = 'failed' | 'stopped' | 'auth' | 'unknown' | 'offline' | 'timeout' | 'speech'
 export type AddResult = { ok: true; item: QueueItem } | { ok: false; error: 'empty' | 'too_long' | 'full' }
 
 export const holdLabel: Record<HoldReason, string> = {
@@ -17,6 +17,7 @@ export const holdLabel: Record<HoldReason, string> = {
   unknown: '前の送信が受理されたか確認できないため',
   offline: '接続できないため',
   timeout: '前の依頼の確認がタイムアウトしたため',
+  speech: '読み上げが途中で止まったため（「続きから読む」で続きを読めます）',
 }
 
 export class MessageQueue {
