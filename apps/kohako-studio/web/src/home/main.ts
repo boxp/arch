@@ -761,7 +761,7 @@ async function startRig() {
   }
 }
 // 自動計測用（同一ページの状態を読むだけ）。
-Object.assign(window, { __kohakoHome: { report, get player() { return rig }, get state() { return state }, get scene() { return sceneNow() }, hitAreas: () => { computeAreas(); const r = rigCanvas.getBoundingClientRect(), abs = (a: Rect | null) => a && { x: a.x + r.left, y: a.y + r.top, w: a.w, h: a.h }; return { head: abs(areas.head), hands: areas.hands.map(abs) } }, get prefs() { return prefs }, history, debug: () => ({ pointerDown, typingIn: typingUntil - Date.now(), scrollingIn: scrollingUntil - Date.now(), director: { ...director }, target: targetScene({ state, thinkingMs: state === 'thinking' ? Date.now() - thinkingSince : 0, cardsOpen: cardsOpen || !viewer.hidden, idleMs: Date.now() - lastActivity, hasReply: !!lastReply, netDown }) }) } })
+Object.assign(window, { __kohakoHome: { report, get player() { return rig }, get stage() { return stage }, get state() { return state }, get scene() { return sceneNow() }, hitAreas: () => { computeAreas(); const r = rigCanvas.getBoundingClientRect(), abs = (a: Rect | null) => a && { x: a.x + r.left, y: a.y + r.top, w: a.w, h: a.h }; return { head: abs(areas.head), hands: areas.hands.map(abs) } }, get prefs() { return prefs }, history, debug: () => ({ pointerDown, typingIn: typingUntil - Date.now(), scrollingIn: scrollingUntil - Date.now(), director: { ...director }, target: targetScene({ state, thinkingMs: state === 'thinking' ? Date.now() - thinkingSince : 0, cardsOpen: cardsOpen || !viewer.hidden, idleMs: Date.now() - lastActivity, hasReply: !!lastReply, netDown }) }) } })
 setBubble('おかえりなさい、ご主人さま。'); show('offline')
 void initialize()
 void startRig()

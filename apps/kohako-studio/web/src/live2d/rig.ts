@@ -19,6 +19,23 @@ export function frameFor(model: RigModel, search: string): 'full' | 'upper' {
   return model.id.startsWith('kohako-full-') && new URLSearchParams(search).get('frame') === 'upper' ? 'upper' : 'full'
 }
 
+/**
+ * BOXP-510 TD-02: 家の canvas は腕・袖がモデル枠（1143 幅）の外へ振れても切れないよう左右へ余白（data-bleed）を持つ。
+ * 余白なしの時と同じ画面上の大きさ・位置で描くため、余白なしの幅 [base] で求めた拡大率に合わせて zoom を補正する。
+ * fit は余白なしの時の当てはめ倍率（上半身の縦位置の計算に使う）。
+ */
+export function bleedZoom(baseZoom: number, base: number, width: number, height: number, modelW: number, modelH: number): { zoom: number; fit: number } {
+  const fitOf = (w: number) => Math.min(w / modelW, height / modelH), fit0 = fitOf(base), fit1 = fitOf(width)
+  if (!(fit0 > 0) || !(fit1 > 0)) return { zoom: baseZoom, fit: fit1 > 0 ? fit1 : 0 }
+  return { zoom: baseZoom * fit0 / fit1, fit: fit0 }
+}
+
+/** 余白なしの canvas 幅: 全身は親（.character）の幅、上半身（?frame=upper か、横向き等で CSS が上半身枠にした時）はモデルの縦横比の幅。 */
+export function bleedBaseWidth(upper: boolean, rect: { width: number; height: number }, parentWidth: number | undefined, model: { width: number; height: number }): number {
+  if (upper) return rect.height * model.width / model.height
+  return parentWidth && parentWidth > 0 ? Math.min(parentWidth, rect.width) : rect.width
+}
+
 /** runtime（p2l.js / p2l_runtime.wasm）は [runtimeDir] から、モデルは model.rig（runtimeDir 相対）から読む。 */
 export async function loadRig(canvas: HTMLCanvasElement, model: RigModel, runtimeDir: string): Promise<RigLoad> {
   canvas.dataset.fullModel = String(model.id.startsWith('kohako-full-'))
@@ -37,8 +54,9 @@ export async function loadRig(canvas: HTMLCanvasElement, model: RigModel, runtim
     const updateFrame = () => {
       const upper = frameFor(model, location.search) === 'upper'
       const rect = canvas.getBoundingClientRect()
-      const fit = Math.min(rect.width / player.width, rect.height / player.height)
-      player.view.zoom = upper ? 1.8 : 1
+      const base = 'bleed' in canvas.dataset ? bleedBaseWidth(upper || canvas.parentElement?.dataset.frame === 'upper', rect, canvas.parentElement?.getBoundingClientRect().width, player) : rect.width
+      const { zoom, fit } = bleedZoom(upper ? 1.8 : 1, base, rect.width, rect.height, player.width, player.height)
+      player.view.zoom = zoom
       player.view.x = 0
       player.view.y = upper ? fit * player.height * 0.37 : 0
       player.draw()
