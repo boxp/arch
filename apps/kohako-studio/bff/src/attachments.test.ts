@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { mkdtemp, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -26,6 +26,20 @@ describe('attachments', () => {
     expect(whole.truncated).toBe(false); expect(whole.extractedText).toHaveLength(45000)
     const cut = await store.upload(Buffer.from('b'.repeat(50000)), 'text/plain', 'b.txt', 'owner', 1)
     expect(cut.truncated).toBe(true); expect(cut.extractedText).toHaveLength(48000)
+  })
+  it('deletes stored files exactly when the 24h retention ends, not up to an hour later', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kohako-attachments-'))
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    try {
+      const store = createAttachments(dir)
+      const item = await store.upload(Buffer.from('hello'), 'text/plain', 'a.txt', 'owner', 1)
+      const files = () => readdir(join(dir, 'attachments'))
+      const settle = async () => { for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r)) }
+      await vi.advanceTimersByTimeAsync(86400000 - 1000); await settle()
+      expect(await files()).toEqual(expect.arrayContaining([item.id + '.bin', item.id + '.json']))
+      await vi.advanceTimersByTimeAsync(1000); await settle()
+      expect(await files()).toEqual([])
+    } finally { vi.useRealTimers(); await rm(dir, { recursive: true, force: true }) }
   })
   it('expires and evicts oldest entries', async () => {
     let now = 1; const store = createAttachments(undefined, () => now, 20, 2)

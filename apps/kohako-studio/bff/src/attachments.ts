@@ -13,7 +13,7 @@ export class AttachmentError extends Error { constructor(public code: string, pu
 const fail = (code: string, status: number): never => { throw new AttachmentError(code, status) }
 export function createAttachments(dir?: string, now = Date.now, quota = 200 * 1024 * 1024, maxCount = 200) {
   const folder = dir && join(dir, 'attachments'), memory = new Map<string, { meta: Attachment; data: Buffer }>()
-  let lock = Promise.resolve()
+  let lock = Promise.resolve(), expiryTimer: ReturnType<typeof setTimeout> | undefined
   async function list(): Promise<Attachment[]> {
     if (!folder) return [...memory.values()].map(x => x.meta)
     await mkdir(folder, { recursive: true })
@@ -25,7 +25,17 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
   async function clean(extra = 0) {
     const items = (await list()).sort ( (a, b) => a.createdAt - b.createdAt )
     let total = items.reduce((n, x) => n + x.size, 0), count = items.length
-    for (const item of items) if (now() - item.createdAt >= 86400000 || total + extra > quota || count >= maxCount) { await remove(item.id); total -= item.size; count-- }
+    const kept: Attachment[] = []
+    for (const item of items) if (now() - item.createdAt >= 86400000 || total + extra > quota || count >= maxCount) { await remove(item.id); total -= item.size; count-- } else kept.push(item)
+    schedule(kept[0]?.createdAt)
+  }
+  /** 次に期限を迎える添付の作成から24時間ちょうどで削除を走らせ、保存期間の上限を超えて残さない。 */
+  function schedule(oldest?: number) {
+    if (expiryTimer) clearTimeout(expiryTimer)
+    expiryTimer = undefined
+    if (oldest === undefined) return
+    expiryTimer = setTimeout(() => { lock = lock.then(() => clean()).catch(() => {}) }, Math.min(Math.max(0, oldest + 86400000 - now()), 3600000))
+    expiryTimer.unref?.()
   }
   async function get(id: string, principal: string, sessionKey: number) {
     if (!/^[a-f0-9]{32}$/.test(id)) return undefined
@@ -65,11 +75,10 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
     if (extractedText && Buffer.byteLength(extractedText) > ATTACHMENT_TEXT_TOTAL) { let low = 0, high = extractedText.length; while (low < high) { const mid = Math.ceil((low + high) / 2); if (Buffer.byteLength(extractedText.slice(0, mid)) <= ATTACHMENT_TEXT_TOTAL) low = mid; else high = mid - 1 } extractedText = extractedText.slice(0, low); truncated = true }
     const displayName = filename.replace(/[\x00-\x1f\x7f-\x9f/\\]/g, '_').slice(0, 120) || 'file'
     const meta: Attachment = { id: randomBytes(16).toString('hex'), principal, sessionKey, kind, mime: detected, size: data.length, displayName, createdAt: now(), truncated, ...(extractedText !== undefined ? { extractedText } : {}) }
-    const work = lock.then(async () => { await clean(data.length); if (folder) { await writeFile(join(folder, meta.id + '.bin'), data, { mode: 0o600, flag: 'wx' }); await atomic(join(folder, meta.id + '.json'), meta) } else memory.set(meta.id, { meta, data }) })
+    const work = lock.then(async () => { await clean(data.length); if (folder) { await writeFile(join(folder, meta.id + '.bin'), data, { mode: 0o600, flag: 'wx' }); await atomic(join(folder, meta.id + '.json'), meta) } else memory.set(meta.id, { meta, data }); if (!expiryTimer) schedule(meta.createdAt) })
     lock = work.catch(() => {}); await work
     return meta
   }
-  void clean().catch(() => {})
-  const timer = setInterval(() => { lock = lock.then(() => clean()).catch(() => {}) }, 3600000); timer.unref()
+  lock = lock.then(() => clean()).catch(() => {})
   return { upload, get, clean }
 }
