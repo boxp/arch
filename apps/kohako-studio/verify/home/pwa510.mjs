@@ -6,10 +6,14 @@ import path from 'node:path'
 const out = process.argv[2] || '/out', site = process.env.SITE || '/site', port = Number(process.env.PORT || 8773)
 fs.mkdirSync(out, { recursive: true })
 let posts = 0, networkDown = false
+// 本番は Cloudflare Access の内側にある。Cookie の無い要求はログインへ 302 させ、資格情報なしの取得（manifest など）を検出する。
+const accessCookie = 'CF_Authorization=test', anonymous = []
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.webmanifest': 'application/manifest+json', '.wasm': 'application/wasm' }
 const server = http.createServer((req, res) => {
   if (networkDown) { req.socket.destroy(); return }
   const p = new URL(req.url, 'http://localhost').pathname
+  if (p === '/cdn-cgi/access/login') { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<title>Access login</title>'); return }
+  if (!(req.headers.cookie || '').includes(accessCookie)) { anonymous.push(p); res.writeHead(302, { location: '/cdn-cgi/access/login' }); res.end(); return }
   if (p.startsWith('/kohako/api/')) {
     if (req.method === 'POST') posts++
     const endpoint = p.split('/').pop()
@@ -28,6 +32,8 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
   await ctx.route(/^https?:\/\/(?!localhost)/, route => route.abort())
   try {
     const base = `http://localhost:${port}`
+    await ctx.addCookies([{ name: 'CF_Authorization', value: 'test', url: base }])
+    anonymous.length = 0
     await page.goto(`${base}/kohako/home.html?acting=0&face=static`)
     const manifest = await page.evaluate(async () => (await fetch('/kohako/manifest.webmanifest')).json())
     for (const [key, value] of Object.entries({ id: '/kohako/home.html', start_url: '/kohako/home.html', scope: '/kohako/', display: 'standalone', name: 'コハコの家', short_name: 'コハコ', theme_color: '#f3eef9', background_color: '#f3eef9' })) assert(manifest[key] === value, `${key}: ${manifest[key]}`)
@@ -39,7 +45,13 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     }
     await page.evaluate(() => navigator.serviceWorker.ready)
     await page.waitForFunction(() => navigator.serviceWorker.controller?.state === 'activated')
-    const cdp = await ctx.newCDPSession(page), installability = await cdp.send('Page.getInstallabilityErrors')
+    const cdp = await ctx.newCDPSession(page)
+    // installability だけではブラウザが <link rel=manifest> を取得しないことがあるため、getAppManifest で取得させて中身まで確かめる。
+    const appManifest = await cdp.send('Page.getAppManifest')
+    assert(appManifest.errors.length === 0 && new URL(appManifest.url).pathname.endsWith('/manifest.webmanifest'), `app manifest: ${appManifest.url} ${JSON.stringify(appManifest.errors)}`)
+    assert(JSON.parse(appManifest.data).id === '/kohako/home.html', 'app manifest data mismatch')
+    assert(anonymous.length === 0, `fetched without Access credentials: ${anonymous.join(', ')}`)
+    const installability = await cdp.send('Page.getInstallabilityErrors')
     assert(installability.installabilityErrors.length === 0, `installability: ${JSON.stringify(installability)}`)
     await page.evaluate(() => fetch('/kohako/api/v1/me'))
     const keys = await page.evaluate(async () => { const result = []; for (const name of await caches.keys()) for (const request of await (await caches.open(name)).keys()) result.push(request.url); return result })
