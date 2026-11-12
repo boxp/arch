@@ -4,7 +4,7 @@ export const presentation: Record<State, { label: string; face: string }> = {
   idle: { label: '待機中', face: 'idle' }, listening: { label: '聞いています', face: 'listening' },
   thinking: { label: '考えています', face: 'thinking' }, speaking: { label: '話しています', face: 'guiding' },
   done: { label: '応答を表示中', face: 'happy' }, approval: { label: '承認待ち', face: 'alert' },
-  failed: { label: '失敗', face: 'offline' }, offline: { label: '未接続', face: 'offline' }, stopped: { label: '停止しました', face: 'offline' },
+  failed: { label: '失敗', face: 'failed' }, offline: { label: '未接続', face: 'offline' }, stopped: { label: '停止しました', face: 'stopped' },
 }
 type Approval = { approvalId: string; summary: string; expiresAt: number }
 export type Result = { state: State; text?: string; approval?: Approval }

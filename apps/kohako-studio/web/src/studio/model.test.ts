@@ -8,6 +8,9 @@ describe('Studio の状態', () => {
     expect(interpretRequest({ status: 'failed', error: 'cancelled' })).toEqual({ state: 'stopped' })
     expect(interpretRequest({ status: 'pending' })).toEqual({ state: 'thinking' })
     expect(interpretRequest({ status: 'unknown' })).toEqual({ state: 'failed' })
+    expect(presentation.failed.face).toBe('failed')
+    expect(presentation.stopped.face).toBe('stopped')
+    expect(presentation.offline.face).toBe('offline')
     expect(presentation.speaking).toEqual({ label: '話しています', face: 'guiding' })
   })
   it('音声を 16kHz の PCM16LE に変換する', () => {
