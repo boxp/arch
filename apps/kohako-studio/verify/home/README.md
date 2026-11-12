@@ -26,3 +26,5 @@ Playwright コンテナ（`mcr.microsoft.com/playwright:v1.56.1-noble`、`npm i 
 `queue.mjs`（BOXP-508）は token 不要の完全な BFF モックを使い、PC と Pixel 7 相当の送信待ち、FIFO、読み上げ中の追加発言（読み上げを中断しない）、通信切れ時の保留（再接続だけでは送らない）、保留・再開、承認、受理未確認、上限と画面配置を検証します。ビルドを `/site/kohako`、出力先を `/out` に置き、Playwright 1.56.1 で `node queue.mjs /out` を実行します。結果は `result.json` とスクリーンショットに保存され、失敗時は終了コード 1 です。
 
 `usability510.mjs`（BOXP-510）は token 不要の完全な BFF モックで、PC と Pixel 7 相当の Enter 改行・Shift+Enter 送信、Markdown の安全な描画（script・javascript: リンク・画像を無効化し外部通信 0 件）、本文表示中の利用枠ウィジェット非表示、履歴・受信箱の昇順、背景の動きと OS の reduced-motion・「背景を動かす」OFF での静止を確かめます。ビルドを `SITE`（既定 `/site`）の `kohako/` に置き、Playwright 1.56.1 で `node usability510.mjs /out` を実行します。
+
+`background512.mjs`（BOXP-512）は BFF を完全にモックし、PC・Pixel 7 相当縦・スマホ横で時間帯と旧背景の表示、動きと各停止条件、連続画像の輝度差、文字のコントラスト、入力・ポインター操作を検証します。PC と Pixel 7 では CDP の処理時間とフレーム間隔も測定します。Playwright 1.56.1 でビルドを `SITE`（既定 `/site`）の `kohako/` に置き、`node background512.mjs /out` を実行します（`PORT` 既定 8795）。結果とスクリーンショットを出力し、assert 失敗または外部通信があれば終了コード 1 です。
