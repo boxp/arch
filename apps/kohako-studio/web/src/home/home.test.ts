@@ -89,7 +89,7 @@ describe('保存', () => {
     expect(parseUnconfirmed('{"kind":"text","text":1,"requestId":"abcdefgh","expiresAt":5}')).toBeNull()
   })
   it('不正な設定は既定値にする', () => {
-    expect(parsePrefs('{"touch":"yes","intensity":"loud","pinned":true}')).toEqual({ voice: 'kohaku', touch: true, follow: true, lines: true, intensity: 'normal', pinned: true, reducedMotion: false, bgMotion: true })
+    expect(parsePrefs('{"touch":"yes","intensity":"loud","pinned":true}')).toEqual({ voice: 'kohaku', touch: true, follow: true, lines: true, intensity: 'normal', pinned: true, reducedMotion: false, bgMotion: true, chestSway: true })
     expect(parsePrefs('{"bgMotion":false}').bgMotion).toBe(false)
     expect(parsePrefs('{"voice":"browser"}').voice).toBe('browser')
     expect(parsePrefs('{"voice":"other"}').voice).toBe('kohaku')
