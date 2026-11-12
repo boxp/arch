@@ -5418,7 +5418,7 @@
                   opts (:compilerOptions config)]
               (if (or (not= "dist" (:outDir opts)) (not= "src" (:rootDir opts))
                       (some #(get opts %) [:sourceMap :declaration :declarationMap :composite :outFile
-                                           :outDir-other :allowJs :emitDeclarationOnly :inlineSourceMap]))
+                                           :allowJs :emitDeclarationOnly :inlineSourceMap]))
                 "bff-dist-tsconfig-unsupported"
                 (letfn [(visit [path rel]
                           (cond
@@ -5433,6 +5433,23 @@
                                       (unknown rel)))))]
                   (visit (fs/path checkout bff-dist) ""))))))))
     (catch Exception e (str "bff-dist-scan-failed " (one-line (.getMessage e))))))
+
+(defn bff-dist-orphan-at?
+  "True when an output under bff/dist has no matching source in `rev`, or the
+  check cannot be made."
+  [checkout rev]
+  (try
+    (let [tree (command-result ["git" "-C" (str checkout) "ls-tree" "-r" "-z" "--name-only" rev "--" bff-src])
+          sources (set (str/split (:out tree) #"\u0000"))
+          root (fs/path checkout bff-dist)]
+      (or (not (zero? (:exit tree)))
+          (boolean (some (fn [f]
+                           (let [rel (str (fs/relativize root f))
+                                 stem (second (re-matches #"(.+)\.js" rel))]
+                             (not (and stem (contains? sources (str bff-src stem ".ts"))))))
+                         (filter #(fs/regular-file? % {:nofollow-links true})
+                                 (file-seq (fs/file root)))))))
+    (catch Exception _ true)))
 
 (defn inspect-ignored [checkout repo]
   ;; NUL output avoids ambiguity from quoted names and embedded newlines.
@@ -6275,9 +6292,13 @@
                     public-diff? (and (not (str/blank? base))
                                       (fs/exists? (fs/path old studio-dist) {:nofollow-links true})
                                       (not (zero? (:exit (command-result ["git" "-C" (str old) "diff" "--quiet" "HEAD" base "--" studio-public])))))
+                    ;; Edited sources only leave a stale but still regenerable
+                    ;; output; a tsconfig change or a source missing at the base
+                    ;; would turn the existing dist into unknown files.
                     bff-diff? (and (not (str/blank? base))
                                    (fs/exists? (fs/path old bff-dist) {:nofollow-links true})
-                                   (not (zero? (:exit (command-result ["git" "-C" (str old) "diff" "--quiet" "HEAD" base "--" bff-src (last bff-inputs)])))))
+                                   (or (not (zero? (:exit (command-result ["git" "-C" (str old) "diff" "--quiet" "HEAD" base "--" (last bff-inputs)]))))
+                                       (bff-dist-orphan-at? old base)))
                     keep-head? (and (or public-diff? bff-diff?) (zero? (:exit (command-result ["git" "-C" (str old) "merge-base" "--is-ancestor" base "HEAD"]))))
                     old-head-result (when keep-head? (command-result ["git" "-C" (str old) "rev-parse" "HEAD"]))
                     old-head (some-> old-head-result :out str/trim)

@@ -3522,10 +3522,18 @@ test_workspace_reuse_bff_dist() {
   assert_file_contains "$tmp/o" ':reused-from "20200101T000000Z"'
   old="$ws/BOXP-908/20200102T000000Z/ghq/github.com/boxp/arch"
   [[ -f "$old/apps/kohako-studio/bff/dist/app.js" ]] || fail 'bff dist not carried over'
-  git -C "$tmp/source" rm -q apps/kohako-studio/bff/src/app.ts; prune_git -C "$tmp/source" commit -q -m remove-source
+  # An edited source on the new base keeps the output regenerable: reuse.
+  echo 'export {}' >"$tmp/source/apps/kohako-studio/bff/src/app.ts"; prune_git -C "$tmp/source" commit -q -am edit-source
   git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD; git -C "$tmp/source" rev-list HEAD >"$tmp/known"
   reuse_lock "$tmp" BOXP-908 20200103T000000Z
   reuse_prepare "$tmp" BOXP-908 20200103T000000Z boxp/arch >"$tmp/o"
+  assert_file_contains "$tmp/o" ':reused-from "20200102T000000Z"'
+  old="$ws/BOXP-908/20200103T000000Z/ghq/github.com/boxp/arch"
+  [[ -f "$old/apps/kohako-studio/bff/dist/app.js" ]] || fail 'bff dist not carried over after source edit'
+  git -C "$tmp/source" rm -q apps/kohako-studio/bff/src/app.ts; prune_git -C "$tmp/source" commit -q -m remove-source
+  git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD; git -C "$tmp/source" rev-list HEAD >"$tmp/known"
+  reuse_lock "$tmp" BOXP-908 20200104T000000Z
+  reuse_prepare "$tmp" BOXP-908 20200104T000000Z boxp/arch >"$tmp/o"
   assert_file_contains "$tmp/o" ':reuse-fallback "bff-dist-src-diff"'
   [[ -f "$old/apps/kohako-studio/bff/dist/app.js" ]] || fail 'stale dist changed'
   rm -rf "$tmp"
