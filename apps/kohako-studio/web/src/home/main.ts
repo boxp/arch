@@ -5,6 +5,8 @@ import { initInbox } from './inbox'
 // BOXP-500: コハコの家（kohako-home）。Studio と同じ BFF・認証・Web 専用会話を使う全画面 UI。
 // 会話の送信・重複防止・停止・承認・追跡は Studio（src/studio/main.ts）と同じ規則。人格・判断・記憶は Hermes だけが持つ。
 import './style.css'
+import './room.css'
+import { buildRoomV1, daypartOf, roomOptions } from './room'
 import { states, formatPool, formatTasks, gaugeOf, taskBadgeOf, upstreamUnavailable, type Status } from './status'
 import { validateViews, mapsUrl, osmUrl, htmlSrcdoc, sanitizeHtml, type View } from './views'
 import { clipHold, isPetting, petFollow, petShown, zeroPet } from './petfollow'
@@ -227,6 +229,9 @@ message.addEventListener('keydown', e => { if (shouldSubmit(e)) { e.preventDefau
 for (const box of [bubble, cardsBox]) box.addEventListener('scroll', () => { scrollingUntil = Date.now() + 1000 }, { passive: true })
 window.addEventListener('pointerdown', () => { pointerDown = true }, true); window.addEventListener('pointerup', () => { pointerDown = false }, true); window.addEventListener('pointercancel', () => { pointerDown = false }, true)
 
+// ---- 背景（BOXP-512） ----
+const room = roomOptions(location.search)
+if (room.version === 'v1') { body.dataset.bg = 'v1'; document.querySelector('.room')?.replaceChildren(buildRoomV1(document)) }
 // ---- 時計 ----
 const days = ['日', '月', '火', '水', '木', '金', '土']
 let lastClock = ''
@@ -236,6 +241,7 @@ function tickClock() {
     lastClock = hm; el('clock').textContent = hm; el('clock-small').textContent = hm
     el('date').textContent = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${days[d.getDay()]}曜日`
     const h = d.getHours()
+    body.dataset.daypart = room.daypart ?? daypartOf(h)
     el('greeting').textContent = h < 5 ? 'こんな時間まで、おつかれさまです、ご主人さま。' : h < 11 ? 'おはようございます、ご主人さま。' : h < 18 ? 'こんにちは、ご主人さま。' : 'こんばんは、ご主人さま。今日もおつかれさまでした。'
   }
 }

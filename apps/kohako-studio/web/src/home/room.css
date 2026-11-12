@@ -1,0 +1,95 @@
+/* BOXP-512: コハコの家の背景「月窓の間」。
+   構図: 壁（七宝の地紋）＞ 丸窓（時間帯で変わる空・金の縁・ゆっくり巡る軌道）＞ 床（奥へ消える格子と窓明かり）＞ 手前・中・奥の三層の花びら。
+   コハコの後ろに丸窓を置き、場面と画面の形に合わせて窓が移る。文字が載る右側と上側の壁は静かに保つ。
+   動くのは transform / translate / rotate だけ（明滅・点滅はしない）。「背景を動かす」OFF・「動きを減らす」・OS の reduced-motion・非表示タブで止まる。 */
+.room{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;container-type:size;
+  --wx:23cqw;--wy:42cqh;--wd:min(77cqh,60cqw);--hz:81cqh;
+  --wall-a:#f6f1fc;--wall-b:#efe6f9;--floor-a:#e4d8f4;--floor-b:#f5effb;--gold:#c39a3e;--gold-soft:#e7d3a0;--line:#8d6fc4;
+  --sky:linear-gradient(180deg,#bfe3f8 0%,#dcdff9 52%,#fae3ee 100%);--g1:#ffffff;--g2:#aee6ee;--g3:#f6c6dc;--orb:#fffdf2;--orb-x:68%;--orb-y:24%;--orb-d:13%;--stars:0;--lat:rgba(255,255,255,.7)}
+body[data-daypart="morning"] .room{--sky:linear-gradient(180deg,#cfe4fb 0%,#f6e3ee 50%,#ffe0c8 100%);--g1:#fff6ea;--g2:#ffd3b4;--g3:#c9e2fb;--orb:#fff3d6;--orb-x:30%;--orb-y:66%;--orb-d:16%}
+body[data-daypart="evening"] .room{--sky:linear-gradient(180deg,#b7a6e6 0%,#f0b3c8 52%,#fbcfa0 100%);--g1:#ffe2b0;--g2:#f5a3b9;--g3:#a48fe2;--orb:#ffe9bd;--orb-x:70%;--orb-y:70%;--orb-d:17%;--lat:rgba(255,246,230,.7)}
+body[data-daypart="night"] .room{--sky:linear-gradient(180deg,#5a63c4 0%,#8f86d8 50%,#d2c0ee 100%);--g1:#aab6f5;--g2:#86cfe6;--g3:#b79be6;--orb:#fdfbff;--orb-x:66%;--orb-y:26%;--orb-d:12%;--stars:.85;--lat:rgba(236,232,255,.55)}
+
+/* 場面と画面の形ごとの丸窓の位置（コハコの立ち位置に合わせる） */
+body[data-scene="talk"] .room,body[data-scene="confirm"] .room,body[data-scene="offline"] .room,body[data-scene="show"] .room,body[data-scene="work"] .room,body[data-viewer="open"] .room{--wx:17cqw;--wy:50cqh;--wd:min(104cqh,70cqw)}
+body[data-shape="portrait"] .room{--wx:50cqw;--wy:60cqh;--wd:min(94cqw,62cqh);--hz:84cqh}
+body[data-shape="portrait"]:not([data-scene="relax"]) .room{--wx:62cqw;--wy:64cqh;--wd:min(118cqw,70cqh)}
+body[data-shape="landscape"] .room{--wx:18cqw;--wy:54cqh;--wd:92cqh;--hz:86cqh}
+
+.room>*,.room i{position:absolute;display:block}
+.room-wall{inset:0;background:radial-gradient(90% 70% at 88% 4%,rgba(255,255,255,.95),rgba(255,255,255,0) 62%),linear-gradient(180deg,var(--wall-a),var(--wall-b))}
+/* 七宝の地紋。角に寄せて薄く置き、文字の後ろでは目立たせない。 */
+.room-wall::after{content:"";position:absolute;inset:0;opacity:.5;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='44' height='44' fill='none' stroke='%23b9a3d8' stroke-width='.7'%3E%3Ccircle cx='0' cy='0' r='22'/%3E%3Ccircle cx='44' cy='0' r='22'/%3E%3Ccircle cx='0' cy='44' r='22'/%3E%3Ccircle cx='44' cy='44' r='22'/%3E%3Ccircle cx='22' cy='22' r='22'/%3E%3C/svg%3E") 0 0/44px 44px;
+  -webkit-mask-image:radial-gradient(70% 60% at 100% 100%,#000,transparent 70%),radial-gradient(46% 50% at 100% 0,rgba(0,0,0,.55),transparent 72%);mask-image:radial-gradient(70% 60% at 100% 100%,#000,transparent 70%),radial-gradient(46% 50% at 100% 0,rgba(0,0,0,.55),transparent 72%)}
+
+/* 丸窓 */
+.room-window,.room-orbit{left:var(--wx);top:var(--wy);width:var(--wd);aspect-ratio:1;translate:-50% -50%;border-radius:50%;transition:left .9s cubic-bezier(.22,.7,.2,1),top .9s cubic-bezier(.22,.7,.2,1),width .9s cubic-bezier(.22,.7,.2,1)}
+.room-window{box-shadow:0 0 0 10px rgba(255,255,255,.55),0 0 90px 30px rgba(214,196,246,.55),0 40px 70px -30px rgba(92,64,150,.45)}
+.room-window .sky{inset:0;border-radius:50%;overflow:hidden;background:var(--sky);transition:background 1.2s}
+.room-window .glow{width:86%;height:86%;border-radius:50%;background:radial-gradient(closest-side,var(--c),transparent);opacity:.9;will-change:translate}
+.room-window .g1{--c:var(--g1);left:-18%;top:-22%;animation:sky-drift-a 64s ease-in-out infinite alternate}
+.room-window .g2{--c:var(--g2);left:34%;top:18%;width:74%;height:74%;opacity:.7;animation:sky-drift-b 82s ease-in-out infinite alternate}
+.room-window .g3{--c:var(--g3);left:-6%;top:44%;width:96%;height:70%;opacity:.75;animation:sky-drift-c 73s ease-in-out infinite alternate}
+.room-window .orb{left:var(--orb-x);top:var(--orb-y);width:var(--orb-d);aspect-ratio:1;translate:-50% -50%;border-radius:50%;background:var(--orb);box-shadow:0 0 0 8px rgba(255,255,255,.18),0 0 46px 14px rgba(255,255,255,.55)}
+.room-window .stars{inset:0;opacity:var(--stars);background:radial-gradient(1.6px 1.6px at 22% 18%,#fff 60%,transparent),radial-gradient(1.2px 1.2px at 38% 9%,#fff 60%,transparent),radial-gradient(1.4px 1.4px at 52% 21%,#fff 60%,transparent),radial-gradient(1.1px 1.1px at 80% 12%,#fff 60%,transparent),radial-gradient(1.5px 1.5px at 86% 38%,#fff 60%,transparent),radial-gradient(1.1px 1.1px at 14% 36%,#fff 60%,transparent),radial-gradient(1.3px 1.3px at 44% 33%,#fff 60%,transparent),radial-gradient(1px 1px at 30% 27%,#fff 60%,transparent)}
+/* 障子の桟: 右寄りの縦 2 本と上寄りの横 1 本 */
+.room-window .lattice{inset:0;border-radius:50%;background:linear-gradient(90deg,transparent calc(71% - 1px),var(--lat) calc(71% - 1px),var(--lat) calc(71% + 1px),transparent calc(71% + 1px)),linear-gradient(90deg,transparent calc(84% - .5px),var(--lat) calc(84% - .5px),var(--lat) calc(84% + .5px),transparent calc(84% + .5px)),linear-gradient(180deg,transparent calc(27% - .5px),var(--lat) calc(27% - .5px),var(--lat) calc(27% + .5px),transparent calc(27% + .5px))}
+/* 金の縁 */
+.room-window .rim{inset:0;border-radius:50%;padding:3px;background:conic-gradient(from 215deg,#f1dfae,#b88a2e 18%,#fbf0cf 36%,#c9a24a 58%,#9a7424 76%,#f1dfae);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0)}
+/* 窓のまわりをゆっくり巡る軌道（回路の意匠を円弧に置き換えたもの） */
+.room-orbit{width:calc(var(--wd) + 44px);border:1px solid transparent;border-top-color:var(--gold);border-right-color:rgba(195,154,62,.35);animation:orbit 150s linear infinite}
+.room-orbit.o2{width:calc(var(--wd) + 96px);border-top-color:transparent;border-right-color:transparent;border-bottom-color:rgba(141,111,196,.55);border-left-color:rgba(141,111,196,.22);animation:orbit 210s linear infinite reverse}
+.room-orbit i{left:50%;top:0;width:7px;height:7px;translate:-50% -50%;border-radius:50%;background:var(--gold);box-shadow:0 0 0 3px rgba(195,154,62,.18)}
+.room-orbit.o2 i{top:100%;background:#38b6c9;box-shadow:0 0 0 3px rgba(56,182,201,.2)}
+
+/* 床 */
+.room-floor{left:0;right:0;top:var(--hz);bottom:0;overflow:hidden;background:linear-gradient(180deg,var(--floor-a),var(--floor-b) 70%)}
+.room-floor .grid{left:-60%;right:-60%;top:0;height:260%;transform-origin:50% 0;transform:perspective(46cqh) rotateX(74deg);background-image:linear-gradient(rgba(141,111,196,.34) 1px,transparent 1px),linear-gradient(90deg,rgba(141,111,196,.34) 1px,transparent 1px);background-size:9cqh 9cqh;-webkit-mask-image:linear-gradient(180deg,transparent 0,#000 22%,transparent 86%);mask-image:linear-gradient(180deg,transparent 0,#000 22%,transparent 86%)}
+.room-floor .sheen{left:var(--wx);top:0;width:calc(var(--wd)*1.05);height:100%;translate:-50% 0;background:radial-gradient(50% 100% at 50% 0,rgba(255,255,255,.85),transparent 72%);transition:left .9s cubic-bezier(.22,.7,.2,1),width .9s cubic-bezier(.22,.7,.2,1)}
+/* 壁と床の境の金線と、そこを時々渡る光 */
+.room-line{left:0;right:0;top:var(--hz);height:1px;background:linear-gradient(90deg,transparent,var(--gold-soft) 12%,var(--gold) 50%,var(--gold-soft) 88%,transparent)}
+.room-line i{left:0;top:-1px;width:22cqw;height:3px;border-radius:3px;background:linear-gradient(90deg,transparent,rgba(56,182,201,.9) 60%,#fff 92%,transparent);translate:-24cqw 0;animation:line-glint 30s cubic-bezier(.4,0,.3,1) infinite}
+
+/* 花びら: 奥（小さく淡い）・中・手前（大きくぼけた）の三層。 */
+.petals{inset:0}
+.petal{left:calc(var(--x)*1cqw);top:calc(var(--y)*1cqh);width:calc(var(--s)*1px);height:calc(var(--s)*.84px);opacity:var(--o);will-change:translate;animation:petal-fall var(--d) linear var(--t) infinite}
+.petal::before{content:"";position:absolute;inset:0;background:linear-gradient(140deg,#fde3ec 10%,#f4abc6 90%);rotate:var(--r);-webkit-mask:var(--petal) center/contain no-repeat;mask:var(--petal) center/contain no-repeat;animation:petal-tumble var(--td) ease-in-out var(--t) infinite alternate}
+.petals{--petal:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 20'%3E%3Cpath d='M12 19.5C5 15.5.5 9.5 3.6 4.2 5.4 1 8.9.8 10.9 2.9L12 5l1.1-2.1c2-2.1 5.5-1.9 7.3 1.3C23.5 9.5 19 15.5 12 19.5z'/%3E%3C/svg%3E")}
+.petal.near{--petal:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 32 28'%3E%3Cfilter id='b'%3E%3CfeGaussianBlur stdDeviation='1.3'/%3E%3C/filter%3E%3Cpath filter='url(%23b)' d='M12 19.5C5 15.5.5 9.5 3.6 4.2 5.4 1 8.9.8 10.9 2.9L12 5l1.1-2.1c2-2.1 5.5-1.9 7.3 1.3C23.5 9.5 19 15.5 12 19.5z'/%3E%3C/svg%3E")}
+/* x,y: 静止時の位置（%）  s: 大きさ(px)  o: 濃さ  d: 落ちる周期  t: ずらし  dx: 横への流れ(cqw)  r: 静止時の向き  td: ひるがえる周期 */
+.p1{--x:71;--y:13;--s:18;--o:.8;--d:34s;--t:-6s;--dx:-9;--r:25deg;--td:5.2s}
+.p2{--x:90;--y:63;--s:20;--o:.75;--d:38s;--t:-21s;--dx:-12;--r:-18deg;--td:6.1s}
+.p3{--x:7;--y:31;--s:17;--o:.75;--d:36s;--t:-13s;--dx:-7;--r:58deg;--td:5.6s}
+.p4{--x:33;--y:84;--s:19;--o:.7;--d:40s;--t:-30s;--dx:-10;--r:40deg;--td:6.6s}
+.p5{--x:46;--y:8;--s:11;--o:.55;--d:52s;--t:-9s;--dx:-5;--r:-30deg;--td:7.4s}
+.p6{--x:58;--y:44;--s:10;--o:.5;--d:58s;--t:-33s;--dx:-4;--r:70deg;--td:8.2s}
+.p7{--x:16;--y:66;--s:11;--o:.5;--d:55s;--t:-44s;--dx:-6;--r:10deg;--td:7.8s}
+.p8{--x:83;--y:29;--s:9;--o:.5;--d:62s;--t:-17s;--dx:-4;--r:-55deg;--td:8.8s}
+.p9{--x:27;--y:17;--s:10;--o:.45;--d:60s;--t:-51s;--dx:-5;--r:35deg;--td:9.1s}
+.p10{--x:96;--y:90;--s:44;--o:.5;--d:23s;--t:-4s;--dx:-18;--r:-22deg;--td:4.4s}
+.p11{--x:2;--y:6;--s:38;--o:.42;--d:27s;--t:-15s;--dx:-15;--r:48deg;--td:4.9s}
+.p12{--x:64;--y:96;--s:34;--o:.4;--d:25s;--t:-20s;--dx:-20;--r:12deg;--td:4.1s}
+@keyframes petal-fall{from{translate:calc(var(--dx)*-.5cqw) calc(var(--y)*-1cqh - 12cqh)}to{translate:calc(var(--dx)*.5cqw) calc(112cqh - var(--y)*1cqh)}}
+@keyframes petal-tumble{from{transform:translateX(-14px) rotate(-38deg) rotateX(-50deg)}to{transform:translateX(14px) rotate(52deg) rotateX(60deg)}}
+@keyframes sky-drift-a{from{translate:-6% -4%}to{translate:22% 12%}}
+@keyframes sky-drift-b{from{translate:8% -10%}to{translate:-24% 14%}}
+@keyframes sky-drift-c{from{translate:-12% 6%}to{translate:14% -12%}}
+@keyframes orbit{to{rotate:360deg}}
+@keyframes line-glint{0%{translate:-24cqw 0}46%,100%{translate:104cqw 0}}
+
+/* 止める条件 */
+body.bg-still .room *,body.bg-still .room *::before,body.tab-hidden .room *,body.tab-hidden .room *::before{animation-play-state:paused}
+body.reduce .room *,body.reduce .room *::before{animation:none!important;transition:none!important}
+@media (prefers-reduced-motion:reduce){.room *,.room *::before{animation:none!important;transition:none!important}}
+
+/* ---- 見比べ用: BOXP-510 初版（home.html?bg=v1）。Owner の受入後に削除する。 ---- */
+body[data-bg="v1"] .circuit{position:static;width:100%;height:100%;fill:none;stroke:#b9a3d8;stroke-width:1.2;opacity:.45}
+body[data-bg="v1"] .circuit circle{fill:#38b6c9;stroke:none;opacity:.6;animation:v1-node-glow 9s ease-in-out infinite alternate}
+body[data-bg="v1"] .circuit circle:nth-of-type(2){animation-delay:-3s}body[data-bg="v1"] .circuit circle:nth-of-type(3){animation-delay:-6s}body[data-bg="v1"] .circuit circle:nth-of-type(4){animation-delay:-4.5s}
+body[data-bg="v1"] .circuit path{stroke-dasharray:6 10;animation:v1-circuit-flow 40s linear infinite}
+body[data-bg="v1"] .petal{position:absolute;left:auto;top:auto;width:18px;height:14px;background:#f2c4d6;border-radius:80% 0 80% 0;opacity:.55;animation:v1-petal-drift 26s ease-in-out infinite alternate}
+body[data-bg="v1"] .petal::before{content:none}
+body[data-bg="v1"] .p1{top:12%;left:72%;transform:rotate(25deg)}body[data-bg="v1"] .p2{top:64%;left:88%;transform:rotate(-15deg);animation-duration:31s;animation-delay:-9s}body[data-bg="v1"] .p3{top:30%;left:6%;transform:rotate(60deg);animation-duration:23s;animation-delay:-5s}body[data-bg="v1"] .p4{top:82%;left:30%;transform:rotate(40deg);animation-duration:34s;animation-delay:-14s}body[data-bg="v1"] .p5{top:8%;left:44%;transform:rotate(-30deg);animation-duration:29s;animation-delay:-20s}
+@keyframes v1-petal-drift{0%{translate:0 0;rotate:0deg}50%{translate:-18px 22px;rotate:18deg}100%{translate:12px 44px;rotate:-10deg}}
+@keyframes v1-circuit-flow{to{stroke-dashoffset:-320}}
+@keyframes v1-node-glow{from{opacity:.45}to{opacity:.7}}
