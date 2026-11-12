@@ -1,6 +1,10 @@
 export type Approval = { requestId?: string; generation?: number; description: string; command: string; commandTruncated?: boolean; choices: ('once' | 'deny')[] }
 type Result = { status: 'done'; text: string; model?: string } | { status: 'failed'; error: string } | { status: 'unknown'; error?: string }
 export const APPROVAL_COMMAND_MAX = 2000
+// POST /v1/runs は Hermes が添付画像の取込み等を終えて 202 を返すまで数十秒〜2分かかることがある
+// （2026-11-12 実測: 画像付き 122s/90s、その後ろで待たされたテキスト 65s）。10s で打ち切ると上流では
+// run が実行されるのに家では失敗・session 切替になり、返答が届かない孤立 run と二重実行を生むため、作成だけ長く待つ。
+export const CREATE_RUN_TIMEOUT_MS = 240_000
 export type HermesInput = string | { role: 'user'; content: ({ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } })[] }[]
 export type RunOptions = {
   idempotencyKey: string
@@ -23,6 +27,7 @@ export function createHermes({
   now = Date.now,
   allowedToolsets = [],
   sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  createTimeoutMs = CREATE_RUN_TIMEOUT_MS,
 }: {
   url: string
   key: string
@@ -30,9 +35,10 @@ export function createHermes({
   now?: () => number
   allowedToolsets?: string[]
   sleep?: (ms: number) => Promise<void>
+  createTimeoutMs?: number
 }) {
   const auth = { Authorization: `Bearer ${key}` }
-  async function request(path: string, init: RequestInit, maxBytes = 65536) {
+  async function request(path: string, init: RequestInit, maxBytes = 65536, timeoutMs = 10_000) {
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout>
     try {
@@ -62,7 +68,7 @@ export function createHermes({
           timer = setTimeout(() => {
             controller.abort()
             reject(Error('timeout'))
-          }, 10_000)
+          }, timeoutMs)
         }),
       ])
     } finally {
@@ -108,7 +114,7 @@ export function createHermes({
             ? { provider: options.route.provider, model: options.route.model, model_options: { reasoning_effort: 'low' } }
             : {}),
         }),
-      })
+      }, 65536, createTimeoutMs)
       if (post.code) return { status: 'failed', error: post.code }
       const id = post.data?.run_id
       if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) return { status: 'unknown', error: 'hermes_schema' }
