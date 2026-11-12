@@ -101,6 +101,13 @@ describe('home.html', () => {
     expect(html).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/)
     expect(html).toContain('href="studio.html"')
   })
+  it('腕が枠外へ振れても切れないよう canvas に左右の余白を持たせ、上下だけ切る (BOXP-510 TD-02)', () => {
+    expect(readFileSync('home.html', 'utf8')).toMatch(/<canvas id="rig" data-bleed/)
+    const css = readFileSync('src/home/style.css', 'utf8')
+    expect(css).toContain('#rig[data-bleed]{left:calc(-1 * var(--rig-bleed));width:calc(100% + 2 * var(--rig-bleed))}')
+    expect(css).toContain('.character:not(.mini){overflow:visible;clip-path:inset(0 -100vmax)}')
+    expect(css).toMatch(/\.character\[data-frame="upper"\] #rig\{[^}]*2 \* var\(--rig-bleed-upper\)/)
+  })
 })
 
 describe('pollVerdict', () => {

@@ -22,10 +22,15 @@ button:focus-visible,a:focus-visible,textarea:focus-visible,input:focus-visible{
 .character{position:absolute;z-index:2;overflow:hidden;left:3%;bottom:0;width:40%;height:100%;transition:left .3s ease,width .3s ease,height .3s ease,bottom .3s ease,right .3s ease}
 .character img{width:100%;height:100%;object-fit:contain;object-position:bottom}
 #rig{position:absolute;left:0;top:0;width:100%;height:100%;display:block;touch-action:pan-y}
+/* BOXP-510 TD-02: 腕・袖がモデル枠の外へ振れても切れないよう、canvas を左右へ広げ（拡大率は rig.ts で補正し見た目の大きさは同じ）、.character は上下だけ切る。 */
+.character{--rig-bleed:25cqw;--rig-bleed-upper:60cqh}
+.character:not(.mini){overflow:visible;clip-path:inset(0 -100vmax)}
+.character.mini{--rig-bleed:0px;--rig-bleed-upper:0px}
+#rig[data-bleed]{left:calc(-1 * var(--rig-bleed));width:calc(100% + 2 * var(--rig-bleed))}
 #rig[hidden],.character img[hidden]{display:none}
 .character{container-type:size}
 /* 上半身: キャンバスをモデルの縦横比で高さの 185% にし、上端をそろえる（頭・手の判定は canvas の実位置から計算するので追従する） */
-.character[data-frame="upper"] #rig{height:185cqh;width:calc(185cqh * 1143 / 2048);max-width:none;left:50%;transform:translateX(-50%)}
+.character[data-frame="upper"] #rig{height:185cqh;width:calc(185cqh * 1143 / 2048 + 2 * var(--rig-bleed-upper));max-width:none;left:50%;transform:translateX(-50%)}
 .character.mini{cursor:pointer;border-radius:16px;background:rgba(255,255,255,.55);box-shadow:0 4px 14px rgba(60,40,90,.15)}
 .clock-face{position:absolute;z-index:1;right:6%;top:12%;text-align:right;transition:opacity .3s}
 .date{margin:0;font-size:clamp(1rem,2.4vw,1.5rem);color:var(--muted)}.clock{margin:0;font-size:clamp(3.5rem,12vw,9rem);font-weight:300;letter-spacing:.04em;font-variant-numeric:tabular-nums;color:var(--purple);line-height:1.05}
@@ -73,7 +78,7 @@ body[data-shape="portrait"][data-scene="offline"] .bubble{top:2%;bottom:auto;lef
 body[data-shape="portrait"] .approval{left:4vw;right:4vw;width:auto;top:8%;transform:none}
 body[data-shape="portrait"] .top .link,body[data-shape="portrait"] .small-clock{display:none}
 /* スマホ横: 左にコハコ（上半身）、右に吹き出し */
-body[data-shape="landscape"] .character{left:0;width:36%;height:100%}
+body[data-shape="landscape"] .character{left:2%;width:36%;height:100%}
 body[data-shape="landscape"] .bubble,body[data-shape="landscape"] .cards,body[data-shape="landscape"] .trouble{left:38%;right:2%;width:auto;top:3%;max-height:94%}
 body[data-shape="landscape"][data-scene="show"] .bubble{max-height:30%}body[data-shape="landscape"][data-scene="show"] .cards{top:35%;max-height:62%}
 body[data-shape="landscape"] .bubble::before{display:none}
@@ -122,13 +127,13 @@ body[data-shape="portrait"][data-scene="show"] .status-panel{left:calc(100% + 6p
 .viewer{position:absolute;z-index:8;right:2%;top:3%;width:min(42%,560px);max-height:94%;overflow:auto;overscroll-behavior:contain;background:#fff;border-radius:20px;padding:16px;box-shadow:0 4px 18px rgba(60,40,90,.2)}
 .viewer[hidden]{display:none}.viewer iframe{width:100%;height:300px;border:1px solid #ddd}.viewer a{display:inline-block;margin:6px 0}.view-bar{height:12px;background:#eee;border-radius:6px}.view-bar div{height:100%;background:#8264aa;border-radius:6px}
 body[data-viewer="open"] .cards,body[data-viewer="open"] .status-anchor{visibility:hidden}
-body[data-viewer="open"] .character{left:0;width:22%;height:78%}body[data-viewer="open"] .bubble{left:22%;top:3%;width:28%;max-height:45%}
+body[data-viewer="open"] .character{left:3%;width:22%;height:78%}body[data-viewer="open"] .bubble{left:25%;top:3%;width:27%;max-height:45%}
 body[data-shape="portrait"][data-viewer="open"] .viewer{left:3%;right:3%;width:auto;top:auto;bottom:0;max-height:45%}
 body[data-shape="portrait"][data-viewer="open"] .character{left:auto;right:2%;bottom:46%;width:35%;height:25%}
 body[data-shape="portrait"][data-viewer="open"] .bubble{left:3%;top:2%;width:60%;max-height:25%}
 body[data-shape="landscape"][data-viewer="open"] .viewer{left:55%;right:2%;width:auto;top:2%;max-height:96%}
-body[data-shape="landscape"][data-viewer="open"] .character{left:0;width:22%;height:90%}
-body[data-shape="landscape"][data-viewer="open"] .bubble{left:23%;width:29%;top:2%;max-height:70%}
+body[data-shape="landscape"][data-viewer="open"] .character{left:6%;width:22%;height:90%}
+body[data-shape="landscape"][data-viewer="open"] .bubble{left:28%;width:26%;top:2%;max-height:70%}
 body[data-viewer="open"] .character,body[data-viewer="open"] .bubble{transition:none;box-sizing:border-box}
 body[data-viewer="open"] .viewer{box-sizing:border-box}
 

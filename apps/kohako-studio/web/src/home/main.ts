@@ -114,7 +114,7 @@ function renderCards(next: Card[], views: View[] = []) {
     cardList.append(box)
   }
   for (const view of views) {
-    const button = document.createElement('button'); button.type = 'button'; button.textContent = view.kind === 'map' ? '地図を表示' : view.kind === 'usage' ? '利用枠のグラフを開く' : '図を開く'
+    const button = document.createElement('button'); button.type = 'button'; button.dataset.view = view.kind; button.textContent = view.kind === 'map' ? '地図をもう一度表示' : view.kind === 'usage' ? '利用枠のグラフをもう一度表示' : '図をもう一度表示'
     button.addEventListener('click', () => openViewer(view, button)); cardList.append(button)
   }
   cardsBox.hidden = !cardsOpen
@@ -375,8 +375,9 @@ function deliver(text: string, views: View[] = []) {
   lastReply = text; lastActivity = Date.now(); reply.dataset.reply = '1'
   setBubble(text || '（空の返答でした）'); addHistory('コハコ', text); renderCards(cardsFromText(text), views)
   const spoken = plainText(text)
-  const map = views.find(view => view.kind === 'map'), mapButton = map && cardList.querySelector<HTMLButtonElement>('button:last-child')
-  if (map && mapButton) openViewer(map, mapButton, false)
+  // 地図・利用枠グラフ・図はボタンを押さなくても返答と同時に開く（ボタンは閉じた後の再表示用）。
+  const first = views[0], firstButton = first && cardList.querySelector<HTMLButtonElement>('button[data-view]')
+  if (first && firstButton) openViewer(first, firstButton, false)
   if (actingEnabled && text) {
     const sentences = splitSentences(spoken)
     acting?.beginReply(); show('speaking')
@@ -767,7 +768,7 @@ async function startRig() {
   }
 }
 // 自動計測用（同一ページの状態を読むだけ）。
-Object.assign(window, { __kohakoHome: { report, get player() { return rig }, get state() { return state }, get scene() { return sceneNow() }, hitAreas: () => { computeAreas(); const r = rigCanvas.getBoundingClientRect(), abs = (a: Rect | null) => a && { x: a.x + r.left, y: a.y + r.top, w: a.w, h: a.h }; return { head: abs(areas.head), hands: areas.hands.map(abs) } }, get prefs() { return prefs }, history, debug: () => ({ pointerDown, typingIn: typingUntil - Date.now(), scrollingIn: scrollingUntil - Date.now(), director: { ...director }, target: targetScene({ state, thinkingMs: state === 'thinking' ? Date.now() - thinkingSince : 0, cardsOpen: cardsOpen || !viewer.hidden, idleMs: Date.now() - lastActivity, hasReply: !!lastReply, netDown }) }) } })
+Object.assign(window, { __kohakoHome: { report, get player() { return rig }, get stage() { return stage }, get state() { return state }, get scene() { return sceneNow() }, hitAreas: () => { computeAreas(); const r = rigCanvas.getBoundingClientRect(), abs = (a: Rect | null) => a && { x: a.x + r.left, y: a.y + r.top, w: a.w, h: a.h }; return { head: abs(areas.head), hands: areas.hands.map(abs) } }, get prefs() { return prefs }, history, debug: () => ({ pointerDown, typingIn: typingUntil - Date.now(), scrollingIn: scrollingUntil - Date.now(), director: { ...director }, target: targetScene({ state, thinkingMs: state === 'thinking' ? Date.now() - thinkingSince : 0, cardsOpen: cardsOpen || !viewer.hidden, idleMs: Date.now() - lastActivity, hasReply: !!lastReply, netDown }) }) } })
 setBubble('おかえりなさい、ご主人さま。'); show('offline')
 void initialize()
 void startRig()

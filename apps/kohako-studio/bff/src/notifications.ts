@@ -11,6 +11,7 @@ export async function createNotifications(dir: string, push: (item: Item) => Pro
   const mutate = <T>(fn: () => Promise<T> | T): Promise<T> => { const result = queue.then(fn); queue = result.then(() => {}, () => {}); return result }
   const save = () => atomic(path, items), leases = new Map<string, number>()
   return {
+    flush: () => queue,
     list: () => { const visible = items.filter(i => i.source !== 'task-board'); return { items: visible, unread: visible.filter(i => !i.readAt).length } },
     ingest: (x: any) => mutate(async () => {
       if (!validPayload(x)) return 'invalid' as const
