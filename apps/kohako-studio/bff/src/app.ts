@@ -7,6 +7,7 @@ import type { StatusPayload } from './status.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createConversation, type Input } from './conversation.js'
 import { createHermes } from './hermes.js'
+import { createTts, TtsError } from './tts.js'
 import { pcmToWav, STT_FINAL_FIELDS } from './stt.js'
 const BASE_INSTRUCTIONS = 'あなたの返答は Web UI の吹き出しに表示され、必要に応じて音声で読み上げられます。'
 // 視覚パネルを持つ家の画面（views: true を送る）だけに kohako-view 形式を指示する。Studio は views を表示しないので本文だけで返させる。
@@ -22,7 +23,7 @@ export const studioInstructions = BASE_INSTRUCTIONS
 // 完了・停止・本人判断待ちを silent にし、家にも Telegram にも届かない。Telegram 経由の依頼と同じ登録を Owner の発言 turn だけに求める。
 export const ownerTaskInstructions = ' ご主人さまの依頼でこの会話から Task Board に起票・再依頼・担当への引き継ぎをした場合は、Telegram 経由の依頼と同じく /opt/data/kohako-task-supervision.md に既存の書式で report-only の監督登録（家経由の依頼と明記）を追加して読み戻し、返答で票 ID を伝えてください。登録が無いと、その票の完了・停止・本人判断待ちの通知が家にも Telegram にも届きません。起票や引き継ぎをしていない turn では登録しません。'
 type Principal = 'owner' | 'verifier' | 'notifier'
-export function createApp(opts: { authenticate: (headers: IncomingMessage['headers']) => Promise<Principal | null>; hermes?: ReturnType<typeof createHermes>; notifications?: Awaited<ReturnType<typeof createNotifications>>; push?: Awaited<ReturnType<typeof createPush>>; sttUrl?: string; conversations?: { owner: ReturnType<typeof createConversation>; verifier: ReturnType<typeof createConversation> }; status?: { get: () => Promise<StatusPayload> }; now?: () => number; fetch?: typeof fetch; attachments?: ReturnType<typeof createAttachments> }) {
+export function createApp(opts: { authenticate: (headers: IncomingMessage['headers']) => Promise<Principal | null>; hermes?: ReturnType<typeof createHermes>; notifications?: Awaited<ReturnType<typeof createNotifications>>; push?: Awaited<ReturnType<typeof createPush>>; sttUrl?: string; tts?: ReturnType<typeof createTts>; conversations?: { owner: ReturnType<typeof createConversation>; verifier: ReturnType<typeof createConversation> }; status?: { get: () => Promise<StatusPayload> }; now?: () => number; fetch?: typeof fetch; attachments?: ReturnType<typeof createAttachments> }) {
   const now = opts.now ?? Date.now, fetcher = opts.fetch ?? fetch
   const attachments = opts.attachments ?? createAttachments(undefined, now)
   const geocode = createGeocoder({ fetcher })
@@ -72,6 +73,18 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
         }
       }
       if (principal === 'notifier') return json(403, { error: 'forbidden' })
+      if (route === 'tts' && (method === 'GET' || method === 'POST')) {
+        if (principal !== 'owner') return json(403, { error: 'forbidden' })
+        if (!opts.tts) return json(503, { error: 'tts_disabled' })
+        if (method === 'GET') return json(200, await opts.tts.status())
+        if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] ?? '')) return json(415, { error: 'content_type' })
+        const chunks: Buffer[] = []; let size = 0
+        for await (const chunk of req) { const b = Buffer.from(chunk); size += b.length; if (size > 4096) return json(413, { error: 'too_large' }); chunks.push(b) }
+        let x: any; try { x = JSON.parse(Buffer.concat(chunks).toString()) } catch { return json(400, { error: 'invalid' }) }
+        const start = now()
+        try { const audio = await opts.tts.synthesize(x?.text); const styleId = opts.tts.styleIdFor(audio); res.writeHead(200, { 'content-type': 'audio/wav', 'cache-control': 'no-store', 'x-kohako-tts-style-id': String(styleId), 'x-kohako-tts-ms': String(now() - start) }); return res.end(audio) }
+        catch (e) { const code = e instanceof TtsError ? e.code : 'tts_failed'; return json(code === 'invalid' ? 400 : code === 'busy' ? 429 : code === 'voice_unavailable' ? 503 : 502, { error: code === 'voice_unavailable' ? 'tts_voice_unavailable' : code }) }
+      }
       if (method === 'POST' && route === 'attachments') {
         if (!conv) return json(503, { error: 'conversation_disabled' })
         const chunks: Buffer[] = []; let size = 0
@@ -81,7 +94,7 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
       }
       if (method === 'GET' && route === 'status') return opts.status ? json(200, await opts.status.get()) : json(503, { error: 'status_disabled' })
       if (method === 'GET' && route === 'me') return json(200, { authenticated: true })
-      if (method === 'GET' && route === 'conversation') return json(200, { enabled: !!conv, stt: opts.sttUrl ? 'whisper' : null, sessionStartedAt: conv?.sessionStartedAt })
+      if (method === 'GET' && route === 'conversation') return json(200, { enabled: !!conv, tts: !!opts.tts, stt: opts.sttUrl ? 'whisper' : null, sessionStartedAt: conv?.sessionStartedAt })
       const match = /^requests\/([A-Za-z0-9-]{8,64})(\/cancel)?$/.exec(route)
       if (match && conv && ((method === 'GET' && !match[2]) || (method === 'POST' && match[2]))) {
         const entry = conv.get(match[1]); if (!entry) return json(404, { error: 'unknown_request' })

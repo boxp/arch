@@ -9,6 +9,7 @@ import { createNotifications } from './notifications.js'
 import { createGeocoder } from './geocode.js'
 import { createConversation } from './conversation.js'
 import { createAttachments } from './attachments.js'
+import { createTts } from './tts.js'
 import { createApp } from './app.js'
 const config = readConfig(process.env)
 const jwks = createJwksProvider({ url: `${config.team}/cdn-cgi/access/certs`, fetch, now: Date.now })
@@ -19,7 +20,7 @@ const notifications = config.dataDir && push ? await createNotifications(config.
 const geocode = createGeocoder({ fetcher: fetch })
 const conversations = hermes ? { owner: createConversation({ now: Date.now, hermes, prefix: 'kohako-web', store: config.dataDir, geocode }), verifier: createConversation({ now: Date.now, hermes, prefix: 'kohako-verify', store: config.dataDir, geocode }) } : undefined
 await Promise.all([conversations?.owner.restore(), conversations?.verifier.restore()])
-const server = createServer(createApp({ attachments: createAttachments(config.dataDir), authenticate, hermes, conversations, push, notifications, status: createStatus({ fetch, now: Date.now, quotaUrl: config.quotaUrl, boardUrl: config.boardUrl }), sttUrl: config.sttUrl }))
+const server = createServer(createApp({ attachments: createAttachments(config.dataDir), authenticate, hermes, conversations, push, notifications, status: createStatus({ fetch, now: Date.now, quotaUrl: config.quotaUrl, boardUrl: config.boardUrl }), sttUrl: config.sttUrl, tts: config.ttsUrl ? createTts({ url: config.ttsUrl, fetcher: fetch, now: Date.now }) : undefined }))
 server.listen(config.port, config.host)
 let closing = false
 const shutdown = () => {
