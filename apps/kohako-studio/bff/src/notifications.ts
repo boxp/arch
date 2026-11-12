@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { atomic, load } from './storage.js'
-export type Item = { eventId: string; source: string; eventType: string; ticketId?: string; jobId?: string; runId?: string; title: string; body: string; choices?: string[]; createdAt: string; receivedAt: string; deliveries: number; readAt?: string; announcedAt?: string; handledAt?: string; pushedAt?: string; pushSkipped?: 'quiet' | 'no-subscriptions' | 'error'; reply?: { replyId: string; kind: 'choice' | 'text'; value: string; requestId: string; claimedAt: string; status: 'claimed' | 'submitted' | 'submit_failed'; sessionId?: string; runId?: string } }
+export type PushStats = { subscriptions: number; sent: number; errors: number; removed: number }
+export type Item = { eventId: string; source: string; eventType: string; ticketId?: string; jobId?: string; runId?: string; title: string; body: string; choices?: string[]; createdAt: string; receivedAt: string; deliveries: number; readAt?: string; announcedAt?: string; handledAt?: string; pushedAt?: string; pushSkipped?: 'quiet' | 'no-subscriptions' | 'error'; pushStats?: PushStats; reply?: { replyId: string; kind: 'choice' | 'text'; value: string; requestId: string; claimedAt: string; status: 'claimed' | 'submitted' | 'submit_failed'; sessionId?: string; runId?: string } }
 const string = (v: unknown, max: number) => typeof v === 'string' && v.length > 0 && v.length <= max
 export function validPayload(x: any): boolean {
   return !!x && typeof x === 'object' && !Array.isArray(x) && Object.keys(x).every(k => ['eventId','source','eventType','ticketId','jobId','runId','title','body','choices','createdAt'].includes(k)) && typeof x.eventId === 'string' && /^[A-Za-z0-9._:-]{8,200}$/.test(x.eventId) && typeof x.source === 'string' && /^[a-z0-9-]{1,40}$/.test(x.source) && string(x.eventType,80) && (x.ticketId === undefined || typeof x.ticketId === 'string' && /^[A-Z]+-\d+$/.test(x.ticketId)) && (x.jobId === undefined || typeof x.jobId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(x.jobId)) && (x.runId === undefined || string(x.runId,120)) && string(x.title,200) && string(x.body,4000) && (x.choices === undefined || Array.isArray(x.choices) && x.choices.length <= 6 && x.choices.every((v: unknown) => string(v,40))) && typeof x.createdAt === 'string' && /^\d{4}-\d\d-\d\dT/.test(x.createdAt) && Number.isFinite(Date.parse(x.createdAt))
 }
-export async function createNotifications(dir: string, push: (item: Item) => Promise<{ pushedAt?: string; pushSkipped?: Item['pushSkipped'] }>, now = Date.now) {
+export async function createNotifications(dir: string, push: (item: Item) => Promise<{ pushedAt?: string; pushSkipped?: Item['pushSkipped']; pushStats?: PushStats }>, now = Date.now) {
   const path = join(dir, 'notifications.json'), items = await load<Item[]>(path, []); let queue = Promise.resolve()
   const mutate = <T>(fn: () => Promise<T> | T): Promise<T> => { const result = queue.then(fn); queue = result.then(() => {}, () => {}); return result }
   const save = () => atomic(path, items), leases = new Map<string, number>()
@@ -14,14 +15,14 @@ export async function createNotifications(dir: string, push: (item: Item) => Pro
     flush: () => queue,
     list: () => { const visible = items.filter(i => i.source !== 'task-board'); return { items: visible, unread: visible.filter(i => !i.readAt).length } },
     ingest: (x: any) => mutate(async () => {
-      if (!validPayload(x)) return 'invalid' as const
+      if (!validPayload(x)) return { status: 'invalid' as const }
       const old = items.find(i => i.eventId === x.eventId)
-      if (old) { old.deliveries++; await save(); return 'duplicate' as const }
+      if (old) { old.deliveries++; await save(); return { status: 'duplicate' as const } }
       const item: Item = { ...x, receivedAt: new Date(now()).toISOString(), deliveries: 1 }; items.push(item)
       while (items.length > 500) { let idx = items.findIndex(i => i.handledAt); if (idx < 0) idx = items.findIndex(i => i.readAt); items.splice(idx < 0 ? 0 : idx, 1) }
       await save()
       try { Object.assign(item, await push(item)) } catch { item.pushSkipped = 'error' }
-      await save(); return 'stored' as const
+      await save(); return { status: 'stored' as const, push: { pushSkipped: item.pushSkipped, ...item.pushStats } }
     }),
     /** 吹き出し表示前の仮押さえ（30秒）。永続化しないので、表示前にページが閉じても期限後に再案内できる。複数タブの同時表示を防ぐ。 */
     claimAnnounce: (id: string) => mutate(() => { const item = items.find(i => i.eventId === id); if (!item) return null; if (item.announcedAt || (leases.get(id) ?? 0) > now()) return false; leases.set(id, now() + 30_000); return true }),
