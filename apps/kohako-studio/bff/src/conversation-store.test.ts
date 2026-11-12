@@ -34,6 +34,11 @@ it('marks a pending run without id unknown and rotates session', async () => {
   expect(conv.get('request')).toMatchObject({ status: 'unknown', error: 'bff_restarted' })
   expect(conv.sessionStartedAt).toBe(200); expect(watch).not.toHaveBeenCalled()
 })
+it('marks a pending attachment run without id unknown so it is not resent blindly', async () => {
+  const { conv, watch, run } = await setup({ status: 'pending', attachments: [{ id: 'a', kind: 'text', displayName: 'a.txt' }] })
+  expect(conv.get('request')).toMatchObject({ status: 'unknown', error: 'bff_restarted' })
+  expect(watch).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled()
+})
 it('flush waits for the queued snapshot', async () => {
   const { conv, dir } = await setup({ status: 'pending' })
   await conv.flush()

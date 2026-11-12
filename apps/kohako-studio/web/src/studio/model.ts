@@ -48,7 +48,7 @@ export function silentSpeechSeconds(text: string): number {
   const chars = [...text.replace(/\s+/g, '')].length
   return Math.min(10, Math.max(1.5, chars / 8))
 }
-export type Outgoing = { kind: 'text'; text: string; requestId: string; expiresAt: number }
+export type Outgoing = { kind: 'text'; text: string; requestId: string; expiresAt: number; attachments?: string[]; attachmentNames?: string[] }
 /** 期限切れと判断する前に置く猶予（端末と BFF の時計ずれ・遅延到着に備える）。 */
 export const EXPIRY_GRACE_MS = 60_000
 export function newOutgoing(text: string, now: number, newId: () => string): Outgoing {
