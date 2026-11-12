@@ -20,6 +20,13 @@ describe('attachments', () => {
       await expect(store.upload(Buffer.from([0xff, 0]), 'text/plain', 'a.txt', 'owner', 1)).rejects.toMatchObject({ code: 'unsupported_type' })
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
+  it('keeps a 45KB ASCII text whole and only truncates beyond 48KB', async () => {
+    const store = createAttachments(undefined)
+    const whole = await store.upload(Buffer.from('a'.repeat(45000)), 'text/plain', 'a.txt', 'owner', 1)
+    expect(whole.truncated).toBe(false); expect(whole.extractedText).toHaveLength(45000)
+    const cut = await store.upload(Buffer.from('b'.repeat(50000)), 'text/plain', 'b.txt', 'owner', 1)
+    expect(cut.truncated).toBe(true); expect(cut.extractedText).toHaveLength(48000)
+  })
   it('expires and evicts oldest entries', async () => {
     let now = 1; const store = createAttachments(undefined, () => now, 20, 2)
     const a = await store.upload(Buffer.from('one'), 'text/plain', 'a.txt', 'owner', 1); now++

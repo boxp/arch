@@ -27,5 +27,5 @@
 ## 実装
 - Owner / verifier が 5 MiB 以下の画像・PDF・UTF-8 テキストを最大3件添付できる。保存は principal と会話セッションに紐付け、24時間・200件・200 MiBを上限とする。
 - 1回の送信で画像は合計5.5 MiB（base64後もHermes要求上限10MB未満）、PDF・テキストの抽出本文は1件・合計とも48KB（Hermes正規化テキスト64KB未満）。超過はUIとBFFで `attachments_too_large` / `attachment_text_too_large` として明示し送信しない（レビューP1対応）。
-- PDF は最大30ページ、PDF・テキストは最大40000文字を抽出する。添付内容は非信頼データとして Hermes に渡す。処理中の添付付き発言のキュー追加は制限する。
+- PDF は最大30ページ、PDF・テキストは抽出本文1件48KBまでを全文として渡し、超過分のみ省略する。添付内容は非信頼データとして Hermes に渡す。処理中の添付付き発言のキュー追加は制限する。
 - エラー: `too_large` (413), `unsupported_type` (415), `pdf_no_text` / `pdf_unreadable` (422), `unknown_attachment` (404)。

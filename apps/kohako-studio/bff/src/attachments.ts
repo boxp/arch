@@ -57,12 +57,11 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
         const task = pdfjs.getDocument({ data: new Uint8Array(data), isEvalSupported: false, disableFontFace: true, useSystemFonts: false, useWorkerFetch: false, stopAtErrors: true })
         let timer: ReturnType<typeof setTimeout> | undefined
         try {
-          const result = await Promise.race([(async () => { const pdf = await task.promise; let text = ''; for (let i = 1; i <= Math.min(pdf.numPages, 30); i++) { const page = await pdf.getPage(i), content = await page.getTextContent(); text += content.items.map(x => 'str' in x ? x.str : '').join(' ') + '\n'; if (text.length > 40000) break } truncated = pdf.numPages > 30 || text.length > 40000; return text })(), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(Error('timeout')), 10000) })])
+          const result = await Promise.race([(async () => { const pdf = await task.promise; let text = ''; for (let i = 1; i <= Math.min(pdf.numPages, 30); i++) { const page = await pdf.getPage(i), content = await page.getTextContent(); text += content.items.map(x => 'str' in x ? x.str : '').join(' ') + '\n'; if (Buffer.byteLength(text) > ATTACHMENT_TEXT_TOTAL) break } truncated = pdf.numPages > 30 || Buffer.byteLength(text) > ATTACHMENT_TEXT_TOTAL; return text })(), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(Error('timeout')), 10000) })])
           extractedText = result; if (!result.trim()) fail('pdf_no_text', 422)
         } finally { clearTimeout(timer); await task.destroy() }
       } catch (e) { if (e instanceof AttachmentError) throw e; return fail('pdf_unreadable', 422) }
     }
-    if (extractedText && extractedText.length > 40000) { extractedText = extractedText.slice(0, 40000); truncated = true }
     if (extractedText && Buffer.byteLength(extractedText) > ATTACHMENT_TEXT_TOTAL) { let low = 0, high = extractedText.length; while (low < high) { const mid = Math.ceil((low + high) / 2); if (Buffer.byteLength(extractedText.slice(0, mid)) <= ATTACHMENT_TEXT_TOTAL) low = mid; else high = mid - 1 } extractedText = extractedText.slice(0, low); truncated = true }
     const displayName = filename.replace(/[\x00-\x1f\x7f-\x9f/\\]/g, '_').slice(0, 120) || 'file'
     const meta: Attachment = { id: randomBytes(16).toString('hex'), principal, sessionKey, kind, mime: detected, size: data.length, displayName, createdAt: now(), truncated, ...(extractedText !== undefined ? { extractedText } : {}) }

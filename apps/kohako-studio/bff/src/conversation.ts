@@ -90,7 +90,7 @@ export function createConversation({ now, hermes, prefix, store, geocode = async
       for (const entry of state.entries.slice(-200)) {
         if (!entry || !entry.requestId || !entry.payloadHash) continue
         entries.set(entry.requestId, entry)
-        if (entry.status === 'pending' && !entry.runId) { entry.status = entry.attachments?.length ? 'failed' : 'unknown'; entry.error = entry.attachments?.length ? 'attachment_expired' : 'bff_restarted'; sessionStartedAt = Math.max(now(), sessionStartedAt + 1) }
+        if (entry.status === 'pending' && !entry.runId) { entry.status = 'unknown'; entry.error = 'bff_restarted'; sessionStartedAt = Math.max(now(), sessionStartedAt + 1) }
         // 停止要求中に再起動した場合は stop を再送する（再起動前の stop が届いたか確認できないため）。追跡中に届く承認は onApproval が拒否する。
         if (entry.status === 'pending' && entry.runId && entry.cancelRequested) { const runId = entry.runId; void Promise.resolve().then(() => hermes.stop(runId)).catch(() => undefined) }
       }
