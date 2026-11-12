@@ -9,8 +9,26 @@ export function normalizeChome(address: string): string | null {
 }
 
 // 都道府県を含む住所から自治体までを取り出す。政令市の区と郡内の町村も含める。
-function municipality(address: string): string | null {
-  return address.match(/^((?:北海道|東京都|京都府|大阪府|.{2,3}県)(?:[^市区町村郡]+郡[^市区町村郡]+[町村]|[^市区町村郡]+市(?:[^市区町村郡]+区)?|[^市区町村郡]+[区町村]))/)?.[1] ?? null
+// 自治体名自体に「市」「区」「町」「村」「郡」を含む例（市川市・町田市・東村山市・名古屋市中村区・余市郡余市町など）を
+// 文字クラスの除外で切らないよう、最短一致と名前に区切り文字を含む市の例外表で切り出す。
+const DESIGNATED_CITY = /^(?:札幌|仙台|さいたま|千葉|横浜|川崎|相模原|新潟|静岡|浜松|名古屋|京都|大阪|堺|神戸|岡山|広島|北九州|福岡|熊本)市/
+const TOKYO_WARD = /^(?:千代田|中央|港|新宿|文京|台東|墨田|江東|品川|目黒|大田|世田谷|渋谷|中野|杉並|豊島|北|荒川|板橋|練馬|足立|葛飾|江戸川)区/
+const CITY_WITH_DELIMITER = /^(?:四日市|廿日市|野々市|大和郡山|郡山|郡上|小郡)市/
+export function municipality(address: string): string | null {
+  const match = address.match(/^(北海道|東京都|京都府|大阪府|.{2,3}?県)(.+)$/)
+  if (!match) return null
+  const [, pref, rest] = match
+  const designated = rest.match(DESIGNATED_CITY)?.[0]
+  if (designated) return pref + designated + (rest.slice(designated.length).match(/^.{1,4}?区/)?.[0] ?? '')
+  const special = (pref === '東京都' ? rest.match(TOKYO_WARD) : null)?.[0] ?? rest.match(CITY_WITH_DELIMITER)?.[0]
+  if (special) return pref + special
+  const city = rest.match(/^.+?市/)?.[0]
+  const county = rest.match(/^(.+?郡)(.+?[町村])/)
+  // 郡名が「余市郡」のように市を含む時は、市の直後が郡なら郡として扱う。それより前で市が終わる時は市を優先する。
+  if (county && (!city || city.length >= county[1].length - 1)) return pref + county[0]
+  if (city) return pref + city
+  const local = rest.match(/^.+?[区町村]/)?.[0]
+  return local ? pref + local : null
 }
 function town(address: string): string | null {
   const match = address.match(/^(.+?)[\s　]*[0-9０-９〇零一二三四五六七八九十百千]+(?:丁目|番地|番|号|[-−ー－‐‑–—―]|\s|　|$)/)

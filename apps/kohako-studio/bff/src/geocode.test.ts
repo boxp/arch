@@ -1,5 +1,5 @@
 import { it, expect, vi } from 'vitest'
-import { createGeocoder, normalizeChome } from './geocode.js'
+import { createGeocoder, normalizeChome, municipality } from './geocode.js'
 import { validateView, type View } from './views.js'
 const map: View = { kind: 'map', title: '地図', destination: { name: '店名', address: '港区芝5-16-14' }, origin: '秘密の出発地' }
 const hit = [{ lat: '35.65', lon: '139.75', place_rank: 30, boundingbox: ['35.64', '35.66', '139.74', '139.76'] }], areaHit = [{ ...hit[0], place_rank: 22 }]
@@ -97,4 +97,26 @@ it('falls back to ward and county municipality names without duplicate queries',
     expect(new Set(queries).size).toBe(queries.length)
     expect(result.kind === 'map' && result.geo?.label).toBe(city)
   }
+})
+it('extracts municipalities whose names contain 市・区・町・村・郡', () => {
+  const cases: Array<[string, string]> = [
+    ['千葉県市川市八幡1-1-1', '千葉県市川市'],
+    ['愛知県名古屋市中村区名駅1-1-4', '愛知県名古屋市中村区'],
+    ['愛知県稲沢市朝府町2-33', '愛知県稲沢市'],
+    ['東京都町田市原町田6-1-1', '東京都町田市'],
+    ['東京都東村山市本町1-2-3', '東京都東村山市'],
+    ['東京都武蔵村山市本町1-1-1', '東京都武蔵村山市'],
+    ['東京都港区芝5丁目1番2号', '東京都港区'],
+    ['新潟県十日町市千歳町3-3', '新潟県十日町市'],
+    ['三重県四日市市諏訪町1-5', '三重県四日市市'],
+    ['奈良県大和郡山市北郡山町248-4', '奈良県大和郡山市'],
+    ['福島県郡山市朝日1-23-7', '福島県郡山市'],
+    ['北海道余市郡余市町朝日町26', '北海道余市郡余市町'],
+    ['北海道虻田郡倶知安町北一条西2丁目', '北海道虻田郡倶知安町'],
+    ['栃木県芳賀郡市貝町市塙1280', '栃木県芳賀郡市貝町'],
+    ['神奈川県横浜市中区本町6-50-10', '神奈川県横浜市中区'],
+    ['三重県津市広明町13', '三重県津市'],
+    ['東京都大島町元町1-1-14', '東京都大島町'],
+  ]
+  for (const [address, expected] of cases) expect(municipality(address), address).toBe(expected)
 })
