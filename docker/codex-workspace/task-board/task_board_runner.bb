@@ -5402,6 +5402,13 @@
                  "apps/kohako-studio/bff/package-lock.json"
                  "apps/kohako-studio/bff/tsconfig.json"])
 
+(def bff-tsconfig-top-keys #{:compilerOptions :include :exclude})
+;; compilerOptions that do not change which files tsc writes under outDir.
+(def bff-tsconfig-option-keys
+  #{:target :module :moduleResolution :strict :skipLibCheck :outDir :rootDir :types
+    :esModuleInterop :forceConsistentCasingInFileNames :lib})
+(def bff-tsconfig-excludes #{"src/**/*.test.ts" "src/**/*.fixture.ts"})
+
 (defn bff-dist-hold [checkout]
   (try
     (let [result (command-result (into ["git" "-C" (str checkout) "ls-files" "-z" "--"]
@@ -5416,9 +5423,17 @@
             (str "bff-dist-build-input-untracked path=" (one-line missing))
             (let [config (json/parse-string (slurp (str (fs/path checkout (last bff-inputs)))) true)
                   opts (:compilerOptions config)]
-              (if (or (not= "dist" (:outDir opts)) (not= "src" (:rootDir opts))
-                      (some #(get opts %) [:sourceMap :declaration :declarationMap :composite :outFile
-                                           :allowJs :emitDeclarationOnly :inlineSourceMap]))
+              ;; Fail closed: only a config whose emit set is exactly the
+              ;; tracked src/**/*.ts (minus test/fixture/.d.ts, which the scan
+              ;; below rejects) is accepted. Unknown keys such as noEmit,
+              ;; extends, files or a narrower include could mean an existing
+              ;; dist file is not reproducible by tsc.
+              (if (or (not (map? config)) (not (map? opts))
+                      (not (every? bff-tsconfig-top-keys (keys config)))
+                      (not (every? bff-tsconfig-option-keys (keys opts)))
+                      (not= "dist" (:outDir opts)) (not= "src" (:rootDir opts))
+                      (not= ["src/**/*.ts"] (:include config))
+                      (not (every? bff-tsconfig-excludes (:exclude config []))))
                 "bff-dist-tsconfig-unsupported"
                 (letfn [(visit [path rel]
                           (cond
