@@ -35,7 +35,7 @@ await scenario('speaking', async page => {
 // なでた直後（デバウンス中）に録音を開始 → touch は送られない
 await scenario('recordAfterTouch', async page => {
   await pat(page); await page.waitForTimeout(200)
-  const box = await page.locator('#record').boundingBox(); await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down()
+  await page.evaluate(() => document.getElementById('record').click())
   await page.waitForTimeout(3000); const st = await page.evaluate(() => window.__kohakoHome.state)
   return { stateWhileHolding: st, recordLabel: await page.locator('#record').textContent() }
 })
