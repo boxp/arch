@@ -111,7 +111,7 @@ function renderCards(next: Card[], views: View[] = []) {
     cardList.append(box)
   }
   for (const view of views) {
-    const button = document.createElement('button'); button.type = 'button'; button.textContent = view.kind === 'map' ? '地図を表示' : view.kind === 'usage' ? '利用枠のグラフを開く' : '図を開く'
+    const button = document.createElement('button'); button.type = 'button'; button.dataset.view = view.kind; button.textContent = view.kind === 'map' ? '地図をもう一度表示' : view.kind === 'usage' ? '利用枠のグラフをもう一度表示' : '図をもう一度表示'
     button.addEventListener('click', () => openViewer(view, button)); cardList.append(button)
   }
   cardsBox.hidden = !cardsOpen
@@ -368,8 +368,9 @@ function deliver(text: string, views: View[] = []) {
   lastReply = text; lastActivity = Date.now(); reply.dataset.reply = '1'
   setBubble(text || '（空の返答でした）'); addHistory('コハコ', text); renderCards(cardsFromText(text), views)
   const spoken = plainText(text)
-  const map = views.find(view => view.kind === 'map'), mapButton = map && cardList.querySelector<HTMLButtonElement>('button:last-child')
-  if (map && mapButton) openViewer(map, mapButton, false)
+  // 地図・利用枠グラフ・図はボタンを押さなくても返答と同時に開く（ボタンは閉じた後の再表示用）。
+  const first = views[0], firstButton = first && cardList.querySelector<HTMLButtonElement>('button[data-view]')
+  if (first && firstButton) openViewer(first, firstButton, false)
   if (actingEnabled && text) {
     const sentences = splitSentences(spoken)
     acting?.beginReply(); show('speaking')
