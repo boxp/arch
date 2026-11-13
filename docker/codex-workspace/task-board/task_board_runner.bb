@@ -2767,7 +2767,7 @@
            "Do the requested work end to end where possible.\n"
            (append-note-instruction agent ticket-id)
            review-contract
-           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\n")
+           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\nIf you return blocked only because time must pass (observation window, scheduled job, rollout), also add exactly one line TASK_BOARD_RECHECK_AT: <UTC ISO-8601 instant> between 5 minutes and 14 days ahead; the runner stores a recheck reservation and hands the card back to you as blocked-retry at that time without Owner action. Do not register your own cron for it.\n")
 
       :blocked-retry
       (str common
@@ -2776,7 +2776,7 @@
            "Do the work end to end where possible.\n"
            (append-note-instruction agent ticket-id)
            review-contract
-           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\n")
+           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\nIf you return blocked only because time must pass (observation window, scheduled job, rollout), also add exactly one line TASK_BOARD_RECHECK_AT: <UTC ISO-8601 instant> between 5 minutes and 14 days ahead; the runner stores a recheck reservation and hands the card back to you as blocked-retry at that time without Owner action. Do not register your own cron for it.\n")
 
       :implement
       (str common
@@ -2785,7 +2785,7 @@
            "Do the work end to end where possible, including focused validation.\n"
            (append-note-instruction agent ticket-id)
            review-contract
-           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\n")))))
+           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\nIf you return blocked only because time must pass (observation window, scheduled job, rollout), also add exactly one line TASK_BOARD_RECHECK_AT: <UTC ISO-8601 instant> between 5 minutes and 14 days ahead; the runner stores a recheck reservation and hands the card back to you as blocked-retry at that time without Owner action. Do not register your own cron for it.\n")))))
 
 (defn normalize-result
   "BOXP-395: `review` is the retired spelling of `continue`. Runs started before
@@ -2799,6 +2799,12 @@
 
 (defn wait-reason-marker [text]
   (some-> (re-find #"(?im)^TASK_BOARD_WAIT_REASON:\s*(owner-decision|external-hold|new-scope|agent-recoverable)\s*$" (or text "")) second str/lower-case))
+
+(defn recheck-at-marker [text]
+  (let [lines (re-seq #"(?im)^TASK_BOARD_RECHECK_AT:[^\r\n]*" (or text ""))]
+    (when (= 1 (count lines))
+      (try (str (.toInstant (java.time.OffsetDateTime/parse (str/trim (subs (first lines) (count "TASK_BOARD_RECHECK_AT:"))))))
+           (catch Exception _ nil)))))
 
 (defn github-pr-url? [text]
   (boolean (re-find #"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+" (or text ""))))
@@ -4599,6 +4605,108 @@
                    " because Notes recording failed"))
         false))))
 
+;; BOXP-537: one bounded reservation per ticket, shared by runners and CLI.
+(def recheck-mutex (Object.))
+(defn recheck-path [] (fs/path (root) "recheck-reservations.edn"))
+(defn with-recheck-lock [f]
+  (locking recheck-mutex
+    (let [path (fs/path (root) "locks" "recheck-reservations.lock")]
+      (fs/create-dirs (fs/parent path))
+      (with-open [file (java.io.RandomAccessFile. (str path) "rw")
+                  channel (.getChannel file)]
+        (let [_lock (.lock channel)] (f))))))
+(defn read-rechecks [] (read-edn-file (recheck-path) {}))
+(defn write-rechecks! [db]
+  (let [path (recheck-path) tmp (fs/path (fs/parent path) (str ".rechecks-" (random-uuid) ".tmp"))]
+    (write-edn-file! tmp db)
+    (fs/move tmp path {:replace-existing true :atomic-move true})))
+(defn recheck-max-chain [] (max 1 (env-long "CODEX_TASK_BOARD_RECHECK_MAX_CHAIN" "5")))
+(defn recheck-plan [previous run-id reason marker now]
+  (let [chain (if (and (= :consumed (:state previous)) (= run-id (:consumed-run-id previous)))
+                (inc (:chain previous)) 1)
+        due (try (some-> marker java.time.Instant/parse) (catch Exception _ nil))
+        min-seconds (max 0 (env-long "CODEX_TASK_BOARD_RECHECK_MIN_SECONDS" "300"))
+        valid? (and due (not (.isBefore due (.plusSeconds now min-seconds)))
+                    (not (.isAfter due (.plusSeconds now (* 14 86400))))) ]
+    (cond
+      (#{"owner-decision" "new-scope"} reason) {:note "再確認予約なし: 本人判断/範囲外待ち"}
+      (> chain (recheck-max-chain)) {:note "連続自動再確認上限到達: Owner 確認が必要"}
+      valid? {:kind :agent :due (str due) :chain chain}
+      (= "external-hold" reason) {:kind :fallback :due (str (.plusSeconds now (* 3600 (max 1 (env-long "CODEX_TASK_BOARD_RECHECK_FALLBACK_HOURS" "24"))))) :chain chain}
+      :else {:note "再確認予約なし: 有効な再確認期限がありません"})))
+(defn recheck-note [r]
+  (str "再確認予約: id=" (:id r) "; 期限=" (:due r) " ("
+       (.format (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd HH:mm:ss z")
+                (.atZone (java.time.Instant/parse (:due r)) (java.time.ZoneId/of "Asia/Tokyo")))
+       "); 再開担当=" (:resume-assignee r) "; 種別=" (name (:kind r))
+       "; 連続=" (:chain r) "/" (recheck-max-chain)
+       "; 取消は recheck-cancel または票の担当/レーン変更"))
+(defn save-recheck! [db ticket r]
+  (write-rechecks! (assoc db ticket r))
+  (update-frontmatter! ticket {:recheck_id (:id r) :recheck_at (:due r)
+                               :recheck_assignee (:resume-assignee r) :recheck_state "pending"})
+  (append-note! ticket (recheck-note r))
+  r)
+(defn create-agent-recheck! [ticket run-id assignee rev message]
+  (with-recheck-lock
+    (fn []
+      (let [db (read-rechecks) plan (recheck-plan (get db ticket) run-id (wait-reason-marker message)
+                                                   (recheck-at-marker message) (java.time.Instant/now))]
+        (if-let [note (:note plan)]
+          (do (when (= :pending (:state (get db ticket)))
+                (write-rechecks! (assoc db ticket (assoc (get db ticket) :state :superseded :reason "new blocked transition")))
+                (update-frontmatter! ticket {:recheck_state "superseded"}))
+              (append-note! ticket note))
+          (save-recheck! db ticket (merge plan {:id (str "rc-" (random-uuid)) :ticket ticket
+                                               :resume-assignee assignee :board-rev rev :run-id run-id
+                                               :created-at (now-str) :state :pending})))))))
+(defn consume-recheck! [ticket rev run-id]
+  (with-recheck-lock
+    (fn []
+      (let [db (read-rechecks) r (get db ticket)]
+        (when (and (= :fired (:state r)) (= rev (:fired-rev r)))
+          (write-rechecks! (assoc db ticket (assoc r :state :consumed :consumed-run-id run-id)))
+          (update-frontmatter! ticket {:recheck_state "consumed"})
+          true)))))
+(defn prepare-blocked-retry! [ticket rev run-id]
+  (when-not (consume-recheck! ticket rev run-id)
+    (clear-continuation-budget! ticket)))
+(defn sweep-rechecks! []
+  (with-recheck-lock
+    (fn []
+      (doseq [[ticket r] (read-rechecks)
+              :when (and (= :pending (:state r))
+                         (or (nil? @only-ticket) (= @only-ticket ticket))
+                         (try (not (.isAfter (java.time.Instant/parse (:due r)) (java.time.Instant/now)))
+                              (catch Exception _ false)))]
+        (try
+        (with-ticket-lock-guard ticket
+          (fn []
+        (let [fm (when (fs/exists? (ticket-path ticket)) (ticket-frontmatter ticket))
+              cards (filter #(= ticket (:ticket-id %)) (parse-board-cards (vec (read-lines (board-path)))))
+              card (when (= 1 (count cards)) (first cards))
+              changed (cond (nil? fm) "票なし" (nil? card) "カードなし/重複"
+                            (or (not= "blocked" (:status fm)) (not= "blocked" (:status card))) "レーン"
+                            (or (not= "boxp" (:assignee fm)) (not= "boxp" (attr-value (:line card) "assignee"))) "担当"
+                            (not= (:board-rev r) (:board_rev fm)) "board_rev"
+                            (not= (:board-rev r) (card-rev card)) "カードのboard_rev")]
+          (cond
+            changed (do (write-rechecks! (assoc (read-rechecks) ticket (assoc r :state :superseded :reason changed)))
+                        (when fm (update-frontmatter! ticket {:recheck_state "superseded"})
+                              (append-note! ticket (str "再確認予約 " (:id r) " は票の状態変更(" changed ")により取消"))))
+            (or (fs/exists? (lock-path ticket)) (contains? @in-flight-futures ticket)) nil
+            :else (let [rev (new-rev) minutes (max 0 (quot (- (.getEpochSecond (java.time.Instant/now))
+                                                               (.getEpochSecond (java.time.Instant/parse (:due r)))) 60))]
+                    (move-card! ticket "blocked" (:resume-assignee r) rev)
+                    (update-frontmatter! ticket {:assignee (:resume-assignee r) :board_rev rev :recheck_state "fired"})
+                    (write-rechecks! (assoc (read-rechecks) ticket (assoc r :state :fired :fired-rev rev :fired-at (now-str))))
+                    (append-note! ticket (str "再確認予約 " (:id r) " 期限到来 (期限=" (:due r) ", 超過=" minutes
+                                              "分): Blocked のまま元担当 " (:resume-assignee r)
+                                              " へ正規再投入 (blocked-retry、継続予算は維持)")))))))
+          ;; One broken ticket must not stop the tick for every other card.
+          (catch Exception e
+            (log! (str "recheck sweep failed for " ticket ": " (.getMessage e)))))))))
+
 (defn block-ticket! [ticket-id run-id action result exit review-gate exception last-message]
   (when (record-blocked-transition! ticket-id run-id action result exit review-gate exception)
     ;; Keep the post-audit transition inside this boundary.  Otherwise a
@@ -4609,12 +4717,19 @@
       ;; have been updated.  A later card/frontmatter failure is recovered to
       ;; the prior lane by process-card!, so recording :blocked beforehand
       ;; would leave summary.edn contradicting the restored ticket state.
-      (let [rev (new-rev)]
+      (let [resume-assignee (when (fs/exists? (ticket-path ticket-id)) (:assignee (ticket-frontmatter ticket-id)))
+            rev (new-rev)]
         (move-card! ticket-id "blocked" "boxp" rev)
         ;; Deterministic black-box failure hook; unset in deployment.
         (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE"))
           (throw (ex-info "forced blocked state update failure" {})))
-        (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp" :board_rev rev}))
+        (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp" :board_rev rev})
+        (when (and (supported-assignee? resume-assignee) (= "agent-reported-blocked" (blocker-category result exit review-gate exception))
+                   (or (nil? review-gate) (:ok? review-gate)))
+          (try (create-agent-recheck! ticket-id run-id resume-assignee rev last-message)
+               (catch Exception e
+                 (log! (str "recheck reservation failed: " (.getMessage e)))
+                 (try (append-note! ticket-id "再確認予約の保存に失敗しました。Owner 確認が必要") (catch Exception _ nil))))))
       ;; run-agent! records a zero-exit agent as succeeded before its result is
       ;; interpreted. Correct that provisional status only after the Blocked
       ;; transition itself has succeeded.
@@ -4918,7 +5033,7 @@
                 ;; The runner hands a stopped card to boxp, so seeing it with a
                 ;; worker again means someone explicitly resumed it.
                 (when (= :blocked-retry action)
-                  (clear-continuation-budget! ticket-id))
+                  (prepare-blocked-retry! ticket-id start-rev (:run-id lock)))
                 (when (#{"ready" "review" "blocked"} status)
                   (move-card! ticket-id "in-progress")
                   (update-frontmatter! ticket-id {:status "in-progress"}))
@@ -6933,6 +7048,7 @@
     (do
       (sync-all!)
       (let [done (collect-completed-futures!)
+            _ (sweep-rechecks!)
             in-flight-ids (set (keys @in-flight-futures))
             candidates (candidate-cards)
             new-candidates (vec (remove #(contains? in-flight-ids (:ticket-id %)) candidates))
@@ -6996,8 +7112,48 @@
     (Thread/sleep (* 1000 (Long/parseLong (env "CODEX_TASK_BOARD_POLL_SECONDS" "60"))))
     (recur)))
 
+(defn recheck-reserve! [ticket at assignee by]
+  (let [due (try (str (java.time.Instant/parse at)) (catch Exception _ (fail "invalid instant")))]
+    (when-not (supported-assignee? assignee) (fail "unsupported assignee"))
+    (with-recheck-lock
+      (fn []
+        (let [db (read-rechecks) fm (ticket-frontmatter ticket)
+              cards (filter #(= ticket (:ticket-id %)) (parse-board-cards (vec (read-lines (board-path)))))
+              card (when (= 1 (count cards)) (first cards))]
+          (when (= :pending (:state (get db ticket))) (fail "pending reservation exists"))
+          (when-not (and (= "blocked" (:status fm)) (= "boxp" (:assignee fm))
+                         (= "blocked" (:status card)) (= "boxp" (attr-value (:line card) "assignee"))
+                         (not (str/blank? (:board_rev fm)))
+                         (= (:board_rev fm) (card-rev card)))
+            (fail "ticket must be Blocked and assigned to boxp with matching revision"))
+          (save-recheck! db ticket {:id (str "rc-" (random-uuid)) :ticket ticket :due due
+                                   :resume-assignee assignee :kind :manual :chain 1 :board-rev (:board_rev fm)
+                                   :run-id nil :created-at (now-str) :state :pending :reason (str "by " by)}))))))
+(defn recheck-cancel! [ticket by]
+  (with-recheck-lock
+    (fn [] (let [db (read-rechecks) r (get db ticket)]
+             (when-not (= :pending (:state r)) (fail "no pending reservation"))
+             (let [r (assoc r :state :cancelled :reason (str "by " by))]
+               (write-rechecks! (assoc db ticket r))
+               (update-frontmatter! ticket {:recheck_state "cancelled"})
+               (append-note! ticket (str "再確認予約 " (:id r) " を " by " が取消"))
+               r)))))
+(defn recheck-audit []
+  (let [db (with-recheck-lock read-rechecks)]
+    (->> (parse-board-cards (vec (read-lines (board-path))))
+         (keep (fn [{:keys [ticket-id status]}]
+                 (when (and (= "blocked" status) (fs/exists? (ticket-path ticket-id))
+                            (= "boxp" (:assignee (ticket-frontmatter ticket-id)))
+                            (not= :pending (:state (get db ticket-id))))
+                   (let [lines (str/split-lines (slurp (str (ticket-path ticket-id))))
+                         line (last (filter #(str/includes? % "Blocked transition recorded:") lines))
+                         run-id (some-> (re-find #"(?:^|;\s*)run=([^;\s]+)" (or line "")) second)]
+                     (when (and run-id (str/includes? line "category=agent-reported-blocked"))
+                       {:ticket ticket-id :run-id run-id
+                        :wait-reason (:wait-reason (read-edn-file (fs/path (run-dir ticket-id run-id) "summary.edn") {}))}))))) vec)))
+
 (defn usage []
-  (println "usage: task_board_runner.bb <tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|reclaim-generated [--dry-run]|workspace-metrics [--since-hours N]|localllm-migrate-markers [--apply]|gate-budget-status BOXP-N|gate-budget-exclude-pr BOXP-N owner/repo#N --by NAME|gate-budget-grant <BOXP-N|owner/repo#N> --amount N --by NAME>")
+  (println "usage: task_board_runner.bb <recheck-list|recheck-reserve BOXP-N --at ISO --assignee AGENT --by NAME|recheck-cancel BOXP-N --by NAME|recheck-audit|tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|reclaim-generated [--dry-run]|workspace-metrics [--since-hours N]|localllm-migrate-markers [--apply]|gate-budget-status BOXP-N|gate-budget-exclude-pr BOXP-N owner/repo#N --by NAME|gate-budget-grant <BOXP-N|owner/repo#N> --amount N --by NAME>")
   (System/exit 2))
 
 (defn arg-value [args flag]
@@ -7010,7 +7166,8 @@
   ;; BOXP-270: the lifecycle self-tests below drive the real finish path, whose
   ;; outbox hook would otherwise write TEST-* events into the operator's live
   ;; CODEX_TASK_BOARD_ROOT when the suite runs on a host. Keep the suite pure.
-  (with-redefs [vault (let [dir (str (fs/create-temp-dir))] (constantly dir))
+  (with-redefs [root (let [dir (str (fs/create-temp-dir))] (constantly dir))
+                vault (let [dir (str (fs/create-temp-dir))] (constantly dir))
                 record-task-board-event! (fn [& _] nil)
                 record-ai-ops-event! (fn [& _] nil)
                 record-ai-ops-gate! (fn [& _] nil)
@@ -7020,6 +7177,51 @@
 
 (defn run-tests*! []
   (let [failures (atom [])]
+    (let [now (java.time.Instant/parse "2026-11-13T00:00:00Z")
+          check (fn [label ok] (if ok (println (str "PASS: " label)) (do (println (str "FAIL: " label)) (swap! failures conj label))))
+          plan #(recheck-plan %1 %2 %3 %4 now)]
+      (check "recheck marker offset" (= "2026-11-13T01:00:00Z" (recheck-at-marker "task_board_recheck_at: 2026-11-13T10:00:00+09:00")))
+      (check "recheck marker duplicate" (nil? (recheck-at-marker "TASK_BOARD_RECHECK_AT: 2026-11-13T01:00:00Z\nTASK_BOARD_RECHECK_AT: invalid")))
+      (check "recheck marker invalid" (nil? (recheck-at-marker "TASK_BOARD_RECHECK_AT: bad")))
+      (check "recheck agent" (= :agent (:kind (plan nil "run" "agent-recoverable" "2026-11-13T01:00:00Z"))))
+      (check "recheck fallback" (= :fallback (:kind (plan nil "run" "external-hold" nil))))
+      (check "recheck owner" (some? (:note (plan nil "run" "owner-decision" "2026-11-13T01:00:00Z"))))
+      (check "recheck chain" (= 2 (:chain (plan {:state :consumed :chain 1 :consumed-run-id "run"} "run" "external-hold" nil))))
+      (check "recheck limit" (some? (:note (plan {:state :consumed :chain (recheck-max-chain) :consumed-run-id "run"} "run" "external-hold" nil)))))
+    (let [db (atom {}) fm (atom {:status "blocked" :assignee "boxp" :board_rev "r1"})
+          card (atom {:ticket-id "BOXP-1" :status "blocked" :line "assignee::boxp rev::r1"})
+          locked (atom false) notes (atom [])
+          check (fn [label ok] (if ok (println (str "PASS: " label)) (do (println (str "FAIL: " label)) (swap! failures conj label))))
+          reset-reservation #(reset! db {"BOXP-1" {:id "rc-test" :ticket "BOXP-1" :state :pending :due % :board-rev "r1" :resume-assignee "codex"}})]
+      (with-redefs [with-ticket-lock-guard (fn [_ f] (f)) with-recheck-lock (fn [f] (f)) read-rechecks (fn [] @db) write-rechecks! #(reset! db %)
+                    ticket-path (constantly "ticket") lock-path (constantly "lock") board-path (constantly "board")
+                    fs/exists? (fn [p] (if (= "lock" (str p)) @locked true))
+                    ticket-frontmatter (fn [_] @fm) read-lines (constantly []) parse-board-cards (fn [_] [@card])
+                    move-card! (fn [& _] nil) update-frontmatter! (fn [_ values] (swap! fm merge values))
+                    append-note! (fn [_ note] (swap! notes conj note)) new-rev (constantly "r2")
+                    in-flight-futures (atom {})]
+        (reset-reservation "2999-01-01T00:00:00Z") (sweep-rechecks!)
+        (check "recheck future untouched" (= :pending (get-in @db ["BOXP-1" :state])))
+        (reset-reservation "2020-01-01T00:00:00Z") (reset! locked true) (sweep-rechecks!)
+        (check "recheck lock waits" (= :pending (get-in @db ["BOXP-1" :state])))
+        (reset! locked false) (sweep-rechecks!)
+        (check "recheck fires" (= :fired (get-in @db ["BOXP-1" :state])))
+        (check "recheck consumed matching revision" (consume-recheck! "BOXP-1" "r2" "run-2"))
+        (check "recheck mismatch does not consume" (not (consume-recheck! "BOXP-1" "r1" "run-3")))
+        (doseq [[label new-fm new-card] [["revision" {:board_rev "changed"} {}]
+                                          ["assignee" {:assignee "other"} {}]
+                                          ["lane" {:status "ready"} {}]]]
+          (reset! fm (merge {:status "blocked" :assignee "boxp" :board_rev "r1"} new-fm))
+          (reset! card (merge {:ticket-id "BOXP-1" :status "blocked" :line "assignee::boxp rev::r1"} new-card))
+          (reset-reservation "2020-01-01T00:00:00Z") (sweep-rechecks!)
+          (check (str "recheck superseded " label) (= :superseded (get-in @db ["BOXP-1" :state]))))))
+    (let [clears (atom 0) fired (atom true)]
+      (with-redefs [consume-recheck! (fn [& _] @fired) clear-continuation-budget! (fn [_] (swap! clears inc))]
+        (prepare-blocked-retry! "BOXP-1" "rev" "run")
+        (when-not (zero? @clears) (swap! failures conj "reserved retry clears budget"))
+        (reset! fired false)
+        (prepare-blocked-retry! "BOXP-1" "rev" "run")
+        (if (= 1 @clears) (println "PASS: blocked retry budget behavior") (swap! failures conj "manual retry does not clear budget"))))
     ;; BOXP-448: isolated in-memory persistence, including duplicate and merged registrations.
     (let [db (atom {:failures {} :grants [] :pr-registrations {} :pr-exclusions []})
           check (fn [label ok] (if ok (println (str "PASS: " label))
@@ -8399,5 +8601,16 @@
                                           :else nil)]
                         (when-not (and scope key amount (pos? amount) (not (str/blank? by))) (usage))
                         (prn (gate-budget-grant! scope key amount by)))
+  "recheck-list" (do (when (seq (rest *command-line-args*)) (usage)) (prn (with-recheck-lock read-rechecks)))
+  "recheck-audit" (do (when (seq (rest *command-line-args*)) (usage)) (prn (recheck-audit)))
+  "recheck-reserve" (let [args (vec (rest *command-line-args*)) ticket (first args)
+                            at (arg-value args "--at") assignee (arg-value args "--assignee") by (arg-value args "--by")]
+                        (when-not (and (= 7 (count args)) (re-matches #"BOXP-\d+" (or ticket ""))
+                                       (every? #(not (str/blank? %)) [at assignee by])
+                                       (= #{"--at" "--assignee" "--by"} (set (take-nth 2 (rest args))))) (usage))
+                        (prn (recheck-reserve! ticket at assignee by)))
+  "recheck-cancel" (let [[ticket flag by :as args] (vec (rest *command-line-args*))]
+                       (when-not (and (= 3 (count args)) (re-matches #"BOXP-\d+" (or ticket "")) (= flag "--by") (not (str/blank? by))) (usage))
+                       (prn (recheck-cancel! ticket by)))
   "test" (run-tests!)
   (usage)))

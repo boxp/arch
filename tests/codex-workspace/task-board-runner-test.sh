@@ -6498,6 +6498,42 @@ test_capacity_attribution() {
   [[ "$(grep -c ':event :capacity-attribution' "$metrics")" == "$before" ]] || fail 'off ignored'
 }
 
+test_recheck_reservation_fires_and_retries() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  sed -i "/^if grep -q .*Delegation contract:/,/^fi$/d" "${bin}/codex"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-991|BOXP-991: recheck]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-991 in-progress codex
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'TASK_BOARD_RESULT: blocked\nTASK_BOARD_WAIT_REASON: external-hold' run_tick "${vault}" "${state}" env >"${tmp}/first"
+  assert_file_contains "${state}/recheck-reservations.edn" ':kind :fallback'
+  bb -e '(require (quote clojure.edn)) (let [p (first *command-line-args*) db (clojure.edn/read-string (slurp p))] (spit p (pr-str (assoc-in db ["BOXP-991" :due] "2020-01-01T00:00:00Z"))))' "${state}/recheck-reservations.edn"
+  printf '%s\n' '{"BOXP-991" {:count 3}}' >"${state}/continuation-budget.edn"
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'TASK_BOARD_RESULT: blocked\nTASK_BOARD_WAIT_REASON: owner-decision' run_tick "${vault}" "${state}" env >"${tmp}/second"
+  assert_file_contains "${state}/continuation-budget.edn" 'BOXP-991'
+  assert_file_contains "${vault}/Tickets/BOXP-991.md" '期限到来.*blocked-retry'
+  assert_file_contains "${vault}/Tickets/BOXP-991.md" 'started from Blocked with action blocked-retry'
+  assert_file_contains "${state}/recheck-reservations.edn" ':state :consumed'
+}
+
+test_recheck_reservation_owner_change_supersedes() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  sed -i "/^if grep -q .*Delegation contract:/,/^fi$/d" "${bin}/codex"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-992|BOXP-992: recheck]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-992 in-progress codex
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'TASK_BOARD_RESULT: blocked\nTASK_BOARD_WAIT_REASON: external-hold' run_tick "${vault}" "${state}" env >"${tmp}/first"
+  bb -e '(require (quote clojure.edn)) (let [p (first *command-line-args*) db (clojure.edn/read-string (slurp p))] (spit p (pr-str (assoc-in db ["BOXP-992" :due] "2020-01-01T00:00:00Z"))))' "${state}/recheck-reservations.edn"
+  sed -i 's/assignee::boxp/assignee::someone/' "${vault}/Boards/Task Board.md"
+  sed -i 's/^assignee: boxp$/assignee: someone/' "${vault}/Tickets/BOXP-992.md"
+  PATH="${bin}:$PATH" run_tick "${vault}" "${state}" env >"${tmp}/second"
+  assert_file_contains "${state}/recheck-reservations.edn" ':state :superseded'
+  assert_file_not_contains "${vault}/Tickets/BOXP-992.md" 'started from Blocked with action blocked-retry'
+}
+
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a
 # deterministic subset in its own job, so vaults, processes and locks are isolated.
 mapfile -t cases < "${ROOT_DIR}/tests/codex-workspace/task-board-runner-cases.txt"
