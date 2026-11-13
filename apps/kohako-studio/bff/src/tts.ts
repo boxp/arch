@@ -23,6 +23,7 @@ export function createTts({ url, fetcher, now, concurrency = 1 }: { url: string;
   async function synthesize(text: unknown, cancel?: AbortSignal): Promise<Buffer> {
     if (typeof text !== 'string' || !text.trim() || text.length > 300) throw new TtsError('invalid')
     if (cancel?.aborted) throw new TtsError('cancelled')
+    const queuedAt = now()
     if (active >= concurrency) {
       if (waiting.length >= 4) throw new TtsError('busy')
       // 停止/切断で待機中のまま不要になった合成はキューから外し、後続の音声を遅らせない
@@ -34,13 +35,18 @@ export function createTts({ url, fetcher, now, concurrency = 1 }: { url: string;
     } else active++
     try {
       if (cancel?.aborted) throw new TtsError('cancelled')
+      const startedAt = now()
       const styleId = await resolveStyle(cancel), params = new URLSearchParams({ speaker: String(styleId), text: text.trim() })
       try {
         const query = await fetcher(`${url}/audio_query?${params}`, { method: 'POST', signal: cancel ? AbortSignal.any([cancel, AbortSignal.timeout(60000)]) : AbortSignal.timeout(60000), redirect: 'error' }); if (!query.ok) throw Error()
         const body = await query.json()
         const response = await fetcher(`${url}/synthesis?speaker=${styleId}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: cancel ? AbortSignal.any([cancel, AbortSignal.timeout(60000)]) : AbortSignal.timeout(60000), redirect: 'error' }); if (!response.ok) throw Error()
         const audio = Buffer.from(await response.arrayBuffer()); if (!/^audio\/wav(?:\s*;|$)/i.test(response.headers.get('content-type') ?? '') && audio.subarray(0, 4).toString() !== 'RIFF') throw Error()
-        styles.set(audio, styleId); return audio
+        styles.set(audio, styleId)
+        // 朗読の区切り待ちを本番で切り分けるため、本文を含めず文字数・待ち・合成時間・音声長だけを記録する。
+        const byteRate = audio.length >= 44 && audio.subarray(0, 4).toString() === 'RIFF' ? audio.readUInt32LE(28) : 0
+        console.log(JSON.stringify({ event: 'tts_synthesized', chars: text.trim().length, waitMs: startedAt - queuedAt, synthMs: now() - startedAt, audioMs: byteRate ? Math.round((audio.length - 44) / byteRate * 1000) : null }))
+        return audio
       } catch { throw new TtsError(cancel?.aborted ? 'cancelled' : 'tts_failed') }
     } finally { const next = waiting.shift(); if (next) next(); else active-- }
   }

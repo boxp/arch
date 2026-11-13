@@ -21,27 +21,30 @@ export function createVoicePlayer(deps: { fetcher: typeof fetch; audio: HTMLAudi
   function speak(input: string[], events: Events, start = 0) {
     cancel(); const current = generation, signal = controller.signal
     const groups: { first: number; last: number; text: string }[] = []
+    let previousChars = 0
     for (let i = start; i < input.length;) {
       const first = i; let text = input[i++]
       if (first !== start) {
+        // 合成は音声長の約 0.7〜0.8 倍。先行再生で余裕を作るため 1.6 倍ずつ増やす。
+        const limit = Math.min(120, Math.max(60, Math.round(previousChars * 1.6)))
         while (i < input.length) {
           const length = text.length + input[i].length
           const ended = /(?:[。！？!?…][」』）]*|\n)$/.test(text)
-          if (length > 160 || (length > 120 && ended)) break
+          if (length > Math.min(160, limit + 40) || (length > limit && ended)) break
           text += input[i++]
         }
       }
-      groups.push({ first, last: i - 1, text })
+      groups.push({ first, last: i - 1, text }); previousChars = text.length
     }
     const fetchOnce = async (sentence: string) => { const fetcher = deps.fetcher; const r = await fetcher('/kohako/api/v1/tts', { method: 'POST', credentials: 'same-origin', redirect: 'manual', cache: 'no-store', headers: { 'content-type': 'application/json', 'X-Kohako-Request': '1' }, body: JSON.stringify({ text: sentence }), signal }); if (!r.ok) throw Error('fetch_failed'); return r.blob() }
     const fetchSentence = async (sentence: string) => { try { return await fetchOnce(sentence) } catch (e) { if (signal.aborted || current !== generation || (e instanceof Error && e.name === 'AbortError')) throw e; await (deps.retryDelay?.() ?? new Promise<void>(resolve => setTimeout(resolve, 1000))); if (signal.aborted || current !== generation) throw e; return fetchOnce(sentence) } }
     let index = start, next = 0, started = 0, fetching = 0, failed = false
     type Result = { blob: Blob; error?: never } | { blob?: never; error: unknown }
     const results: Promise<Result>[] = []
-    // CPU 合成は実時間より遅いため先読みを続け、文の途中での区切りも避ける。初回は単独で早く返し、
+    // CPU 合成は実時間より遅いため先読みを続け、文の途中での区切りも避ける。初回は短く保ち、
     // 以降は VOICE_PARALLEL 件まで同時に合成を進めて(BFF が同時数を制限)グループ間の待ちを縮める。
     const pump = () => {
-      while (!failed && current === generation && next < groups.length && next - started < VOICE_AHEAD && fetching < (next < 2 ? 1 : VOICE_PARALLEL)) fetchNext()
+      while (!failed && current === generation && next < groups.length && next - started < VOICE_AHEAD && fetching < VOICE_PARALLEL) fetchNext()
     }
     const fetchNext = () => {
       const group = groups[next++]; fetching++
