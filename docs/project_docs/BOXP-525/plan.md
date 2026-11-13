@@ -51,3 +51,8 @@
 - 修正: `face-texture.ts` に `fillLashSlots` を追加。読み込み時に、上まぶたの範囲で、上（3 画素以上の太さ）と下（2 画素以上）を濃い線に挟まれた 7 画素以下の隙間だけを、挟む線の色で不透明に塗る。1〜2 列だけ漏れた列は左右から補間する。細い二重まぶたの線との間・白目との広い間（9 画素以上）・虹彩上端より下は対象外。
 - 検証: vitest 287/287、tsc PASS。Playwright 1.56.1 で配備版と比較し、下視線で両目のまつ毛帯の白い筋が消え、待機時の見た目はほぼ不変。証跡 `/home/boxp/verification-artifacts/BOXP-525/r7-td01/opus/`（layers-down.png, patch-vs-nopatch.png, lash13/10-deployed/new.png, eyeL/eyeR-dep-vs-new.png）。
 - 残: 左あご外側の肌色の欠片（顔 mesh 18 由来と帰属済み）は次段で対応。
+
+## 修正 r8（左右あご輪郭の外の肌色の欠片）
+- 原因: 顔 mesh 18（`ArtMeshFace`）のテクスチャには、もみあげの毛先の下にも肌色の下地が塗られている。あご輪郭線の外側にあるこの下地が、髪房との隙間から桃色の欠片として見えていた（r6 で帰属）。
+- 修正: `face-texture.ts` の `eraseJawRow` と `patchFaceTexture` で、顔の高さ（モデル座標 y=305〜390）の各行を顔の中心から外向きに走査し、最初の暗い輪郭線（輝度<90）より外にある明るい肌色（輝度>140、r≥g≥b）を RGB ごと 0（透明）にする。顔の島の中だけを書き換えるので共有アトラスへ直接書き、頬の赤み・涙の再合成後も消えたまま。目より上・輪郭線・髪・顔の内側は変えない。
+- 結果: 配備版 14ba000 と比べ、左あごの欠片（約 3×5 CSS px）が約 1×2 CSS px の淡い桃色 1 点まで縮小、右あごの欠片も縮小。下視線のまつ毛（#14976）・髪飾り・三つ編みの桜は不変。vitest 288/288、tsc、peteyes525（初回は揺らぎで FAIL、再実行 2 回 PASS）、petvisible PASS。証跡 `/home/boxp/verification-artifacts/BOXP-525/r8-td01/`（opus/o2/jawL.png, jawR.png, eyes.png, face.png）。

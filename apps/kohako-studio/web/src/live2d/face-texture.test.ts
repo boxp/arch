@@ -230,11 +230,11 @@ describe('まつ毛の隙間の 1 列の漏れ', () => {
 })
 
 describe('あごの輪郭外の下地', () => {
-  it('輪郭の外の肌だけを除き、内側・赤み・輪郭・髪と境界画素を残す', () => {
+  it('輪郭の外の肌だけを除き、内側・赤み・輪郭・髪を残す', () => {
     const skin: Rgba = [240, 200, 180, 255], blush: Rgba = [240, 170, 160, 255], ink: Rgba = [30, 20, 25, 255], hair: Rgba = [70, 55, 65, 255]
     const row = [skin, skin, hair, skin, skin, ink, blush, skin, skin]
-    expect(eraseJawRow(row, 8, 7, 0, 330)).toEqual([3, 0])
+    expect(eraseJawRow(row, 8, 7, 0, 330)).toEqual([4, 3, 1, 0])
     expect(eraseJawRow(row, 8, 7, 0, 280)).toEqual([])
-    expect(eraseJawRow([...row].reverse(), 0, 1, 8, 330)).toEqual([5, 8])
+    expect(eraseJawRow([...row].reverse(), 0, 1, 8, 330)).toEqual([4, 5, 7, 8])
   })
 })

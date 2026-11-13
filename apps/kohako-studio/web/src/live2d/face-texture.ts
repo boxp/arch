@@ -266,7 +266,7 @@ export function fillLashSlots(target: Atlas, spec: EyeSpec, lash: Layer, maxGap 
   return writes.length
 }
 
-/** 顔の中心から輪郭を越えた肌だけを透明にする。線に隣接する画素は残す。 */
+/** 顔の中心から輪郭を越えた肌だけを透明にする（RGB も 0 にするので線形補間で白い縁は出ない）。 */
 export function eraseJawRow(pixels: Rgba[], center: number, start: number, end: number, modelY: number): number[] {
   if (modelY < 305 || modelY > 390) return []
   const step = end < start ? -1 : 1
@@ -280,8 +280,6 @@ export function eraseJawRow(pixels: Rgba[], center: number, start: number, end: 
   for (let i = edge + step; step * (i - end) <= 0; i += step) {
     const p = pixels[i]
     if (!p || p[3] < 128 || luma(p) <= 140 || p[0] < p[1] || p[1] < p[2]) continue
-    const previous = pixels[i - step]
-    if (previous && luma(previous) < 90) continue
     erased.push(i)
   }
   return erased
@@ -383,14 +381,8 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
     })
     gl.bindTexture(gl.TEXTURE_2D, p.textures[0] as WebGLTexture)
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, output)
-    // 共有アトラスを複製し、顔メッシュだけに割り当てる。
-    const faceTexture = gl.createTexture()
-    if (!faceTexture) throw new Error('顔テクスチャを作成できません')
-    gl.bindTexture(gl.TEXTURE_2D, faceTexture)
-    gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 0, 0, width, height, 0)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    // あご輪郭の外（髪の下の下地）の肌色を透明にする。顔の島の中だけを書き換えるので共有アトラスへ直接書く
+    // （他メッシュがこの画素を覆っていても、髪の上に肌色の欠片が出るのを防ぐ方向にしか効かない）。
     const jaw = { left: 0, right: 0 }, jawOffsets: number[] = []
     const face = of(FACE_MESH), centerU = face.forward(572, 350)[0]
     for (let v = y0; v < y1; v++) {
@@ -404,10 +396,8 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
         for (const x of eraseJawRow(row, center, start, end, modelY)) { jawOffsets.push(((v - y0) * w + x) * 4); jaw[side]++ }
       }
     }
-    const facePixels = (pixels: Uint8Array) => { const copy = pixels.slice(); for (const i of jawOffsets) copy.fill(0, i, i + 4); return copy }
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, facePixels(output))
-    p.textures.push(faceTexture)
-    ;(p.meshes[FACE_MESH] as GlPlayer['meshes'][number]).texture = p.textures.length - 1
+    for (const i of jawOffsets) output.fill(0, i, i + 4)
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, output)
     // 顔レイヤーの画素だけを保存し、元の色から毎回合成する。
     const blushPixels: { i: number; weight: number }[] = []
     eachTexel(target, of(FACE_MESH), { x0: 486, y0: 306, x1: 658, y1: 332 }, (u, v, x, y) => {
@@ -438,8 +428,6 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
       for (const { i, weight } of tearPixels) for (let c = 0; c < 3; c++) pixels[i + c] = output[i + c]! + (output[i + 3]! - output[i + c]!) * weight * wetLevel
       gl.bindTexture(gl.TEXTURE_2D, p.textures[0] as WebGLTexture)
       gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
-      gl.bindTexture(gl.TEXTURE_2D, faceTexture)
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, facePixels(pixels))
     }
     // テクスチャの差し替えが通ってから穴をふさぐ（途中で失敗したら元のメッシュのまま）。
     for (const { iris, loops } of holes) {
