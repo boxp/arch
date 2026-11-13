@@ -197,6 +197,8 @@ workflows:
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
     '.github/workflows/test-upgrade-k8s-readyz-watch.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+    '.github/workflows/test-usb-ssd-storage.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
     '.github/workflows/test.yaml': []
     '.github/workflows/upgrade-k8s.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'

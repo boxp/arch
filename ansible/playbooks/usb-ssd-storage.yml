@@ -1,0 +1,145 @@
+---
+- name: Protect existing Longhorn USB SSD mounts with limited apply
+  hosts: workers
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../vars/usb_ssd_storage.yml
+  vars:
+    usb_ssd_uuid: "{{ usb_ssd_storage_nodes[inventory_hostname].uuid }}"
+  tasks:
+    - name: Require explicit confirmation and an allowed node
+      ansible.builtin.assert:
+        that:
+          - usb_ssd_storage_confirm | default(false) | bool
+          - inventory_hostname in usb_ssd_storage_nodes
+        fail_msg: Run with --limit golyat-1,golyat-3 -e usb_ssd_storage_confirm=true
+
+    - name: Find the existing UUID device
+      ansible.builtin.command:
+        argv: [blkid, -U, "{{ usb_ssd_uuid }}"]
+      register: usb_ssd_device
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Require an existing device
+      ansible.builtin.assert:
+        that:
+          - usb_ssd_device.rc == 0
+          - usb_ssd_device.stdout | trim != ''
+        fail_msg: Device not found; this playbook does not initialize disks.
+
+    - name: Probe the existing filesystem
+      ansible.builtin.command:
+        argv: [blkid, -p, -o, export, "{{ usb_ssd_device.stdout | trim }}"]
+      register: usb_ssd_probe
+      changed_when: false
+      check_mode: false
+
+    - name: Require the expected ext4 filesystem
+      ansible.builtin.assert:
+        that:
+          - "'TYPE=' ~ usb_ssd_storage_fstype in usb_ssd_probe.stdout_lines"
+          - "'UUID=' ~ usb_ssd_uuid in usb_ssd_probe.stdout_lines"
+        fail_msg: Filesystem mismatch; this playbook does not initialize disks.
+
+    - name: Read existing fstab
+      ansible.builtin.slurp:
+        src: /etc/fstab
+      register: usb_ssd_fstab
+      check_mode: false
+
+    - name: Refuse ambiguous or conflicting fstab entries
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import sys
+            path, source = sys.argv[1:]
+            entries = [s.split() for line in sys.stdin for s in [line.strip()]
+                       if s and not s.startswith('#')]
+            entries = [e for e in entries if len(e) >= 2]
+            matches = [e for e in entries if e[1] == path]
+            if (len(matches) > 1 or any(e[0] != source for e in matches)
+                    or any(e[0] == source and e[1] != path for e in entries)):
+                sys.exit('Conflicting fstab entry; human inspection required')
+          - "{{ usb_ssd_storage_mount_path }}"
+          - "UUID={{ usb_ssd_uuid }}"
+        stdin: "{{ usb_ssd_fstab.content | b64decode }}"
+      changed_when: false
+      check_mode: false
+
+    - name: Manage the existing fstab entry
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: '^[ \t]*[^# \t]+[ \t]+{{ usb_ssd_storage_mount_path | regex_escape }}[ \t]+'
+        line: "UUID={{ usb_ssd_uuid }} {{ usb_ssd_storage_mount_path }} {{ usb_ssd_storage_fstype }} {{ usb_ssd_storage_options }} {{ usb_ssd_storage_dump }} {{ usb_ssd_storage_passno }}"
+        backup: true
+        owner: root
+        group: root
+        mode: '0644'
+        validate: 'findmnt --verify --tab-file %s'
+      register: usb_ssd_fstab_result
+
+    - name: Reload systemd only when fstab changed
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when: usb_ssd_fstab_result.changed and not ansible_check_mode
+
+    - name: Inspect or protect the underlying directory
+      ansible.builtin.script:
+        cmd: "../files/usb-ssd-underlay.sh --path {{ usb_ssd_storage_mount_path }} --uuid {{ usb_ssd_uuid }} --mode {{ 'check' if ansible_check_mode else 'apply' }}"
+      register: usb_ssd_underlay
+      changed_when: "'changed=true' in usb_ssd_underlay.stdout"
+      check_mode: false
+
+    - name: Derive the mount unit name
+      ansible.builtin.command:
+        argv: [systemd-escape, -p, --suffix=mount, "{{ usb_ssd_storage_mount_path }}"]
+      register: usb_ssd_unit
+      changed_when: false
+      check_mode: false
+      when: "'state=unmounted' in usb_ssd_underlay.stdout and not ansible_check_mode"
+
+    - name: Start the mount when currently unmounted
+      ansible.builtin.systemd:
+        name: "{{ usb_ssd_unit.stdout | trim }}"
+        state: started
+      when: "'state=unmounted' in usb_ssd_underlay.stdout and not ansible_check_mode"
+
+    - name: Recheck the underlay after mounting
+      ansible.builtin.script:
+        cmd: "../files/usb-ssd-underlay.sh --path {{ usb_ssd_storage_mount_path }} --uuid {{ usb_ssd_uuid }} --mode check"
+      register: usb_ssd_recheck
+      changed_when: false
+      failed_when: "'state=mounted immutable=yes changed=false' not in usb_ssd_recheck.stdout"
+      check_mode: false
+      when: "'state=unmounted' in usb_ssd_underlay.stdout and not ansible_check_mode"
+
+    - name: Verify mounted filesystem and fstab
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import os, subprocess, sys
+            path, device, uuid = sys.argv[1:]
+            fields = subprocess.check_output(['findmnt', '-n', '-o', 'SOURCE,UUID,FSTYPE,OPTIONS', '--mountpoint', path], text=True).split()
+            if len(fields) != 4 or os.path.realpath(fields[0]) != os.path.realpath(device) or fields[1] != uuid or fields[2] != 'ext4' or 'noatime' not in fields[3].split(','):
+                sys.exit('Mounted filesystem verification failed: ' + repr(fields))
+            attrs = subprocess.check_output(['lsattr', '-d', path], text=True).split()[0]
+            if 'i' in attrs:
+                sys.exit('Mounted SSD root is immutable')
+            subprocess.run(['findmnt', '--verify'], check=True)
+          - "{{ usb_ssd_storage_mount_path }}"
+          - "{{ usb_ssd_device.stdout | trim }}"
+          - "{{ usb_ssd_uuid }}"
+      changed_when: false
+      check_mode: false
+      when: not ansible_check_mode or 'state=mounted' in usb_ssd_underlay.stdout
+
+    - name: Summarize the result
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: {{ usb_ssd_underlay.stdout | trim }}"
