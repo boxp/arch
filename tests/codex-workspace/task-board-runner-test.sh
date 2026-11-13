@@ -6438,6 +6438,14 @@ test_capacity_attribution() {
     chmod 755 "$root/locked"; rm -rf "$root/locked"
     TEST_METRICS="$metrics" bb -e '(require (quote [clojure.edn :as edn])) (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))] (assert (pos? (:scan-exit e))) (assert (false? (:scan-complete e))) (assert (= {} (:area-delta-bytes e))))'
   fi
+  # A scan cut off by the timeout is killed mid-read: the record must still be
+  # written, marked incomplete, instead of being lost to a closed-stream error.
+  mkdir -p "$tmp/slowbin"
+  printf '#!/bin/sh\nwhile :; do printf "8\\t0\\t1\\t1\\tone/fresh\\0"; done\n' >"$tmp/slowbin/find"; chmod +x "$tmp/slowbin/find"
+  before="$(grep -c ':event :capacity-attribution' "$metrics")"
+  PATH="$tmp/slowbin:$PATH" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_TIMEOUT_SECONDS=1 CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 CODEX_TASK_BOARD_CAPACITY_GUARD_BYTES=0 run_prune "$vault" "$state" >"$tmp/out"
+  [[ "$(grep -c ':event :capacity-attribution' "$metrics")" == "$((before + 1))" ]] || fail 'timed-out scan left no record'
+  TEST_METRICS="$metrics" bb -e '(require (quote [clojure.edn :as edn])) (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))] (assert (= -1 (:scan-exit e))) (assert (false? (:scan-complete e))) (assert (= {} (:area-delta-bytes e))))'
   CODEX_TASK_BOARD_ROOT="$state" bb "$RUNNER" workspace-metrics >"$tmp/summary"
   assert_file_contains "$tmp/summary" 'capacity-used-bytes='
   assert_file_contains "$tmp/summary" 'capacity-days-to-guard='
