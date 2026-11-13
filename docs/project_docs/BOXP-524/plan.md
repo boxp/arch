@@ -21,3 +21,9 @@
 ## 検証
 - unit test（dictation モジュール・BFF）、typecheck/build、CI、codex review P0/P1。
 - merge/Argo CD 配備後、合成日本語音声（AivisSpeech/既存 TTS）を認証済み BFF の transcriptions へ送り認識文を確認、実ブラウザ（PC/モバイル viewport, fake media stream）でマイク→認識文編集→送信→実 Hermes 応答。
+
+## 追補: 自動E2E用の verifier 権限（2026-11-13, Owner B承認）
+
+- 家経由Owner「B」(reply_id=281b1fa4-366b-471e-9454-6d35d3b3c713) により、既存 verifier 認証へ家BFFの `transcriptions` と `tts` のみを許可する。
+- 変更は BFF `app.ts` の2箇所のみ。新token・他API開放・Owner認証緩和・RBAC/NetworkPolicy変更なし。notifier/未認証は従来通り拒否。verifier の会話 session（`kohako-verify-*`）は Owner と分離のまま。
+- 配備後、合成日本語音声（既存クラスタ内 AivisSpeech を verifier の `tts` 経由で生成）→ `transcriptions` 実STT、配備版画面で擬似マイク→認識文編集→送信→実Hermes応答を検証する。
