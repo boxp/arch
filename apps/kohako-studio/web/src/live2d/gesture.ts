@@ -341,7 +341,7 @@ export const closedEyeTarget = (emotion: Emotion): number => emotion === 'smileC
 export function petEyeStep(current: number, on: boolean, dt: number): number {
   if (dt <= 0) return current
   const value = Math.max(0, Math.min(1, current))
-  return Math.max(0, Math.min(1, value + ((on ? 1 : 0) - value) * (1 - Math.exp(-dt / (on ? 0.115 : 0.18)))))
+  return Math.max(0, Math.min(1, value + (on ? dt / 0.14 : -dt / 0.2)))
 }
 export const eyeOpenFor = (blinkOpen: number, emotionClosed: number, petClosed: number): number => Math.min(blinkOpen, 1 - Math.max(emotionClosed, petClosed))
 
@@ -662,12 +662,13 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     }
     baseUpdate(dt)
     // BOXP-525: 自動まばたきの途中でも目が逆に開かないよう閉眼を重ねる。
-    const closed = Math.max(eyeClosed, petClosed)
+    const petLid = petClosed * petClosed * (3 - 2 * petClosed)
+    const closed = Math.max(eyeClosed, petLid)
     if (closed > 0.001) {
       const values = typeof p.parameterValues === 'function' ? p.parameterValues() : []
       for (const id of ['ParamEyeLOpen', 'ParamEyeROpen']) {
         const index = p.parameters?.indexOf(id) ?? -1, blink = values[index]
-        p.setParameter(id, typeof blink === 'number' && Number.isFinite(blink) ? eyeOpenFor(blink, eyeClosed, petClosed) : 1 - closed)
+        p.setParameter(id, typeof blink === 'number' && Number.isFinite(blink) ? eyeOpenFor(blink, eyeClosed, petLid) : 1 - closed)
       }
       rt.p2l_update_stages(p.rig, 0, 0)
     }

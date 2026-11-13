@@ -61,4 +61,6 @@ it('なでている手が頭の内側にある間だけ閉眼する', async () =
   expect(petEyesWanted(track, options)).toBe(true)
   expect(petEyesWanted({ rect, points: [point(50), point(100)] }, options)).toBe(true)
   expect(petEyesWanted({ rect, points: [point(50), point(101)] }, options)).toBe(false)
+  expect(petEyesWanted({ rect, points: [point(50), point(120)] }, options, true)).toBe(true)
+  expect(petEyesWanted({ rect, points: [point(50), point(136)] }, options, true)).toBe(false)
 })

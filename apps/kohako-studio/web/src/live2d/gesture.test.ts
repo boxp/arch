@@ -606,3 +606,9 @@ it('待機クリップ停止中でもなで解除後に閉眼値が残らない'
   stage.setPetEyes?.(false); for (let i = 0; i < 120; i++) player.update(1 / 60)
   expect(values[0]).toBeGreaterThan(0.95); expect(values[1]).toBeGreaterThan(0.95)
 })
+
+it('pet eye transition reaches endpoints within the requested durations', async () => {
+  const { petEyeStep } = await import('./gesture')
+  expect(petEyeStep(0, true, 0.14)).toBe(1)
+  expect(petEyeStep(1, false, 0.2)).toBe(0)
+})

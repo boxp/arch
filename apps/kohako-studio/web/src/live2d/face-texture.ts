@@ -194,8 +194,18 @@ export function rebakeEye(source: Atlas, target: Atlas, spec: EyeSpec, lash: Lay
       const own = readIris(x, y)
       // ハイライトは虹彩のメッシュの穴なので触らない。虹彩の上の角も透明のまま、下部の抜きだけ白目の色で埋める。
       if (own[3] < 128 && y < spec.top + 5 && Math.min(x - arcX(spec.left, y), arcX(spec.right, y) - x) < 4 && !ring) return
-      // 虹彩の上半分の穴はハイライト。白目の色を透かすと濁るので白で埋め、虹彩と一緒に動かす。
-      let body = over(own, own[3] < 128 && y < (spec.top + spec.bottom) / 2 ? WHITE : readWhite(x, y))
+      // 虹彩上端より上は縁色、内側のハイライトの穴は白で埋める。
+      let background = readWhite(x, y)
+      if (own[3] < 128 && y < (spec.top + spec.bottom) / 2) {
+        let above = false, top: Rgba | null = null
+        for (let yy = spec.top; yy <= spec.bottom; yy += 0.5) {
+          if (!inside(x, yy)) continue
+          const pixel = readIris(x, yy)
+          if (pixel[3] >= 128) { if (!top) top = pixel; if (yy < y) above = true }
+        }
+        background = above ? WHITE : top ?? background
+      }
+      let body = over(own, background)
       if (body[3] < 200) body = over(body, [255, 255, 255, 255])
       target.set(u, v, ring ? over(ring, body) : body)
     } else if (ring && ring[3] > 0 && (y >= spec.top + 3 || readIris(x, y)[3] >= 128)) target.set(u, v, over(ring, readIris(x, y)))
