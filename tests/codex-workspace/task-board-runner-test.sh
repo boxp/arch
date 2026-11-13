@@ -5857,6 +5857,7 @@ test_workspace_reuse_interplay() {
     assert_file_contains "$tmp/o" ':reused-from "20200102T000000Z"'
     assert_file_contains "$tmp/o" ':reuse-base-reason "studio-dist-dropped"'
     assert_file_contains "$tmp/state/runs/BOXP-908/20200103T000000Z/workspace-reuse.edn" ':reuse-base-reason "studio-dist-dropped"'
+    assert_file_contains "$tmp/state/metrics/workspace-capacity.edn" ':reuse-base-reason "studio-dist-dropped"'
     [[ ! -e "$old" && ! -e "$new/apps/kohako-studio/web/dist" && "$(cat "$new/apps/kohako-studio/web/public/copied.txt")" == efgh && "$(git -C "$new" rev-parse HEAD)" == "$(git -C "$tmp/source" rev-parse origin/main)" ]] || fail 'studio dist drop or reuse failed'
   else
     if [[ "$dist_case" == unknown ]]; then

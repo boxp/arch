@@ -5618,7 +5618,8 @@
         (let [metrics {:mode mode :new-bytes-est bytes :new-bytes-basis (cond (contains? #{:carryover :reuse} mode) "worktree-move-no-copy" (some? bytes) "git-ls-tree-blob-sum" :else "unavailable")
                        :moved (boolean (:reused-from worktree))}]
           (workspace-metrics-write! (merge {:event :workspace-prepare :ticket ticket-id :run run-id :repo (:repo worktree)
-                                           :reason (:reuse-fallback worktree) :reused-from (:reused-from worktree)} metrics))
+                                           :reason (:reuse-fallback worktree) :reused-from (:reused-from worktree)}
+                                          (when-let [r (:reuse-base-reason worktree)] {:reuse-base-reason r}) metrics))
           metrics))
       (catch Exception e (log! (str "workspace-metrics: warning " (.getMessage e)))))))
 
