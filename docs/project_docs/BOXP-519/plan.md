@@ -141,3 +141,11 @@ Longhorn/snapshot/容量の変更、保持期間・保持本数の短縮、最�
 | 共有 Git・ツール・キャッシュ（ghq 7.2 / .cache 2.9 / .local 1.6 ほか） | 約13GiB | 保持（共有repoと実行に必要なもの） |
 
 容量記録が 01:09Z 以降書かれていなかった不具合（走査の時間切れで記録ごと消失）は PR #14939 で修正。成功基準の判定はこの記録に依存するため、配備後に判定時刻を引き直す。
+
+### 保持中runの同一追跡ファイルの脱水（2026-11-13 03:50Z 実装）
+
+- 対象: 完了票（Done 1枚・lock/プロセスなし・1時間以上経過）の run で、未コミット変更や未追跡ファイルがあるために従来は丸ごと対象外だった checkout。
+- 変更: `git status` が挙げるパス（変更・ステージ済み・改名元/先・削除・未追跡）はすべて候補から除外し、index の blob と生バイトが一致する 256KiB 以上の追跡ファイルだけを脱水する。削除後の `git status` が削除前と完全一致しなければ保持扱いにする。
+- 変えないもの: ローカル変更、未push commit、run/worktree/branch、保持期間と本数、nested checkout の保持、再開時の自動復元。
+- rollback: `~/.codex-task-board/generated-reclaim.edn {:dehydrate-dirty false}` または `CODEX_TASK_BOARD_GENERATED_RECLAIM_DEHYDRATE_DIRTY=off`。
+- 検査: `test_dehydrate_dirty_checkout`（旧実装で失敗、新実装で通過）。flag / env での停止は `test_dehydrate_holds` に追加。
