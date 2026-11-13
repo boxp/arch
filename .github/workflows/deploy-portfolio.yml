@@ -22,6 +22,12 @@ on:
 permissions:
   contents: read
 
+# BOXP-539: main の run は stage から本番まで push 順に 1 本ずつ流す。本番 job だけを排他にすると、
+# 古い commit の stage が遅れて終わったときに古い版が最後に本番へ出る。待機中の古い run は新しい run に置き換わる。
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('deploy-portfolio-pr-{0}', github.ref) || 'deploy-portfolio-main' }}
+  cancel-in-progress: false
+
 jobs:
   # PR は本番設定でビルドする。この dist は public repo の artifact になるので、secret の全体図サムネイルは含めない。
   build:
@@ -148,9 +154,6 @@ jobs:
       deployments: write
     # 全体図サムネイルの secret を持つ既存の main 限定環境。方針は変えない。
     environment: portfolio-stage-private
-    concurrency:
-      group: portfolio-production
-      cancel-in-progress: false
     env:
       PRODUCTION_PROJECT: shanghai
       PRODUCTION_URL: https://b0xp.io

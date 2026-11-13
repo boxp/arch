@@ -18,6 +18,12 @@ on:
       - '.github/workflows/deploy-hitohako.yml'
   workflow_dispatch: {}
 
+# BOXP-539: main の run は stage から本番まで push 順に 1 本ずつ流す。本番 job だけを排他にすると、
+# 古い commit の stage が遅れて終わったときに古い版が最後に本番へ出る。待機中の古い run は新しい run に置き換わる。
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('deploy-hitohako-pr-{0}', github.ref) || 'deploy-hitohako-main' }}
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -61,9 +67,6 @@ jobs:
     permissions:
       contents: read
       deployments: write
-    concurrency:
-      group: hitohako-production
-      cancel-in-progress: false
     env:
       PRODUCTION_PROJECT: boxp-hitohako
       PRODUCTION_URL: https://hitohako.b0xp.io

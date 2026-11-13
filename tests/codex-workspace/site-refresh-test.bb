@@ -25,4 +25,8 @@
 (deftest failures
  (let [s (sandbox)] (fs/delete (str (:f s) "/youtube.xml")) (tick s) (tick s) (is (empty? (calls s))) (tick s) (is (= 1 (count (calls s)))) (is (str/includes? (ticket s "BOXP-2") "source:hitohako/youtube")))
  (let [s (sandbox)] (fs/delete (str (:d s) "/baseline.json")) (dotimes [_ 4] (tick s)) (is (empty? (calls s))) (is (str/includes? (slurp (str (:root s) "/status.md")) "連続失敗 4 回"))))
+(deftest seed-applies-cutoff-to-every-source
+ (let [s (sandbox) b #(json/parse-string (:out (run s "seed-baseline" "--cutoff-portfolio" % "--cutoff-hitohako" "2026-11-13")) true)]
+  (is (= ["boxp/old"] (get-in (b "2026-11-06") [:portfolio :github])))
+  (is (= [] (get-in (b "2026-11-05") [:portfolio :github])))))
 (let [{:keys [fail error]} (run-tests)] (when (pos? (+ fail error)) (System/exit 1)))

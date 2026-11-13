@@ -48,3 +48,8 @@ Owner は家経由で、両サイトを architecture 図と同じく定期更新
 - merge 後の本番配備 run の成功と、両サイトの実 URL の HTML が build と一致すること。
 - image の反映後、tick を手動で実行して起票を確認し、2 回目の tick が二重に起票しないことを確認する。
 - 次の定期実行を status で確認する。
+
+## レビュー指摘への対応 (codex review P1)
+
+- 本番 job だけの排他では、古い commit の stage が遅れて終わると古い版が最後に本番へ出る。`deploy-portfolio.yml` と `deploy-hitohako.yml` は workflow 全体の concurrency で main の run を push 順に直列化し、待機中の古い run は新しい run に置き換える。
+- `seed-baseline` は GitHub にも cutoff を適用する。前回受入日より後に作成された公開 repo は基準に入らず、最初の差分として処理する。現時点の実データでは該当 repo がなく、再生成した基準は `docs/site-refresh/baseline.json` と一致した。
