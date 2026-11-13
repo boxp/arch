@@ -45,7 +45,8 @@ const local = storage(() => localStorage), tab = storage(() => sessionStorage)
 let prefs: Prefs = parsePrefs(local.get(PREFS_KEY))
 const systemReduce = matchMedia('(prefers-reduced-motion: reduce)')
 const reduced = () => prefs.reducedMotion || systemReduce.matches
-const prefBoxes: [keyof Prefs, HTMLInputElement][] = [['mix', el('pref-mix')], ['touch', el('pref-touch')], ['follow', el('pref-follow')], ['lines', el('pref-lines')], ['pinned', el('pref-pinned')], ['reducedMotion', el('pref-reduce')], ['bgMotion', el('pref-bg')], ['chestSway', el('pref-chest')]]
+const mixBox = el<HTMLInputElement>('pref-mix')
+const prefBoxes: [keyof Prefs, HTMLInputElement][] = [['mix', mixBox], ['touch', el('pref-touch')], ['follow', el('pref-follow')], ['lines', el('pref-lines')], ['pinned', el('pref-pinned')], ['reducedMotion', el('pref-reduce')], ['bgMotion', el('pref-bg')], ['chestSway', el('pref-chest')]]
 const voiceSelect = el<HTMLSelectElement>('pref-voice'), volumeInput = el<HTMLInputElement>('pref-volume'), volumeValue = el('pref-volume-value')
 const subtleBox = el<HTMLInputElement>('pref-subtle')
 function applyPrefs() {
@@ -469,7 +470,11 @@ function mouthOnly(text: string) {
   show('speaking'); startViseme(text)
   mouthTimer = window.setTimeout(() => { if (state === 'speaking') show('done') }, silentSpeechSeconds(text) * 1000)
 }
-speech.addEventListener('change', () => { if (!speech.checked) hushNow(true); else if (prefs.mix) unlockMix(); else { voiceAudio.src = 'data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA'; void voiceAudio.play().then(() => { if (voiceAudio.src.startsWith('data:audio/wav')) { voiceAudio.pause(); voiceAudio.removeAttribute('src'); voiceAudio.load() } }).catch(() => {}) } })
+/** 従来方式（HTMLAudio）の再生をユーザー操作内で一度許可させる（iOS は操作外の play() を拒否するため）。 */
+function primeVoiceAudio() { voiceAudio.src = 'data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA'; void voiceAudio.play().then(() => { if (voiceAudio.src.startsWith('data:audio/wav')) { voiceAudio.pause(); voiceAudio.removeAttribute('src'); voiceAudio.load() } }).catch(() => {}) }
+speech.addEventListener('change', () => { if (!speech.checked) hushNow(true); else if (prefs.mix) unlockMix(); else primeVoiceAudio() })
+// 読み上げ ON のまま「他アプリの音楽を止めない」を OFF にしたときも、その操作内で従来方式の再生を許可させる。
+mixBox.addEventListener('change', () => { if (!mixBox.checked && speech.checked) primeVoiceAudio() })
 /** 読み上げを止める。pause は本人の「止める」/読み上げOFF で、続きが残るなら送信待ちの自動送信を止めて再開位置を守る（録音開始など新しい発言のための中断では止めない）。 */
 function hushNow(pause = false) {
   voicePlayer.cancel(); speaker?.cancel(); if (actingEnabled) interruptActing()
