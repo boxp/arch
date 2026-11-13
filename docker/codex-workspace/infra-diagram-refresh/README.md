@@ -19,7 +19,7 @@ lineage 図、全体図、portfolio のサムネイルを実構成に追従さ�
 2. **図に反映しない場合:** 3 から 5 を飛ばして 6 へ進みます。
 3. `publish.bb prepare-tools` のあと `publish.bb stage BOXP-N` を実行します。`~/.cache/infra-diagram-refresh/staging/BOXP-N/` に複製と最新の snapshot ができます。`Projects/*/data/*.edn` は、ここで直します。根拠の無い要素は足しません。
 4. `publish.bb build BOXP-N` を実行します。根拠の検査、表記の検査、実ブラウザの検査、サムネイルの生成を通します。
-5. `publish.bb deploy BOXP-N` のあと `publish.bb promote BOXP-N` を実行します。配備は両図の Worker と portfolio stage で、公開境界を実 URL で確かめます。promote で vault の正本が新版になります。
+5. `publish.bb deploy BOXP-N` のあと `publish.bb promote BOXP-N` を実行します。配備は両図の Worker と portfolio の stage と本番で、公開境界を実 URL で確かめます。portfolio 本番は `deploy-portfolio.yml` が stage に続けて配備し、実 URL が build と一致しなければ前の版へ戻します (BOXP-539)。promote で vault の正本が新版になります。
 6. 基準の更新を通常の PR にします。下のコマンドで作ったファイルと、反映があれば `apps/portfolio/public/diagrams/lolice-lineage.webp` を入れます。CI と review gate を通して merge します。
 
    ```sh
@@ -45,13 +45,12 @@ lineage 図、全体図、portfolio のサムネイルを実構成に追従さ�
 自動でしないこと:
 
 - 公開範囲と Access の変更（両図は Owner の承認で一般公開済み: lineage は BOXP-430、全体図は BOXP-435。portfolio stage は本人限定のまま）
-- portfolio 本番 (`b0xp.io`) の配備。本番は BOXP-442 の Owner 承認で両図のカードとサムネイルを掲載した受入済みの固定版を配信しています。サムネイルの本番更新は Owner の承認を受けてから既存の本番 workflow で行います
 - 元のインフラ、モデル設定の変更。図の更新のために元を直しません
 - Secret の値、ENV、Terraform state、ConfigMap の本文の取得
 
-`publish.bb deploy` は両図が未認証で開けて配信中の hash が build と一致すること、portfolio stage が未認証で 302 になること、本番が配信を続けていること (HTTP 200) を確かめます。
+`publish.bb deploy` は両図が未認証で開けて配信中の hash が build と一致すること、portfolio stage が未認証で 302 になること、本番が配信を続けていること (HTTP 200) を確かめます。portfolio 本番 (`b0xp.io`) は BOXP-539 の Owner 承認で、main と同じ内容とサムネイルへ自動で追従します。両図のカードとサムネイルの掲載は BOXP-442 で承認済みです。
 
-public repo (arch、lolice) の IaC にある要素と既に公開済みの要素は、Secret の値を除いて承認範囲内として図へ反映します (BOXP-456)。それ以外の新しい公開要素や公開範囲が必要なら、チケットを Blocked にして Owner に相談します。図の HTML の正本と live の値は public repo、Actions の log、artifact に出しません。全体図のサムネイルは repo に置かず、stage へ secret で渡します。
+public repo (arch、lolice) の IaC にある要素と既に公開済みの要素は、Secret の値を除いて承認範囲内として図へ反映します (BOXP-456)。それ以外の新しい公開要素や公開範囲が必要なら、チケットを Blocked にして Owner に相談します。図の HTML の正本と live の値は public repo、Actions の log、artifact に出しません。全体図のサムネイルは repo に置かず、stage と本番の配備へ secret で渡します。
 
 ## 失敗したとき
 

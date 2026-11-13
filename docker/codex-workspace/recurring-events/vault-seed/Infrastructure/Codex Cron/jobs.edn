@@ -19,4 +19,8 @@
    :command "bb /opt/codex-workspace/model-updates/model_updates.bb tick"
    :schedule "41 * * * *"
    :time-zone "Etc/UTC"
-   :workdir "/home/boxp"}]}
+   :workdir "/home/boxp"}
+  ;; BOXP-539: 公開活動の差分だけを起票する。
+  {:id "site-refresh" :name "サイトの定期更新の確認(agent なし)" :enabled true
+   :runner "command" :command "bb /opt/codex-workspace/site-refresh/site_refresh.bb tick"
+   :schedule "23 */6 * * *" :time-zone "Etc/UTC" :workdir "/home/boxp"}]}

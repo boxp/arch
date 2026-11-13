@@ -1,5 +1,11 @@
 name: Deploy Hitohako Site
 
+# PR: stage 設定でビルドだけ行う。
+# main push / workflow_dispatch: stage（boxp-hitohako-stage）へ配備し、続けて同じ commit を本番設定で
+# 本番（boxp-hitohako、https://hitohako.b0xp.io/）へ配備する。
+# BOXP-539: Owner は更新ごとの本番承認を求めず、main への merge で本番まで反映する。
+# 配備前に配信中の本番 deployment を記録し、実 URL の HTML が build と一致しなければその版へ戻す。
+
 on:
   push:
     branches: [main]
@@ -39,7 +45,6 @@ jobs:
           SITE_URL: https://hitohako-stage.b0xp.io
           PUBLIC_SITE_STAGE: 'true'
 
-      # Stage only in this phase. Production (hitohako.b0xp.io) is not deployed from here.
       - name: Deploy to Cloudflare Pages (stage)
         if: github.event_name != 'pull_request'
         working-directory: apps/hitohako
@@ -47,3 +52,77 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  deploy-production:
+    needs: deploy
+    if: github.event_name != 'pull_request' && github.repository == 'boxp/arch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      deployments: write
+    concurrency:
+      group: hitohako-production
+      cancel-in-progress: false
+    env:
+      PRODUCTION_PROJECT: boxp-hitohako
+      PRODUCTION_URL: https://hitohako.b0xp.io
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Record the production deployment to restore on failure
+        id: production
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: scripts/pages-production.sh record "$PRODUCTION_PROJECT" hitohako.b0xp.io
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Build (production settings)
+        working-directory: apps/hitohako
+        env:
+          SITE_URL: ${{ env.PRODUCTION_URL }}
+          PUBLIC_SITE_STAGE: 'false'
+        run: |
+          # The stage-only noindex header is the one difference from the stage source.
+          # Fail closed if that header no longer has the expected shape.
+          test "$(grep -c '^  X-Robots-Tag: noindex, nofollow$' public/_headers)" = 1
+          sed -i -e '/^# Stage environment: keep search engines away/d' \
+            -e '/^  X-Robots-Tag: noindex, nofollow$/d' public/_headers
+          npm ci
+          npm run build
+
+      - name: Check the build has no stage settings
+        working-directory: apps/hitohako
+        run: |
+          if grep -rIiE 'noindex|hitohako-stage|STAGE 環境|stage-banner"' dist; then
+            echo 'Stage settings leaked into the production build' >&2
+            exit 1
+          fi
+          grep -q "property=\"og:url\" content=\"${PRODUCTION_URL}/\"" dist/index.html
+          grep -q 'サイトの一部にAIを利用しています' dist/index.html
+
+      - name: Deploy to Cloudflare Pages (production)
+        working-directory: apps/hitohako
+        env:
+          PRODUCTION_BRANCH: ${{ steps.production.outputs.branch }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: >-
+          npx wrangler pages deploy dist
+          --project-name "$PRODUCTION_PROJECT"
+          --branch "$PRODUCTION_BRANCH"
+          --commit-hash "$GITHUB_SHA"
+          --commit-dirty=true
+
+      - name: Verify the live site and roll back on mismatch
+        env:
+          PREVIOUS_ID: ${{ steps.production.outputs.previous_id }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: scripts/pages-production.sh verify "$PRODUCTION_PROJECT" "${PRODUCTION_URL}/" apps/hitohako/dist "$PREVIOUS_ID"
