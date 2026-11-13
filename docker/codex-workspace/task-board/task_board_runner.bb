@@ -6438,17 +6438,20 @@
   (try
     (when (prune-setting "CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION" parse-prune-enabled)
       (let [instant (now)
-            events (capacity-events)
+            root-path (or (not-empty (System/getenv "CODEX_TASK_BOARD_CAPACITY_ROOT")) "/home/boxp")
+            events (filter #(= root-path (:root %)) (capacity-events))
             latest (last (sort-by ::instant events))
             interval (prune-setting "CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES" #(parse-bounded-long % 50 0))]
         (when (or (nil? latest) (not (.isAfter (::instant latest) (.minus instant (java.time.Duration/ofMinutes interval)))))
-          (let [root-path (or (not-empty (System/getenv "CODEX_TASK_BOARD_CAPACITY_ROOT")) "/home/boxp")
-                guard (prune-setting "CODEX_TASK_BOARD_CAPACITY_GUARD_BYTES" #(parse-bounded-long % 8589934592 0))
+          (let [guard (prune-setting "CODEX_TASK_BOARD_CAPACITY_GUARD_BYTES" #(parse-bounded-long % 8589934592 0))
                 store (java.io.File. root-path)
                 total (.getTotalSpace store) free (.getUsableSpace store) used (- total free)
                 baseline (last (sort-by ::instant (filter #(and (not (.isAfter (::instant %) (.minus instant (java.time.Duration/ofHours 20))))
                                                                   (not (.isBefore (::instant %) (.minus instant (java.time.Duration/ofDays 8))))
                                                                   (number? (:fs-used-bytes %))) events)))
+                area-baseline (last (sort-by ::instant (filter #(not (false? (:scan-complete %)))
+                                                                (filter #(and (not (.isAfter (::instant %) (.minus instant (java.time.Duration/ofHours 20))))
+                                                                              (not (.isBefore (::instant %) (.minus instant (java.time.Duration/ofDays 8))))) events))))
                 hours (when baseline (/ (double (.toMillis (java.time.Duration/between (::instant baseline) instant))) 3600000.0))
                 delta (when baseline (- used (:fs-used-bytes baseline)))
                 rate (when baseline (long (Math/round (/ (* delta 24.0) hours))))
@@ -6496,17 +6499,18 @@
                                  (recur)))))))
                 completed (.waitFor proc 300 java.util.concurrent.TimeUnit/SECONDS)
                 _ (when-not completed (.destroyForcibly proc))
-                _ @scan
+                scan-ok? (try @scan true (catch Throwable _ false))
+                scan-complete (and completed scan-ok?)
                 exit (if completed (.exitValue proc) -1)
                 r @result
                 subareas (into (sorted-map-by (fn [a b] (let [c (compare (get-in r [:subareas b :bytes]) (get-in r [:subareas a :bytes]))] (if (zero? c) (compare a b) c))))
                                (take 40 (sort-by (comp - :bytes val) (filter #(>= (:bytes (val %)) 536870912) (:subareas r)))))
-                area-deltas (if baseline (into {} (keep (fn [area] (let [d (- (get-in r [:areas area :bytes] 0) (get-in baseline [:areas area :bytes] 0))] (when (>= (abs d) 268435456) [area d]))) (into (set (keys (:areas r))) (keys (:areas baseline))))) {})
+                area-deltas (if (and scan-complete area-baseline) (into {} (keep (fn [area] (let [d (- (get-in r [:areas area :bytes] 0) (get-in area-baseline [:areas area :bytes] 0))] (when (>= (abs d) 268435456) [area d]))) (into (set (keys (:areas r))) (keys (:areas area-baseline))))) {})
                 event (merge r {:event :capacity-attribution :root root-path :fs-total-bytes total :fs-free-bytes free :fs-used-bytes used
-                                :scan-ms (quot (- (System/nanoTime) started) 1000000) :scan-exit exit :fresh-window-hours 24 :subareas subareas
+                                :scan-ms (quot (- (System/nanoTime) started) 1000000) :scan-exit exit :scan-complete scan-complete :fresh-window-hours 24 :subareas subareas
                                 :baseline-at (:at baseline) :baseline-hours hours :used-delta-bytes delta :used-bytes-per-day rate :area-delta-bytes area-deltas :days-to-guard days})]
             (workspace-metrics-write! event)
-            (log! (str "capacity-attribution: used=" used " free=" free " outside-workspaces=" (get-in r [:outside-workspaces :bytes])
+            (log! (str "capacity-attribution: " (when-not scan-complete "scan-incomplete ") "used=" used " free=" free " outside-workspaces=" (get-in r [:outside-workspaces :bytes])
                        " fresh24h=" (reduce + 0 (map :fresh-bytes (vals (:areas r)))) " days-to-guard=" days
                        " top-fresh=" (str/join "," (map (fn [[a v]] (str (one-line a) ":" (:fresh-bytes v))) (capacity-top-fresh (:areas r))))))))))
     (catch Throwable e (log! (str "capacity-attribution: warning " (one-line (.getMessage e)))))))
