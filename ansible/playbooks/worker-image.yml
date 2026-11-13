@@ -246,6 +246,10 @@
         gpu_worker_host_tools_enabled: "{{ worker_install_gpu_host_tools }}"
         gpu_worker_host_tools_i915_timeout_enabled: "{{ worker_node.gpu_host_tools | bool }}"
 
+    # BOXP-538: reclaim unused images before Longhorn's 25% free-space DiskPressure.
+    - role: worker_kubelet_image_gc
+      tags: [kubernetes, kubelet-image-gc]
+
   tasks:
     - name: Install root filesystem grow script
       ansible.builtin.copy:
