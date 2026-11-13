@@ -53,9 +53,12 @@ it('retries once and reports the failed group index', async () => {
   const calls: string[] = []
   const fetcher = vi.fn(async (_url, init) => { const value = JSON.parse(String(init?.body)).text; calls.push(value); return new Response('wav', { status: value.startsWith('b') ? 500 : 200 }) }) as unknown as typeof fetch
   const { player, audio, events } = setup(fetcher)
-  player.speak(['a', 'b'.repeat(60), 'c'.repeat(60)], events); await tick(); audio.onended?.(); await tick()
-  expect(calls).toEqual(['a', 'b'.repeat(60), 'b'.repeat(60), 'c'.repeat(60)])
-  expect(events.onError).toHaveBeenCalledWith('fetch_failed', 1)
+  player.speak(['a', 'b'.repeat(60), 'c'.repeat(60)], events); await tick(); audio.onended?.()
+  // 'c' の先読みは 'a' の完了と 'b' の再試行失敗の前後関係で出る/出ないが決まるため、件数ではなく再試行と報告位置を確かめる。
+  await vi.waitFor(() => expect(events.onError).toHaveBeenCalledWith('fetch_failed', 1))
+  expect(calls.slice(0, 1)).toEqual(['a'])
+  expect(calls.filter(x => x.startsWith('b'))).toEqual(['b'.repeat(60), 'b'.repeat(60)])
+  expect(calls.every(x => x === 'a' || x.startsWith('b') || x === 'c'.repeat(60))).toBe(true)
 })
 it('calls fetcher without a receiver so window.fetch does not throw Illegal invocation (BOXP-522)', async () => {
   // Chrome の window.fetch は this が Window/undefined 以外だと送信前に TypeError: Illegal invocation を投げる。
