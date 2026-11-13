@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { arcX, boundaryLoops, capLoops, fitAffine, highlightHoles, luma, over, paintHighlight, rebakeBrows, rebakeEye, stitchSlit, type Atlas, type EyeSpec, type Rgba } from './face-texture'
+import { arcX, boundaryLoops, capLoops, fitAffine, fillLashSlots, highlightHoles, luma, over, paintHighlight, rebakeBrows, rebakeEye, stitchSlit, type Atlas, type EyeSpec, type Rgba } from './face-texture'
 
 const clear: Rgba = [0, 0, 0, 0]
 function atlas(width: number, height: number): Atlas & { data: Map<string, Rgba> } {
@@ -193,4 +193,38 @@ it('潤みは虹彩下部の局所に限られる', async () => {
   const { tearWeight } = await import('./face-texture')
   expect(tearWeight(0, 0, 0, 0)).toBeCloseTo(0.65)
   expect(tearWeight(4, 0, 0, 0)).toBe(0)
+})
+
+describe('まつ毛の隙間（BOXP-525）', () => {
+  const spec: EyeSpec = { lash: 13, iris: 14, white: 15, top: 279, bottom: 297, strip: 275, left: [[279, 510], [297, 510]], right: [[279, 540], [297, 540]] }
+  const ink: Rgba = [40, 20, 50, 255], faint: Rgba = [30, 30, 30, 60]
+  it('上下を濃い線に挟まれた細い隙間は線の色で不透明にする', () => {
+    const target = atlas(900, 400)
+    for (const y of [266, 267, 268, 272, 273]) target.set(520, y, ink) // 上 3 画素・下 2 画素の線の間に隙間 3 画素（269〜271）
+    target.set(520, 270, faint)
+    expect(fillLashSlots(target, spec, identity)).toBe(3)
+    expect(target.get(520, 269)).toEqual([40, 20, 50, 255])
+    expect(target.get(520, 270)[3]).toBe(255)
+    expect(luma(target.get(520, 270))).toBeLessThan(60)
+  })
+  it('淡い二重まぶたの線との間・白目との広い間・虹彩より下は塗らない', () => {
+    const target = atlas(900, 400), crease: Rgba = [60, 50, 70, 150]
+    target.set(525, 266, crease); target.set(525, 270, ink) // 片側が淡い線
+    for (const y of [262, 263, 264, 273, 274]) target.set(530, y, ink) // 8 画素の広い間
+    target.set(540, 266, ink); for (const y of [272, 273, 274]) target.set(540, y, ink) // 濃くても 1 画素の細い二重まぶたの線
+    target.set(535, 281, ink); target.set(535, 284, ink) // 虹彩の上端より下
+    expect(fillLashSlots(target, spec, identity)).toBe(0)
+  })
+})
+
+describe('まつ毛の隙間の 1 列の漏れ', () => {
+  const spec: EyeSpec = { lash: 13, iris: 14, white: 15, top: 279, bottom: 297, strip: 275, left: [[279, 510], [297, 510]], right: [[279, 540], [297, 540]] }
+  const ink: Rgba = [40, 20, 50, 255]
+  it('左右が塗られた 1〜2 列の漏れもつなぐ', () => {
+    const target = atlas(900, 400)
+    for (const x of [520, 522]) for (const y of [266, 267, 268, 272, 273]) target.set(x, y, ink)
+    for (const y of [266, 267, 268]) target.set(521, y, ink) // 下の線が欠けた列
+    fillLashSlots(target, spec, identity)
+    expect(target.get(521, 270)[3]).toBe(255)
+  })
 })
