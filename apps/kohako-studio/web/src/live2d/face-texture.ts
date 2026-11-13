@@ -266,6 +266,25 @@ export function fillLashSlots(target: Atlas, spec: EyeSpec, lash: Layer, maxGap 
   return writes.length
 }
 
+/** 顔の中心から輪郭を越えた肌だけを透明にする（RGB も 0 にするので線形補間で白い縁は出ない）。 */
+export function eraseJawRow(pixels: Rgba[], center: number, start: number, end: number, modelY: number): number[] {
+  if (modelY < 305 || modelY > 390) return []
+  const step = end < start ? -1 : 1
+  let edge = -1
+  for (let i = start; step * (i - end) <= 0; i += step) {
+    const p = pixels[i]
+    if (p && p[3] >= 128 && luma(p) < 90) { edge = i; break }
+  }
+  if (edge < 0 || step * (edge - center) <= 0) return []
+  const erased: number[] = []
+  for (let i = edge + step; step * (i - end) <= 0; i += step) {
+    const p = pixels[i]
+    if (!p || p[3] < 128 || luma(p) <= 140 || p[0] < p[1] || p[1] < p[2]) continue
+    erased.push(i)
+  }
+  return erased
+}
+
 /** 行 y で x から最も近い明暗の切り替わり（なければ null）。 */
 function edgeNear(read: (x: number, y: number) => Rgba, x: number, y: number, threshold: number): number | null {
   const side = luma(read(x, y)) >= threshold
@@ -337,7 +356,7 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
   try {
     if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('アトラスを読めません')
     // 必要な矩形だけ読む（顔の周りのみ）。
-    const models = [{ x: 480, y: 200 }, { x: 680, y: 350 }]
+    const models = [{ x: 480, y: 200 }, { x: 700, y: 405 }]
     const span = [...layers.values()].flatMap(l => models.map(m => l.forward(m.x, m.y)))
     const x0 = Math.max(0, Math.floor(Math.min(...span.map(s => s[0]))) - 8), y0 = Math.max(0, Math.floor(Math.min(...span.map(s => s[1]))) - 8)
     const x1 = Math.min(width, Math.ceil(Math.max(...span.map(s => s[0]))) + 8), y1 = Math.min(height, Math.ceil(Math.max(...span.map(s => s[1]))) + 8)
@@ -362,6 +381,22 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
     })
     gl.bindTexture(gl.TEXTURE_2D, p.textures[0] as WebGLTexture)
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
+    // あご輪郭の外（髪の下の下地）の肌色を透明にする。顔の島の中だけを書き換えるので共有アトラスへ直接書く
+    // （他メッシュがこの画素を覆っていても、髪の上に肌色の欠片が出るのを防ぐ方向にしか効かない）。
+    const jaw = { left: 0, right: 0 }, jawOffsets: number[] = []
+    const face = of(FACE_MESH), centerU = face.forward(572, 350)[0]
+    for (let v = y0; v < y1; v++) {
+      const [, modelY] = face.inverse(centerU, v)
+      if (modelY < 305 || modelY > 390) continue
+      const center = Math.round(face.forward(572, modelY)[0]) - x0
+      const row = Array.from({ length: w }, (_, x) => target.get(x + x0, v))
+      for (const [side, inner, outer] of [['left', 535, 485], ['right', 610, 685]] as const) {
+        const start = Math.max(0, Math.min(w - 1, Math.round(face.forward(inner, modelY)[0]) - x0))
+        const end = Math.max(0, Math.min(w - 1, Math.round(face.forward(outer, modelY)[0]) - x0))
+        for (const x of eraseJawRow(row, center, start, end, modelY)) { jawOffsets.push(((v - y0) * w + x) * 4); jaw[side]++ }
+      }
+    }
+    for (const i of jawOffsets) output.fill(0, i, i + 4)
     gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, output)
     // 顔レイヤーの画素だけを保存し、元の色から毎回合成する。
     const blushPixels: { i: number; weight: number }[] = []
@@ -405,7 +440,7 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
       info.indices = new Indices([...info.indices, ...triangles])
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, info.indexBuffer); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, info.indices, gl.STATIC_DRAW)
     }
-    return { setBlush, patched: true, brows, eyes, highlightHoles: holes.map(h => h.loops.length), slitTriangles: stitches.map(s => s.triangles.length / 3), rect: [x0, y0, x1, y1] }
+    return { setBlush, patched: true, brows, eyes, jaw, highlightHoles: holes.map(h => h.loops.length), slitTriangles: stitches.map(s => s.triangles.length / 3), rect: [x0, y0, x1, y1] }
   } finally {
     gl.bindFramebuffer(gl.FRAMEBUFFER, previous)
     gl.deleteFramebuffer(framebuffer)

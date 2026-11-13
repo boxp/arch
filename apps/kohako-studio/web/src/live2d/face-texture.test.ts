@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { arcX, boundaryLoops, capLoops, fitAffine, fillLashSlots, highlightHoles, luma, over, paintHighlight, rebakeBrows, rebakeEye, stitchSlit, type Atlas, type EyeSpec, type Rgba } from './face-texture'
+import { eraseJawRow, arcX, boundaryLoops, capLoops, fitAffine, fillLashSlots, highlightHoles, luma, over, paintHighlight, rebakeBrows, rebakeEye, stitchSlit, type Atlas, type EyeSpec, type Rgba } from './face-texture'
 
 const clear: Rgba = [0, 0, 0, 0]
 function atlas(width: number, height: number): Atlas & { data: Map<string, Rgba> } {
@@ -226,5 +226,15 @@ describe('まつ毛の隙間の 1 列の漏れ', () => {
     for (const y of [266, 267, 268]) target.set(521, y, ink) // 下の線が欠けた列
     fillLashSlots(target, spec, identity)
     expect(target.get(521, 270)[3]).toBe(255)
+  })
+})
+
+describe('あごの輪郭外の下地', () => {
+  it('輪郭の外の肌だけを除き、内側・赤み・輪郭・髪を残す', () => {
+    const skin: Rgba = [240, 200, 180, 255], blush: Rgba = [240, 170, 160, 255], ink: Rgba = [30, 20, 25, 255], hair: Rgba = [70, 55, 65, 255]
+    const row = [skin, skin, hair, skin, skin, ink, blush, skin, skin]
+    expect(eraseJawRow(row, 8, 7, 0, 330)).toEqual([4, 3, 1, 0])
+    expect(eraseJawRow(row, 8, 7, 0, 280)).toEqual([])
+    expect(eraseJawRow([...row].reverse(), 0, 1, 8, 330)).toEqual([4, 5, 7, 8])
   })
 })
