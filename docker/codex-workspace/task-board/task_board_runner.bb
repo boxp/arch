@@ -6448,7 +6448,11 @@
                 total (.getTotalSpace store) free (.getUsableSpace store) used (- total free)
                 baseline (last (sort-by ::instant (filter #(and (not (.isAfter (::instant %) (.minus instant (java.time.Duration/ofHours 20))))
                                                                   (not (.isBefore (::instant %) (.minus instant (java.time.Duration/ofDays 8))))
-                                                                  (number? (:fs-used-bytes %))) events)))
+                                                                  (number? (:fs-used-bytes %))
+                                                                  ;; Another root is another filesystem, and a scan cut off by the
+                                                                  ;; timeout has partial per-area sums: neither is a valid baseline.
+                                                                  (= root-path (:root %))
+                                                                  (not (false? (:scan-complete %)))) events)))
                 hours (when baseline (/ (double (.toMillis (java.time.Duration/between (::instant baseline) instant))) 3600000.0))
                 delta (when baseline (- used (:fs-used-bytes baseline)))
                 rate (when baseline (long (Math/round (/ (* delta 24.0) hours))))
@@ -6501,9 +6505,9 @@
                 r @result
                 subareas (into (sorted-map-by (fn [a b] (let [c (compare (get-in r [:subareas b :bytes]) (get-in r [:subareas a :bytes]))] (if (zero? c) (compare a b) c))))
                                (take 40 (sort-by (comp - :bytes val) (filter #(>= (:bytes (val %)) 536870912) (:subareas r)))))
-                area-deltas (if baseline (into {} (keep (fn [area] (let [d (- (get-in r [:areas area :bytes] 0) (get-in baseline [:areas area :bytes] 0))] (when (>= (abs d) 268435456) [area d]))) (into (set (keys (:areas r))) (keys (:areas baseline))))) {})
+                area-deltas (if (and baseline completed) (into {} (keep (fn [area] (let [d (- (get-in r [:areas area :bytes] 0) (get-in baseline [:areas area :bytes] 0))] (when (>= (abs d) 268435456) [area d]))) (into (set (keys (:areas r))) (keys (:areas baseline))))) {})
                 event (merge r {:event :capacity-attribution :root root-path :fs-total-bytes total :fs-free-bytes free :fs-used-bytes used
-                                :scan-ms (quot (- (System/nanoTime) started) 1000000) :scan-exit exit :fresh-window-hours 24 :subareas subareas
+                                :scan-ms (quot (- (System/nanoTime) started) 1000000) :scan-exit exit :scan-complete (boolean completed) :fresh-window-hours 24 :subareas subareas
                                 :baseline-at (:at baseline) :baseline-hours hours :used-delta-bytes delta :used-bytes-per-day rate :area-delta-bytes area-deltas :days-to-guard days})]
             (workspace-metrics-write! event)
             (log! (str "capacity-attribution: used=" used " free=" free " outside-workspaces=" (get-in r [:outside-workspaces :bytes])

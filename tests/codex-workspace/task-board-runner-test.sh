@@ -6410,6 +6410,16 @@ test_capacity_attribution() {
   [[ "$(grep -c ':event :capacity-attribution' "$metrics")" == "$before" ]] || fail 'dry run recorded attribution'
   CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" run_prune "$vault" "$state" >"$tmp/out"
   [[ "$(grep -c ':event :capacity-attribution' "$metrics")" == "$before" ]] || fail 'interval ignored'
+  # Records from another root (another filesystem) or from a scan cut off by the
+  # timeout must not become the baseline for the growth rate.
+  TEST_METRICS="$metrics" bb -e '
+    (require (quote [clojure.edn :as edn]))
+    (let [path (System/getenv "TEST_METRICS") e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp path)))))
+          old (assoc e :at (str (.minus (java.time.Instant/now) (java.time.Duration/ofHours 24))) :fs-used-bytes (- (:fs-used-bytes e) 1000000000))]
+      (assert (true? (:scan-complete e)))
+      (spit path (str (pr-str (assoc old :root "/elsewhere")) "\n" (pr-str (assoc old :scan-complete false)) "\n") :append true))'
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 CODEX_TASK_BOARD_CAPACITY_GUARD_BYTES=0 run_prune "$vault" "$state" >"$tmp/out"
+  TEST_METRICS="$metrics" bb -e '(require (quote [clojure.edn :as edn])) (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))] (assert (nil? (:baseline-at e))) (assert (nil? (:used-bytes-per-day e))))'
   TEST_METRICS="$metrics" bb -e '
     (require (quote [clojure.edn :as edn]))
     (let [path (System/getenv "TEST_METRICS") e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp path)))))
