@@ -35,6 +35,8 @@ if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/kohako
 const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
 const body = document.body, face = el<HTMLImageElement>('face'), rigCanvas = el<HTMLCanvasElement>('rig'), character = el('character')
 const stateLabel = el('state'), message = el<HTMLTextAreaElement>('message'), send = el<HTMLButtonElement>('send'), stop = el<HTMLButtonElement>('stop'), record = el<HTMLButtonElement>('record'), hush = el<HTMLButtonElement>('hush')
+// BOXP-544: 縦スマホでは操作ヒントを省いた短い文言にして、入力欄で折り返して切れないようにする。
+const fullPlaceholder = message.placeholder
 const speech = el<HTMLInputElement>('speech'), reply = el('reply'), bubble = el('bubble'), bubbleTag = el('bubble-tag'), error = el('error'), trouble = el('trouble'), approvalBox = el('approval')
 const cardsBox = el('cards'), cardList = el('card-list'), elapsedLabel = el('elapsed'), connection = el('connection')
 
@@ -235,6 +237,7 @@ function refreshScene(force = false) {
   document.documentElement.style.setProperty('--vh', `${Math.round(vh)}px`)
   const shape = shapeOf(), kbd = shape !== 'pc' && document.activeElement === message && !!vv && vv.height < window.innerHeight * 0.8
   body.dataset.shape = shape; body.dataset.kbd = kbd ? '1' : '0'
+  message.placeholder = shape === 'portrait' ? '話しかける' : fullPlaceholder
   const target = targetScene({ state, thinkingMs: state === 'thinking' ? Date.now() - thinkingSince : 0, cardsOpen: cardsOpen || !viewer.hidden, idleMs: Date.now() - lastActivity, hasReply: !!lastReply, netDown })
   const scene = director.decide(target, Date.now(), { holding: holding(), pinned: prefs.pinned, force })
   body.dataset.scene = scene; updateMessage()
@@ -246,8 +249,9 @@ function refreshScene(force = false) {
   if (scene === 'work' && !reply.dataset.reply && !reply.textContent?.startsWith('少し時間')) setBubble('少し時間がかかっています。終わったらお知らせしますね。止めたいときは「停止」を押してください。')
   return scene
 }
+
 const sceneNow = () => body.dataset.scene as Scene
-window.addEventListener('resize', () => refreshScene())
+window.addEventListener('resize', () => { refreshScene(); if (shapeOf() === 'portrait') closeStatus() })
 window.visualViewport?.addEventListener('resize', () => refreshScene())
 message.addEventListener('input', () => { typingUntil = Date.now() + 2000; message.style.height = 'auto'; message.style.height = `${Math.min(message.scrollHeight, window.innerHeight * 0.3)}px` })
 message.addEventListener('focus', () => setTimeout(() => refreshScene(), 300)); message.addEventListener('blur', () => setTimeout(() => refreshScene(), 300))

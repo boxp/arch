@@ -19,7 +19,7 @@ Playwright コンテナ（`mcr.microsoft.com/playwright:v1.56.1-noble`、`npm i 
 
 `petvisible.mjs`（BOXP-505 TD-01）は、頭をなでたときに**最終描画で**頭が傾いて見え、離すと戻ることを画素から確かめる回帰検査です。petFollow や setParameter の値ではなく、スクリーンショットの左右の瞳（青）の重心を結ぶ線の傾き（度）と首肩のずれ（px）を測ります。待機クリップも頭を揺らすため、最初に触らずに 8 回測った待機の平均・揺れ幅と比べます。PC（実マウス）と Pixel 7（touch）で右側・左側・中央をまたぐ往復・縦（PC のみ。touch の縦は `touch-action: pan-y` でスクロールになる）のなでを行い、右なでと左なでの差が 10° 以上、各なでが待機から 3° 以上、ふれあい OFF と動きを減らす設定では 3° 以内、ホバーでは追従しないこと、離して 3 秒後に待機の揺れの内側へ戻ることを確かめ、失敗があれば終了コード 1 にします。`node petvisible.mjs <build の dist> <出力先>`（Playwright 1.56.1、BFF は完全にモック、token 不要）。`ONLY=pc,pixel7,reduced,touchoff` で絞れます。連続フレーム（なで中・離して 0.4 秒・3 秒）の画像を出力先に保存します。
 
-`statusview.mjs` は `STATUS_JSON` の実データ写しと BFF モックを使い、舞台内ウィジェットの数値、詳細の開閉、各画面サイズの重なり、取得失敗時の表示を確認し、スクリーンショットを保存します。
+`statusview.mjs` は `STATUS_JSON` の実データ写しと BFF モックを使い、PC・横画面のウィジェットの数値、詳細の開閉、重なり、取得失敗時の表示と、縦画面での非表示を確認し、スクリーンショットを保存します。
 
 `viewpanel.mjs` は BFF をモックして地図・利用枠・HTML 図の表示、iframe の制約、操作欄との重なりを PC・スマートフォンで検証します。ビルドを `SITE`（既定 `/site`）の `kohako/` に配置し、必要に応じて `PORT` と出力ディレクトリ引数を指定して実行します。
 
@@ -54,3 +54,5 @@ Playwright コンテナ（`mcr.microsoft.com/playwright:v1.56.1-noble`、`npm i 
 `peteyes525.mjs`（BOXP-525）は BFF を完全にモックし、PC（実マウス）と Pixel 7（CDP touch）で頭をなでたときの連続描画から、顔周りの青い瞳の画素数（variants510 と同じ指標）で閉眼と復帰を確かめる回帰検査です。なで中（押して動かして 0.7 秒以降）の全フレームが待機最大値の 15% 以下、離して 1.5〜3 秒の最大値が 60% 以上に戻ること、3 回の反復、取消（PC は押したまま描画面の外へ出す／Pixel 7 は touchcancel）で開くこと、hover・頭の tap・手の tap・ふれあい OFF・reduced-motion では閉じないこと、なで中も頭追従（headZ）が残ること、読み上げ中のなででも口形が動き続けることを検査します。`node peteyes525.mjs <build の dist> <出力先>`（Playwright 1.56.1、token 不要）。連続フレームの画像と `result.json` を保存し、失敗があれば終了コード 1 です。`petvisible.mjs` はなで中に目を閉じるようになったため、傾きを瞳の線ではなく頭全体の回転照合で測ります（瞳の線は `eyeTilt` として併記）。
 
 `chest521.mjs`（BOXP-521）は BFF を完全にモックし、胸の揺れ（二次動作）を最終描画の画素で確かめます。Playwright の時計を止めて少しずつ進め、各時刻でキャラの canvas を「揺れを描いたまま」と「同じ瞬間に揺れだけ外して描き直した絵」で読み、胸の範囲の画素のずれ（px）と、胸の外（顔・首・腕・帯・脚）の画素一致を比べます（背景や時計の CSS の動きを拾わないよう、スクリーンショットではなく canvas を読みます）。PC と Pixel 7 相当で、身振り（joy / nod）中に胸が遅れて揺れること（各身振りで 0.5px 以上、少なくとも一つで 0.75px 以上。スマホはキャラの描画が小さいため）、身振りの終わりから 1.5 秒後と待機（触らない）では 0.5px 以内、胸の外の差が 4 画素以内であること、設定「胸の揺れ」OFF・アプリの「動きを減らす」・OS の reduced-motion では変位 0 を確かめ、失敗があれば終了コード 1 にします。`node chest521.mjs <build の dist> <出力先>`（Playwright 1.56.1、token 不要、`ONLY=pc,pixel7,off,reduced,osreduce` で絞れます）。各時刻の胸の拡大（揺れあり／なし）と、0.1 秒ごとに並べた画像（`<ケース>-sheet.png`、上: 揺れあり、下: 揺れなし）を保存します。
+
+`portrait544.mjs`（BOXP-544）は BFF を完全にモックし、縦 3 サイズの各場面・viewer・キーボード表示と PC・横画面を検証します。Playwright 1.56.1 でビルドを `SITE`（既定 `/site`）の `kohako/` に置き、`node portrait544.mjs /out` を実行します（`PORT` 既定 8804）。スクリーンショットと `result.json` を保存し、配置異常または外部通信があれば終了コード 1 です。

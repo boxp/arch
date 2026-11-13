@@ -1,0 +1,23 @@
+# BOXP-544: コハコの家 スマホ縦表示で時計・ウィジェットを非表示にしてレイアウトを修復
+
+## 目的
+スマホ縦表示（`body[data-shape="portrait"]`、`innerHeight > innerWidth`）では画面が狭く、
+時計（`.clock-face`）と利用枠・進行中ウィジェット（`.status-anchor`）が吹き出し・コハコ・カード等と競合してレイアウトが崩れる。
+縦スマホではこれらを表示せず、会話・入力・主要操作が無理なく収まるようにする。
+
+## 方針
+- `apps/kohako-studio/web/src/home/style.css` で portrait 時に `.clock-face` と `.status-anchor`（詳細パネルを含む）を `display:none` にする。
+  - ヘッダーの小さな時計（`.small-clock`）は既に portrait で非表示。
+- 時計・ウィジェットがあった前提の portrait 専用の配置（ウィジェットを避けるための位置・幅指定）を整理し、
+  吹き出し・カード・コハコ・入力欄・ヘッダーが重ならず画面内に収まるよう調整する。
+- PC（`data-shape="pc"`）と横表示（`data-shape="landscape"`）の CSS は変更しない。
+- vitest に portrait で時計・ウィジェットを隠す CSS の回帰テストを追加。
+- 実描画検証（Playwright 1.56.1、BFF 完全モック）: 縦 360×780 / 390×844 / 412×915 の各場面
+  （relax / talk / show / work / offline / confirm / viewer / キーボード）で時計・ウィジェット非表示、要素の重なり・はみ出しなし。
+  PC 1280×800・横 844×390 は修正前後のスクリーンショット比較で退行なし。
+- `verify/home/statusview.mjs` の portrait ケースは「非表示であること」を検査するよう更新。
+
+## 配備・確認
+通常 CI → gate 通過後 merge → Kohako Studio image build → Image Updater 配備 → 配備版で同じ実描画確認。
+検証画像は `/home/boxp/verification-artifacts/BOXP-544/` に保存し vault には置かない。
+- 縦スマホでは入力欄のプレースホルダーを「話しかける」に短縮し、360px 幅でも折り返して切れないようにする（PC・横は従来の文言のまま）。
