@@ -6398,7 +6398,7 @@ test_capacity_attribution() {
     (require (quote [clojure.edn :as edn]))
     (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))
           bytes (fn [p] (* 512 (Long/parseLong (clojure.string/trim (:out (babashka.process/shell {:out :string} "stat" "-c" "%b" (str (System/getenv "TEST_ROOT") "/" p)))))))]
-      (assert e) (assert (= 5 (:scanned-files e))) (assert (pos? (get-in e [:areas "(root files)" :bytes])))
+      (assert e) (assert (true? (:scan-complete e))) (assert (= 5 (:scanned-files e))) (assert (pos? (get-in e [:areas "(root files)" :bytes])))
       (assert (= (+ (bytes "one/fresh") (bytes "one/link")) (get-in e [:areas "one" :bytes])))
       (assert (= (bytes "two/old") (get-in e [:areas "two" :bytes])))
       (assert (zero? (get-in e [:areas "two" :fresh-bytes])))
@@ -6421,6 +6421,43 @@ test_capacity_attribution() {
   assert_file_contains "$tmp/summary" 'capacity-used-bytes='
   assert_file_contains "$tmp/summary" 'capacity-days-to-guard='
   assert_file_contains "$tmp/summary" 'capacity-top-fresh='
+  # An unrelated root must neither suppress a scan nor supply its baseline.
+  TEST_METRICS="$metrics" TEST_ROOT="$root" bb -e '
+    (let [now (java.time.Instant/now) path (System/getenv "TEST_METRICS")]
+      (spit path (str (pr-str {:event :capacity-attribution :root "other-root" :at (str (.minus now (java.time.Duration/ofHours 24))) :fs-used-bytes 1 :areas {"one" {:bytes 1000000000}}}) "\n"
+                      (pr-str {:event :capacity-attribution :root "other-root" :at (str now) :fs-used-bytes 1}) "\n")))'
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" run_prune "$vault" "$state" >"$tmp/out"
+  TEST_METRICS="$metrics" bb -e '
+    (require (quote [clojure.edn :as edn]))
+    (let [events (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))) e (last events)]
+      (assert (= 3 (count events))) (assert (nil? (:baseline-at e))) (assert (empty? (:area-delta-bytes e))))'
+  # Incomplete area data is excluded, while its statfs measurement remains usable.
+  TEST_METRICS="$metrics" TEST_ROOT="$root" bb -e '
+    (let [at (str (.minus (java.time.Instant/now) (java.time.Duration/ofHours 24)))]
+      (spit (System/getenv "TEST_METRICS") (str (pr-str {:event :capacity-attribution :root (System/getenv "TEST_ROOT") :at at :scan-complete false :fs-used-bytes 1 :areas {"one" {:bytes 1000000000}}}) "\n")))'
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" run_prune "$vault" "$state" >"$tmp/out"
+  TEST_METRICS="$metrics" bb -e '
+    (require (quote [clojure.edn :as edn]))
+    (let [[baseline e] (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS")))))]
+      (assert (= (:at baseline) (:baseline-at e))) (assert (number? (:used-delta-bytes e))) (assert (empty? (:area-delta-bytes e))))'
+  mkdir -p "$tmp/bin"
+  cat >"$tmp/bin/find" <<'FAKE'
+#!/bin/sh
+if [ "${FAKE_SCAN_ERROR:-}" = 1 ]; then printf 'invalid\000'; fi
+exit 1
+FAKE
+  chmod +x "$tmp/bin/find"
+  PATH="$tmp/bin:$PATH" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 run_prune "$vault" "$state" >"$tmp/out"
+  TEST_METRICS="$metrics" bb -e '
+    (require (quote [clojure.edn :as edn]))
+    (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))]
+      (assert (= 1 (:scan-exit e))) (assert (true? (:scan-complete e))))'
+  PATH="$tmp/bin:$PATH" FAKE_SCAN_ERROR=1 CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 run_prune "$vault" "$state" >"$tmp/out"
+  TEST_METRICS="$metrics" bb -e '
+    (require (quote [clojure.edn :as edn]))
+    (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))]
+      (assert (false? (:scan-complete e))) (assert (empty? (:area-delta-bytes e))))'
+  assert_file_contains "$tmp/out" 'scan-incomplete'
   before="$(grep -c ':event :capacity-attribution' "$metrics")"
   CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=off CODEX_TASK_BOARD_CAPACITY_ROOT="$root" run_prune "$vault" "$state" >"$tmp/out"
   [[ "$(grep -c ':event :capacity-attribution' "$metrics")" == "$before" ]] || fail 'off ignored'
