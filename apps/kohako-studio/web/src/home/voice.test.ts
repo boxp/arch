@@ -8,14 +8,14 @@ function setup(fetcher: typeof fetch) {
   const events = { onSentence: vi.fn(), onEnd: vi.fn(), onError: vi.fn() }
   return { audio, player, events, revoke }
 }
-it('groups contiguous units, prefetches up to two in parallel after the first, and resumes from a unit', async () => {
+it('groups contiguous units, immediately prefetches two, and resumes from a unit', async () => {
   const units = ['最初。', ...Array.from({ length: 8 }, (_, i) => String(i).repeat(55) + '。')]
   const calls: string[] = [], resolvers: ((r: Response) => void)[] = []
   let active = 0, maxActive = 0
   const fetcher = vi.fn((_url, init) => { calls.push(JSON.parse(String(init?.body)).text); active++; maxActive = Math.max(maxActive, active); return new Promise<Response>(resolve => resolvers.push(r => { active--; resolve(r) })) }) as unknown as typeof fetch
   const { player, audio, events } = setup(fetcher), onChunkEnd = vi.fn()
   player.speak(units, { ...events, onChunkEnd }, 1)
-  expect(calls).toEqual([units[1]])
+  expect(calls).toEqual([units[1], units[2]])
   resolvers.shift()!(new Response('wav')); await tick()
   expect(calls).toHaveLength(3)
   resolvers.shift()!(new Response('wav')); await tick()
@@ -29,8 +29,8 @@ it('groups contiguous units, prefetches up to two in parallel after the first, a
   expect(maxActive).toBe(2)
   expect(calls.join('')).toBe(units.slice(1).join(''))
   expect(calls.every(x => x.length <= 160)).toBe(true)
-  expect(onChunkEnd.mock.calls.map(x => x[0])).toEqual([1, 3, 5, 7, 8])
-  expect(events.onSentence.mock.calls.map(x => x[0])).toEqual([1, 2, 4, 6, 8])
+  expect(onChunkEnd.mock.calls.map(x => x[0])).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
+  expect(events.onSentence.mock.calls.map(x => x[0])).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
 })
 it('cancel prevents stale fetch and playback', async () => {
   let resolve!: (response: Response) => void
@@ -53,9 +53,12 @@ it('retries once and reports the failed group index', async () => {
   const calls: string[] = []
   const fetcher = vi.fn(async (_url, init) => { const value = JSON.parse(String(init?.body)).text; calls.push(value); return new Response('wav', { status: value.startsWith('b') ? 500 : 200 }) }) as unknown as typeof fetch
   const { player, audio, events } = setup(fetcher)
-  player.speak(['a', 'b'.repeat(60), 'c'.repeat(60)], events); await tick(); audio.onended?.(); await tick()
-  expect(calls).toEqual(['a', 'b'.repeat(60) + 'c'.repeat(60), 'b'.repeat(60) + 'c'.repeat(60)])
-  expect(events.onError).toHaveBeenCalledWith('fetch_failed', 1)
+  player.speak(['a', 'b'.repeat(60), 'c'.repeat(60)], events); await tick(); audio.onended?.()
+  // 'c' の先読みは 'a' の完了と 'b' の再試行失敗の前後関係で出る/出ないが決まるため、件数ではなく再試行と報告位置を確かめる。
+  await vi.waitFor(() => expect(events.onError).toHaveBeenCalledWith('fetch_failed', 1))
+  expect(calls.slice(0, 1)).toEqual(['a'])
+  expect(calls.filter(x => x.startsWith('b'))).toEqual(['b'.repeat(60), 'b'.repeat(60)])
+  expect(calls.every(x => x === 'a' || x.startsWith('b') || x === 'c'.repeat(60))).toBe(true)
 })
 it('calls fetcher without a receiver so window.fetch does not throw Illegal invocation (BOXP-522)', async () => {
   // Chrome の window.fetch は this が Window/undefined 以外だと送信前に TypeError: Illegal invocation を投げる。
@@ -70,7 +73,7 @@ it('extends past 120 only to finish an unfinished sentence and stops at 160', as
   const { player, audio } = setup(fetcher)
   player.speak(units, { onSentence: vi.fn(), onEnd: vi.fn(), onError: vi.fn() }); await tick()
   audio.onended?.(); await tick(); audio.onended?.(); await tick(); audio.onended?.(); await tick()
-  expect(calls).toEqual(['first。', units[1] + units[2] + units[3], units[4]])
+  expect(calls).toEqual(['first。', units[1], units[2] + units[3], units[4]])
   player.cancel()
 })
 it('cancel discards buffered audio and aborts the in-flight request', async () => {
@@ -84,4 +87,15 @@ it('cancel discards buffered audio and aborts the in-flight request', async () =
   const ended = audio.onended; player.cancel(); expect(pending[2].signal.aborted && pending[3].signal.aborted).toBe(true)
   pending[2].resolve(new Response('wav')); pending[3].resolve(new Response('wav')); ended?.(); await tick()
   expect(audio.play).toHaveBeenCalledTimes(1); expect(events.onEnd).not.toHaveBeenCalled(); expect(events.onError).not.toHaveBeenCalled()
+})
+
+it('ramps group limits from the preceding group while preserving units', async () => {
+  const units = Array.from({ length: 20 }, () => 'あ'.repeat(19) + '。')
+  const calls: string[] = []
+  const fetcher = vi.fn(async (_url, init) => { calls.push(JSON.parse(String(init?.body)).text); return new Response('wav') }) as unknown as typeof fetch
+  const { player, audio, events } = setup(fetcher)
+  player.speak(units, events); await tick()
+  while (!events.onEnd.mock.calls.length) { audio.onended?.(); await tick() }
+  expect(calls.map(x => x.length)).toEqual([20, 60, 80, 120, 120])
+  expect(calls.join('')).toBe(units.join(''))
 })
