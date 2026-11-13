@@ -1,0 +1,32 @@
+#!/usr/bin/env bb
+(require '[babashka.fs :as fs] '[babashka.process :as p] '[cheshire.core :as json] '[clojure.edn :as edn] '[clojure.string :as str] '[clojure.test :refer [deftest is run-tests]])
+(def repo (str (fs/absolutize ".")))
+(def script (str repo "/docker/codex-workspace/site-refresh/site_refresh.bb"))
+(def fixtures (str repo "/tests/codex-workspace/fixtures/site-refresh"))
+(defn sandbox [] (let [d (str (fs/create-temp-dir)) v (str d "/vault") f (str d "/fixtures") root (str d "/root")]
+  (fs/create-dirs (str v "/Tickets")) (fs/create-dirs f)
+  (doseq [n ["medium.xml" "speakerdeck.atom" "youtube.xml" "github.json"]] (fs/copy (str fixtures "/" n) (str f "/" n)))
+  (spit (str d "/baseline.json") (json/generate-string {:schema 1 :portfolio {:medium ["https://medium.com/@boxpketaro/old"] :speakerdeck ["https://speakerdeck.com/boxp/old"] :github ["boxp/old"]} :hitohako {:youtube ["old"]}}))
+  (spit (str d "/helper.bb") "(require '[cheshire.core :as j]) (let [a *command-line-args* c (first a) d (System/getenv \"FAKE\") v (System/getenv \"CODEX_TASK_BOARD_VAULT\") opt (fn [k] (second (drop-while #(not= k %) a)))] (spit (str d \"/calls\") (str c \" \" (or (opt \"--lane\") (second a)) \"\\n\") :append true) (if (= c \"create\") (let [id (str \"BOXP-\" (inc (count (file-seq (clojure.java.io/file (str v \"/Tickets\"))))))] (spit (str v \"/Tickets/\" id \".md\") (str \"status: ready\\n\" (slurp (opt \"--context-file\")))) (println (j/generate-string {:id id}))) (spit (str v \"/Tickets/\" (second a) \".md\") (slurp (opt \"--note-file\")) :append true)))")
+  {:d d :v v :f f :root root :env {"FAKE" d "CODEX_TASK_BOARD_VAULT" v "SITE_REFRESH_ROOT" root "SITE_REFRESH_FIXTURES" f "SITE_REFRESH_BASELINE_FILE" (str d "/baseline.json") "SITE_REFRESH_NOW" "2026-11-13T00:00:00Z" "TASK_BOARD_HELPER" (str d "/helper.bb")}}))
+(defn run [s & args] @(p/process (into ["bb" script] args) {:extra-env (:env s) :out :string :err :string}))
+(defn tick [s] (let [r (run s "tick")] (is (zero? (:exit r)) (:err r)) r))
+(defn calls [s] (let [f (str (:d s) "/calls")] (if (fs/exists? f) (str/split-lines (slurp f)) [])))
+(defn ticket [s id] (slurp (str (:v s) "/Tickets/" id ".md")))
+(defn close! [s id] (let [f (str (:v s) "/Tickets/" id ".md")] (spit f (str/replace (slurp f) "status: ready" "status: done"))))
+(defn add-video! [s id title] (let [f (str (:f s) "/youtube.xml")] (spit f (str/replace (slurp f) "</feed>" (str "<entry><yt:videoId>" id "</yt:videoId><title>" title "</title><published>2026-11-12T00:00:00Z</published></entry></feed>")))))
+(deftest lifecycle
+ (let [s (sandbox)] (is (str/includes? (:out (tick s)) "no-change")) (is (empty? (calls s)))
+  (add-video! s "new1" "新しい動画") (is (str/includes? (:out (tick s)) "filed")) (is (= 1 (count (calls s)))) (is (str/includes? (ticket s "BOXP-2") "site-refresh-key:")) (is (str/includes? (ticket s "BOXP-2") "新しい動画"))
+  (is (str/includes? (:out (tick s)) "already-queued")) (is (= 1 (count (calls s))))
+  (add-video! s "new2" "次の動画") (is (str/includes? (:out (tick s)) "aggregated")) (is (= 2 (count (calls s))))
+  (fs/delete (str (:root s) "/state.edn")) (is (str/includes? (:out (tick s)) "adopted")) (is (= 2 (count (calls s)))) (is (not (fs/exists? (str (:root s) "/tick.lock")))))
+ (let [s (sandbox)] (add-video! s "new" "動画") (tick s) (close! s "BOXP-2") (tick s) (close! s "BOXP-3") (is (str/includes? (:out (tick s)) "suppressed")) (tick s) (is (= 3 (count (calls s)))) (is (str/includes? (last (calls s)) "Backlog"))))
+(deftest failures
+ (let [s (sandbox)] (fs/delete (str (:f s) "/youtube.xml")) (tick s) (tick s) (is (empty? (calls s))) (tick s) (is (= 1 (count (calls s)))) (is (str/includes? (ticket s "BOXP-2") "source:hitohako/youtube")))
+ (let [s (sandbox)] (fs/delete (str (:d s) "/baseline.json")) (dotimes [_ 4] (tick s)) (is (empty? (calls s))) (is (str/includes? (slurp (str (:root s) "/status.md")) "連続失敗 4 回"))))
+(deftest seed-applies-cutoff-to-every-source
+ (let [s (sandbox) b #(json/parse-string (:out (run s "seed-baseline" "--cutoff-portfolio" % "--cutoff-hitohako" "2026-11-13")) true)]
+  (is (= ["boxp/old"] (get-in (b "2026-11-06") [:portfolio :github])))
+  (is (= [] (get-in (b "2026-11-05") [:portfolio :github])))))
+(let [{:keys [fail error]} (run-tests)] (when (pos? (+ fail error)) (System/exit 1)))

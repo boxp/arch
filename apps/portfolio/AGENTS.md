@@ -7,10 +7,10 @@
 - Astro 7 + Tailwind CSS 4（`@tailwindcss/vite`）。静的 HTML + CSS が基本。クライアント JS は `Layout.astro` の配色テーマ切替（head の inline script、フレームワーク・hydration なし）だけに留める。
 - コンテンツは `src/content/` の Content Collections（スキーマ: `src/content.config.ts`）。
 - トップは `src/pages/index.astro`。セクション共通部品は `src/components/`。インフラ図は紹介ページを作らず、トップの Infrastructure 節のカードから各図の URL へ直接リンクする（内容は `src/lib/diagrams.ts`）。図の本体はこの repo に置かない。
-- 全体図のカードは stage でだけ生成する。図の匿名公開は未承認なので、本番ビルドに URL も導線もサムネイルも出さない（CI が検査する）。
-- 全体図のサムネイルはコミットせず、`public/` にも置かない（本番設定のビルドに混ざる）。stage の deploy がビルド後に環境 `portfolio-stage-private` の secret から `dist/diagrams/` へ復元する。stage の `dist` は public repo の artifact へ上げない。
+- 両図のカードを stage と本番の両方で生成する（両図は一般公開済み、本番掲載は BOXP-442 で承認済み）。
+- 全体図のサムネイルはコミットせず、`public/` にも置かない。stage と本番の deploy がビルド後に環境 `portfolio-stage-private` の secret から `dist/diagrams/` へ復元する。サムネイル入りの `dist` は public repo の artifact へ上げない。
 - OGP 画像は `npm run og` で `public/og.png` を生成する（`@resvg/resvg-js` + 同梱 Inter）。
-- デプロイはリポジトリルートの `.github/workflows/deploy-portfolio.yml`（`apps/portfolio/**` の変更で起動）。PR ではビルド + Lighthouse CI のみ、`main` push で Cloudflare Pages の stage プロジェクト `boxp-portfolio-stage`（https://portfolio-stage.b0xp.io/、Cloudflare Access で本人限定）へデプロイ。本番 `boxp-portfolio` へのデプロイは本番切替フェーズで追加する。
+- デプロイはリポジトリルートの `.github/workflows/deploy-portfolio.yml`（`apps/portfolio/**` の変更で起動）。PR ではビルド + Lighthouse CI のみ、`main` push で Cloudflare Pages の stage プロジェクト `boxp-portfolio-stage`（https://portfolio-stage.b0xp.io/、Cloudflare Access で本人限定）へデプロイ。続けて本番 Pages プロジェクト `shanghai`（https://b0xp.io/）へ同じ commit を本番設定で配備する（BOXP-539）。配備前に配信中の deployment を記録し、配備後に実 URL の HTML が build と一致しなければその版へ自動で戻す。公開活動の差分検知と更新手順は `docker/codex-workspace/site-refresh/README.md`。
 - プロフィール画像は GitHub アカウント boxp のアバター（`src/assets/boxp-github-avatar.jpg`）。生成・改変した画像に差し替えない。更新するときは https://avatars.githubusercontent.com/u/1819576?v=4 を取り直す。
 - `SITE_ENV=stage` / `SITE_URL` はビルド時環境変数（`astro.config.mjs` の `env.schema`、`src/lib/site.ts`）。stage では noindex メタ・robots.txt Disallow・stage バナーを出す。noindex はアクセス制限ではないので、stage にも未確認の経歴・メールアドレス・非公開原稿は載せない。
 - DNS / Pages プロジェクト / Cloudflare Access は同リポジトリの Terraform（`terraform/cloudflare/b0xp.io/portfolio/`）で管理。tfaction の plan / apply を経由する。

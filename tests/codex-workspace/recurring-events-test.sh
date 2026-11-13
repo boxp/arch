@@ -543,7 +543,7 @@ if command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
     CODEX_WORKSPACE_ENTRYPOINT_SEED_ONLY=1 \
     bash "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh"
   merged="$(sudo cat "${entrypoint_vault}/Infrastructure/Codex Cron/jobs.edn" | bb -e '(let [jobs (:jobs (clojure.edn/read-string (slurp *in*)))] (println (mapv :id jobs) (:schedule (first (filter #(= "recurring-events-dry-run" (:id %)) jobs)))))')"
-  [[ "${merged}" == '[existing recurring-events-dry-run model-updates] 1 2 * * *' ]] || fail "entrypoint cron seed merge mismatch: ${merged}"
+  [[ "${merged}" == '[existing recurring-events-dry-run model-updates site-refresh] 1 2 * * *' ]] || fail "entrypoint cron seed merge mismatch: ${merged}"
 
   for path in \
     "${entrypoint_vault}/Infrastructure" \

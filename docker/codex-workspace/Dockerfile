@@ -176,6 +176,7 @@ COPY recurring-events/ /opt/codex-workspace/recurring-events/
 COPY model-catalog.edn /opt/codex-workspace/model-catalog.edn
 COPY model-updates/ /opt/codex-workspace/model-updates/
 COPY infra-diagram-refresh/ /opt/codex-workspace/infra-diagram-refresh/
+COPY site-refresh/ /opt/codex-workspace/site-refresh/
 COPY skills/ /opt/codex-workspace/skills/
 RUN chmod 0755 /usr/local/bin/codex-workspace-entrypoint \
     && chmod 0755 /opt/codex-workspace/dotfiles-sync.sh \
@@ -185,6 +186,7 @@ RUN chmod 0755 /usr/local/bin/codex-workspace-entrypoint \
     && find /opt/codex-workspace/novel-board -type f -name "*.bb" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/recurring-events -type f -name "*.bb" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/model-updates -type f -name "*.bb" -exec chmod 0755 {} + \
+    && find /opt/codex-workspace/site-refresh -type f -name "*.bb" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/infra-diagram-refresh -type f \( -name "*.bb" -o -name "*.sh" \) -exec chmod 0755 {} +
 
 EXPOSE 2222 3456

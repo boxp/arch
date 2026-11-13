@@ -1,6 +1,4 @@
-import { isStage } from './site';
-
-/** 図そのものの公開区分。両図とも一般公開済み。architecture の portfolio 本番への掲載は未承認で、本番ビルドには出さない。 */
+/** 図そのものの公開区分。両図とも一般公開済みで、portfolio 本番への掲載も BOXP-442 で承認済み。 */
 export type DiagramAccess = 'public' | 'owner-only';
 
 export interface Diagram {
@@ -26,7 +24,7 @@ export const lineage: Diagram = {
   thumbnailAlt: 'lolice lineage の実画面の一部。アプリ、基盤、物理ノードの層にサービス名のタグが並んでいる。',
 };
 
-// portfolio 本番への掲載が未承認なので、サムネイルは repo に置かない。stage の deploy がビルド後に環境 secret から dist/diagrams/ へ復元する。
+// サムネイルは repo に置かない。stage と本番の deploy がビルド後に環境 secret から dist/diagrams/ へ復元する。
 export const architecture: Diagram = {
   title: 'lolice architecture',
   lead: '同じクラスタを役割の単位で束ね、利用者、エッジと認証、アプリと基盤、CI と GitOps、データ、外部サービスの構造と主な流れを一望できるようにした図です。',
@@ -36,5 +34,5 @@ export const architecture: Diagram = {
   thumbnailAlt: 'lolice architecture の実画面の一部。役割ごとの色枠の中にサービスのアイコンと名前が並び、矢印と短いラベルで結ばれている。',
 };
 
-/** 本番ビルドに architecture の導線と URL を含めない。 */
-export const diagrams: Diagram[] = isStage ? [lineage, architecture] : [lineage];
+/** stage と本番で同じ両図のカードを出す (BOXP-442 承認、BOXP-539 で本番を main に追従)。 */
+export const diagrams: Diagram[] = [lineage, architecture];
