@@ -5857,6 +5857,7 @@ test_workspace_reuse_interplay() {
     assert_file_contains "$tmp/o" ':reused-from "20200102T000000Z"'
     assert_file_contains "$tmp/o" ':reuse-base-reason "studio-dist-dropped"'
     assert_file_contains "$tmp/state/runs/BOXP-908/20200103T000000Z/workspace-reuse.edn" ':reuse-base-reason "studio-dist-dropped"'
+    assert_file_contains "$tmp/state/metrics/workspace-capacity.edn" ':reuse-base-reason "studio-dist-dropped"'
     [[ ! -e "$old" && ! -e "$new/apps/kohako-studio/web/dist" && "$(cat "$new/apps/kohako-studio/web/public/copied.txt")" == efgh && "$(git -C "$new" rev-parse HEAD)" == "$(git -C "$tmp/source" rev-parse origin/main)" ]] || fail 'studio dist drop or reuse failed'
   else
     if [[ "$dist_case" == unknown ]]; then
@@ -6410,6 +6411,18 @@ test_capacity_attribution() {
   [[ "$(grep -c ':event :capacity-attribution' "$metrics")" == "$before" ]] || fail 'dry run recorded attribution'
   CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" run_prune "$vault" "$state" >"$tmp/out"
   [[ "$(grep -c ':event :capacity-attribution' "$metrics")" == "$before" ]] || fail 'interval ignored'
+  # Records from another root (another filesystem) or from a scan cut off by the
+  # timeout must not become the baseline for the growth rate.
+  TEST_METRICS="$metrics" bb -e '
+    (require (quote [clojure.edn :as edn]))
+    (let [path (System/getenv "TEST_METRICS") e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp path)))))
+          old (assoc e :at (str (.minus (java.time.Instant/now) (java.time.Duration/ofHours 24))) :fs-used-bytes (- (:fs-used-bytes e) 1000000000))]
+      (assert (true? (:scan-complete e)))
+      ;; Records written before :scan-complete existed are judged by :scan-exit.
+      (spit path (str (pr-str (assoc old :root "/elsewhere")) "\n" (pr-str (assoc old :scan-complete false)) "\n"
+                      (pr-str (dissoc (assoc old :scan-exit -1) :scan-complete)) "\n" (pr-str (dissoc (assoc old :scan-exit 1) :scan-complete)) "\n") :append true))'
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 CODEX_TASK_BOARD_CAPACITY_GUARD_BYTES=0 run_prune "$vault" "$state" >"$tmp/out"
+  TEST_METRICS="$metrics" bb -e '(require (quote [clojure.edn :as edn])) (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))] (assert (nil? (:baseline-at e))) (assert (nil? (:used-bytes-per-day e))))'
   TEST_METRICS="$metrics" bb -e '
     (require (quote [clojure.edn :as edn]))
     (let [path (System/getenv "TEST_METRICS") e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp path)))))
@@ -6417,6 +6430,14 @@ test_capacity_attribution() {
       (spit path (str (pr-str baseline) "\n") :append true))'
   CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 CODEX_TASK_BOARD_CAPACITY_GUARD_BYTES=0 run_prune "$vault" "$state" >"$tmp/out"
   TEST_METRICS="$metrics" bb -e '(require (quote [clojure.edn :as edn])) (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))] (assert (pos? (:used-bytes-per-day e))) (assert (number? (:days-to-guard e))))'
+  # A find that ends in time but non-zero (unreadable directory) skipped files:
+  # the record must say so and must not report per-area growth.
+  if [[ "$(id -u)" != 0 ]]; then
+    mkdir -p "$root/locked/inner"; printf hidden >"$root/locked/inner/f"; chmod 000 "$root/locked"
+    CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 CODEX_TASK_BOARD_CAPACITY_GUARD_BYTES=0 run_prune "$vault" "$state" >"$tmp/out"
+    chmod 755 "$root/locked"; rm -rf "$root/locked"
+    TEST_METRICS="$metrics" bb -e '(require (quote [clojure.edn :as edn])) (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))] (assert (pos? (:scan-exit e))) (assert (false? (:scan-complete e))) (assert (= {} (:area-delta-bytes e))))'
+  fi
   CODEX_TASK_BOARD_ROOT="$state" bb "$RUNNER" workspace-metrics >"$tmp/summary"
   assert_file_contains "$tmp/summary" 'capacity-used-bytes='
   assert_file_contains "$tmp/summary" 'capacity-days-to-guard='

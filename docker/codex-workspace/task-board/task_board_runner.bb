@@ -5618,7 +5618,8 @@
         (let [metrics {:mode mode :new-bytes-est bytes :new-bytes-basis (cond (contains? #{:carryover :reuse} mode) "worktree-move-no-copy" (some? bytes) "git-ls-tree-blob-sum" :else "unavailable")
                        :moved (boolean (:reused-from worktree))}]
           (workspace-metrics-write! (merge {:event :workspace-prepare :ticket ticket-id :run run-id :repo (:repo worktree)
-                                           :reason (:reuse-fallback worktree) :reused-from (:reused-from worktree)} metrics))
+                                           :reason (:reuse-fallback worktree) :reused-from (:reused-from worktree)}
+                                          (when-let [r (:reuse-base-reason worktree)] {:reuse-base-reason r}) metrics))
           metrics))
       (catch Exception e (log! (str "workspace-metrics: warning " (.getMessage e)))))))
 
@@ -6448,13 +6449,19 @@
                 total (.getTotalSpace store) free (.getUsableSpace store) used (- total free)
                 baseline (last (sort-by ::instant (filter #(and (not (.isAfter (::instant %) (.minus instant (java.time.Duration/ofHours 20))))
                                                                   (not (.isBefore (::instant %) (.minus instant (java.time.Duration/ofDays 8))))
-                                                                  (number? (:fs-used-bytes %))) events)))
+                                                                  (number? (:fs-used-bytes %))
+                                                                  ;; Another root is another filesystem, and a scan that timed out or
+                                                                  ;; exited non-zero has partial per-area sums: neither is a valid
+                                                                  ;; baseline. Records written before :scan-complete existed are
+                                                                  ;; judged by their exit status (-1 = timed out).
+                                                                  (= root-path (:root %))
+                                                                  (if (contains? % :scan-complete) (true? (:scan-complete %)) (= 0 (:scan-exit %)))) events)))
                 hours (when baseline (/ (double (.toMillis (java.time.Duration/between (::instant baseline) instant))) 3600000.0))
                 delta (when baseline (- used (:fs-used-bytes baseline)))
                 rate (when baseline (long (Math/round (/ (* delta 24.0) hours))))
                 days (when (and rate (pos? rate)) (/ (double (Math/round (* 10.0 (max 0.0 (/ (double (- free guard)) rate))))) 10.0))
                 prefix (if (zero? (:exit (command-result ["sh" "-c" "command -v nice >/dev/null && command -v ionice >/dev/null"]))) ["nice" "-n" "19" "ionice" "-c3"] [])
-                args (into prefix ["find" "-P" root-path "-xdev" "-type" "f" "-printf" "%b\t%T@\t%n\t%i\t%P\\0"])
+                args (into prefix ["find" "-P" root-path "-xdev" "-ignore_readdir_race" "-type" "f" "-printf" "%b\t%T@\t%n\t%i\t%P\\0"])
                 started (System/nanoTime)
                 builder (java.lang.ProcessBuilder. ^java.util.List args)
                 _ (.redirectError builder java.lang.ProcessBuilder$Redirect/DISCARD)
@@ -6498,12 +6505,15 @@
                 _ (when-not completed (.destroyForcibly proc))
                 _ @scan
                 exit (if completed (.exitValue proc) -1)
+                ;; A find that ends in time but non-zero (unreadable directory, I/O error) has
+                ;; skipped files, so its per-area sums are as partial as a timed-out scan.
+                complete (boolean (and completed (zero? exit)))
                 r @result
                 subareas (into (sorted-map-by (fn [a b] (let [c (compare (get-in r [:subareas b :bytes]) (get-in r [:subareas a :bytes]))] (if (zero? c) (compare a b) c))))
                                (take 40 (sort-by (comp - :bytes val) (filter #(>= (:bytes (val %)) 536870912) (:subareas r)))))
-                area-deltas (if baseline (into {} (keep (fn [area] (let [d (- (get-in r [:areas area :bytes] 0) (get-in baseline [:areas area :bytes] 0))] (when (>= (abs d) 268435456) [area d]))) (into (set (keys (:areas r))) (keys (:areas baseline))))) {})
+                area-deltas (if (and baseline complete) (into {} (keep (fn [area] (let [d (- (get-in r [:areas area :bytes] 0) (get-in baseline [:areas area :bytes] 0))] (when (>= (abs d) 268435456) [area d]))) (into (set (keys (:areas r))) (keys (:areas baseline))))) {})
                 event (merge r {:event :capacity-attribution :root root-path :fs-total-bytes total :fs-free-bytes free :fs-used-bytes used
-                                :scan-ms (quot (- (System/nanoTime) started) 1000000) :scan-exit exit :fresh-window-hours 24 :subareas subareas
+                                :scan-ms (quot (- (System/nanoTime) started) 1000000) :scan-exit exit :scan-complete complete :fresh-window-hours 24 :subareas subareas
                                 :baseline-at (:at baseline) :baseline-hours hours :used-delta-bytes delta :used-bytes-per-day rate :area-delta-bytes area-deltas :days-to-guard days})]
             (workspace-metrics-write! event)
             (log! (str "capacity-attribution: used=" used " free=" free " outside-workspaces=" (get-in r [:outside-workspaces :bytes])
