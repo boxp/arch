@@ -8,7 +8,7 @@ function setup(fetcher: typeof fetch) {
   const events = { onSentence: vi.fn(), onEnd: vi.fn(), onError: vi.fn() }
   return { audio, player, events, revoke }
 }
-it('groups contiguous units, keeps two ahead, and resumes from a unit', async () => {
+it('groups contiguous units, prefetches up to two in parallel after the first, and resumes from a unit', async () => {
   const units = ['最初。', ...Array.from({ length: 8 }, (_, i) => String(i).repeat(55) + '。')]
   const calls: string[] = [], resolvers: ((r: Response) => void)[] = []
   let active = 0, maxActive = 0
@@ -17,16 +17,16 @@ it('groups contiguous units, keeps two ahead, and resumes from a unit', async ()
   player.speak(units, { ...events, onChunkEnd }, 1)
   expect(calls).toEqual([units[1]])
   resolvers.shift()!(new Response('wav')); await tick()
-  expect(calls).toHaveLength(2)
-  resolvers.shift()!(new Response('wav')); await tick()
   expect(calls).toHaveLength(3)
   resolvers.shift()!(new Response('wav')); await tick()
-  expect(calls).toHaveLength(3)
+  expect(calls).toHaveLength(4)
+  resolvers.shift()!(new Response('wav')); await tick()
+  expect(calls).toHaveLength(4)
   while (!events.onEnd.mock.calls.length) {
     audio.onended?.(); await tick()
     while (resolvers.length) { resolvers.shift()!(new Response('wav')); await tick() }
   }
-  expect(maxActive).toBe(1)
+  expect(maxActive).toBe(2)
   expect(calls.join('')).toBe(units.slice(1).join(''))
   expect(calls.every(x => x.length <= 160)).toBe(true)
   expect(onChunkEnd.mock.calls.map(x => x[0])).toEqual([1, 3, 5, 7, 8])
@@ -80,8 +80,8 @@ it('cancel discards buffered audio and aborts the in-flight request', async () =
   player.speak(['a', ...Array(5).fill('あ'.repeat(60) + '。')], events)
   pending[0].resolve(new Response('wav')); await tick()
   pending[1].resolve(new Response('wav')); await tick()
-  expect(pending).toHaveLength(3)
-  const ended = audio.onended; player.cancel(); expect(pending[2].signal.aborted).toBe(true)
-  pending[2].resolve(new Response('wav')); ended?.(); await tick()
+  expect(pending).toHaveLength(4)
+  const ended = audio.onended; player.cancel(); expect(pending[2].signal.aborted && pending[3].signal.aborted).toBe(true)
+  pending[2].resolve(new Response('wav')); pending[3].resolve(new Response('wav')); ended?.(); await tick()
   expect(audio.play).toHaveBeenCalledTimes(1); expect(events.onEnd).not.toHaveBeenCalled(); expect(events.onError).not.toHaveBeenCalled()
 })
