@@ -26,6 +26,7 @@
     src: 50-image-gc.conf.j2
     dest: "{{ worker_kubelet_image_gc_config_file }}"
     mode: '0644'
+    backup: true
   register: worker_kubelet_image_gc_config
   when: worker_kubelet_image_gc_enabled | bool
 
@@ -34,6 +35,7 @@
     src: 20-kubelet-config-dir.conf.j2
     dest: "{{ worker_kubelet_config_dir_dropin }}"
     mode: '0644'
+    backup: true
   register: worker_kubelet_config_dir_unit
   when: worker_kubelet_image_gc_enabled | bool
 
@@ -59,14 +61,22 @@
       until: worker_kubelet_healthz.status == 200 and worker_kubelet_healthz.content | trim == 'ok'
       retries: 30
       delay: 2
-  rescue:
-    - name: Remove kubelet image GC drop-ins after a failed restart
+
+    # Backups are kept until kubelet is healthy so a failed restart can restore
+    # the previous drop-ins. With worker_kubelet_image_gc_restart=false they stay.
+    - name: Remove kubelet drop-in backups after a healthy restart
       ansible.builtin.file:
-        path: "{{ item }}"
+        path: "{{ item.backup_file }}"
         state: absent
       loop:
-        - "{{ worker_kubelet_config_dir_dropin }}"
-        - "{{ worker_kubelet_image_gc_config_file }}"
+        - "{{ worker_kubelet_image_gc_config }}"
+        - "{{ worker_kubelet_config_dir_unit }}"
+      loop_control:
+        label: "{{ item.dest | default('skipped') }}"
+      when: item.backup_file is defined
+  rescue:
+    - name: Restore the previous kubelet drop-ins after a failed restart
+      ansible.builtin.include_tasks: restore.yml
 
     - name: Restart kubelet with the previous configuration
       ansible.builtin.systemd:
@@ -76,4 +86,6 @@
 
     - name: Stop after rolling back the kubelet image GC drop-ins
       ansible.builtin.fail:
-        msg: kubelet did not become healthy with the image GC drop-ins; they were removed and kubelet restarted.
+        msg: >-
+          kubelet did not become healthy with the new image GC drop-ins; the
+          previous drop-ins were restored (new ones removed) and kubelet restarted.

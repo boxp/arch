@@ -62,6 +62,45 @@ class WorkerKubeletImageGcTest(unittest.TestCase):
                       f'--config-dir={self.conf_dir}"', unit)
         self.assertIn('changed=0', self.run_playbook())
 
+    def run_with_rollback(self):
+        """Apply the role, then run its rollback tasks as the rescue block does after a failed restart."""
+        self.playbook.write_text(self.playbook.read_text() + '''
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_role:
+        name: worker_kubelet_image_gc
+        tasks_from: restore
+''')
+        self.run_playbook()
+
+    def test_rollback_restores_previous_drop_ins(self):
+        self.conf_dir.mkdir()
+        old_config = 'imageGCHighThresholdPercent: 60\n'
+        old_unit = '[Service]\nEnvironment="KUBELET_CONFIG_ARGS=--config=/old"\n'
+        (self.conf_dir / '50-image-gc.conf').write_text(old_config)
+        self.dropin.write_text(old_unit)
+        self.run_with_rollback()
+        self.assertEqual((self.conf_dir / '50-image-gc.conf').read_text(), old_config)
+        self.assertEqual(self.dropin.read_text(), old_unit)
+        self.assertEqual(sorted(p.name for p in self.conf_dir.iterdir()), ['50-image-gc.conf'])
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir() if p.name.startswith(self.dropin.name)),
+                         [self.dropin.name])
+
+    def test_rollback_removes_only_newly_created_drop_ins(self):
+        self.run_with_rollback()
+        self.assertFalse(self.dropin.exists())
+        self.assertFalse((self.conf_dir / '50-image-gc.conf').exists())
+
+    def test_rollback_keeps_unchanged_drop_in(self):
+        self.run_playbook()
+        unit = self.dropin.read_text()
+        (self.conf_dir / '50-image-gc.conf').write_text('imageGCHighThresholdPercent: 60\n')
+        self.run_with_rollback()
+        self.assertEqual(self.dropin.read_text(), unit)
+        self.assertEqual((self.conf_dir / '50-image-gc.conf').read_text(), 'imageGCHighThresholdPercent: 60\n')
+
     def test_drop_in_sorts_after_kubeadm_unit(self):
         defaults = yaml.safe_load((self.root / 'roles' / 'worker_kubelet_image_gc' / 'defaults' / 'main.yml').read_text())
         name = Path(defaults['worker_kubelet_config_dir_dropin']).name
