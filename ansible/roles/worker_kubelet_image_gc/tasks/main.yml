@@ -1,0 +1,79 @@
+---
+- name: Validate kubelet image GC settings
+  ansible.builtin.assert:
+    that:
+      - worker_kubelet_image_gc_high_threshold_percent | string is match('^[0-9]+$')
+      - worker_kubelet_image_gc_low_threshold_percent | string is match('^[0-9]+$')
+      - worker_kubelet_image_gc_low_threshold_percent | int < worker_kubelet_image_gc_high_threshold_percent | int
+      - worker_kubelet_image_gc_high_threshold_percent | int < worker_kubelet_image_gc_longhorn_usage_limit_percent | int
+      - worker_kubelet_image_maximum_gc_age is match('^[0-9]+(h|m)$')
+      - worker_kubelet_image_maximum_gc_age != '0h' and worker_kubelet_image_maximum_gc_age != '0m'
+    fail_msg: >-
+      kubelet image GC must satisfy low < high < Longhorn usage limit
+      ({{ worker_kubelet_image_gc_longhorn_usage_limit_percent }}%) and a non-zero
+      imageMaximumGCAge such as 168h
+  when: worker_kubelet_image_gc_enabled | bool
+
+- name: Create kubelet drop-in config directory
+  ansible.builtin.file:
+    path: "{{ worker_kubelet_config_dir }}"
+    state: directory
+    mode: '0755'
+  when: worker_kubelet_image_gc_enabled | bool
+
+- name: Install kubelet image GC drop-in
+  ansible.builtin.template:
+    src: 50-image-gc.conf.j2
+    dest: "{{ worker_kubelet_image_gc_config_file }}"
+    mode: '0644'
+  register: worker_kubelet_image_gc_config
+  when: worker_kubelet_image_gc_enabled | bool
+
+- name: Point kubelet at the drop-in config directory
+  ansible.builtin.template:
+    src: 20-kubelet-config-dir.conf.j2
+    dest: "{{ worker_kubelet_config_dir_dropin }}"
+    mode: '0644'
+  register: worker_kubelet_config_dir_unit
+  when: worker_kubelet_image_gc_enabled | bool
+
+- name: Restart kubelet with the new image GC settings and roll back on failure
+  when:
+    - worker_kubelet_image_gc_enabled | bool
+    - worker_kubelet_image_gc_restart | bool
+    - chroot_build is not defined or not chroot_build | bool
+    - not ansible_check_mode
+    - worker_kubelet_image_gc_config is changed or worker_kubelet_config_dir_unit is changed
+  block:
+    - name: Restart kubelet
+      ansible.builtin.systemd:
+        name: kubelet
+        state: restarted
+        daemon_reload: true
+
+    - name: Wait for kubelet healthz after the restart
+      ansible.builtin.uri:
+        url: "{{ worker_kubelet_healthz_url }}"
+        return_content: true
+      register: worker_kubelet_healthz
+      until: worker_kubelet_healthz.status == 200 and worker_kubelet_healthz.content | trim == 'ok'
+      retries: 30
+      delay: 2
+  rescue:
+    - name: Remove kubelet image GC drop-ins after a failed restart
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ worker_kubelet_config_dir_dropin }}"
+        - "{{ worker_kubelet_image_gc_config_file }}"
+
+    - name: Restart kubelet with the previous configuration
+      ansible.builtin.systemd:
+        name: kubelet
+        state: restarted
+        daemon_reload: true
+
+    - name: Stop after rolling back the kubelet image GC drop-ins
+      ansible.builtin.fail:
+        msg: kubelet did not become healthy with the image GC drop-ins; they were removed and kubelet restarted.

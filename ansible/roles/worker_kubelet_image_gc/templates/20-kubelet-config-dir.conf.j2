@@ -1,0 +1,4 @@
+# Managed by ansible role worker_kubelet_image_gc (BOXP-538).
+# Overrides KUBELET_CONFIG_ARGS from 10-kubeadm.conf to add the drop-in directory.
+[Service]
+Environment="KUBELET_CONFIG_ARGS=--config={{ worker_kubelet_config_file }} --config-dir={{ worker_kubelet_config_dir }}"

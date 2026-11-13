@@ -1,0 +1,6 @@
+# Managed by ansible role worker_kubelet_image_gc (BOXP-538).
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+imageGCHighThresholdPercent: {{ worker_kubelet_image_gc_high_threshold_percent | int }}
+imageGCLowThresholdPercent: {{ worker_kubelet_image_gc_low_threshold_percent | int }}
+imageMaximumGCAge: "{{ worker_kubelet_image_maximum_gc_age }}"
