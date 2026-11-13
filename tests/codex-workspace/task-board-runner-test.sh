@@ -7,6 +7,7 @@ unset CODEX_TASK_BOARD_CLAUDE_BIN
 unset CODEX_TASK_BOARD_FABLE_MODEL
 unset CODEX_TASK_BOARD_FABLE_AGENT
 unset CODEX_TASK_BOARD_FABLE_EXTRA_ARGS
+export CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=off
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb"
@@ -5456,7 +5457,10 @@ reuse_prepare() {
                             (apply original old args)))))
       (let [workspace (prepare-run-workspace! (System/getenv "TEST_TICKET") (System/getenv "TEST_RUN"))
             result (first (:repo-worktrees workspace))
-            prompt (workspace-prompt workspace)]
+            prompt (workspace-prompt workspace)
+            placement "Storage placement: put temporary clones, extra worktrees, caches, build outputs and verification copies inside this run workspace (it is cleaned up automatically). Do not create them under /home/boxp/ghq, ~/.cache or elsewhere in the home directory, where nothing cleans them up. Copy to the vault only the evidence that has to be kept."]
+        (assert (clojure.string/includes? prompt placement))
+        (assert (clojure.string/includes? (workspace-prompt {:workspace-dir "/tmp/run" :repo-worktrees []}) placement))
         (when (:carryover result)
           (assert (clojure.string/includes? prompt "Carried over from previous run"))
           (assert (not (clojure.string/includes? prompt "private-untracked"))))
@@ -6379,6 +6383,47 @@ test_generated_reclaim_studio() {
   assert_file_contains "${tmp}/out" 'generated-reclaim: hold .*copied.txt'
   [[ "$(find "${state}/workspaces/BOXP-522" -name copied.txt -path '*/dist/*' | wc -l)" == 3 ]] || fail 'studio dist with modified HTML entry deleted'
   assert_file_contains "${tmp}/out" 'generated-reclaim: hold .*web/dist.* reason=inputs-modified'
+}
+
+test_capacity_attribution() {
+  local tmp vault state root metrics before
+  tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; root="$tmp/volume"; metrics="$state/metrics/workspace-capacity.edn"
+  mkdir -p "$root/one" "$root/two" "$root/.codex-task-board/workspaces/T-1/r/x/node_modules" "$vault" "$state"
+  printf fresh >"$root/one/fresh"; printf old >"$root/two/old"; touch -d '3 days ago' "$root/two/old"
+  printf link >"$root/one/link"; ln "$root/one/link" "$root/one/link2"
+  printf module >"$root/.codex-task-board/workspaces/T-1/r/x/node_modules/a"
+  printf odd >"$root/"$'tab\tand\nnewline'
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" run_prune "$vault" "$state" >"$tmp/out"
+  TEST_METRICS="$metrics" TEST_ROOT="$root" bb -e '
+    (require (quote [clojure.edn :as edn]))
+    (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))
+          bytes (fn [p] (* 512 (Long/parseLong (clojure.string/trim (:out (babashka.process/shell {:out :string} "stat" "-c" "%b" (str (System/getenv "TEST_ROOT") "/" p)))))))]
+      (assert e) (assert (= 5 (:scanned-files e))) (assert (pos? (get-in e [:areas "(root files)" :bytes])))
+      (assert (= (+ (bytes "one/fresh") (bytes "one/link")) (get-in e [:areas "one" :bytes])))
+      (assert (= (bytes "two/old") (get-in e [:areas "two" :bytes])))
+      (assert (zero? (get-in e [:areas "two" :fresh-bytes])))
+      (assert (= (get-in e [:areas "one" :bytes]) (get-in e [:areas "one" :fresh-bytes])))
+      (assert (pos? (get-in e [:workspaces :by-kind "node_modules"])))
+      (assert (nil? (:days-to-guard e))))'
+  before="$(grep -c ':event :capacity-attribution' "$metrics")"
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 run_prune "$vault" "$state" --dry-run >"$tmp/out"
+  [[ "$(grep -c ':event :capacity-attribution' "$metrics")" == "$before" ]] || fail 'dry run recorded attribution'
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" run_prune "$vault" "$state" >"$tmp/out"
+  [[ "$(grep -c ':event :capacity-attribution' "$metrics")" == "$before" ]] || fail 'interval ignored'
+  TEST_METRICS="$metrics" bb -e '
+    (require (quote [clojure.edn :as edn]))
+    (let [path (System/getenv "TEST_METRICS") e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp path)))))
+          baseline (assoc e :at (str (.minus (java.time.Instant/now) (java.time.Duration/ofHours 24))) :fs-used-bytes (- (:fs-used-bytes e) 1000000000))]
+      (spit path (str (pr-str baseline) "\n") :append true))'
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 CODEX_TASK_BOARD_CAPACITY_GUARD_BYTES=0 run_prune "$vault" "$state" >"$tmp/out"
+  TEST_METRICS="$metrics" bb -e '(require (quote [clojure.edn :as edn])) (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))] (assert (pos? (:used-bytes-per-day e))) (assert (number? (:days-to-guard e))))'
+  CODEX_TASK_BOARD_ROOT="$state" bb "$RUNNER" workspace-metrics >"$tmp/summary"
+  assert_file_contains "$tmp/summary" 'capacity-used-bytes='
+  assert_file_contains "$tmp/summary" 'capacity-days-to-guard='
+  assert_file_contains "$tmp/summary" 'capacity-top-fresh='
+  before="$(grep -c ':event :capacity-attribution' "$metrics")"
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=off CODEX_TASK_BOARD_CAPACITY_ROOT="$root" run_prune "$vault" "$state" >"$tmp/out"
+  [[ "$(grep -c ':event :capacity-attribution' "$metrics")" == "$before" ]] || fail 'off ignored'
 }
 
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a

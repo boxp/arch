@@ -2304,6 +2304,7 @@
                                   prepared))
                 "Use these per-run worktrees for repository changes. Do not edit shared checkouts under /home/boxp/ghq for this task.\n")
            "No repository worktree was prepared for this ticket.\n")
+         "Storage placement: put temporary clones, extra worktrees, caches, build outputs and verification copies inside this run workspace (it is cleaned up automatically). Do not create them under /home/boxp/ghq, ~/.cache or elsewhere in the home directory, where nothing cleans them up. Copy to the vault only the evidence that has to be kept.\n"
          (when (seq unavailable)
            (str "Repositories that need preparation inside this run workspace:\n"
                 (str/join "" (map (fn [{:keys [repo message]}]
@@ -6417,6 +6418,99 @@
       (workspace-metrics-write! (merge {:event :generated-reclaim-summary :mode mode :fs-free-bytes-before before :fs-free-bytes-after (free)} @stats))
       (log! (str "generated-reclaim: summary " (one-line (pr-str (assoc @stats :mode mode))))))))
 
+(defn capacity-events []
+  (let [path (fs/path (root) "metrics" "workspace-capacity.edn")]
+    (if (fs/exists? path)
+      (with-open [reader (clojure.java.io/reader (str path))]
+        (doall (keep (fn [line]
+                       (when (str/includes? line ":capacity-attribution")
+                         (try (let [e (edn/read-string line)]
+                                (when (= :capacity-attribution (:event e))
+                                  (assoc e ::instant (java.time.Instant/parse (:at e)))))
+                              (catch Throwable _ nil))))
+                     (line-seq reader))))
+      [])))
+
+(defn capacity-top-fresh [areas]
+  (take 5 (sort-by (fn [[name data]] [(- (:fresh-bytes data)) name]) areas)))
+
+(defn capacity-attribution! []
+  (try
+    (when (prune-setting "CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION" parse-prune-enabled)
+      (let [instant (now)
+            events (capacity-events)
+            latest (last (sort-by ::instant events))
+            interval (prune-setting "CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES" #(parse-bounded-long % 50 0))]
+        (when (or (nil? latest) (not (.isAfter (::instant latest) (.minus instant (java.time.Duration/ofMinutes interval)))))
+          (let [root-path (or (not-empty (System/getenv "CODEX_TASK_BOARD_CAPACITY_ROOT")) "/home/boxp")
+                guard (prune-setting "CODEX_TASK_BOARD_CAPACITY_GUARD_BYTES" #(parse-bounded-long % 8589934592 0))
+                store (java.io.File. root-path)
+                total (.getTotalSpace store) free (.getUsableSpace store) used (- total free)
+                baseline (last (sort-by ::instant (filter #(and (not (.isAfter (::instant %) (.minus instant (java.time.Duration/ofHours 20))))
+                                                                  (not (.isBefore (::instant %) (.minus instant (java.time.Duration/ofDays 8))))
+                                                                  (number? (:fs-used-bytes %))) events)))
+                hours (when baseline (/ (double (.toMillis (java.time.Duration/between (::instant baseline) instant))) 3600000.0))
+                delta (when baseline (- used (:fs-used-bytes baseline)))
+                rate (when baseline (long (Math/round (/ (* delta 24.0) hours))))
+                days (when (and rate (pos? rate)) (/ (double (Math/round (* 10.0 (max 0.0 (/ (double (- free guard)) rate))))) 10.0))
+                prefix (if (zero? (:exit (command-result ["sh" "-c" "command -v nice >/dev/null && command -v ionice >/dev/null"]))) ["nice" "-n" "19" "ionice" "-c3"] [])
+                args (into prefix ["find" "-P" root-path "-xdev" "-type" "f" "-printf" "%b\t%T@\t%n\t%i\t%P\\0"])
+                started (System/nanoTime)
+                builder (java.lang.ProcessBuilder. ^java.util.List args)
+                _ (.redirectError builder java.lang.ProcessBuilder$Redirect/DISCARD)
+                proc (.start builder)
+                result (atom {:areas {} :subareas {} :workspaces {:bytes 0 :fresh-bytes 0 :by-kind {"node_modules" 0 "dist" 0 "git" 0 "other" 0}} :outside-workspaces {:bytes 0 :fresh-bytes 0} :scanned-bytes 0 :scanned-files 0})
+                seen (java.util.HashSet.)
+                fresh-cutoff (- (/ (.toEpochMilli instant) 1000.0) 86400.0)
+                scan (future
+                       (with-open [in (java.io.BufferedInputStream. (.getInputStream proc))]
+                         (let [record (java.io.ByteArrayOutputStream.)]
+                           (loop []
+                             (let [b (.read in)]
+                               (when (not= -1 b)
+                                 (if (zero? b)
+                                   (let [line (.toString record "UTF-8")
+                                         [blocks mtime links inode path] (str/split line #"\t" 5)
+                                         bytes (* 512 (Long/parseLong blocks))
+                                         fresh? (>= (Double/parseDouble mtime) fresh-cutoff)
+                                         parts (str/split path #"/")
+                                         area (if (> (count parts) 1) (first parts) "(root files)")
+                                         subarea (when (> (count parts) 1) (str (first parts) "/" (second parts)))
+                                         workspace? (str/starts-with? path ".codex-task-board/workspaces/")
+                                         kind (cond (some #{"node_modules"} (butlast parts)) "node_modules"
+                                                    (some #{"dist"} (butlast parts)) "dist"
+                                                    (some #{".git"} (butlast parts)) "git" :else "other")
+                                         fresh (if fresh? bytes 0)]
+                                     (.reset record)
+                                     (when (or (= "1" links) (.add seen inode))
+                                       (swap! result (fn [r]
+                                                       (cond-> (-> r (update :scanned-bytes + bytes) (update :scanned-files inc)
+                                                                   (update-in [:areas area :bytes] (fnil + 0) bytes)
+                                                                   (update-in [:areas area :fresh-bytes] (fnil + 0) fresh)
+                                                                   (update-in [(if workspace? :workspaces :outside-workspaces) :bytes] + bytes)
+                                                                   (update-in [(if workspace? :workspaces :outside-workspaces) :fresh-bytes] + fresh))
+                                                         subarea (update-in [:subareas subarea :bytes] (fnil + 0) bytes)
+                                                         subarea (update-in [:subareas subarea :fresh-bytes] (fnil + 0) fresh)
+                                                         workspace? (update-in [:workspaces :by-kind kind] + bytes))))))
+                                   (.write record b))
+                                 (recur)))))))
+                completed (.waitFor proc 300 java.util.concurrent.TimeUnit/SECONDS)
+                _ (when-not completed (.destroyForcibly proc))
+                _ @scan
+                exit (if completed (.exitValue proc) -1)
+                r @result
+                subareas (into (sorted-map-by (fn [a b] (let [c (compare (get-in r [:subareas b :bytes]) (get-in r [:subareas a :bytes]))] (if (zero? c) (compare a b) c))))
+                               (take 40 (sort-by (comp - :bytes val) (filter #(>= (:bytes (val %)) 536870912) (:subareas r)))))
+                area-deltas (if baseline (into {} (keep (fn [area] (let [d (- (get-in r [:areas area :bytes] 0) (get-in baseline [:areas area :bytes] 0))] (when (>= (abs d) 268435456) [area d]))) (into (set (keys (:areas r))) (keys (:areas baseline))))) {})
+                event (merge r {:event :capacity-attribution :root root-path :fs-total-bytes total :fs-free-bytes free :fs-used-bytes used
+                                :scan-ms (quot (- (System/nanoTime) started) 1000000) :scan-exit exit :fresh-window-hours 24 :subareas subareas
+                                :baseline-at (:at baseline) :baseline-hours hours :used-delta-bytes delta :used-bytes-per-day rate :area-delta-bytes area-deltas :days-to-guard days})]
+            (workspace-metrics-write! event)
+            (log! (str "capacity-attribution: used=" used " free=" free " outside-workspaces=" (get-in r [:outside-workspaces :bytes])
+                       " fresh24h=" (reduce + 0 (map :fresh-bytes (vals (:areas r)))) " days-to-guard=" days
+                       " top-fresh=" (str/join "," (map (fn [[a v]] (str (one-line a) ":" (:fresh-bytes v))) (capacity-top-fresh (:areas r))))))))))
+    (catch Throwable e (log! (str "capacity-attribution: warning " (one-line (.getMessage e)))))))
+
 (defn prune-workspaces!
   ([] (prune-workspaces! {}))
   ([{:keys [dry-run? stop?] :or {dry-run? false stop? (constantly false)}}]
@@ -6463,7 +6557,8 @@
            (let [store (let [dir (java.io.File. (str (workspaces-dir)))] (when (.isDirectory dir) dir))
                  capacity (assoc @(:capacity ctx) :fs-free-bytes (when store (.getUsableSpace store)) :fs-total-bytes (when store (.getTotalSpace store))
                                  :duration-ms (quot (- (System/nanoTime) started-nanos) 1000000))]
-             (workspace-metrics-write! (merge {:event :prune-summary} @(:stats ctx) capacity)))
+             (workspace-metrics-write! (merge {:event :prune-summary} @(:stats ctx) capacity))
+             (when (and (not dry-run?) (not (stop?))) (capacity-attribution!)))
            (catch Exception e (log! (str "workspace-metrics: warning " (.getMessage e))))))
        (log! (str "prune: summary deleted=" deleted
                   " stale-deleted=" stale-deleted
@@ -6492,8 +6587,13 @@
         prepares (filter #(= :workspace-prepare (:event %)) events)
         runs (filter #(= :prune-run (:event %)) events)
         latest (last (filter #(= :prune-summary (:event %)) events))
+        attribution (last (sort-by ::instant (capacity-events)))
         generated (reduce + 0 (keep #(when (= :new-checkout (:mode %)) (:new-bytes-est %)) prepares))
         reclaimed (reduce + 0 (keep #(when (= :deleted (:result %)) (:allocated-bytes %)) runs))]
+    (when attribution
+      (println "capacity-used-bytes=" (:fs-used-bytes attribution) "free-bytes=" (:fs-free-bytes attribution))
+      (println "capacity-days-to-guard=" (:days-to-guard attribution) "used-bytes-per-day=" (:used-bytes-per-day attribution))
+      (println "capacity-top-fresh=" (pr-str (capacity-top-fresh (:areas attribution)))))
     (println "prepare-by-mode=" (pr-str (frequencies (map :mode prepares))))
     (println "fallback-by-reason=" (pr-str (frequencies (keep :reason prepares))))
     (println "generated-bytes-est=" generated)
