@@ -6460,7 +6460,10 @@
                 delta (when baseline (- used (:fs-used-bytes baseline)))
                 rate (when baseline (long (Math/round (/ (* delta 24.0) hours))))
                 days (when (and rate (pos? rate)) (/ (double (Math/round (* 10.0 (max 0.0 (/ (double (- free guard)) rate))))) 10.0))
-                prefix (if (zero? (:exit (command-result ["sh" "-c" "command -v nice >/dev/null && command -v ionice >/dev/null"]))) ["nice" "-n" "19" "ionice" "-c3"] [])
+                prefix (if (zero? (:exit (command-result ["sh" "-c" "command -v nice >/dev/null && command -v ionice >/dev/null"]))) ["nice" "-n" "19" "ionice" "-c2" "-n7"] [])
+                ;; Lowest best-effort priority, not the idle class: an idle-class scan gets no
+                ;; I/O while runs are busy, times out, and leaves no usable record.
+                scan-timeout (prune-setting "CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_TIMEOUT_SECONDS" #(parse-bounded-long % 900 1))
                 args (into prefix ["find" "-P" root-path "-xdev" "-ignore_readdir_race" "-type" "f" "-printf" "%b\t%T@\t%n\t%i\t%P\\0"])
                 started (System/nanoTime)
                 builder (java.lang.ProcessBuilder. ^java.util.List args)
@@ -6470,6 +6473,9 @@
                 seen (java.util.HashSet.)
                 fresh-cutoff (- (/ (.toEpochMilli instant) 1000.0) 86400.0)
                 scan (future
+                      ;; Killing a timed-out find closes this stream under the reader; the
+                      ;; partial sums are still recorded, marked incomplete below.
+                      (try
                        (with-open [in (java.io.BufferedInputStream. (.getInputStream proc))]
                          (let [record (java.io.ByteArrayOutputStream.)]
                            (loop []
@@ -6500,8 +6506,9 @@
                                                          subarea (update-in [:subareas subarea :fresh-bytes] (fnil + 0) fresh)
                                                          workspace? (update-in [:workspaces :by-kind kind] + bytes))))))
                                    (.write record b))
-                                 (recur)))))))
-                completed (.waitFor proc 300 java.util.concurrent.TimeUnit/SECONDS)
+                                 (recur))))))
+                       (catch java.io.IOException _ nil)))
+                completed (.waitFor proc scan-timeout java.util.concurrent.TimeUnit/SECONDS)
                 _ (when-not completed (.destroyForcibly proc))
                 _ @scan
                 exit (if completed (.exitValue proc) -1)
