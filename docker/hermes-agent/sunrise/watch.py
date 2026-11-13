@@ -482,7 +482,8 @@ def run(cfg, state, now, getter=fetch, clock=None):
                     if item["last_alert"]
                     else None
                 )
-                if item["count"] >= 3 and (
+                # Official congestion stays observable without producing an alert.
+                if code != "congestion" and item["count"] >= 3 and (
                     last is None or now - last >= dt.timedelta(hours=6)
                 ):
                     messages.append(
