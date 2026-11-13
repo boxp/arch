@@ -5,6 +5,7 @@ import type { ActingStage, Emotion, Gesture } from './acting'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { patchFaceTexture } from './face-texture'
+import { patchHair } from './hair-parts'
 import { atBind, bindPoint, BUST, chestGrid, createChestSpring, stepChest, type Bind } from './chest'
 import { addGhost, addGrid, addQuad, addShared, addTexture, CUFF_POLY, eraseAtlas, FOREARM_POLY, isSleeveLining, isStaticUpper, loadTexture, mirrorPolygon, paintCapeCorner, splitMesh, type PartsPlayer, type Polygon, type Split } from './arm-parts'
 
@@ -353,6 +354,9 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   const p = player as Internal, rt = p.rt, rests = new Map<number, Float32Array>(), done = new Map<number, number>()
   let facePatch: Record<string, unknown>
   try { facePatch = patchFaceTexture(p as unknown as Parameters<typeof patchFaceTexture>[0]) } catch (e) { facePatch = { patched: false, error: e instanceof Error ? e.message : String(e) } }
+  // BOXP-525: 髪房の別素材の混入（頬・もみあげのゴミ）と、前髪の外周による髪飾りの先端の欠けを直す。
+  let hairPatch: Record<string, unknown>
+  try { hairPatch = patchHair(p as unknown as PartsPlayer) } catch (e) { hairPatch = { error: e instanceof Error ? e.message : String(e) } }
   let petEyes = false, petClosed = 0
   let blush = 0, eyeClosed = 0, surprised = 0, troubled = 0, speaking = false, mouthOverride = false
   let generation = 0, target = faces.neutral, face = { ...faces.neutral }, clip: Clip | null = null, clipName: Gesture = 'none', clipTime = 0, emotion: Emotion = 'neutral'
@@ -716,6 +720,6 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
       clip = clips[next]; clipName = next; clipTime = plan.at; armBlend = 1
     },
     reset() { emotion = 'neutral'; target = faces.neutral; player.expression(null); if (switched || sw) { switchOut(); return } if (clip) startFade(); clip = null; clipName = 'none' },
-    report: () => ({ supported: true, petEyes: petClosed, chest: { ...chestStatus, enabled: chestEnabled, shown: chestShown(), offset: [...spring.offset], anchor: spring.anchor }, parts: partsStatus, facePatch, emotion, gesture: clipName, armBlend, armSwitch: sw ? { phase: sw.phase, t: sw.t, posedAlpha } : null, switched, haltSet: haltOn(), greetSet: greetSet && haltOn(), guideSet: guideOn(), shySet: shyOn(), clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
+    report: () => ({ supported: true, petEyes: petClosed, chest: { ...chestStatus, enabled: chestEnabled, shown: chestShown(), offset: [...spring.offset], anchor: spring.anchor }, parts: partsStatus, facePatch, hairPatch, emotion, gesture: clipName, armBlend, armSwitch: sw ? { phase: sw.phase, t: sw.t, posedAlpha } : null, switched, haltSet: haltOn(), greetSet: greetSet && haltOn(), guideSet: guideOn(), shySet: shyOn(), clipTime, face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner } }),
   }
 }

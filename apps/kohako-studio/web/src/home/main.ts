@@ -99,6 +99,7 @@ const sentencer = createSilentSentencer({ setTimeout: (fn, ms) => window.setTime
 const report: Record<string, unknown> = { loaded: false, errors: [] as string[], touches: [] as unknown[] }
 // 胸の揺れの状態は検査から読むときだけ求める（毎フレーム report を作らない）。
 Object.defineProperty(report, 'chest', { enumerable: true, get: () => stage?.report().chest ?? null })
+Object.defineProperty(report, 'hair', { enumerable: true, get: () => stage?.report().hairPatch ?? null })
 function interruptActing() { voicePlayer.cancel(); speaker?.cancel(); sentencer.cancel(); acting?.interrupt(); if (acting) report.acting = acting.snapshot }
 function actingPose(player: Player, s: RigState) {
   const ids = player.clips, pose = poseFor(s, player.expressions, ids.map(id => clipName(rigModel, id)))
