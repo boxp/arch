@@ -1,6 +1,6 @@
 import { it, expect, vi } from 'vitest'
 import { generateKeyPairSync, sign } from 'node:crypto'
-import { createServer } from 'node:http'
+import { createServer, type IncomingMessage } from 'node:http'
 import { createAuth } from './auth.js'
 import { createApp, instructions, ownerTaskInstructions, studioInstructions } from './app.js'
 import type { createHermes } from './hermes.js'
@@ -534,5 +534,21 @@ it('returns no_speech when whisper returns only whitespace', async () => {
     const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/transcriptions`
     const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: Buffer.alloc(16000) })
     expect(response.status).toBe(422); expect(await response.json()).toEqual({ error: 'no_speech' })
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
+})
+
+it('BOXP-524: lets owner and verifier transcribe but rejects notifier and unauthenticated callers', async () => {
+  const hermes = {} as ReturnType<typeof createHermes>
+  const fetcher = vi.fn(async () => new Response(JSON.stringify({ text: ' こんにちは ' }), { status: 200 })) as unknown as typeof fetch
+  const auth = async (h: IncomingMessage['headers']) => (['owner', 'verifier', 'notifier'] as const).find(p => p === h.authorization) ?? null
+  const server = createServer(createApp({ authenticate: auth, hermes, sttUrl: 'http://whisper', fetch: fetcher }))
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/transcriptions`
+    const call = (who: string) => fetch(url, { method: 'POST', headers: { authorization: who, 'content-type': 'application/octet-stream' }, body: Buffer.alloc(16000) })
+    expect((await call('none')).status).toBe(401)
+    expect((await call('notifier')).status).toBe(403)
+    for (const who of ['owner', 'verifier']) { const r = await call(who); expect(r.status).toBe(200); expect(await r.json()).toMatchObject({ text: 'こんにちは' }) }
+    expect(fetcher).toHaveBeenCalledTimes(2)
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
 })

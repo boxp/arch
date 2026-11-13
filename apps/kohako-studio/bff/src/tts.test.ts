@@ -24,13 +24,14 @@ it('enforces route auth and maps errors and conversation flag', async () => {
   let mode = 'ok'
   const fetcher = (async (input: string | URL | Request) => { const url = String(input); if (url.endsWith('/speakers')) return response(mode === 'missing' ? speakers([], 'other') : speakers()); if (mode === 'failed') return new Response('', { status: 500 }); return url.includes('audio_query') ? response({}) : new Response('RIFFdata') }) as typeof fetch
   const tts = createTts({ url: 'http://tts', fetcher, now: Date.now })
-  const server = createServer(createApp({ authenticate: async h => h.authorization === 'owner' ? 'owner' : h.authorization === 'verifier' ? 'verifier' : null, tts }))
+  const server = createServer(createApp({ authenticate: async h => h.authorization === 'owner' ? 'owner' : h.authorization === 'verifier' ? 'verifier' : h.authorization === 'notifier' ? 'notifier' : null, tts }))
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
   try {
     const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`, call = (who: string, text?: unknown) => fetch(base + 'tts', { method: text === undefined ? 'GET' : 'POST', headers: { authorization: who, 'content-type': 'application/json' }, ...(text === undefined ? {} : { body: JSON.stringify({ text }) }) })
-    expect((await call('none')).status).toBe(401); expect((await call('verifier')).status).toBe(403)
+    expect((await call('none')).status).toBe(401); expect((await call('notifier')).status).toBe(403)
     mode = 'missing'; expect((await call('owner', 'a')).status).toBe(503)
     mode = 'ok'; const ok = await call('owner', 'a'); expect(ok.status).toBe(200); expect(ok.headers.get('x-kohako-tts-style-id')).toBe('7')
+    const v = await call('verifier', 'a'); expect(v.status).toBe(200); expect(v.headers.get('content-type')).toBe('audio/wav')
     expect((await call('owner', '')).status).toBe(400); mode = 'failed'; expect((await call('owner', 'a')).status).toBe(502)
     expect(await (await fetch(base + 'conversation', { headers: { authorization: 'owner' } })).json()).toMatchObject({ tts: true })
   } finally { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())) }

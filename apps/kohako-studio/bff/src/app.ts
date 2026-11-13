@@ -80,7 +80,8 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
       }
       if (principal === 'notifier') return json(403, { error: 'forbidden' })
       if (route === 'tts' && (method === 'GET' || method === 'POST')) {
-        if (principal !== 'owner') return json(403, { error: 'forbidden' })
+        // BOXP-524 Owner承認: 自動E2E用に既存 verifier にも TTS を許可（notifier は上で拒否済み）。
+        if (principal !== 'owner' && principal !== 'verifier') return json(403, { error: 'forbidden' })
         if (!opts.tts) return json(503, { error: 'tts_disabled' })
         if (method === 'GET') return json(200, await opts.tts.status())
         if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] ?? '')) return json(415, { error: 'content_type' })
@@ -114,7 +115,7 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
       for await (const chunk of req) { const b = Buffer.from(chunk); size += b.length; if (size > limit) return json(413, { error: 'too_large' }); chunks.push(b) }
       const body = Buffer.concat(chunks)
       if (route === 'transcriptions' || route === 'stt') {
-        if (principal === 'verifier') return json(403, { error: 'forbidden' })
+        // BOXP-524 Owner承認: 自動E2E用に既存 verifier にも STT を許可（音声は保存せず whisper へ転送するのみ）。
         if (!opts.sttUrl) return json(503, { error: 'stt_disabled' })
         if (body.length < 16000 || body.length % 2 || !/^application\/octet-stream(?:;|$)/i.test(req.headers['content-type'] ?? '')) return json(400, { error: 'invalid' })
         const start = now(), form = new FormData(); form.append('file', new Blob([new Uint8Array(pcmToWav(body))], { type: 'audio/wav' }), 'audio.wav'); for (const [k,v] of Object.entries(STT_FINAL_FIELDS)) form.append(k,v)
