@@ -25,12 +25,18 @@
     (10-kubeadm.conf より後に読まれる)。
   - 変更時のみ kubelet を restart し healthz を待つ。失敗時は drop-in を消して元設定で restart し fail。
 - 共有 role `kubernetes_components` は変更しないため、apply-ansible の対象は golyat-4 のみ (control plane へ Apply しない)。
+  - Apply Ansible の matrix は固定 4 台ではなく、`select-targets` job が変更ファイルから
+    `.github/scripts/ansible-apply-targets.sh` で導出する (`strategy.matrix.node: fromJSON(needs.select-targets.outputs.nodes)`)。
+  - この PR の全変更ファイルを main 最新の resolver に通した結果は `["golyat-4"]`
+    (`worker-image.yml` / `roles/worker_kubelet_image_gc/**` -> golyat-4、tests / docs / resolver test -> 対象なし)。
+    control plane (shanghai-1/2/3) は matrix に入らず、`control-plane.yml` は実行されない。
+  - 回帰防止として `ansible-apply-targets.test.sh` に「本 PR のファイル集合 -> worker only」の check を追加 (53/53 pass)。
 - Longhorn の閾値 (storage-minimal-available-percentage 等) は変更しない。
 
 ## 検証
 
 - `tests/test_worker_kubelet_image_gc.py` (描画・冪等・不正値拒否・check mode・playbook 組込み)。
-- merge 後: Apply Ansible run の matrix が golyat-4 のみ、kubelet 再起動後 Ready、drop-in の実効、
+- merge 後: Apply Ansible run の select-targets 出力と matrix が golyat-4 のみ (CP job なし)、kubelet 再起動後 Ready、drop-in の実効、
   Longhorn disk Schedulable、全 volume healthy、golyat-4 Pod 正常を確認。
 
 ## Rollback
