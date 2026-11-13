@@ -133,6 +133,14 @@ describe('目の組み替え', () => {
     expect(target.get(705, 288)).toEqual(clear) // 弧から 5 離れた透明はシルエットの外
     expect(target.get(708, 288)[3]).toBe(255) // 弧から 2 の抜きは埋める
   })
+  it('虹彩の上端より上は縁色で埋め、内部の穴は白く保つ', () => {
+    const source = atlas(900, 400), rim: Rgba = [30, 40, 80, 255]
+    for (let y = 283; y <= 296; y++) if (y !== 285) source.set(620, y, rim)
+    const target = copy(source)
+    rebakeEye(source, target, spec, lash, iris, white)
+    expect(target.get(620, 281)).toEqual(rim)
+    expect(target.get(620, 285)).toEqual([255, 255, 255, 255])
+  })
   it('虹彩の上半分の穴（ハイライト）は白で埋めて虹彩と一緒に動かす', () => {
     const source = atlas(900, 400), blue: Rgba = [40, 60, 200, 255], pale: Rgba = [230, 225, 240, 255]
     for (let x = 512; x <= 538; x++) for (let y = 280; y <= 296; y++) { if (x !== 520 || y !== 283) source.set(x + 100, y, blue); source.set(x + 200, y, pale) }

@@ -825,11 +825,13 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) lookP
 window.addEventListener('resize', () => { lookFaceAt = 0 })
 
 // ---- リグの読込と描画ループ ----
+let petEyesLatched = false
 function rigTick(now: number) {
   if (!rig) return
   const dt = petTick ? Math.min(0.1, (now - petTick) / 1000) : 0; petTick = now
   const petTrack = track?.zone === 'head' && track.headRect ? { points: track.points, rect: track.headRect, now } : null, petOptions = { enabled: !touchBlocked(), reduced: reduced(), subtle: prefs.intensity === 'subtle' }
-  const petEyes = !track?.outside && petEyesWanted(petTrack, petOptions)
+  const petEyes = !track?.outside && petEyesWanted(petTrack, petOptions, petEyesLatched)
+  petEyesLatched = petEyes
   stage?.setPetEyes?.(petEyes); report.petEyes = petEyes
   petOffset = petFollow(petOffset, petTrack, dt, petOptions)
   if (stage?.setPetOffset) { stage.setPetOffset(petOffset); holdClipForPet(isPetting(petTrack, petOptions) || petShown(petOffset)) }

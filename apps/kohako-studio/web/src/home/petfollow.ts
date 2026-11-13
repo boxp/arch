@@ -15,12 +15,13 @@ export function isPetting(track: PetTrack | null, options: PetOptions): boolean 
   const points = track?.points ?? [], first = points[0]
   return !!first && options.enabled && !options.reduced && points.some(p => Math.hypot(p.x - first.x, p.y - first.y) >= PET_MOVE_PX)
 }
-// BOXP-525: 手が頭の外へ出たら押したままでも目を開く。
-export function petEyesWanted(track: PetTrack | null, options: PetOptions): boolean {
+// BOXP-525: 閉眼後は頭の周囲に余裕を持たせ、遠くへ離れるか解除すると開く。
+export function petEyesWanted(track: PetTrack | null, options: PetOptions, previouslyClosed = false): boolean {
   const last = track?.points.at(-1)
   if (!track || !last || !isPetting(track, options)) return false
   const { x, y, w, h } = track.rect
-  return last.x >= x && last.x <= x + w && last.y >= y && last.y <= y + h
+  const margin = previouslyClosed ? 0.35 : 0
+  return last.x >= x - w * margin && last.x <= x + w * (1 + margin) && last.y >= y - h * margin && last.y <= y + h * (1 + margin)
 }
 /** 頭がまだ追従の位置にある（離した後に戻り切っていない）か。 */
 export const petShown = (o: PetOffset) => Math.max(Math.abs(o.headX), Math.abs(o.headY), Math.abs(o.headZ)) > 0.3
