@@ -1,12 +1,20 @@
-export type Inline = { type: 'text' | 'code' | 'bold' | 'italic' | 'strike' | 'link'; text: string; url?: string }
+export type Inline = { type: 'text' | 'code' | 'bold' | 'italic' | 'strike' | 'link' | 'image'; text: string; url?: string }
 export type Block = { type: 'paragraph' | 'heading' | 'list' | 'quote' | 'code' | 'rule'; text?: string; level?: number; ordered?: boolean; items?: string[]; indents?: number[]; inline?: Inline[] }
 const safeUrl = (url: string) => { try { const u = new URL(url); return ['http:', 'https:', 'mailto:'].includes(u.protocol) ? u.href : undefined } catch { return undefined } }
+export function vaultImageUrl(raw: string): string | undefined {
+  if (!raw.startsWith('kohako-vault:')) return undefined
+  try {
+    const path = decodeURIComponent(raw.slice(13))
+    if (!path || path.length > 1500 || /[\\\x00-\x1f]/.test(path) || path.split('/').some(p => !p || p.startsWith('.')) || !/\.(png|jpe?g|gif|webp)$/i.test(path)) return undefined
+    return `/kohako/api/v1/vault-image?path=${encodeURIComponent(path)}`
+  } catch { return undefined }
+}
 export function parseInline(src: string): Inline[] {
   const result: Inline[] = [], re = /(!?)\[([^\]]*)\]\(([^\s)]+)\)|https:\/\/[A-Za-z0-9\-._~:/?#@!$&'*+,;=%]*[A-Za-z0-9\-_~/#=&%+]|`([^`]+)`|\*\*([^*]+)\*\*|~~([^~]+)~~|\*([^*\s][^*]*)\*|(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])/g
   let pos = 0, m: RegExpExecArray | null
   while ((m = re.exec(src))) {
     if (m.index > pos) result.push({ type: 'text', text: src.slice(pos, m.index) })
-    if (m[2] !== undefined) { const label = m[1] ? `画像: ${m[2]}` : m[2], url = safeUrl(m[3]); result.push(url ? { type: 'link', text: label, url } : { type: 'text', text: label }) }
+    if (m[2] !== undefined) { const image = m[1] && vaultImageUrl(m[3]), label = m[1] ? `画像: ${m[2]}` : m[2], url = safeUrl(m[3]); result.push(image ? { type: 'image', text: m[2], url: image } : url ? { type: 'link', text: label, url } : { type: 'text', text: label }) }
     else if (m[0].startsWith('https://')) { const url = safeUrl(m[0]); result.push(url ? { type: 'link', text: m[0], url } : { type: 'text', text: m[0] }) }
     else result.push({ type: m[4] ? 'code' : m[5] ? 'bold' : m[6] ? 'strike' : 'italic', text: m[4] ?? m[5] ?? m[6] ?? m[7] ?? m[8] })
     pos = re.lastIndex
@@ -30,7 +38,13 @@ export function parseMarkdown(src: string): Block[] {
 }
 export function renderMarkdown(src: string, doc: Document = document): DocumentFragment {
   const fragment = doc.createDocumentFragment()
-  const inline = (parent: HTMLElement, nodes: Inline[]) => { for (const n of nodes) { const tag = n.type === 'link' ? 'a' : n.type === 'code' ? 'code' : n.type === 'bold' ? 'strong' : n.type === 'italic' ? 'em' : n.type === 'strike' ? 'del' : 'span', node = doc.createElement(tag); if (n.type === 'link' && n.url) { const a = node as HTMLAnchorElement; a.href = n.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.referrerPolicy = 'no-referrer' }; const parts = n.text.split('\n'); parts.forEach((part, index) => { if (index) node.append(doc.createElement('br')); const text = doc.createElement('span'); text.textContent = part; node.append(text) }); parent.append(node) } }
+  const inline = (parent: HTMLElement, nodes: Inline[]) => { for (const n of nodes) { if (n.type === 'image' && n.url) {
+    const wrap = doc.createElement('span'), image = doc.createElement('img'), link = doc.createElement('a')
+    wrap.className = 'vault-image'; image.src = n.url; image.alt = n.text; image.loading = 'lazy'; image.referrerPolicy = 'no-referrer'
+    link.href = n.url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.append(image)
+    image.addEventListener('error', () => { image.hidden = true; const error = doc.createElement('span'); error.textContent = `画像を表示できません（${n.text || 'vault画像'}）。削除・移動・対応形式・認証を確認してください。`; wrap.append(error) }, { once: true })
+    wrap.append(link); parent.append(wrap); continue
+  }; const tag = n.type === 'link' ? 'a' : n.type === 'code' ? 'code' : n.type === 'bold' ? 'strong' : n.type === 'italic' ? 'em' : n.type === 'strike' ? 'del' : 'span', node = doc.createElement(tag); if (n.type === 'link' && n.url) { const a = node as HTMLAnchorElement; a.href = n.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.referrerPolicy = 'no-referrer' }; const parts = n.text.split('\n'); parts.forEach((part, index) => { if (index) node.append(doc.createElement('br')); const text = doc.createElement('span'); text.textContent = part; node.append(text) }); parent.append(node) } }
   for (const block of parseMarkdown(src)) {
     if (block.type === 'rule') { fragment.append(doc.createElement('hr')); continue }
     const tag = block.type === 'heading' ? `h${Math.min(6, (block.level ?? 1) + 2)}` : block.type === 'list' ? block.ordered ? 'ol' : 'ul' : block.type === 'quote' ? 'blockquote' : block.type === 'code' ? 'pre' : 'p', node = doc.createElement(tag)

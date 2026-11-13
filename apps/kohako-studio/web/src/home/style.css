@@ -163,3 +163,5 @@ body[data-scene="relax"] .bubble:has(#notice-actions:not([hidden])){opacity:1;po
 .bar{flex-wrap:wrap}.attachment-chips{flex-basis:100%;display:flex;gap:4px;flex-wrap:wrap}.attachment-chips:empty{display:none}.attachment-chips span{background:#eee4f7;border-radius:8px;padding:4px;font-size:12px}.attachment-chips button{padding:2px 5px;margin-left:4px}
 .dictation-note{flex-basis:100%;font-size:.8rem;display:flex;flex-wrap:wrap;gap:2px 8px;align-items:baseline}.dictation-note[hidden]{display:none}.bar button[hidden]{display:none}
 .bar.dictating #attach,.bar.dictating #send{display:none}#record{min-width:44px;white-space:nowrap}
+/* Owner-authenticated vault images remain within both bubble and history. */
+.vault-image{display:block;margin:.5rem 0}.vault-image img{display:block;max-width:100%;height:auto;max-height:65vh;object-fit:contain;border-radius:8px}.vault-image img[hidden]{display:none}

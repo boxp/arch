@@ -196,6 +196,15 @@ export function createHermes({
   }
   return {
     approve,
+    async vaultImage(path: string): Promise<{ mime: string; data: Buffer } | undefined> {
+      if (!path || path.length > 1500 || path.split('/').some(p => !p || p.startsWith('.')) || /[\\\x00-\x1f]/.test(path)) return undefined
+      const result = await request(`/v1/kohako/vault-image?path=${encodeURIComponent(path)}`, { headers: auth }, 7 * 1024 * 1024)
+      const mime = result.data?.mime, encoded = result.data?.data
+      if (result.code || typeof mime !== 'string' || !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mime) || typeof encoded !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) return undefined
+      const data = Buffer.from(encoded, 'base64')
+      if (!data.length || data.length > 5 * 1024 * 1024) return undefined
+      return { mime, data }
+    },
     async stop(runId: string): Promise<'ok' | 'not_pending' | 'unknown'> {
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(runId)) return 'not_pending'
       try {

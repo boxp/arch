@@ -10,6 +10,7 @@ import { createHermes } from './hermes.js'
 import { createTts, TtsError } from './tts.js'
 import { pcmToWav, STT_FINAL_FIELDS } from './stt.js'
 const BASE_INSTRUCTIONS = 'あなたの返答は Web UI の吹き出しに表示され、必要に応じて音声で読み上げられます。'
+export const vaultImageInstructions = ' vault内の画像を家の会話に表示するときは、実在確認したvault相対パスを encodeURIComponent 相当でURLエンコード（括弧も%28/%29へ変換）し、![短い説明](kohako-vault:エンコード済み相対パス) と返してください。絶対パスやMEDIA記法は表示できません。対応はPNG/JPEG/GIF/WebP各5MiBまで。SVG/PDF/動画/その他のファイルはインライン表示非対応です。画像を再生成したり、検証画像をvaultに保存したりしないでください。'
 // 視覚パネルを持つ家の画面（views: true を送る）だけに kohako-view 形式を指示する。Studio は views を表示しないので本文だけで返させる。
 export function notificationReplyText(item: import('./notifications.js').Item, reply: NonNullable<import('./notifications.js').Item['reply']>): string {
   return item.source === 'hermes-cron'
@@ -17,8 +18,8 @@ export function notificationReplyText(item: import('./notifications.js').Item, r
               : `[家の通知への返信] event=${item.eventId.replace(/\.(report|notice)$/, '')} ticket=${item.ticketId ?? '-'} source=${item.source} reply_id=${reply.requestId}\n${reply.kind === 'choice' ? '選択' : '返信'}: ${reply.value}`
 }
 
-export const instructions = BASE_INSTRUCTIONS + VIEW_INSTRUCTIONS
-export const studioInstructions = BASE_INSTRUCTIONS
+export const instructions = BASE_INSTRUCTIONS + VIEW_INSTRUCTIONS + vaultImageInstructions
+export const studioInstructions = BASE_INSTRUCTIONS + vaultImageInstructions
 // BOXP-501: 家の会話で起票した票が監督 runbook に未登録だと、Task Board webhook の prefilter と route prompt が
 // 完了・停止・本人判断待ちを silent にし、家にも Telegram にも届かない。Telegram 経由の依頼と同じ登録を Owner の発言 turn だけに求める。
 export const ownerTaskInstructions = ' ご主人さまの依頼でこの会話から Task Board に起票・再依頼・担当への引き継ぎをした場合は、Telegram 経由の依頼と同じく /opt/data/kohako-task-supervision.md に既存の書式で report-only の監督登録（家経由の依頼と明記）を追加して読み戻し、返答で票 ID を伝えてください。登録が無いと、その票の完了・停止・本人判断待ちの通知が家にも Telegram にも届きません。起票や引き継ぎをしていない turn では登録しません。'
@@ -79,6 +80,18 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
         }
       }
       if (principal === 'notifier') return json(403, { error: 'forbidden' })
+      if (route === 'vault-image' && method === 'GET') {
+        if (principal !== 'owner') return json(403, { error: 'forbidden' })
+        if (!opts.hermes) return json(503, { error: 'image_unavailable' })
+        const params = new URL(req.url ?? '/', 'http://localhost').searchParams
+        if (params.getAll('path').length !== 1) return json(400, { error: 'invalid' })
+        try {
+          const image = await opts.hermes.vaultImage(params.get('path')!)
+          if (!image) return json(404, { error: 'image_unavailable' })
+          res.writeHead(200, { 'content-type': image.mime, 'content-length': image.data.length, 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; sandbox" })
+          return res.end(image.data)
+        } catch { return json(502, { error: 'image_unavailable' }) }
+      }
       if (route === 'tts' && (method === 'GET' || method === 'POST')) {
         // BOXP-524 Owner承認: 自動E2E用に既存 verifier にも TTS を許可（notifier は上で拒否済み）。
         if (principal !== 'owner' && principal !== 'verifier') return json(403, { error: 'forbidden' })
