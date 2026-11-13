@@ -223,6 +223,49 @@ export function rebakeEye(source: Atlas, target: Atlas, spec: EyeSpec, lash: Lay
   return count
 }
 
+/** まつ毛の上下の線の間にある細い隙間の最大の高さ（アトラスの画素）。実測で 6〜7。白目との間は 9 以上。 */
+export const LASH_SLOT_MAX = 7
+const LASH_SOLID = 200, LASH_INK = 110, LASH_BODY = 100
+/** 二重まぶたの線は 1〜2 画素と細いので、上側は 3 画素以上の太い線に限る。 */
+const LASH_THICK_UP = 3, LASH_THICK_DOWN = 2
+/**
+ * BOXP-525: 太いまつ毛の帯は上下 2 本の線の間が透明（または薄い）になっている。待機時はその下に虹彩上端の暗い影があるので黒く見えるが、
+ * 下を見ると虹彩が下がって白目が透け、まつ毛が白く見える。上下を濃い線に挟まれた隙間だけを、挟む線の色で不透明に塗る。
+ */
+export function fillLashSlots(target: Atlas, spec: EyeSpec, lash: Layer, maxGap = LASH_SLOT_MAX): number {
+  const box = { x0: arcX(spec.left, spec.top) - 22, y0: spec.top - 16, x1: arcX(spec.right, spec.top) + 10, y1: spec.top + 2 }
+  const ink = (p: Rgba) => p[3] >= LASH_SOLID && luma(p) < LASH_INK
+  const writes: [number, number, Rgba][] = []
+  eachTexel(target, lash, box, (u, v) => {
+    const own = target.get(u, v)
+    if (own[3] >= LASH_SOLID) return
+    let up = 0, down = 0
+    for (let d = 1; d <= maxGap && !up; d++) if (ink(target.get(u, v - d))) up = d
+    for (let d = 1; d <= maxGap && !down; d++) if (ink(target.get(u, v + d))) down = d
+    if (!up || !down || up + down - 1 > maxGap) return
+    const thick = (from: number, step: number) => { let n = 0; while (n < 8 && target.get(u, from + step * n)[3] >= LASH_BODY) n++; return n }
+    if (thick(v - up, -1) < LASH_THICK_UP || thick(v + down, 1) < LASH_THICK_DOWN) return
+    const a = target.get(u, v - up), b = target.get(u, v + down)
+    const solid: Rgba = [0, 1, 2].map(k => ((a[k] as number) * 255 / a[3] + (b[k] as number) * 255 / b[3]) / 2) as unknown as Rgba
+    solid[3] = 255
+    writes.push([u, v, over(own, solid)])
+  })
+  // 列ごとの判定から 1〜2 列だけ漏れた隙間は、左右の塗った画素の平均でつなぐ。
+  const done = new Map(writes.map(([u, v, p]) => [`${u},${v}`, p]))
+  for (const [u, v, left] of [...writes]) {
+    const k = [2, 3].find(k => done.has(`${u + k},${v}`) && ![...Array(k - 1)].some((_, i) => done.has(`${u + 1 + i},${v}`)))
+    if (!k) continue
+    const right = done.get(`${u + k},${v}`) as Rgba
+    for (let i = 1; i < k; i++) {
+      const gap = target.get(u + i, v)
+      if (gap[3] >= LASH_SOLID) break
+      const p = over(gap, mix(left, right, i / k)); writes.push([u + i, v, p]); done.set(`${u + i},${v}`, p)
+    }
+  }
+  for (const [u, v, p] of writes) target.set(u, v, p)
+  return writes.length
+}
+
 /** 行 y で x から最も近い明暗の切り替わり（なければ null）。 */
 function edgeNear(read: (x: number, y: number) => Rgba, x: number, y: number, threshold: number): number | null {
   const side = luma(read(x, y)) >= threshold
@@ -306,7 +349,7 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
       set(x, y, q) { if (x < x0 || y < y0 || x >= x1 || y >= y1) return; const i = ((y - y0) * w + (x - x0)) * 4; data[i] = q[0]; data[i + 1] = q[1]; data[i + 2] = q[2]; data[i + 3] = q[3] } })
     const source = view(original), target = view(output)
     const brows = rebakeBrows(source, target, of(BROW_MESH), of(FACE_MESH), of(BANGS_MESH))
-    const eyes = EYE_SPECS.map(s => rebakeEye(source, target, s, of(s.lash), of(s.iris), of(s.white)))
+    const eyes = EYE_SPECS.map(s => ({ ...rebakeEye(source, target, s, of(s.lash), of(s.iris), of(s.white)), lashSlots: fillLashSlots(target, s, of(s.lash)) }))
     const holes = EYE_SPECS.map(s => {
       const info = p.meshes[s.iris] as GlPlayer['meshes'][number], v = new Float32Array(p.rt.memory.buffer, p.rt.p2l_mesh_vertices(p.rig, s.iris), info.vertices * 2)
       const loops = highlightHoles(info.indices, n => [v[2 * n] as number, v[2 * n + 1] as number], HIGHLIGHT_MAX)
