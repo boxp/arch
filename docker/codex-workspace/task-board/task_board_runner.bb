@@ -6263,9 +6263,16 @@
           (not (safe-run-workspace-path? ticket-id run-id path)) "unsafe-path"
           :else (stale-process-hold (fs/real-path path)))))
 
-(defn dehydrate-scan [run co checkouts min-bytes]
+(defn dehydrate-scan
+  "With allow-dirty? a checkout holding local changes is still scanned, but
+  every path git status reports (modified, staged, renamed, untracked) is
+  left alone: only tracked files identical to their index blob are listed."
+  [run co checkouts min-bytes allow-dirty?]
   (let [marker (dehydrated-marker co)
         status (generated-git co "status" "--porcelain" "-z" "--untracked-files=all")
+        ;; -z entries are "XY path"; a rename adds the bare source path.
+        changed (into #{} (mapcat #(if (and (> (count %) 3) (= \space (nth % 2))) [% (subs % 3)] [%]))
+                      (remove str/blank? (str/split (str (:out status)) #"\u0000")))
         nested? (some #(and (not= (str %) (str co))
                             (or (fs/starts-with? % co) (fs/starts-with? co %))) checkouts)]
     (cond
@@ -6273,7 +6280,7 @@
       nested? {:hold "nested-checkout"}
       (fs/exists? marker {:nofollow-links true}) {:already true}
       (not (zero? (:exit status))) {:hold "git-error"}
-      (not (str/blank? (:out status))) {:hold "uncommitted-changes"}
+      (and (not allow-dirty?) (not (str/blank? (:out status)))) {:hold "uncommitted-changes"}
       (some #(fs/exists? (fs/path (fs/parent marker) %) {:nofollow-links true})
             ["MERGE_HEAD" "rebase-merge" "rebase-apply" "CHERRY_PICK_HEAD" "REVERT_HEAD" "BISECT_LOG" "index.lock"]) {:hold "git-operation-in-progress"}
       :else
@@ -6290,7 +6297,7 @@
                 files (keep (fn [entry]
                               (when-let [[_ mode sha stage rel] (re-matches #"(?s)(100644|100755) ([0-9a-f]+) ([0-9])\t(.*)" entry)]
                                 (let [path (fs/path co rel)]
-                                  (when (and (= stage "0") (not (skipped rel))
+                                  (when (and (= stage "0") (not (skipped rel)) (not (changed rel))
                                              (fs/regular-file? path {:nofollow-links true})
                                              (>= (fs/get-attribute path "basic:size" {:nofollow-links true}) min-bytes)
                                              (= 1 (fs/get-attribute path "unix:nlink" {:nofollow-links true}))
@@ -6300,12 +6307,14 @@
                                                  (do (vswap! mismatches inc) false)))
                                     rel)))) (str/split (:out index) #"\u0000"))
                 bytes (reduce (fn [n rel] (let [v (generated-measure (fs/path co rel))] (if (and n v) (+ n v) (reduced nil)))) 0 files)]
-            (if (nil? bytes) {:hold "measurement-failed"} {:files (vec files) :bytes bytes :marker marker :hash-mismatches @mismatches})))))))
+            (if (nil? bytes) {:hold "measurement-failed"} {:files (vec files) :bytes bytes :marker marker :hash-mismatches @mismatches :status (:out status) :dirty (not (str/blank? (:out status)))})))))))
 
 (defn dehydrate-pass! [mode hours cap stop? stats count-done]
   (let [flag (fs/path (root) "generated-reclaim.edn")
         enabled? (and (not= "off" (some-> (System/getenv "CODEX_TASK_BOARD_GENERATED_RECLAIM_DEHYDRATE") str/trim str/lower-case))
                       (not= false (try (:dehydrate (read-edn-file flag nil)) (catch Exception _ false))))
+        allow-dirty? (and (not= "off" (some-> (System/getenv "CODEX_TASK_BOARD_DEHYDRATE_DIRTY") str/trim str/lower-case))
+                          (not= false (try (:dehydrate-dirty (read-edn-file flag nil)) (catch Exception _ false))))
         min-bytes (prune-setting "CODEX_TASK_BOARD_DEHYDRATE_MIN_BYTES" #(parse-bounded-long % 262144 1))]
     (when enabled?
       (doseq [ticket-dir (child-directories (workspaces-dir)) :while (and (not (stop?)) (< (count-done) cap))
@@ -6315,12 +6324,12 @@
         (try
           (let [checkouts (find-checkouts run)]
             (doseq [co checkouts :while (and (not (stop?)) (< (count-done) cap))]
-              (let [{:keys [hold already files bytes hash-mismatches]} (dehydrate-scan run co checkouts min-bytes)
+              (let [{:keys [hold already files bytes hash-mismatches dirty]} (dehydrate-scan run co checkouts min-bytes allow-dirty?)
                     display (str (fs/relativize run co))
                     recheck (when (and (not hold) (seq files) (= mode :on))
                               (with-ticket-lock-guard ticket
                                 #(or (generated-ticket-hold ticket) (dehydrate-run-hold ticket run-id hours)
-                                     (let [fresh (dehydrate-scan run co (find-checkouts run) min-bytes)]
+                                     (let [fresh (dehydrate-scan run co (find-checkouts run) min-bytes allow-dirty?)]
                                        (cond (:hold fresh) (:hold fresh)
                                              (not= files (:files fresh)) "candidates-changed"
                                              :else (try
@@ -6331,15 +6340,16 @@
                                                        (if-not (zero? (:exit (git-with-paths co ["update-index" "-z" "--skip-worktree" "--stdin"] files)))
                                                          "update-index-failed"
                                                          (do (doseq [rel files] (fs/delete (fs/path co rel)))
-                                                             (let [status (generated-git co "status" "--porcelain")]
-                                                               (when (or (not (zero? (:exit status))) (not (str/blank? (:out status)))) "post-verify-failed")))))
+                                                             ;; Local changes must read exactly as before.
+                                                             (let [status (generated-git co "status" "--porcelain" "-z" "--untracked-files=all")]
+                                                               (when (or (not (zero? (:exit status))) (not= (:out status) (:status fresh))) "post-verify-failed")))))
                                                      (catch Exception e (str "dehydrate-failed " (one-line (.getMessage e))))))))))
                     result (cond hold :held (= recheck "post-verify-failed") :held recheck :skipped-recheck (and (seq files) (= mode :on)) :reclaimed (seq files) :would-reclaim :else nil)
                     reason (or hold recheck)]
                 (when already (swap! stats update :already-dehydrated inc))
                 (when hash-mismatches (swap! stats update :dehydrate-hash-mismatches + hash-mismatches))
                 (when result
-                  (workspace-metrics-write! {:event :generated-reclaim :kind :tracked-dehydrate :ticket ticket :run run-id :path display :files (count files) :allocated-bytes bytes :result result :reason reason})
+                  (workspace-metrics-write! {:event :generated-reclaim :kind :tracked-dehydrate :ticket ticket :run run-id :path display :files (count files) :allocated-bytes bytes :result result :reason reason :dirty (boolean dirty)})
                   (if reason
                     (do (swap! stats update :held inc) (swap! stats update-in [:held-by-reason reason] (fnil inc 0)) (log! (str "generated-reclaim: hold " display " reason=" reason)))
                     (do (swap! stats update result inc)

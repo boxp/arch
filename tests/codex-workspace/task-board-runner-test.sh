@@ -5998,7 +5998,7 @@ test_dehydrate_holds() {
       operation) touch "$(git -C "$co" rev-parse --absolute-git-dir)/MERGE_HEAD" ;;
       hash) git -C "$co" update-index --assume-unchanged large; printf changed >>"$co/large" ;;
     esac
-    CODEX_TASK_BOARD_GENERATED_RECLAIM=on CODEX_TASK_BOARD_GENERATED_RECLAIM_DEHYDRATE="$([[ "$mode" == envflag ]] && echo off || echo on)" CODEX_TASK_BOARD_GENERATED_RECLAIM_MIN_AGE_HOURS="$([[ "$mode" == age ]] && echo 100 || echo 1)" run_prune "$vault" "$state" >"$out"
+    CODEX_TASK_BOARD_DEHYDRATE_DIRTY=off CODEX_TASK_BOARD_GENERATED_RECLAIM=on CODEX_TASK_BOARD_GENERATED_RECLAIM_DEHYDRATE="$([[ "$mode" == envflag ]] && echo off || echo on)" CODEX_TASK_BOARD_GENERATED_RECLAIM_MIN_AGE_HOURS="$([[ "$mode" == age ]] && echo 100 || echo 1)" run_prune "$vault" "$state" >"$out"
     [[ -f "$co/large" ]] || fail "dehydrate hold failed: $mode"
     case "$mode" in
       dirty) git -C "$co" checkout -- small ;;
@@ -6012,6 +6012,49 @@ test_dehydrate_holds() {
       operation) rm "$(git -C "$co" rev-parse --absolute-git-dir)/MERGE_HEAD" ;;
       hash) git -C "$co" update-index --no-assume-unchanged large; git -C "$co" checkout -- large ;;
     esac
+  done
+}
+
+test_dehydrate_dirty_keeps_changes() {
+  # A held Done run with local changes: only tracked files identical to the
+  # index blob are dehydrated; every changed/staged/untracked path is kept.
+  local tmp vault state source co run out mode gitdir before
+  for mode in on envoff flagoff; do
+    tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
+    mkdir -p "$state/locks" "$tmp/proc/100"
+    ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+    export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
+    make_prune_source_repo "$source"
+    head -c 307200 /dev/urandom >"$source/large"; head -c 307200 /dev/urandom >"$source/edited"
+    head -c 307200 /dev/urandom >"$source/moved"; echo small >"$source/small"
+    git -C "$source" add .; prune_git -C "$source" commit -qm large
+    write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+    write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+    run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
+    co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
+    echo change >>"$co/small"; printf local >>"$co/edited"
+    head -c 307200 /dev/urandom >"$co/untracked"
+    head -c 307200 /dev/urandom >"$co/staged"; git -C "$co" add staged
+    git -C "$co" mv moved renamed
+    before="$(git -C "$co" status --porcelain --untracked-files=all; sha256sum "$co/small" "$co/edited" "$co/untracked" "$co/staged" "$co/renamed")"
+    [[ "$mode" != flagoff ]] || echo '{:mode :on :dehydrate-dirty false}' >"$state/generated-reclaim.edn"
+    CODEX_TASK_BOARD_GENERATED_RECLAIM=on CODEX_TASK_BOARD_DEHYDRATE_DIRTY="$([[ "$mode" == envoff ]] && echo off || echo on)" run_prune "$vault" "$state" >"$out"
+    gitdir="$(git -C "$co" rev-parse --absolute-git-dir)"
+    [[ "$before" == "$(git -C "$co" status --porcelain --untracked-files=all; sha256sum "$co/small" "$co/edited" "$co/untracked" "$co/staged" "$co/renamed")" ]] || fail "local changes altered: $mode"
+    if [[ "$mode" != on ]]; then
+      [[ -f "$co/large" && ! -e "$gitdir/codex-task-board-dehydrated" ]] || fail "dirty dehydration not disabled: $mode"
+      continue
+    fi
+    [[ ! -e "$co/large" ]] || fail 'clean tracked file in dirty checkout not dehydrated'
+    [[ "$(tr '\0' '\n' <"$gitdir/codex-task-board-dehydrated")" == large ]] || fail 'marker lists a changed path'
+    assert_file_contains "$state/metrics/workspace-capacity.edn" ':dirty true'
+    CODEX_TASK_BOARD_ROOT="$state" TEST_RUNNER="$RUNNER" TEST_CO="$co" bb -e '
+      (System/setProperty "babashka.file" "/tmp/load-runner.bb")
+      (load-file (System/getenv "TEST_RUNNER"))
+      (assert (nil? (rehydrate-checkout! (fs/path (System/getenv "TEST_CO")))))' >"$out" 2>&1 || { cat "$out" >&2; fail 'rehydrate of dirty checkout failed'; }
+    [[ "$(sha256sum "$source/large" | cut -d' ' -f1)" == "$(sha256sum "$co/large" | cut -d' ' -f1)" ]] || fail 'restored content differs'
+    [[ ! -e "$gitdir/codex-task-board-dehydrated" ]] || fail 'marker retained'
+    [[ "$before" == "$(git -C "$co" status --porcelain --untracked-files=all; sha256sum "$co/small" "$co/edited" "$co/untracked" "$co/staged" "$co/renamed")" ]] || fail 'local changes altered by restore'
   done
 }
 
