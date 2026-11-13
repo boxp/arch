@@ -4,7 +4,7 @@ import { SceneDirector, targetScene, type SceneInput } from './scene'
 import { cardsFromText } from './cards'
 import { bboxOf, classifyTouch, TouchLimiter, TouchBatcher, toScreenRect, type Point } from './touch'
 import { parseResume, parseUnconfirmed, pollVerdict } from './resume'
-import { parsePrefs } from './prefs'
+import { parsePrefs, parseVolume } from './prefs'
 
 const base: SceneInput = { state: 'idle', thinkingMs: 0, cardsOpen: false, idleMs: 0, hasReply: false, netDown: false }
 describe('場面', () => {
@@ -89,17 +89,28 @@ describe('保存', () => {
     expect(parseUnconfirmed('{"kind":"text","text":1,"requestId":"abcdefgh","expiresAt":5}')).toBeNull()
   })
   it('不正な設定は既定値にする', () => {
-    expect(parsePrefs('{"touch":"yes","intensity":"loud","pinned":true}')).toEqual({ voice: 'kohaku', touch: true, follow: true, lines: true, intensity: 'normal', pinned: true, reducedMotion: false, bgMotion: true, chestSway: true })
+    expect(parsePrefs('{"touch":"yes","intensity":"loud","pinned":true}')).toEqual({ voice: 'kohaku', volume: 100, touch: true, follow: true, lines: true, intensity: 'normal', pinned: true, reducedMotion: false, bgMotion: true, chestSway: true })
     expect(parsePrefs('{"bgMotion":false}').bgMotion).toBe(false)
     expect(parsePrefs('{"voice":"browser"}').voice).toBe('browser')
     expect(parsePrefs('{"voice":"other"}').voice).toBe('kohaku')
     expect(parsePrefs('[]').touch).toBe(true)
+    // BOXP-534: 読み上げ音量は 0〜100 の整数。範囲外は端に寄せ、数値でなければ既定 100。
+    expect(parsePrefs(null).volume).toBe(100)
+    expect(parsePrefs('{"volume":40}').volume).toBe(40)
+    expect(parsePrefs('{"volume":0}').volume).toBe(0)
+    expect(parsePrefs('{"volume":250}').volume).toBe(100)
+    expect(parsePrefs('{"volume":-5}').volume).toBe(0)
+    expect(parsePrefs('{"volume":33.6}').volume).toBe(34)
+    expect(parsePrefs('{"volume":"loud"}').volume).toBe(100)
+    expect(parsePrefs('{"volume":null}').volume).toBe(100)
+    expect(parseVolume('55')).toBe(55)
+    expect(parseVolume('')).toBe(100)
   })
 })
 describe('home.html', () => {
   it('必要な要素があり、インラインスクリプトがない', () => {
     const html = readFileSync('home.html', 'utf8')
-    for (const id of ['rig', 'reply', 'approval', 'allow', 'deny', 'message', 'send', 'stop', 'record', 'cards', 'history', 'settings', 'touch-open', 'reconnect', 'clock', 'state']) expect(html).toContain(`id="${id}"`)
+    for (const id of ['rig', 'reply', 'approval', 'allow', 'deny', 'message', 'send', 'stop', 'record', 'cards', 'history', 'settings', 'touch-open', 'reconnect', 'clock', 'state', 'pref-volume', 'pref-volume-value']) expect(html).toContain(`id="${id}"`)
     expect(html).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/)
     expect(html).toContain('href="studio.html"')
   })
