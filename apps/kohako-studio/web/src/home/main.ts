@@ -24,7 +24,7 @@ import { SceneDirector, targetScene, messageShown, type Scene } from './scene'
 import { cardsFromText, type Card } from './cards'
 import { acts, bboxOf, classifyTouch, HAND_MESHES, HEAD_MESHES, inside, toScreenRect, TouchLimiter, TouchBatcher, type Point, type Rect, type Zone } from './touch'
 import { createVoicePlayer, splitVoiceSentences } from './voice'
-import { parsePrefs, type Prefs } from './prefs'
+import { parsePrefs, parseVolume, type Prefs } from './prefs'
 import { blendLook, followWeightFor, lookTarget, smoothLook, type Look } from './lookfollow'
 import { parseResume, parseUnconfirmed, pollVerdict, type Inflight } from './resume'
 import { addErrorText, holdLabel, MessageQueue, QUEUE_MAX_ITEMS, type HoldReason, type QueueItem } from './queue'
@@ -46,11 +46,12 @@ let prefs: Prefs = parsePrefs(local.get(PREFS_KEY))
 const systemReduce = matchMedia('(prefers-reduced-motion: reduce)')
 const reduced = () => prefs.reducedMotion || systemReduce.matches
 const prefBoxes: [keyof Prefs, HTMLInputElement][] = [['touch', el('pref-touch')], ['follow', el('pref-follow')], ['lines', el('pref-lines')], ['pinned', el('pref-pinned')], ['reducedMotion', el('pref-reduce')], ['bgMotion', el('pref-bg')], ['chestSway', el('pref-chest')]]
-const voiceSelect = el<HTMLSelectElement>('pref-voice')
+const voiceSelect = el<HTMLSelectElement>('pref-voice'), volumeInput = el<HTMLInputElement>('pref-volume'), volumeValue = el('pref-volume-value')
 const subtleBox = el<HTMLInputElement>('pref-subtle')
 function applyPrefs() {
   for (const [key, box] of prefBoxes) box.checked = prefs[key] as boolean
   voiceSelect.value = prefs.voice
+  volumeInput.value = String(prefs.volume); volumeValue.textContent = `${prefs.volume}%`
   subtleBox.checked = prefs.intensity === 'subtle'
   body.classList.toggle('reduce', reduced()); body.classList.toggle('bg-still', !prefs.bgMotion || reduced())
   el('touch-open').hidden = !prefs.touch
@@ -58,6 +59,9 @@ function applyPrefs() {
 }
 for (const [key, box] of prefBoxes) box.addEventListener('change', () => { prefs = { ...prefs, [key]: box.checked }; applyPrefs(); refreshScene() })
 voiceSelect.addEventListener('change', () => { prefs = { ...prefs, voice: voiceSelect.value === 'browser' ? 'browser' : 'kohaku' }; applyPrefs() })
+// BOXP-534: 読み上げ音量。動かしている間も再生中のコハクの声へすぐ反映し（端末の声は次の文から）、離したときに保存する。
+volumeInput.addEventListener('input', () => { const volume = parseVolume(volumeInput.value); volumeValue.textContent = `${volume}%`; prefs = { ...prefs, volume }; syncVolume() })
+volumeInput.addEventListener('change', () => { prefs = { ...prefs, volume: parseVolume(volumeInput.value) }; applyPrefs(); syncVolume() })
 subtleBox.addEventListener('change', () => { prefs = { ...prefs, intensity: subtleBox.checked ? 'subtle' : 'normal' }; applyPrefs() })
 systemReduce.addEventListener?.('change', applyPrefs)
 document.addEventListener('visibilitychange', () => body.classList.toggle('tab-hidden', document.hidden))
@@ -80,6 +84,8 @@ let cancelDictation: (() => void) | undefined, syncDictationNoteHook: (() => voi
 const synthesis = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window
 const voiceAudio = new Audio()
 const voicePlayer = createVoicePlayer({ fetcher: (input, init) => window.fetch(input, init), audio: voiceAudio, createUrl: blob => URL.createObjectURL(blob), revokeUrl: url => URL.revokeObjectURL(url) })
+const syncVolume = () => { voiceAudio.volume = prefs.volume / 100 }
+syncVolume()
 
 // ---- リグと演技（476 の規則をそのまま使う） ----
 const rigModel = modelFor(`?model=${studioRigModelId(location.search)}`)
@@ -88,7 +94,7 @@ let visemes: VisemeSequence | null = null, visemeAnchor = 0, visemeLive = false
 function startViseme(text: string, duration = silentSpeechSeconds(text), live = false) { visemes = makeVisemes(text, duration); visemeLive = live; speakingSince = performance.now(); visemeAnchor = 0 }
 function syncViseme(charIndex: number) { if (visemes) { visemeAnchor = boundaryTime(visemes, charIndex); speakingSince = performance.now() } }
 const actingEnabled = wantsActing(location.search)
-const speaker = synthesis ? createSentenceSpeaker({ synth: { speak: u => window.speechSynthesis.speak(u as SpeechSynthesisUtterance), cancel: () => window.speechSynthesis.cancel() }, makeUtterance: text => { const u = new SpeechSynthesisUtterance(text); u.lang = 'ja-JP'; return u } }) : null
+const speaker = synthesis ? createSentenceSpeaker({ synth: { speak: u => window.speechSynthesis.speak(u as SpeechSynthesisUtterance), cancel: () => window.speechSynthesis.cancel() }, makeUtterance: text => { const u = new SpeechSynthesisUtterance(text); u.lang = 'ja-JP'; u.volume = prefs.volume / 100; return u } }) : null
 const sentencer = createSilentSentencer({ setTimeout: (fn, ms) => window.setTimeout(fn, ms), clearTimeout: id => window.clearTimeout(id) })
 const report: Record<string, unknown> = { loaded: false, errors: [] as string[], touches: [] as unknown[] }
 // 胸の揺れの状態は検査から読むときだけ求める（毎フレーム report を作らない）。

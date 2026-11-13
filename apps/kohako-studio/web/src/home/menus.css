@@ -120,3 +120,4 @@ body[data-shape="landscape"] .drawer{top:6px;right:6px;bottom:6px}
 /* スマホ縦: シートは下の画面が透けすぎないよう濃くし、上帯の札は 1 行に収める */
 body[data-shape="portrait"] .drawer{background:rgba(253,251,255,.95)}
 body[data-shape="portrait"] .pill{padding:3px 8px;font-size:.7rem}body[data-shape="portrait"] .brand{font-size:.92rem;letter-spacing:.08em}
+.volume{display:flex;align-items:center;gap:8px;flex:0 0 auto}.volume input[type=range]{width:min(160px,38vw);accent-color:var(--accent,#b48ad6)}.volume output{min-width:3.2em;text-align:right;font-variant-numeric:tabular-nums;color:var(--muted);font-size:.85rem}
