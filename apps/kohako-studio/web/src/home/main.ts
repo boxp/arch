@@ -45,7 +45,7 @@ const local = storage(() => localStorage), tab = storage(() => sessionStorage)
 let prefs: Prefs = parsePrefs(local.get(PREFS_KEY))
 const systemReduce = matchMedia('(prefers-reduced-motion: reduce)')
 const reduced = () => prefs.reducedMotion || systemReduce.matches
-const prefBoxes: [keyof Prefs, HTMLInputElement][] = [['touch', el('pref-touch')], ['follow', el('pref-follow')], ['lines', el('pref-lines')], ['pinned', el('pref-pinned')], ['reducedMotion', el('pref-reduce')], ['bgMotion', el('pref-bg')], ['chestSway', el('pref-chest')]]
+const prefBoxes: [keyof Prefs, HTMLInputElement][] = [['mix', el('pref-mix')], ['touch', el('pref-touch')], ['follow', el('pref-follow')], ['lines', el('pref-lines')], ['pinned', el('pref-pinned')], ['reducedMotion', el('pref-reduce')], ['bgMotion', el('pref-bg')], ['chestSway', el('pref-chest')]]
 const voiceSelect = el<HTMLSelectElement>('pref-voice'), volumeInput = el<HTMLInputElement>('pref-volume'), volumeValue = el('pref-volume-value')
 const subtleBox = el<HTMLInputElement>('pref-subtle')
 function applyPrefs() {
@@ -83,8 +83,29 @@ let recording = false, starting = false
 let cancelDictation: (() => void) | undefined, syncDictationNoteHook: (() => void) | undefined
 const synthesis = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window
 const voiceAudio = new Audio()
-const voicePlayer = createVoicePlayer({ fetcher: (input, init) => window.fetch(input, init), audio: voiceAudio, createUrl: blob => URL.createObjectURL(blob), revokeUrl: url => URL.revokeObjectURL(url) })
-const syncVolume = () => { voiceAudio.volume = prefs.volume / 100 }
+let mixContext: AudioContext | null = null
+function unlockMix() {
+  if (!prefs.mix) return
+  try {
+    const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (!mixContext && AudioContextClass) {
+      mixContext = new AudioContextClass()
+      const silent = mixContext.createBufferSource(); silent.buffer = mixContext.createBuffer(1, 1, mixContext.sampleRate); silent.connect(mixContext.destination); silent.start(); silent.onended = () => silent.disconnect()
+    }
+    if (mixContext && mixContext.state !== 'running') void mixContext.resume().catch(() => {})
+  } catch {}
+}
+for (const name of ['pointerdown', 'keydown', 'touchend']) document.addEventListener(name, unlockMix, true)
+async function runningMixContext() {
+  unlockMix(); const context = mixContext
+  if (!context) return null
+  if (context.state !== 'running') {
+    try { await Promise.race([context.resume(), new Promise<void>(resolve => setTimeout(resolve, 300))]) } catch { return null }
+  }
+  return context.state === 'running' ? context : null
+}
+const voicePlayer = createVoicePlayer({ fetcher: (input, init) => window.fetch(input, init), audio: voiceAudio, createUrl: blob => URL.createObjectURL(blob), revokeUrl: url => URL.revokeObjectURL(url), mixer: { enabled: () => prefs.mix, context: runningMixContext, gain: () => prefs.volume / 100 } })
+const syncVolume = () => { voiceAudio.volume = prefs.volume / 100; voicePlayer.setVolume(prefs.volume / 100) }
 syncVolume()
 
 // ---- リグと演技（476 の規則をそのまま使う） ----
@@ -421,7 +442,7 @@ function playReply() {
   else if (speaker) speaker.speak(speechChunks, events, speechNext)
   else { show('done'); offerSpeechResume() }
 }
-resumeSpeech.addEventListener('click', () => { speech.checked = true; playReply() })
+resumeSpeech.addEventListener('click', () => { unlockMix(); speech.checked = true; playReply() })
 
 /** 返答を吹き出し・カード・履歴へ出し、演技と読み上げを始める（Studio と同じ）。 */
 function deliver(text: string, views: View[] = []) {
@@ -448,7 +469,7 @@ function mouthOnly(text: string) {
   show('speaking'); startViseme(text)
   mouthTimer = window.setTimeout(() => { if (state === 'speaking') show('done') }, silentSpeechSeconds(text) * 1000)
 }
-speech.addEventListener('change', () => { if (!speech.checked) hushNow(true); else { voiceAudio.src = 'data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA'; void voiceAudio.play().then(() => { if (voiceAudio.src.startsWith('data:audio/wav')) { voiceAudio.pause(); voiceAudio.removeAttribute('src'); voiceAudio.load() } }).catch(() => {}) } })
+speech.addEventListener('change', () => { if (!speech.checked) hushNow(true); else if (prefs.mix) unlockMix(); else { voiceAudio.src = 'data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA'; void voiceAudio.play().then(() => { if (voiceAudio.src.startsWith('data:audio/wav')) { voiceAudio.pause(); voiceAudio.removeAttribute('src'); voiceAudio.load() } }).catch(() => {}) } })
 /** 読み上げを止める。pause は本人の「止める」/読み上げOFF で、続きが残るなら送信待ちの自動送信を止めて再開位置を守る（録音開始など新しい発言のための中断では止めない）。 */
 function hushNow(pause = false) {
   voicePlayer.cancel(); speaker?.cancel(); if (actingEnabled) interruptActing()

@@ -41,6 +41,7 @@
   </section>
   <section class="group"><h3>読み上げ</h3>
     <label class="opt"><span class="opt-text"><b>読み上げの声</b></span><select id="pref-voice"><option value="kohaku">コハク（ノーマル）</option><option value="browser">端末の声</option></select></label>
+    <label class="opt"><span class="opt-text"><b>他アプリの音楽を止めない</b><small>コハクの声を音楽と重ねて再生します。OFFで従来の再生方式（音楽は一時停止）。iPhone/iPadではマナーモード中に声が出ないことがあります</small></span><input id="pref-mix" class="switch" type="checkbox"></label>
     <label class="opt"><span class="opt-text"><b>読み上げの音量</b><small>コハクの声・端末の声の両方に効きます。iPhone/iPad では端末の音量ボタンで調整してください</small></span><span class="volume"><input id="pref-volume" type="range" min="0" max="100" step="5" value="100" aria-describedby="pref-volume-value"><output id="pref-volume-value" for="pref-volume">100%</output></span></label>
     <p id="voice-unavailable" class="note" hidden>コハクの声は今使えません</p>
     <p class="note">声: AivisSpeech: コハク（ノーマル）／ACML 1.0。猫音コハク（©Oz Chat/Trippy）の公式とは関係ない非公式利用です。</p>

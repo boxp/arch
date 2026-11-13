@@ -13,11 +13,14 @@ export function splitVoiceSentences(sentences: string[]): string[] {
   return result
 }
 type Events = { onSentence(index: number, sentence: string, durationSeconds: number): void; onChunkEnd?(index: number): void; onEnd(): void; onError(code: string, index: number): void }
-export function createVoicePlayer(deps: { fetcher: typeof fetch; audio: HTMLAudioElement; createUrl(blob: Blob): string; revokeUrl(url: string): void; retryDelay?(): Promise<void> }) {
+export function createVoicePlayer(deps: { fetcher: typeof fetch; audio: HTMLAudioElement; createUrl(blob: Blob): string; revokeUrl(url: string): void; retryDelay?(): Promise<void>; mixer?: { enabled(): boolean; context(): Promise<AudioContext | null>; gain(): number } }) {
   let generation = 0, controller = new AbortController(), url: string | undefined, settle: (() => void) | undefined
+  let source: AudioBufferSourceNode | undefined, gain: GainNode | undefined
+  function clearNodes(stop = false) { if (source) { source.onended = null; if (stop) { try { source.stop() } catch {} } source.disconnect(); source = undefined } gain?.disconnect(); gain = undefined }
+  function setVolume(value: number) { if (gain) gain.gain.value = Math.max(0, Math.min(1, value)) }
   // fetch はレシーバ付き(deps.fetcher(...))で呼ぶと Chrome で Illegal invocation になり送信前に失敗するため、レシーバなしで呼ぶ。
   const audio = deps.audio
-  function cancel() { generation++; controller.abort(); settle?.(); settle = undefined; controller = new AbortController(); audio.pause(); audio.onended = null; audio.onerror = null; audio.onplaying = null; audio.removeAttribute('src'); audio.load(); if (url) deps.revokeUrl(url); url = undefined }
+  function cancel() { generation++; clearNodes(true); controller.abort(); settle?.(); settle = undefined; controller = new AbortController(); audio.pause(); audio.onended = null; audio.onerror = null; audio.onplaying = null; audio.removeAttribute('src'); audio.load(); if (url) deps.revokeUrl(url); url = undefined }
   function speak(input: string[], events: Events, start = 0) {
     cancel(); const current = generation, signal = controller.signal
     const groups: { first: number; last: number; text: string }[] = []
@@ -60,6 +63,20 @@ export function createVoicePlayer(deps: { fetcher: typeof fetch; audio: HTMLAudi
         const result = await results[i]
         if (current !== generation) return
         if ('error' in result) throw result.error
+        let context: AudioContext | null = null, buffer: AudioBuffer | undefined
+        if (deps.mixer?.enabled()) {
+          try { context = await deps.mixer.context(); if (context?.state === 'running') buffer = await context.decodeAudioData(await result.blob.arrayBuffer()) } catch { context = null }
+        }
+        if (current !== generation) return
+        if (context?.state === 'running' && buffer && deps.mixer?.enabled()) {
+          const ctx = context, decoded = buffer
+          await new Promise<void>(resolve => {
+            settle = resolve; source = ctx.createBufferSource(); gain = ctx.createGain(); source.buffer = decoded
+            gain.gain.value = deps.mixer!.gain(); source.connect(gain); gain.connect(ctx.destination)
+            source.onended = () => { if (current !== generation) return; clearNodes(); resolve() }
+            source.start(); started++; pump(); events.onSentence(group.first, group.text, decoded.duration)
+          })
+        } else {
         url = deps.createUrl(result.blob); audio.src = url
         await new Promise<void>((resolve, reject) => {
           let playing = false; settle = resolve
@@ -67,6 +84,7 @@ export function createVoicePlayer(deps: { fetcher: typeof fetch; audio: HTMLAudi
           audio.onended = () => { if (!playing) { playing = true; started++; pump() } resolve() }; audio.onerror = () => reject(Error('decode_failed'))
           try { void audio.play().catch(reject) } catch (e) { reject(e) }
         })
+        }
         if (current !== generation) return
         settle = undefined; events.onChunkEnd?.(group.last)
         if (url) deps.revokeUrl(url); url = undefined
@@ -75,5 +93,5 @@ export function createVoicePlayer(deps: { fetcher: typeof fetch; audio: HTMLAudi
     }
     void run().catch(e => { if (current !== generation) return; cancel(); events.onError(e instanceof Error ? e.name === 'NotAllowedError' ? e.name : e.message : 'unknown', index) })
   }
-  return { speak, cancel }
+  return { speak, cancel, setVolume }
 }
