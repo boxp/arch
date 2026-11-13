@@ -1,6 +1,8 @@
 // CPU ローカル合成は実時間より遅く(本番相当 2〜4 CPU で音声 8.8 秒に約 20〜40 秒)、120 字文をそのまま送ると
 // nginx/Cloudflare の応答待ち上限を超え得る。1 要求を短く保ち、合成待ちと初回再生までの時間を抑える。
 export const VOICE_CHUNK_MAX = 60
+// 同時に進める合成要求数と、再生中グループより先に用意するグループ数の上限。
+export const VOICE_PARALLEL = 2, VOICE_AHEAD = 3
 export function splitVoiceSentences(sentences: string[]): string[] {
   const result: string[] = []
   for (const sentence of sentences) {
@@ -33,16 +35,19 @@ export function createVoicePlayer(deps: { fetcher: typeof fetch; audio: HTMLAudi
     }
     const fetchOnce = async (sentence: string) => { const fetcher = deps.fetcher; const r = await fetcher('/kohako/api/v1/tts', { method: 'POST', credentials: 'same-origin', redirect: 'manual', cache: 'no-store', headers: { 'content-type': 'application/json', 'X-Kohako-Request': '1' }, body: JSON.stringify({ text: sentence }), signal }); if (!r.ok) throw Error('fetch_failed'); return r.blob() }
     const fetchSentence = async (sentence: string) => { try { return await fetchOnce(sentence) } catch (e) { if (signal.aborted || current !== generation || (e instanceof Error && e.name === 'AbortError')) throw e; await (deps.retryDelay?.() ?? new Promise<void>(resolve => setTimeout(resolve, 1000))); if (signal.aborted || current !== generation) throw e; return fetchOnce(sentence) } }
-    let index = start, next = 0, started = 0, fetching = false, failed = false
+    let index = start, next = 0, started = 0, fetching = 0, failed = false
     type Result = { blob: Blob; error?: never } | { blob?: never; error: unknown }
     const results: Promise<Result>[] = []
-    // CPU 合成は実時間より遅いため先読みを続け、文の途中での区切りも避ける。
+    // CPU 合成は実時間より遅いため先読みを続け、文の途中での区切りも避ける。初回は単独で早く返し、
+    // 以降は VOICE_PARALLEL 件まで同時に合成を進めて(BFF が同時数を制限)グループ間の待ちを縮める。
     const pump = () => {
-      if (fetching || failed || current !== generation || next >= groups.length || next - started >= 2) return
-      const group = groups[next++]; fetching = true
+      while (!failed && current === generation && next < groups.length && next - started < VOICE_AHEAD && fetching < (next < 2 ? 1 : VOICE_PARALLEL)) fetchNext()
+    }
+    const fetchNext = () => {
+      const group = groups[next++]; fetching++
       const result: Promise<Result> = fetchSentence(group.text).then(blob => ({ blob }), error => ({ error }))
       results.push(result)
-      void result.then(value => { fetching = false; if ('error' in value) failed = true; else pump() })
+      void result.then(value => { fetching--; if ('error' in value) failed = true; else pump() })
     }
     const run = async () => {
       pump()

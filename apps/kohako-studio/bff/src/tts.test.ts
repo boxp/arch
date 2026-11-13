@@ -67,3 +67,15 @@ it('aborts an uncached /speakers lookup when the active request is cancelled', a
   first.abort(); await expect(a).rejects.toMatchObject({ code: 'cancelled' })
   expect((await b).subarray(0, 4).toString()).toBe('RIFF')
 })
+it('runs up to the configured number of syntheses at once and queues the rest (BOXP-522)', async () => {
+  const releases: (() => void)[] = []
+  let running = 0, maxRunning = 0
+  const fetcher = vi.fn(async (input: string | URL | Request) => { const url = String(input); if (url.endsWith('/speakers')) return response(speakers()); if (url.includes('audio_query')) { running++; maxRunning = Math.max(maxRunning, running); await new Promise<void>(r => releases.push(r)); running--; return response({}) }; return new Response('RIFFdata') }) as unknown as typeof fetch
+  const t = createTts({ url: 'http://tts', fetcher, now: Date.now, concurrency: 2 })
+  const jobs = ['a', 'b', 'c'].map(x => t.synthesize(x))
+  await vi.waitFor(() => expect(releases).toHaveLength(2)); expect(maxRunning).toBe(2)
+  releases.shift()!(); await vi.waitFor(() => expect(releases).toHaveLength(2))
+  while (releases.length) releases.shift()!()
+  await vi.waitFor(() => expect(releases).toHaveLength(0))
+  expect((await Promise.all(jobs)).every(x => x.subarray(0, 4).toString() === 'RIFF')).toBe(true); expect(maxRunning).toBe(2)
+})
