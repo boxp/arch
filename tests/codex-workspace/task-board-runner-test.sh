@@ -5458,7 +5458,7 @@ reuse_prepare() {
       (let [workspace (prepare-run-workspace! (System/getenv "TEST_TICKET") (System/getenv "TEST_RUN"))
             result (first (:repo-worktrees workspace))
             prompt (workspace-prompt workspace)
-            placement "Storage placement: put temporary clones, extra worktrees, caches, build outputs and verification copies inside this run workspace (it is cleaned up automatically). Do not create them under /home/boxp/ghq, ~/.cache or elsewhere in the home directory, where nothing cleans them up. Copy to the vault only the evidence that has to be kept."]
+            placement "Storage placement: put temporary clones, extra worktrees, caches, build outputs and verification copies inside this run workspace (it is cleaned up automatically). Do not create them under /home/boxp/ghq, ~/.cache or elsewhere in the home directory, where nothing cleans them up. Verification media (screenshots, screen recordings, rendered frames, comparison images, audio) must not be written or copied into the Obsidian vault, which syncs to a size-limited remote: keep the media that has to be kept under /home/boxp/verification-artifacts/<TICKET>/<label>/ (outside the vault, not cleaned up) and record in the vault only a text summary of the result and that path. Images the ticket itself asks for as deliverables are not verification media."]
         (assert (clojure.string/includes? prompt placement))
         (assert (clojure.string/includes? (workspace-prompt {:workspace-dir "/tmp/run" :repo-worktrees []}) placement))
         (when (:carryover result)
