@@ -1,3 +1,4 @@
+import { must } from '../must'
 // Text-based approximation only: kanji readings and actual phoneme timings are unknown.
 export type Vowel = 'a' | 'i' | 'u' | 'e' | 'o' | 'n' | 'closed'
 export type Viseme = { vowel: Vowel; open: number; width: number }
@@ -26,7 +27,7 @@ export function makeVisemes(text: string, duration: number): VisemeSequence {
   for (const char of text) {
     const index = offset
     offset += char.length
-    const code = char.codePointAt(0)!,
+    const code = must(char.codePointAt(0)),
       kana = code >= 0x30a1 && code <= 0x30f6 ? String.fromCodePoint(code - 0x60) : char
     if ('ゃゅょ'.includes(kana) && units.length && units[units.length - 1].vowel !== 'closed') {
       units[units.length - 1].vowel = ({ ゃ: 'a', ゅ: 'u', ょ: 'o' } as Record<string, Vowel>)[kana]

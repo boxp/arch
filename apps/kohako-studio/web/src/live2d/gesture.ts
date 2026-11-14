@@ -924,7 +924,7 @@ export function createActingStage(
     partsStatus: Record<string, unknown> = { ready: false }
   const armOf = (b: Bone) => (b === RIGHT ? pose.right : pose.left)
   // 腕セットの切替の状態。out は今の腕を待機の腕へ、in は待機の腕から切替先の腕へフェードする。
-  let sw: { phase: 'in' | 'out'; t: number; then?: () => void } | null = null,
+  let sw: { phase: 'in' | 'out'; t: number; after?: () => void } | null = null,
     posedAlpha = 1,
     switched = false,
     frozen: ReturnType<typeof sample> | null = null
@@ -1677,7 +1677,7 @@ export function createActingStage(
           pose = { right: REST, left: REST, body: NO_BODY }
           armBlend = 0
         }
-        ended.then?.()
+        ended.after?.()
       }
     }
     if (clip) {
@@ -1795,9 +1795,9 @@ export function createActingStage(
     stepChestSpring(dt)
   }
   // 今の腕を待機の腕へフェードで戻す（姿勢は止めたまま）。then はフェード後に呼ぶ。
-  function switchOut(then?: () => void) {
+  function switchOut(after?: () => void) {
     if (sw?.phase === 'out') {
-      sw.then = then
+      sw.after = after
       return
     }
     frozen = { right: pose.right, left: pose.left, body: pose.body }
@@ -1805,7 +1805,7 @@ export function createActingStage(
     clip = null
     clipName = 'none'
     fadeFrom = null
-    sw = { phase: 'out', t: 0, then }
+    sw = { phase: 'out', t: 0, after }
   }
   // 待機の腕から、切替先の腕セットへフェードで差し替える。
   function switchIn(next: Exclude<Gesture, 'none'>) {
@@ -1867,7 +1867,7 @@ export function createActingStage(
           }
         }
         if (sw?.phase === 'out') {
-          sw.then = start
+          sw.after = start
           return
         }
         if (switched && clipName === next) {

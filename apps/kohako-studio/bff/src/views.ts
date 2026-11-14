@@ -24,7 +24,8 @@ const str = (v: unknown, max: number, html = false) =>
   typeof v === 'string' &&
   v.length > 0 &&
   v.length <= max &&
-  !(html ? /[\x00-\x08\x0b-\x1f\x7f-\x9f]/ : /[\x00-\x1f\x7f-\x9f]/).test(v)
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: view 本文の制御文字を拒否する（html は改行・タブを許可するため範囲指定が必要）
+  !(html ? /[\x00-\x08\x0b-\x1f\x7f-\x9f]/ : /\p{Cc}/u).test(v)
 export function validateView(v: unknown): View | null {
   if (!object(v)) return null
   if (v.kind === 'usage')

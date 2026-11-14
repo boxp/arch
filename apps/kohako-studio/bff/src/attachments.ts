@@ -1,3 +1,4 @@
+import { must } from './must.js'
 import { randomBytes } from 'node:crypto'
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -56,8 +57,8 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
     if (!folder) memory.delete(id)
     else
       await Promise.all([
-        rm(join(folder, id + '.json'), { force: true }),
-        rm(join(folder, id + '.bin'), { force: true }),
+        rm(join(folder, `${id}.json`), { force: true }),
+        rm(join(folder, `${id}.bin`), { force: true }),
       ])
   }
   async function clean(extra = 0) {
@@ -90,7 +91,7 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
     if (!/^[a-f0-9]{32}$/.test(id)) return undefined
     try {
       const meta = folder
-        ? (JSON.parse(await readFile(join(folder, id + '.json'), 'utf8')) as Attachment)
+        ? (JSON.parse(await readFile(join(folder, `${id}.json`), 'utf8')) as Attachment)
         : memory.get(id)?.meta
       if (
         !meta ||
@@ -100,7 +101,7 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
         now() - meta.createdAt >= 86400000
       )
         return undefined
-      const data = folder ? await readFile(join(folder, id + '.bin')) : memory.get(id)!.data
+      const data = folder ? await readFile(join(folder, `${id}.bin`)) : must(memory.get(id)).data
       return { meta, data }
     } catch {
       return undefined
@@ -168,7 +169,7 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
               for (let i = 1; i <= Math.min(pdf.numPages, 30); i++) {
                 const page = await pdf.getPage(i),
                   content = await page.getTextContent()
-                text += content.items.map((x) => ('str' in x ? x.str : '')).join(' ') + '\n'
+                text += `${content.items.map((x) => ('str' in x ? x.str : '')).join(' ')}\n`
                 if (Buffer.byteLength(text) > ATTACHMENT_TEXT_TOTAL) break
               }
               truncated = pdf.numPages > 30 || Buffer.byteLength(text) > ATTACHMENT_TEXT_TOTAL
@@ -200,6 +201,7 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
       extractedText = extractedText.slice(0, low)
       truncated = true
     }
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: 添付ファイル名の C0/C1 制御文字とパス区切りを置換して表示名を安全にする
     const displayName = filename.replace(/[\x00-\x1f\x7f-\x9f/\\]/g, '_').slice(0, 120) || 'file'
     const meta: Attachment = {
       id: randomBytes(16).toString('hex'),
@@ -216,8 +218,8 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
     const work = lock.then(async () => {
       await clean(data.length)
       if (folder) {
-        await writeFile(join(folder, meta.id + '.bin'), data, { mode: 0o600, flag: 'wx' })
-        await atomic(join(folder, meta.id + '.json'), meta)
+        await writeFile(join(folder, `${meta.id}.bin`), data, { mode: 0o600, flag: 'wx' })
+        await atomic(join(folder, `${meta.id}.json`), meta)
       } else memory.set(meta.id, { meta, data })
       if (!expiryTimer) schedule(meta.createdAt)
     })

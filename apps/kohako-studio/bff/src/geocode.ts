@@ -1,3 +1,4 @@
+import { must } from './must.js'
 import type { Geo, View } from './views.js'
 
 const kanji = (n: number) =>
@@ -180,7 +181,7 @@ export function createGeocoder({
         if (cacheable) {
           cache.delete(key)
           cache.set(key, { at: Date.now(), value })
-          while (cache.size > 200) cache.delete(cache.keys().next().value!)
+          while (cache.size > 200) cache.delete(must(cache.keys().next().value))
         }
         resolve(value)
       })

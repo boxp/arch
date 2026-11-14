@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { atomic, load } from './storage.js'
+import { isRecord } from './untrusted.js'
 export type PushStats = { subscriptions: number; sent: number; errors: number; removed: number }
 export type Item = {
   eventId: string
@@ -32,12 +33,15 @@ export type Item = {
     runId?: string
   }
 }
-const string = (v: unknown, max: number) => typeof v === 'string' && v.length > 0 && v.length <= max
-export function validPayload(x: any): boolean {
+const string = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 && v.length <= max
+/** ingest で受け付ける通知本体（受信側で付ける項目を除いた Item）。 */
+export type Payload = Pick<
+  Item,
+  'eventId' | 'source' | 'eventType' | 'ticketId' | 'jobId' | 'runId' | 'title' | 'body' | 'choices' | 'createdAt'
+>
+export function validPayload(x: unknown): x is Payload {
   return (
-    !!x &&
-    typeof x === 'object' &&
-    !Array.isArray(x) &&
+    isRecord(x) &&
     Object.keys(x).every((k) =>
       [
         'eventId',
@@ -100,7 +104,7 @@ export async function createNotifications(
           return [id, { exists: !!item, read: !!item?.readAt, handled: !!item?.handledAt, replied: !!item?.reply }]
         }),
       ),
-    ingest: (x: any) =>
+    ingest: (x: unknown) =>
       mutate(async () => {
         if (!validPayload(x)) return { status: 'invalid' as const }
         const old = items.find((i) => i.eventId === x.eventId)
@@ -114,7 +118,7 @@ export async function createNotifications(
         while (items.length > 500) {
           let idx = items.findIndex((i) => i.handledAt)
           if (idx < 0) idx = items.findIndex((i) => i.readAt)
-          items.splice(idx < 0 ? 0 : idx, 1)
+          items.splice(Math.max(idx, 0), 1)
         }
         await save()
         try {
@@ -162,7 +166,7 @@ export async function createNotifications(
       }),
     reply: (
       id: string,
-      x: any,
+      x: unknown,
       submit: (item: Item, reply: NonNullable<Item['reply']>) => boolean,
       tracked: (requestId: string) => boolean = () => true,
       sessionId?: string,
@@ -171,11 +175,11 @@ export async function createNotifications(
         const item = items.find((i) => i.eventId === id)
         if (!item) return { error: 'not_found' }
         if (
-          !x ||
+          !isRecord(x) ||
           Object.keys(x).some((k) => !['replyId', 'kind', 'value'].includes(k)) ||
           typeof x.replyId !== 'string' ||
           !/^[A-Za-z0-9-]{8,64}$/.test(x.replyId) ||
-          !['text', 'choice'].includes(x.kind) ||
+          (x.kind !== 'text' && x.kind !== 'choice') ||
           !string(x.value, 500) ||
           !x.value.trim() ||
           (x.kind === 'choice' && !item.choices?.includes(x.value))

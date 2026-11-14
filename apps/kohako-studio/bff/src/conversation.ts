@@ -1,3 +1,4 @@
+import { must } from './must.js'
 import { createActivity } from './activity.js'
 import { join } from 'node:path'
 import { atomic, load } from './storage.js'
@@ -49,7 +50,7 @@ type Entry = {
 function redact(text: string) {
   return (
     text
-      .replace(/[\x00-\x1f\x7f-\x9f]/g, ' ')
+      .replace(/\p{Cc}/gu, ' ')
       .replace(/\b(?:token|key|secret|password|bearer)\b\s*[:=]?\s*\S+/gi, '<secret>')
       .split(/(\s+)/)
       // 32 文字以上の英数字の塊は鍵とみなす。ただし / や . で区切られた path・URL 断片は残す。
@@ -71,9 +72,9 @@ export function approvalSummary(approval: { description: string; command: string
   const description = redact(approval.description).slice(0, 160)
   // 改行・タブ等の制御文字は空白へ潰すと `echo safe\nrm -rf ...` のような複数コマンドを 1 行に見せてしまう。
   // \n 等の可視表記に置き換えて表示し、制御文字を含む command は全文を正しく確認できないとみなして拒否のみにする。
-  const hasControl = /[\x00-\x1f\x7f-\x9f]/.test(approval.command)
+  const hasControl = /\p{Cc}/u.test(approval.command)
   const rawCommand = approval.command
-    .replace(/[\x00-\x1f\x7f-\x9f]/g, (c) =>
+    .replace(/\p{Cc}/gu, (c) =>
       c === '\n'
         ? '\\n'
         : c === '\r'
@@ -193,7 +194,7 @@ export function createConversation({
       lastUse = state.lastUse
       lastExchange = persistedExchange = state.lastExchange ?? null
       for (const entry of state.entries.slice(-200)) {
-        if (!entry || !entry.requestId || !entry.payloadHash) continue
+        if (!entry?.requestId || !entry.payloadHash) continue
         entries.set(entry.requestId, entry)
         if (entry.status === 'pending' && !entry.runId) {
           entry.status = 'unknown'
@@ -276,12 +277,12 @@ export function createConversation({
     /** 実行中の run を止める。run id がまだ無ければ判明した時点で止める。止めた結果は failed/cancelled になる。 */
     async cancel(requestId: string): Promise<'ok' | 'not_pending' | 'unknown'> {
       const entry = entries.get(requestId)
-      if (!entry || entry.status !== 'pending') return 'not_pending'
+      if (entry?.status !== 'pending') return 'not_pending'
       entry.cancelRequested = true
       save()
       // 停止前に未回答の承認を deny で消費する（Hermes は stop だけでは保留中の承認を解かず、停止後の once で実行されうるため）。
       const pending = entry.approval
-      if (pending && pending.active && !pending.consumed) {
+      if (pending?.active && !pending.consumed) {
         pending.consumed = true
         pending.choice = 'deny'
         pending.pendingResult = hermes.approve(pending.runId, 'deny', pending.hermesRequestId, pending.generation)
@@ -319,7 +320,7 @@ export function createConversation({
       const existing = restored ? undefined : this.check(input)
       if (existing) return existing
       if (!restored && [...entries.values()].some((e) => e.status === 'pending')) return { error: 'busy' }
-      while (!restored && entries.size >= 200) entries.delete(entries.keys().next().value!)
+      while (!restored && entries.size >= 200) entries.delete(must(entries.keys().next().value))
       if (!restored && now() - lastUse > 6 * 3600_000) {
         sessionStartedAt = now()
         lastExchange = null
@@ -380,8 +381,7 @@ export function createConversation({
         // 先行 deny が unknown（429・通信障害等）で終わっていれば拒否を再試行し、古い unknown は待機対象から外す。
         const cur = entry.approval
         if (
-          cur &&
-          cur.consumed &&
+          cur?.consumed &&
           cur.choice === 'deny' &&
           cur.denyOnly &&
           !cur.active &&
@@ -404,7 +404,8 @@ export function createConversation({
               if (r === 'unknown') entry.cancelUnconfirmed = true
               return r
             })
-          ;(entry.lateDenies ??= []).push(result)
+          entry.lateDenies ??= []
+          entry.lateDenies.push(result)
           // Owner に一度だけ許可を出させない: 消費済み deny として記録する。
           entry.approval = {
             approvalId: randomBytes(8).toString('hex'),
@@ -430,7 +431,8 @@ export function createConversation({
           const result = hermes
             .approve(runId, 'deny', approval.requestId, approval.generation)
             .catch(() => 'unknown' as const)
-          ;(entry.lateDenies ??= []).push(result)
+          entry.lateDenies ??= []
+          entry.lateDenies.push(result)
           entry.approval = {
             approvalId: randomBytes(8).toString('hex'),
             runId,
@@ -451,8 +453,7 @@ export function createConversation({
         }
         // 同じ prompt_id でも execution_generation が変われば新しい承認として表示し直す（古い generation を送ると失敗するため）。
         if (
-          entry.approval &&
-          entry.approval.active &&
+          entry.approval?.active &&
           entry.approval.runId === runId &&
           entry.approval.generation === approval.generation &&
           (approval.requestId
@@ -526,7 +527,7 @@ export function createConversation({
         if (entry.cancelRequested) void hermes.stop(runId)
       }
       if (resume?.runId) entry.runId = resume.runId
-      if (restored?.runId || resume?.runId) watchActivity((restored?.runId ?? resume?.runId)!)
+      if (restored?.runId || resume?.runId) watchActivity(must(restored?.runId ?? resume?.runId))
       const applyResult = async (settled: Awaited<ReturnType<typeof hermes.run>>) => {
         // 結果の照会が SSE の完了通知より先に終わることがある。終了が確認できた run は、購読が終端まで読み切るのを
         // 短時間だけ待ってから閉じる（成功した手順を「中断」と出さない・未受信の手順を落とさない）。停止依頼時と終了未確認時は待たない。
@@ -551,12 +552,12 @@ export function createConversation({
               input.kind === 'touch' || input.views ? extractViews(result.text) : { text: result.text, views: [] },
             reply =
               extracted.text.length > 24000
-                ? extracted.text.slice(
+                ? `${extracted.text.slice(
                     0,
                     /[\uD800-\uDBFF]/.test(extracted.text[23999]) && /[\uDC00-\uDFFF]/.test(extracted.text[24000])
                       ? 23999
                       : 24000,
-                  ) + '\n（返答が長すぎるため、ここから先は省略されました）'
+                  )}\n（返答が長すぎるため、ここから先は省略されました）`
                 : extracted.text
           // 打ち切りは geocoder 側(7秒)で取得済みの位置を残して行う。ここは異常時の保険。
           const views =
@@ -601,7 +602,7 @@ export function createConversation({
         if (store && !restored) await queue
         let result =
           restored?.runId || resume?.runId
-            ? await hermes.watch((restored?.runId ?? resume!.runId)!, onApproval)
+            ? await hermes.watch(must(restored?.runId ?? must(resume).runId), onApproval)
             : await hermes.run(
                 input.requestId,
                 runInput,

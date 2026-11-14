@@ -1,3 +1,4 @@
+import { must } from '../must'
 import { expect, it, vi } from 'vitest'
 import { createVoicePlayer, splitVoiceSentences, VOICE_CHUNK_MAX } from './voice'
 import { splitSentences } from '../live2d/acting'
@@ -30,7 +31,7 @@ function setup(fetcher: typeof fetch) {
   return { audio, player, events, revoke }
 }
 it('groups contiguous units, immediately prefetches two, and resumes from a unit', async () => {
-  const units = ['最初。', ...Array.from({ length: 8 }, (_, i) => String(i).repeat(55) + '。')]
+  const units = ['最初。', ...Array.from({ length: 8 }, (_, i) => `${String(i).repeat(55)}。`)]
   const calls: string[] = [],
     resolvers: ((r: Response) => void)[] = []
   let active = 0,
@@ -50,20 +51,20 @@ it('groups contiguous units, immediately prefetches two, and resumes from a unit
     onChunkEnd = vi.fn()
   player.speak(units, { ...events, onChunkEnd }, 1)
   expect(calls).toEqual([units[1], units[2]])
-  resolvers.shift()!(new Response('wav'))
+  must(resolvers.shift())(new Response('wav'))
   await tick()
   expect(calls).toHaveLength(3)
-  resolvers.shift()!(new Response('wav'))
+  must(resolvers.shift())(new Response('wav'))
   await tick()
   expect(calls).toHaveLength(4)
-  resolvers.shift()!(new Response('wav'))
+  must(resolvers.shift())(new Response('wav'))
   await tick()
   expect(calls).toHaveLength(4)
   while (!events.onEnd.mock.calls.length) {
     audio.onended?.()
     await tick()
     while (resolvers.length) {
-      resolvers.shift()!(new Response('wav'))
+      must(resolvers.shift())(new Response('wav'))
       await tick()
     }
   }
@@ -103,7 +104,7 @@ it('reports errors and splits long sentences', async () => {
   player.speak(['x'], events)
   await tick()
   expect(events.onError).toHaveBeenCalledWith('fetch_failed', 0)
-  const text = 'あ'.repeat(40) + '、' + 'い'.repeat(350)
+  const text = `${'あ'.repeat(40)}、${'い'.repeat(350)}`
   const chunks = splitVoiceSentences([text])
   expect(chunks.join('')).toBe(text)
   expect(chunks.every((x) => x.length <= VOICE_CHUNK_MAX)).toBe(true)
@@ -149,7 +150,7 @@ it('calls fetcher without a receiver so window.fetch does not throw Illegal invo
   expect(events.onSentence).toHaveBeenCalledWith(0, 'one', 2)
 })
 it('extends past 120 only to finish an unfinished sentence and stops at 160', async () => {
-  const units = ['first。', 'あ'.repeat(60), 'い'.repeat(60), 'う'.repeat(39) + '。', '終わり。']
+  const units = ['first。', 'あ'.repeat(60), 'い'.repeat(60), `${'う'.repeat(39)}。`, '終わり。']
   const calls: string[] = []
   const fetcher = vi.fn(async (_url, init) => {
     calls.push(JSON.parse(String(init?.body)).text)
@@ -170,10 +171,11 @@ it('extends past 120 only to finish an unfinished sentence and stops at 160', as
 it('cancel discards buffered audio and aborts the in-flight request', async () => {
   const pending: { resolve: (r: Response) => void; signal: AbortSignal }[] = []
   const fetcher = vi.fn(
-    (_url, init) => new Promise<Response>((resolve) => pending.push({ resolve, signal: init!.signal as AbortSignal })),
+    (_url, init) =>
+      new Promise<Response>((resolve) => pending.push({ resolve, signal: must(init).signal as AbortSignal })),
   ) as unknown as typeof fetch
   const { player, audio, events } = setup(fetcher)
-  player.speak(['a', ...Array(5).fill('あ'.repeat(60) + '。')], events)
+  player.speak(['a', ...Array(5).fill(`${'あ'.repeat(60)}。`)], events)
   pending[0].resolve(new Response('wav'))
   await tick()
   pending[1].resolve(new Response('wav'))
@@ -192,7 +194,7 @@ it('cancel discards buffered audio and aborts the in-flight request', async () =
 })
 
 it('ramps group limits from the preceding group while preserving units', async () => {
-  const units = Array.from({ length: 20 }, () => 'あ'.repeat(19) + '。')
+  const units = Array.from({ length: 20 }, () => `${'あ'.repeat(19)}。`)
   const calls: string[] = []
   const fetcher = vi.fn(async (_url, init) => {
     calls.push(JSON.parse(String(init?.body)).text)

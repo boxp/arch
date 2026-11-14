@@ -1,3 +1,4 @@
+import { must } from '../must'
 import './activity.css'
 import { validateActivity, renderActivity, tickActivity } from './activity'
 import { createDictation, supportsDictation, appendDictation } from './dictation'
@@ -335,7 +336,6 @@ const calmStage = (s: ActingStage): ActingStage => ({
 let lastReply = '',
   lastActivity = Date.now(),
   thinkingSince = 0,
-  cards: Card[] = [],
   cardsOpen = false
 type Entry = { who: 'あなた' | 'コハコ' | 'お知らせ'; text: string; at: number }
 const history: Entry[] = []
@@ -408,7 +408,6 @@ function updateMessage() {
     : '0'
 }
 function renderCards(next: Card[], views: View[] = []) {
-  cards = next
   cardsOpen = next.length > 0 || views.length > 0
   cardList.replaceChildren()
   for (const c of next) {
@@ -565,7 +564,7 @@ function openViewer(view: View, opener: HTMLElement, focus = true) {
             const bar = document.createElement('div'),
               fill = document.createElement('div')
             bar.className = 'view-bar'
-            fill.style.width = `${Math.max(0, Math.min(100, w.usedPercent!))}%`
+            fill.style.width = `${Math.max(0, Math.min(100, must(w.usedPercent)))}%`
             bar.append(fill)
             chart.append(bar)
           }
@@ -1052,7 +1051,7 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
   let misses = 0
   while (requestId === id && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 1000))
-    let result
+    let result: Awaited<ReturnType<typeof call>>
     const lost = () => {
       if (++misses >= 2 && !netDown) {
         netDown = true
@@ -1531,7 +1530,7 @@ el<HTMLFormElement>('form').addEventListener('submit', (event) => {
       return
     }
     const pending = unconfirmed,
-      same = !!pending.attachments && chips.every((x) => x.id && pending.attachments!.includes(x.id))
+      same = !!pending.attachments && chips.every((x) => x.id && must(pending.attachments).includes(x.id))
     if (same && message.value.trim() === pending.text) {
       message.value = ''
       message.style.height = ''
@@ -1610,7 +1609,7 @@ async function sendText(text: string, from: 'composer' | 'pending' | QueueItem):
       addHistory('あなた', pending.text + (pending.attachmentNames ?? []).map((x) => `\n📎 ${x}`).join(''))
       if (pending.attachments) {
         for (let i = chips.length - 1; i >= 0; i--)
-          if (chips[i].id && pending.attachments.includes(chips[i].id!)) chips.splice(i, 1)
+          if (chips[i].id && pending.attachments.includes(must(chips[i].id))) chips.splice(i, 1)
         renderChips()
       }
       addHistory('お知らせ', '前回の送信は受理済みでした。再送せずに結果を追います。')
@@ -1640,7 +1639,7 @@ async function sendText(text: string, from: 'composer' | 'pending' | QueueItem):
   } else {
     payload = newOutgoing(text, Date.now(), () => crypto.randomUUID())
     if (from === 'composer' && chips.length) {
-      payload.attachments = chips.map((x) => x.id!)
+      payload.attachments = chips.map((x) => must(x.id))
       payload.attachmentNames = chips.map((x) => x.name)
     }
   }
@@ -1665,7 +1664,7 @@ async function sendText(text: string, from: 'composer' | 'pending' | QueueItem):
     addHistory('あなた', payload.text + (payload.attachmentNames ?? []).map((x) => `\n📎 ${x}`).join(''))
     if (payload.attachments) {
       for (let i = chips.length - 1; i >= 0; i--)
-        if (chips[i].id && payload.attachments.includes(chips[i].id!)) chips.splice(i, 1)
+        if (chips[i].id && payload.attachments.includes(must(chips[i].id))) chips.splice(i, 1)
       renderChips()
     }
     setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true })
@@ -1689,7 +1688,7 @@ async function sendText(text: string, from: 'composer' | 'pending' | QueueItem):
   else if (wasQueued) queue.putBack({ id: -Date.now(), text: payload.text, addedAt: Date.now() })
   else if (!message.value.trim()) message.value = payload.text
   else queue.putBack({ id: -Date.now(), text: payload.text, addedAt: Date.now() })
-  fail(result!.status, result!.data)
+  fail(must(result).status, must(result).data)
 }
 async function decide(choice: 'once' | 'deny') {
   if (!requestId || !approvalId) return
@@ -2360,7 +2359,7 @@ async function resumeUnconfirmed(pending: Outgoing) {
     addHistory('あなた', pending.text + (pending.attachmentNames ?? []).map((x) => `\n📎 ${x}`).join(''))
     if (pending.attachments) {
       for (let i = chips.length - 1; i >= 0; i--)
-        if (chips[i].id && pending.attachments.includes(chips[i].id!)) chips.splice(i, 1)
+        if (chips[i].id && pending.attachments.includes(must(chips[i].id))) chips.splice(i, 1)
       renderChips()
     }
     addHistory('お知らせ', '再読み込み前の送信は受理済みでした。再送せずに結果を追います。')
@@ -2420,7 +2419,7 @@ const inbox = initInbox(followRequest, {
     !touchActive &&
     !CONVERSING.includes(state),
   announce: (item, actions, more) => {
-    const body = item.body.length > 300 ? item.body.slice(0, 300) + '… 続きは受信箱で' : item.body
+    const body = item.body.length > 300 ? `${item.body.slice(0, 300)}… 続きは受信箱で` : item.body
     const text = `ご主人さま、お知らせです。${item.title}\n${body}${more ? `\nほかに ${more} 件のお知らせは受信箱にあります` : ''}`
     setBubble(text)
     addHistory('お知らせ', text)
