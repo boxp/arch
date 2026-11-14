@@ -12,8 +12,8 @@ body[data-daypart="night"] .room{--sky:linear-gradient(180deg,#5a63c4 0%,#8f86d8
 
 /* 場面と画面の形ごとの丸窓の位置（コハコの立ち位置に合わせる） */
 body[data-scene="talk"] .room,body[data-scene="confirm"] .room,body[data-scene="offline"] .room,body[data-scene="show"] .room,body[data-scene="work"] .room,body[data-viewer="open"] .room{--wx:17cqw;--wy:50cqh;--wd:min(104cqh,70cqw)}
-body[data-shape="portrait"] .room{--wx:50cqw;--wy:60cqh;--wd:min(94cqw,62cqh);--hz:84cqh}
-body[data-shape="portrait"]:not([data-scene="relax"]) .room{--wx:62cqw;--wy:64cqh;--wd:min(118cqw,70cqh)}
+body[data-shape="portrait"] .room,body[data-shape="portrait"]:not([data-scene="relax"]) .room{--wx:50cqw;--wy:18cqh;--wd:22cqh;--hz:30cqh}
+body[data-shape="portrait"] .room-floor .grid{opacity:.12}
 body[data-shape="landscape"] .room{--wx:18cqw;--wy:54cqh;--wd:92cqh;--hz:86cqh}
 
 .room>*,.room i{position:absolute;display:block}
