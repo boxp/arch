@@ -47,7 +47,9 @@
 伏字規則(拒否リスト)では `mysql -pabc123` や `echo 値 | …` のような任意位置の秘密値を見分け切れないため、ツール由来の文字列は許可リスト方式にする。
 
 - terminal: 先頭のプログラム名のみ(例 `mysql …`)。引数は載せない。
-- read_file / write_file / patch / skill_view / web_extract / browser_navigate: 空白・引用符を含まない 1 語(パス/URL、URLの問い合わせ部は省略)のときだけ。
+- read_file / write_file / patch / skill_view: 空白・引用符を含まない 1 語(パス)のときだけ。
+- web_extract / browser_navigate: 接続先のホスト名だけ(例 example.com)。パス・問い合わせ部・利用者情報は、再設定トークン等の秘密値が入り得て見分けられないため載せない。
+- 途中発言や検索語に含まれる URL も同じ理由でホスト名までに縮める(例 https://example.com/…)。
 - web_search / search_files / session_search: 伏字化した検索語。
 - 上記以外の道具の引数、および全ての道具の出力(tool.completed の preview)は載せない。状態・所要時間のみ。
 - コハコ自身の途中発言(message.interim / delta)は従来どおり伏字化して表示。

@@ -13,8 +13,8 @@ export function redactPublic(text: string): string {
     .replace(/(?<![A-Za-z0-9-])-p\s*(?:\$?["'`]|\\+["'])[\s\S]*/g, '<secret>')
     // 名前に資格情報らしい語を含む項目は、JSON・引用符つき・エスケープ済みの形でも値ごと伏せる（例: {"api_key":"…"}）。
     .replace(new RegExp(String.raw`(?:\\*["'])?[A-Za-z0-9_.-]*(?:token|key|secret|passw(?:or)?d|passphrase|credential|authorization|cookie)[A-Za-z0-9_.-]*(?:\\*["'])?\s*[:=]\s*` + VALUE, 'gi'), '<secret>')
-    .replace(/(https?:\/\/)[^\s/@]+@/gi, '$1<secret>@')
-    .replace(/(https?:\/\/[^\s?#]+)[?#][^\s]*/gi, '$1?…')
+    // URL はパス・クエリ・利用者情報に秘密値（再設定トークン等）が入り得て見分けられないため、接続先のホスト名までだけを残す。
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^\s/?#]*)([/?#][^\s]*)?/gi, (_m, scheme: string, authority: string, rest?: string) => /^[a-z0-9.-]+(?::\d{1,5})?$/i.test(authority) && !/^[a-z0-9_-]{24,}$/i.test(authority) ? scheme + authority + (rest && rest !== '/' ? '/…' : rest ?? '') : '<secret>')
     // コマンドの引数は、値が引用符で囲まれ空白を含んでも（例: --password ' abc'）閉じ引用符まで値ごと伏せる。
     .replace(new RegExp(String.raw`--?[A-Za-z0-9-]*(?:passw(?:or)?d|passphrase|token|key|secret|credential|auth)[A-Za-z0-9-]*(?:=|\s+)` + LOOSE_VALUE, 'gi'), '<secret>')
     .replace(new RegExp(String.raw`(?<![A-Za-z0-9-])(?:-u|--user)(?:=|\s+)` + `(?:${QUOTED}|\\S+:\\S+)`, 'g'), '<secret>')
@@ -28,10 +28,12 @@ export function redactPublic(text: string): string {
 const clean = (s: string, limit: number) => { const x = redactPublic(s).replace(/\s+/g, ' ').trim(); return x.length > limit ? x.slice(0, limit) + '…' : x }
 // ツールの引数・出力は任意の文字列で、秘密値を伏字規則で見分け切れない（例: mysql -pabc123、echo 値 | …）。
 // そのため伏字に頼らず、公開してよい形だけを通す: コマンドは先頭のプログラム名のみ、ファイル/URL は空白や引用符のない 1 語のみ、検索語は伏字化した文。それ以外の道具の引数と、全ての道具の出力は載せない。
-const SINGLE_TOKEN_TOOLS = new Set(['read_file', 'write_file', 'patch', 'skill_view', 'web_extract', 'browser_navigate']), QUERY_TOOLS = new Set(['web_search', 'search_files', 'session_search'])
+const SINGLE_TOKEN_TOOLS = new Set(['read_file', 'write_file', 'patch', 'skill_view']), URL_TOOLS = new Set(['web_extract', 'browser_navigate']), QUERY_TOOLS = new Set(['web_search', 'search_files', 'session_search'])
 export function publicDetail(tool: string, preview: string): string {
   if (tool === 'terminal') { const first = preview.trim().split(/\s+/)[0] ?? '', name = first.slice(first.lastIndexOf('/') + 1); return /^[A-Za-z][A-Za-z0-9_.+-]{0,31}$/.test(name) ? (preview.trim() === first ? name : `${name} …`) : '' }
   if (SINGLE_TOKEN_TOOLS.has(tool)) { const value = clean(preview, 160); return /^[^\s"'`{}[\]=,;<>]+$/.test(value) ? value : '' }
+  // URL を受ける道具は接続先のホスト名だけを載せる（scheme 省略の example.com/reset/… もパスを出さない）。
+  if (URL_TOOLS.has(tool)) { const m = /^(?:https?:\/\/)?([a-z0-9.-]+\.[a-z]{2,}|localhost)(?::\d{1,5})?(?:[/?#]\S*)?$/i.exec(preview.trim()); return m && m[1].length <= 100 ? m[1].toLowerCase() : '' }
   return QUERY_TOOLS.has(tool) ? clean(preview, 160) : ''
 }
 export function createActivity(now: () => number) {

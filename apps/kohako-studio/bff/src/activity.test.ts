@@ -11,7 +11,7 @@ describe('activity', () => {
     expect(redactPublic('git push -u origin main')).toBe('git push -u origin main')
     expect(redactPublic("ls -la 'my dir'")).toBe("ls -la 'my dir'")
     expect(redactPublic('mkdir -p dir && ssh -p 22 host')).toBe('mkdir -p dir && ssh -p 22 host')
-    expect(redactPublic('天気を調べます\ncurl https://example.com/a')).toBe('天気を調べます curl https://example.com/a')
+    expect(redactPublic('天気を調べます\ncurl https://example.com/a')).toBe('天気を調べます curl https://example.com/…')
   })
   it('JSON・引用符つき・エスケープ済みの資格情報も伏せる', () => {
     for (const value of ['{"api_key":"abc123"}', '{"apiKey": "abc123", "q": "weather"}', "{'access_token': 'abc123'}", '{\\\\"api_key\\\\":\\\\"abc123\\\\"}', '"password":"abc123 def456"', '{"authorization":"Bearer abc123"}', '{"tokens":["abc123","abc124"]}', 'client_secret: abc123', '{"api_key":"abc123']) expect(redactPublic(value)).not.toMatch(/abc12|def456/)
@@ -27,8 +27,16 @@ describe('activity', () => {
       const snap = a.snapshot()!; expect(JSON.stringify(snap)).not.toContain('abc123'); expect(snap.steps[0]).toMatchObject({ status: 'failed' }); expect(snap.steps[0]).not.toHaveProperty('result')
     }
     expect(publicDetail('terminal', 'mysql -pabc123')).toBe('mysql …'); expect(publicDetail('terminal', 'ls')).toBe('ls'); expect(publicDetail('terminal', '/usr/bin/git status')).toBe('git …')
-    expect(publicDetail('read_file', '/home/kohako/メモ.md')).toBe('/home/kohako/メモ.md'); expect(publicDetail('web_extract', 'https://example.com/a?q=1')).toBe('https://example.com/a?…'); expect(publicDetail('web_search', '東京 天気')).toBe('東京 天気')
+    expect(publicDetail('read_file', '/home/kohako/メモ.md')).toBe('/home/kohako/メモ.md'); expect(publicDetail('web_extract', 'https://example.com/a?q=1')).toBe('example.com'); expect(publicDetail('web_search', '東京 天気')).toBe('東京 天気')
     expect(publicDetail('execute_code', 'print(1)')).toBe(''); expect(publicDetail('mcp_x', 'anything')).toBe('')
+  })
+  it('URL はホスト名だけを残し、パス・クエリ・利用者情報を載せない', () => {
+    for (const tool of ['web_extract', 'browser_navigate']) for (const preview of ['https://example.com/reset/abc123', 'example.com/reset/abc123', 'https://example.com/#abc123', 'https://example.com:8443/abc123', 'https://u:abc123@example.com/', 'https://abc123@example.com', 'https://example.com/a abc123']) expect(publicDetail(tool, preview), preview).not.toContain('abc123')
+    expect(publicDetail('web_extract', 'https://example.com/reset/abc123')).toBe('example.com'); expect(publicDetail('browser_navigate', 'https://u:abc123@example.com/')).toBe('')
+    for (const text of ['https://example.com/reset/abc123 を開きます', 'ssh://git@h/abc123', 'postgres://u:abc123@db/x', 'https://u:pa/abc123@h/x', 'see http://h?t=abc123', 'https://h#abc123']) expect(redactPublic(text), text).not.toContain('abc123')
+    expect(redactPublic('https://example.com/reset/abc123 を開きます')).toBe('https://example.com/… を開きます'); expect(redactPublic('https://example.com/ です')).toBe('https://example.com/ です')
+    expect(publicDetail('read_file', 'https://example.com/reset/abc123')).toBe('https://example.com/…'); expect(publicDetail('web_search', 'site https://example.com/reset/abc123')).toBe('site https://example.com/…')
+    const a = createActivity(() => 1); a.apply({ event: 'message.interim', text: '再設定は https://example.com/reset/abc123 です' }); a.apply({ event: 'tool.started', tool: 'web_extract', preview: 'https://example.com/reset/abc123' }); expect(JSON.stringify(a.snapshot())).not.toContain('abc123')
   })
   it('run が正常終了したのに完了通知が無い手順は結果未確認にする', () => { const a = createActivity(() => 1); a.apply({ event: 'tool.started', tool: 'terminal' }); a.finish(true); expect(a.snapshot()!.steps[0]).toMatchObject({ status: 'unconfirmed' }) })
   it('上限を守り実行中を中断する', () => { const a = createActivity(() => 1); for (let i = 0; i < 45; i++) a.apply({ event: 'message.interim', text: String(i) }); a.apply({ event: 'tool.started', tool: 'terminal' }); a.finish(); expect(a.snapshot()).toMatchObject({ dropped: 6, writing: false }); expect(a.snapshot()!.steps.at(-1)).toMatchObject({ status: 'interrupted' }) })
