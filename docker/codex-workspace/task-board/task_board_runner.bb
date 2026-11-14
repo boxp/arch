@@ -150,6 +150,21 @@
         (log! (str "ai ops ledger module unavailable (" ai-ops-module-path "): " (.getMessage e)))
         false))))
 
+(def conflict-module-path
+  (str (fs/path (fs/parent (fs/canonicalize *file*)) "task_board_conflict.bb")))
+(def conflict-module-loaded?
+  (delay (try (load-file conflict-module-path) true
+              (catch Throwable e (log! (str "conflict observation module unavailable: " (.getMessage e))) false))))
+(defn conflict-observe! [f-sym & args]
+  (try (when (and @conflict-module-loaded? ((resolve 'task-board-conflict/enabled?)))
+         (with-bindings {(resolve 'task-board-conflict/*warning-handler*) log!}
+           (apply (resolve f-sym) args)))
+       (catch Throwable e (log! (str "conflict observation failed: " (.getMessage e))) nil)))
+(defn conflict-declare-instruction [ticket-id]
+  (try (when (and @conflict-module-loaded? ((resolve 'task-board-conflict/enabled?)))
+         (str "Conflict observation (record only; it changes neither start nor merge): once your investigation shows what you will change, run once: bb " conflict-module-path " declare " ticket-id " --keys '<comma separated keys>' with keys like code:<repo>:<dir>, spec:<feature-or-contract>, deploy:<target>, res:<resource>. Skip it if you change nothing.\n"))
+       (catch Throwable e (log! (str "conflict observation prompt failed: " (.getMessage e))) nil)))
+
 (def subscription-module-path
   (str (fs/path (fs/parent (fs/canonicalize *file*)) "ai_subscription_usage.bb")))
 
@@ -2766,6 +2781,7 @@
            "First inspect the ticket Notes, relevant repos, current git state, PR state if referenced, and tests.\n"
            "Do the requested work end to end where possible.\n"
            (append-note-instruction agent ticket-id)
+           (conflict-declare-instruction ticket-id)
            review-contract
            "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\n")
 
@@ -2775,6 +2791,7 @@
            "First verify whether the blocker is actually cleared. If still blocked, update Notes with the concrete blocker.\n"
            "Do the work end to end where possible.\n"
            (append-note-instruction agent ticket-id)
+           (conflict-declare-instruction ticket-id)
            review-contract
            "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\n")
 
@@ -2784,6 +2801,7 @@
            "First inspect the ticket Notes, relevant repos, current git state, and existing project conventions.\n"
            "Do the work end to end where possible, including focused validation.\n"
            (append-note-instruction agent ticket-id)
+           (conflict-declare-instruction ticket-id)
            review-contract
            "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\n")))))
 
@@ -4925,6 +4943,11 @@
                 (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
                 (record-ai-ops-event! ticket-id (:run-id lock) assignee action "started"
                                       {:event_type "run.started" :lane_from status :lane_to (ai-ops-run-lane status)})
+                (try (when (conflict-observe! 'task-board-conflict/enabled?)
+                       (conflict-observe! 'task-board-conflict/record-pre! (env "CODEX_TASK_BOARD_ROOT" default-root)
+                                          {:ticket ticket-id :run (:run-id lock) :agent assignee :action (name action)
+                                           :repos (ticket-repos ticket-id) :text (slurp (str (ticket-path ticket-id)))}))
+                     (catch Throwable e (log! (str "conflict observation pre failed: " (.getMessage e)))))
                 ;; The card actually moved: record the start transition as well so
                 ;; the ledger lane history matches the board (run.started is not a
                 ;; state transition for the aggregator).
@@ -4964,7 +4987,18 @@
                     gate-result (when (= "continue" intended)
                                   (review-gate! dir last-message))
                     _ (when gate-result
-                        (record-ai-ops-gate! ticket-id run-id assignee action gate-result))
+                        (record-ai-ops-gate! ticket-id run-id assignee action gate-result)
+                        (try (future
+                               (try (doseq [url (:pr-urls gate-result)]
+                                      (when (conflict-observe! 'task-board-conflict/enabled?)
+                                        (if-let [pr (conflict-observe! 'task-board-conflict/fetch-pr url)]
+                                          (conflict-observe! 'task-board-conflict/record-pr! (env "CODEX_TASK_BOARD_ROOT" default-root)
+                                                             (merge pr {:ticket ticket-id :run run-id :pr url
+                                                                        :gate-ok (:ok? gate-result)
+                                                                        :gate (when-not (:ok? gate-result) (some-> (:gate gate-result) name))}))
+                                          (log! (str "conflict observation PR fetch failed or timed out: " url)))))
+                                    (catch Throwable e (log! (str "conflict observation PR failed: " (.getMessage e))))))
+                             (catch Throwable e (log! (str "conflict observation future failed: " (.getMessage e))))))
                     _ (do (begin-lifecycle-commit!)
                           (reset! committing? true))
                     ;; localllm docs-edit: the document write was staged, not
