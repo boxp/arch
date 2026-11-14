@@ -316,6 +316,19 @@ async def stage2():
     telegram["reject_html"] = False
     check("cron: Telegram refusing the markup gets the plain text instead",
           telegram["sent"][-1] == "**壊れた <markup" and "parse_mode" not in telegram["bodies"][-1])
+    # two jobs on the one cron target saying the same thing within the retry window are two notifications
+    before, sent = len(cron_copies()), len(telegram["sent"])
+    await plugin.send_once(plugin.settings(), "cron", "同じ本文の報告", {"job_id": "aaaa00000001"})
+    await plugin.send_once(plugin.settings(), "cron", "同じ本文の報告", {"job_id": "bbbb00000002"})
+    check("cron: the same text from another job is not a retry",
+          len(cron_copies()) == before + 2 and len(telegram["sent"]) == sent + 2)
+    # the out-of-process sender gets no job id: jobs cannot be told apart, so nothing is dropped as a retry
+    before, sent = len(cron_copies()), len(telegram["sent"])
+    first = await plugin._standalone_send(None, "cron", "job を区別できない報告")
+    second = await plugin._standalone_send(None, "cron", "job を区別できない報告")
+    check("cron: without a job id the same text again is delivered, not dropped",
+          first.get("success") and second.get("success")
+          and len(cron_copies()) == before + 2 and len(telegram["sent"]) == sent + 2)
     os.environ["BOXP_NOTIFY_TELEGRAM_MODE_CRON"] = ""
     telegram.update(sent=[], bodies=[])
 
@@ -409,17 +422,17 @@ async def main():
           home_copy(ev).get("primary") == "home" and receipt(ev) == ("sent", "notified"))
 
     # 7. (BOXP-553) receipt and inbox names do not depend on the key length: two cron runs whose long
-    #    target names differ only past the old 180-character cut are two notifications.
+    #    job ids differ only past the old 180-character cut are two notifications.
     cfg = plugin.settings()
     long_a, long_b = "cron-" + "x" * 300 + "-a", "cron-" + "x" * 300 + "-b"
-    await plugin.send_once(cfg, long_a, "本文 A", None)
-    await plugin.send_once(cfg, long_b, "本文 B", None)
-    await plugin.send_once(cfg, long_a, "本文 C", None)
+    await plugin.send_once(cfg, "cron", "本文 A", {"job_id": long_a})
+    await plugin.send_once(cfg, "cron", "本文 B", {"job_id": long_b})
+    await plugin.send_once(cfg, "cron", "本文 C", {"job_id": long_a})
     copies = sorted((root / "vault/Projects/cron-deliveries/delivered-copies").glob("*.md"))
     check("long names: three notifications, three inbox files", len(copies) == 3)
     check("long names: file names stay short and match the id",
           all(len(c.name) < 130 and json.loads(c.read_text())["id"] + ".md" == c.name for c in copies))
-    await plugin.send_once(cfg, long_a, "本文 C", None)
+    await plugin.send_once(cfg, "cron", "本文 C", {"job_id": long_a})
     check("long names: the same run again is still one",
           len(list((root / "vault/Projects/cron-deliveries/delivered-copies").glob("*.md"))) == 3)
 

@@ -55,6 +55,7 @@ Hermes 本体 patch（`docker/hermes-agent/patches/`）が担っている通知�
   直送と cron は、同じ本文が「その宛先（job）の直近の通知」で、時間幅の内（直送 20 分、cron は
   `BOXP_NOTIFY_CRON_DEDUP_SECONDS`、既定 300 秒）にある時だけ同じ通知の再送として扱う。cron は実行 ID が渡らないので、
   同じ job が時間幅の内に同じ本文を続けて出すと 1 件にまとまる（job の最短間隔より短くしておく）。
+  job id が渡らない時（gateway 外配送の口）は job を区別できないので、再送扱いをせず毎回届ける（別 job の同じ本文を落とさないため。重複は起こり得る）。
 - 無通知にするのは、票 Notes に helper の `result=silent|deferred|continued` の receipt がある時だけ。channel に `allow_silence` は与えない。
 - `event=<id>` を含まない本文（上流の例外文・空応答の代替文など）は「配送要確認」の notice として 1 回だけ届ける。上流の文言には依存しない。
 - 家にも Telegram にも届けられなかった分は pending として残り、`connect` 後の定期回復で届ける。

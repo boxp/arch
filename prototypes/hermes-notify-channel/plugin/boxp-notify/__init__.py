@@ -32,6 +32,7 @@ import re
 import tempfile
 import urllib.error
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -433,6 +434,11 @@ def dedup_key(cfg: dict, target: dict, decision: dict, metadata: Optional[dict],
     job = str((metadata or {}).get("job_id") or target["name"] or "unknown")
     if decision["action"] != "deliver":
         return f"cron-{job}-{digest}-{bucket}"
+    if not (metadata or {}).get("job_id"):
+        # No job id either (the out-of-process sender): every job shares the target name, so the same text
+        # from two jobs could not be told from a retry and the later one would be dropped. Losing a
+        # notification is worse than a repeated one: without a job id nothing is treated as a retry.
+        return f"cron-{job}-{digest}-{uuid.uuid4().hex[:16]}"
     return direct_key(cfg, job, digest, superseded, window=max(1, cfg["cron_dedup_seconds"]), prefix="cron")
 
 
@@ -905,8 +911,9 @@ class BoxpNotifyAdapter(BasePlatformAdapter):
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, **_kwargs) -> dict:
     """Out-of-process cron delivery (a cron run outside the gateway has no live adapter).
 
-    Same decision, receipt and egress as ``send``. No job id reaches this path, so the cron key falls back
-    to the target name. Pending receipts are finished by the gateway's recovery loop.
+    Same decision, receipt and egress as ``send``. No job id reaches this path, so jobs cannot be told
+    apart here and nothing is treated as a retry of an earlier send (see ``dedup_key``). Pending receipts
+    are finished by the gateway's recovery loop.
     """
     cfg = settings()
     journal(cfg, "standalone_send_called", chat_id=str(chat_id), length=len(message or ""),
