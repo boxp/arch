@@ -1,3 +1,4 @@
+import { must } from './must.js'
 import { describe, expect, it } from 'vitest'
 import { createActivity, publicDetail } from './activity.js'
 describe('activity', () => {
@@ -11,7 +12,7 @@ describe('activity', () => {
     a.apply({ event: 'tool.completed', tool: 'terminal', tool_call_id: 'private-id', duration: 1.234 })
     a.apply({ event: 'message.delta', delta: '最終返答' })
     a.finish()
-    const snap = a.snapshot()!
+    const snap = must(a.snapshot())
     expect(snap.steps).toEqual([
       { id: 't1', kind: 'tool', tool: 'terminal', detail: 'ls', status: 'done', startedAt: 123, durationMs: 1234 },
     ])
@@ -38,7 +39,7 @@ describe('activity', () => {
         a.apply(event)
         a.apply({ event: 'tool.completed', tool: 'terminal' })
         a.apply(event)
-        const snap = a.snapshot()!
+        const snap = must(a.snapshot())
         expect(JSON.stringify(snap), text).not.toMatch(/abc123|example|password|api_key/)
         expect(snap.steps).toHaveLength(1)
       }
@@ -71,7 +72,7 @@ describe('activity', () => {
       const a = createActivity(() => 1)
       a.apply({ event: 'tool.started', tool, tool_call_id: 'c', preview })
       a.apply({ event: 'tool.completed', tool, tool_call_id: 'c', preview: 'out abc123', error: true })
-      const snap = a.snapshot()!
+      const snap = must(a.snapshot())
       expect(JSON.stringify(snap), preview).not.toContain('abc123')
       expect(snap.steps[0]).toMatchObject({ tool, status: 'failed' })
       expect(snap.steps[0]).not.toHaveProperty('result')
@@ -91,13 +92,13 @@ describe('activity', () => {
   it('道具名として不正な値は固定名にする', () => {
     const a = createActivity(() => 1)
     a.apply({ event: 'tool.started', tool: 'abc 123 secret' })
-    expect(a.snapshot()!.steps[0].tool).toBe('tool')
+    expect(must(a.snapshot()).steps[0].tool).toBe('tool')
   })
   it('run が正常終了したのに完了通知が無い手順は結果未確認にする', () => {
     const a = createActivity(() => 1)
     a.apply({ event: 'tool.started', tool: 'terminal' })
     a.finish(true)
-    expect(a.snapshot()!.steps[0]).toMatchObject({ status: 'unconfirmed' })
+    expect(must(a.snapshot()).steps[0]).toMatchObject({ status: 'unconfirmed' })
   })
   it('上限を守り実行中を中断する', () => {
     const a = createActivity(() => 1)
@@ -107,7 +108,7 @@ describe('activity', () => {
     }
     a.apply({ event: 'tool.started', tool: 'terminal' })
     a.finish()
-    const snap = a.snapshot()!
+    const snap = must(a.snapshot())
     expect(snap).toMatchObject({ dropped: 6, writing: false })
     expect(snap.steps).toHaveLength(40)
     expect(snap.steps.at(-1)).toMatchObject({ status: 'interrupted' })
@@ -116,23 +117,23 @@ describe('activity', () => {
     const a = createActivity(() => 12000)
     a.apply({ event: 'tool.started', tool: 'terminal', tool_call_id: 'a', timestamp: 10 })
     a.apply({ event: 'tool.started', tool: 'terminal', tool_call_id: 'b', timestamp: 11 })
-    expect(a.snapshot()!.steps.map((s) => s.runningMs)).toEqual([2000, 1000])
+    expect(must(a.snapshot()).steps.map((s) => s.runningMs)).toEqual([2000, 1000])
     expect(JSON.stringify(a.snapshot())).not.toMatch(/hermesAt|call|timestamp/)
     a.apply({ event: 'tool.completed', tool: 'terminal', tool_call_id: 'b', timestamp: 13, duration: 0 })
     a.apply({ event: 'tool.completed', tool: 'terminal', tool_call_id: 'a', timestamp: 15, duration: 0 })
-    expect(a.snapshot()!.steps.map((s) => s.durationMs)).toEqual([5000, 2000])
+    expect(must(a.snapshot()).steps.map((s) => s.durationMs)).toEqual([5000, 2000])
   })
   it('開始不明の完了は実行中に対応付けない', () => {
     const a = createActivity(() => 1)
     a.apply({ event: 'tool.started', tool: 'terminal', tool_call_id: 'a' })
     a.apply({ event: 'tool.completed', tool: 'terminal', tool_call_id: 'unknown', duration: 5 })
-    expect(a.snapshot()!.steps).toMatchObject([{ status: 'running' }, { status: 'done', startMissing: true }])
-    expect(a.snapshot()!.steps[1]).not.toHaveProperty('durationMs')
+    expect(must(a.snapshot()).steps).toMatchObject([{ status: 'running' }, { status: 'done', startMissing: true }])
+    expect(must(a.snapshot()).steps[1]).not.toHaveProperty('durationMs')
     const b = createActivity(() => 1)
     b.apply({ event: 'tool.started', tool: 'terminal' })
     b.apply({ event: 'tool.started', tool: 'terminal' })
     b.apply({ event: 'tool.completed', tool: 'terminal', duration: 0 })
-    expect(b.snapshot()!.steps).toMatchObject([
+    expect(must(b.snapshot()).steps).toMatchObject([
       { status: 'running' },
       { status: 'running' },
       { status: 'done', startMissing: true },
@@ -140,7 +141,7 @@ describe('activity', () => {
     const c = createActivity(() => 1)
     c.apply({ event: 'tool.started', tool: 'terminal' })
     c.apply({ event: 'tool.completed', tool: 'terminal', duration: 0 })
-    expect(c.snapshot()!.steps[0]).not.toHaveProperty('durationMs')
+    expect(must(c.snapshot()).steps[0]).not.toHaveProperty('durationMs')
   })
   it('概要は固定語だけで組み立てる', () => {
     for (const [tool, input, expected] of [

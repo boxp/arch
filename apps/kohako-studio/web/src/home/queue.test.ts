@@ -1,3 +1,4 @@
+import { must } from '../must'
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { MessageQueue, QUEUE_MAX_CHARS, QUEUE_MAX_ITEMS } from './queue'
@@ -31,14 +32,14 @@ describe('送信待ち（BOXP-508）', () => {
     expect(q.remove(b.item.id)).toBe(true)
     expect(q.remove(b.item.id)).toBe(false)
     expect(q.list().map((x) => x.text)).toEqual(['a', 'c'])
-    const taken = q.take()!
+    const taken = must(q.take())
     expect(q.remove(taken.id)).toBe(false) // 送り出し済みは取り消せない
   })
   it('保留中は取り出さず、再開で先頭から続ける。受理されなかった項目は先頭へ戻る', () => {
     const q = new MessageQueue()
     q.add('a', 0)
     q.add('b', 0)
-    const a = q.take()!
+    const a = must(q.take())
     q.putBack(a)
     q.putBack(a)
     expect(q.list().map((x) => x.text)).toEqual(['a', 'b'])

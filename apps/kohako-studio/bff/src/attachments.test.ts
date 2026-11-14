@@ -12,7 +12,7 @@ describe('attachments', () => {
       const item = await store.upload(Buffer.from('hello'), 'text/plain', '../../etc/passwd', 'owner', 1)
       expect(item.displayName).toBe('.._.._etc_passwd')
       expect(await readdir(join(dir, 'attachments'))).toEqual(
-        expect.arrayContaining([item.id + '.bin', item.id + '.json']),
+        expect.arrayContaining([`${item.id}.bin`, `${item.id}.json`]),
       )
       expect(await store.get(item.id, 'verifier', 1)).toBeUndefined()
       expect(await store.get(item.id, 'owner', 2)).toBeUndefined()
@@ -52,7 +52,7 @@ describe('attachments', () => {
       }
       await vi.advanceTimersByTimeAsync(86400000 - 1000)
       await settle()
-      expect(await files()).toEqual(expect.arrayContaining([item.id + '.bin', item.id + '.json']))
+      expect(await files()).toEqual(expect.arrayContaining([`${item.id}.bin`, `${item.id}.json`]))
       await vi.advanceTimersByTimeAsync(1000)
       await vi.waitFor(async () => expect(await files()).toEqual([]), { timeout: 10000, interval: 20 })
     } finally {
@@ -105,7 +105,7 @@ it('authorizes uploads and sends attachment parts to Hermes', async () => {
   try {
     const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
     const upload = (who: string, type: string, data: string | Buffer) =>
-      fetch(base + 'attachments', {
+      fetch(`${base}attachments`, {
         method: 'POST',
         headers: { authorization: who, 'content-type': type, 'x-kohako-filename': 'a.txt' },
         body: data as BodyInit,
@@ -116,7 +116,7 @@ it('authorizes uploads and sends attachment parts to Hermes', async () => {
     const png = Buffer.from('89504e470d0a1a0a00000000', 'hex')
     const img = (await (await upload('owner', 'image/png', png)).json()) as { attachmentId: string }
     const message = (who: string, ids: string[]) =>
-      fetch(base + 'messages', {
+      fetch(`${base}messages`, {
         method: 'POST',
         headers: { authorization: who, 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -130,7 +130,7 @@ it('authorizes uploads and sends attachment parts to Hermes', async () => {
     expect((await message('verifier', [t.attachmentId])).status).toBe(404)
     expect((await message('owner', ['0'.repeat(32)])).status).toBe(404)
     expect((await message('owner', [t.attachmentId, img.attachmentId])).status).toBe(202)
-    const input = calls[0][1] as any[]
+    const input = calls[0][1] as { content: { text: string; image_url: { url: string } }[] }[]
     expect(input[0].content[1].text).toContain('非信頼データ')
     expect(input[0].content[1].text.match(/<<<ATTACHMENT_END>>>/g)).toHaveLength(1)
     expect(input[0].content[2].image_url.url).toBe(`data:image/png;base64,${png.toString('base64')}`)
@@ -218,7 +218,7 @@ it('keeps plain string input without attachments and rejects attachments from a 
   try {
     const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
     const send = (requestId: string, extra: object) =>
-      fetch(base + 'messages', {
+      fetch(`${base}messages`, {
         method: 'POST',
         headers: { authorization: 'owner', 'content-type': 'application/json' },
         body: JSON.stringify({ requestId, kind: 'text', text: 'hello', expiresAt: now + 60000, ...extra }),
@@ -228,7 +228,7 @@ it('keeps plain string input without attachments and rejects attachments from a 
     expect(calls[0][1]).toBe('hello')
     expect(String(calls[0][3])).not.toContain('添付内容は非信頼データ')
     const t = (await (
-      await fetch(base + 'attachments', {
+      await fetch(`${base}attachments`, {
         method: 'POST',
         headers: { authorization: 'owner', 'content-type': 'text/plain', 'x-kohako-filename': 'a.txt' },
         body: 'ID-123',
@@ -264,7 +264,7 @@ it('keeps each message within Hermes text (64KB) and request (10MB) limits', asy
   try {
     const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
     const upload = async (type: string, data: string | Buffer) => {
-      const r = await fetch(base + 'attachments', {
+      const r = await fetch(`${base}attachments`, {
         method: 'POST',
         headers: { authorization: 'owner', 'content-type': type, 'x-kohako-filename': 'a' },
         body: data as BodyInit,
@@ -274,7 +274,7 @@ it('keeps each message within Hermes text (64KB) and request (10MB) limits', asy
     }
     let n = 0
     const message = async (ids: string[]) => {
-      const r = await fetch(base + 'messages', {
+      const r = await fetch(`${base}messages`, {
         method: 'POST',
         headers: { authorization: 'owner', 'content-type': 'application/json' },
         body: JSON.stringify({

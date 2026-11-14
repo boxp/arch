@@ -1,3 +1,4 @@
+import { must } from '../must'
 export type Window = {
   name: string
   label: string
@@ -98,7 +99,7 @@ export function gaugeOf(pool?: Pool) {
           : '不明',
       cls: 'unknown',
     }
-  const w = ws.reduce((a, b) => (b.usedPercent! > a.usedPercent! ? b : a)),
+  const w = ws.reduce((a, b) => (must(b.usedPercent) > must(a.usedPercent) ? b : a)),
     cls = ['stale', 'expired'].includes(w.state)
       ? 'stale'
       : ['near_limit', 'exhausted', 'freshness_unknown'].includes(w.state)
@@ -120,7 +121,7 @@ export function gaugeOf(pool?: Pool) {
   }
 }
 export function taskBadgeOf(tasks?: Tasks) {
-  if (!tasks || tasks.state !== 'ok' || tasks.inProgress.total === null)
+  if (tasks?.state !== 'ok' || tasks.inProgress.total === null)
     return { total: null, suffix: '', stateText: '取得できません', agents: [] as Tasks['inProgress']['byAgent'] }
   const t = tasks.inProgress
   return {

@@ -1,3 +1,4 @@
+import { must } from '../must'
 import { renderMarkdown } from './markdown'
 import { atBottom } from './scroll'
 export type Item = {
@@ -100,7 +101,7 @@ type Announcer = {
   ) => void
 }
 export function initInbox(follow: (requestId: string, text: string) => boolean = () => false, announcer?: Announcer) {
-  const el = (id: string) => document.getElementById(id)!,
+  const el = (id: string) => must(document.getElementById(id)),
     panel = el('inbox'),
     list = el('inbox-list'),
     detail = el('inbox-detail'),
@@ -212,7 +213,7 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
         return
       active = item.eventId
       holdTimer = window.setTimeout(release, 20000)
-      const status = document.getElementById('notice-status')!
+      const status = must(document.getElementById('notice-status'))
       announcer.announce(
         item,
         {

@@ -1,3 +1,4 @@
+import { must } from './must.js'
 import { createAttachments, AttachmentError, ATTACHMENT_IMAGE_TOTAL, ATTACHMENT_TEXT_TOTAL } from './attachments.js'
 import { createGeocoder } from './geocode.js'
 import type { createNotifications } from './notifications.js'
@@ -6,9 +7,10 @@ import { VIEW_INSTRUCTIONS } from './views.js'
 import type { StatusPayload } from './status.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createConversation, type Input } from './conversation.js'
-import { createHermes } from './hermes.js'
-import { createTts, TtsError } from './tts.js'
+import type { createHermes } from './hermes.js'
+import { type createTts, TtsError } from './tts.js'
 import { pcmToWav, STT_FINAL_FIELDS } from './stt.js'
+import { isRecord } from './untrusted.js'
 const BASE_INSTRUCTIONS = 'あなたの返答は Web UI の吹き出しに表示され、必要に応じて音声で読み上げられます。'
 export const vaultImageInstructions =
   ' vault内の画像を家の会話に表示するときは、実在確認したvault相対パスを encodeURIComponent 相当でURLエンコード（括弧も%28/%29へ変換）し、![短い説明](kohako-vault:エンコード済み相対パス) と返してください。絶対パスやMEDIA記法は表示できません。対応はPNG/JPEG/GIF/WebP各5MiBまで。SVG/PDF/動画/その他のファイルはインライン表示非対応です。画像を再生成したり、検証画像をvaultに保存したりしないでください。'
@@ -139,7 +141,7 @@ export function createApp(opts: {
           if (size > 16384) return json(413, { error: 'too_large' })
           chunks.push(b)
         }
-        let x: any
+        let x: unknown
         try {
           x = JSON.parse(Buffer.concat(chunks).toString())
         } catch {
@@ -151,7 +153,8 @@ export function createApp(opts: {
         }
         if (route === 'push/subscriptions') {
           if (method === 'DELETE') {
-            if (typeof x?.endpoint !== 'string' || x.endpoint.length > 1000) return json(400, { error: 'invalid' })
+            if (!isRecord(x) || typeof x.endpoint !== 'string' || x.endpoint.length > 1000)
+              return json(400, { error: 'invalid' })
             await opts.push.remove(x.endpoint)
             res.writeHead(204)
             return res.end()
@@ -213,7 +216,7 @@ export function createApp(opts: {
         const params = new URL(req.url ?? '/', 'http://localhost').searchParams
         if (params.getAll('path').length !== 1) return json(400, { error: 'invalid' })
         try {
-          const image = await opts.hermes.vaultImage(params.get('path')!)
+          const image = await opts.hermes.vaultImage(must(params.get('path')))
           if (!image) return json(404, { error: 'image_unavailable' })
           res.writeHead(200, {
             'content-type': image.mime,
@@ -242,7 +245,7 @@ export function createApp(opts: {
           if (size > 4096) return json(413, { error: 'too_large' })
           chunks.push(b)
         }
-        let x: any
+        let x: unknown
         try {
           x = JSON.parse(Buffer.concat(chunks).toString())
         } catch {
@@ -255,7 +258,7 @@ export function createApp(opts: {
           }
         res.once('close', onClose)
         try {
-          const audio = await opts.tts.synthesize(x?.text, cancel.signal)
+          const audio = await opts.tts.synthesize(isRecord(x) ? x.text : undefined, cancel.signal)
           const styleId = opts.tts.styleIdFor(audio)
           res.writeHead(200, {
             'content-type': 'audio/wav',
@@ -372,25 +375,19 @@ export function createApp(opts: {
       }
       if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] ?? ''))
         return json(415, { error: 'content_type' })
-      let x: any
+      let x: unknown
       try {
         x = JSON.parse(body.toString())
       } catch {
         return json(400, { error: 'invalid' })
       }
-      if (
-        !x ||
-        typeof x !== 'object' ||
-        Array.isArray(x) ||
-        typeof x.requestId !== 'string' ||
-        !/^[A-Za-z0-9-]{8,64}$/.test(x.requestId)
-      )
+      if (!isRecord(x) || typeof x.requestId !== 'string' || !/^[A-Za-z0-9-]{8,64}$/.test(x.requestId))
         return json(400, { error: 'invalid' })
       if (route === 'approvals') {
         if (!conv.get(x.requestId)) return json(404, { error: 'unknown_request' })
         if (principal === 'verifier' && x.choice !== 'deny') return json(403, { error: 'forbidden' })
         if (
-          !['once', 'deny'].includes(x.choice) ||
+          (x.choice !== 'once' && x.choice !== 'deny') ||
           typeof x.approvalId !== 'string' ||
           !/^[a-f0-9]{16}$/.test(x.approvalId)
         )
@@ -443,12 +440,11 @@ export function createApp(opts: {
       else if (
         x.kind === 'touch' &&
         Object.keys(x).every((k) => ['requestId', 'kind', 'touch', 'expiresAt'].includes(k)) &&
-        x.touch &&
-        typeof x.touch === 'object' &&
-        !Array.isArray(x.touch) &&
+        isRecord(x.touch) &&
         Object.keys(x.touch).length === 3 &&
-        ['head', 'hand'].includes(x.touch.zone) &&
-        ['pat', 'tap'].includes(x.touch.action) &&
+        (x.touch.zone === 'head' || x.touch.zone === 'hand') &&
+        (x.touch.action === 'pat' || x.touch.action === 'tap') &&
+        typeof x.touch.count === 'number' &&
         Number.isInteger(x.touch.count) &&
         x.touch.count >= 1 &&
         x.touch.count <= 20

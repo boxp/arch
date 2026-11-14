@@ -1,3 +1,4 @@
+import { must } from './must.js'
 import { describe, expect, it } from 'vitest'
 import { createHermes } from './hermes.js'
 const stream = (...chunks: string[]) =>
@@ -29,7 +30,7 @@ describe('Hermes events', () => {
     const headers: Record<string, string>[] = []
     let calls = 0
     const fetcher = (async (_url: unknown, init?: RequestInit) => {
-      headers.push(init!.headers as Record<string, string>)
+      headers.push(must(init).headers as Record<string, string>)
       return ++calls === 1
         ? stream('id: 7\ndata: {"event":"tool.started"}\n\n')
         : stream('data: {"event":"run.completed"}\n\n')

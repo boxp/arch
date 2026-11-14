@@ -1,3 +1,4 @@
+import { must } from '../must'
 import { makeVisemes, visemeAt, boundaryTime, spokenSeconds, type VisemeSequence } from '../live2d/viseme'
 import './style.css'
 import {
@@ -228,7 +229,7 @@ async function poll(id: string) {
   const deadline = Date.now() + 11 * 60_000
   while (requestId === id && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 1800))
-    let result
+    let result: Awaited<ReturnType<typeof call>>
     try {
       result = await call(`requests/${id}`)
     } catch {
@@ -407,7 +408,7 @@ el<HTMLFormElement>('form').addEventListener('submit', async (event) => {
     show('failed')
     return
   }
-  fail(result!.status, result!.data)
+  fail(must(result).status, must(result).data)
 })
 async function decide(choice: 'once' | 'deny') {
   if (!requestId || !approvalId) return
@@ -453,7 +454,9 @@ async function finishRecording() {
   clearTimeout(r.timer)
   r.processor.disconnect()
   r.source.disconnect()
-  r.stream.getTracks().forEach((track) => track.stop())
+  r.stream.getTracks().forEach((track) => {
+    track.stop()
+  })
   await r.context.close()
   const samples = new Float32Array(r.size)
   let offset = 0
@@ -477,7 +480,7 @@ async function finishRecording() {
       body: new Blob([pcm]),
     })
     log(
-      `STT 往復: ${Date.now() - began} ms / BFF: ${typeof result.data?.ms === 'number' ? result.data.ms + ' ms' : '不明'}`,
+      `STT 往復: ${Date.now() - began} ms / BFF: ${typeof result.data?.ms === 'number' ? `${result.data.ms} ms` : '不明'}`,
     )
     busy = false
     if (result.status !== 200 || typeof result.data?.text !== 'string') {
@@ -503,7 +506,9 @@ record.addEventListener('pointerdown', async (event) => {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } })
     if (!held || busy) {
-      stream.getTracks().forEach((track) => track.stop())
+      stream.getTracks().forEach((track) => {
+        track.stop()
+      })
       return
     }
     const context = new AudioContext(),

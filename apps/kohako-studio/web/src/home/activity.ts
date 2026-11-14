@@ -1,3 +1,4 @@
+import { must } from '../must'
 type Tool = {
   id: string
   kind: 'tool'
@@ -164,7 +165,7 @@ const seen = new Map<string, { at: number; runningMs: number }>()
 export function tickActivity() {
   if (!rootNode) return
   rootNode.querySelectorAll<HTMLElement>('[data-running-id]').forEach((el) => {
-    const at = seen.get(el.dataset.runningId!)
+    const at = seen.get(must(el.dataset.runningId))
     if (at !== undefined) el.textContent = formatDuration(at.runningMs + Math.max(0, Date.now() - at.at))
   })
 }

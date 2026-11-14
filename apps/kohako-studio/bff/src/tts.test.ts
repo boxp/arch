@@ -1,3 +1,4 @@
+import { must } from './must.js'
 import { expect, it, vi } from 'vitest'
 import { createServer } from 'node:http'
 import { createTts, KOHAKU } from './tts.js'
@@ -68,7 +69,7 @@ it('enforces route auth and maps errors and conversation flag', async () => {
   try {
     const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`,
       call = (who: string, text?: unknown) =>
-        fetch(base + 'tts', {
+        fetch(`${base}tts`, {
           method: text === undefined ? 'GET' : 'POST',
           headers: { authorization: who, 'content-type': 'application/json' },
           ...(text === undefined ? {} : { body: JSON.stringify({ text }) }),
@@ -87,7 +88,7 @@ it('enforces route auth and maps errors and conversation flag', async () => {
     expect((await call('owner', '')).status).toBe(400)
     mode = 'failed'
     expect((await call('owner', 'a')).status).toBe(502)
-    expect(await (await fetch(base + 'conversation', { headers: { authorization: 'owner' } })).json()).toMatchObject({
+    expect(await (await fetch(`${base}conversation`, { headers: { authorization: 'owner' } })).json()).toMatchObject({
       tts: true,
     })
   } finally {
@@ -174,9 +175,9 @@ it('runs up to the configured number of syntheses at once and queues the rest (B
   const jobs = ['a', 'b', 'c'].map((x) => t.synthesize(x))
   await vi.waitFor(() => expect(releases).toHaveLength(2))
   expect(maxRunning).toBe(2)
-  releases.shift()!()
+  must(releases.shift())()
   await vi.waitFor(() => expect(releases).toHaveLength(2))
-  while (releases.length) releases.shift()!()
+  while (releases.length) must(releases.shift())()
   await vi.waitFor(() => expect(releases).toHaveLength(0))
   expect((await Promise.all(jobs)).every((x) => x.subarray(0, 4).toString() === 'RIFF')).toBe(true)
   expect(maxRunning).toBe(2)

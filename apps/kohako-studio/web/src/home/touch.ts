@@ -1,3 +1,4 @@
+import { must } from '../must'
 // ふれあい（頭をなでる・手をタップ）の判定と頻度制御（BOXP-499 設計 5）。端末内だけで完結し、通信・記憶・数値の保存をしない。
 import type { Emotion, Gesture } from '../live2d/acting'
 export type Point = { x: number; y: number; time: number }
@@ -69,7 +70,7 @@ export class TouchLimiter {
     if (now < this.subduedUntil) return this.finish('quiet', null)
     if (this.times.length > BURST_LIMIT) {
       this.subduedUntil = now + SUBDUED_MS
-      return this.finish('tickle', opts.lines ? phrases.tickle! : null, now)
+      return this.finish('tickle', opts.lines ? must(phrases.tickle) : null, now)
     }
     let reaction: Reaction =
       zone === 'hand'

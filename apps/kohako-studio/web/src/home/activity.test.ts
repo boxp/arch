@@ -1,16 +1,19 @@
+import { must } from '../must'
 import { describe, expect, it } from 'vitest'
 import { activityHeadline, activityTime, formatDuration, toolLabel, validateActivity } from './activity'
 describe('activity', () => {
   it('未知フィールドを除き、不正な手順を捨てる', () => {
-    const a = validateActivity({
-      writing: false,
-      dropped: 0,
-      reasoning: 'secret',
-      steps: [
-        { id: 't1', kind: 'tool', tool: 'web_search', status: 'done', startedAt: 0, extra: 'secret' },
-        { id: 'bad' },
-      ],
-    })!
+    const a = must(
+      validateActivity({
+        writing: false,
+        dropped: 0,
+        reasoning: 'secret',
+        steps: [
+          { id: 't1', kind: 'tool', tool: 'web_search', status: 'done', startedAt: 0, extra: 'secret' },
+          { id: 'bad' },
+        ],
+      }),
+    )
     expect(a.steps).toHaveLength(1)
     expect(JSON.stringify(a)).not.toContain('secret')
     expect(activityHeadline(a, { live: false, nowMs: 0, receivedAtMs: 0 })).toBe(
@@ -23,21 +26,25 @@ describe('activity', () => {
     expect(formatDuration(65000)).toBe('1分05秒')
   })
   it('結果未確認の手順を受け取り、見出しに数える', () => {
-    const a = validateActivity({
-      steps: [{ id: 't1', kind: 'tool', tool: 'terminal', status: 'unconfirmed', startedAt: 1 }],
-      writing: false,
-      dropped: 0,
-    })!
+    const a = must(
+      validateActivity({
+        steps: [{ id: 't1', kind: 'tool', tool: 'terminal', status: 'unconfirmed', startedAt: 1 }],
+        writing: false,
+        dropped: 0,
+      }),
+    )
     expect(a.steps).toHaveLength(1)
     expect(activityHeadline(a, { live: false, nowMs: 0, receivedAtMs: 0 })).toContain('結果未確認 1')
   })
   it('追加項目と時間不明を検証する', () => {
     const make = (extra: object) =>
-      validateActivity({
-        steps: [{ id: 't1', kind: 'tool', tool: 'terminal', status: 'done', startedAt: 1, ...extra }],
-        writing: false,
-        dropped: 0,
-      })!
+      must(
+        validateActivity({
+          steps: [{ id: 't1', kind: 'tool', tool: 'terminal', status: 'done', startedAt: 1, ...extra }],
+          writing: false,
+          dropped: 0,
+        }),
+      )
     expect(make({ runningMs: 3, startMissing: true }).steps[0]).toMatchObject({ runningMs: 3, startMissing: true })
     expect(make({ runningMs: 86400001 }).steps).toHaveLength(0)
     expect(make({ startMissing: false }).steps).toHaveLength(0)
@@ -52,17 +59,19 @@ describe('activity', () => {
     expect(toolLabel('tool_search').doing).toBe('使えるツールを探しています')
     expect(toolLabel('tool_describe').doing).toBe('ツールの説明を読んでいます')
     expect(toolLabel('mcp__langfuse__listObservations').noun).toBe('外部ツール')
-    const a = validateActivity({
-      steps: ['terminal', 'web_search', 'terminal', 'memory', 'tool_call'].map((tool, i) => ({
-        id: `t${i}`,
-        kind: 'tool',
-        tool,
-        status: 'done',
-        startedAt: 1,
-      })),
-      writing: false,
-      dropped: 0,
-    })!
+    const a = must(
+      validateActivity({
+        steps: ['terminal', 'web_search', 'terminal', 'memory', 'tool_call'].map((tool, i) => ({
+          id: `t${i}`,
+          kind: 'tool',
+          tool,
+          status: 'done',
+          startedAt: 1,
+        })),
+        writing: false,
+        dropped: 0,
+      }),
+    )
     expect(activityHeadline(a, { live: false, nowMs: 0, receivedAtMs: 0 })).toBe(
       'ツールを 5 回使いました（terminal×2、web_search、memory、ほか）',
     )

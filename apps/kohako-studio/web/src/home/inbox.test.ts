@@ -47,7 +47,7 @@ it('案内候補を状態と24時間で絞り、古い順またはまとめて�
 it('吹き出しを表示した後にだけ案内済みを保存し、表示前に止まれば再案内できる', async () => {
   const { initInbox } = await import('./inbox'),
     { vi } = await import('vitest')
-  const els: Record<string, any> = {},
+  const els: Record<string, ReturnType<typeof el>> = {},
     el = () => ({ hidden: false, textContent: '', replaceChildren() {}, append() {}, addEventListener() {} })
   const items = [
     {
@@ -110,7 +110,7 @@ it('吹き出しを表示した後にだけ案内済みを保存し、表示前�
 it('まとめて案内する時は対象全件を仮押さえし、他タブが押さえた通知は案内・保存しない', async () => {
   const { initInbox } = await import('./inbox'),
     { vi } = await import('vitest')
-  const els: Record<string, any> = {},
+  const els: Record<string, ReturnType<typeof el>> = {},
     el = () => ({ hidden: false, textContent: '', replaceChildren() {}, append() {}, addEventListener() {} })
   const items = [1, 2, 3, 4, 5].map((n) => ({
     eventId: `event-00000${n}`,

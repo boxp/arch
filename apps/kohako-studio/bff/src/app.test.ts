@@ -1,3 +1,12 @@
+import { must } from './must.js'
+type Cb = (...args: unknown[]) => void
+type RequestView = {
+  requestId: string
+  status: string
+  approval: { approvalId: string }
+  reply: { text: string; views?: unknown }
+  activity: { steps: unknown[] }
+}
 import { it, expect, vi } from 'vitest'
 import { generateKeyPairSync, sign } from 'node:crypto'
 import { createServer, type IncomingMessage } from 'node:http'
@@ -52,7 +61,7 @@ it('rejects wrong user, audience, and disabled verifier', async () => {
 it('isolates sessions and requests and restricts verifier approval', async () => {
   const sessions: string[] = []
   const hermes = {
-    run: (_id: string, _text: string, session: string, _instructions: string, cb: any) => {
+    run: (_id: string, _text: string, session: string, _instructions: string, cb: Cb) => {
       sessions.push(session)
       cb('run', { description: 'test', command: 'echo hi', choices: ['once', 'deny'] })
       return new Promise(() => {})
@@ -88,7 +97,7 @@ it('isolates sessions and requests and restricts verifier approval', async () =>
       (await call('verifier', 'approvals', { requestId: 'owner-123', approvalId: '0000000000000000', choice: 'deny' }))
         .status,
     ).toBe(404)
-    const item = (await (await call('verifier', 'requests/verifier-123')).json()) as any
+    const item = (await (await call('verifier', 'requests/verifier-123')).json()) as RequestView
     expect(item.status).toBe('approval')
     expect(
       (
@@ -115,9 +124,9 @@ it('isolates sessions and requests and restricts verifier approval', async () =>
   }
 })
 it('clears pending approval when the run ends with a polling failure', async () => {
-  let settle: (r: any) => void = () => {}
+  let settle: (r: unknown) => void = () => {}
   const hermes = {
-    run: (_id: string, _text: string, _session: string, _instructions: string, cb: any) => {
+    run: (_id: string, _text: string, _session: string, _instructions: string, cb: Cb) => {
       cb('run', { description: 'test', command: 'echo hi', choices: ['once', 'deny'] })
       return new Promise((r) => {
         settle = r
@@ -132,17 +141,17 @@ it('clears pending approval when the run ends with a polling failure', async () 
     const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
     expect(
       (
-        await fetch(base + 'messages', {
+        await fetch(`${base}messages`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ requestId: 'owner-456', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }),
         })
       ).status,
     ).toBe(202)
-    expect(((await (await fetch(base + 'requests/owner-456')).json()) as any).status).toBe('approval')
+    expect(((await (await fetch(`${base}requests/owner-456`)).json()) as RequestView).status).toBe('approval')
     settle({ status: 'failed', error: 'poll_timeout' })
     await new Promise((r) => setTimeout(r, 10))
-    const item = (await (await fetch(base + 'requests/owner-456')).json()) as any
+    const item = (await (await fetch(`${base}requests/owner-456`)).json()) as RequestView
     expect(item.status).toBe('failed')
     expect(item.approval).toBeUndefined()
   } finally {
@@ -153,9 +162,9 @@ it('clears pending approval when the run ends with a polling failure', async () 
 it('stops the upstream run and rotates the session when the run outcome is unknown', async () => {
   const sessions: string[] = [],
     stopped: string[] = []
-  let settle: (r: any) => void = () => {}
+  let settle: (r: unknown) => void = () => {}
   const hermes = {
-    run: (_id: string, _text: string, session: string, _i: string, _cb: any, _a: any, onRun: any) => {
+    run: (_id: string, _text: string, session: string, _i: string, _cb: Cb, _a: unknown, onRun: Cb) => {
       sessions.push(session)
       onRun(`run${sessions.length}`)
       return new Promise((r) => {
@@ -173,7 +182,7 @@ it('stops the upstream run and rotates the session when the run outcome is unkno
   try {
     const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
     const send = (requestId: string) =>
-      fetch(base + 'messages', {
+      fetch(`${base}messages`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ requestId, kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }),
@@ -242,7 +251,7 @@ it('treats 4xx polling errors as unconfirmed outcome instead of failed, retrying
 it('rotates the session even without a run id when the create request outcome is unknown', async () => {
   const sessions: string[] = [],
     stopped: string[] = []
-  let settle: (r: any) => void = () => {}
+  let settle: (r: unknown) => void = () => {}
   const hermes = {
     run: (_id: string, _text: string, session: string) => {
       sessions.push(session)
@@ -261,7 +270,7 @@ it('rotates the session even without a run id when the create request outcome is
   try {
     const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
     const send = (requestId: string) =>
-      fetch(base + 'messages', {
+      fetch(`${base}messages`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ requestId, kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }),
@@ -282,10 +291,10 @@ it('rotates the session even without a run id when the create request outcome is
   }
 })
 it('shows a new approval and sends the new generation when the same prompt id gets a new execution generation', async () => {
-  let cb: any = () => {}
-  const approvals: any[] = []
+  let cb: Cb = () => {}
+  const approvals: unknown[] = []
   const hermes = {
-    run: (_id: string, _text: string, _session: string, _i: string, onApproval: any) => {
+    run: (_id: string, _text: string, _session: string, _i: string, onApproval: Cb) => {
       cb = onApproval
       onApproval('run', {
         requestId: 'p1',
@@ -296,7 +305,7 @@ it('shows a new approval and sends the new generation when the same prompt id ge
       })
       return new Promise(() => {})
     },
-    approve: async (...args: any[]) => {
+    approve: async (...args: unknown[]) => {
       approvals.push(args)
       return 'ok'
     },
@@ -308,21 +317,21 @@ it('shows a new approval and sends the new generation when the same prompt id ge
     const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
     expect(
       (
-        await fetch(base + 'messages', {
+        await fetch(`${base}messages`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ requestId: 'owner-901', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }),
         })
       ).status,
     ).toBe(202)
-    const first = (await (await fetch(base + 'requests/owner-901')).json()) as any
+    const first = (await (await fetch(`${base}requests/owner-901`)).json()) as RequestView
     cb('run', { requestId: 'p1', generation: 2, description: 'test', command: 'echo hi', choices: ['once', 'deny'] })
-    const second = (await (await fetch(base + 'requests/owner-901')).json()) as any
+    const second = (await (await fetch(`${base}requests/owner-901`)).json()) as RequestView
     expect(second.status).toBe('approval')
     expect(second.approval.approvalId).not.toBe(first.approval.approvalId)
     expect(
       (
-        await fetch(base + 'approvals', {
+        await fetch(`${base}approvals`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ requestId: 'owner-901', approvalId: second.approval.approvalId, choice: 'once' }),
@@ -332,7 +341,7 @@ it('shows a new approval and sends the new generation when the same prompt id ge
     expect(approvals).toEqual([['run', 'once', 'p1', 2]])
     cb('run', { requestId: 'p1', generation: 2, description: 'test', command: 'echo hi', choices: ['once', 'deny'] })
     expect(
-      ((await (await fetch(base + 'requests/owner-901')).json()) as any).approval?.approvalId ??
+      ((await (await fetch(`${base}requests/owner-901`)).json()) as RequestView).approval?.approvalId ??
         second.approval.approvalId,
     ).toBe(second.approval.approvalId)
   } finally {
@@ -341,18 +350,18 @@ it('shows a new approval and sends the new generation when the same prompt id ge
   }
 })
 it('validates and deduplicates touch, rejects concurrent work and automatically denies approval', async () => {
-  const calls: any[] = [],
-    approvals: any[] = []
-  let settle: (v: any) => void = () => {}
+  const calls: unknown[] = [],
+    approvals: unknown[] = []
+  let settle: (v: unknown) => void = () => {}
   const hermes = {
-    run: (...args: any[]) => {
+    run: (...args: unknown[]) => {
       calls.push(args)
       args[4]('run', { requestId: 'p', generation: 1, description: 'x', command: 'echo x', choices: ['once', 'deny'] })
       return new Promise((r) => {
         settle = r
       })
     },
-    approve: async (...args: any[]) => {
+    approve: async (...args: unknown[]) => {
       approvals.push(args)
       return 'ok'
     },
@@ -396,7 +405,7 @@ it('validates and deduplicates touch, rejects concurrent work and automatically 
     ).not.toBe(200)
     settle({ status: 'done', text: 'unsafe' })
     await new Promise((r) => setTimeout(r, 10))
-    const result = (await (await fetch(base + 'requests/' + body.requestId)).json()) as any
+    const result = (await (await fetch(`${base}requests/${body.requestId}`)).json()) as RequestView
     expect(result.status).toBe('failed')
     expect(result.reply).toBeUndefined()
     expect(result.approval).toBeUndefined()
@@ -406,10 +415,10 @@ it('validates and deduplicates touch, rejects concurrent work and automatically 
   }
 })
 it('denies a pending approval before stopping and denies approvals that arrive after stop (BOXP-503)', async () => {
-  let cb: any = () => {}
-  const calls: any[] = []
+  let cb: Cb = () => {}
+  const calls: unknown[] = []
   const hermes = {
-    run: (_id: string, _text: string, _session: string, _i: string, onApproval: any, _a: any, onRun: any) => {
+    run: (_id: string, _text: string, _session: string, _i: string, onApproval: Cb, _a: unknown, onRun: Cb) => {
       cb = onApproval
       onRun('run')
       onApproval('run', {
@@ -421,7 +430,7 @@ it('denies a pending approval before stopping and denies approvals that arrive a
       })
       return new Promise(() => {})
     },
-    approve: async (...args: any[]) => {
+    approve: async (...args: unknown[]) => {
       calls.push(['approve', ...args])
       return 'ok'
     },
@@ -444,7 +453,7 @@ it('denies a pending approval before stopping and denies approvals that arrive a
       (await post('messages', { requestId: 'owner-950', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }))
         .status,
     ).toBe(202)
-    const pending = (await (await fetch(base + 'requests/owner-950')).json()) as any
+    const pending = (await (await fetch(`${base}requests/owner-950`)).json()) as RequestView
     expect(pending.status).toBe('approval')
     expect((await post('requests/owner-950/cancel', {})).status).toBe(202)
     expect(calls).toEqual([
@@ -466,10 +475,10 @@ it('denies a pending approval before stopping and denies approvals that arrive a
 })
 it('waits for an in-flight deny before stopping on concurrent cancel (BOXP-503)', async () => {
   const { createConversation } = await import('./conversation.js')
-  const calls: any[] = []
+  const calls: unknown[] = []
   let releaseDeny: (v: 'ok') => void = () => {}
   const hermes = {
-    run: (_id: string, _text: string, _session: string, _i: string, onApproval: any, _a: any, onRun: any) => {
+    run: (_id: string, _text: string, _session: string, _i: string, onApproval: Cb, _a: unknown, onRun: Cb) => {
       onRun('run')
       onApproval('run', {
         requestId: 'p1',
@@ -480,7 +489,7 @@ it('waits for an in-flight deny before stopping on concurrent cancel (BOXP-503)'
       })
       return new Promise(() => {})
     },
-    approve: (...args: any[]) => {
+    approve: (...args: unknown[]) => {
       calls.push(['approve', ...args])
       return new Promise((r) => {
         releaseDeny = r
@@ -506,9 +515,9 @@ it('waits for an in-flight deny before stopping on concurrent cancel (BOXP-503)'
 })
 it('reports cancel as unconfirmed when the deny before stop is unknown (BOXP-503)', async () => {
   const { createConversation } = await import('./conversation.js')
-  const calls: any[] = []
+  const calls: unknown[] = []
   const hermes = {
-    run: (_id: string, _text: string, _session: string, _i: string, onApproval: any, _a: any, onRun: any) => {
+    run: (_id: string, _text: string, _session: string, _i: string, onApproval: Cb, _a: unknown, onRun: Cb) => {
       onRun('run')
       onApproval('run', {
         requestId: 'p1',
@@ -519,7 +528,7 @@ it('reports cancel as unconfirmed when the deny before stop is unknown (BOXP-503
       })
       return new Promise(() => {})
     },
-    approve: async (...args: any[]) => {
+    approve: async (...args: unknown[]) => {
       calls.push(['approve', ...args])
       return 'unknown'
     },
@@ -555,15 +564,15 @@ it('treats only 404/409 approval responses as not pending (BOXP-503)', async () 
 })
 it('does not report cancel as successful when a deny for an approval arriving after stop is unknown (BOXP-503)', async () => {
   const { createConversation } = await import('./conversation.js')
-  const calls: any[] = []
-  let cb: any = () => {}
+  const calls: unknown[] = []
+  let cb: Cb = () => {}
   const hermes = {
-    run: (_id: string, _text: string, _session: string, _i: string, onApproval: any, _a: any, onRun: any) => {
+    run: (_id: string, _text: string, _session: string, _i: string, onApproval: Cb, _a: unknown, onRun: Cb) => {
       cb = onApproval
       onRun('run')
       return new Promise(() => {})
     },
-    approve: async (...args: any[]) => {
+    approve: async (...args: unknown[]) => {
       calls.push(['approve', ...args])
       return 'unknown'
     },
@@ -591,16 +600,18 @@ it('does not report cancel as successful when a deny for an approval arriving af
     ['approve', 'run', 'deny', 'p2', 2],
     ['approve', 'run', 'deny', 'p2', 2],
   ])
-  expect(await conv.approve('owner-953', conv.get('owner-953')!.approval!.approvalId, 'once')).toBe('approval_conflict')
+  expect(await conv.approve('owner-953', must(must(conv.get('owner-953')).approval).approvalId, 'once')).toBe(
+    'approval_conflict',
+  )
   // 窓の外で届いた場合も、記録された未確認状態により後続の cancel は成功を返さない。
   cb('run', { requestId: 'p3', generation: 3, description: 'test', command: 'echo later', choices: ['once', 'deny'] })
   expect(await conv.cancel('owner-953')).toBe('unknown')
 })
 it('does not report cancel as successful while the run end is unconfirmed (BOXP-503)', async () => {
   const { createConversation } = await import('./conversation.js')
-  let settle: (v: any) => void = () => {}
+  let settle: (v: unknown) => void = () => {}
   const hermes = {
-    run: (_id: string, _text: string, _session: string, _i: string, _onApproval: any, _a: any, onRun: any) => {
+    run: (_id: string, _text: string, _session: string, _i: string, _onApproval: Cb, _a: unknown, onRun: Cb) => {
       onRun('run')
       return new Promise((r) => {
         settle = r
@@ -619,13 +630,13 @@ it('does not report cancel as successful while the run end is unconfirmed (BOXP-
   expect(second).toEqual({ error: 'busy' })
   settle({ status: 'failed', error: 'x' })
   await new Promise((r) => setTimeout(r, 5))
-  expect(conv.get('owner-954')!.status).toBe('failed')
+  expect(must(conv.get('owner-954')).status).toBe('failed')
 })
 it('does not report cancel as successful when the run settles as unknown (BOXP-503)', async () => {
   const { createConversation } = await import('./conversation.js')
-  let settle: (v: any) => void = () => {}
+  let settle: (v: unknown) => void = () => {}
   const hermes = {
-    run: (_id: string, _text: string, _session: string, _i: string, _onApproval: any, _a: any, onRun: any) => {
+    run: (_id: string, _text: string, _session: string, _i: string, _onApproval: Cb, _a: unknown, onRun: Cb) => {
       onRun('run')
       return new Promise((r) => {
         settle = r
@@ -640,15 +651,15 @@ it('does not report cancel as successful when the run settles as unknown (BOXP-5
   const conv = createConversation({ now: Date.now, hermes, prefix: 'kohako-web', cancelSettleMs: 20 })
   conv.submit({ requestId: 'owner-957', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }, 'i')
   expect(await conv.cancel('owner-957')).toBe('unknown')
-  expect(conv.get('owner-957')!.status).toBe('unknown')
+  expect(must(conv.get('owner-957')).status).toBe('unknown')
 })
 it('waits for the touch auto-deny before stopping and reports its unknown result (BOXP-503)', async () => {
   const { createConversation } = await import('./conversation.js')
-  const calls: any[] = []
+  const calls: unknown[] = []
   let releaseDeny: (v: 'unknown') => void = () => {},
-    settle: (v: any) => void = () => {}
+    settle: (v: unknown) => void = () => {}
   const hermes = {
-    run: (_id: string, _text: string, _session: string, _i: string, onApproval: any, _a: any, onRun: any) => {
+    run: (_id: string, _text: string, _session: string, _i: string, onApproval: Cb, _a: unknown, onRun: Cb) => {
       onRun('run')
       onApproval('run', {
         requestId: 'p1',
@@ -661,7 +672,7 @@ it('waits for the touch auto-deny before stopping and reports its unknown result
         settle = r
       })
     },
-    approve: (...args: any[]) => {
+    approve: (...args: unknown[]) => {
       calls.push(['approve', ...args])
       return new Promise((r) => {
         releaseDeny = r
@@ -692,9 +703,9 @@ it('waits for the touch auto-deny before stopping and reports its unknown result
 })
 it('does not report cancel as successful when a touch run settles as unknown (BOXP-503)', async () => {
   const { createConversation } = await import('./conversation.js')
-  let settle: (v: any) => void = () => {}
+  let settle: (v: unknown) => void = () => {}
   const hermes = {
-    run: (_id: string, _text: string, _session: string, _i: string, onApproval: any, _a: any, onRun: any) => {
+    run: (_id: string, _text: string, _session: string, _i: string, onApproval: Cb, _a: unknown, onRun: Cb) => {
       onRun('run')
       onApproval('run', {
         requestId: 'p1',
@@ -724,17 +735,17 @@ it('does not report cancel as successful when a touch run settles as unknown (BO
     'i',
   )
   expect(await conv.cancel('touch-958')).toBe('unknown')
-  expect(conv.get('touch-958')!.status).toBe('failed')
+  expect(must(conv.get('touch-958')).status).toBe('failed')
 })
 it('does not resend or overwrite the touch auto-deny when the same approval is re-notified (BOXP-503)', async () => {
   const { createConversation } = await import('./conversation.js')
-  const calls: any[] = []
-  const releases: ((v: any) => void)[] = []
-  let settle: (v: any) => void = () => {},
-    cb: any = () => {}
+  const calls: unknown[] = []
+  const releases: ((v: unknown) => void)[] = []
+  let settle: (v: unknown) => void = () => {},
+    cb: Cb = () => {}
   const req = { requestId: 'p1', generation: 1, description: 'x', command: 'echo x', choices: ['once', 'deny'] }
   const hermes = {
-    run: (_id: string, _text: string, _session: string, _i: string, onApproval: any, _a: any, onRun: any) => {
+    run: (_id: string, _text: string, _session: string, _i: string, onApproval: Cb, _a: unknown, onRun: Cb) => {
       cb = onApproval
       onRun('run')
       onApproval('run', req)
@@ -742,7 +753,7 @@ it('does not resend or overwrite the touch auto-deny when the same approval is r
         settle = r
       })
     },
-    approve: (...args: any[]) => {
+    approve: (...args: unknown[]) => {
       calls.push(['approve', ...args])
       return new Promise((r) => {
         releases.push(r)
@@ -764,9 +775,9 @@ it('does not resend or overwrite the touch auto-deny when the same approval is r
     },
     'i',
   )
-  const first = conv.get('touch-959')!.approval
+  const first = must(conv.get('touch-959')).approval
   cb('run', req)
-  expect(conv.get('touch-959')!.approval).toBe(first)
+  expect(must(conv.get('touch-959')).approval).toBe(first)
   expect(calls).toEqual([['approve', 'run', 'deny', 'p1', 1]])
   const cancelled = conv.cancel('touch-959')
   await new Promise((r) => setTimeout(r, 10))
@@ -777,13 +788,13 @@ it('does not resend or overwrite the touch auto-deny when the same approval is r
 })
 it('retries the touch auto-deny when the same approval is re-notified after an unknown result (BOXP-503)', async () => {
   const { createConversation } = await import('./conversation.js')
-  const calls: any[] = []
+  const calls: unknown[] = []
   const results = ['unknown', 'ok']
-  let settle: (v: any) => void = () => {},
-    cb: any = () => {}
+  let settle: (v: unknown) => void = () => {},
+    cb: Cb = () => {}
   const req = { requestId: 'p1', generation: 1, description: 'x', command: 'echo x', choices: ['once', 'deny'] }
   const hermes = {
-    run: (_id: string, _text: string, _session: string, _i: string, onApproval: any, _a: any, onRun: any) => {
+    run: (_id: string, _text: string, _session: string, _i: string, onApproval: Cb, _a: unknown, onRun: Cb) => {
       cb = onApproval
       onRun('run')
       onApproval('run', req)
@@ -791,7 +802,7 @@ it('retries the touch auto-deny when the same approval is re-notified after an u
         settle = r
       })
     },
-    approve: async (...args: any[]) => {
+    approve: async (...args: unknown[]) => {
       calls.push(['approve', ...args])
       return results.shift()
     },
@@ -812,14 +823,14 @@ it('retries the touch auto-deny when the same approval is re-notified after an u
     'i',
   )
   await new Promise((r) => setTimeout(r, 0))
-  expect(conv.get('touch-960')!.approval!.result).toBe('unknown')
+  expect(must(must(conv.get('touch-960')).approval).result).toBe('unknown')
   cb('run', req)
   await new Promise((r) => setTimeout(r, 0))
   expect(calls).toEqual([
     ['approve', 'run', 'deny', 'p1', 1],
     ['approve', 'run', 'deny', 'p1', 1],
   ])
-  expect(conv.get('touch-960')!.approval!.result).toBe('ok')
+  expect(must(must(conv.get('touch-960')).approval).result).toBe('ok')
   expect(await conv.cancel('touch-960')).toBe('ok')
 })
 it('serves status only to authenticated principals and only by GET', async () => {
@@ -867,7 +878,7 @@ it('returns cleaned replies and only valid views', async () => {
       ['view-456', '{"kind":"usage","x":1}', false],
     ] as const) {
       output = `返答\n\`\`\`kohako-view\n${json}\n\`\`\``
-      await fetch(base + 'messages', {
+      await fetch(`${base}messages`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -879,27 +890,27 @@ it('returns cleaned replies and only valid views', async () => {
         }),
       })
       await new Promise((r) => setTimeout(r, 10))
-      const item = (await (await fetch(base + `requests/${id}`)).json()) as any
+      const item = (await (await fetch(`${base}requests/${id}`)).json()) as RequestView
       expect(item.reply.text).toBe('返答')
       expect(item.reply.views).toEqual(valid ? [{ kind: 'usage' }] : undefined)
     }
     // Studio（views 未指定）では view 形式を指示せず、本文もそのまま返す（ブロックを消して結果を失わない）。
     expect(seen.at(-1)).toBe(instructions + ownerTaskInstructions)
     output = '返答\n```kohako-view\n{"kind":"usage"}\n```'
-    await fetch(base + 'messages', {
+    await fetch(`${base}messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ requestId: 'studio-123', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }),
     })
     await new Promise((r) => setTimeout(r, 10))
-    const studio = (await (await fetch(base + 'requests/studio-123')).json()) as any
+    const studio = (await (await fetch(`${base}requests/studio-123`)).json()) as RequestView
     expect(seen.at(-1)).toBe(studioInstructions + ownerTaskInstructions)
     expect(studioInstructions).not.toContain('kohako-view')
     expect(studio.reply.text).toBe(output)
     expect(studio.reply.views).toBeUndefined()
     expect(
       (
-        await fetch(base + 'messages', {
+        await fetch(`${base}messages`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
@@ -947,7 +958,7 @@ it('returns only push counts for stored notifications', async () => {
     push = await createPush(dir, {
       subject: 'https://example.com',
       quietHours: '0-0',
-      sender: (async () => ({})) as any,
+      sender: (async () => ({})) as unknown as NonNullable<Parameters<typeof createPush>[1]['sender']>,
     }),
     notifications = await createNotifications(dir, push.send)
   const keys = { p256dh: Buffer.alloc(65).toString('base64url'), auth: Buffer.alloc(16).toString('base64url') }
@@ -988,7 +999,7 @@ it('disables notification routes without storage and restricts verifier', async 
   const dir = await mkdtemp(join(tmpdir(), 'routes-')),
     push = await createPush(dir, { subject: 'https://example.com', quietHours: '2-9' }),
     notifications = await createNotifications(dir, push.send)
-  const authenticate = async (h: any) =>
+  const authenticate = async (h: IncomingMessage['headers']) =>
     h.authorization === 'verifier'
       ? ('verifier' as const)
       : h.authorization === 'notifier'
@@ -1007,12 +1018,12 @@ it('disables notification routes without storage and restricts verifier', async 
         headers: { authorization: who, 'content-type': 'application/json' },
         body: '{}',
       })
-    expect((await fetch(base(disabled) + 'notifications', { headers: { authorization: 'owner' } })).status).toBe(503)
+    expect((await fetch(`${base(disabled)}notifications`, { headers: { authorization: 'owner' } })).status).toBe(503)
     expect((await post('notifications/ingest', 'verifier')).status).toBe(403)
     expect((await post('notifications/ingest', 'owner')).status).toBe(403)
     expect((await post('notifications/event-123456/reply', 'verifier')).status).toBe(403)
     expect((await post('notifications/event-123456/announced', 'verifier')).status).toBe(403)
-    expect((await fetch(base(server) + 'notifications/event-123456/announced', { method: 'POST' })).status).toBe(401)
+    expect((await fetch(`${base(server)}notifications/event-123456/announced`, { method: 'POST' })).status).toBe(401)
     expect((await post('notifications/missing-123456/announced', 'owner')).status).toBe(404)
     await notifications.ingest({
       eventId: 'event-123456',
@@ -1023,7 +1034,7 @@ it('disables notification routes without storage and restricts verifier', async 
       createdAt: '2026-01-01T00:00:00Z',
     })
     const status = (ids: string, who: string) =>
-      fetch(base(server) + 'notifications/status?ids=' + ids, { headers: { authorization: who } })
+      fetch(`${base(server)}notifications/status?ids=${ids}`, { headers: { authorization: who } })
     expect((await status('event-123456', 'owner')).status).toBe(403)
     expect((await status('event-123456', 'verifier')).status).toBe(403)
     expect((await status('bad', 'notifier')).status).toBe(400)
@@ -1047,7 +1058,7 @@ it('disables notification routes without storage and restricts verifier', async 
     const at = notifications.list().items[0].announcedAt
     expect(await (await post('notifications/event-123456/announced', 'owner')).json()).toEqual({ announced: false })
     expect(notifications.list().items[0].announcedAt).toBe(at)
-    expect((await fetch(base(server) + 'notifications', { headers: { authorization: 'verifier' } })).status).toBe(200)
+    expect((await fetch(`${base(server)}notifications`, { headers: { authorization: 'verifier' } })).status).toBe(200)
   } finally {
     for (const s of [server, disabled]) {
       s.closeAllConnections()
@@ -1073,8 +1084,8 @@ it('resumes a notification reply after a BFF restart without executing it twice 
   const fetcher = (async (url: string, init?: RequestInit) => {
     if (url.endsWith('/v1/toolsets')) return json(200, { data: [] })
     if (url.endsWith('/v1/runs')) {
-      const key = (init!.headers as Record<string, string>)['Idempotency-Key'],
-        body = String(init!.body),
+      const key = (must(init).headers as Record<string, string>)['Idempotency-Key'],
+        body = String(must(init).body),
         seen = keys.get(key)
       posts.push(key)
       if (seen)
@@ -1086,7 +1097,7 @@ it('resumes a notification reply after a BFF restart without executing it twice 
       return json(202, { run_id: runId })
     }
     if (url.endsWith('/events')) return new Response(null, { status: 404 })
-    polls.push(url.split('/').pop()!)
+    polls.push(must(url.split('/').pop()))
     return json(200, { status: 'completed', output: '了解しました' })
   }) as unknown as typeof fetch
   const dir = await mkdtemp(join(tmpdir(), 'resume-')),
@@ -1197,7 +1208,7 @@ it('asks Hermes to register home-requested tickets only on owner text turns', as
     try {
       const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
       const post = (body: object) =>
-        fetch(base + 'messages', {
+        fetch(`${base}messages`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ expiresAt: Date.now() + 60000, ...body }),
@@ -1295,7 +1306,10 @@ it('does not retry polls whose response body is malformed', async () => {
       ? new Response(JSON.stringify({ data: [] }), { status: 200 })
       : url.endsWith('/v1/runs')
         ? new Response(JSON.stringify({ run_id: 'run1' }), { status: 202 })
-        : (polls++, new Response('not json', { status: 200 }))) as unknown as typeof fetch
+        : (() => {
+            polls++
+            return new Response('not json', { status: 200 })
+          })()) as unknown as typeof fetch
   const hermes = createHermes({ url: 'http://h', key: 'k', fetch: fetcher, sleep: async () => {} })
   expect(await hermes.execute({ idempotencyKey: 'i', input: 'x', sessionId: 's', instructions: '' })).toEqual({
     status: 'unknown',
@@ -1363,12 +1377,12 @@ it('結果の照会が SSE の完了通知より先に終わっても、読み�
   const make = (lateMs: number, drainMs: number, result: object = { status: 'done', text: 'ok' }) => {
     let aborted = false
     const hermes = {
-      run: async (_id: string, _text: string, _session: string, _i: string, _cb: any, _a: any, onRun: any) => {
+      run: async (_id: string, _text: string, _session: string, _i: string, _cb: Cb, _a: unknown, onRun: Cb) => {
         onRun('run1')
         await new Promise((r) => setTimeout(r, 5))
         return result
       },
-      events: async (_id: string, emit: any, signal: AbortSignal) => {
+      events: async (_id: string, emit: Cb, signal: AbortSignal) => {
         emit({ event: 'tool.started', tool: 'web_search', tool_call_id: 'c1' })
         await new Promise((r) => setTimeout(r, lateMs))
         aborted = signal.aborted
@@ -1413,15 +1427,15 @@ it('結果の照会が SSE の完了通知より先に終わっても、読み�
   expect(steps(failed, 'drain-fail-123')).toEqual(['interrupted'])
 })
 it('returns public activity for text but never reasoning or touch activity', async () => {
-  let settle: (r: any) => void = () => {}
+  let settle: (r: unknown) => void = () => {}
   const hermes = {
-    run: (_id: string, _text: string, _session: string, _i: string, _cb: any, _a: any, onRun: any) => {
+    run: (_id: string, _text: string, _session: string, _i: string, _cb: Cb, _a: unknown, onRun: Cb) => {
       onRun('run1')
       return new Promise((r) => {
         settle = r
       })
     },
-    events: async (_id: string, emit: any) => {
+    events: async (_id: string, emit: Cb) => {
       emit({ event: 'reasoning.available', text: 'SECRET-THOUGHT' })
       emit({ event: 'tool.started', tool: 'web_search', tool_call_id: 'call1' })
     },
@@ -1433,12 +1447,12 @@ it('returns public activity for text but never reasoning or touch activity', asy
   try {
     const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`,
       post = (body: object) =>
-        fetch(base + 'messages', {
+        fetch(`${base}messages`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(body),
         }),
-      get = async (id: string) => (await fetch(base + 'requests/' + id)).json() as Promise<any>
+      get = async (id: string) => (await fetch(`${base}requests/${id}`)).json() as Promise<RequestView>
     await post({ requestId: 'activity-123', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 })
     const item = await get('activity-123')
     expect(item.activity.steps[0]).toMatchObject({ tool: 'web_search', status: 'running' })

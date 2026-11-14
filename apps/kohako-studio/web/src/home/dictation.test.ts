@@ -12,7 +12,11 @@ function setup(
   vi.useFakeTimers()
   const track = { stop: vi.fn() },
     stream = { getTracks: () => [track] } as unknown as MediaStream
-  const processor = { connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: null as ((e: any) => void) | null }
+  const processor = {
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    onaudioprocess: null as ((e: { inputBuffer: { getChannelData: () => Float32Array } }) => void) | null,
+  }
   const source = { connect: vi.fn(), disconnect: vi.fn() },
     context = {
       sampleRate: 16000,

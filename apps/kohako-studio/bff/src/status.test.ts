@@ -30,7 +30,7 @@ it('parses real exposition, absent present series, and fixed pools', () => {
   expect(q.pools[3].windows[0]).toMatchObject({ state: 'freshness_unknown', usedPercent: 59, observedAt: null })
 })
 it('classifies stale, expired, rejected and ignores invalid enum labels', () => {
-  const w = (suffix: string, at = now) => parseQuota(metrics + '\n' + suffix, at).pools[3].windows[0]
+  const w = (suffix: string, at = now) => parseQuota(`${metrics}\n${suffix}`, at).pools[3].windows[0]
   expect(w('', now + 90000000).state).toBe('freshness_unknown') // no observation timestamp: never shown as ok
   expect(
     w(

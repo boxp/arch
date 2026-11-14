@@ -1,3 +1,4 @@
+import { must } from '../must'
 // BOXP-476 TD-04: v11r の焼き込みを、比較版の実行時だけアトラス上で組み替える（モデルファイルと通常表示は変えない）。
 // 実描画の層別切分けで確定した原因:
 // - 眉: 動く眉の層 (mesh 1) を動かすと、顔の層 (mesh 18) に焼き込まれた同じ眉が残り二重になる。mesh 1 には前髪の断片も混ざる。
@@ -827,7 +828,7 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
     eachTexel(target, of(FACE_MESH), { x0: 486, y0: 306, x1: 658, y1: 332 }, (u, v, x, y) => {
       const weight = blushWeight(x, y),
         i = ((v - y0) * w + u - x0) * 4
-      if (weight > 0 && i >= 0 && i + 3 < output.length && output[i + 3]! > 200) blushPixels.push({ i, weight })
+      if (weight > 0 && i >= 0 && i + 3 < output.length && must(output[i + 3]) > 200) blushPixels.push({ i, weight })
     })
     const tearPixels: { i: number; weight: number }[] = []
     for (const spec of EYE_SPECS) {
@@ -836,7 +837,7 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
       eachTexel(target, of(spec.iris), { x0: cx - 3, x1: cx + 3, y0: cy - 2, y1: cy + 2 }, (u, v, x, y) => {
         const weight = tearWeight(x, y, cx, cy),
           i = ((v - y0) * w + u - x0) * 4
-        if (weight > 0 && i >= 0 && i + 3 < output.length && output[i + 3]! > 200) tearPixels.push({ i, weight })
+        if (weight > 0 && i >= 0 && i + 3 < output.length && must(output[i + 3]) > 200) tearPixels.push({ i, weight })
       })
     }
     let lastBlush = -1,
@@ -849,14 +850,14 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
       lastWet = wetLevel
       const pixels = output.slice()
       for (const { i, weight } of blushPixels) {
-        const a = (weight * level * output[i + 3]!) / 255
-        pixels[i] = output[i]! * (1 - weight * level) + 255 * a
-        pixels[i + 1] = output[i + 1]! * (1 - weight * level) + 105 * a
-        pixels[i + 2] = output[i + 2]! * (1 - weight * level) + 135 * a
+        const a = (weight * level * must(output[i + 3])) / 255
+        pixels[i] = must(output[i]) * (1 - weight * level) + 255 * a
+        pixels[i + 1] = must(output[i + 1]) * (1 - weight * level) + 105 * a
+        pixels[i + 2] = must(output[i + 2]) * (1 - weight * level) + 135 * a
       }
       for (const { i, weight } of tearPixels)
         for (let c = 0; c < 3; c++)
-          pixels[i + c] = output[i + c]! + (output[i + 3]! - output[i + c]!) * weight * wetLevel
+          pixels[i + c] = must(output[i + c]) + (must(output[i + 3]) - must(output[i + c])) * weight * wetLevel
       gl.bindTexture(gl.TEXTURE_2D, p.textures[0] as WebGLTexture)
       gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
     }

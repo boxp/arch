@@ -62,7 +62,7 @@ export function createHermes({
   const auth = { Authorization: `Bearer ${key}` }
   async function request(path: string, init: RequestInit, maxBytes = 65536, timeoutMs = 10_000) {
     const controller = new AbortController()
-    let timer: ReturnType<typeof setTimeout>
+    let timer: ReturnType<typeof setTimeout> | undefined
     try {
       return await Promise.race([
         (async () => {
@@ -94,7 +94,7 @@ export function createHermes({
         }),
       ])
     } finally {
-      clearTimeout(timer!)
+      clearTimeout(timer)
     }
   }
   let toolsetsCheckedAt = -Infinity
@@ -221,8 +221,7 @@ export function createHermes({
             (poll.data?.approval && typeof poll.data.approval === 'object'
               ? (poll.data.approval as Record<string, unknown>)
               : {})
-          const strip = (value: unknown) =>
-            typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').trim() : ''
+          const strip = (value: unknown) => (typeof value === 'string' ? value.replace(/\p{Cc}/gu, ' ').trim() : '')
           const clean = (value: unknown) => strip(value).slice(0, 160)
           // command は Owner が許可対象を確認する本体なので切り詰めず、収まらない場合は印を付けて拒否のみにする。
           // 改行等の制御文字は空白へ潰さず原文のまま渡す（複数コマンドを 1 行に見せないため。判定と表示は approvalSummary 側）。
@@ -296,7 +295,7 @@ export function createHermes({
       }
       try {
         reset()
-        const response = await fetcher(url + '/v1/runs/' + runId + '/events', {
+        const response = await fetcher(`${url}/v1/runs/${runId}/events`, {
           headers: {
             ...auth,
             Accept: 'text/event-stream',
@@ -316,8 +315,7 @@ export function createHermes({
           reset()
           buffer += decoder.decode(chunk.value, { stream: true })
           buffer = buffer.replace(/\r\n/g, '\n')
-          let end: number
-          while ((end = buffer.indexOf('\n\n')) >= 0) {
+          for (let end = buffer.indexOf('\n\n'); end >= 0; end = buffer.indexOf('\n\n')) {
             const frame = buffer.slice(0, end)
             buffer = buffer.slice(end + 2)
             let id: string | undefined
@@ -390,6 +388,7 @@ export function createHermes({
         !path ||
         path.length > 1500 ||
         path.split('/').some((p) => !p || p.startsWith('.')) ||
+        // biome-ignore lint/suspicious/noControlCharactersInRegex: vault 相対パスにバックスラッシュと C0 制御文字を含むものを拒否する
         /[\\\x00-\x1f]/.test(path)
       )
         return undefined

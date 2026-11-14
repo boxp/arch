@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createNotifications } from './notifications.js'
+import { createNotifications, type Item } from './notifications.js'
 import { notificationReplyText } from './app.js'
 import { createPush } from './push.js'
 import { atomic, load } from './storage.js'
@@ -140,7 +140,7 @@ describe('notifications', () => {
       expect(store.list().items.map((i) => i.eventId)).toEqual([payload.eventId])
       expect(store.list().unread).toBe(1)
       expect(await store.ingest({ ...legacy, source: 'task-board-report' })).toEqual({ status: 'duplicate' })
-      expect((await load<any[]>(join(dir, 'notifications.json'), [])).length).toBe(2)
+      expect((await load<Item[]>(join(dir, 'notifications.json'), [])).length).toBe(2)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -179,7 +179,7 @@ describe('notifications', () => {
       await store.ingest(payload)
       const reply = { replyId: 'reply-123456', kind: 'choice', value: 'はい' }
       // claim 保存直後に BFF が止まった状態を再現する（submit が戻らないまま保存だけ残る）。
-      const items = await load<any[]>(join(dir, 'notifications.json'), [])
+      const items = await load<Item[]>(join(dir, 'notifications.json'), [])
       items[0].reply = { ...reply, requestId: 'req-claimed', claimedAt: new Date().toISOString(), status: 'claimed' }
       await atomic(join(dir, 'notifications.json'), items)
       const restart = await createNotifications(dir, push),
@@ -202,7 +202,7 @@ describe('notifications', () => {
       await store.ingest(payload)
       const reply = { replyId: 'reply-123456', kind: 'choice', value: 'はい' }
       // Hermes 受理直後・submitted 保存前に BFF が停止し、24h 以上経ってから再送要求が来た状態を再現する。
-      const items = await load<any[]>(join(dir, 'notifications.json'), [])
+      const items = await load<Item[]>(join(dir, 'notifications.json'), [])
       items[0].reply = {
         ...reply,
         requestId: 'req-old',
@@ -243,7 +243,7 @@ describe('notifications', () => {
       // BFF 再起動: 永続 inbox は submitted のまま、会話トラッカー（メモリ）は空になる。
       const restart = await createNotifications(dir, push),
         after = new Set<string>(),
-        submit = vi.fn((_i: any, r: any) => {
+        submit = vi.fn((_i: Item, r: NonNullable<Item['reply']>) => {
           after.add(r.requestId)
           return true
         })
@@ -264,7 +264,11 @@ describe('notifications', () => {
     const dir = await mkdtemp(join(tmpdir(), 'push-')),
       sender = vi.fn(async () => ({}))
     try {
-      const push = await createPush(dir, { subject: 'https://example.com', quietHours: '0-0', sender: sender as any })
+      const push = await createPush(dir, {
+        subject: 'https://example.com',
+        quietHours: '0-0',
+        sender: sender as unknown as NonNullable<Parameters<typeof createPush>[1]['sender']>,
+      })
       const keys = { p256dh: Buffer.alloc(65).toString('base64url'), auth: Buffer.alloc(16).toString('base64url') }
       await push.add({ endpoint: 'https://example.com/one', keys })
       await push.add({ endpoint: 'https://example.com/two', keys })
@@ -296,7 +300,7 @@ describe('notifications', () => {
         subject: 'https://example.com',
         quietHours: '2-9',
         now: () => now,
-        sender: sender as any,
+        sender: sender as unknown as NonNullable<Parameters<typeof createPush>[1]['sender']>,
       })
       const sub = {
         endpoint: 'https://example.com/push',
@@ -332,7 +336,7 @@ it('伏字と本文の短縮、空本文と minimal を扱う', async () => {
   const result = summarizePush(item)
   expect(result.title).toHaveLength(80)
   expect(result.body).toBe('URL (リンク) パス (パス) (パス) token (省略) mail (メール) 次')
-  expect(summarizePush({ ...item, body: 'あ'.repeat(121) }).body).toBe('あ'.repeat(119) + '…')
+  expect(summarizePush({ ...item, body: 'あ'.repeat(121) }).body).toBe(`${'あ'.repeat(119)}…`)
   expect(summarizePush({ ...item, body: '**BOXP-1 完了**\n# 結果\n`ok`' }).body).toBe('BOXP-1 完了 結果 ok')
   expect(summarizePush({ ...item, body: '  ' }).body).toBe('完了しました')
   expect(summarizePush({ ...item, body: '', eventType: 'unknown' }).body).toBe('新しいお知らせがあります')

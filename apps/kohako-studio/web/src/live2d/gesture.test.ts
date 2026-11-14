@@ -1,3 +1,4 @@
+import { must } from '../must'
 import { describe, expect, it } from 'vitest'
 import { existsSync } from 'node:fs'
 import {
@@ -330,7 +331,7 @@ describe('上げた腕からの反対側への割込み（BOXP-476 TD-02）', ()
   it('照れ→制止は上を回り、手首が腹の高さへ下がらない', () => {
     const { plan, frames } = path('shyHand', 1.2, 'halt')
     expect(plan.at).toBeGreaterThan(0)
-    expect(Math.abs(plan.from.right.fo - clips.halt.keys[2]!.right!.fo)).toBeLessThan(Math.PI)
+    expect(Math.abs(plan.from.right.fo - must(must(clips.halt.keys[2]).right).fo)).toBeLessThan(Math.PI)
     for (const { wrist, elbow } of frames) {
       expect(wrist[1]).toBeLessThan(elbow[1])
       expect(wrist[1]).toBeLessThan(600)
@@ -352,7 +353,7 @@ describe('上げた腕からの反対側への割込み（BOXP-476 TD-02）', ()
   it('曲げの絵の裏返しは割込みで回る途中の 1 回だけ', () => {
     const { plan } = path('shyHand', 1.2, 'halt'),
       from = plan.from.right.fo,
-      to = clips.halt.keys[2]!.right!.fo
+      to = must(must(clips.halt.keys[2]).right).fo
     const sides = Array.from({ length: 41 }, (_, i) =>
       bentSide({ mirror: false }, { fo: from + ((to - from) * i) / 40 }),
     )
@@ -817,12 +818,12 @@ describe('喜びの手の大きさ（BOXP-476 Owner 指摘）', () => {
     const holds = clips.joy.keys.filter((k) => k.right && Math.abs(k.right.fo) > 1)
     expect(holds.length).toBeGreaterThan(0)
     for (const k of holds) {
-      expect(k.right!.haS).toBe(JOY_HAND_SCALE)
-      expect(k.left!.haS).toBe(JOY_HAND_SCALE)
+      expect(must(k.right).haS).toBe(JOY_HAND_SCALE)
+      expect(must(k.left).haS).toBe(JOY_HAND_SCALE)
     }
     // 待機と始点・終点は等倍（入りと戻りで手の大きさが跳ばない）
-    expect(clips.joy.keys[0].right!.haS).toBe(1)
-    expect(clips.joy.keys[clips.joy.keys.length - 1].right!.haS).toBe(1)
+    expect(must(clips.joy.keys[0].right).haS).toBe(1)
+    expect(must(clips.joy.keys[clips.joy.keys.length - 1].right).haS).toBe(1)
   })
 })
 

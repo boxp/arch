@@ -1,3 +1,4 @@
+import { must } from '../must'
 // CPU ローカル合成は実時間より遅く(本番相当 2〜4 CPU で音声 8.8 秒に約 20〜40 秒)、120 字文をそのまま送ると
 // nginx/Cloudflare の応答待ち上限を超え得る。1 要求を短く保ち、合成待ちと初回再生までの時間を抑える。
 export const VOICE_CHUNK_MAX = 60
@@ -180,7 +181,7 @@ export function createVoicePlayer(deps: {
             source = ctx.createBufferSource()
             gain = ctx.createGain()
             source.buffer = decoded
-            gain.gain.value = deps.mixer!.gain()
+            gain.gain.value = must(deps.mixer).gain()
             source.connect(gain)
             gain.connect(ctx.destination)
             source.onended = () => {

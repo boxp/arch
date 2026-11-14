@@ -1,8 +1,10 @@
+import { must } from './must.js'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import webPush from 'web-push'
 import type { Item } from './notifications.js'
 import { atomic, load } from './storage.js'
+import { isRecord } from './untrusted.js'
 type Subscription = { endpoint: string; keys: { p256dh: string; auth: string } }
 export function summarizePush(item: Pick<Item, 'title' | 'body' | 'eventType'>, minimal = false) {
   if (minimal) return { title: 'コハコ', body: 'コハコからお知らせがあります' }
@@ -13,7 +15,7 @@ export function summarizePush(item: Pick<Item, 'title' | 'body' | 'eventType'>, 
     'run-stopped': '止まっています',
   }
   let body = redact(item.body) || fallback[item.eventType] || '新しいお知らせがあります'
-  if (body.length > 120) body = body.slice(0, 119) + '…'
+  if (body.length > 120) body = `${body.slice(0, 119)}…`
   // タイトルもロック画面に出るため本文と同じ伏字処理を通す
   const title = redact(item.title).slice(0, 80) || 'コハコ'
   return { title, body }
@@ -24,7 +26,7 @@ export function redact(text: string) {
     .replace(/https?:\/\/[^\s]+/gi, '(リンク)')
     .replace(/[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '(メール)')
     .replace(/(?:~\/[^\s]+|\/(?:[^\s/]+\/)+[^\s/]+)/g, '(パス)')
-    .replace(/[A-Za-z0-9_+\/=.:~-]{20,}/g, '(省略)')
+    .replace(/[A-Za-z0-9_+/=.:~-]{20,}/g, '(省略)')
     .replace(/[*`#>|]+/g, '')
     .replace(/\s+/g, ' ')
     .trim()
@@ -58,17 +60,18 @@ export async function createPush(
     return result
   }
   const hash = (s: string) => createHash('sha256').update(s).digest('hex')
-  const valid = (x: any): x is Subscription => {
+  const valid = (x: unknown): x is Subscription => {
     try {
       return (
-        x &&
+        isRecord(x) &&
         typeof x.endpoint === 'string' &&
         x.endpoint.length <= 1000 &&
         new URL(x.endpoint).protocol === 'https:' &&
-        typeof x.keys?.p256dh === 'string' &&
+        isRecord(x.keys) &&
+        typeof x.keys.p256dh === 'string' &&
         /^[A-Za-z0-9_-]+$/.test(x.keys.p256dh) &&
         Buffer.from(x.keys.p256dh, 'base64url').length === 65 &&
-        typeof x.keys?.auth === 'string' &&
+        typeof x.keys.auth === 'string' &&
         /^[A-Za-z0-9_-]+$/.test(x.keys.auth) &&
         Buffer.from(x.keys.auth, 'base64url').length === 16
       )
@@ -80,7 +83,7 @@ export async function createPush(
   return {
     flush: () => queue,
     publicKey: keys.publicKey,
-    add: (x: any) =>
+    add: (x: unknown) =>
       mutate(async () => {
         if (!valid(x)) return false
         const id = hash(x.endpoint)
@@ -114,7 +117,7 @@ export async function createPush(
                 tag: item.eventId,
                 url: `/kohako/home.html?notification=${encodeURIComponent(item.eventId)}`,
               }),
-              { TTL: 86400, urgency: 'normal', vapidDetails: { subject: opts.subject, ...keys! } },
+              { TTL: 86400, urgency: 'normal', vapidDetails: { subject: opts.subject, ...must(keys) } },
             )
             pushStats.sent++
           } catch (e) {

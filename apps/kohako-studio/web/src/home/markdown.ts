@@ -1,3 +1,4 @@
+import { must } from '../must'
 export type Inline = {
   type: 'text' | 'code' | 'bold' | 'italic' | 'strike' | 'link' | 'image'
   text: string
@@ -27,6 +28,7 @@ export function vaultImageUrl(raw: string): string | undefined {
     if (
       !path ||
       path.length > 1500 ||
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: vault 相対パスにバックスラッシュと C0 制御文字を含むものを拒否する
       /[\\\x00-\x1f]/.test(path) ||
       path.split('/').some((p) => !p || p.startsWith('.')) ||
       !/\.(png|jpe?g|gif|webp)$/i.test(path)
@@ -41,9 +43,8 @@ export function parseInline(src: string): Inline[] {
   const result: Inline[] = [],
     re =
       /(!?)\[([^\]]*)\]\(([^\s)]+)\)|https:\/\/[A-Za-z0-9\-._~:/?#@!$&'*+,;=%]*[A-Za-z0-9\-_~/#=&%+]|`([^`]+)`|\*\*([^*]+)\*\*|~~([^~]+)~~|\*([^*\s][^*]*)\*|(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])/g
-  let pos = 0,
-    m: RegExpExecArray | null
-  while ((m = re.exec(src))) {
+  let pos = 0
+  for (let m = re.exec(src); m; m = re.exec(src)) {
     if (m.index > pos) result.push({ type: 'text', text: src.slice(pos, m.index) })
     if (m[2] !== undefined) {
       const image = m[1] && vaultImageUrl(m[3]),
@@ -108,7 +109,7 @@ export function parseMarkdown(src: string): Block[] {
         const m = /^\s*([-*+]|\d+\.)\s+(.+)$/.exec(lines[i])
         if (!m || /\d/.test(m[1]) !== ordered) break
         items.push(m[2])
-        indents.push(/^\s*/.exec(lines[i])![0].length)
+        indents.push(must(/^\s*/.exec(lines[i]))[0].length)
         i++
       }
       blocks.push({ type: 'list', ordered, items, indents })

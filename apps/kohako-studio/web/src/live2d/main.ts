@@ -290,7 +290,9 @@ el<HTMLFormElement>('speak').addEventListener('submit', (e) => {
 el('mic').addEventListener('click', async () => {
   const button = el<HTMLButtonElement>('mic')
   if (mic) {
-    mic.stream.getTracks().forEach((t) => t.stop())
+    mic.stream.getTracks().forEach((t) => {
+      t.stop()
+    })
     await mic.context.close()
     mic = null
     button.textContent = 'マイク音量で口パク'
