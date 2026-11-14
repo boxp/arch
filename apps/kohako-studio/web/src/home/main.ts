@@ -443,7 +443,7 @@ function playReply() {
   else if (speaker) speaker.speak(speechChunks, events, speechNext)
   else { show('done'); offerSpeechResume() }
 }
-resumeSpeech.addEventListener('click', () => { unlockMix(); speech.checked = true; playReply() })
+resumeSpeech.addEventListener('click', () => { unlockMix(); primeVoiceAudio(); speech.checked = true; playReply() })
 
 /** 返答を吹き出し・カード・履歴へ出し、演技と読み上げを始める（Studio と同じ）。 */
 function deliver(text: string, views: View[] = []) {
@@ -470,9 +470,10 @@ function mouthOnly(text: string) {
   show('speaking'); startViseme(text)
   mouthTimer = window.setTimeout(() => { if (state === 'speaking') show('done') }, silentSpeechSeconds(text) * 1000)
 }
-/** 従来方式（HTMLAudio）の再生をユーザー操作内で一度許可させる（iOS は操作外の play() を拒否するため）。 */
-function primeVoiceAudio() { voiceAudio.src = 'data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA'; void voiceAudio.play().then(() => { if (voiceAudio.src.startsWith('data:audio/wav')) { voiceAudio.pause(); voiceAudio.removeAttribute('src'); voiceAudio.load() } }).catch(() => {}) }
-speech.addEventListener('change', () => { if (!speech.checked) hushNow(true); else if (prefs.mix) unlockMix(); else primeVoiceAudio() })
+/** 従来方式（HTMLAudio）の再生をユーザー操作内で一度許可させる（iOS は操作外の play() を拒否するため）。読み上げ中の音声は上書きしない。 */
+function primeVoiceAudio() { if (voiceAudio.getAttribute('src')) return; voiceAudio.src = 'data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA'; void voiceAudio.play().then(() => { if (voiceAudio.src.startsWith('data:audio/wav')) { voiceAudio.pause(); voiceAudio.removeAttribute('src'); voiceAudio.load() } }).catch(() => {}) }
+// 読み上げ ON は Web Audio が使えない場合の従来方式フォールバックに備えて HTMLAudio も許可させる（1 サンプルの無音なので他アプリの音楽は止めない）。
+speech.addEventListener('change', () => { if (!speech.checked) hushNow(true); else { unlockMix(); primeVoiceAudio() } })
 // 読み上げ ON のまま「他アプリの音楽を止めない」を OFF にしたときも、その操作内で従来方式の再生を許可させる。
 mixBox.addEventListener('change', () => { if (!mixBox.checked && speech.checked) primeVoiceAudio() })
 /** 読み上げを止める。pause は本人の「止める」/読み上げOFF で、続きが残るなら送信待ちの自動送信を止めて再開位置を守る（録音開始など新しい発言のための中断では止めない）。 */
