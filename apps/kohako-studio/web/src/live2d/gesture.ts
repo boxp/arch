@@ -352,6 +352,9 @@ export function smoothAngle(shown: number, raw: number, dt: number): number {
   const step = (raw - shown) * (1 - Math.exp(-dt / 0.15)), max = 45 * dt
   return shown + Math.max(-max, Math.min(max, step))
 }
+// BOXP-525: なでで閉じていく間は、自動まばたきの戻り（待機クリップ停止でまばたき値が 1 に戻るのも含む）で
+// 目が一瞬開いてから閉じ直すちらつきを出さないよう、表示する開き具合を前フレームより増やさない。
+export const petEyeHold = (open: number, last: number | undefined, petOn: boolean): number => petOn && typeof last === 'number' && Number.isFinite(last) ? Math.min(open, last) : open
 export const eyeOpenFor = (blinkOpen: number, emotionClosed: number, petClosed: number): number => Math.min(blinkOpen, 1 - Math.max(emotionClosed, petClosed))
 
 export function createActingStage(player: Player, model: RigModel): ActingStage & { report(): Record<string, unknown> } {
@@ -368,6 +371,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   let petEyes = false, petClosed = 0, petHold = false, petHeld = false, petTail = 0
   const SMOOTH_KEYS = ['ParamAngleX', 'ParamAngleY', 'ParamAngleZ', 'ParamBodyAngleX', 'ParamBodyAngleZ'] as const
   const shownAngle: Record<string, number> = {}
+  const shownEye: Record<string, number> = {}
   let blush = 0, eyeClosed = 0, surprised = 0, troubled = 0, speaking = false, mouthOverride = false
   let generation = 0, target = faces.neutral, face = { ...faces.neutral }, clip: Clip | null = null, clipName: Gesture = 'none', clipTime = 0, emotion: Emotion = 'neutral'
   let pose: ReturnType<typeof sample> = { right: REST, left: REST, body: NO_BODY }, armBlend = 0
@@ -698,13 +702,17 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     // BOXP-525: 自動まばたきの途中でも目が逆に開かないよう閉眼を重ねる。
     const petLid = petClosed * petClosed * (3 - 2 * petClosed)
     const closed = Math.max(eyeClosed, petLid)
-    if (closed > 0.001) {
+    {
       const values = typeof p.parameterValues === 'function' ? p.parameterValues() : []
       for (const id of ['ParamEyeLOpen', 'ParamEyeROpen']) {
         const index = p.parameters?.indexOf(id) ?? -1, blink = values[index]
-        p.setParameter(id, typeof blink === 'number' && Number.isFinite(blink) ? eyeOpenFor(blink, eyeClosed, petLid) : 1 - closed)
+        const hasBlink = typeof blink === 'number' && Number.isFinite(blink)
+        const open = closed > 0.001 ? (hasBlink ? eyeOpenFor(blink, eyeClosed, petLid) : 1 - closed) : hasBlink ? blink : undefined
+        if (open === undefined) { delete shownEye[id]; continue }
+        const held = petEyeHold(open, shownEye[id], petEyes)
+        if (closed > 0.001 || held !== open) { p.setParameter(id, held); restage = true }
+        shownEye[id] = held
       }
-      restage = true
     }
     if (restage) rt.p2l_update_stages(p.rig, 0, 0)
     stepChestSpring(dt)
