@@ -5,7 +5,7 @@ export async function fetchJson(
   maxBytes: number,
 ): Promise<unknown> {
   const controller = new AbortController()
-  let timer: ReturnType<typeof setTimeout>
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
     return await Promise.race([
       new Promise<never>((_, reject) => {
@@ -38,6 +38,6 @@ export async function fetchJson(
       })(),
     ])
   } finally {
-    clearTimeout(timer!)
+    clearTimeout(timer)
   }
 }

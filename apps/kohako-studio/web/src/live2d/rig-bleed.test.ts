@@ -7,7 +7,9 @@ const pixelScale = (r: { zoom: number }, w: number, h: number) => Math.min(w / M
 
 describe('bleedZoom', () => {
   it('全身・幅で決まる箱: 余白で広げても画面上の倍率は余白なしと同じ', () => {
-    const base = 300, h = 800, wide = base * 1.5
+    const base = 300,
+      h = 800,
+      wide = base * 1.5
     const r = bleedZoom(1, base, wide, h, M.width, M.height)
     expect(pixelScale(r, wide, h)).toBeCloseTo(Math.min(base / M.width, h / M.height))
     expect(r.zoom).toBeLessThan(1)
@@ -17,7 +19,8 @@ describe('bleedZoom', () => {
     expect(r.zoom).toBeCloseTo(1)
   })
   it('上半身: 拡大 1.8 倍と縦位置用の fit を保つ', () => {
-    const h = 740, base = bleedBaseWidth(true, { width: 900, height: h }, 366, M)
+    const h = 740,
+      base = bleedBaseWidth(true, { width: 900, height: h }, 366, M)
     const r = bleedZoom(1.8, base, 900, h, M.width, M.height)
     expect(r.zoom).toBeCloseTo(1.8)
     expect(r.fit).toBeCloseTo(h / M.height)
@@ -29,7 +32,7 @@ describe('bleedZoom', () => {
 
 describe('bleedBaseWidth', () => {
   it('上半身枠は親が狭くてもモデルの縦横比の幅（親の幅で縮めない）', () => {
-    expect(bleedBaseWidth(true, { width: 600, height: 551 }, 201, M)).toBeCloseTo(551 * M.width / M.height)
+    expect(bleedBaseWidth(true, { width: 600, height: 551 }, 201, M)).toBeCloseTo((551 * M.width) / M.height)
   })
   it('全身は親の幅、親が無い時は canvas 幅', () => {
     expect(bleedBaseWidth(false, { width: 450, height: 800 }, 300, M)).toBe(300)
