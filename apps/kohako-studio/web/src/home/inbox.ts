@@ -5,6 +5,13 @@ export function sortAscending(items: Item[]): Item[] {
   const seen = new Set<string>()
   return items.filter(i => { if (seen.has(i.eventId)) return false; seen.add(i.eventId); return true }).sort((a, b) => { const x = Date.parse(a.receivedAt), y = Date.parse(b.receivedAt); return (Number.isFinite(x) ? x : Infinity) - (Number.isFinite(y) ? y : Infinity) || (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0) })
 }
+export const detailKey = (i: Item) => JSON.stringify([i.eventId, i.title, i.body, i.source, i.ticketId, i.choices, i.reply])
+export class ReplyDrafts {
+  private drafts = new Map<string, string>()
+  get(id: string) { return this.drafts.get(id) ?? '' }
+  set(id: string, value: string) { this.drafts.set(id, value) }
+  clear(id: string) { this.drafts.delete(id) }
+}
 export const sourceLabel = (source: string) => source === 'task-board-report' ? 'Task Board' : source === 'hermes-cron' ? '定期通知' : source
 export const replyText = (i: Pick<Item, 'title' | 'ticketId'>, kind: 'choice' | 'text', value: string) => `通知「${i.title}」${i.ticketId ? `（${i.ticketId}）` : ''}への${kind === 'choice' ? '選択' : '返信'}: ${value}`
 export const stateLabel = (i: Pick<Item, 'readAt' | 'handledAt'>) => i.handledAt ? '処理済み' : i.readAt ? '既読' : '未読'
@@ -22,7 +29,8 @@ type Announcer = { canAnnounce: () => boolean; announce: (item: Item, actions: {
 export function initInbox(follow: (requestId: string, text: string) => boolean = () => false, announcer?: Announcer) {
   const el = (id: string) => document.getElementById(id)!, panel = el('inbox'), list = el('inbox-list'), detail = el('inbox-detail'), message = el('push-message')
   let notice = '', items: Item[] = [], selected = notificationParam(location.search), timer = 0, waiting = false, active = '', holdTimer = 0
-  let opening = !!selected, firstOpen = true
+  let opening = !!selected, firstOpen = true, renderedKey: string | null = null
+  const drafts = new ReplyDrafts()
   const call = async (path: string, method = 'GET', body?: unknown) => { const r = await fetch(`/kohako/api/v1/${path}`, { method, ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }) }); return { status: r.status, data: r.status === 204 ? null : await r.json() } }
   const button = (text: string, fn: () => void) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = text; b.addEventListener('click', fn); return b }
   const line = (parent: HTMLElement, text: string) => { const p = document.createElement('p'); p.textContent = text; parent.append(p); return p }
@@ -35,6 +43,7 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
       if (result.status >= 300) { status.textContent = '返信を送信できませんでした。'; return false }
       if (result.data.status !== 'submitted') { status.textContent = `受付番号: ${result.data.requestId}（送信できませんでした。同じ返信を再試行できます）`; return false }
       await call(`notifications/${encodeURIComponent(i.eventId)}/read`, 'POST')
+      drafts.clear(i.eventId)
       if (follow(result.data.requestId, replyText(i, kind, value))) panel.hidden = true
       else notice = status.textContent = `返信は受付済みです（受付番号: ${result.data.requestId}）。会話が終わってから受信箱で「会話で続きを見る」を押してください。`
       await refresh(); return true
@@ -65,7 +74,7 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
   }
   function render() {
     const top = list.scrollTop, bottom = firstOpen || atBottom(top, list.clientHeight, list.scrollHeight)
-    list.replaceChildren(); detail.replaceChildren()
+    list.replaceChildren()
     // 一覧の行: 状態の印・題名・出どころ・受信時刻。区切りの「｜」と受付 ID は読み上げ・検証用に文字として残し、見た目は CSS で整える。
     for (const i of items) {
       const row = button('', () => { void open(i.eventId) }), state = stateLabel(i), part = (cls: string, text: string) => { const s = document.createElement('span'); s.className = cls; s.textContent = text; return s }
@@ -75,15 +84,22 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
     }
     if (!items.length) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = '通知はありません。'; list.append(p) }
     if (!panel.hidden) { list.scrollTop = bottom ? list.scrollHeight : top; firstOpen = false }
-    const i = items.find(x => x.eventId === selected); if (!i) return
-    line(detail, i.title).className = 'detail-title'; const content = document.createElement('div'); content.className = 'md'; content.append(renderMarkdown(i.body)); detail.append(content); line(detail, `${sourceLabel(i.source)} ${i.ticketId ?? ''} ${i.eventId} ${formatReceived(i.receivedAt)} ${stateLabel(i)}`).className = 'detail-meta'
+    const i = items.find(x => x.eventId === selected)
+    const key = i ? detailKey(i) : null
+    const meta = i ? `${sourceLabel(i.source)} ${i.ticketId ?? ''} ${i.eventId} ${formatReceived(i.receivedAt)} ${stateLabel(i)}` : ''
+    if (i && key === renderedKey && !notice) { const row = detail.querySelector('.detail-meta'); if (row) row.textContent = meta; return }
+    const previous = detail.querySelector('textarea'), focused = previous && document.activeElement === previous
+    const start = focused ? previous.selectionStart : 0, end = focused ? previous.selectionEnd : 0
+    detail.replaceChildren(); renderedKey = key
+    if (!i) return
+    line(detail, i.title).className = 'detail-title'; const content = document.createElement('div'); content.className = 'md'; content.append(renderMarkdown(i.body)); detail.append(content); line(detail, meta).className = 'detail-meta'
     const handled = button('処理済みにする', () => { void call(`notifications/${encodeURIComponent(i.eventId)}/handled`, 'POST').then(refresh) }); handled.className = 'secondary'; detail.append(handled)
     const status = document.createElement('p'); status.className = 'detail-status'; status.setAttribute('role', 'status'); status.textContent = notice; notice = ''; detail.append(status)
     const sendReply = (kind: 'choice' | 'text', value: string) => send(i, kind, value, status)
     if (i.reply && i.reply.status === 'submitted') { const r = i.reply; line(detail, `返信済み。受付番号: ${r.requestId}`); detail.append(button('会話で続きを見る', () => { void sendReply(r.kind, r.value) })) }
     else if (i.reply) { const r = i.reply; line(detail, `「${r.value}」の送信を確認できませんでした（受付番号: ${r.requestId}）。同じ受付番号で再送できます。`); detail.append(button('同じ返信を再送', () => { void sendReply(r.kind, r.value) })) }
     else if (i.choices?.length) for (const choice of i.choices) detail.append(button(choice, () => { void sendReply('choice', choice) }))
-    else { const input = document.createElement('textarea'); input.maxLength = 500; input.placeholder = '返信を入力'; detail.append(input, button('返信する', () => { if (input.value.trim()) void sendReply('text', input.value) })) }
+    else { const input = document.createElement('textarea'); input.maxLength = 500; input.placeholder = '返信を入力'; input.value = drafts.get(i.eventId); input.addEventListener('input', () => drafts.set(i.eventId, input.value)); detail.append(input, button('返信する', () => { if (input.value.trim()) void sendReply('text', input.value) })); if (focused) { input.focus(); input.setSelectionRange(start, end) } }
   }
   async function refresh() { try { const r = await call('notifications'); if (r.status === 503 && r.data?.error === 'notifications_disabled') { el('inbox-open').hidden = true; panel.hidden = true; return }; if (r.status !== 200) return; items = sortAscending(r.data.items); el('inbox-open').hidden = false; el('inbox-badge').textContent = r.data.unread ? String(r.data.unread) : ''; el('inbox-open').setAttribute('aria-label', r.data.unread ? `受信箱（未読 ${r.data.unread} 件）` : '受信箱'); render(); void tryAnnounce() } catch { /* 次回更新で再試行 */ } }
   el('inbox-open').addEventListener('click', () => { panel.hidden = !panel.hidden; void refresh() }); el('inbox-close').addEventListener('click', () => { panel.hidden = true })
