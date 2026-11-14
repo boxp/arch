@@ -165,3 +165,20 @@ body[data-scene="relax"] .bubble:has(#notice-actions:not([hidden])){opacity:1;po
 .bar.dictating #attach,.bar.dictating #send{display:none}#record{min-width:44px;white-space:nowrap}
 /* Owner-authenticated vault images remain within both bubble and history. */
 .vault-image{display:block;margin:.5rem 0}.vault-image img{display:block;max-width:100%;height:auto;max-height:65vh;object-fit:contain;border-radius:8px}.vault-image img[hidden]{display:none}
+
+/* BOXP-544: 縦画面の会話優先レイアウト */
+.chatlog{display:none}
+body[data-shape="portrait"] .chatlog{display:block;position:absolute;z-index:3;top:28%;bottom:1%;left:3%;right:3%;overflow-y:auto;overscroll-behavior:contain;padding:8px;scrollbar-width:thin;font-size:.98rem;line-height:1.6}
+body[data-shape="portrait"] .character,body[data-shape="portrait"][data-scene="show"] .character,body[data-shape="portrait"][data-scene="work"] .character,body[data-shape="portrait"][data-viewer="open"] .character,body[data-shape="portrait"][data-kbd="1"] .character{top:0;bottom:auto;left:0;right:0;width:100%;height:28%;transition:none}
+body[data-shape="portrait"][data-kbd="1"] .character{height:18%}
+body[data-shape="portrait"][data-kbd="1"] .chatlog{top:18%}
+body[data-shape="portrait"] #chatlog-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+body[data-shape="portrait"] #chatlog-list li{max-width:90%;align-self:flex-start;background:rgba(255,253,251,.96);border-radius:16px;padding:8px 12px;overflow-wrap:anywhere}
+body[data-shape="portrait"] #chatlog-list li[data-who="あなた"]{align-self:flex-end;background:#e9ddf6}
+body[data-shape="portrait"] #chatlog-list li[data-who="お知らせ"]{align-self:center;background:transparent;color:#625b6b;font-size:.82rem;text-align:center}
+.chat-who{display:block;font-size:.72rem;color:#70637e}
+body[data-shape="portrait"] .chatlog .bubble,body[data-shape="portrait"][data-scene="relax"] .chatlog .bubble.touch,body[data-shape="portrait"][data-viewer="open"] .chatlog .bubble{position:static;display:block;opacity:1;pointer-events:auto;width:auto;max-width:90%;max-height:none;margin:10px auto 0 0;padding:10px 12px;overflow:visible;font-size:.98rem;line-height:1.6;transition:none}
+body[data-shape="portrait"][data-scene="show"] .chatlog{bottom:42%}
+body[data-shape="portrait"][data-scene="show"] .cards{top:auto;bottom:1%;max-height:40%}
+body[data-shape="portrait"][data-viewer="open"] .chatlog{bottom:46%}
+body[data-shape="portrait"] .trouble{top:29%}

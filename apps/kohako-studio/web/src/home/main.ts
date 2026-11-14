@@ -2,6 +2,7 @@ import { createDictation, supportsDictation, appendDictation } from './dictation
 import { attachmentSubmitAction, attachmentValidation } from './attachments'
 import { shouldSubmit } from './keys'
 import { atBottom } from './scroll'
+import { chatEntries } from './chatlog'
 import { renderMarkdown, plainText } from './markdown'
 import { initInbox } from './inbox'
 // BOXP-500: コハコの家（kohako-home）。Studio と同じ BFF・認証・Web 専用会話を使う全画面 UI。
@@ -137,18 +138,31 @@ const calmStage = (s: ActingStage): ActingStage => ({ setEmotion: e => s.setEmot
 let lastReply = '', lastActivity = Date.now(), thinkingSince = 0, cards: Card[] = [], cardsOpen = false
 type Entry = { who: 'あなた' | 'コハコ' | 'お知らせ'; text: string; at: number }
 const history: Entry[] = []
+const chatlog = el('chatlog'), chatList = el('chatlog-list')
+function renderChat() {
+  const bottom = atBottom(chatlog.scrollTop, chatlog.clientHeight, chatlog.scrollHeight), top = chatlog.scrollTop
+  chatList.replaceChildren(...chatEntries(history, bubbleText).map(entry => {
+    const li = document.createElement('li'); li.dataset.who = entry.who
+    const label = document.createElement('span'); label.className = 'chat-who'; label.textContent = entry.who
+    const content = document.createElement('div'); content.className = 'md'; content.append(renderMarkdown(entry.text))
+    li.append(label, content); return li
+  }))
+  chatlog.scrollTop = bottom ? chatlog.scrollHeight : top
+}
 function addHistory(who: Entry['who'], text: string) {
   history.push({ who, text, at: Date.now() }); if (history.length > 100) history.shift()
   const li = document.createElement('li'), w = document.createElement('span'), t = document.createElement('span'), time = new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
   const list = el('history-list'), scroller = el('history'), bottom = atBottom(scroller.scrollTop, scroller.clientHeight, scroller.scrollHeight)
   li.dataset.who = who; w.className = 'who'; w.textContent = `${who}（${time}）`; t.className = 'md'; t.append(renderMarkdown(text)); li.append(w, t); list.append(li); if (bottom) scroller.scrollTop = scroller.scrollHeight
+  renderChat()
 }
 let touchLineTimer = 0, bubbleText = ''
 function setBubble(text: string, touch = false) {
+  const bottom = atBottom(chatlog.scrollTop, chatlog.clientHeight, chatlog.scrollHeight)
   clearTimeout(touchLineTimer); bubbleText = text
   reply.replaceChildren(renderMarkdown(text)); reply.classList.add('md'); bubble.classList.toggle('touch', touch); bubbleTag.hidden = !touch; bubble.scrollTop = 0
   // 吹き出しが別の内容に変わったら、前のお知らせの操作欄は閉じる（通知は受信箱に未読で残る）。
-  el('notice-actions').hidden = true; el('notice-status').textContent = ''; updateMessage()
+  el('notice-actions').hidden = true; el('notice-status').textContent = ''; renderChat(); if (bottom) chatlog.scrollTop = chatlog.scrollHeight; updateMessage()
 }
 function updateMessage() { body.dataset.message = messageShown({ scene: body.dataset.scene ?? 'relax', touch: bubble.classList.contains('touch'), notice: !el('notice-actions').hidden }) ? '1' : '0' }
 function renderCards(next: Card[], views: View[] = []) {
@@ -260,12 +274,14 @@ function refreshScene(force = false) {
   const shape = shapeOf(), kbd = shape !== 'pc' && document.activeElement === message && !!vv && vv.height < window.innerHeight * 0.8
   body.dataset.shape = shape; body.dataset.kbd = kbd ? '1' : '0'
   message.placeholder = shape === 'portrait' ? '話しかける' : fullPlaceholder
+  if (shape === 'portrait' && bubble.parentElement !== chatlog) { chatlog.append(bubble); chatlog.scrollTop = chatlog.scrollHeight }
+  else if (shape !== 'portrait' && bubble.parentElement !== character.parentElement) character.after(bubble)
   const target = targetScene({ state, thinkingMs: state === 'thinking' ? Date.now() - thinkingSince : 0, cardsOpen: cardsOpen || !viewer.hidden, idleMs: Date.now() - lastActivity, hasReply: !!lastReply, netDown })
   const scene = director.decide(target, Date.now(), { holding: holding(), pinned: prefs.pinned, force })
   body.dataset.scene = scene; updateMessage()
-  const upper = kbd || shape === 'landscape' || ((scene === 'show' || scene === 'work') && shape === 'pc')
+  const upper = kbd || shape === 'portrait' || shape === 'landscape' || ((scene === 'show' || scene === 'work') && shape === 'pc')
   if ((character.dataset.frame === 'upper') !== upper) character.dataset.frame = upper ? 'upper' : 'full'
-  character.classList.toggle('mini', kbd || (shape === 'portrait' && (scene === 'show' || scene === 'work')))
+  character.classList.toggle('mini', kbd && shape !== 'portrait')
   if (scene === 'work' || busy) elapsedLabel.textContent = `${Math.floor((Date.now() - started) / 1000)}秒`
   elapsedLabel.hidden = !busy
   if (scene === 'work' && !reply.dataset.reply && !reply.textContent?.startsWith('少し時間')) setBubble('少し時間がかかっています。終わったらお知らせしますね。止めたいときは「停止」を押してください。')
@@ -278,7 +294,7 @@ window.visualViewport?.addEventListener('resize', () => refreshScene())
 message.addEventListener('input', () => { typingUntil = Date.now() + 2000; message.style.height = 'auto'; message.style.height = `${Math.min(message.scrollHeight, window.innerHeight * 0.3)}px` })
 message.addEventListener('focus', () => setTimeout(() => refreshScene(), 300)); message.addEventListener('blur', () => setTimeout(() => refreshScene(), 300))
 message.addEventListener('keydown', e => { if (shouldSubmit(e)) { e.preventDefault(); el<HTMLFormElement>('form').requestSubmit() } })
-for (const box of [bubble, cardsBox]) box.addEventListener('scroll', () => { scrollingUntil = Date.now() + 1000 }, { passive: true })
+for (const box of [bubble, cardsBox, chatlog]) box.addEventListener('scroll', () => { scrollingUntil = Date.now() + 1000 }, { passive: true })
 window.addEventListener('pointerdown', () => { pointerDown = true }, true); window.addEventListener('pointerup', () => { pointerDown = false }, true); window.addEventListener('pointercancel', () => { pointerDown = false }, true)
 
 // ---- 背景（BOXP-512） ----
@@ -921,7 +937,7 @@ async function startRig() {
   }
 }
 // 自動計測用（同一ページの状態を読むだけ）。
-Object.assign(window, { __kohakoHome: { report, get player() { return rig }, get stage() { return stage }, get state() { return state }, get scene() { return sceneNow() }, hitAreas: () => { computeAreas(); const r = rigCanvas.getBoundingClientRect(), abs = (a: Rect | null) => a && { x: a.x + r.left, y: a.y + r.top, w: a.w, h: a.h }; return { head: abs(areas.head), hands: areas.hands.map(abs) } }, get prefs() { return prefs }, history, debug: () => ({ pointerDown, typingIn: typingUntil - Date.now(), scrollingIn: scrollingUntil - Date.now(), director: { ...director }, target: targetScene({ state, thinkingMs: state === 'thinking' ? Date.now() - thinkingSince : 0, cardsOpen: cardsOpen || !viewer.hidden, idleMs: Date.now() - lastActivity, hasReply: !!lastReply, netDown }) }) } })
+Object.assign(window, { __kohakoHome: { report, get player() { return rig }, get stage() { return stage }, get state() { return state }, get scene() { return sceneNow() }, hitAreas: () => { computeAreas(); const r = rigCanvas.getBoundingClientRect(), abs = (a: Rect | null) => a && { x: a.x + r.left, y: a.y + r.top, w: a.w, h: a.h }; return { head: abs(areas.head), hands: areas.hands.map(abs) } }, get prefs() { return prefs }, history, addHistory, setBubble, debug: () => ({ pointerDown, typingIn: typingUntil - Date.now(), scrollingIn: scrollingUntil - Date.now(), director: { ...director }, target: targetScene({ state, thinkingMs: state === 'thinking' ? Date.now() - thinkingSince : 0, cardsOpen: cardsOpen || !viewer.hidden, idleMs: Date.now() - lastActivity, hasReply: !!lastReply, netDown }) }) } })
 setBubble('おかえりなさい、ご主人さま。'); show('offline')
 void initialize()
 void startRig()
