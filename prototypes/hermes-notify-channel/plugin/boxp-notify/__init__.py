@@ -291,10 +291,26 @@ async def deliver(cfg: dict, key: str, record: dict) -> dict:
     return record
 
 
+_LOCKS: dict[str, asyncio.Lock] = {}
+
+
 async def send_once(cfg: dict, chat_id: str, content: str, metadata: Optional[dict]) -> SendResult:
     target = parse_target(chat_id)
     decision = decide(cfg, target, content)
     key = dedup_key(cfg, target, decision, metadata)
+    # One claim per key at a time: two concurrent redeliveries of one event must not both run the egress.
+    # (In-process only. The standalone cron path is a separate process; its keys are cron keys.)
+    async with _LOCKS.setdefault(key, asyncio.Lock()):
+        try:
+            return await _send_claimed(cfg, target, decision, key, chat_id, content, metadata)
+        finally:
+            if len(_LOCKS) > 512:
+                for stale in [k for k, lock in _LOCKS.items() if not lock.locked() and k != key]:
+                    _LOCKS.pop(stale, None)
+
+
+async def _send_claimed(cfg: dict, target: dict, decision: dict, key: str, chat_id: str, content: str,
+                        metadata: Optional[dict]) -> SendResult:
     path = receipt_path(cfg, key)
     existing = read_json(path)
     base = {"chat_id": chat_id, "key": key, "classification": decision["classification"],
@@ -410,6 +426,23 @@ class BoxpNotifyAdapter(BasePlatformAdapter):
         return {"name": str(chat_id), "type": "channel"}
 
 
+async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, **_kwargs) -> dict:
+    """Out-of-process cron delivery (a cron run outside the gateway has no live adapter).
+
+    Same decision, receipt and egress as ``send``. No job id reaches this path, so the cron key falls back
+    to the target name. Pending receipts are finished by the gateway's recovery loop.
+    """
+    cfg = settings()
+    journal(cfg, "standalone_send_called", chat_id=str(chat_id), length=len(message or ""),
+            preview=(message or "")[:300])
+    try:
+        result = await send_once(cfg, str(chat_id), message or "", None)
+    except Exception as error:
+        logger.exception("boxp-notify standalone send failed")
+        return {"error": f"boxp-notify: {type(error).__name__}"}
+    return {"success": True, "message_id": result.message_id} if result.success else {"error": result.error}
+
+
 def _enabled() -> Optional[dict]:
     # No home channel on purpose: lifecycle broadcasts go to home channels, and every target must be explicit.
     return {} if _env("BOXP_NOTIFY_ENABLED") == "1" else None
@@ -422,4 +455,4 @@ def register(ctx) -> None:
         env_enablement_fn=_enabled, emoji="📮", pii_safe=True, allow_update_command=False,
         # Cron accepts a plugin platform as a `deliver` target only when it names this variable. It is left
         # unset: targets are always explicit (`boxp_notify:<name>`), there is no default home channel.
-        cron_deliver_env_var="BOXP_NOTIFY_HOME_CHANNEL")
+        cron_deliver_env_var="BOXP_NOTIFY_HOME_CHANNEL", standalone_sender_fn=_standalone_send)

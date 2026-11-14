@@ -44,10 +44,14 @@ lab/lab.sh down lab546a
 
 - `lab/Dockerfile.patched` は「上流 v0.22.5 ＋本番の本体 patch」の土台を作る（build context に `docker/hermes-agent/patches/` を置く）。並行稼働の確認用。
 - `LAB_CRON_ONLY=1` で cron の場面だけ、`LAB_RUN_ARGS="-e BOXP_NOTIFY_CRON_BUCKET_SECONDS=60"` で重複排除の時間幅を変えられる。
+- `lab/cron-standalone.sh` は gateway を起動せず `hermes cron tick` だけで cron を届ける場面。
+- `lab/home-dispatch.sh <証跡> <作業dir>` は出来た受信箱を無改変の配送係（`task_board_events.bb`）に読ませ、擬似の家が受け取った内容を出す。
 - 証跡は `boxp-notify/journal.jsonl`（`send` の呼出しと判定）、`logs/telegram.jsonl`、`vault/`（家の受信箱）に残る。
 
 ## 試作のままにしてある点
 
+- 同じ鍵の同時 `send` は process 内の lock で 1 本にしている。別 process との同時実行までは排他していない。
+- gateway 外配送用の `standalone_sender_fn` は登録してあるが、実測した 2 版では `hermes cron tick` が adapter を自分で起こして `send` を呼ぶため、この口は呼ばれなかった（未実測）。
 - `lab-fail-home` / `lab-no-recovery` の印ファイルは障害を起こすための実測用。
 - Telegram 送信は 4000 字で分割するだけで、再送間隔の調整や書式変換は無い。
 - 起動時自己検査は結果を journal に書くだけで、監視へは繋いでいない。
