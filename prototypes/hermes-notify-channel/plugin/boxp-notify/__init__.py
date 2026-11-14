@@ -707,9 +707,14 @@ async def _send_claimed(cfg: dict, target: dict, decision: dict, key: str, chat_
     if tracked and existing and existing.get("state") == "suppressed" and decision["action"] == "suppress":
         existing = None  # the same silence again: write its receipt again, the dispatcher wants a fresh one
     if existing and existing.get("state") in {"delivered", "suppressed", "expired", "superseded"}:
-        if tracked and existing["state"] == "delivered":
-            # The dispatcher only trusts a receipt newer than its own delivery attempt.
-            vault_receipt(cfg, target["event"], "sent", existing["decision"].get("receipt_class"))
+        if tracked and existing["state"] in {"delivered", "expired"}:
+            # The dispatcher only trusts a receipt newer than its own delivery attempt. If that receipt
+            # cannot be written now, this redelivery is not confirmed: fail so it is retried (nothing is
+            # sent again, the stored state stays as it is).
+            if not vault_receipt(cfg, target["event"], "sent", existing["decision"].get("receipt_class")):
+                journal(cfg, "duplicate_unrecorded", **base, first_state=existing["state"])
+                return SendResult(success=False, error="boxp-notify: delivery receipt unrecorded",
+                                  retryable=True)
         journal(cfg, "duplicate_dropped", **base, first_state=existing["state"])
         return SendResult(success=True, message_id=key)
     if target["kind"] == "task-board" and decision["slot"] == "notice":
@@ -750,6 +755,11 @@ async def _send_claimed(cfg: dict, target: dict, decision: dict, key: str, chat_
                           **(task_board_plan(cfg, target, decision) if target["kind"] == "task-board" else {})}
     if not existing:
         atomic_json(path, record)  # durable intent before any egress
+    elif tracked:
+        # A redelivery of an event still pending here: the dispatcher needs a receipt newer than this
+        # attempt, so the one written before no longer counts. If it cannot be written now the record
+        # stays pending and recovery writes it.
+        record.pop("vault_receipt", None)
     record = await deliver(cfg, path, record)
     reached = record["home"] or record["telegram"]
     journal(cfg, "delivered" if record["state"] == "delivered" else

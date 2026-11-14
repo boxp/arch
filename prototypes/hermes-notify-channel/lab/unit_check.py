@@ -242,6 +242,17 @@ async def stage2():
     (root / TBE / "delivery-receipts" / f"{e}.md").unlink()
     await tb(e, f"報告 event={e}")
     check("duplicate: the receipt is written again for the dispatcher", receipt(e) == before)
+    (root / TBE / "delivery-receipts" / f"{e}.md").unlink()
+    (root / "state/lab-fail-home").write_text("1")
+    sent, copy = len(telegram["sent"]), home_copy(e)
+    result = await tb(e, f"報告 event={e}")
+    check("duplicate, receipt unwritable: a retryable failure, nothing sent again",
+          not result.success and result.retryable and receipt(e) == (None, None)
+          and len(telegram["sent"]) == sent and home_copy(e) == copy)
+    (root / "state/lab-fail-home").unlink()
+    result = await tb(e, f"報告 event={e}")
+    check("duplicate, retried after the store is back: the receipt is written, still nothing sent",
+          result.success and receipt(e) == before and len(telegram["sent"]) == sent and home_copy(e) == copy)
     await tb(e, "⏳ retrying (1/3)")
     check("status lines are never a result", len(telegram["sent"]) == 5)
 
