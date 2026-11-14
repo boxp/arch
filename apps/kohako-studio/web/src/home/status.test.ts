@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { formatPool, formatTasks, gaugeOf, taskBadgeOf, relativeTime, summaryLine, upstreamUnavailable, type Pool, type Status } from './status'
+import { formatPercent, formatPool, formatTasks, gaugeOf, taskBadgeOf, relativeTime, summaryLine, upstreamUnavailable, type Pool, type Status } from './status'
 const pool: Pool = { id: 'claude_shared', label: 'Claude', windows: [{ name: 'shared_5h', label: '5時間', state: 'not_provided', usedPercent: null, resetsAt: null, observedAt: null, status: null }] }
 it('shows unavailable numbers as a dash rather than zero', () => { expect(formatPool(pool)).toContain('—'); expect(formatPool(pool)).not.toContain('0%') })
 it('shows task totals, breakdown and incomplete lower bound', () => { const tasks = { state: 'ok', inProgress: { total: 3, complete: false, byAgent: [{ agent: 'a', count: 2 }, { agent: 'b', count: 1 }], conflicts: ['BOXP-1'] } }; expect(tasks.inProgress.byAgent.reduce((n, x) => n + x.count, 0)).toBe(tasks.inProgress.total); expect(formatTasks(tasks)).toContain('3件以上（全件は不明）'); expect(formatTasks(tasks)).toContain('整合不明あり') })
@@ -17,3 +17,20 @@ it('treats a 200 response with an unavailable upstream as a reason to back off',
 
 it('models gauges without inventing zero and picks the highest observed window', () => { expect(gaugeOf(pool).percent).toBeNull(); const w = pool.windows[0]; const g = gaugeOf({ ...pool, windows: [{ ...w, state: 'ok', usedPercent: 25 }, { ...w, label: '7日', state: 'stale', usedPercent: 69 }, { ...w, state: 'unavailable', usedPercent: 90 }] }); expect(g).toMatchObject({ percent: 69, label: '7日', stateText: '古い', cls: 'stale' }) })
 it('models incomplete and unavailable task totals', () => { const tasks = { state: 'ok', inProgress: { total: 2, complete: false, byAgent: [], conflicts: ['x'] } }; expect(taskBadgeOf(tasks)).toMatchObject({ total: 2, suffix: '以上', stateText: '整合不明' }); expect(taskBadgeOf({ ...tasks, state: 'unavailable' }).total).toBeNull() })
+it('formats used percent without float noise and never invents zero for missing values (BOXP-551)', () => {
+  expect(formatPercent(0.07 * 100)).toBe('7%')
+  expect(formatPercent(7.000000000000001)).toBe('7%')
+  expect(formatPercent(12.5)).toBe('12.5%')
+  expect(formatPercent(33.333333333333336)).toBe('33.3%')
+  expect(formatPercent(0)).toBe('0%')
+  expect(formatPercent(100)).toBe('100%')
+  expect(formatPercent(null)).toBe('—')
+  expect(formatPercent(undefined)).toBe('—')
+  expect(formatPercent(Number.NaN)).toBe('—')
+  const fable: Pool = { id: 'claude_fable', label: 'Fable専用上限', windows: [{ name: 'fable_7d', label: '7日', state: 'ok', usedPercent: 0.07 * 100, resetsAt: null, observedAt: null, status: 'allowed' }] }
+  expect(formatPool(fable)).toBe('Fable専用上限 7日 7%（正常）')
+  expect(gaugeOf(fable).percent).toBe(0.07 * 100)
+  const expired: Pool = { ...fable, windows: [{ ...fable.windows[0], state: 'expired', usedPercent: null }] }
+  expect(formatPool(expired)).toBe('Fable専用上限 7日 —（リセット後未観測）')
+  expect(gaugeOf(expired).percent).toBeNull()
+})
