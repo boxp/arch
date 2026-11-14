@@ -1,9 +1,0 @@
-# BOXP-546 lab only: upstream v0.22.5 plus the three production core patches, applied the way
-# docker/hermes-agent/Dockerfile applies them (same scripts, same order). Never pushed.
-FROM boxp546/hermes-up:v0.22.5
-COPY patches/ /opt/boxp/hermes-agent/patches/
-RUN /opt/hermes/.venv/bin/python /opt/boxp/hermes-agent/patches/fix-scheduler-network-unreachable.py \
-    && /opt/hermes/.venv/bin/python /opt/boxp/hermes-agent/patches/fix-task-board-delivery.py \
-    && /opt/hermes/.venv/bin/python /opt/boxp/hermes-agent/patches/fix-cron-delivery-copy.py \
-    && /opt/hermes/.venv/bin/python /opt/boxp/hermes-agent/patches/fix-vault-image.py \
-    && /opt/hermes/.venv/bin/python -m unittest discover -s /opt/boxp/hermes-agent/patches -p 'test_task_board_delivery.py' 2>&1 | tail -3

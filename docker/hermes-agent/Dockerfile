@@ -1,9 +1,9 @@
 # Upstream Hermes Agent, pinned by stable tag + multi-arch index digest so Renovate's
 # dockerfile manager can follow both the version and the digest (BOXP-313).
-# The annotated tag v0.22.5 records this index digest as dockerManifestDigest.
+# The annotated tag v0.23.1 records this index digest as dockerManifestDigest.
 # Do NOT drop the tag (a bare digest cannot be version-looked-up: "Updates: undefined")
 # and do NOT move to :latest / :stable (an unpinned moving tag).
-FROM docker.io/nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
+FROM docker.io/nousresearch/hermes-agent:v0.23.1@sha256:276d44685c65c0cb2a25f190b63c65c8906f9dc76486fb1c05ae71b5826bda08
 
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.14
 ARG BABASHKA_VERSION=1.13.229
@@ -17,7 +17,7 @@ ENV OBSIDIAN_HEADLESS_HOME=/opt/obsidian-headless \
     PATH=/opt/obsidian-headless/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # CVE-2026-92392 (HTTP/2 upload use-after-free, BOXP-236) and the eMudhra (emSign)
-# intermediate-CA compromise (BOXP-259). The v0.22.5 base (debian:trixie-20261020)
+# intermediate-CA compromise (BOXP-259). The v0.22.5+ bases
 # already ships the fixed curl 8.14.1-2+deb13u7, ca-certificates 20250419+deb13u1 and
 # certifi 2026.10.19, so no package is upgraded here any more; the build still FAILS
 # if a future base regresses below the fixed versions or re-trusts the revoked roots.
@@ -73,39 +73,16 @@ RUN set -eux; \
 RUN mv --help | grep -q -- --exchange
 
 COPY skills/ /opt/boxp/hermes-agent/skills/
-COPY patches/ /opt/boxp/hermes-agent/patches/
 
 RUN chmod 0644 /opt/boxp/hermes-agent/skills/obsidian-task-board/SKILL.md \
     && chmod 0755 /opt/boxp/hermes-agent/skills/obsidian-task-board/bin/task-board.bb /opt/boxp/hermes-agent/skills/obsidian-task-board/bin/task_board_todos.bb \
     && chown -R root:root /opt/obsidian-headless /opt/boxp/hermes-agent/skills
 
-# Patch upstream cron/scheduler.py: report ENETUNREACH / Errno 101 as "network
-# unreachable" instead of letting the shared error classifier call it a provider
-# timeout ("did not respond in time"). Still needed on v0.22.5 (BOXP-137 / BOXP-313).
-# The former add-webhook-mirror-to-session.py backport (BOXP-270) is upstream since
-# v0.22.x (gateway/platforms/webhook.py ``mirror_to_session``) and was removed.
-RUN /opt/hermes/.venv/bin/python /opt/boxp/hermes-agent/patches/fix-scheduler-network-unreachable.py \
-    && /opt/hermes/.venv/bin/python -m py_compile /opt/hermes/cron/scheduler.py \
-    && grep -q 'mirror_to_session' /opt/hermes/gateway/platforms/webhook.py
-
-# BOXP-373: task-board silence requires an exact Notes receipt. Unknown/failed
-# replies stay visible; metadata-only receipts prevent duplicate delivery after
-# a retry/restart. Build fails if upstream changes the reviewed integration.
-RUN /opt/hermes/.venv/bin/python /opt/boxp/hermes-agent/patches/fix-task-board-delivery.py \
-    && /opt/hermes/.venv/bin/python -m unittest discover -s /opt/boxp/hermes-agent/patches -p 'test_task_board_delivery.py'
+# BOXP-556: this image carries NO patch of the upstream Hermes source. Everything
+# site-specific lives in plugins using the documented extension points (lolice
+# argoproj/hermes-agent/plugins): notification delivery (boxp-notify), the home
+# vault-image route (kohako-vault-image), G2 context/gate and observers. Do not add
+# build-time edits of /opt/hermes here; they block upstream updates (BOXP-540).
 
 COPY sunrise/ /opt/boxp/hermes-agent/sunrise/
 RUN chmod 0755 /opt/boxp/hermes-agent/sunrise/sunrise-watch.sh /opt/boxp/hermes-agent/sunrise/watch.py
-
-# BOXP-501: retain successful Telegram cron deliveries for the home inbox.
-RUN /opt/hermes/.venv/bin/python /opt/boxp/hermes-agent/patches/fix-cron-delivery-copy.py \
-    && /opt/hermes/.venv/bin/python -m py_compile /opt/hermes/cron/scheduler_delivery.py /opt/hermes/cron/boxp_cron_delivery.py \
-    && /opt/hermes/.venv/bin/python -m unittest discover -s /opt/boxp/hermes-agent/patches -p 'test_cron_delivery.py' \
-    && for order in 'cron.scheduler cron.scheduler_delivery' 'cron.scheduler_delivery cron.scheduler'; do \
-         PYTHONPATH=/opt/hermes BOXP_CRON_COPY_RECOVERY_SECONDS=0 /opt/hermes/.venv/bin/python -c "import importlib, sys; [importlib.import_module(m) for m in sys.argv[1].split()]; import cron.scheduler as s, cron.scheduler_delivery as d; assert d._deliver_result.__name__ == 'wrapped' and s._deliver_result is d._deliver_result and d._deliver_via_live_adapter.__name__ == 'wrapped' and d._deliver_standalone.__name__ == 'wrapped' and d._live_send_text.__name__ == 'wrapped'" "$order" || exit 1; \
-       done
-
-# BOXP-542: owner-authenticated home display of selected vault images.
-RUN /opt/hermes/.venv/bin/python /opt/boxp/hermes-agent/patches/fix-vault-image.py \
-    && /opt/hermes/.venv/bin/python -m py_compile /opt/hermes/gateway/platforms/api_server.py /opt/hermes/gateway/platforms/boxp_vault_image.py \
-    && /opt/hermes/.venv/bin/python -m unittest discover -s /opt/boxp/hermes-agent/patches -p 'test_vault_image.py'
