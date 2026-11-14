@@ -3,8 +3,13 @@ import { interpretRequest, presentation, pcm16, rigStateOf, studioRigModelId, wa
 
 describe('Studio の状態', () => {
   it('応答・承認・停止を表示状態に変換する', () => {
-    expect(interpretRequest({ status: 'done', reply: { text: 'こんにちは' } })).toEqual({ state: 'done', text: 'こんにちは' })
-    expect(interpretRequest({ status: 'approval', approval: { approvalId: '123', summary: '操作', expiresAt: 100 } })).toEqual({ state: 'approval', approval: { approvalId: '123', summary: '操作', expiresAt: 100 } })
+    expect(interpretRequest({ status: 'done', reply: { text: 'こんにちは' } })).toEqual({
+      state: 'done',
+      text: 'こんにちは',
+    })
+    expect(
+      interpretRequest({ status: 'approval', approval: { approvalId: '123', summary: '操作', expiresAt: 100 } }),
+    ).toEqual({ state: 'approval', approval: { approvalId: '123', summary: '操作', expiresAt: 100 } })
     expect(interpretRequest({ status: 'failed', error: 'cancelled' })).toEqual({ state: 'stopped' })
     expect(interpretRequest({ status: 'pending' })).toEqual({ state: 'thinking' })
     expect(interpretRequest({ status: 'unknown' })).toEqual({ state: 'failed' })
