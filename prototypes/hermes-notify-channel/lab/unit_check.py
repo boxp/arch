@@ -333,6 +333,44 @@ async def stage2():
     telegram.update(sent=[], bodies=[])
 
 
+def cron_rewrite():
+    """BOXP-556: new cron jobs addressed to Telegram or to the creating chat go through the channel."""
+    def deliver(args, tool="cronjob_manage"):
+        directive = plugin.cron_deliver_rewrite(tool, args)
+        return None if directive is None else (directive["action"], directive["args"])
+    to_channel = ("modify", {"deliver": "boxp_notify:cron"})
+    check("cron rewrite: a create without deliver (the creating chat) goes to the channel",
+          deliver({"action": "create", "schedule": "every 1h", "prompt": "x"}) == to_channel
+          and deliver({"action": "create", "deliver": ""}) == to_channel
+          and deliver({"action": "Create", "deliver": "origin"}) == to_channel)
+    check("cron rewrite: Telegram targets and all go to the channel, once",
+          deliver({"action": "create", "deliver": "telegram"}) == to_channel
+          and deliver({"action": "create", "deliver": "telegram:-100123:17"}) == to_channel
+          and deliver({"action": "create", "deliver": ["telegram", "origin"]}) == to_channel
+          and deliver({"action": "create", "deliver": "origin,all"}) == to_channel)
+    check("cron rewrite: other elements are kept in order",
+          deliver({"action": "create", "deliver": "local,telegram"}) == ("modify", {"deliver": "local,boxp_notify:cron"})
+          and deliver({"action": "update", "job_id": "a", "deliver": "telegram:1"}) == to_channel)
+    check("cron rewrite: local, the channel itself, other platforms and non-delivery updates are untouched",
+          deliver({"action": "create", "deliver": "local"}) is None
+          and deliver({"action": "create", "deliver": "boxp_notify:cron"}) is None
+          and deliver({"action": "create", "deliver": "discord:1"}) is None
+          and deliver({"action": "update", "job_id": "a", "prompt": "y"}) is None
+          and deliver({"action": "update", "job_id": "a", "failure_deliver": "telegram"}) is None)
+    check("cron rewrite: other actions, other tools and malformed calls are untouched",
+          deliver({"action": "list"}) is None and deliver({"action": "run", "job_id": "a"}) is None
+          and deliver({"action": "create"}, tool="terminal") is None and deliver({"action": "create"}, tool="cronjob") is None and deliver(None) is None
+          and deliver({"deliver": "telegram"}) is None)
+    os.environ["BOXP_NOTIFY_ENABLED"] = "1"
+    check("cron rewrite: the hook follows the switches",
+          plugin._cron_hook(tool_name="cronjob_manage", args={"action": "create"}, session_id="s") is not None
+          and not os.environ.update(BOXP_NOTIFY_CRON_REWRITE="0")
+          and plugin._cron_hook(tool_name="cronjob_manage", args={"action": "create"}) is None
+          and not os.environ.update(BOXP_NOTIFY_CRON_REWRITE="1", BOXP_NOTIFY_ENABLED="")
+          and plugin._cron_hook(tool_name="cronjob_manage", args={"action": "create"}) is None)
+    os.environ.pop("BOXP_NOTIFY_CRON_REWRITE", None)
+
+
 async def send(ev):
     return await plugin.send_once(plugin.settings(), f"tb:{ev}", f"報告 event={ev}", None)
 
@@ -601,6 +639,7 @@ async def main():
           (cfg["telegram_token"], cfg["telegram_chat"], cfg["telegram_thread"]) == ("gw", "42", "9")
           and plugin.self_check(cfg) == [])
     await stage2()
+    cron_rewrite()
 
 if not LIB:
     asyncio.run(main())

@@ -1,4 +1,4 @@
-# hermes-notify-channel（BOXP-546 隔離試作、BOXP-553 段階 1、BOXP-554 段階 2）
+# hermes-notify-channel（BOXP-546 隔離試作、BOXP-553 段階 1、BOXP-554 段階 2、BOXP-556 段階 3〜4）
 
 **段階 1（BOXP-553）で、この plugin の写しを Alertmanager 通知だけに本番配備した。** 配備物は lolice
 `argoproj/hermes-agent/plugins/boxp-notify/`（既存 plugin と同じく ConfigMap から init container が入れる。
@@ -9,7 +9,14 @@ image には入れていない）で、`plugin/boxp-notify/` と同一内容に�
 `task-board-channel`（lolice の init container が既存 route `task-board` から導出）を dispatcher の送信先にし、
 cron は job の届け先を `boxp_notify:cron` にする。戻す時は dispatcher の送信先 URL と job の届け先を戻す。
 
-Hermes 本体 patch（`docker/hermes-agent/patches/`）が担っている通知配送を、
+**段階 3〜4（BOXP-556）で、本体 patch を image から外し、上流 v0.23.1 へ更新する。** `docker/hermes-agent/patches/`
+は削除した。旧 webhook route `task-board`（本体 patch 前提）は lolice の init container が消し、`task-board-channel` だけを
+残す。agent が `cronjob_manage` tool で作る job の届け先は、この plugin の `pre_tool_call` hook が Telegram（未指定・`origin`・
+`all`・`telegram[:…]`）から `boxp_notify:cron` へ書き換える（`BOXP_NOTIFY_CRON_REWRITE=0` で止められる）。CLI
+（`hermes cron create`）で Telegram 宛に作った job は書き換わらず、Telegram にだけ届く。戻す時は arch の変更を revert して
+patch 入りの image へ戻す（lolice 側は patch の有無どちらの image でも動く）。
+
+以下は試作時の説明。Hermes 本体 patch（当時の `docker/hermes-agent/patches/`）が担っていた通知配送を、
 公式の拡張機構（`kind: platform` の plugin）だけで置き換えられるかを、本番に触れない環境で実測するためのもの。
 `docker/hermes-agent/` の外に置いてあり、どの image build・配備にも含まれない。
 
@@ -75,7 +82,7 @@ lab/suite.sh boxp546/lab:v0.23.1 lab546a /path/to/evidence/v0.23.1   # 約 12 �
 lab/lab.sh down lab546a
 ```
 
-- `lab/Dockerfile.patched` は「上流 v0.22.5 ＋本番の本体 patch」の土台を作る（build context に `docker/hermes-agent/patches/` を置く）。並行稼働の確認用。
+- （`lab/Dockerfile.patched` は本体 patch の削除に伴い BOXP-556 で削除した。patch 入りの土台が要る時は当時の本番 image を digest 指定で使う。）
 - `lab/stage1.sh` は段階 1 の経路（Alertmanager payload → 本番の relay script → channel → 家の受信箱＋Telegram）を、
   本番 image（digest 指定）と lolice の manifest（設定・route・plugin 一式）で動かす。
   `stage1.sh build <tag> <本番 image> <lolice/argoproj/hermes-agent>`、`stage1.sh run <tag> <名前> <証跡dir>`。
@@ -86,7 +93,8 @@ lab/lab.sh down lab546a
   `stage2.sh run <tag> <名前> <証跡dir>`（約 12 分）。`STAGE2_CONFIG=<file>` で本番 PVC 上の config.yaml の写しを使う
   （model だけ擬似 LLM へ向ける）。場面: 正式報告（家のみ→dispatcher 完了→未読催促）、同じ event の再投入、記録なし無通知、
   記録つき無通知、例外、静音時間に入った後の報告（保留→朝の digest）、受信箱へ書けない時、routing を telegram にした時、
-  両方不通＋再起動、旧 route（本体 patch 経由）、cron（成功・失敗・同じ本文の再実行）、Alertmanager。
+  両方不通＋再起動、旧 route（残っていれば本体 patch 経由で届くこと、消えていれば拒否されること）、cron（成功・失敗・同じ本文の再実行）、Alertmanager。
+  BOXP-556 で追加: 画像表示 route（plugin `kohako-vault-image`）、agent が作る cron の届け先書き換え、全 plugin の公式検査。
 - `LAB_CRON_ONLY=1` で cron の場面だけ、`LAB_RUN_ARGS="-e BOXP_NOTIFY_CRON_BUCKET_SECONDS=60"` で重複排除の時間幅を変えられる。
 - `lab/cron-standalone.sh` は gateway を起動せず `hermes cron tick` だけで cron を届ける場面。
 - `lab/home-dispatch.sh <証跡> <作業dir>` は出来た受信箱を無改変の配送係（`task_board_events.bb`）に読ませ、擬似の家が受け取った内容を出す。
@@ -100,6 +108,6 @@ lab/lab.sh down lab546a
 - `lab-fail-home` / `lab-no-recovery` の印ファイルは障害を起こすための実測用。
 - Telegram 送信は 4000 字で分割するだけで、再送間隔の調整は無い。書式変換は Task Board と cron の 1 通に収まる本文だけ。
 - Task Board と cron の通知も channel 宛では Telegram の会話 session へ mirror されない（返信の文脈は家の会話と本文・Notes）。
-- cron job の届け先は job ごとの設定なので、Telegram 宛のまま作られた job は従来どおり本体 patch の経路（Telegram＋家の写し）で届く。
+- cron job の届け先は job ごとの設定。agent が作る job は hook が channel 宛へ書き換える（BOXP-556）。それ以外の方法で Telegram 宛に作られた job は Telegram にだけ届き、家の受信箱には載らない（本体 patch 撤去後）。
 - 起動時自己検査は結果を journal と gateway の log（warning）に書くだけで、監視へは繋いでいない。
 - Alertmanager 通知は channel 宛になったので、Telegram の会話 session への mirror（`mirror_to_session`）は無い。
