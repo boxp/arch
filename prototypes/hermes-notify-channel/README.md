@@ -12,8 +12,9 @@ cron は job の届け先を `boxp_notify:cron` にする。戻す時は dispatc
 **段階 3〜4（BOXP-556）で、本体 patch を image から外し、上流 v0.23.1 へ更新する。** `docker/hermes-agent/patches/`
 は削除した。旧 webhook route `task-board`（本体 patch 前提）は lolice の init container が消し、`task-board-channel` だけを
 残す。agent が `cronjob_manage` tool で作る job の届け先は、この plugin の `pre_tool_call` hook が Telegram（未指定・`origin`・
-`all`・`telegram[:…]`）から `boxp_notify:cron` へ書き換える（`BOXP_NOTIFY_CRON_REWRITE=0` で止められる）。CLI
-（`hermes cron create`）で Telegram 宛に作った job は書き換わらず、Telegram にだけ届く。戻す時は arch の変更を revert して
+`all`・`telegram[:…]`）から `boxp_notify:cron` へ書き換える（失敗通知の宛先 `failure_deliver` も同じ。
+`BOXP_NOTIFY_CRON_REWRITE=0` で止められる）。保存済みの job や CLI（`hermes cron create`）で Telegram 宛に作った job は、
+回復 loop（既定 60 秒ごと）が `hermes cron edit` で同じ宛先へ移す（完了済み・無効の job は触らない）。戻す時は arch の変更を revert して
 patch 入りの image へ戻す（lolice 側は patch の有無どちらの image でも動く）。
 
 以下は試作時の説明。Hermes 本体 patch（当時の `docker/hermes-agent/patches/`）が担っていた通知配送を、
@@ -108,6 +109,6 @@ lab/lab.sh down lab546a
 - `lab-fail-home` / `lab-no-recovery` の印ファイルは障害を起こすための実測用。
 - Telegram 送信は 4000 字で分割するだけで、再送間隔の調整は無い。書式変換は Task Board と cron の 1 通に収まる本文だけ。
 - Task Board と cron の通知も channel 宛では Telegram の会話 session へ mirror されない（返信の文脈は家の会話と本文・Notes）。
-- cron job の届け先は job ごとの設定。agent が作る job は hook が channel 宛へ書き換える（BOXP-556）。それ以外の方法で Telegram 宛に作られた job は Telegram にだけ届き、家の受信箱には載らない（本体 patch 撤去後）。
+- cron job の届け先は job ごとの設定。agent が作る job は hook が channel 宛へ書き換える（BOXP-556）。それ以外の方法で Telegram 宛に作られた job は回復 loop が channel 宛へ移す。移す前（最長で回復間隔）に実行された分は Telegram にだけ届き、家の受信箱には載らない（本体 patch 撤去後）。
 - 起動時自己検査は結果を journal と gateway の log（warning）に書くだけで、監視へは繋いでいない。
 - Alertmanager 通知は channel 宛になったので、Telegram の会話 session への mirror（`mirror_to_session`）は無い。

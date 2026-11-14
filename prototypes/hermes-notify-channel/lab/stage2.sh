@@ -98,10 +98,15 @@ if x 'test -d /opt/data/plugins/kohako-vault-image'; then
   for sc in cron-create cron-create-telegram cron-create-local; do
     x "cd /opt/hermes; timeout 120 ./.venv/bin/hermes chat -Q -t cronjob -q 'lab scenario=$sc' 2>&1 | grep -v 'install out of sync' | tail -1" || echo "chat $sc failed"
   done
+  mark "K2 (BOXP-556) jobs stored with a Telegram target (hermes cron create) are moved by the recovery loop"
+  x 'cd /opt/hermes; ./.venv/bin/hermes cron create --name lab-cli-telegram --deliver telegram:1000000001 "every 12h" "cron lab scenario=cron-report" 2>&1 | grep Created
+     ./.venv/bin/hermes cron create --name lab-cli-fd --deliver boxp_notify:cron --failure-deliver telegram:1000000001 "every 12h" "cron lab scenario=cron-report" 2>&1 | grep Created'
+  sleep 30
+  x 'grep cron_job_migrat /opt/data/boxp-notify/journal.jsonl' || echo "no migration journal"
   x 'python3 -c "
 import json
 for j in json.load(open(\"/opt/data/cron/jobs.json\"))[\"jobs\"]:
-    print(\"job\", j.get(\"name\"), \"deliver=\" + str(j.get(\"deliver\")))"'
+    print(\"job\", j.get(\"name\"), \"deliver=\" + str(j.get(\"deliver\")), \"failure_deliver=\" + str(j.get(\"failure_deliver\")))"'
   x 'grep cron_deliver_rewritten /opt/data/boxp-notify/journal.jsonl' || echo "no rewrite journal"
   mark "P1 (BOXP-556) plugin validation of every managed plugin on this image"
   for p in kohako-g2-context kohako-g2-realtime kohako-vault-image boxp-notify boxp-ai-ops-observer boxp-langfuse-observer; do
