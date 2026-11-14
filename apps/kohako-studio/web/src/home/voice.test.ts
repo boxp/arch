@@ -1,130 +1,314 @@
 import { expect, it, vi } from 'vitest'
 import { createVoicePlayer, splitVoiceSentences, VOICE_CHUNK_MAX } from './voice'
 import { splitSentences } from '../live2d/acting'
-const tick = () => new Promise(r => setTimeout(r, 0))
+const tick = () => new Promise((r) => setTimeout(r, 0))
 function setup(fetcher: typeof fetch) {
-  const audio = { src: '', duration: 2, onplaying: null as null | (() => void), onended: null as null | (() => void), onerror: null as null | (() => void), play: vi.fn(async () => { audio.onplaying?.() }), pause: vi.fn(), load: vi.fn(), removeAttribute: vi.fn(() => { audio.src = '' }) }
-  const revoke = vi.fn(), player = createVoicePlayer({ fetcher, audio: audio as unknown as HTMLAudioElement, createUrl: vi.fn(() => 'blob:test'), revokeUrl: revoke, retryDelay: async () => {} })
+  const audio = {
+    src: '',
+    duration: 2,
+    onplaying: null as null | (() => void),
+    onended: null as null | (() => void),
+    onerror: null as null | (() => void),
+    play: vi.fn(async () => {
+      audio.onplaying?.()
+    }),
+    pause: vi.fn(),
+    load: vi.fn(),
+    removeAttribute: vi.fn(() => {
+      audio.src = ''
+    }),
+  }
+  const revoke = vi.fn(),
+    player = createVoicePlayer({
+      fetcher,
+      audio: audio as unknown as HTMLAudioElement,
+      createUrl: vi.fn(() => 'blob:test'),
+      revokeUrl: revoke,
+      retryDelay: async () => {},
+    })
   const events = { onSentence: vi.fn(), onEnd: vi.fn(), onError: vi.fn() }
   return { audio, player, events, revoke }
 }
 it('groups contiguous units, immediately prefetches two, and resumes from a unit', async () => {
   const units = ['最初。', ...Array.from({ length: 8 }, (_, i) => String(i).repeat(55) + '。')]
-  const calls: string[] = [], resolvers: ((r: Response) => void)[] = []
-  let active = 0, maxActive = 0
-  const fetcher = vi.fn((_url, init) => { calls.push(JSON.parse(String(init?.body)).text); active++; maxActive = Math.max(maxActive, active); return new Promise<Response>(resolve => resolvers.push(r => { active--; resolve(r) })) }) as unknown as typeof fetch
-  const { player, audio, events } = setup(fetcher), onChunkEnd = vi.fn()
+  const calls: string[] = [],
+    resolvers: ((r: Response) => void)[] = []
+  let active = 0,
+    maxActive = 0
+  const fetcher = vi.fn((_url, init) => {
+    calls.push(JSON.parse(String(init?.body)).text)
+    active++
+    maxActive = Math.max(maxActive, active)
+    return new Promise<Response>((resolve) =>
+      resolvers.push((r) => {
+        active--
+        resolve(r)
+      }),
+    )
+  }) as unknown as typeof fetch
+  const { player, audio, events } = setup(fetcher),
+    onChunkEnd = vi.fn()
   player.speak(units, { ...events, onChunkEnd }, 1)
   expect(calls).toEqual([units[1], units[2]])
-  resolvers.shift()!(new Response('wav')); await tick()
+  resolvers.shift()!(new Response('wav'))
+  await tick()
   expect(calls).toHaveLength(3)
-  resolvers.shift()!(new Response('wav')); await tick()
+  resolvers.shift()!(new Response('wav'))
+  await tick()
   expect(calls).toHaveLength(4)
-  resolvers.shift()!(new Response('wav')); await tick()
+  resolvers.shift()!(new Response('wav'))
+  await tick()
   expect(calls).toHaveLength(4)
   while (!events.onEnd.mock.calls.length) {
-    audio.onended?.(); await tick()
-    while (resolvers.length) { resolvers.shift()!(new Response('wav')); await tick() }
+    audio.onended?.()
+    await tick()
+    while (resolvers.length) {
+      resolvers.shift()!(new Response('wav'))
+      await tick()
+    }
   }
   expect(maxActive).toBe(2)
   expect(calls.join('')).toBe(units.slice(1).join(''))
-  expect(calls.every(x => x.length <= 160)).toBe(true)
-  expect(onChunkEnd.mock.calls.map(x => x[0])).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
-  expect(events.onSentence.mock.calls.map(x => x[0])).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
+  expect(calls.every((x) => x.length <= 160)).toBe(true)
+  expect(onChunkEnd.mock.calls.map((x) => x[0])).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
+  expect(events.onSentence.mock.calls.map((x) => x[0])).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
 })
 it('cancel prevents stale fetch and playback', async () => {
   let resolve!: (response: Response) => void
-  const fetcher = vi.fn(() => new Promise<Response>(r => { resolve = r })) as unknown as typeof fetch, { audio, player, events } = setup(fetcher)
-  player.speak(['old'], events); player.cancel(); resolve(new Response('wav')); await tick(); expect(audio.play).not.toHaveBeenCalled(); expect(events.onSentence).not.toHaveBeenCalled()
-  player.speak(['new'], events); resolve(new Response('wav')); await tick(); expect(audio.play).toHaveBeenCalledTimes(1); const ended = audio.onended; player.cancel(); ended?.(); await tick(); expect(events.onEnd).not.toHaveBeenCalled()
+  const fetcher = vi.fn(
+      () =>
+        new Promise<Response>((r) => {
+          resolve = r
+        }),
+    ) as unknown as typeof fetch,
+    { audio, player, events } = setup(fetcher)
+  player.speak(['old'], events)
+  player.cancel()
+  resolve(new Response('wav'))
+  await tick()
+  expect(audio.play).not.toHaveBeenCalled()
+  expect(events.onSentence).not.toHaveBeenCalled()
+  player.speak(['new'], events)
+  resolve(new Response('wav'))
+  await tick()
+  expect(audio.play).toHaveBeenCalledTimes(1)
+  const ended = audio.onended
+  player.cancel()
+  ended?.()
+  await tick()
+  expect(events.onEnd).not.toHaveBeenCalled()
 })
 it('reports errors and splits long sentences', async () => {
   const { player, events } = setup((async () => new Response('', { status: 500 })) as typeof fetch)
-  player.speak(['x'], events); await tick(); expect(events.onError).toHaveBeenCalledWith('fetch_failed', 0)
-  const text = 'あ'.repeat(40) + '、' + 'い'.repeat(350); const chunks = splitVoiceSentences([text]); expect(chunks.join('')).toBe(text); expect(chunks.every(x => x.length <= VOICE_CHUNK_MAX)).toBe(true); expect(chunks[0].endsWith('、')).toBe(true)
+  player.speak(['x'], events)
+  await tick()
+  expect(events.onError).toHaveBeenCalledWith('fetch_failed', 0)
+  const text = 'あ'.repeat(40) + '、' + 'い'.repeat(350)
+  const chunks = splitVoiceSentences([text])
+  expect(chunks.join('')).toBe(text)
+  expect(chunks.every((x) => x.length <= VOICE_CHUNK_MAX)).toBe(true)
+  expect(chunks[0].endsWith('、')).toBe(true)
 })
 
 it('preserves a long novel through both splitters', () => {
   const text = ('「第123話！」彼女は驚いた……！？\n数字42と記号＠。\n'.repeat(80) + '長'.repeat(400)).trim()
-  const sentences = splitSentences(text), chunks = splitVoiceSentences(sentences)
-  expect(chunks.join('')).toBe(text); expect(sentences.every(s => Array.from(s).length <= 120)).toBe(true); expect(chunks.every(s => s.length <= VOICE_CHUNK_MAX)).toBe(true)
+  const sentences = splitSentences(text),
+    chunks = splitVoiceSentences(sentences)
+  expect(chunks.join('')).toBe(text)
+  expect(sentences.every((s) => Array.from(s).length <= 120)).toBe(true)
+  expect(chunks.every((s) => s.length <= VOICE_CHUNK_MAX)).toBe(true)
 })
 it('retries once and reports the failed group index', async () => {
   const calls: string[] = []
-  const fetcher = vi.fn(async (_url, init) => { const value = JSON.parse(String(init?.body)).text; calls.push(value); return new Response('wav', { status: value.startsWith('b') ? 500 : 200 }) }) as unknown as typeof fetch
+  const fetcher = vi.fn(async (_url, init) => {
+    const value = JSON.parse(String(init?.body)).text
+    calls.push(value)
+    return new Response('wav', { status: value.startsWith('b') ? 500 : 200 })
+  }) as unknown as typeof fetch
   const { player, audio, events } = setup(fetcher)
-  player.speak(['a', 'b'.repeat(60), 'c'.repeat(60)], events); await tick(); audio.onended?.()
+  player.speak(['a', 'b'.repeat(60), 'c'.repeat(60)], events)
+  await tick()
+  audio.onended?.()
   // 'c' の先読みは 'a' の完了と 'b' の再試行失敗の前後関係で出る/出ないが決まるため、件数ではなく再試行と報告位置を確かめる。
   await vi.waitFor(() => expect(events.onError).toHaveBeenCalledWith('fetch_failed', 1))
   expect(calls.slice(0, 1)).toEqual(['a'])
-  expect(calls.filter(x => x.startsWith('b'))).toEqual(['b'.repeat(60), 'b'.repeat(60)])
-  expect(calls.every(x => x === 'a' || x.startsWith('b') || x === 'c'.repeat(60))).toBe(true)
+  expect(calls.filter((x) => x.startsWith('b'))).toEqual(['b'.repeat(60), 'b'.repeat(60)])
+  expect(calls.every((x) => x === 'a' || x.startsWith('b') || x === 'c'.repeat(60))).toBe(true)
 })
 it('calls fetcher without a receiver so window.fetch does not throw Illegal invocation (BOXP-522)', async () => {
   // Chrome の window.fetch は this が Window/undefined 以外だと送信前に TypeError: Illegal invocation を投げる。
-  const fetcher = vi.fn(function (this: unknown) { if (this !== undefined && this !== globalThis) throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation"); return Promise.resolve(new Response('wav')) }) as unknown as typeof fetch
+  const fetcher = vi.fn(function (this: unknown) {
+    if (this !== undefined && this !== globalThis)
+      throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation")
+    return Promise.resolve(new Response('wav'))
+  }) as unknown as typeof fetch
   const { player, events } = setup(fetcher)
-  player.speak(['one'], events); await tick(); expect(events.onError).not.toHaveBeenCalled(); expect(events.onSentence).toHaveBeenCalledWith(0, 'one', 2)
+  player.speak(['one'], events)
+  await tick()
+  expect(events.onError).not.toHaveBeenCalled()
+  expect(events.onSentence).toHaveBeenCalledWith(0, 'one', 2)
 })
 it('extends past 120 only to finish an unfinished sentence and stops at 160', async () => {
   const units = ['first。', 'あ'.repeat(60), 'い'.repeat(60), 'う'.repeat(39) + '。', '終わり。']
   const calls: string[] = []
-  const fetcher = vi.fn(async (_url, init) => { calls.push(JSON.parse(String(init?.body)).text); return new Response('wav') }) as unknown as typeof fetch
+  const fetcher = vi.fn(async (_url, init) => {
+    calls.push(JSON.parse(String(init?.body)).text)
+    return new Response('wav')
+  }) as unknown as typeof fetch
   const { player, audio } = setup(fetcher)
-  player.speak(units, { onSentence: vi.fn(), onEnd: vi.fn(), onError: vi.fn() }); await tick()
-  audio.onended?.(); await tick(); audio.onended?.(); await tick(); audio.onended?.(); await tick()
+  player.speak(units, { onSentence: vi.fn(), onEnd: vi.fn(), onError: vi.fn() })
+  await tick()
+  audio.onended?.()
+  await tick()
+  audio.onended?.()
+  await tick()
+  audio.onended?.()
+  await tick()
   expect(calls).toEqual(['first。', units[1], units[2] + units[3], units[4]])
   player.cancel()
 })
 it('cancel discards buffered audio and aborts the in-flight request', async () => {
   const pending: { resolve: (r: Response) => void; signal: AbortSignal }[] = []
-  const fetcher = vi.fn((_url, init) => new Promise<Response>(resolve => pending.push({ resolve, signal: init!.signal as AbortSignal }))) as unknown as typeof fetch
+  const fetcher = vi.fn(
+    (_url, init) => new Promise<Response>((resolve) => pending.push({ resolve, signal: init!.signal as AbortSignal })),
+  ) as unknown as typeof fetch
   const { player, audio, events } = setup(fetcher)
   player.speak(['a', ...Array(5).fill('あ'.repeat(60) + '。')], events)
-  pending[0].resolve(new Response('wav')); await tick()
-  pending[1].resolve(new Response('wav')); await tick()
+  pending[0].resolve(new Response('wav'))
+  await tick()
+  pending[1].resolve(new Response('wav'))
+  await tick()
   expect(pending).toHaveLength(4)
-  const ended = audio.onended; player.cancel(); expect(pending[2].signal.aborted && pending[3].signal.aborted).toBe(true)
-  pending[2].resolve(new Response('wav')); pending[3].resolve(new Response('wav')); ended?.(); await tick()
-  expect(audio.play).toHaveBeenCalledTimes(1); expect(events.onEnd).not.toHaveBeenCalled(); expect(events.onError).not.toHaveBeenCalled()
+  const ended = audio.onended
+  player.cancel()
+  expect(pending[2].signal.aborted && pending[3].signal.aborted).toBe(true)
+  pending[2].resolve(new Response('wav'))
+  pending[3].resolve(new Response('wav'))
+  ended?.()
+  await tick()
+  expect(audio.play).toHaveBeenCalledTimes(1)
+  expect(events.onEnd).not.toHaveBeenCalled()
+  expect(events.onError).not.toHaveBeenCalled()
 })
 
 it('ramps group limits from the preceding group while preserving units', async () => {
   const units = Array.from({ length: 20 }, () => 'あ'.repeat(19) + '。')
   const calls: string[] = []
-  const fetcher = vi.fn(async (_url, init) => { calls.push(JSON.parse(String(init?.body)).text); return new Response('wav') }) as unknown as typeof fetch
+  const fetcher = vi.fn(async (_url, init) => {
+    calls.push(JSON.parse(String(init?.body)).text)
+    return new Response('wav')
+  }) as unknown as typeof fetch
   const { player, audio, events } = setup(fetcher)
-  player.speak(units, events); await tick()
-  while (!events.onEnd.mock.calls.length) { audio.onended?.(); await tick() }
-  expect(calls.map(x => x.length)).toEqual([20, 60, 80, 120, 120])
+  player.speak(units, events)
+  await tick()
+  while (!events.onEnd.mock.calls.length) {
+    audio.onended?.()
+    await tick()
+  }
+  expect(calls.map((x) => x.length)).toEqual([20, 60, 80, 120, 120])
   expect(calls.join('')).toBe(units.join(''))
 })
 
 function mixSetup(options: { enabled?: boolean; unavailable?: boolean; decodeFails?: boolean } = {}) {
-  const audio = { src: '', duration: 2, onplaying: null as null | (() => void), onended: null as null | (() => void), onerror: null, play: vi.fn(async () => { audio.onplaying?.() }), pause: vi.fn(), load: vi.fn(), removeAttribute: vi.fn() }
-  const sources: { onended: null | (() => void); buffer: unknown; connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn>; start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }[] = []
-  const gains: { gain: { value: number }; connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }[] = []
-  const context = { state: 'running', destination: {}, decodeAudioData: vi.fn(async () => { if (options.decodeFails) throw Error('decode'); return { duration: 6 } }), createBufferSource: () => { const s = { onended: null, buffer: null, connect: vi.fn(), disconnect: vi.fn(), start: vi.fn(), stop: vi.fn() }; sources.push(s); return s }, createGain: () => { const g = { gain: { value: 0 }, connect: vi.fn(), disconnect: vi.fn() }; gains.push(g); return g } }
+  const audio = {
+    src: '',
+    duration: 2,
+    onplaying: null as null | (() => void),
+    onended: null as null | (() => void),
+    onerror: null,
+    play: vi.fn(async () => {
+      audio.onplaying?.()
+    }),
+    pause: vi.fn(),
+    load: vi.fn(),
+    removeAttribute: vi.fn(),
+  }
+  const sources: {
+    onended: null | (() => void)
+    buffer: unknown
+    connect: ReturnType<typeof vi.fn>
+    disconnect: ReturnType<typeof vi.fn>
+    start: ReturnType<typeof vi.fn>
+    stop: ReturnType<typeof vi.fn>
+  }[] = []
+  const gains: { gain: { value: number }; connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }[] =
+    []
+  const context = {
+    state: 'running',
+    destination: {},
+    decodeAudioData: vi.fn(async () => {
+      if (options.decodeFails) throw Error('decode')
+      return { duration: 6 }
+    }),
+    createBufferSource: () => {
+      const s = { onended: null, buffer: null, connect: vi.fn(), disconnect: vi.fn(), start: vi.fn(), stop: vi.fn() }
+      sources.push(s)
+      return s
+    },
+    createGain: () => {
+      const g = { gain: { value: 0 }, connect: vi.fn(), disconnect: vi.fn() }
+      gains.push(g)
+      return g
+    },
+  }
   const events = { onSentence: vi.fn(), onChunkEnd: vi.fn(), onEnd: vi.fn(), onError: vi.fn() }
-  const player = createVoicePlayer({ fetcher: (async () => new Response('wav')) as typeof fetch, audio: audio as unknown as HTMLAudioElement, createUrl: () => 'blob:test', revokeUrl: vi.fn(), mixer: { enabled: () => options.enabled !== false, context: async () => options.unavailable ? null : context as unknown as AudioContext, gain: () => 0.7 } })
+  const player = createVoicePlayer({
+    fetcher: (async () => new Response('wav')) as typeof fetch,
+    audio: audio as unknown as HTMLAudioElement,
+    createUrl: () => 'blob:test',
+    revokeUrl: vi.fn(),
+    mixer: {
+      enabled: () => options.enabled !== false,
+      context: async () => (options.unavailable ? null : (context as unknown as AudioContext)),
+      gain: () => 0.7,
+    },
+  })
   return { audio, sources, gains, events, player, context }
 }
 it('mixes sequential chunks and resumes at the requested index', async () => {
   const { audio, sources, gains, events, player } = mixSetup()
-  player.speak(['skip', 'first。', 'second。'], events, 1); await tick()
-  expect(audio.play).not.toHaveBeenCalled(); expect(events.onSentence).toHaveBeenCalledWith(1, 'first。', 6)
-  expect(gains[0].gain.value).toBe(0.7); player.setVolume(0.2); expect(gains[0].gain.value).toBe(0.2)
-  sources[0].onended?.(); await tick(); expect(events.onChunkEnd).toHaveBeenCalledWith(1)
-  expect(events.onSentence).toHaveBeenCalledWith(2, 'second。', 6); sources[1].onended?.(); await tick()
-  expect(events.onChunkEnd).toHaveBeenCalledWith(2); expect(events.onEnd).toHaveBeenCalledOnce()
+  player.speak(['skip', 'first。', 'second。'], events, 1)
+  await tick()
+  expect(audio.play).not.toHaveBeenCalled()
+  expect(events.onSentence).toHaveBeenCalledWith(1, 'first。', 6)
+  expect(gains[0].gain.value).toBe(0.7)
+  player.setVolume(0.2)
+  expect(gains[0].gain.value).toBe(0.2)
+  sources[0].onended?.()
+  await tick()
+  expect(events.onChunkEnd).toHaveBeenCalledWith(1)
+  expect(events.onSentence).toHaveBeenCalledWith(2, 'second。', 6)
+  sources[1].onended?.()
+  await tick()
+  expect(events.onChunkEnd).toHaveBeenCalledWith(2)
+  expect(events.onEnd).toHaveBeenCalledOnce()
 })
 it('stops a mixed source and ignores its stale end on cancel', async () => {
-  const { sources, events, player } = mixSetup(); player.speak(['a', 'b'], events); await tick()
-  const ended = sources[0].onended; player.cancel(); expect(sources[0].stop).toHaveBeenCalledOnce(); expect(sources[0].disconnect).toHaveBeenCalled(); ended?.(); await tick()
-  expect(sources).toHaveLength(1); expect(events.onChunkEnd).not.toHaveBeenCalled(); expect(events.onEnd).not.toHaveBeenCalled(); expect(events.onError).not.toHaveBeenCalled()
+  const { sources, events, player } = mixSetup()
+  player.speak(['a', 'b'], events)
+  await tick()
+  const ended = sources[0].onended
+  player.cancel()
+  expect(sources[0].stop).toHaveBeenCalledOnce()
+  expect(sources[0].disconnect).toHaveBeenCalled()
+  ended?.()
+  await tick()
+  expect(sources).toHaveLength(1)
+  expect(events.onChunkEnd).not.toHaveBeenCalled()
+  expect(events.onEnd).not.toHaveBeenCalled()
+  expect(events.onError).not.toHaveBeenCalled()
 })
-it.each([{ decodeFails: true }, { unavailable: true }, { enabled: false }])('falls back to audio for %j', async options => {
-  const { player, audio, sources, events } = mixSetup(options); player.speak(['a'], events); await tick()
-  expect(audio.play).toHaveBeenCalledOnce(); expect(sources).toHaveLength(0); expect(events.onSentence).toHaveBeenCalledWith(0, 'a', 2)
-  audio.onended?.(); await tick(); expect(events.onEnd).toHaveBeenCalledOnce()
-})
+it.each([{ decodeFails: true }, { unavailable: true }, { enabled: false }])(
+  'falls back to audio for %j',
+  async (options) => {
+    const { player, audio, sources, events } = mixSetup(options)
+    player.speak(['a'], events)
+    await tick()
+    expect(audio.play).toHaveBeenCalledOnce()
+    expect(sources).toHaveLength(0)
+    expect(events.onSentence).toHaveBeenCalledWith(0, 'a', 2)
+    audio.onended?.()
+    await tick()
+    expect(events.onEnd).toHaveBeenCalledOnce()
+  },
+)

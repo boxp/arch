@@ -1,27 +1,51 @@
 import { LATEST_MODEL_ID, normalizeModelId, rigModels, type RigModelId } from '../live2d/model'
-export type State = 'idle' | 'listening' | 'thinking' | 'speaking' | 'done' | 'approval' | 'failed' | 'offline' | 'stopped'
+export type State =
+  | 'idle'
+  | 'listening'
+  | 'thinking'
+  | 'speaking'
+  | 'done'
+  | 'approval'
+  | 'failed'
+  | 'offline'
+  | 'stopped'
 export const presentation: Record<State, { label: string; face: string }> = {
-  idle: { label: '待機中', face: 'idle' }, listening: { label: '聞いています', face: 'listening' },
-  thinking: { label: '考えています', face: 'thinking' }, speaking: { label: '話しています', face: 'guiding' },
-  done: { label: '応答を表示中', face: 'happy' }, approval: { label: '承認待ち', face: 'alert' },
-  failed: { label: '失敗', face: 'failed' }, offline: { label: '未接続', face: 'offline' }, stopped: { label: '停止しました', face: 'stopped' },
+  idle: { label: '待機中', face: 'idle' },
+  listening: { label: '聞いています', face: 'listening' },
+  thinking: { label: '考えています', face: 'thinking' },
+  speaking: { label: '話しています', face: 'guiding' },
+  done: { label: '応答を表示中', face: 'happy' },
+  approval: { label: '承認待ち', face: 'alert' },
+  failed: { label: '失敗', face: 'failed' },
+  offline: { label: '未接続', face: 'offline' },
+  stopped: { label: '停止しました', face: 'stopped' },
 }
 type Approval = { approvalId: string; summary: string; expiresAt: number }
 export type Result = { state: State; text?: string; approval?: Approval }
 export function interpretRequest(data: Record<string, unknown>): Result {
   if (data.status === 'pending') return { state: 'thinking' }
-  if (data.status === 'done' && data.reply && typeof data.reply === 'object' && typeof (data.reply as Record<string, unknown>).text === 'string') return { state: 'done', text: (data.reply as { text: string }).text }
+  if (
+    data.status === 'done' &&
+    data.reply &&
+    typeof data.reply === 'object' &&
+    typeof (data.reply as Record<string, unknown>).text === 'string'
+  )
+    return { state: 'done', text: (data.reply as { text: string }).text }
   if (data.status === 'approval' && data.approval && typeof data.approval === 'object') {
     const a = data.approval as Record<string, unknown>
-    if (typeof a.approvalId === 'string' && typeof a.summary === 'string' && typeof a.expiresAt === 'number') return { state: 'approval', approval: { approvalId: a.approvalId, summary: a.summary, expiresAt: a.expiresAt } }
+    if (typeof a.approvalId === 'string' && typeof a.summary === 'string' && typeof a.expiresAt === 'number')
+      return { state: 'approval', approval: { approvalId: a.approvalId, summary: a.summary, expiresAt: a.expiresAt } }
   }
   return { state: data.status === 'failed' && data.error === 'cancelled' ? 'stopped' : 'failed' }
 }
 /** 入力サンプルを平均化して 16kHz、符号付き PCM16 little endian にする。 */
 export function pcm16(samples: Float32Array, rate: number): Uint8Array {
-  const length = Math.floor(samples.length * 16000 / rate), bytes = new Uint8Array(length * 2), view = new DataView(bytes.buffer)
+  const length = Math.floor((samples.length * 16000) / rate),
+    bytes = new Uint8Array(length * 2),
+    view = new DataView(bytes.buffer)
   for (let i = 0; i < length; i++) {
-    const start = Math.floor(i * rate / 16000), end = Math.max(start + 1, Math.floor((i + 1) * rate / 16000))
+    const start = Math.floor((i * rate) / 16000),
+      end = Math.max(start + 1, Math.floor(((i + 1) * rate) / 16000))
     let sum = 0
     for (let j = start; j < end; j++) sum += samples[j] ?? 0
     const value = Math.max(-1, Math.min(1, sum / (end - start)))
@@ -31,8 +55,15 @@ export function pcm16(samples: Float32Array, rate: number): Uint8Array {
 }
 /** Studio の表示状態を Web リグの状態に写す（応答表示中・停止は待機、未接続は失敗の姿勢）。 */
 export const rigStateOf: Record<State, 'idle' | 'listening' | 'thinking' | 'speaking' | 'approval' | 'failed'> = {
-  idle: 'idle', done: 'idle', stopped: 'idle', listening: 'listening', thinking: 'thinking', speaking: 'speaking',
-  approval: 'approval', failed: 'failed', offline: 'failed',
+  idle: 'idle',
+  done: 'idle',
+  stopped: 'idle',
+  listening: 'listening',
+  thinking: 'thinking',
+  speaking: 'speaking',
+  approval: 'approval',
+  failed: 'failed',
+  offline: 'failed',
 }
 /** `?face=static` なら Web リグを読まず従来の静止表情だけを使う。 */
 export function wantsRig(search: string): boolean {
@@ -41,14 +72,21 @@ export function wantsRig(search: string): boolean {
 /** 本人モデルを選択し、未指定・不明値・サンプル指定は最新にする。 */
 export function studioRigModelId(search: string): RigModelId {
   const id = normalizeModelId(new URLSearchParams(search).get('model'))
-  return rigModels.find(m => m.id === id && m.id !== 'sample')?.id ?? LATEST_MODEL_ID
+  return rigModels.find((m) => m.id === id && m.id !== 'sample')?.id ?? LATEST_MODEL_ID
 }
 /** 読み上げが無効・使えない・失敗したときに、応答文の長さから口パクだけ見せる秒数（1.5〜10 秒）。 */
 export function silentSpeechSeconds(text: string): number {
   const chars = [...text.replace(/\s+/g, '')].length
   return Math.min(10, Math.max(1.5, chars / 8))
 }
-export type Outgoing = { kind: 'text'; text: string; requestId: string; expiresAt: number; attachments?: string[]; attachmentNames?: string[] }
+export type Outgoing = {
+  kind: 'text'
+  text: string
+  requestId: string
+  expiresAt: number
+  attachments?: string[]
+  attachmentNames?: string[]
+}
 /** 期限切れと判断する前に置く猶予（端末と BFF の時計ずれ・遅延到着に備える）。 */
 export const EXPIRY_GRACE_MS = 60_000
 export function newOutgoing(text: string, now: number, newId: () => string): Outgoing {
@@ -62,7 +100,11 @@ export function newOutgoing(text: string, now: number, newId: () => string): Out
  * - 404 かつ期限+猶予を過ぎた: BFF は期限切れの到着を 410 で拒否するので以後受理されない → 新しい ID で送れる。
  * - それ以外（通信失敗・5xx・404 だが猶予内で期限切れ）: 状態不明のまま保持し、送らない。
  */
-export function resolveUnconfirmed(unconfirmed: Outgoing, lookupStatus: number | null, now: number): 'attach' | 'resend' | 'new' | 'wait' {
+export function resolveUnconfirmed(
+  unconfirmed: Outgoing,
+  lookupStatus: number | null,
+  now: number,
+): 'attach' | 'resend' | 'new' | 'wait' {
   if (lookupStatus === 200) return 'attach'
   if (lookupStatus === 404) {
     if (unconfirmed.expiresAt > now) return 'resend'
