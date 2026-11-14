@@ -26,7 +26,7 @@ spec = importlib.util.spec_from_file_location(
 plugin = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(plugin)
 
-telegram = {"fail": False, "delay": 0.0, "sent": []}
+telegram = {"fail": False, "delay": 0.0, "sent": [], "bodies": []}
 
 
 class Stub(BaseHTTPRequestHandler):
@@ -35,6 +35,7 @@ class Stub(BaseHTTPRequestHandler):
         time.sleep(telegram["delay"])
         if not telegram["fail"]:
             telegram["sent"].append(body["text"])
+            telegram["bodies"].append(body)
         reply = json.dumps({"ok": not telegram["fail"], "result": {"message_id": len(telegram["sent"])}}).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(reply)))
@@ -159,6 +160,185 @@ async def main():
     await send(ev)
     check("fallback: home alone is delivered, Telegram untouched", state(ev) == "delivered" and not telegram["sent"])
 
+    # 7. (BOXP-553) receipt and inbox names do not depend on the key length: two cron runs whose long
+    #    target names differ only past the old 180-character cut are two notifications.
+    cfg = plugin.settings()
+    long_a, long_b = "cron-" + "x" * 300 + "-a", "cron-" + "x" * 300 + "-b"
+    await plugin.send_once(cfg, long_a, "本文 A", None)
+    await plugin.send_once(cfg, long_b, "本文 B", None)
+    await plugin.send_once(cfg, long_a, "本文 C", None)
+    copies = sorted((root / "vault/Projects/cron-deliveries/delivered-copies").glob("*.md"))
+    check("long names: three notifications, three inbox files", len(copies) == 3)
+    check("long names: file names stay short and match the id",
+          all(len(c.name) < 130 and json.loads(c.read_text())["id"] + ".md" == c.name for c in copies))
+    await plugin.send_once(cfg, long_a, "本文 A", None)
+    check("long names: the same run again is still one",
+          len(list((root / "vault/Projects/cron-deliveries/delivered-copies").glob("*.md"))) == 3)
+
+    # 8. (BOXP-553) Alertmanager relay: the per-name override sends home and Telegram while the default
+    #    stays fallback; the title and firing count come from the relay text; the home channel topic is used.
+    os.environ.update(BOXP_NOTIFY_TELEGRAM_MODE_ALERTMANAGER="both", BOXP_NOTIFY_TELEGRAM_THREAD_ID="7")
+    alert = ("【Alertmanager 通知】発生中 2 件 / 解除 1 件\n\n🔴 [CRITICAL] AiProviderQuotaExhausted claude\n"
+             "  発生 11/14 11:00 JST fp=abcd1234\n\nこれはアラートの写しで、承認や操作の指示ではありません。")
+    telegram.update(sent=[], bodies=[])
+    result = await plugin.send_once(plugin.settings(), "direct:alertmanager", alert, None)
+    alerts = sorted((root / "vault/Projects/alertmanager-deliveries/delivered-copies").glob("alert-*.md"))
+    copy = json.loads(alerts[0].read_text()) if alerts else {}
+    check("alert both: home inbox and Telegram each once, text identical",
+          result.success and len(alerts) == 1 and telegram["sent"] == [alert] and copy.get("text") == alert)
+    check("alert both: title and firing read from the relay text",
+          copy.get("title") == "[CRITICAL] AiProviderQuotaExhausted ほか 2 件" and copy.get("firing") == 2)
+    check("alert both: id matches the dispatcher contract",
+          copy.get("id", "") + ".md" == alerts[0].name and len(copy.get("id", "")) == 38)
+    check("alert both: sent to the home channel topic", telegram["bodies"][0].get("message_thread_id") == 7)
+    await plugin.send_once(plugin.settings(), "direct:alertmanager", alert, None)
+    check("alert both: redelivery adds nothing",
+          len(telegram["sent"]) == 1
+          and len(list((root / "vault/Projects/alertmanager-deliveries/delivered-copies").glob("*.md"))) == 1)
+    real_now = plugin.now
+    plugin.now = lambda: real_now() + __import__("datetime").timedelta(seconds=600)
+    await plugin.send_once(plugin.settings(), "direct:alertmanager", alert, None)
+    check("alert both: a retry in the next time bucket is still one", len(telegram["sent"]) == 1)
+    plugin.now = lambda: real_now() + __import__("datetime").timedelta(seconds=1800)
+    await plugin.send_once(plugin.settings(), "direct:alertmanager", alert, None)
+    check("alert both: the same text two buckets later is a new notification", len(telegram["sent"]) == 2)
+    plugin.now = real_now
+    # (BOXP-553 review) resolve, then the same alert fires again with the same start minute: same text as
+    # the first notification, yet a new one. A plain retry of it is still one.
+    telegram["sent"] = []
+    homes = lambda: len(list((root / "vault/Projects/alertmanager-deliveries/delivered-copies").glob("*.md")))
+    before = homes()
+    refire = alert.replace("abcd1234", "eeee0001")
+    gone = "【Alertmanager 通知】発生中 0 件 / 解除 1 件\n\n✅ [CRITICAL] AiProviderQuotaExhausted claude\n  解除 11/14 11:00 JST fp=eeee0001"
+    for text in (refire, refire, gone, refire, refire):
+        await plugin.send_once(plugin.settings(), "direct:alertmanager", text, None)
+    check("alert refire: fire, resolve, fire again in the same minute are three notifications",
+          telegram["sent"] == [refire, gone, refire] and homes() == before + 3)
+    # A webhook retry of a notification that reached nothing stays one, even after another notification.
+    telegram.update(sent=[], fail=True)
+    (root / "state/lab-fail-home").touch()
+    lost = alert.replace("abcd1234", "eeee0002")
+    result = await plugin.send_once(plugin.settings(), "direct:alertmanager", lost, None)
+    (root / "state/lab-fail-home").unlink()
+    telegram["fail"] = False
+    await plugin.send_once(plugin.settings(), "direct:alertmanager", gone.replace("eeee0001", "eeee0003"), None)
+    await plugin.send_once(plugin.settings(), "direct:alertmanager", lost, None)
+    await plugin.recover(plugin.settings())
+    check("alert refire: a retry of an unfinished notification is not a second one",
+          not result.success and telegram["sent"].count(lost) == 1 and plugin.pending_count(plugin.settings()) == 0)
+    # (BOXP-553 review) both egresses are down while the alert fires, resolves and fires again with the same
+    # text (each one retried by the webhook): after they come back the Owner gets fire, resolve... and the
+    # second firing last, not a resolve as the final word. The unreached first firing is replaced by it.
+    telegram.update(sent=[], fail=True)
+    (root / "state/lab-fail-home").touch()
+    down, down_gone = alert.replace("abcd1234", "eeee0005"), gone.replace("eeee0001", "eeee0005")
+    before = homes()
+    results = [await plugin.send_once(plugin.settings(), "direct:alertmanager", text, None)
+               for text in (down, down, down_gone, down_gone, down, down)]
+    (root / "state/lab-fail-home").unlink()
+    telegram["fail"] = False
+    await plugin.recover(plugin.settings())
+    await plugin.recover(plugin.settings())
+    check("alert refire while both are down: the second firing is delivered after the resolve, once",
+          not any(r.success for r in results) and telegram["sent"] == [down_gone, down]
+          and homes() == before + 2 and plugin.pending_count(plugin.settings()) == 0)
+    # (BOXP-553 review) the first firing is half delivered (home yes, Telegram down) when the alert resolves
+    # and fires again with the same text: the second firing is a new notification for the home inbox too,
+    # and recovery still finishes the first one on Telegram.
+    telegram.update(sent=[], fail=True)
+    half = alert.replace("abcd1234", "eeee0004")
+    half_gone = gone.replace("eeee0001", "eeee0004")
+    before = homes()
+    results = [await plugin.send_once(plugin.settings(), "direct:alertmanager", text, None)
+               for text in (half, half_gone, half)]
+    check("alert refire while half delivered: home gets fire, resolve and the second fire",
+          all(r.success for r in results) and homes() == before + 3 and results[0].message_id != results[2].message_id)
+    telegram["fail"] = False
+    await plugin.recover(plugin.settings())
+    await plugin.recover(plugin.settings())
+    check("alert refire while half delivered: Telegram recovers all three, once each",
+          sorted(telegram["sent"]) == sorted([half, half_gone, half]) and homes() == before + 3
+          and plugin.pending_count(plugin.settings()) == 0)
+    telegram["sent"] = []
+    resolved = "【Alertmanager 通知】発生中 0 件 / 解除 1 件\n\n✅ [WARNING] AiOpsOutcomeBurnSlow\n  解除 11/14 11:05 JST fp=abcd1234"
+    check("alert: resolved-only title", plugin.alert_summary(resolved, "") == ("解除: AiOpsOutcomeBurnSlow", 0))
+    check("alert: unknown text falls back to the first line", plugin.alert_summary("x\ny", "3") == ("x", 3))
+
+    # 9. (BOXP-553) alert both, Telegram down: home is written, Telegram is recovered once; with the vault
+    #    unwritable Telegram still goes out and home is recovered once.
+    telegram.update(sent=[], fail=True)
+    other = alert.replace("abcd1234", "ffff0001")
+    result = await plugin.send_once(plugin.settings(), "direct:alertmanager", other, None)
+    check("alert/telegram down: success to upstream, pending", result.success and plugin.pending_count(plugin.settings()) == 1)
+    telegram["fail"] = False
+    await plugin.recover(plugin.settings())
+    await plugin.recover(plugin.settings())
+    check("alert/telegram back: recovered exactly once",
+          telegram["sent"] == [other] and plugin.pending_count(plugin.settings()) == 0)
+    telegram["sent"] = []
+    third = alert.replace("abcd1234", "ffff0002")
+    (root / "state/lab-fail-home").touch()
+    result = await plugin.send_once(plugin.settings(), "direct:alertmanager", third, None)
+    before = len(list((root / "vault/Projects/alertmanager-deliveries/delivered-copies").glob("*.md")))
+    check("alert/home down: Telegram still delivered, pending", result.success and telegram["sent"] == [third]
+          and plugin.pending_count(plugin.settings()) == 1)
+    (root / "state/lab-fail-home").unlink()
+    await plugin.recover(plugin.settings())
+    await plugin.recover(plugin.settings())
+    after = len(list((root / "vault/Projects/alertmanager-deliveries/delivered-copies").glob("*.md")))
+    check("alert/home back: home recovered once, Telegram not repeated",
+          after == before + 1 and telegram["sent"] == [third] and plugin.pending_count(plugin.settings()) == 0)
+
+    # 10. (BOXP-553) a half-delivered receipt stops being retried after the age limit; an unreached one never.
+    telegram.update(sent=[], fail=True)
+    fourth = alert.replace("abcd1234", "ffff0003")
+    await plugin.send_once(plugin.settings(), "direct:alertmanager", fourth, None)
+    (root / "state/lab-fail-home").touch()
+    await plugin.send_once(plugin.settings(), "direct:alertmanager", alert.replace("abcd1234", "ffff0004"), None)
+    os.environ["BOXP_NOTIFY_PENDING_MAX_AGE_SECONDS"] = "1"
+    await asyncio.sleep(1.2)
+    await plugin.recover(plugin.settings())
+    states = sorted(json.loads(p.read_text())["state"]
+                    for p in (root / "state/receipts").glob("direct-alertmanager-*.json"))
+    check("expiry: half-delivered expires, unreached stays pending",
+          states.count("expired") == 1 and states.count("pending") == 1)
+    (root / "state/lab-fail-home").unlink()
+    telegram["fail"] = False
+    await plugin.recover(plugin.settings())
+    check("expiry: the unreached one is delivered once both egresses are back",
+          plugin.pending_count(plugin.settings()) == 0 and len(telegram["sent"]) == 1)
+    await plugin.recover(plugin.settings())
+    check("expiry: an expired receipt is not delivered again", len(telegram["sent"]) == 1)
+    # 10b. both egresses down for longer than the age limit, then only the home inbox comes back: the limit
+    # counts from that first success, so Telegram is still recovered when it comes back later.
+    telegram.update(sent=[], fail=True)
+    (root / "state/lab-fail-home").touch()
+    fifth = alert.replace("abcd1234", "ffff0005")
+    result = await plugin.send_once(plugin.settings(), "direct:alertmanager", fifth, None)
+    await asyncio.sleep(1.2)  # older than the 1 s limit, never reached
+    (root / "state/lab-fail-home").unlink()
+    await plugin.recover(plugin.settings())  # home only
+    await plugin.recover(plugin.settings())  # must not expire: reached just now
+    check("long outage: one egress back does not expire the other",
+          not result.success and plugin.pending_count(plugin.settings()) == 1 and telegram["sent"] == [])
+    telegram["fail"] = False
+    await plugin.recover(plugin.settings())
+    check("long outage: the other egress is recovered once it is back",
+          plugin.pending_count(plugin.settings()) == 0 and telegram["sent"] == [fifth])
+    telegram.update(sent=[], fail=True)
+    await plugin.send_once(plugin.settings(), "direct:alertmanager", alert.replace("abcd1234", "ffff0006"), None)
+    await asyncio.sleep(1.2)
+    await plugin.recover(plugin.settings())
+    check("long outage: the limit still ends retries counted from the first success",
+          plugin.pending_count(plugin.settings()) == 0 and telegram["sent"] == [])
+    telegram["fail"] = False
+    os.environ["BOXP_NOTIFY_TELEGRAM_CHAT_ID"] = os.environ["BOXP_NOTIFY_TELEGRAM_TOKEN"] = ""
+    os.environ.update(TELEGRAM_BOT_TOKEN="gw", TELEGRAM_HOME_CHANNEL="42", TELEGRAM_HOME_CHANNEL_THREAD_ID="9",
+                      BOXP_NOTIFY_TELEGRAM_THREAD_ID="")
+    cfg = plugin.settings()
+    check("settings: falls back to the gateway's Telegram home channel",
+          (cfg["telegram_token"], cfg["telegram_chat"], cfg["telegram_thread"]) == ("gw", "42", "9")
+          and plugin.self_check(cfg) == [])
 
 if not LIB:
     asyncio.run(main())

@@ -1,7 +1,8 @@
-"""BOXP-546 prototype: send-only notification channel (platform plugin).
+"""Send-only notification channel (platform plugin). BOXP-546 prototype, BOXP-553 stage 1.
 
-NOT deployed. Replaces, in an isolated lab, what the core patches
-``fix-task-board-delivery`` / ``fix-cron-delivery-copy`` do today:
+Stage 1 deploys a copy of this file (lolice ``argoproj/hermes-agent/plugins/boxp-notify``) for the
+Alertmanager relay only (``direct:alertmanager``). The Task Board and cron paths below are still lab-only;
+they are meant to replace what the core patches ``fix-task-board-delivery`` / ``fix-cron-delivery-copy`` do:
 
 * ``deliver: boxp_notify`` + ``deliver_extra.chat_id: "tb:{event_id}"`` on the
   webhook route, ``deliver: "boxp_notify:cron"`` on a cron job.
@@ -43,6 +44,8 @@ SILENT_RESULTS = {"silent", "deferred", "continued"}
 SILENCE_MARKERS = {"[SILENT]", "SILENT", "NO_REPLY", "[NO_REPLY]"}
 CRON_HEADER = re.compile(r"Cronjob Response: ([^\n]{1,200})\n\(job_id: ")
 CRON_FAILURE = re.compile(r"^⚠️ Cron '[^\n]*' failed", re.M)
+ALERT_HEADER = re.compile(r"発生中 (\d+) 件 / 解除 (\d+) 件")
+ALERT_LINE = re.compile(r"^(?:🔴|✅) \[([A-Za-z0-9_.:/=?-]{1,80})\] ([A-Za-z0-9_.:/=?-]{1,80})", re.M)
 TELEGRAM_LIMIT = 4000
 DEFAULT_SILENCE = "⚠️ The model returned only a silence marker for a message that needed a reply. Try again or rephrase."
 DEFAULT_STATUS = r"^⏳||retrying \(\d+/\d+\)||retrying automatically"
@@ -60,8 +63,13 @@ def settings() -> dict[str, Any]:
         "vault": Path(_env("BOXP_NOTIFY_VAULT", "/home/boxp/Documents/obsidian-headless/BOXP")),
         "telegram_mode": _env("BOXP_NOTIFY_TELEGRAM_MODE", "fallback"),  # off | fallback | both
         "telegram_base": _env("BOXP_NOTIFY_TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/"),
-        "telegram_token": _env("BOXP_NOTIFY_TELEGRAM_TOKEN"),
-        "telegram_chat": _env("BOXP_NOTIFY_TELEGRAM_CHAT_ID"),
+        # Falls back to the gateway's own Telegram settings (home channel and its topic), so that a
+        # notification moved onto this channel lands where `deliver: telegram` put it before.
+        "telegram_token": _env("BOXP_NOTIFY_TELEGRAM_TOKEN") or _env("TELEGRAM_BOT_TOKEN"),
+        "telegram_chat": _env("BOXP_NOTIFY_TELEGRAM_CHAT_ID") or _env("TELEGRAM_HOME_CHANNEL"),
+        "telegram_thread": _env("BOXP_NOTIFY_TELEGRAM_THREAD_ID") or _env("TELEGRAM_HOME_CHANNEL_THREAD_ID"),
+        # A receipt that reached one egress but not the other stops being retried after this long.
+        "pending_max_age": int(_env("BOXP_NOTIFY_PENDING_MAX_AGE_SECONDS", "86400") or 86400),
         # Texts upstream substitutes for a refused silence / a failed turn; measured in the lab and
         # supplied by configuration so that an upstream wording change is a config change, not a patch.
         "silence_fallbacks": [s for s in _env("BOXP_NOTIFY_SILENCE_FALLBACKS", DEFAULT_SILENCE).split("||") if s],
@@ -203,17 +211,94 @@ def decide(cfg: dict, target: dict, content: str) -> dict:
 
 # --- delivery -------------------------------------------------------------------------------
 
+def file_ident(key: str) -> str:
+    """File-name-safe identity of a key: a readable prefix plus a hash of the whole key.
+
+    The hash keeps two keys apart whatever their length; a plain truncation dropped the text digest and
+    the time bucket of a long cron target, so a different notification could hit the same receipt.
+    """
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", key)[:80] + "-" + hashlib.sha256(key.encode()).hexdigest()[:32]
+
+
 def receipt_path(cfg: dict, key: str) -> Path:
-    return cfg["state"] / "receipts" / (re.sub(r"[^A-Za-z0-9_.-]", "_", key)[:180] + ".json")
+    return cfg["state"] / "receipts" / (file_ident(key) + ".json")
 
 
-def dedup_key(cfg: dict, target: dict, decision: dict, metadata: Optional[dict]) -> str:
+def mode_for(cfg: dict, target: dict) -> str:
+    """Telegram mode of one target. An agent-less relay can override the default per name, e.g.
+    ``BOXP_NOTIFY_TELEGRAM_MODE_ALERTMANAGER=both`` keeps alerts on Telegram while home is added."""
+    if target["kind"] == "direct":
+        override = _env("BOXP_NOTIFY_TELEGRAM_MODE_" + re.sub(r"[^A-Za-z0-9]", "_", str(target.get("name") or "")).upper())
+        if override:
+            return override
+    return cfg["telegram_mode"]
+
+
+def alert_summary(text: str, extra: str) -> tuple[str, int]:
+    """Title and firing count for the home inbox, read back from the relay's own text.
+
+    The webhook hands the channel nothing but the chat id and the text. The relay writes
+    "発生中 N 件 / 解除 M 件" and one "🔴 [SEVERITY] alertname ..." line per alert; anything else falls
+    back to the first line and to the count in the chat id (``direct:alertmanager:<firing>``), else 1.
+    """
+    header, line = ALERT_HEADER.search(text), ALERT_LINE.search(text)
+    firing = int(header[1]) if header else int(extra) if str(extra).isdigit() else 1
+    if not (header and line):
+        return (text.strip().splitlines() or ["Alertmanager 通知"])[0][:200], firing
+    total = firing + int(header[2])
+    title = (f"[{line[1].upper()}] " if firing else "解除: ") + line[2] + (f" ほか {total - 1} 件" if total > 1 else "")
+    return title[:200], firing
+
+
+def direct_key(cfg: dict, name: str, digest: str, superseded: Optional[list] = None) -> str:
+    """Key of one agent-less relay notification: the same text counts as a retry only while nothing else
+    from that relay was accepted in between.
+
+    Nothing but the text reaches the channel, and an alert that resolves and fires again with the same
+    start minute produces the same text as its first notification. A key made of text and time alone would
+    drop that second firing as a duplicate. So each accepted notification gets a sequence number, and the
+    last ones are remembered per relay: the same text again is a retry only when it is the latest
+    notification of the relay, inside two time buckets. After a different notification (the resolve) it is
+    a new one and goes to both egresses.
+
+    What happens to the earlier one with the same text depends on whether it reached the Owner. Half
+    delivered: upstream was told success and does not retry it, so recovery finishes it separately. Reached
+    neither egress (both were down, the webhook was told failure): the new text may be the webhook's retry
+    of it (another alert group came in between) or the alert firing again after its resolve. The two cannot
+    be told apart, and they need not be: the new notification takes the place of the unreached one
+    (``superseded`` collects its key), so the Owner gets that text once, after whatever came in between.
+    Treating it as the old receipt instead would lose a second firing; keeping both would send a retry twice.
+    """
+    path = cfg["state"] / "direct-recent" / (file_ident(name) + ".json")
+    recent = read_json(path) or {}
+    window = 2 * max(1, cfg["cron_bucket_seconds"])
+    stamp = now().timestamp()
+    entries = [e for e in recent.get("entries", []) if isinstance(e, dict) and stamp - float(e.get("at", 0)) < window]
+    for index in range(len(entries) - 1, -1, -1):
+        entry = entries[index]
+        if entry.get("digest") != digest:
+            continue
+        if index == len(entries) - 1:
+            return entry["key"]
+        if superseded is not None:
+            superseded.append(entry["key"])  # replaced below, if it turns out to have reached nothing
+        break  # something else came after it: a new notification
+    seq = int(recent.get("seq", 0)) + 1
+    key = f"direct-{name}-{digest}-{seq}"
+    atomic_json(path, {"seq": seq, "entries": (entries + [{"digest": digest, "key": key, "at": stamp}])[-64:]})
+    return key
+
+
+def dedup_key(cfg: dict, target: dict, decision: dict, metadata: Optional[dict],
+              superseded: Optional[list] = None) -> str:
     if target["kind"] == "task-board":
         return f"tb-{target['event']}.{decision['slot']}"
     digest = hashlib.sha256(decision["text"].encode()).hexdigest()[:16]
     bucket = int(now().timestamp()) // max(1, cfg["cron_bucket_seconds"])
-    if target["kind"] == "direct":  # a repeat of the same alert text in a later bucket is a new notification
-        return f"direct-{target['name']}-{digest}-{bucket}"
+    if target["kind"] == "direct":
+        if decision["action"] != "deliver":
+            return f"direct-{target['name']}-{digest}-{bucket}"
+        return direct_key(cfg, str(target["name"]), digest, superseded)
     # cron: no run id reaches the channel. job id + text + a coarse time bucket separates two runs
     # that produce the same text, while a retry of one run inside the bucket collapses.
     job = str((metadata or {}).get("job_id") or target["name"] or "unknown")
@@ -230,10 +315,9 @@ def write_home(cfg: dict, target: dict, decision: dict, key: str, metadata: Opti
             if target["name"] != "alertmanager":
                 return False  # no home inbox contract for this relay: Telegram is its only egress
             ident = "alert-" + hashlib.sha256(key.encode()).hexdigest()[:32]
-            firing = int(target.get("extra") or 1) if str(target.get("extra") or "1").isdigit() else 1
+            title, firing = alert_summary(decision["text"], str(target.get("extra") or ""))
             atomic_json(cfg["vault"] / "Projects/alertmanager-deliveries/delivered-copies" / f"{ident}.md",
-                        {"id": ident, "text": decision["text"], "title": decision["text"].splitlines()[0][:200],
-                         "firing": firing, "sent_at": sent_at})
+                        {"id": ident, "text": decision["text"], "title": title, "firing": firing, "sent_at": sent_at})
         elif target["kind"] == "task-board":
             if not target.get("ticket"):
                 # Not a recognised event id: never used as a file name (it could point outside the vault),
@@ -246,7 +330,7 @@ def write_home(cfg: dict, target: dict, decision: dict, key: str, metadata: Opti
                                "text": decision["text"], "sent_at": sent_at, "primary": "home"})
         else:
             job = re.sub(r"[^A-Za-z0-9_-]", "_", str((metadata or {}).get("job_id") or target["name"] or "x"))[:64]
-            ident = re.sub(r"[^A-Za-z0-9_.-]", "_", key)[:200]
+            ident = file_ident(key)
             path = cfg["vault"] / "Projects/cron-deliveries/delivered-copies" / f"{ident}.md"
             # Upstream wraps cron output as "Cronjob Response: <job name>\n(job_id: ...)" and reports a
             # failed run as "⚠️ Cron '<job name>' failed: ..." (measured on v0.22.5 and v0.23.1).
@@ -292,7 +376,10 @@ def telegram_send(cfg: dict, text: str, progress: Optional[dict] = None, saved=N
     for index, start in enumerate(range(0, max(len(text), 1), TELEGRAM_LIMIT)):
         if index < int(progress.get("chunks", 0)):
             continue
-        body = json.dumps({"chat_id": cfg["telegram_chat"], "text": text[start:start + TELEGRAM_LIMIT]}).encode()
+        message = {"chat_id": cfg["telegram_chat"], "text": text[start:start + TELEGRAM_LIMIT]}
+        if str(cfg.get("telegram_thread") or "").isdigit():
+            message["message_thread_id"] = int(cfg["telegram_thread"])
+        body = json.dumps(message).encode()
         request = urllib.request.Request(
             f"{cfg['telegram_base']}/bot{cfg['telegram_token']}/sendMessage", data=body,
             headers={"Content-Type": "application/json"})
@@ -310,16 +397,16 @@ def telegram_send(cfg: dict, text: str, progress: Optional[dict] = None, saved=N
     return True, ",".join(ids)
 
 
-async def deliver(cfg: dict, key: str, record: dict) -> dict:
-    """Run the egress for one pending receipt and return the updated record."""
+async def deliver(cfg: dict, path: Path, record: dict) -> dict:
+    """Run the egress for one pending receipt (stored at ``path``) and return the updated record."""
     target, decision, metadata = record["target"], record["decision"], record.get("metadata")
-    path = receipt_path(cfg, key)
+    key = record.get("key") or path.stem
     home = record.get("home") or write_home(cfg, target, decision, key, metadata)
     if home and not record.get("home"):
         record["home"] = True
         atomic_json(path, record)  # durable before the next egress: a crash must not redo this one
     telegram, detail = record.get("telegram", False), record.get("telegram_detail", "")
-    mode = cfg["telegram_mode"]
+    mode = mode_for(cfg, target)
     if not telegram and (mode == "both" or (mode == "fallback" and not home)):
         progress = {"chunks": int(record.get("telegram_chunks", 0))}
 
@@ -345,6 +432,8 @@ async def deliver(cfg: dict, key: str, record: dict) -> dict:
         record["telegram_chunks"] = progress["chunks"]
     record.update(home=home, telegram=telegram, telegram_detail=detail,
                   attempts=int(record.get("attempts", 0)) + 1, updated_at=now().isoformat())
+    if (home or telegram) and not record.get("reached_at"):
+        record["reached_at"] = record["updated_at"]  # the age limit of the other egress counts from here
     record["state"] = "delivered" if egress_complete(mode, target, home, telegram) else "pending"
     atomic_json(path, record)
     return record
@@ -354,13 +443,12 @@ _LOCKS: dict[str, asyncio.Lock] = {}
 
 
 @contextlib.asynccontextmanager
-async def claim(cfg: dict, key: str):
-    """One claim per receipt at a time, shared by ``send`` and ``recover``.
+async def claim(path: Path):
+    """One claim per receipt file at a time, shared by ``send`` and ``recover``.
 
     The asyncio lock covers this process; the file lock covers the standalone cron process, which runs
-    outside the gateway. Both are keyed by the receipt file, so a raw key and its file stem are one claim.
+    outside the gateway. Both are keyed by the receipt file.
     """
-    path = receipt_path(cfg, key)
     name = path.stem
     async with _LOCKS.setdefault(name, asyncio.Lock()):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -378,10 +466,23 @@ async def claim(cfg: dict, key: str):
 async def send_once(cfg: dict, chat_id: str, content: str, metadata: Optional[dict]) -> SendResult:
     target = parse_target(chat_id)
     decision = decide(cfg, target, content)
-    key = dedup_key(cfg, target, decision, metadata)
+    superseded: list = []
+    key = dedup_key(cfg, target, decision, metadata, superseded)
+    for old in superseded:
+        # An earlier notification with this text that reached neither egress is replaced by this one. Under
+        # its own claim, and only if recovery has not reached the Owner with it meanwhile. Should the gateway
+        # die right here, the webhook was not told success and retries: that retry is this new key again.
+        old_path = receipt_path(cfg, old)
+        async with claim(old_path):
+            record = read_json(old_path)
+            if (record and record.get("state") == "pending"
+                    and not (record.get("home") or record.get("telegram"))):
+                record.update(state="superseded", superseded_by=key, updated_at=now().isoformat())
+                atomic_json(old_path, record)
+                journal(cfg, "superseded", key=old, by=key)
     # One claim per key at a time: two concurrent redeliveries of one event, or a redelivery and the
     # recovery pass, must not both run the egress.
-    async with claim(cfg, key):
+    async with claim(receipt_path(cfg, key)):
         return await _send_claimed(cfg, target, decision, key, chat_id, content, metadata)
 
 
@@ -395,7 +496,7 @@ async def _send_claimed(cfg: dict, target: dict, decision: dict, key: str, chat_
         # Progress lines and lifecycle broadcasts ("shutting down") are never a notification result.
         journal(cfg, "status_dropped", **base)
         return SendResult(success=True, message_id=key)
-    if existing and existing.get("state") in {"delivered", "suppressed"}:
+    if existing and existing.get("state") in {"delivered", "suppressed", "expired", "superseded"}:
         journal(cfg, "duplicate_dropped", **base, first_state=existing["state"])
         return SendResult(success=True, message_id=key)
     if target["kind"] == "task-board" and decision["slot"] == "notice":
@@ -411,13 +512,13 @@ async def _send_claimed(cfg: dict, target: dict, decision: dict, key: str, chat_
                            "created_at": now().isoformat()})
         journal(cfg, "suppressed", **base, proof=decision.get("proof"))
         return SendResult(success=True, message_id=key)
-    record = existing or {"state": "pending", "target": target, "decision": decision,
+    record = existing or {"state": "pending", "key": key, "target": target, "decision": decision,
                           "metadata": {k: v for k, v in (metadata or {}).items()
                                        if isinstance(v, (str, int, float, bool))},
                           "created_at": now().isoformat()}
     if not existing:
         atomic_json(path, record)  # durable intent before any egress
-    record = await deliver(cfg, key, record)
+    record = await deliver(cfg, path, record)
     reached = record["home"] or record["telegram"]
     journal(cfg, "delivered" if record["state"] == "delivered" else
             "delivered_partial" if reached else "delivery_failed", **base,
@@ -436,28 +537,56 @@ async def recover(cfg: dict) -> int:
     if cfg["no_recovery"]:
         return done
     directory = cfg["state"] / "receipts"
-    for path in sorted(directory.glob("*.json")) if directory.is_dir() else []:
-        record = read_json(path)
-        if not record or record.get("state") != "pending":
-            continue
-        async with claim(cfg, path.stem):
+    pending = [(str(record.get("created_at") or ""), path)
+               for path in (directory.glob("*.json") if directory.is_dir() else [])
+               for record in [read_json(path)] if record and record.get("state") == "pending"]
+    for _, path in sorted(pending):  # oldest first: a resolve and a second firing arrive in their order
+        async with claim(path):
             record = read_json(path)  # a send that held the claim may have finished it meanwhile
             if not record or record.get("state") != "pending":
                 continue
-            record = await deliver(cfg, path.stem, record)
-        journal(cfg, "recovered" if record["state"] == "delivered" else "recovery_failed", key=path.stem,
+            if (record.get("home") or record.get("telegram")) and _age(record) > cfg["pending_max_age"]:
+                # Reached the Owner through one egress; the other has failed for this long since then (a
+                # rejected message would otherwise be retried every pass, forever). The limit counts from
+                # the first egress that succeeded, not from creation: after an outage of both that outlasts
+                # the limit, the egress that comes back later still gets the full window. Nothing unreached
+                # is ever dropped.
+                record.update(state="expired", updated_at=now().isoformat())
+                atomic_json(path, record)
+                journal(cfg, "expired", key=record.get("key") or path.stem, home=bool(record.get("home")),
+                        telegram=bool(record.get("telegram")))
+                continue
+            record = await deliver(cfg, path, record)
+        journal(cfg, "recovered" if record["state"] == "delivered" else "recovery_failed",
+                key=record.get("key") or path.stem,
                 home=record["home"], telegram=record["telegram"])
         done += record["state"] == "delivered"
     return done
+
+
+def _age(record: dict) -> float:
+    """Seconds since the receipt first reached the Owner (0 when that time is unknown: keep retrying)."""
+    try:
+        return (now() - datetime.fromisoformat(str(record.get("reached_at")))).total_seconds()
+    except ValueError:
+        return 0.0
+
+
+def pending_count(cfg: dict) -> int:
+    directory = cfg["state"] / "receipts"
+    return sum(1 for path in (directory.glob("*.json") if directory.is_dir() else [])
+               if (read_json(path) or {}).get("state") == "pending")
 
 
 def self_check(cfg: dict) -> list[str]:
     problems = []
     if not (cfg["vault"] / "Tickets").is_dir():
         problems.append("vault Tickets directory missing")
-    if cfg["telegram_mode"] not in {"off", "fallback", "both"}:
+    modes = {cfg["telegram_mode"]} | {value.strip() for name, value in os.environ.items()
+                                      if name.startswith("BOXP_NOTIFY_TELEGRAM_MODE_") and value.strip()}
+    if not modes <= {"off", "fallback", "both"}:
         problems.append("unknown telegram mode")
-    if cfg["telegram_mode"] != "off" and not (cfg["telegram_token"] and cfg["telegram_chat"]):
+    if modes != {"off"} and not (cfg["telegram_token"] and cfg["telegram_chat"]):
         problems.append("telegram fallback not configured")
     return problems
 
@@ -472,7 +601,9 @@ class BoxpNotifyAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         cfg = settings()
         problems = self_check(cfg)
-        journal(cfg, "connect", is_reconnect=is_reconnect, problems=problems)
+        journal(cfg, "connect", is_reconnect=is_reconnect, problems=problems, pending=pending_count(cfg))
+        if problems:
+            logger.warning("boxp-notify self check: %s", "; ".join(problems))
         self._mark_connected()
         self._recovery = asyncio.create_task(self._recover_loop())
         return True
