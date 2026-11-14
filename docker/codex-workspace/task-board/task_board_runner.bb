@@ -6432,14 +6432,18 @@
                    (str/split (:out scan) #"\u0000")))))))
 
 (defn outside-copy-common-dirs
-  "Absolute common git dirs of every top-level run checkout of the ticket."
+  "Absolute common git dirs of the shared clones behind the ticket's run checkouts."
   [ticket-dir]
   (vec (distinct
         (for [run (child-directories ticket-dir)
               co (try (find-checkouts run) (catch Exception _ []))
               :let [r (generated-git co "rev-parse" "--path-format=absolute" "--git-common-dir")]
-              :when (and (zero? (:exit r)) (not (str/blank? (:out r))))]
-          (str/trim (:out r))))))
+              :let [dir (str/trim (:out r))]
+              ;; A clone living inside a run can vanish with it; only shared
+              ;; clones outside the workspaces are a durable restore source.
+              :when (and (zero? (:exit r)) (not (str/blank? dir))
+                         (try (not (fs/starts-with? (fs/real-path dir) (fs/real-path (workspaces-dir)))) (catch Exception _ false)))]
+          dir))))
 
 (defn outside-copy-reclaim-pass!
   "Stale runs are kept whole when anything lies outside their checkouts. Most
