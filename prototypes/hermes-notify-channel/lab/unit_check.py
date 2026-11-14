@@ -373,6 +373,15 @@ def cron_rewrite():
           and deliver({"action": "update", "job_id": "a", "deliver": "telegram:1"}) is None
           and deliver({"action": "create", "deliver": "telegram:1,telegram"})
           == ("modify", {"deliver": "telegram:1,boxp_notify:cron"}))
+    os.environ["TELEGRAM_CRON_THREAD_ID"] = "8"
+    check("cron rewrite: a cron topic other than the channel's keeps telegram, all and a home UI job as written",
+          deliver({"action": "create", "deliver": "telegram"}) is None
+          and deliver({"action": "create", "deliver": "all"}) is None
+          and deliver({"action": "create"}, origin=home_ui) is None
+          and deliver({"action": "update", "job_id": "a", "failure_deliver": "telegram"}) is None
+          and deliver({"action": "create", "deliver": "telegram:42:9"}) == to_channel
+          and deliver({"action": "create"}) == to_channel)
+    del os.environ["TELEGRAM_CRON_THREAD_ID"]
     os.environ["DISCORD_HOME_CHANNEL"] = "5"
     check("cron rewrite: with another home channel, all and a home UI job stay as written",
           deliver({"action": "create", "deliver": "all"}) is None
