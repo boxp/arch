@@ -612,3 +612,12 @@ it('pet eye transition reaches endpoints within the requested durations', async 
   expect(petEyeStep(0, true, 0.14)).toBe(1)
   expect(petEyeStep(1, false, 0.2)).toBe(0)
 })
+// BOXP-525: なでの開始・終了で描画する頭の角度が 1 フレームで跳ばない（旧: 待機クリップ停止で 8〜9° の跳び）。
+it('smoothAngle はなで前後の頭の角度の跳びを毎フレーム小さく分けて追う', async () => {
+  const { smoothAngle } = await import('./gesture')
+  let shown = 13, maxStep = 0
+  for (let i = 0; i < 90; i++) { const next = smoothAngle(shown, 0.3, 1 / 60); maxStep = Math.max(maxStep, Math.abs(next - shown)); shown = next }
+  expect(maxStep).toBeLessThanOrEqual(45 / 60 + 1e-9)
+  expect(Math.abs(shown - 0.3)).toBeLessThan(0.05)
+  expect(smoothAngle(5, 9, 0)).toBe(5)
+})

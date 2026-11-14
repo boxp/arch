@@ -64,3 +64,16 @@ it('なでている手が頭の内側にある間だけ閉眼する', async () =
   expect(petEyesWanted({ rect, points: [point(50), point(120)] }, options, true)).toBe(true)
   expect(petEyesWanted({ rect, points: [point(50), point(136)] }, options, true)).toBe(false)
 })
+// BOXP-525: スマホの不規則な入力間隔（8〜40ms）でも、なで中の頭がフレームごとに小刻みに跳ばない。
+it('なで中の頭の揺れは入力間隔が不規則でもフレームごとに大きく跳ばない', () => {
+  const pts: { x: number; y: number; time: number }[] = []
+  let o = zeroPet(), t = 0, maxStep = 0
+  const gaps = [8, 31, 12, 40, 9, 22, 35, 11]
+  for (let i = 0, nextAt = 0; t < 3000; t += 1000 / 60) {
+    while (nextAt <= t) { pts.push(point(50 + 38 * Math.sin(nextAt / 1000 * 2 * Math.PI * 1.8), 50, nextAt)); nextAt += gaps[i++ % gaps.length] }
+    const next = petFollow(o, { rect, points: pts, now: t }, 1 / 60, options)
+    if (t > 800) maxStep = Math.max(maxStep, Math.abs(next.headZ - o.headZ), Math.abs(next.headX - o.headX))
+    o = next
+  }
+  expect(maxStep).toBeLessThan(0.5)
+})

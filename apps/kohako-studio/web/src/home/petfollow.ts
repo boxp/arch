@@ -30,15 +30,22 @@ export function petFollow(current: PetOffset, track: PetTrack | null, dt: number
   const active = isPetting(track, options)
   let x = 0, y = 0, z = 0
   if (active && track && last) {
-    const { rect } = track, recent = points.slice(-40)
-    // 寄る側は直近の手の平均位置で決める（往復のたびに向きが反転して打ち消し合わないように）。中央付近なら今の傾きの側を保つ。
+    // 寄る側は直近 0.7 秒の手の平均位置で決める（往復のたびに向きが反転して打ち消し合わないように）。
+    // BOXP-525: 点数で区切ると入力間隔で窓の長さが変わり、中央をまたぐ往復で平均が揺れて傾きが往復ごとに一瞬反転していた（ガクガク）。
+    // 時間で区切り、いったん寄った側は反対側へはっきり寄る（|side| ≥ 0.45）まで保つ。
+    const { rect } = track, recent = points.filter(p => p.time >= last.time - 700)
     const side = clamp((recent.reduce((s, p) => s + p.x, 0) / recent.length - (rect.x + rect.w / 2)) / (rect.w / 2), -1, 1)
-    const sign = Math.abs(side) >= 0.12 ? Math.sign(side) : current.headZ > 0.5 ? 1 : current.headZ < -0.5 ? -1 : 1
+    const held = current.headZ > 0.5 ? 1 : current.headZ < -0.5 ? -1 : 0
+    const sign = held !== 0 ? (side * held <= -0.45 ? -held : held) : Math.abs(side) >= 0.12 ? Math.sign(side) : 1
     const lean = sign * Math.max(0.65, Math.min(1, Math.abs(side) * 1.6))
     // 揺れは直近の手の水平速度に合わせる（頭の幅の 3 倍/秒で最大）。止めて押さえているだけなら揺らさない。
-    const before = points.at(-4) ?? first
-    const fresh = track.now == null || track.now - last.time < 150
-    const sway = fresh && before ? clamp((last.x - before.x) / Math.max(16, last.time - before.time) * 1000 / (rect.w * 3), -1, 1) : 0
+    // BOXP-525: 直近 3 点の速度は入力間隔の揺れ（スマホは 8〜40ms）で暴れ、頭が小刻みに揺れていた。約 0.12 秒前の点との平均速度にし、
+    // 手が止まったら急に 0 にせず 0.15〜0.35 秒かけて弱める。
+    let before = first
+    for (let i = points.length - 2; i >= 0; i--) { before = points[i]; if (last.time - points[i].time >= 120) break }
+    const idle = track.now == null ? 0 : Math.max(0, track.now - last.time)
+    const fade = clamp(1 - (idle - 150) / 200, 0, 1)
+    const sway = before && before !== last ? clamp((last.x - before.x) / Math.max(16, last.time - before.time) * 1000 / (rect.w * 3), -1, 1) * fade : 0
     const scale = options.subtle ? 0.6 : 1
     // v11r の ParamAngleZ は正で頭頂が画面の右へ傾き、ParamAngleX は正で顔が画面の右を向く（最終描画で確認）。手の側へ寄せる。
     z = clamp(lean * LEAN_Z + sway * SWAY_Z, -11, 11) * scale

@@ -826,6 +826,9 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) track
 for (const ev of ['pointerup', 'pointercancel'] as const) window.addEventListener(ev, e => { if (track && e.pointerId === track.id && e.target !== rigCanvas) track = null })
 // 二本指・ピンチはふれあいにしない。
 rigCanvas.addEventListener('touchstart', e => { if (e.touches.length > 1) track = null }, { passive: true })
+// BOXP-525: 頭は前後（画面の縦）になでることが多いが、キャンバスは縦スクロール（pan-y）を許すため、縦になでると約 0.3 秒でブラウザが
+// スクロールに切り替えて pointercancel になり、なでが途中で切れて頭が跳ね戻っていた（Pixel 7 で実測）。頭の上で始めた 1 本指の操作だけスクロールさせない。
+rigCanvas.addEventListener('touchstart', e => { if (e.touches.length === 1 && track?.zone === 'head' && e.cancelable && !touchBlocked()) e.preventDefault() }, { passive: false })
 character.addEventListener('click', () => { if (character.classList.contains('mini')) { message.blur(); renderCards([]); refreshScene(true) } })
 const touchOpen = el<HTMLButtonElement>('touch-open'), touchMenu = el('touch-menu')
 touchOpen.addEventListener('click', () => { touchMenu.hidden = !touchMenu.hidden; touchOpen.setAttribute('aria-expanded', String(!touchMenu.hidden)); if (!touchMenu.hidden) el<HTMLButtonElement>('touch-pat').focus() })
@@ -862,7 +865,7 @@ function rigTick(now: number) {
   petEyesLatched = petEyes
   stage?.setPetEyes?.(petEyes); report.petEyes = petEyes
   petOffset = petFollow(petOffset, petTrack, dt, petOptions)
-  if (stage?.setPetOffset) { stage.setPetOffset(petOffset); holdClipForPet(isPetting(petTrack, petOptions) || petShown(petOffset)) }
+  if (stage?.setPetOffset) { const hold = isPetting(petTrack, petOptions) || petShown(petOffset); stage.setPetOffset(petOffset); stage.setPetHold?.(hold); holdClipForPet(hold) }
   report.petFollow = { ...petOffset }
   // BOXP-521: 胸の揺れは設定 OFF と「動きを減らす」（アプリ設定・OS）で止める。
   stage?.setChestMotion?.(prefs.chestSway && !reduced())
