@@ -15,6 +15,8 @@
   (is (some #{"spec:test"} (task-board-conflict/pre-keys {:repos ["boxp/arch"] :text "conflict_keys: spec:test, bad\nhermes"})))
   (is (some #{"deploy:hermes-agent"} (task-board-conflict/pre-keys {:text "## Summary\nhermes-agent"})))
   (is (= ["code:arch"] (task-board-conflict/pre-keys {:repos ["boxp/arch"] :text "## Summary\nx\n## Notes\n- [hermes-agent]: codex-workspace"})))
+  (is (= ["code:arch"] (task-board-conflict/pre-keys {:repos ["boxp/arch"] :text "---\nassignee: hermes-agent\nreporter: hermes-agent\n---\n## Plan\n- [ ] TD-01 x\n  - 由来: hermes-agent\n"})))
+  (is (some #{"deploy:hermes-agent"} (task-board-conflict/pre-keys {:repos ["boxp/arch"] :text "## Plan\n- [ ] hermes-agent の配送を直す\n  - 由来: hermes-agent\n"})))
   (is (task-board-conflict/keys-overlap? "code:arch:a" "code:arch:a/b"))
   (is (not (task-board-conflict/keys-overlap? "code:arch:a" "code:arch:ab")))
   (is (not (task-board-conflict/keys-overlap? "code:arch" "code:lolice"))))

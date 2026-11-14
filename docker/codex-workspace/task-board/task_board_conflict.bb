@@ -24,9 +24,12 @@
         deploy (some (fn [[re target]] (when-let [m (re-find re full)] (str "deploy:" (if (number? target) (nth m target) target)))) deploy-rules)]
     (sorted-keys [code deploy])))
 ;; Notes are a work log (agent names, run lines), not the ticket goal: matching
-;; them would mark almost every ticket as touching the runner or Hermes.
+;; them would mark almost every ticket as touching the runner or Hermes. The same
+;; holds for lines that only name who filed or holds the ticket (TODO origin
+;; `由来: hermes-agent`, frontmatter assignee/reporter).
 (defn hot-region-text [text]
-  (first (str/split (or text "") #"(?m)^## Notes\s*$" 2)))
+  (-> (first (str/split (or text "") #"(?m)^## Notes\s*$" 2))
+      (str/replace #"(?m)^\s*(?:-\s*)?(?:由来|assignee|reporter)\s*[:：].*$" "")))
 (defn pre-keys [{:keys [repos text]}]
   (sorted-keys (concat (map #(str "code:" (last (str/split % #"/"))) repos)
                        (mapcat #(str/split (second %) #"[,\s]+") (re-seq #"(?im)^\s*(?:conflict_keys|衝突領域)\s*[:：]+\s*(.+)$" (or text "")))
