@@ -6,9 +6,17 @@ describe('activity', () => {
     const snap = a.snapshot()!; expect(snap.steps).toHaveLength(2); expect(snap.steps[1]).toMatchObject({ status: 'done', durationMs: 1234 }); expect(JSON.stringify(snap)).not.toMatch(/SECRET-THOUGHT|private-id|最終返答/)
   })
   it('資格情報を伏せる', () => { for (const value of ['TOKEN=abc', '--password abc', 'https://user:pass@host/a?key=abc', 'Authorization: Bearer abc', 'ghp_abc123', 'eyJabc.def.ghi']) expect(redactPublic(value)).not.toMatch(/abc|pass@|def/) })
+  it('引用符の中に空白がある資格情報も値ごと伏せる', () => {
+    for (const value of ["--password ' abc123'", '--password " abc123"', "--password='  abc123 def456'", "mysql --db-password ' abc123' -e x", '--api-key \\" abc123\\"', "-token ' abc123'", "password ' abc123'", "password: ' abc123'", "PGPASSWORD=' abc123' psql", "Bearer ' abc123'", "--password ' abc123", "--password '\tabc123'", "--password '\n abc123'", 'curl -u admin:abc123 https://h', "curl --user 'admin: abc123'", "--passwd ' abc123'", "--password $' abc123'", "-p ' abc123'", "password is ' abc123'", "--password 'x' abc123", "api_key = ` abc123`", "password=( abc123 )", "sshpass -p abc123 ssh h", "key\\n' abc123'", "token:\n  ' abc123'", "password:\n\n abc123"]) expect(redactPublic(value), value).not.toMatch(/abc12|def456/)
+    expect(redactPublic('git push -u origin main')).toBe('git push -u origin main')
+    expect(redactPublic("ls -la 'my dir'")).toBe("ls -la 'my dir'")
+    expect(redactPublic('mkdir -p dir && ssh -p 22 host')).toBe('mkdir -p dir && ssh -p 22 host')
+    expect(redactPublic('天気を調べます\ncurl https://example.com/a')).toBe('天気を調べます curl https://example.com/a')
+  })
   it('JSON・引用符つき・エスケープ済みの資格情報も伏せる', () => {
     for (const value of ['{"api_key":"abc123"}', '{"apiKey": "abc123", "q": "weather"}', "{'access_token': 'abc123'}", '{\\\\"api_key\\\\":\\\\"abc123\\\\"}', '"password":"abc123 def456"', '{"authorization":"Bearer abc123"}', '{"tokens":["abc123","abc124"]}', 'client_secret: abc123', '{"api_key":"abc123']) expect(redactPublic(value)).not.toMatch(/abc12|def456/)
-    expect(redactPublic('{"apiKey": "abc123", "q": "weather"}')).toContain('weather')
+    // 資格情報らしい項目より前は残し、以降は安全側で丸ごと伏せる。
+    expect(redactPublic('{"q": "weather", "apiKey": "abc123"}')).toBe('{"q": "weather", "<secret>')
     const a = createActivity(() => 1); a.apply({ event: 'message.interim', text: '設定は {"api_key":"abc123"} です' }); a.apply({ event: 'tool.started', tool: 'terminal', preview: 'curl -d {"api_key":"abc123"}' }); a.apply({ event: 'tool.completed', tool: 'terminal', preview: '{"api_key":"abc123"}' })
     expect(JSON.stringify(a.snapshot())).not.toContain('abc123')
   })
