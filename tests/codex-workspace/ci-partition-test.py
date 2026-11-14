@@ -52,6 +52,7 @@ class PartitionTest(unittest.TestCase):
             'bb tests/codex-workspace/autonomy-policy-test.bb',
             'bb tests/codex-workspace/autonomy-control-test.bb',
             'bb tests/codex-workspace/vault-writer-test.bb',
+            'bb tests/codex-workspace/task-board-conflict-test.bb',
             'bb tests/codex-workspace/task-board-todos-test.bb',
         ]
         for command in commands:
