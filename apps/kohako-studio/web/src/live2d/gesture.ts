@@ -344,6 +344,14 @@ export function petEyeStep(current: number, on: boolean, dt: number): number {
   const value = Math.max(0, Math.min(1, current))
   return Math.max(0, Math.min(1, value + (on ? dt / 0.14 : -dt / 0.2)))
 }
+// BOXP-525: なでの開始（待機クリップの停止）や終了（なでた反応）で頭の角度が 1 フレームで跳ぶ（実測 8〜9°）と、
+// 連続して見たときにガクガクする。なで中とその前後だけ、描画する頭の角度を時定数 0.15 秒・毎秒 45° までで追わせる。
+export const PET_SMOOTH_TAIL = 1.2
+export function smoothAngle(shown: number, raw: number, dt: number): number {
+  if (!(dt > 0)) return shown
+  const step = (raw - shown) * (1 - Math.exp(-dt / 0.15)), max = 45 * dt
+  return shown + Math.max(-max, Math.min(max, step))
+}
 export const eyeOpenFor = (blinkOpen: number, emotionClosed: number, petClosed: number): number => Math.min(blinkOpen, 1 - Math.max(emotionClosed, petClosed))
 
 export function createActingStage(player: Player, model: RigModel): ActingStage & { report(): Record<string, unknown> } {
@@ -357,7 +365,9 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
   // BOXP-525: 髪房の別素材の混入（頬・もみあげのゴミ）と、前髪の外周による髪飾りの先端の欠けを直す。
   let hairPatch: Record<string, unknown>
   try { hairPatch = patchHair(p as unknown as PartsPlayer) } catch (e) { hairPatch = { error: e instanceof Error ? e.message : String(e) } }
-  let petEyes = false, petClosed = 0
+  let petEyes = false, petClosed = 0, petHold = false, petHeld = false, petTail = 0
+  const SMOOTH_KEYS = ['ParamAngleX', 'ParamAngleY', 'ParamAngleZ', 'ParamBodyAngleX', 'ParamBodyAngleZ'] as const
+  const shownAngle: Record<string, number> = {}
   let blush = 0, eyeClosed = 0, surprised = 0, troubled = 0, speaking = false, mouthOverride = false
   let generation = 0, target = faces.neutral, face = { ...faces.neutral }, clip: Clip | null = null, clipName: Gesture = 'none', clipTime = 0, emotion: Emotion = 'neutral'
   let pose: ReturnType<typeof sample> = { right: REST, left: REST, body: NO_BODY }, armBlend = 0
@@ -664,7 +674,27 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     if (Math.max(wasClosed, eyeClosed, petClosed) > 0.001) {
       p.setParameter('ParamEyeLOpen', 1); p.setParameter('ParamEyeROpen', 1)
     }
+    // なでの開始時は止める直前の待機クリップの角度から追従を始める（頭と髪の揺れが跳ばないように）。
+    const values0 = petHold && !petHeld && typeof p.parameterValues === 'function' ? p.parameterValues() : null
+    if (values0) for (const key of ['headX', 'headY', 'headZ', 'bodyX', 'bodyZ'] as const) {
+      const v = values0[p.parameters?.indexOf(PARAMS[key]) ?? -1]
+      if (typeof v === 'number' && Number.isFinite(v)) { headCurrent[key] = v; p.setParameter(PARAMS[key], v) }
+    }
+    petHeld = petHold
+    petTail = petHold ? PET_SMOOTH_TAIL : Math.max(0, petTail - dt)
     baseUpdate(dt)
+    let restage = false
+    {
+      const values = typeof p.parameterValues === 'function' ? p.parameterValues() : []
+      for (const id of SMOOTH_KEYS) {
+        const raw = values[p.parameters?.indexOf(id) ?? -1]
+        if (typeof raw !== 'number' || !Number.isFinite(raw)) continue
+        if (petTail > 0 && typeof shownAngle[id] === 'number') {
+          shownAngle[id] = smoothAngle(shownAngle[id], raw, dt)
+          if (Math.abs(shownAngle[id] - raw) > 1e-4) { p.setParameter(id, shownAngle[id]); restage = true }
+        } else shownAngle[id] = raw
+      }
+    }
     // BOXP-525: 自動まばたきの途中でも目が逆に開かないよう閉眼を重ねる。
     const petLid = petClosed * petClosed * (3 - 2 * petClosed)
     const closed = Math.max(eyeClosed, petLid)
@@ -674,8 +704,9 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
         const index = p.parameters?.indexOf(id) ?? -1, blink = values[index]
         p.setParameter(id, typeof blink === 'number' && Number.isFinite(blink) ? eyeOpenFor(blink, eyeClosed, petLid) : 1 - closed)
       }
-      rt.p2l_update_stages(p.rig, 0, 0)
+      restage = true
     }
+    if (restage) rt.p2l_update_stages(p.rig, 0, 0)
     stepChestSpring(dt)
   }
   // 今の腕を待機の腕へフェードで戻す（姿勢は止めたまま）。then はフェード後に呼ぶ。
@@ -698,6 +729,7 @@ export function createActingStage(player: Player, model: RigModel): ActingStage 
     setViseme(v) { speaking = v !== null; visemeWant = v ? Math.max(0.78, Math.min(1.15, v.width)) : 1 },
     setPetOffset(v) { petOffset = v },
     setPetEyes(on) { petEyes = on },
+    setPetHold(on) { petHold = on },
     setChestMotion(on) { chestEnabled = on },
     setEmotion(next) { emotion = next; target = faces[next]; player.expression(target.expression && player.expressions.includes(target.expression) ? target.expression : null) },
     playGesture(next) {
