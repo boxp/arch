@@ -11,7 +11,7 @@ import './style.css'
 import './room.css'
 import './menus.css'
 import { buildRoomV1, daypartOf, roomOptions } from './room'
-import { states, formatPool, formatTasks, gaugeOf, taskBadgeOf, upstreamUnavailable, type Status } from './status'
+import { states, formatPercent, formatPool, formatTasks, gaugeOf, taskBadgeOf, upstreamUnavailable, type Status } from './status'
 import { validateViews, mapsUrl, osmUrl, htmlSrcdoc, sanitizeHtml, type View } from './views'
 import { clipHold, isPetting, petEyesWanted, petFollow, petShown, zeroPet } from './petfollow'
 import { makeVisemes, visemeAt, boundaryTime, spokenSeconds, type VisemeSequence } from '../live2d/viseme'
@@ -224,7 +224,7 @@ function openViewer(view: View, opener: HTMLElement, focus = true) {
       add(`取得 ${time(statusValue.generatedAt)}`)
       for (const pool of statusValue.quota.pools) for (const w of pool.windows) {
         const absent = w.usedPercent === null || ['not_provided', 'not_applicable', 'unavailable', 'unobserved'].includes(w.state)
-        add(`${pool.label} ${w.label} ${absent ? (states[w.state] ?? '未提供') : `${w.usedPercent}%`}（${states[w.state] ?? '不明'}）${w.resetsAt ? `・リセット ${time(w.resetsAt)}` : ''}${w.observedAt ? `・観測 ${time(w.observedAt)}` : ''}`)
+        add(`${pool.label} ${w.label} ${absent ? (states[w.state] ?? '未提供') : formatPercent(w.usedPercent)}（${states[w.state] ?? '不明'}）${w.resetsAt ? `・リセット ${time(w.resetsAt)}` : ''}${w.observedAt ? `・観測 ${time(w.observedAt)}` : ''}`)
         if (!absent) { const bar = document.createElement('div'), fill = document.createElement('div'); bar.className = 'view-bar'; fill.style.width = `${Math.max(0, Math.min(100, w.usedPercent!))}%`; bar.append(fill); chart.append(bar) }
       }
       add(formatTasks(statusValue.tasks))
@@ -350,11 +350,11 @@ function renderStatus() {
   for (const [id, label] of [['claude_shared', 'Claude共有'], ['codex_shared', 'Codex共有']]) {
     const g = gaugeOf(statusValue.quota.pools.find(p => p.id === id)), box = document.createElement('span'); box.className = `status-gauge ${g.cls}`; box.dataset.pool = id
     const title = document.createElement('span'); title.className = 'gauge-title'; title.textContent = label
-    const ring = document.createElement('span'); ring.className = 'gauge-ring'; const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 100 100'); svg.innerHTML = '<circle class="ring-track" cx="50" cy="50" r="43"/><circle class="ring-value" cx="50" cy="50" r="43" pathLength="100"/>'; const arc = svg.lastElementChild as SVGElement; const amount = Math.max(0, Math.min(100, g.percent ?? 100)); const dashes: number[] = []; if (g.cls === 'stale' || g.percent === null) { for (let n = 0; n < amount; n += 6) dashes.push(Math.min(2, amount - n), Math.min(4, Math.max(0, amount - n - 2))); dashes.push(0, 100) } arc.style.strokeDasharray = dashes.length ? dashes.join(' ') : `${amount} 100`; const value = document.createElement('span'); value.className = 'gauge-value'; value.textContent = g.percent === null ? '—' : `${g.percent}%`; ring.append(svg, value)
+    const ring = document.createElement('span'); ring.className = 'gauge-ring'; const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 100 100'); svg.innerHTML = '<circle class="ring-track" cx="50" cy="50" r="43"/><circle class="ring-value" cx="50" cy="50" r="43" pathLength="100"/>'; const arc = svg.lastElementChild as SVGElement; const amount = Math.max(0, Math.min(100, g.percent ?? 100)); const dashes: number[] = []; if (g.cls === 'stale' || g.percent === null) { for (let n = 0; n < amount; n += 6) dashes.push(Math.min(2, amount - n), Math.min(4, Math.max(0, amount - n - 2))); dashes.push(0, 100) } arc.style.strokeDasharray = dashes.length ? dashes.join(' ') : `${amount} 100`; const value = document.createElement('span'); value.className = 'gauge-value'; value.textContent = formatPercent(g.percent); ring.append(svg, value)
     const caption = document.createElement('span'); caption.className = 'gauge-caption'; caption.textContent = [g.label, g.stateText].filter(Boolean).join('・'); box.append(title, ring, caption); row.append(box)
   }
   const t = taskBadgeOf(statusValue.tasks), task = document.createElement('span'); task.className = 'status-task'; const total = document.createElement('strong'); total.className = 'task-total'; total.textContent = t.total === null ? '—' : String(t.total); const text = document.createElement('span'); text.textContent = `進行中${t.suffix}${t.stateText ? `・${t.stateText}` : ''}`; const chips = document.createElement('span'); chips.className = 'task-chips'; for (const a of t.agents) { const chip = document.createElement('span'); chip.textContent = `${a.agent} ${a.count}`; chips.append(chip) } task.append(total, text, chips); row.append(task)
-  for (const pool of statusValue.quota.pools.filter(p => !['claude_shared', 'codex_shared'].includes(p.id))) { const g = gaugeOf(pool); if (g.percent === null) continue; const mini = document.createElement('span'); mini.className = `status-mini ${g.cls}`; const text = document.createElement('span'); text.textContent = `${pool.id === 'claude_fable' ? 'Fable専用' : pool.label} ${g.percent}% ${g.stateText}`; const track = document.createElement('span'); track.className = 'mini-track'; const fill = document.createElement('span'); fill.style.width = `${Math.max(0, Math.min(100, g.percent))}%`; track.append(fill); mini.append(text, track); host.append(mini) }
+  for (const pool of statusValue.quota.pools.filter(p => !['claude_shared', 'codex_shared'].includes(p.id))) { const g = gaugeOf(pool); if (g.percent === null) continue; const mini = document.createElement('span'); mini.className = `status-mini ${g.cls}`; const text = document.createElement('span'); text.textContent = `${pool.id === 'claude_fable' ? 'Fable専用' : pool.label} ${formatPercent(g.percent)} ${g.stateText}`; const track = document.createElement('span'); track.className = 'mini-track'; const fill = document.createElement('span'); fill.style.width = `${Math.max(0, Math.min(100, g.percent))}%`; track.append(fill); mini.append(text, track); host.append(mini) }
 }
 async function refreshStatus() {
   clearTimeout(statusTimer); if (document.hidden || statusLoading) return
