@@ -15,6 +15,8 @@ Only ``gateway.platforms.base`` and ``gateway.config`` are imported from Hermes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import fcntl
 import hashlib
 import json
 import logging
@@ -259,6 +261,24 @@ def write_home(cfg: dict, target: dict, decision: dict, key: str, metadata: Opti
         return False
 
 
+def home_applicable(target: dict) -> bool:
+    """False when the target has no home inbox contract, so Telegram is its only egress."""
+    if target["kind"] == "direct":
+        return target.get("name") == "alertmanager"
+    if target["kind"] == "task-board":
+        return bool(target.get("ticket"))
+    return True
+
+
+def egress_complete(mode: str, target: dict, home: bool, telegram: bool) -> bool:
+    """Whether every egress the mode requires has succeeded (otherwise the receipt stays pending)."""
+    if mode == "both":  # both means both: a home success alone must not close a failed Telegram send
+        return telegram and (home or not home_applicable(target))
+    if mode == "fallback":
+        return home or telegram
+    return home
+
+
 def telegram_send(cfg: dict, text: str, progress: Optional[dict] = None) -> tuple[bool, str]:
     """Blocking Bot API call (run in a thread). Splits long text; no retry beyond the caller's.
 
@@ -299,7 +319,7 @@ async def deliver(cfg: dict, key: str, record: dict) -> dict:
         record["telegram_chunks"] = progress["chunks"]
     record.update(home=home, telegram=telegram, telegram_detail=detail,
                   attempts=int(record.get("attempts", 0)) + 1, updated_at=now().isoformat())
-    record["state"] = "delivered" if (home or telegram) else "pending"
+    record["state"] = "delivered" if egress_complete(mode, target, home, telegram) else "pending"
     atomic_json(receipt_path(cfg, key), record)
     return record
 
@@ -307,19 +327,36 @@ async def deliver(cfg: dict, key: str, record: dict) -> dict:
 _LOCKS: dict[str, asyncio.Lock] = {}
 
 
+@contextlib.asynccontextmanager
+async def claim(cfg: dict, key: str):
+    """One claim per receipt at a time, shared by ``send`` and ``recover``.
+
+    The asyncio lock covers this process; the file lock covers the standalone cron process, which runs
+    outside the gateway. Both are keyed by the receipt file, so a raw key and its file stem are one claim.
+    """
+    path = receipt_path(cfg, key)
+    name = path.stem
+    async with _LOCKS.setdefault(name, asyncio.Lock()):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(path.parent / f".{name}.lock", "w")
+        try:
+            await asyncio.to_thread(fcntl.flock, handle, fcntl.LOCK_EX)
+            yield
+        finally:
+            handle.close()  # releases the file lock
+            if len(_LOCKS) > 512:
+                for stale in [k for k, lock in _LOCKS.items() if not lock.locked() and k != name]:
+                    _LOCKS.pop(stale, None)
+
+
 async def send_once(cfg: dict, chat_id: str, content: str, metadata: Optional[dict]) -> SendResult:
     target = parse_target(chat_id)
     decision = decide(cfg, target, content)
     key = dedup_key(cfg, target, decision, metadata)
-    # One claim per key at a time: two concurrent redeliveries of one event must not both run the egress.
-    # (In-process only. The standalone cron path is a separate process; its keys are cron keys.)
-    async with _LOCKS.setdefault(key, asyncio.Lock()):
-        try:
-            return await _send_claimed(cfg, target, decision, key, chat_id, content, metadata)
-        finally:
-            if len(_LOCKS) > 512:
-                for stale in [k for k, lock in _LOCKS.items() if not lock.locked() and k != key]:
-                    _LOCKS.pop(stale, None)
+    # One claim per key at a time: two concurrent redeliveries of one event, or a redelivery and the
+    # recovery pass, must not both run the egress.
+    async with claim(cfg, key):
+        return await _send_claimed(cfg, target, decision, key, chat_id, content, metadata)
 
 
 async def _send_claimed(cfg: dict, target: dict, decision: dict, key: str, chat_id: str, content: str,
@@ -355,9 +392,13 @@ async def _send_claimed(cfg: dict, target: dict, decision: dict, key: str, chat_
     if not existing:
         atomic_json(path, record)  # durable intent before any egress
     record = await deliver(cfg, key, record)
-    journal(cfg, "delivered" if record["state"] == "delivered" else "delivery_failed", **base,
+    reached = record["home"] or record["telegram"]
+    journal(cfg, "delivered" if record["state"] == "delivered" else
+            "delivered_partial" if reached else "delivery_failed", **base,
             home=record["home"], telegram=record["telegram"], proof=decision.get("proof"))
-    if record["state"] == "delivered":
+    if reached:
+        # Partial (mode both, one egress failed): the notification reached the Owner, so upstream is told
+        # success and sends no failure follow-up; the receipt stays pending and recovery finishes the rest.
         return SendResult(success=True, message_id=key)
     return SendResult(success=False, error="boxp-notify: home inbox and telegram both unavailable",
                       retryable=True)
@@ -373,7 +414,11 @@ async def recover(cfg: dict) -> int:
         record = read_json(path)
         if not record or record.get("state") != "pending":
             continue
-        record = await deliver(cfg, path.stem, record)
+        async with claim(cfg, path.stem):
+            record = read_json(path)  # a send that held the claim may have finished it meanwhile
+            if not record or record.get("state") != "pending":
+                continue
+            record = await deliver(cfg, path.stem, record)
         journal(cfg, "recovered" if record["state"] == "delivered" else "recovery_failed", key=path.stem,
                 home=record["home"], telegram=record["telegram"])
         done += record["state"] == "delivered"
