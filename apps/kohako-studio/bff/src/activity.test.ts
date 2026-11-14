@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createActivity, redactPublic } from './activity.js'
+import { createActivity, publicDetail, redactPublic } from './activity.js'
 describe('activity', () => {
   it('公開イベントを集約し、思考と最後の返答を残さない', () => {
     const a = createActivity(() => 123); a.apply({ event: 'reasoning.available', text: 'SECRET-THOUGHT' }); a.apply({ event: 'message.delta', delta: '途中です' }); a.apply({ event: 'tool.started', tool: 'terminal', tool_call_id: 'private-id', preview: 'ls' }); a.apply({ event: 'tool.started', tool: 'terminal', tool_call_id: 'private-id' }); a.apply({ event: 'tool.completed', tool: 'terminal', tool_call_id: 'private-id', duration: 1.234 }); a.apply({ event: 'message.delta', delta: '最終返答' }); a.finish()
@@ -19,6 +19,16 @@ describe('activity', () => {
     expect(redactPublic('{"q": "weather", "apiKey": "abc123"}')).toBe('{"q": "weather", "<secret>')
     const a = createActivity(() => 1); a.apply({ event: 'message.interim', text: '設定は {"api_key":"abc123"} です' }); a.apply({ event: 'tool.started', tool: 'terminal', preview: 'curl -d {"api_key":"abc123"}' }); a.apply({ event: 'tool.completed', tool: 'terminal', preview: '{"api_key":"abc123"}' })
     expect(JSON.stringify(a.snapshot())).not.toContain('abc123')
+  })
+  it('ツールの引数は公開してよい形だけを載せ、出力は載せない', () => {
+    // 伏字規則では見分けられない値（-p直結・位置引数・パイプ元・環境変数・コード・未知の道具）が出ないこと。
+    for (const [tool, preview] of [['terminal', 'mysql -pabc123'], ['terminal', 'mysql -uroot -pabc123 db'], ['terminal', 'echo abc123 | docker login --password-stdin'], ['terminal', 'PGPASSWORD=" abc123 " psql'], ['terminal', 'abc123=1 ls'], ['terminal', '{"command":"mysql -pabc123"}'], ['terminal', "'abc123' x"], ['execute_code', 'login("abc123")'], ['process', 'abc123'], ['mcp_vault_put', 'abc123'], ['unknown', 'abc123'], ['write_file', '/tmp/a.txt abc123'], ['write_file', '{"path":"/tmp/a","content":"abc123"}'], ['read_file', 'a b'], ['web_extract', 'https://u:abc123@h/p?k=abc123']] as const) {
+      const a = createActivity(() => 1); a.apply({ event: 'tool.started', tool, tool_call_id: 'c', preview }); a.apply({ event: 'tool.completed', tool, tool_call_id: 'c', preview: 'out abc123', error: true })
+      const snap = a.snapshot()!; expect(JSON.stringify(snap)).not.toContain('abc123'); expect(snap.steps[0]).toMatchObject({ status: 'failed' }); expect(snap.steps[0]).not.toHaveProperty('result')
+    }
+    expect(publicDetail('terminal', 'mysql -pabc123')).toBe('mysql …'); expect(publicDetail('terminal', 'ls')).toBe('ls'); expect(publicDetail('terminal', '/usr/bin/git status')).toBe('git …')
+    expect(publicDetail('read_file', '/home/kohako/メモ.md')).toBe('/home/kohako/メモ.md'); expect(publicDetail('web_extract', 'https://example.com/a?q=1')).toBe('https://example.com/a?…'); expect(publicDetail('web_search', '東京 天気')).toBe('東京 天気')
+    expect(publicDetail('execute_code', 'print(1)')).toBe(''); expect(publicDetail('mcp_x', 'anything')).toBe('')
   })
   it('run が正常終了したのに完了通知が無い手順は結果未確認にする', () => { const a = createActivity(() => 1); a.apply({ event: 'tool.started', tool: 'terminal' }); a.finish(true); expect(a.snapshot()!.steps[0]).toMatchObject({ status: 'unconfirmed' }) })
   it('上限を守り実行中を中断する', () => { const a = createActivity(() => 1); for (let i = 0; i < 45; i++) a.apply({ event: 'message.interim', text: String(i) }); a.apply({ event: 'tool.started', tool: 'terminal' }); a.finish(); expect(a.snapshot()).toMatchObject({ dropped: 6, writing: false }); expect(a.snapshot()!.steps.at(-1)).toMatchObject({ status: 'interrupted' }) })

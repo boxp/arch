@@ -41,3 +41,13 @@
 - vitest: 畳み込み・伏字・思考の破棄・SSE パーサ・再接続・応答への付与、Web 側の検証とラベル。
 - `verify/home/activity548.mjs`（BFF モック、PC / Pixel 7 縦）: 開始→進行→完了/失敗の表示、思考・秘密が DOM に出ない、入力・停止・承認と重ならない、外部通信 0。
 - 配備後: 本番会話経路（verifier の会話と Owner 経路の実 run）でツール手順が実データで出ることを確認。検証画像は `/home/boxp/verification-artifacts/BOXP-548/` に置き vault には保存しない。
+
+## 追記 (2026-11-14): ツール引数・出力の公開方針
+
+伏字規則(拒否リスト)では `mysql -pabc123` や `echo 値 | …` のような任意位置の秘密値を見分け切れないため、ツール由来の文字列は許可リスト方式にする。
+
+- terminal: 先頭のプログラム名のみ(例 `mysql …`)。引数は載せない。
+- read_file / write_file / patch / skill_view / web_extract / browser_navigate: 空白・引用符を含まない 1 語(パス/URL、URLの問い合わせ部は省略)のときだけ。
+- web_search / search_files / session_search: 伏字化した検索語。
+- 上記以外の道具の引数、および全ての道具の出力(tool.completed の preview)は載せない。状態・所要時間のみ。
+- コハコ自身の途中発言(message.interim / delta)は従来どおり伏字化して表示。

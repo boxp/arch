@@ -26,6 +26,14 @@ export function redactPublic(text: string): string {
     .split(/(\s+)/).map(word => (/^[A-Za-z0-9_\-+=]{32,}$/.test(word) || (/^[A-Za-z0-9_\-+/=]{40,}$/.test(word) && !/^\.{0,2}\//.test(word) && !word.includes('//')) ? '<secret>' : word)).join('').trim()
 }
 const clean = (s: string, limit: number) => { const x = redactPublic(s).replace(/\s+/g, ' ').trim(); return x.length > limit ? x.slice(0, limit) + '…' : x }
+// ツールの引数・出力は任意の文字列で、秘密値を伏字規則で見分け切れない（例: mysql -pabc123、echo 値 | …）。
+// そのため伏字に頼らず、公開してよい形だけを通す: コマンドは先頭のプログラム名のみ、ファイル/URL は空白や引用符のない 1 語のみ、検索語は伏字化した文。それ以外の道具の引数と、全ての道具の出力は載せない。
+const SINGLE_TOKEN_TOOLS = new Set(['read_file', 'write_file', 'patch', 'skill_view', 'web_extract', 'browser_navigate']), QUERY_TOOLS = new Set(['web_search', 'search_files', 'session_search'])
+export function publicDetail(tool: string, preview: string): string {
+  if (tool === 'terminal') { const first = preview.trim().split(/\s+/)[0] ?? '', name = first.slice(first.lastIndexOf('/') + 1); return /^[A-Za-z][A-Za-z0-9_.+-]{0,31}$/.test(name) ? (preview.trim() === first ? name : `${name} …`) : '' }
+  if (SINGLE_TOKEN_TOOLS.has(tool)) { const value = clean(preview, 160); return /^[^\s"'`{}[\]=,;<>]+$/.test(value) ? value : '' }
+  return QUERY_TOOLS.has(tool) ? clean(preview, 160) : ''
+}
 export function createActivity(now: () => number) {
   const steps: ActivityStep[] = [], ids = new Map<string, string>(); let writing = false, dropped = 0, buffer = '', serial = 0
   const add = (step: ActivityStep) => { steps.push(step); if (steps.length > 40) { let i = steps.findIndex(s => s.kind !== 'tool' || s.status !== 'running'); if (i < 0) i = 0; steps.splice(i, 1); dropped++ } }
@@ -41,9 +49,9 @@ export function createActivity(now: () => number) {
       else if (e.event === 'tool.started') {
         note(buffer); buffer = ''; writing = false
         const call = callId(e.tool_call_id); if (call && ids.has(call)) return
-        const id = `t${++serial}`, detail = typeof e.preview === 'string' ? clean(e.preview, 160) : ''
+        const id = `t${++serial}`, tool = toolName(e.tool), detail = typeof e.preview === 'string' ? publicDetail(tool, e.preview) : ''
         if (call) ids.set(call, id)
-        add({ id, kind: 'tool', tool: toolName(e.tool), status: 'running', startedAt: now(), ...(detail ? { detail } : {}) })
+        add({ id, kind: 'tool', tool, status: 'running', startedAt: now(), ...(detail ? { detail } : {}) })
       } else if (e.event === 'tool.completed') {
         const call = callId(e.tool_call_id), tool = toolName(e.tool), id = call && ids.get(call)
         // 再接続の再生などで、既に完了を反映した呼び出しの完了がもう一度届いても別の手順を作らない。
@@ -52,7 +60,6 @@ export function createActivity(now: () => number) {
         if (!step) { step = { id: `t${++serial}`, kind: 'tool', tool, status: 'running', startedAt: now() }; add(step); if (call) ids.set(call, step.id) }
         step.status = e.error === true ? 'failed' : 'done'
         if (typeof e.duration === 'number' && Number.isFinite(e.duration) && e.duration >= 0 && e.duration * 1000 <= 86400000) step.durationMs = Math.round(e.duration * 1000)
-        const result = typeof e.preview === 'string' ? clean(e.preview, 200) : ''; if (result) step.result = result
       }
     },
     // completed: run 自体は正常終了したが完了通知を受け取れなかった手順は、中断でも成功でもなく「結果未確認」とする。
