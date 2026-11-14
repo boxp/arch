@@ -203,6 +203,30 @@ async def main():
     await plugin.send_once(plugin.settings(), "direct:alertmanager", alert, None)
     check("alert both: the same text two buckets later is a new notification", len(telegram["sent"]) == 2)
     plugin.now = real_now
+    # (BOXP-553 review) resolve, then the same alert fires again with the same start minute: same text as
+    # the first notification, yet a new one. A plain retry of it is still one.
+    telegram["sent"] = []
+    homes = lambda: len(list((root / "vault/Projects/alertmanager-deliveries/delivered-copies").glob("*.md")))
+    before = homes()
+    refire = alert.replace("abcd1234", "eeee0001")
+    gone = "【Alertmanager 通知】発生中 0 件 / 解除 1 件\n\n✅ [CRITICAL] AiProviderQuotaExhausted claude\n  解除 11/14 11:00 JST fp=eeee0001"
+    for text in (refire, refire, gone, refire, refire):
+        await plugin.send_once(plugin.settings(), "direct:alertmanager", text, None)
+    check("alert refire: fire, resolve, fire again in the same minute are three notifications",
+          telegram["sent"] == [refire, gone, refire] and homes() == before + 3)
+    # A webhook retry of a notification that reached nothing stays one, even after another notification.
+    telegram.update(sent=[], fail=True)
+    (root / "state/lab-fail-home").touch()
+    lost = alert.replace("abcd1234", "eeee0002")
+    result = await plugin.send_once(plugin.settings(), "direct:alertmanager", lost, None)
+    (root / "state/lab-fail-home").unlink()
+    telegram["fail"] = False
+    await plugin.send_once(plugin.settings(), "direct:alertmanager", gone.replace("eeee0001", "eeee0003"), None)
+    await plugin.send_once(plugin.settings(), "direct:alertmanager", lost, None)
+    await plugin.recover(plugin.settings())
+    check("alert refire: a retry of an unfinished notification is not a second one",
+          not result.success and telegram["sent"].count(lost) == 1 and plugin.pending_count(plugin.settings()) == 0)
+    telegram["sent"] = []
     resolved = "【Alertmanager 通知】発生中 0 件 / 解除 1 件\n\n✅ [WARNING] AiOpsOutcomeBurnSlow\n  解除 11/14 11:05 JST fp=abcd1234"
     check("alert: resolved-only title", plugin.alert_summary(resolved, "") == ("解除: AiOpsOutcomeBurnSlow", 0))
     check("alert: unknown text falls back to the first line", plugin.alert_summary("x\ny", "3") == ("x", 3))
@@ -250,7 +274,7 @@ async def main():
     await plugin.recover(plugin.settings())
     check("expiry: the unreached one is delivered once both egresses are back",
           plugin.pending_count(plugin.settings()) == 0 and len(telegram["sent"]) == 1)
-    await plugin.send_once(plugin.settings(), "direct:alertmanager", fourth, None)
+    await plugin.recover(plugin.settings())
     check("expiry: an expired receipt is not delivered again", len(telegram["sent"]) == 1)
     os.environ["BOXP_NOTIFY_TELEGRAM_CHAT_ID"] = os.environ["BOXP_NOTIFY_TELEGRAM_TOKEN"] = ""
     os.environ.update(TELEGRAM_BOT_TOKEN="gw", TELEGRAM_HOME_CHANNEL="42", TELEGRAM_HOME_CHANNEL_THREAD_ID="9",

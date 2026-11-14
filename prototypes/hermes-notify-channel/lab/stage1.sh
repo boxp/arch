@@ -31,6 +31,8 @@ mark "S2 the same payload delivered again (Alertmanager retry)"
 post alertmanager s2 "$(alert aaaa0001 firing critical)"; sleep 6
 mark "S3 resolved"
 post alertmanager s3 "$(alert aaaa0001 resolved critical)"; sleep 6
+mark "S3b the alert fires again with the same start time (same text as S1) -> a new notification"
+post alertmanager s3b "$(alert aaaa0001 firing critical)"; sleep 6
 mark "S4 relay output [SILENT] (quiet hours)"
 post alertmanager-quiet s4 "$(alert aaaa0004 firing warning)"; sleep 6
 mark "S5 not an Alertmanager payload"
