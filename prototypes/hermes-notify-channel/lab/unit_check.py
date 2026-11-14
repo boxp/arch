@@ -45,13 +45,15 @@ class Stub(BaseHTTPRequestHandler):
         pass
 
 
-server = ThreadingHTTPServer(("127.0.0.1", 0), Stub)
-threading.Thread(target=server.serve_forever, daemon=True).start()
-root = Path(tempfile.mkdtemp(prefix="boxp-notify-check."))
-(root / "vault/Tickets").mkdir(parents=True)
-os.environ.update(BOXP_NOTIFY_STATE_DIR=str(root / "state"), BOXP_NOTIFY_VAULT=str(root / "vault"),
-                  BOXP_NOTIFY_TELEGRAM_MODE="both", BOXP_NOTIFY_TELEGRAM_TOKEN="lab", BOXP_NOTIFY_TELEGRAM_CHAT_ID="1",
-                  BOXP_NOTIFY_TELEGRAM_API_BASE=f"http://127.0.0.1:{server.server_port}")
+LIB = os.environ.get("CHECK_LIB") == "1"  # loaded by the child of check 4: plugin only, parent's environment
+if not LIB:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Stub)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    root = Path(tempfile.mkdtemp(prefix="boxp-notify-check."))
+    (root / "vault/Tickets").mkdir(parents=True)
+    os.environ.update(BOXP_NOTIFY_STATE_DIR=str(root / "state"), BOXP_NOTIFY_VAULT=str(root / "vault"),
+        BOXP_NOTIFY_TELEGRAM_MODE="both", BOXP_NOTIFY_TELEGRAM_TOKEN="lab", BOXP_NOTIFY_TELEGRAM_CHAT_ID="1",
+        BOXP_NOTIFY_TELEGRAM_API_BASE=f"http://127.0.0.1:{server.server_port}")
 failures = []
 
 
@@ -119,13 +121,32 @@ async def main():
     await holder.wait()
     check("cross-process: recovery proceeds after release, once", await recovering == 1 and len(telegram["sent"]) == 1)
 
-    # 4. mode fallback is unchanged: home success closes the receipt without Telegram.
+    # 4. long text, process dies after Telegram accepted the first chunk: recovery resumes at the second.
+    ev = event(5)
+    telegram["sent"] = []
+    text = f"報告 event={ev} " + "あ" * 4000 + "い" * 100
+    code = ("import asyncio,os,runpy; m=runpy.run_path(os.environ['CHECK'],run_name='lib');"
+            "p=m['plugin']; real=p.atomic_json\n"
+            "def dying(path,payload):\n"
+            "    real(path,payload)\n"
+            "    if payload.get('telegram_chunks')==1: os._exit(9)\n"
+            "p.atomic_json=dying\n"
+            "asyncio.run(p.send_once(p.settings(),'tb:'+os.environ['EV'],os.environ['TEXT'],None))")
+    child = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", code, env={**os.environ, "CHECK": __file__, "EV": ev, "TEXT": text, "CHECK_LIB": "1"})
+    check("chunks: sender process died after the first chunk", await child.wait() == 9 and len(telegram["sent"]) == 1)
+    await plugin.recover(plugin.settings())
+    check("chunks: recovery sends only the remaining chunk",
+          state(ev) == "delivered" and len(telegram["sent"]) == 2 and "".join(telegram["sent"]) == text)
+
+    # 5. mode fallback is unchanged: home success closes the receipt without Telegram.
     os.environ["BOXP_NOTIFY_TELEGRAM_MODE"] = "fallback"
-    ev = event(4)
+    ev = event(6)
     telegram["sent"] = []
     await send(ev)
     check("fallback: home alone is delivered, Telegram untouched", state(ev) == "delivered" and not telegram["sent"])
 
 
-asyncio.run(main())
-sys.exit(1 if failures else 0)
+if not LIB:
+    asyncio.run(main())
+    sys.exit(1 if failures else 0)

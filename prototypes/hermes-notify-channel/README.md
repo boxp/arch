@@ -48,7 +48,7 @@ lab/lab.sh down lab546a
 - `LAB_CRON_ONLY=1` で cron の場面だけ、`LAB_RUN_ARGS="-e BOXP_NOTIFY_CRON_BUCKET_SECONDS=60"` で重複排除の時間幅を変えられる。
 - `lab/cron-standalone.sh` は gateway を起動せず `hermes cron tick` だけで cron を届ける場面。
 - `lab/home-dispatch.sh <証跡> <作業dir>` は出来た受信箱を無改変の配送係（`task_board_events.bb`）に読ませ、擬似の家が受け取った内容を出す。
-- `python3 lab/unit_check.py` は image 無しで動く確認（`both` で Telegram だけ失敗した時の回復、送信中の回復との競合、別 process との排他）。上流の gateway は擬似に差し替えている。
+- `python3 lab/unit_check.py` は image 無しで動く確認（`both` で Telegram だけ失敗した時の回復、送信中の回復との競合、別 process との排他、分割送信の途中停止からの再開）。上流の gateway は擬似に差し替えている。
 - 証跡は `boxp-notify/journal.jsonl`（`send` の呼出しと判定）、`logs/telegram.jsonl`、`vault/`（家の受信箱）に残る。
 
 ## 試作のままにしてある点

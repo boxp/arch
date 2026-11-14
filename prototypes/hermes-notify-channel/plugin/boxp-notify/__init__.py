@@ -279,10 +279,11 @@ def egress_complete(mode: str, target: dict, home: bool, telegram: bool) -> bool
     return home
 
 
-def telegram_send(cfg: dict, text: str, progress: Optional[dict] = None) -> tuple[bool, str]:
+def telegram_send(cfg: dict, text: str, progress: Optional[dict] = None, saved=None) -> tuple[bool, str]:
     """Blocking Bot API call (run in a thread). Splits long text; no retry beyond the caller's.
 
     ``progress["chunks"]`` counts the chunks already accepted, so a retry resumes after them.
+    ``saved(count)`` is called right after each accepted chunk so the count survives a crash mid-text.
     """
     if not (cfg["telegram_token"] and cfg["telegram_chat"]):
         return False, "telegram not configured"
@@ -302,6 +303,8 @@ def telegram_send(cfg: dict, text: str, progress: Optional[dict] = None) -> tupl
                 return False, "telegram rejected"
             ids.append(str((reply.get("result") or {}).get("message_id", "")))
             progress["chunks"] = index + 1
+            if saved:
+                saved(index + 1)
         except (urllib.error.URLError, OSError, ValueError) as error:
             return False, f"telegram {type(error).__name__}"
     return True, ",".join(ids)
@@ -310,17 +313,26 @@ def telegram_send(cfg: dict, text: str, progress: Optional[dict] = None) -> tupl
 async def deliver(cfg: dict, key: str, record: dict) -> dict:
     """Run the egress for one pending receipt and return the updated record."""
     target, decision, metadata = record["target"], record["decision"], record.get("metadata")
+    path = receipt_path(cfg, key)
     home = record.get("home") or write_home(cfg, target, decision, key, metadata)
+    if home and not record.get("home"):
+        record["home"] = True
+        atomic_json(path, record)  # durable before the next egress: a crash must not redo this one
     telegram, detail = record.get("telegram", False), record.get("telegram_detail", "")
     mode = cfg["telegram_mode"]
     if not telegram and (mode == "both" or (mode == "fallback" and not home)):
         progress = {"chunks": int(record.get("telegram_chunks", 0))}
-        telegram, detail = await asyncio.to_thread(telegram_send, cfg, decision["text"], progress)
+
+        def saved(count: int) -> None:
+            record["telegram_chunks"] = count
+            atomic_json(path, record)
+
+        telegram, detail = await asyncio.to_thread(telegram_send, cfg, decision["text"], progress, saved)
         record["telegram_chunks"] = progress["chunks"]
     record.update(home=home, telegram=telegram, telegram_detail=detail,
                   attempts=int(record.get("attempts", 0)) + 1, updated_at=now().isoformat())
     record["state"] = "delivered" if egress_complete(mode, target, home, telegram) else "pending"
-    atomic_json(receipt_path(cfg, key), record)
+    atomic_json(path, record)
     return record
 
 
