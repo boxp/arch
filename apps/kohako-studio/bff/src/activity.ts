@@ -1,8 +1,10 @@
-export type ActivityStep = { id: string; kind: 'tool'; tool: string; detail?: string; status: 'running' | 'done' | 'failed' | 'interrupted'; startedAt: number; durationMs?: number; result?: string } | { id: string; kind: 'note'; text: string; at: number }
+export type ActivityStep = { id: string; kind: 'tool'; tool: string; detail?: string; status: 'running' | 'done' | 'failed' | 'interrupted' | 'unconfirmed'; startedAt: number; durationMs?: number; result?: string } | { id: string; kind: 'note'; text: string; at: number }
 export type Activity = { steps: ActivityStep[]; writing: boolean; dropped: number }
 export function redactPublic(text: string): string {
   return text.replace(/-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*/gi, '<secret>')
     .replace(/\b(?:authorization|cookie|x-api-key)\s*:[^\r\n]*/gi, '<secret>')
+    // 名前に資格情報らしい語を含む項目は、JSON・引用符つき・エスケープ済みの形でも値ごと伏せる（例: {"api_key":"…"}）。
+    .replace(/(?:\\*["'])?[A-Za-z0-9_.-]*(?:token|key|secret|passw(?:or)?d|passphrase|credential|authorization|cookie)[A-Za-z0-9_.-]*(?:\\*["'])?\s*[:=]\s*(?:\\+"[\s\S]*?(?:\\+"|$)|"(?:[^"\\]|\\[\s\S])*(?:"|$)|'(?:[^'\\]|\\[\s\S])*(?:'|$)|\[[^\]]*(?:\]|$)|\{[^}]*(?:\}|$)|[^\s,;}\]]+)/gi, '<secret>')
     .replace(/(https?:\/\/)[^\s/@]+@/gi, '$1<secret>@')
     .replace(/(https?:\/\/[^\s?#]+)[?#][^\s]*/gi, '$1?…')
     .replace(/--(?:password|token|api-key|secret)(?:=|\s+)\S+/gi, '<secret>')
@@ -10,7 +12,7 @@ export function redactPublic(text: string): string {
     .replace(/\b(?:sk-|ghp_|gho_|github_pat_|xox[abp]-|AKIA)[A-Za-z0-9_-]+/g, '<secret>')
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '<secret>')
     .replace(/[\x00-\x1f\x7f-\x9f]/g, ' ')
-    .replace(/\b(?:token|key|secret|password|bearer)\b\s*[:=]?\s*\S+/gi, '<secret>')
+    .replace(/\b(?:token|key|secret|password|bearer)\b(?!>)\s*[:=]?\s*\S+/gi, '<secret>')
     .split(/(\s+)/).map(word => (/^[A-Za-z0-9_\-+=]{32,}$/.test(word) || (/^[A-Za-z0-9_\-+/=]{40,}$/.test(word) && !/^\.{0,2}\//.test(word) && !word.includes('//')) ? '<secret>' : word)).join('').trim()
 }
 const clean = (s: string, limit: number) => { const x = redactPublic(s).replace(/\s+/g, ' ').trim(); return x.length > limit ? x.slice(0, limit) + '…' : x }
@@ -43,7 +45,8 @@ export function createActivity(now: () => number) {
         const result = typeof e.preview === 'string' ? clean(e.preview, 200) : ''; if (result) step.result = result
       }
     },
-    finish() { for (const step of steps) if (step.kind === 'tool' && step.status === 'running') step.status = 'interrupted'; writing = false; buffer = '' },
+    // completed: run 自体は正常終了したが完了通知を受け取れなかった手順は、中断でも成功でもなく「結果未確認」とする。
+    finish(completed = false) { for (const step of steps) if (step.kind === 'tool' && step.status === 'running') step.status = completed ? 'unconfirmed' : 'interrupted'; writing = false; buffer = '' },
     snapshot(): Activity | undefined { return steps.length || writing ? { steps: steps.map(s => ({ ...s })), writing, dropped } : undefined },
   }
 }

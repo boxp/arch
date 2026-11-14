@@ -553,6 +553,23 @@ it('BOXP-524: lets owner and verifier transcribe but rejects notifier and unauth
     expect(fetcher).toHaveBeenCalledTimes(2)
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
 })
+it('結果の照会が SSE の完了通知より先に終わっても、読み切ってから手順を確定する', async () => {
+  const { createConversation } = await import('./conversation.js')
+  const make = (lateMs: number, drainMs: number, result: object = { status: 'done', text: 'ok' }) => {
+    let aborted = false
+    const hermes = { run: async (_id: string, _text: string, _session: string, _i: string, _cb: any, _a: any, onRun: any) => { onRun('run1'); await new Promise(r => setTimeout(r, 5)); return result }, events: async (_id: string, emit: any, signal: AbortSignal) => { emit({ event: 'tool.started', tool: 'web_search', tool_call_id: 'c1' }); await new Promise(r => setTimeout(r, lateMs)); aborted = signal.aborted; emit({ event: 'tool.completed', tool: 'web_search', tool_call_id: 'c1', duration: 0.5 }); emit({ event: 'tool.started', tool: 'terminal', tool_call_id: 'c2' }); emit({ event: 'tool.completed', tool: 'terminal', tool_call_id: 'c2', error: true }) }, approve: async () => 'ok', stop: async () => 'ok' } as unknown as ReturnType<typeof createHermes>
+    return { conv: createConversation({ now: Date.now, hermes, prefix: 'kohako-web', activityDrainMs: drainMs }), wasAborted: () => aborted }
+  }
+  const input = (requestId: string) => ({ requestId, kind: 'text' as const, text: 'hello', expiresAt: Date.now() + 60000 })
+  const steps = (c: ReturnType<typeof make>, id: string) => c.conv.get(id)?.activity?.snapshot()?.steps.map(s => s.kind === 'tool' ? s.status : 'note')
+  const ok = make(40, 1000); ok.conv.submit(input('drain-ok-123'), 'i'); await new Promise(r => setTimeout(r, 120))
+  expect(ok.conv.get('drain-ok-123')?.status).toBe('done'); expect(ok.wasAborted()).toBe(false); expect(steps(ok, 'drain-ok-123')).toEqual(['done', 'failed'])
+  // 読み切れないまま待ち時間を過ぎたら、成功とも中断とも言わず結果未確認にして返答を確定する。
+  const slow = make(300, 20); slow.conv.submit(input('drain-slow-123'), 'i'); await new Promise(r => setTimeout(r, 120))
+  expect(slow.conv.get('drain-slow-123')?.status).toBe('done'); expect(steps(slow, 'drain-slow-123')).toEqual(['unconfirmed'])
+  const failed = make(300, 20, { status: 'failed', error: 'run_failed' }); failed.conv.submit(input('drain-fail-123'), 'i'); await new Promise(r => setTimeout(r, 120))
+  expect(steps(failed, 'drain-fail-123')).toEqual(['interrupted'])
+})
 it('returns public activity for text but never reasoning or touch activity', async () => {
   let settle: (r: any) => void = () => {}
   const hermes = { run: (_id: string, _text: string, _session: string, _i: string, _cb: any, _a: any, onRun: any) => { onRun('run1'); return new Promise(r => { settle = r }) }, events: async (_id: string, emit: any) => { emit({ event: 'reasoning.available', text: 'SECRET-THOUGHT' }); emit({ event: 'tool.started', tool: 'web_search', tool_call_id: 'call1' }) }, approve: async () => 'ok', stop: async () => 'ok' } as unknown as ReturnType<typeof createHermes>
@@ -560,7 +577,7 @@ it('returns public activity for text but never reasoning or touch activity', asy
   try {
     const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`, post = (body: object) => fetch(base + 'messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }), get = async (id: string) => (await fetch(base + 'requests/' + id)).json() as Promise<any>
     await post({ requestId: 'activity-123', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }); const item = await get('activity-123'); expect(item.activity.steps[0]).toMatchObject({ tool: 'web_search', status: 'running' }); expect(JSON.stringify(item)).not.toContain('SECRET-THOUGHT')
-    settle({ status: 'done', text: 'ok' }); await new Promise(r => setTimeout(r, 10)); expect((await get('activity-123')).activity.steps[0].status).toBe('interrupted')
+    settle({ status: 'done', text: 'ok' }); await new Promise(r => setTimeout(r, 10)); expect((await get('activity-123')).activity.steps[0].status).toBe('unconfirmed')
     await post({ requestId: 'activity-touch-123', kind: 'touch', touch: { zone: 'head', action: 'pat', count: 1 }, expiresAt: Date.now() + 60000 }); expect((await get('activity-touch-123')).activity).toBeUndefined()
   } finally { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())) }
 })

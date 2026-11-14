@@ -1,4 +1,4 @@
-type Tool = { id: string; kind: 'tool'; tool: string; detail?: string; status: 'running' | 'done' | 'failed' | 'interrupted'; startedAt: number; durationMs?: number; result?: string }
+type Tool = { id: string; kind: 'tool'; tool: string; detail?: string; status: 'running' | 'done' | 'failed' | 'interrupted' | 'unconfirmed'; startedAt: number; durationMs?: number; result?: string }
 type Note = { id: string; kind: 'note'; text: string; at: number }
 export type Activity = { steps: (Tool | Note)[]; writing: boolean; dropped: number }
 export function validateActivity(value: unknown): Activity | null {
@@ -9,7 +9,7 @@ export function validateActivity(value: unknown): Activity | null {
     if (!v || typeof v !== 'object' || Array.isArray(v)) continue
     const s = v as Record<string, unknown>; if (typeof s.id !== 'string' || !/^[tn]\d{1,16}$/.test(s.id)) continue
     if (s.kind === 'note' && typeof s.text === 'string' && s.text.length <= 401 && typeof s.at === 'number' && Number.isFinite(s.at)) steps.push({ id: s.id, kind: 'note', text: s.text, at: s.at })
-    else if (s.kind === 'tool' && typeof s.tool === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/.test(s.tool) && ['running','done','failed','interrupted'].includes(String(s.status)) && typeof s.startedAt === 'number' && Number.isFinite(s.startedAt) && (s.detail === undefined || typeof s.detail === 'string' && s.detail.length <= 161) && (s.result === undefined || typeof s.result === 'string' && s.result.length <= 201) && (s.durationMs === undefined || typeof s.durationMs === 'number' && Number.isInteger(s.durationMs) && s.durationMs >= 0 && s.durationMs <= 86400000)) steps.push({ id: s.id, kind: 'tool', tool: s.tool, status: s.status as Tool['status'], startedAt: s.startedAt, ...(typeof s.detail === 'string' ? { detail: s.detail } : {}), ...(typeof s.result === 'string' ? { result: s.result } : {}), ...(typeof s.durationMs === 'number' ? { durationMs: s.durationMs } : {}) })
+    else if (s.kind === 'tool' && typeof s.tool === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/.test(s.tool) && ['running','done','failed','interrupted','unconfirmed'].includes(String(s.status)) && typeof s.startedAt === 'number' && Number.isFinite(s.startedAt) && (s.detail === undefined || typeof s.detail === 'string' && s.detail.length <= 161) && (s.result === undefined || typeof s.result === 'string' && s.result.length <= 201) && (s.durationMs === undefined || typeof s.durationMs === 'number' && Number.isInteger(s.durationMs) && s.durationMs >= 0 && s.durationMs <= 86400000)) steps.push({ id: s.id, kind: 'tool', tool: s.tool, status: s.status as Tool['status'], startedAt: s.startedAt, ...(typeof s.detail === 'string' ? { detail: s.detail } : {}), ...(typeof s.result === 'string' ? { result: s.result } : {}), ...(typeof s.durationMs === 'number' ? { durationMs: s.durationMs } : {}) })
   }
   return { steps, writing: a.writing, dropped: a.dropped as number }
 }
@@ -22,8 +22,8 @@ export function activityHeadline(a: Activity, opts: { live: boolean; nowMs: numb
   const tools = a.steps.filter((s): s is Tool => s.kind === 'tool')
   if (opts.live) { const running = tools.filter(s => s.status === 'running').at(-1); return running ? toolLabel(running.tool).doing : a.writing ? '返答を書いています' : '次の手順を待っています' }
   if (!tools.length) return `途中のひとこと ${a.steps.length} 件`
-  const failed = tools.filter(s => s.status === 'failed').length, interrupted = tools.filter(s => s.status === 'interrupted').length
-  return `ツールを ${tools.length} 回使いました${failed ? `（うち失敗 ${failed}）` : ''}${interrupted ? `（中断 ${interrupted}）` : ''}`
+  const failed = tools.filter(s => s.status === 'failed').length, interrupted = tools.filter(s => s.status === 'interrupted').length, unconfirmed = tools.filter(s => s.status === 'unconfirmed').length
+  return `ツールを ${tools.length} 回使いました${failed ? `（うち失敗 ${failed}）` : ''}${interrupted ? `（中断 ${interrupted}）` : ''}${unconfirmed ? `（結果未確認 ${unconfirmed}）` : ''}`
 }
 export function formatDuration(ms: number): string { const seconds = Math.max(0, ms) / 1000; if (seconds < 10) return `${seconds.toFixed(1)}秒`; if (seconds < 60) return `${Math.floor(seconds)}秒`; return `${Math.floor(seconds / 60)}分${String(Math.floor(seconds % 60)).padStart(2, '0')}秒` }
 let rootNode: HTMLElement | undefined, last = '', expanded = false; const seen = new Map<string, number>()
@@ -46,7 +46,7 @@ export function renderActivity(root: HTMLElement, activity: Activity | null, opt
   if (activity.dropped) list.append(make('li','activity-dropped',`古い手順 ${activity.dropped} 件は省略しました`))
   for (const s of activity.steps) { const li = document.createElement('li'); li.dataset.kind = s.kind
     if (s.kind === 'note') li.textContent = s.text
-    else { li.dataset.status = s.status; const mark = make('span','activity-mark'); mark.setAttribute('aria-hidden','true'); li.append(mark, make('span','activity-name',toolLabel(s.tool).name)); const time = make('span','activity-time',s.durationMs === undefined ? '' : formatDuration(s.durationMs)); if (s.status === 'running') { if (!seen.has(s.id)) seen.set(s.id,Date.now()); time.dataset.runningId = s.id } li.append(time); if (s.detail) li.append(make('span','activity-detail',s.detail)); if (s.result) li.append(make('span','activity-result',s.result)); li.append(make('span','sr-only',({running:'実行中',done:'完了',failed:'失敗',interrupted:'中断'})[s.status])) }
+    else { li.dataset.status = s.status; const mark = make('span','activity-mark'); mark.setAttribute('aria-hidden','true'); li.append(mark, make('span','activity-name',toolLabel(s.tool).name)); const time = make('span','activity-time',s.durationMs === undefined ? '' : formatDuration(s.durationMs)); if (s.status === 'running') { if (!seen.has(s.id)) seen.set(s.id,Date.now()); time.dataset.runningId = s.id } li.append(time); if (s.detail) li.append(make('span','activity-detail',s.detail)); if (s.result) li.append(make('span','activity-result',s.result)); li.append(make('span','sr-only',({running:'実行中',done:'完了',failed:'失敗',interrupted:'中断',unconfirmed:'結果未確認'})[s.status])) }
     list.append(li)
   }
   root.append(head,list); list.scrollTop = follow ? list.scrollHeight : oldTop; if (hadFocus) head.focus({ preventScroll: true }); tickActivity()
