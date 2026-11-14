@@ -52,7 +52,10 @@ mark "S7 vault back -> recovery"
 x 'rm -f /opt/data/boxp-notify/lab-fail-home'; sleep 25
 mark "S8 vault and Telegram both down, then gateway restart"
 x 'touch /opt/data/boxp-notify/lab-fail-home; echo "{\"telegram_fail\":true}" > /lab/logs/control.json'
-post alertmanager s8 "$(alert aaaa0008 firing critical)"; sleep 40
+post alertmanager s8 "$(alert aaaa0008 firing critical)"; sleep 6
+mark "S8b reached nothing, then resolved and firing again with the same text -> after recovery: resolve, then the firing once"
+post alertmanager s8b-resolved "$(alert aaaa0008 resolved critical)"; sleep 6
+post alertmanager s8b-refire "$(alert aaaa0008 firing critical)"; sleep 30
 docker restart "$name" >/dev/null; "$here/lab.sh" stub "$name"; sleep 60
 mark "S8 both back after the restart -> recovery"
 x 'rm -f /opt/data/boxp-notify/lab-fail-home; echo "{}" > /lab/logs/control.json'; sleep 30

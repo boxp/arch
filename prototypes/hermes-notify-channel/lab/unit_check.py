@@ -226,6 +226,22 @@ async def main():
     await plugin.recover(plugin.settings())
     check("alert refire: a retry of an unfinished notification is not a second one",
           not result.success and telegram["sent"].count(lost) == 1 and plugin.pending_count(plugin.settings()) == 0)
+    # (BOXP-553 review) both egresses are down while the alert fires, resolves and fires again with the same
+    # text (each one retried by the webhook): after they come back the Owner gets fire, resolve... and the
+    # second firing last, not a resolve as the final word. The unreached first firing is replaced by it.
+    telegram.update(sent=[], fail=True)
+    (root / "state/lab-fail-home").touch()
+    down, down_gone = alert.replace("abcd1234", "eeee0005"), gone.replace("eeee0001", "eeee0005")
+    before = homes()
+    results = [await plugin.send_once(plugin.settings(), "direct:alertmanager", text, None)
+               for text in (down, down, down_gone, down_gone, down, down)]
+    (root / "state/lab-fail-home").unlink()
+    telegram["fail"] = False
+    await plugin.recover(plugin.settings())
+    await plugin.recover(plugin.settings())
+    check("alert refire while both are down: the second firing is delivered after the resolve, once",
+          not any(r.success for r in results) and telegram["sent"] == [down_gone, down]
+          and homes() == before + 2 and plugin.pending_count(plugin.settings()) == 0)
     # (BOXP-553 review) the first firing is half delivered (home yes, Telegram down) when the alert resolves
     # and fires again with the same text: the second firing is a new notification for the home inbox too,
     # and recovery still finishes the first one on Telegram.
