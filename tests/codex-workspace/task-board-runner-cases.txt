@@ -170,3 +170,4 @@ test_dehydrate_rehydrate_keeps_mode_change
 test_dehydrate_keeps_clean_filtered_bytes
 test_dehydrate_keeps_symlinked_dir_files
 test_capacity_attribution
+test_outside_copy_reclaim

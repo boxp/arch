@@ -2304,7 +2304,7 @@
                                   prepared))
                 "Use these per-run worktrees for repository changes. Do not edit shared checkouts under /home/boxp/ghq for this task.\n")
            "No repository worktree was prepared for this ticket.\n")
-         "Storage placement: put temporary clones, extra worktrees, caches, build outputs and verification copies inside this run workspace (it is cleaned up automatically). Do not create them under /home/boxp/ghq, ~/.cache or elsewhere in the home directory, where nothing cleans them up. Verification media (screenshots, screen recordings, rendered frames, comparison images, audio) must not be written or copied into the Obsidian vault, which syncs to a size-limited remote: keep the media that has to be kept under /home/boxp/verification-artifacts/<TICKET>/<label>/ (outside the vault, not cleaned up) and record in the vault only a text summary of the result and that path. Images the ticket itself asks for as deliverables are not verification media.\n"
+         "Storage placement: put temporary clones, extra worktrees, caches, build outputs and verification copies inside this run workspace (it is cleaned up automatically). When verification needs a copy of a built site or large tracked assets, do not duplicate files already tracked in the repository; reference the checkout path or symlink into it, and delete such copies before the run ends; copies identical to origin are automatically removed from older runs. Do not create them under /home/boxp/ghq, ~/.cache or elsewhere in the home directory, where nothing cleans them up. Verification media (screenshots, screen recordings, rendered frames, comparison images, audio) must not be written or copied into the Obsidian vault, which syncs to a size-limited remote: keep the media that has to be kept under /home/boxp/verification-artifacts/<TICKET>/<label>/ (outside the vault, not cleaned up) and record in the vault only a text summary of the result and that path. Images the ticket itself asks for as deliverables are not verification media.\n"
          (when (seq unavailable)
            (str "Repositories that need preparation inside this run workspace:\n"
                 (str/join "" (map (fn [{:keys [repo message]}]
@@ -6358,6 +6358,269 @@
                         (log! (str "generated-reclaim: dehydrate " display " files=" (count files) " bytes=" bytes (when (= result :would-reclaim) " (dry-run)")))))))))
           (catch Exception e (log! (str "generated-reclaim: dehydrate error " run " " (one-line (.getMessage e))))))))))
 
+(defn outside-copy-enabled? []
+  ;; Eligibility is the stale prune's own, so the pass follows its switch.
+  (and (stale-prune-enabled?)
+       (not= "off" (some-> (System/getenv "CODEX_TASK_BOARD_OUTSIDE_COPY_RECLAIM") str/trim str/lower-case))
+       (not= false (try (:outside-copies (read-edn-file (fs/path (root) "generated-reclaim.edn") nil)) (catch Exception _ false)))))
+
+(defn outside-copy-active-run
+  "Run id of the live run holding the ticket lock, :unreadable when the lock
+  does not name one, nil when the ticket is not locked."
+  [ticket-id]
+  (when (fs/exists? (lock-path ticket-id) {:nofollow-links true})
+    (let [info (try (lock-prune-info (read-edn-file (lock-path ticket-id) nil) ticket-id) (catch Exception _ nil))]
+      (or (:active-run-id info) :unreadable))))
+
+(defn outside-copy-ticket-hold
+  "Unlike generated-ticket-hold the ticket may be in any lane: only runs the
+  stale prune already treats as deletable are touched. A ticket locked by a
+  live run is handled like the stale prune's locked-active path when
+  allow-active? is set: its other stale runs stay eligible."
+  ([ticket-id] (outside-copy-ticket-hold ticket-id false))
+  ([ticket-id allow-active?]
+   (let [active (outside-copy-active-run ticket-id)]
+     (cond (and active (or (not allow-active?) (= :unreadable active))) "locked"
+           (nil? (board-card-lanes ticket-id)) "board-unreadable"
+           (nil? (ticket-frontmatter-or-nil ticket-id)) "ticket-missing"))))
+
+(defn outside-copy-run-hold [ticket-id run-id]
+  (let [path (run-workspace-dir ticket-id run-id)
+        ids (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))
+        decision (stale-run-decision run-id ids (now) (stale-retention-hours) (keep-latest-runs))]
+    (cond (= run-id (outside-copy-active-run ticket-id)) "active-run"
+          (not (:eligible? decision)) (:reason decision)
+          (not (safe-run-workspace-path? ticket-id run-id path)) "unsafe-path"
+          :else (stale-process-hold (fs/real-path path)))))
+
+(defn outside-copy-git
+  "Git against common-dir, bounded by the seconds the pass may still run (left)
+  and by cap. Not started once the budget ran out: reported as a failure."
+  [common-dir left cap & args]
+  (if (pos? (left))
+    (command-result (into ["git" (str "--git-dir=" common-dir)] args) {:timeout-seconds (max 1 (min cap (left)))})
+    {:exit -1 :out "" :err "outside-copy budget exhausted"}))
+
+(defn outside-copy-origin-blobs
+  "sha -> true for every blob in the remote-tracking default branch of the
+  repository behind common-dir, or nil when it cannot be read. Only
+  remote-tracking refs count: their content is known to exist on GitHub.
+  :commit holds the commit the tree was listed from. left returns the
+  seconds the pass may still run."
+  [common-dir left]
+  (let [git (fn [& args] (apply outside-copy-git common-dir left 120 args))
+        commit (some #(let [r (git "rev-parse" "--verify" "-q" (str % "^{commit}"))
+                            sha (str/trim (:out r))]
+                        (when (and (zero? (:exit r)) (re-matches #"[0-9a-f]{40,64}" sha)) sha))
+                     ["refs/remotes/origin/HEAD" "refs/remotes/origin/main" "refs/remotes/origin/master"])
+        tree (when commit (git "ls-tree" "-r" "-z" commit))]
+    (when (and tree (zero? (:exit tree)))
+      (into {:commit commit} (keep #(when-let [[_ sha] (re-matches #"(?s)(?:100644|100755) blob ([0-9a-f]+)\t.*" %)] [sha true]))
+            (str/split (:out tree) #"\u0000")))))
+
+(defn outside-copy-pin!
+  "Keeps commit (and so every blob the ledger restores from) reachable in the
+  shared clone after origin's branch moves on and Git collects garbage.
+  Returns the ref name, or nil when the ref could not be written and read back."
+  [common-dir commit left]
+  (let [ref (str "refs/codex-task-board/outside-copy-reclaim/" commit)
+        git (fn [& args] (apply outside-copy-git common-dir left 30 args))]
+    (when (and commit
+               (zero? (:exit (git "update-ref" ref commit)))
+               (= commit (str/trim (:out (git "rev-parse" "--verify" "-q" (str ref "^{commit}"))))))
+      ref)))
+
+(defn outside-copy-link-targets
+  "Real paths (strings) that symlinks anywhere under the task-board state and
+  the workspaces resolve to, so a copy referenced from another run or from the
+  run records is kept. nil when the scan did not complete."
+  [timeout-seconds]
+  (let [all (vec (distinct (keep #(try (str (fs/real-path %)) (catch Exception _ nil)) [(root) (workspaces-dir)])))
+        roots (remove (fn [r] (some #(and (not= r %) (fs/starts-with? (fs/path r) (fs/path %))) all)) all)
+        scan (command-result (vec (concat ["find" "-P"] roots ["-type" "l" "-print0"])) {:timeout-seconds timeout-seconds})]
+    (when (and (seq roots) (zero? (:exit scan)))
+      (into #{} (keep #(try (str (fs/real-path %)) (catch Exception _ nil)))
+            (remove str/blank? (str/split (:out scan) #"\u0000"))))))
+
+(defn outside-copy-hashes
+  "path -> raw blob sha (no clean filter). Files that vanish or cannot be
+  hashed are simply absent from the result. left returns the seconds the pass
+  may still run: every git call is bounded by it and hashing stops at zero."
+  [common-dir paths left]
+  (let [prefix (if (zero? (:exit (command-result ["sh" "-c" "command -v nice >/dev/null && command -v ionice >/dev/null"] {:timeout-seconds (max 1 (min 10 (left)))}))) ["nice" "-n" "19" "ionice" "-c2" "-n7"] [])
+        one (fn [path] (let [r (command-result (into prefix ["git" (str "--git-dir=" common-dir) "hash-object" "--no-filters" "--" (str path)]) {:timeout-seconds (max 1 (min 60 (left)))})]
+                         (when (zero? (:exit r)) (str/trim (:out r)))))]
+    (into {}
+          (mapcat (fn [chunk]
+                    (let [r (if-not (pos? (left))
+                              {:exit -1}
+                              (try (let [proc (p/process (into prefix ["git" (str "--git-dir=" common-dir) "hash-object" "--no-filters" "--stdin-paths"])
+                                                         {:in (str (str/join "\n" (map str chunk)) "\n") :out :string :err :string})
+                                         res (deref proc (* 1000 (max 1 (left))) ::timeout)]
+                                     (if (= ::timeout res) (do (p/destroy-tree proc) {:exit -1}) res))
+                                   (catch Exception _ {:exit -1})))
+                          lines (when (zero? (:exit r)) (str/split-lines (:out r)))]
+                      (if (= (count lines) (count chunk))
+                        (map vector chunk lines)
+                        (keep (fn [path] (when (pos? (left)) (when-let [sha (one path)] [path sha]))) chunk)))))
+          (partition-all 200 paths))))
+
+(defn outside-copy-files
+  "Regular single-link files of at least min-bytes in the run that belong to
+  no checkout (nested repositories included) and are not reachable through a
+  symlink, neither one inside the run nor one in external-targets (real paths
+  of link targets found elsewhere). Each is {:path :rel :blocks-bytes :size
+  :mtime}; nil on scan error or once left (seconds the pass may still run) ran out."
+  [run-path min-bytes external-targets left]
+  (let [run-real (fs/real-path run-path)
+        limit #(max 1 (min 300 (left)))
+        linked? (fn [path] (loop [p path]
+                             (cond (nil? p) false
+                                   (contains? external-targets (str p)) true
+                                   (= p run-real) false
+                                   :else (recur (fs/parent p)))))
+        checkouts (mapv fs/real-path (find-checkouts run-path))
+        scan (command-result ["find" "-P" (str run-real) "-name" ".git" "-prune" "-o" "-type" "f" "-links" "1" "-size" (str "+" (max 0 (dec min-bytes)) "c") "-printf" "%b\\t%s\\t%T@\\t%p\\0"] {:timeout-seconds (limit)})
+        links (command-result ["find" "-P" (str run-real) "-name" ".git" "-prune" "-o" "-type" "l" "-print0"] {:timeout-seconds (limit)})]
+    (when (and (pos? (left)) (zero? (:exit scan)) (zero? (:exit links)))
+      (let [targets (vec (distinct (keep #(try (fs/real-path %) (catch Exception _ nil)) (remove str/blank? (str/split (:out links) #"\u0000")))))]
+        (vec (keep (fn [entry]
+                     (when-let [[_ blocks size mtime file] (re-matches #"(?s)(\d+)\t(\d+)\t([0-9.]+)\t(.*)" entry)]
+                       (let [path (fs/path file) rel (str (fs/relativize run-real path))]
+                         (when (and (not (re-find #"[\t\n\r]" rel))
+                                    (not-any? #(fs/starts-with? path %) checkouts)
+                                    (not-any? #(fs/starts-with? path %) targets)
+                                    (not (linked? path)))
+                           {:path path :rel rel :blocks-bytes (* 512 (Long/parseLong blocks)) :size (Long/parseLong size) :mtime mtime}))))
+                   (str/split (:out scan) #"\u0000")))))))
+
+(defn outside-copy-common-dirs
+  "Absolute common git dirs of the shared clones behind the ticket's run checkouts."
+  [ticket-dir left]
+  (vec (distinct
+        (for [run (child-directories ticket-dir)
+              co (try (find-checkouts run) (catch Exception _ []))
+              :while (pos? (left))
+              :let [r (command-result ["git" "-C" (str co) "rev-parse" "--path-format=absolute" "--git-common-dir"] {:timeout-seconds (max 1 (min 60 (left)))})]
+              :let [dir (str/trim (:out r))]
+              ;; A clone living inside a run can vanish with it; only shared
+              ;; clones outside the workspaces are a durable restore source.
+              :when (and (zero? (:exit r)) (not (str/blank? dir))
+                         (try (not (fs/starts-with? (fs/real-path dir) (fs/real-path (workspaces-dir)))) (catch Exception _ false)))]
+          dir))))
+
+(defn outside-copy-reclaim-pass!
+  "Stale runs are kept whole when anything lies outside their checkouts. Most
+  of those bytes are verification copies of tracked assets, so files there
+  that are byte-identical to a blob on origin's default branch are removed
+  (ledger first, restorable with git cat-file). Unique files, directories,
+  checkouts and the retention rules are left as they are."
+  [mode stop? stats]
+  (when (outside-copy-enabled?)
+    (let [min-bytes (prune-setting "CODEX_TASK_BOARD_OUTSIDE_COPY_MIN_BYTES" #(parse-bounded-long % 65536 1))
+          budget (prune-setting "CODEX_TASK_BOARD_OUTSIDE_COPY_BUDGET_SECONDS" #(parse-bounded-long % 600 1))
+          deadline (.plusSeconds (java.time.Instant/now) budget)
+          ;; Seconds the pass may still run: every scan, hash and delete is bounded by it.
+          left #(if (stop?) 0 (.getSeconds (java.time.Duration/between (java.time.Instant/now) deadline)))
+          done? #(not (pos? (left)))
+          link-targets (outside-copy-link-targets (max 1 (min 300 (left))))
+          pins (atom {})
+          pin-of (fn [dir commit] (if (contains? @pins dir) (get @pins dir)
+                                      (let [v (outside-copy-pin! dir commit left)] (swap! pins assoc dir v) v)))
+          cache-path (fs/path (root) "metrics" "outside-copy-scan-cache.edn")
+          loaded (let [v (try (read-edn-file cache-path {}) (catch Exception _ {}))] (if (map? v) v {}))
+          cache (atom (into {} (filter (fn [[k v]] (and (string? k) (set? v) (fs/directory? (fs/path (workspaces-dir) k)))) loaded)))
+          blobs (atom {})
+          blobs-of (fn [dir] (if (contains? @blobs dir) (get @blobs dir)
+                                 (let [v (outside-copy-origin-blobs dir left)] (swap! blobs assoc dir v) v)))
+          ledger (fs/path (root) "metrics" "outside-copy-reclaim-ledger.tsv")
+          skip! (fn [reason] (swap! stats update-in [:outside-copy-skipped reason] (fnil inc 0)))]
+      (when (nil? link-targets) (skip! "link-scan-failed"))
+      (doseq [ticket-dir (when link-targets (child-directories (workspaces-dir))) :while (not (done?))
+              :let [ticket (fs/file-name ticket-dir)]]
+        (try
+          (if-let [reason (outside-copy-ticket-hold ticket true)]
+            (skip! reason)
+            (let [active? (some? (outside-copy-active-run ticket))
+                  sources (delay (vec (keep (fn [dir] (when-let [m (blobs-of dir)] [dir m])) (outside-copy-common-dirs ticket-dir left))))]
+              (doseq [run (child-directories ticket-dir) :while (not (done?))
+                      :let [run-id (fs/file-name run) key (str ticket "/" run-id)]]
+                (try
+                  (if-let [reason (outside-copy-run-hold ticket run-id)]
+                    (skip! (first (str/split reason #" ")))
+                    (let [files (outside-copy-files run min-bytes link-targets left)
+                          known (get @cache key #{})
+                          fresh (remove #(known [(:rel %) (:size %) (:mtime %)]) files)]
+                      (cond
+                        (nil? files) (skip! "scan-failed")
+                        (empty? fresh) nil
+                        (empty? @sources) (skip! "no-origin-blobs")
+                        :else
+                        (let [hashes (outside-copy-hashes (ffirst @sources) (map :path fresh) left)
+                              source-of (fn [sha] (some (fn [[dir m]] (when (get m sha) dir)) @sources))
+                              matched (vec (keep (fn [f] (when-let [sha (get hashes (:path f))]
+                                                           (when-let [dir (source-of sha)]
+                                                             (assoc f :sha sha :source dir :commit (some (fn [[d m]] (when (= d dir) (:commit m))) @sources))))) fresh))
+                              misses (into #{} (keep (fn [f] (when (and (get hashes (:path f)) (not (source-of (get hashes (:path f)))))
+                                                               [(:rel f) (:size f) (:mtime f)]))) fresh)
+                              bytes (reduce + 0 (map :blocks-bytes matched))
+                              removed (volatile! 0) removed-bytes (volatile! 0)
+                              ;; A live run needs the guard for its heartbeat, so for
+                              ;; its ticket only the status is rechecked under the guard
+                              ;; and the files go outside it, as the stale prune does.
+                              status #(or (cond (not active?) (outside-copy-ticket-hold ticket)
+                                                (nil? (outside-copy-active-run ticket)) "lock-changed"
+                                                :else (outside-copy-ticket-hold ticket true))
+                                          (outside-copy-run-hold ticket run-id))
+                              recheck (when (and (seq matched) (= mode :on))
+                                        ((if active? (fn [_ f] (or (with-ticket-lock-guard ticket status) (f))) with-ticket-lock-guard) ticket
+                                          #(or (status)
+                                               (let [again (into {} (map (juxt :path identity)) (or (outside-copy-files run min-bytes link-targets left) []))
+                                                     still (filterv (fn [f] (contains? again (:path f))) matched)
+                                                     rehash (outside-copy-hashes (ffirst @sources) (map :path still) left)]
+                                                 (fs/create-dirs (fs/parent ledger))
+                                                 (doseq [f still :while (pos? (left))
+                                                         ;; The restore source must outlive origin's branch: pin its commit first.
+                                                         :let [pin (pin-of (:source f) (:commit f))]]
+                                                   (if (and pin
+                                                            (= (:sha f) (get rehash (:path f)))
+                                                            (zero? (:exit (outside-copy-git (:source f) left 30 "cat-file" "-e" (str (:sha f) "^{blob}")))))
+                                                     (try
+                                                       (spit (str ledger)
+                                                             (str (str/join "\t" [(str (now)) ticket run-id (:rel f) (:sha f) (:source f) (:blocks-bytes f)
+                                                                                  (if (owner-executable? (:path f)) "100755" "100644") pin]) "\n")
+                                                             :append true)
+                                                       (fs/delete (:path f))
+                                                       (vswap! removed inc) (vswap! removed-bytes + (:blocks-bytes f))
+                                                       (catch Exception e
+                                                         (log! (str "generated-reclaim: outside-copy delete-failed " key "/" (:rel f) " " (one-line (.getMessage e))))))
+                                                     (swap! stats update :outside-copy-changed inc)))
+                                                 nil))))
+                              result (cond recheck :skipped-recheck (empty? matched) nil (= mode :on) :reclaimed :else :would-reclaim)]
+                          (when (seq misses) (swap! cache update key (fnil into #{}) misses))
+                          (when result
+                            (workspace-metrics-write! {:event :generated-reclaim :kind :outside-copy :ticket ticket :run run-id
+                                                       :files (if (= result :reclaimed) @removed (count matched))
+                                                       :allocated-bytes (if (= result :reclaimed) @removed-bytes bytes) :result result :reason recheck})
+                            (case result
+                              :skipped-recheck (skip! (first (str/split recheck #" ")))
+                              :reclaimed (do (swap! stats update :outside-copy-runs inc)
+                                             (swap! stats update :outside-copy-files + @removed)
+                                             (swap! stats update :outside-copy-allocated-bytes + @removed-bytes))
+                              :would-reclaim (do (swap! stats update :outside-copy-runs inc)
+                                                 (swap! stats update :outside-copy-files + (count matched))
+                                                 (swap! stats update :outside-copy-would-allocated-bytes + bytes)))
+                            (log! (str "generated-reclaim: outside-copy " key " result=" (name result) " files=" (count matched) " bytes=" bytes
+                                       (when recheck (str " reason=" (one-line recheck))))))))))
+                  (catch Exception e (log! (str "generated-reclaim: outside-copy run error " key " " (one-line (.getMessage e)))))))))
+          (catch Exception e (log! (str "generated-reclaim: outside-copy ticket error " ticket " " (one-line (.getMessage e)))))))
+      (try
+        (fs/create-dirs (fs/parent cache-path))
+        (let [temp (fs/create-temp-file {:dir (fs/parent cache-path) :prefix "outside-copy-cache-"})]
+          (spit (str temp) (pr-str @cache))
+          (fs/move temp cache-path {:replace-existing true :atomic-move true}))
+        (catch Exception e (log! (str "generated-reclaim: outside-copy cache write failed " (one-line (.getMessage e)))))))))
+
 (defn reclaim-generated-outputs! [{:keys [dry-run? stop?] :or {stop? (constantly false)}}]
   (let [configured (generated-reclaim-mode)
         mode (if (and dry-run? (not= :off configured)) :dry-run configured)
@@ -6365,7 +6628,8 @@
         cap (prune-setting "CODEX_TASK_BOARD_GENERATED_RECLAIM_MAX_PER_PASS" #(parse-bounded-long % 50 1))
         free #(try (.getUsableSpace (java.io.File. (str (workspaces-dir)))) (catch Exception _ nil))
         before (free)
-        stats (atom {:reclaimed 0 :would-reclaim 0 :held 0 :reclaimed-allocated-bytes 0 :would-reclaim-allocated-bytes 0 :dehydrated-files 0 :already-dehydrated 0 :dehydrate-hash-mismatches 0 :held-by-reason {} :skipped-tickets {} :skipped-runs {}})
+        stats (atom {:reclaimed 0 :would-reclaim 0 :held 0 :reclaimed-allocated-bytes 0 :would-reclaim-allocated-bytes 0 :dehydrated-files 0 :already-dehydrated 0 :dehydrate-hash-mismatches 0 :held-by-reason {} :skipped-tickets {} :skipped-runs {}
+                     :outside-copy-runs 0 :outside-copy-files 0 :outside-copy-allocated-bytes 0 :outside-copy-would-allocated-bytes 0 :outside-copy-changed 0 :outside-copy-skipped {}})
         count-done #(+ (:reclaimed @stats) (:would-reclaim @stats))]
     (when (not= mode :off)
       (doseq [ticket-dir (child-directories (workspaces-dir)) :while (and (not (stop?)) (< (count-done) cap))]
@@ -6426,6 +6690,7 @@
                   (catch Exception e (log! (str "generated-reclaim: run error " run-path " " (one-line (.getMessage e))))))))
             (catch Exception e (log! (str "generated-reclaim: ticket error " ticket-id " " (one-line (.getMessage e))))))))
       (dehydrate-pass! mode hours cap stop? stats count-done)
+      (outside-copy-reclaim-pass! mode stop? stats)
       (workspace-metrics-write! (merge {:event :generated-reclaim-summary :mode mode :fs-free-bytes-before before :fs-free-bytes-after (free)} @stats))
       (log! (str "generated-reclaim: summary " (one-line (pr-str (assoc @stats :mode mode))))))))
 

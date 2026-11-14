@@ -5458,7 +5458,7 @@ reuse_prepare() {
       (let [workspace (prepare-run-workspace! (System/getenv "TEST_TICKET") (System/getenv "TEST_RUN"))
             result (first (:repo-worktrees workspace))
             prompt (workspace-prompt workspace)
-            placement "Storage placement: put temporary clones, extra worktrees, caches, build outputs and verification copies inside this run workspace (it is cleaned up automatically). Do not create them under /home/boxp/ghq, ~/.cache or elsewhere in the home directory, where nothing cleans them up. Verification media (screenshots, screen recordings, rendered frames, comparison images, audio) must not be written or copied into the Obsidian vault, which syncs to a size-limited remote: keep the media that has to be kept under /home/boxp/verification-artifacts/<TICKET>/<label>/ (outside the vault, not cleaned up) and record in the vault only a text summary of the result and that path. Images the ticket itself asks for as deliverables are not verification media."]
+            placement "Storage placement: put temporary clones, extra worktrees, caches, build outputs and verification copies inside this run workspace (it is cleaned up automatically). When verification needs a copy of a built site or large tracked assets, do not duplicate files already tracked in the repository; reference the checkout path or symlink into it, and delete such copies before the run ends; copies identical to origin are automatically removed from older runs. Do not create them under /home/boxp/ghq, ~/.cache or elsewhere in the home directory, where nothing cleans them up. Verification media (screenshots, screen recordings, rendered frames, comparison images, audio) must not be written or copied into the Obsidian vault, which syncs to a size-limited remote: keep the media that has to be kept under /home/boxp/verification-artifacts/<TICKET>/<label>/ (outside the vault, not cleaned up) and record in the vault only a text summary of the result and that path. Images the ticket itself asks for as deliverables are not verification media."]
         (assert (clojure.string/includes? prompt placement))
         (assert (clojure.string/includes? (workspace-prompt {:workspace-dir "/tmp/run" :repo-worktrees []}) placement))
         (when (:carryover result)
@@ -6496,6 +6496,83 @@ test_capacity_attribution() {
   before="$(grep -c ':event :capacity-attribution' "$metrics")"
   CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=off CODEX_TASK_BOARD_CAPACITY_ROOT="$root" run_prune "$vault" "$state" >"$tmp/out"
   [[ "$(grep -c ':event :capacity-attribution' "$metrics")" == "$before" ]] || fail 'off ignored'
+}
+
+test_outside_copy_reclaim() {
+  # Stale runs kept for files outside the checkout: copies identical to a blob
+  # on origin's default branch are removed, everything else stays.
+  local tmp vault state source out mode old mid new co run copy ledger sha
+  local real_git; real_git="$(command -v git)"
+  for mode in on active activeself dryrun envoff flagoff locked latest recent slow slowtree; do
+    tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
+    mkdir -p "$state/locks" "$tmp/proc/100"
+    ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+    export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
+    make_prune_source_repo "$source"
+    head -c 204800 /dev/urandom >"$source/asset.bin"; head -c 204800 /dev/urandom >"$source/tool.bin"; chmod +x "$source/tool.bin"
+    git -C "$source" add .; prune_git -C "$source" commit -qm assets
+    git -C "$source" update-ref refs/remotes/origin/main HEAD
+    # Committed only on a local branch: not known to exist on GitHub.
+    head -c 204800 /dev/urandom >"$source/local.bin"; git -C "$source" add local.bin; prune_git -C "$source" commit -qm local
+    write_board "$vault" "- [ ] [[Tickets/BOXP-519|BOXP-519: wip]] #ticket status::in-progress"
+    write_prune_ticket "$vault" BOXP-519 in-progress ""
+    old="$(date -u -d '30 hours ago' +%Y%m%dT%H%M%SZ)"; mid="$(date -u -d '20 hours ago' +%Y%m%dT%H%M%SZ)"; new="$(date -u -d '14 hours ago' +%Y%m%dT%H%M%SZ)"
+    [[ "$mode" != recent ]] || old="$(date -u -d '3 hours ago' +%Y%m%dT%H%M%SZ)"
+    [[ "$mode" != recent ]] || { mid="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"; new="$(date -u -d '1 hours ago' +%Y%m%dT%H%M%SZ)"; }
+    co="$(add_prune_run "$state" "$source" BOXP-519 "$new")"
+    mkdir -p "$state/workspaces/BOXP-519/$mid"
+    run="$state/workspaces/BOXP-519/$old"; [[ "$mode" != latest ]] || run="$state/workspaces/BOXP-519/$mid"
+    copy="$run/deploy/site"; mkdir -p "$copy/linked" "$copy/nested" "$run/ghq"
+    cp "$source/asset.bin" "$copy/asset.bin"; cp -p "$source/tool.bin" "$copy/tool.bin"
+    cp "$source/local.bin" "$copy/local.bin"
+    head -c 204800 /dev/urandom >"$copy/unique.bin"; echo note >"$run/note.md"
+    cp "$source/asset.bin" "$copy/hard.bin"; ln "$copy/hard.bin" "$copy/hard2.bin"
+    cp "$source/asset.bin" "$copy/linked/target.bin"; ln -s "$copy/linked/target.bin" "$run/link"
+    git init -q "$copy/nested"; cp "$source/asset.bin" "$copy/nested/asset.bin"
+    # Referenced from another run and from the run records: links outside the run protect too.
+    mkdir -p "$copy/extdir" "$state/runs/BOXP-519"
+    cp "$source/asset.bin" "$copy/extlinked.bin"; ln -s "$copy/extlinked.bin" "$state/workspaces/BOXP-519/$new/ext-link"
+    cp "$source/asset.bin" "$copy/extdir/asset.bin"; ln -s "$copy/extdir" "$state/runs/BOXP-519/ext-dir"
+    # Hashing slower than the pass budget must end the pass without deleting.
+    mkdir -p "$tmp/bin"
+    # So must any other git call of the pass (listing origin's tree here): each is bounded by the time left.
+    printf '#!/usr/bin/env bash\ncase "$1 $* " in %s) sleep 12 ;; esac\nexec %q "$@"\n' "$([[ "$mode" == slowtree ]] && echo '--git-dir=*" ls-tree "*' || echo '*" hash-object "*')" "$real_git" >"$tmp/bin/git"; chmod +x "$tmp/bin/git"
+    case "$mode" in
+      flagoff) echo '{:mode :on :outside-copies false}' >"$state/generated-reclaim.edn" ;;
+      locked) echo "{}" >"$state/locks/BOXP-519.edn" ;;
+      # A live run holds the ticket: its other stale runs stay eligible, as in the stale prune.
+      active) echo "{:ticket \"BOXP-519\" :run-id \"$new\"}" >"$state/locks/BOXP-519.edn" ;;
+      activeself) echo "{:ticket \"BOXP-519\" :run-id \"$old\"}" >"$state/locks/BOXP-519.edn" ;;
+    esac
+    local started=$SECONDS
+    PATH="$([[ "$mode" == slow* ]] && echo "$tmp/bin:")$PATH" CODEX_TASK_BOARD_OUTSIDE_COPY_BUDGET_SECONDS="$([[ "$mode" == slow* ]] && echo 3 || echo 600)" \
+      CODEX_TASK_BOARD_GENERATED_RECLAIM="$([[ "$mode" == dryrun ]] && echo dry-run || echo on)" \
+      CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true CODEX_TASK_BOARD_OUTSIDE_COPY_RECLAIM="$([[ "$mode" == envoff ]] && echo off || echo on)" run_prune "$vault" "$state" >"$out" 2>&1 || { cat "$out" >&2; fail "prune failed: $mode"; }
+    ledger="$state/metrics/outside-copy-reclaim-ledger.tsv"
+    [[ "$mode" != slow* ]] || (( SECONDS - started < 11 )) || { cat "$out" >&2; fail "outside-copy pass ran past its budget: $mode"; }
+    for keep in unique.bin local.bin hard.bin hard2.bin linked/target.bin nested/asset.bin extlinked.bin extdir/asset.bin; do
+      [[ -f "$copy/$keep" ]] || { cat "$out" >&2; fail "outside-copy removed protected file $keep: $mode"; }
+    done
+    [[ -f "$run/note.md" && -f "$co/asset.bin" && -f "$source/asset.bin" ]] || fail "outside-copy touched unique/checkout files: $mode"
+    if [[ "$mode" != on && "$mode" != active ]]; then
+      [[ -f "$copy/asset.bin" && -f "$copy/tool.bin" && ! -e "$ledger" ]] || { cat "$out" >&2; fail "outside-copy deleted when it must not: $mode"; }
+      [[ "$mode" != dryrun ]] || assert_file_contains "$state/metrics/workspace-capacity.edn" ':outside-copy-would-allocated-bytes 4'
+      continue
+    fi
+    [[ ! -e "$copy/asset.bin" && ! -e "$copy/tool.bin" && -d "$copy" ]] || { cat "$out" >&2; fail "identical outside copy not reclaimed: $mode"; }
+    [[ "$(wc -l <"$ledger")" == 2 ]] || fail 'ledger line count'
+    sha="$(awk -F'\t' '$4=="deploy/site/tool.bin"{print $5" "$8}' "$ledger")"
+    [[ "$sha" == "$(git -C "$source" rev-parse origin/main:tool.bin) 100755" ]] || fail "ledger entry wrong: $sha"
+    git --git-dir="$(awk -F'\t' '$4=="deploy/site/tool.bin"{print $6}' "$ledger")" cat-file blob "${sha% *}" | cmp -s - "$source/tool.bin" || fail 'ledger restore differs'
+    # The commit the blobs came from stays reachable after origin's branch moves on.
+    local pin; pin="$(awk -F'\t' '$4=="deploy/site/tool.bin"{print $9}' "$ledger")"
+    [[ "$pin" == refs/codex-task-board/outside-copy-reclaim/* && "$(git -C "$source" rev-parse "$pin")" == "$(git -C "$source" rev-parse origin/main)" ]] || fail "restore source not pinned: $pin"
+    assert_file_contains "$state/metrics/workspace-capacity.edn" ':outside-copy-files 2'
+    assert_file_contains "$state/metrics/outside-copy-scan-cache.edn" 'deploy/site/unique.bin'
+    # Idempotent second pass.
+    CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "$vault" "$state" >"$out" 2>&1 || fail 'second pass failed'
+    [[ "$(wc -l <"$ledger")" == 2 && -f "$copy/unique.bin" ]] || fail 'second pass changed state'
+  done
 }
 
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a
