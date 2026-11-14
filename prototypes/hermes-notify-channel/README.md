@@ -59,6 +59,7 @@ lab/lab.sh down lab546a
 - `lab/stage1.sh` は段階 1 の経路（Alertmanager payload → 本番の relay script → channel → 家の受信箱＋Telegram）を、
   本番 image（digest 指定）と lolice の manifest（設定・route・plugin 一式）で動かす。
   `stage1.sh build <tag> <本番 image> <lolice/argoproj/hermes-agent>`、`stage1.sh run <tag> <名前> <証跡dir>`。
+  `STAGE1_CONFIG=<file>` を付けて build すると、ConfigMap の `config.yaml` の代わりにその file（本番 PVC 上の手編集済みの写しなど）で動かす。
 - `LAB_CRON_ONLY=1` で cron の場面だけ、`LAB_RUN_ARGS="-e BOXP_NOTIFY_CRON_BUCKET_SECONDS=60"` で重複排除の時間幅を変えられる。
 - `lab/cron-standalone.sh` は gateway を起動せず `hermes cron tick` だけで cron を届ける場面。
 - `lab/home-dispatch.sh <証跡> <作業dir>` は出来た受信箱を無改変の配送係（`task_board_events.bb`）に読ませ、擬似の家が受け取った内容を出す。
