@@ -348,6 +348,21 @@ test_home_inbox_copy_is_independent_of_telegram() {
   assert_file_contains "${CASE_STATE}/outbox/home/cron-job2-run2.edn" ':reason "stale-copy"'
   [[ ! -e "${CASE_STATE}/outbox/home/broken.edn" ]] || fail "malformed cron copy must be ignored"
 
+  # Alertmanager copies use the same durable home delivery state.
+  local alert_dir="${CASE_VAULT}/Projects/alertmanager-deliveries/delivered-copies"
+  mkdir -p "$alert_dir"
+  printf '%s' "{\"id\":\"alert-fresh123\",\"text\":\"alert body\",\"title\":\"alert title\",\"firing\":1,\"sent_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" >"${alert_dir}/alert-fresh123.md"
+  printf '{"id":"alert-stale123","text":"old","sent_at":"2020-01-01T00:00:00Z"}' >"${alert_dir}/alert-stale123.md"
+  printf 'not json' >"${alert_dir}/alert-broken123.md"
+  for _ in 1 2; do
+    run_events "${CASE_VAULT}" "${CASE_STATE}" env "${home_env[@]}" CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  done
+  assert_file_contains "${CASE_TMP}/home.log" '"source":"alertmanager"'
+  assert_file_contains "${CASE_TMP}/home.log" '"eventType":"alert.firing"'
+  [[ $(grep -c '"eventId":"alert-fresh123"' "${CASE_TMP}/home.log") == 1 ]] || fail "alert copy must be sent once"
+  assert_file_contains "${CASE_STATE}/outbox/home/alert-stale123.edn" ':reason "stale-copy"'
+  [[ ! -e "${CASE_STATE}/outbox/home/alert-broken123.edn" ]] || fail "malformed alert copy must be ignored"
+
   # Unset URL = rollback: nothing is sent to the home inbox.
   record "${CASE_VAULT}" "${CASE_STATE}" BOXP-902 r2 in-progress done done >/dev/null
   run_events "${CASE_VAULT}" "${CASE_STATE}" env \

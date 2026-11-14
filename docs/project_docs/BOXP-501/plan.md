@@ -87,3 +87,10 @@ Hermes は Telegram への送信成功後、receipt より先に実送信本文�
 - fail safe（codex-review P1 対応）: 催促 URL と催促 route は lolice 側の設定なので、arch だけ配備された・route が未登録・dispatcher に URL/secret が無い状態で `task-board: home` にすると、家主配信の通知が Telegram に一度も出ない。これを防ぐため、Hermes gate は次の 2 つが揃っている時だけ `home` を有効にし、どちらか欠けたら Telegram 主配信のまま送る（ログに警告）。
   - Hermes の `webhook_subscriptions.json` に `kohako-home-reminder` route が登録済みで無効化されていない。
   - dispatcher が vault `Projects/task-board-events/home-reminder-ready.md` に書く heartbeat(dispatcher と Hermes は別 PVC で Obsidian Sync が同期するのは `.md` のため、中身は JSON だが拡張子は `.md`。delivered-copies と同じ) が `reminder_ready: true` で、`BOXP_TASK_BOARD_HOME_READY_MAX_AGE_SECONDS`(既定 3600) 秒以内。dispatcher は家宛て転送の各 tick で、催促 URL と webhook secret が揃っていれば true、欠けていれば即 false を書く（10 分ごとに更新）。
+
+## TD-06 Alertmanager の家への複製(暫定)
+
+- 原因は未接続。Telegram へは実配送されるが家向けの写しがなかった。
+- relay が通知出力時に送信前の写しを best effort で保存し、dispatcher が家の受信箱へ転送する。静音と critical 例外、LLM なし直送、Telegram 主配信は不変。
+- rollback は relay の写し保存部分を戻して書込を止める。dispatcher はディレクトリが空なら何もしない。
+- BOXP-546 が alertmanager route の deliver を家へ直接書く channel に移す際は、二重配送を避けるため relay の写し保存を同じ変更で外す。

@@ -12,7 +12,7 @@ export class ReplyDrafts {
   set(id: string, value: string) { this.drafts.set(id, value) }
   clear(id: string) { this.drafts.delete(id) }
 }
-export const sourceLabel = (source: string) => source === 'task-board-report' ? 'Task Board' : source === 'hermes-cron' ? '定期通知' : source
+export const sourceLabel = (source: string) => source === 'task-board-report' ? 'Task Board' : source === 'hermes-cron' ? '定期通知' : source === 'alertmanager' ? 'アラート' : source
 export const replyText = (i: Pick<Item, 'title' | 'ticketId'>, kind: 'choice' | 'text', value: string) => `通知「${i.title}」${i.ticketId ? `（${i.ticketId}）` : ''}への${kind === 'choice' ? '選択' : '返信'}: ${value}`
 export const stateLabel = (i: Pick<Item, 'readAt' | 'handledAt'>) => i.handledAt ? '処理済み' : i.readAt ? '既読' : '未読'
 export function formatReceived(value: string, now = Date.now()) { const date = new Date(value), minutes = Math.max(0, Math.floor((now - date.getTime()) / 60000)); return `${date.toLocaleString('ja-JP')}（${minutes < 60 ? `${minutes}分` : `${Math.floor(minutes / 60)}時間`}前）` }
