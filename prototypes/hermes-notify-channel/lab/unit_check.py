@@ -139,7 +139,20 @@ async def main():
     check("chunks: recovery sends only the remaining chunk",
           state(ev) == "delivered" and len(telegram["sent"]) == 2 and "".join(telegram["sent"]) == text)
 
-    # 5. mode fallback is unchanged: home success closes the receipt without Telegram.
+    # 5. send cancelled (shutdown) while Telegram is in flight: claim held to the end, outcome recorded.
+    ev = event(7)
+    telegram.update(delay=1.0, sent=[])
+    sending = asyncio.create_task(send(ev))
+    await asyncio.sleep(0.3)
+    sending.cancel()
+    recovering = asyncio.create_task(plugin.recover(plugin.settings()))
+    await asyncio.gather(sending, recovering, return_exceptions=True)
+    await plugin.recover(plugin.settings())
+    check("cancel: cancelled in-flight send plus recovery -> Telegram exactly once",
+          sending.cancelled() and state(ev) == "delivered" and len(telegram["sent"]) == 1)
+    telegram["delay"] = 0.0
+
+    # 6. mode fallback is unchanged: home success closes the receipt without Telegram.
     os.environ["BOXP_NOTIFY_TELEGRAM_MODE"] = "fallback"
     ev = event(6)
     telegram["sent"] = []

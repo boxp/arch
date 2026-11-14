@@ -327,7 +327,21 @@ async def deliver(cfg: dict, key: str, record: dict) -> dict:
             record["telegram_chunks"] = count
             atomic_json(path, record)
 
-        telegram, detail = await asyncio.to_thread(telegram_send, cfg, decision["text"], progress, saved)
+        worker = asyncio.ensure_future(asyncio.to_thread(telegram_send, cfg, decision["text"], progress, saved))
+        try:
+            telegram, detail = await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # Shutdown cancelled this send while the HTTP call runs on in its thread. Keep the claim until
+            # the call ends and its outcome is in the receipt, so nobody resends what is being accepted.
+            done, _ = await asyncio.wait([worker])
+            if not worker.cancelled() and worker.exception() is None:
+                telegram, detail = worker.result()
+                record.update(telegram=telegram, telegram_detail=detail, telegram_chunks=progress["chunks"],
+                              updated_at=now().isoformat())
+                if egress_complete(mode, target, home, telegram):
+                    record["state"] = "delivered"
+                atomic_json(path, record)
+            raise
         record["telegram_chunks"] = progress["chunks"]
     record.update(home=home, telegram=telegram, telegram_detail=detail,
                   attempts=int(record.get("attempts", 0)) + 1, updated_at=now().isoformat())
