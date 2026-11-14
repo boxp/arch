@@ -218,6 +218,24 @@ async def stage2():
           len(telegram["sent"]) == 4 and home_copy(e).get("text") and "primary" not in home_copy(e)
           and receipt(e) == ("sent", "notified") and plugin.pending_count(plugin.settings()) == 0)
 
+    e = ev(14)  # Telegram carried it, the vault stays unwritable past the age limit: never expired unrecorded
+    note("BOXP-9002", e, "notified")
+    (root / "state/lab-fail-home").touch()
+    sent = len(telegram["sent"])
+    await tb(e, f"報告 event={e}")
+    os.environ["BOXP_NOTIFY_PENDING_MAX_AGE_SECONDS"] = "1"
+    await asyncio.sleep(1.2)
+    await plugin.recover(plugin.settings())
+    check("vault down past the age limit: the event stays pending, no receipt, Telegram not repeated",
+          state(e) == "pending" and receipt(e) == (None, None) and len(telegram["sent"]) == sent + 1)
+    (root / "state/lab-fail-home").unlink()
+    await plugin.recover(plugin.settings())
+    os.environ["BOXP_NOTIFY_PENDING_MAX_AGE_SECONDS"] = ""
+    check("vault back after the age limit: receipt sent so the dispatcher can close, Telegram not repeated",
+          state(e) == "delivered" and receipt(e) == ("sent", "notified") and home_copy(e).get("text")
+          and len(telegram["sent"]) == sent + 1)
+    telegram["sent"] = telegram["sent"][:sent]
+
     e = ev(9)  # nothing reachable, then quiet hours begin: recovery turns it into a hold, not a night send
     note("BOXP-9002", e, "notified")
     (root / "state/lab-fail-home").touch()

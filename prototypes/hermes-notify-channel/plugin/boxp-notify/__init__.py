@@ -799,7 +799,13 @@ async def recover(cfg: dict) -> int:
                     atomic_json(path, record)
                     journal(cfg, "quiet_held", key=record.get("key") or path.stem, recovered=True)
                 continue
-            if (record.get("home") or record.get("telegram")) and _age(record) > cfg["pending_max_age"]:
+            unconfirmed = (target["kind"] == "task-board" and bool(target.get("ticket"))
+                           and record.get("vault_receipt") != "sent")
+            # A Task Board event whose "sent" receipt is not in the vault yet never expires: the
+            # dispatcher can only close the event from that receipt, so it is retried until the vault
+            # is writable again, however long that takes (nothing already sent is sent again).
+            if (not unconfirmed and (record.get("home") or record.get("telegram"))
+                    and _age(record) > cfg["pending_max_age"]):
                 # Reached the Owner through one egress; the other has failed for this long since then (a
                 # rejected message would otherwise be retried every pass, forever). The limit counts from
                 # the first egress that succeeded, not from creation: after an outage of both that outlasts
