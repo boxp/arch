@@ -19,6 +19,6 @@
   },
   "dependencies": {
     "pdfjs-dist": "4.10.38",
-    "web-push": "3.6.7"
+    "web-push": "4.0.0"
   }
 }
