@@ -52,3 +52,4 @@ export async function verifyAccessJwt(
     return bad('malformed')
   }
 }
+export const probe = (x: any) =>   x
