@@ -334,40 +334,81 @@ async def stage2():
 
 
 def cron_rewrite():
-    """BOXP-556: new cron jobs addressed to Telegram or to the creating chat go through the channel."""
-    def deliver(args, tool="cronjob_manage"):
+    """BOXP-556: a cron target moves to the channel only when it means exactly the home Telegram chat and
+    topic (here chat 42, topic 9, the gateway's only home channel)."""
+    session = {}
+    context = types.ModuleType("gateway.session_context")
+    context.get_session_env = lambda name, default="": session.get(name, default)
+    sys.modules["gateway.session_context"] = context
+
+    def deliver(args, tool="cronjob_manage", origin=("telegram", "42", "9")):
+        session.clear()
+        if origin:
+            session.update(HERMES_SESSION_PLATFORM=origin[0], HERMES_SESSION_CHAT_ID=origin[1],
+                           HERMES_SESSION_THREAD_ID=origin[2])
         directive = plugin.cron_deliver_rewrite(tool, args)
         return None if directive is None else (directive["action"], directive["args"])
     to_channel = ("modify", {"deliver": "boxp_notify:cron"})
-    check("cron rewrite: a create without deliver (the creating chat) goes to the channel",
+    home_ui, discord, cli = ("api_server", "s1", ""), ("discord", "5", ""), None
+    check("cron rewrite: a create without deliver goes to the channel when created from the home Telegram chat",
           deliver({"action": "create", "schedule": "every 1h", "prompt": "x"}) == to_channel
           and deliver({"action": "create", "deliver": ""}) == to_channel
-          and deliver({"action": "Create", "deliver": "origin"}) == to_channel)
-    check("cron rewrite: Telegram targets and all go to the channel, once",
-          deliver({"action": "create", "deliver": "telegram"}) == to_channel
-          and deliver({"action": "create", "deliver": "telegram:-100123:17"}) == to_channel
+          and deliver({"action": "Create", "deliver": "origin"}) == to_channel
+          and deliver({"action": "create"}, origin=home_ui) == to_channel)
+    check("cron rewrite: a create from another chat, topic or platform, or from the CLI, stays as written",
+          deliver({"action": "create"}, origin=("telegram", "42", "8")) is None
+          and deliver({"action": "create"}, origin=("telegram", "43", "9")) is None
+          and deliver({"action": "create", "deliver": "origin"}, origin=discord) is None
+          and deliver({"action": "create"}, origin=cli) is None
+          and deliver({"action": "create", "deliver": "origin"}, origin=cli) is None)
+    check("cron rewrite: the home Telegram chat and all go to the channel, once",
+          deliver({"action": "create", "deliver": "telegram"}, origin=discord) == to_channel
+          and deliver({"action": "create", "deliver": "telegram:42:9"}, origin=cli) == to_channel
           and deliver({"action": "create", "deliver": ["telegram", "origin"]}) == to_channel
           and deliver({"action": "create", "deliver": "origin,all"}) == to_channel)
+    check("cron rewrite: another Telegram chat or topic keeps its target",
+          deliver({"action": "create", "deliver": "telegram:-100123:17"}) is None
+          and deliver({"action": "create", "deliver": "telegram:42"}) is None
+          and deliver({"action": "create", "deliver": "telegram:42:8"}) is None
+          and deliver({"action": "update", "job_id": "a", "deliver": "telegram:1"}) is None
+          and deliver({"action": "create", "deliver": "telegram:1,telegram"})
+          == ("modify", {"deliver": "telegram:1,boxp_notify:cron"}))
+    os.environ["DISCORD_HOME_CHANNEL"] = "5"
+    check("cron rewrite: with another home channel, all and a home UI job stay as written",
+          deliver({"action": "create", "deliver": "all"}) is None
+          and deliver({"action": "create"}, origin=home_ui) is None
+          and deliver({"action": "create"}) == to_channel)
+    del os.environ["DISCORD_HOME_CHANNEL"]
+    config_file = plugin.settings()["hermes_home"] / "config.yaml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    kept = config_file.read_text() if config_file.exists() else None
+    config_file.write_text("platforms:\n  slack:\n    home_channel: C1\n")
+    check("cron rewrite: a home_channel in config.yaml keeps all as written",
+          deliver({"action": "create", "deliver": "all"}) is None)
+    config_file.write_text(kept) if kept is not None else config_file.unlink()
     check("cron rewrite: other elements are kept in order",
           deliver({"action": "create", "deliver": "local,telegram"}) == ("modify", {"deliver": "local,boxp_notify:cron"})
-          and deliver({"action": "update", "job_id": "a", "deliver": "telegram:1"}) == to_channel)
+          and deliver({"action": "update", "job_id": "a", "deliver": "telegram:42:9"}) == to_channel)
     check("cron rewrite: local, the channel itself, other platforms and non-delivery updates are untouched",
           deliver({"action": "create", "deliver": "local"}) is None
           and deliver({"action": "create", "deliver": "boxp_notify:cron"}) is None
           and deliver({"action": "create", "deliver": "discord:1"}) is None
           and deliver({"action": "update", "job_id": "a", "prompt": "y"}) is None
+          and deliver({"action": "update", "job_id": "a", "deliver": "origin"}) is None
           and deliver({"action": "update", "job_id": "a", "failure_deliver": "local"}) is None)
-    check("cron rewrite: a Telegram failure target goes to the channel too",
+    check("cron rewrite: a failure target for the home Telegram chat goes to the channel too",
           deliver({"action": "update", "job_id": "a", "failure_deliver": "telegram"})
           == ("modify", {"failure_deliver": "boxp_notify:cron"})
-          and deliver({"action": "create", "deliver": "boxp_notify:cron", "failure_deliver": "telegram:1"})
+          and deliver({"action": "create", "deliver": "boxp_notify:cron", "failure_deliver": "telegram:42:9"})
           == ("modify", {"failure_deliver": "boxp_notify:cron"})
-          and deliver({"action": "create", "failure_deliver": "telegram:1"})
-          == ("modify", {"deliver": "boxp_notify:cron", "failure_deliver": "boxp_notify:cron"}))
+          and deliver({"action": "create", "failure_deliver": "telegram"})
+          == ("modify", {"deliver": "boxp_notify:cron", "failure_deliver": "boxp_notify:cron"})
+          and deliver({"action": "create", "deliver": "local", "failure_deliver": "telegram:1"}) is None)
     check("cron rewrite: other actions, other tools and malformed calls are untouched",
           deliver({"action": "list"}) is None and deliver({"action": "run", "job_id": "a"}) is None
           and deliver({"action": "create"}, tool="terminal") is None and deliver({"action": "create"}, tool="cronjob") is None and deliver(None) is None
           and deliver({"deliver": "telegram"}) is None)
+    session.update(HERMES_SESSION_PLATFORM="telegram", HERMES_SESSION_CHAT_ID="42", HERMES_SESSION_THREAD_ID="9")
     os.environ["BOXP_NOTIFY_ENABLED"] = "1"
     check("cron rewrite: the hook follows the switches",
           plugin._cron_hook(tool_name="cronjob_manage", args={"action": "create"}, session_id="s") is not None
@@ -381,17 +422,22 @@ def cron_rewrite():
     cfg = plugin.settings()
     jobs_file = cfg["hermes_home"] / "cron/jobs.json"
     jobs_file.parent.mkdir(parents=True, exist_ok=True)
+    home, other = {"platform": "telegram", "chat_id": "42", "thread_id": "9"}, {"platform": "discord", "chat_id": "5"}
     jobs = [{"id": "aaaa00000001", "enabled": True, "state": "scheduled", "deliver": "boxp_notify:cron"},
             {"id": "aaaa00000002", "enabled": True, "state": "scheduled", "deliver": "boxp_notify:cron",
-             "failure_deliver": "telegram:1"},
-            {"id": "aaaa00000003", "enabled": True, "state": "scheduled", "deliver": "origin"},
-            {"id": "aaaa00000004", "enabled": False, "state": "completed", "deliver": "telegram:1"},
+             "failure_deliver": "telegram"},
+            {"id": "aaaa00000003", "enabled": True, "state": "scheduled", "deliver": "origin", "origin": home},
+            {"id": "aaaa00000004", "enabled": False, "state": "completed", "deliver": "telegram"},
             {"id": "aaaa00000005", "enabled": True, "state": "scheduled", "deliver": "local"},
             {"id": "aaaa00000006", "enabled": True, "state": "scheduled", "deliver": None},
             {"id": "bad id; rm", "enabled": True, "state": "scheduled", "deliver": "telegram"},
-            {"id": "aaaa00000007", "enabled": True, "state": "scheduled", "deliver": "telegram:1"}]
+            {"id": "aaaa00000008", "enabled": True, "state": "scheduled", "deliver": "origin", "origin": other},
+            {"id": "aaaa00000009", "enabled": True, "state": "scheduled", "deliver": "telegram:1"},
+            {"id": "aaaa0000000a", "enabled": True, "state": "scheduled", "deliver": "origin",
+             "origin": {"platform": "telegram", "chat_id": "42", "thread_id": "8"}},
+            {"id": "aaaa00000007", "enabled": True, "state": "scheduled", "deliver": "telegram:42:9"}]
     jobs_file.write_text(json.dumps({"jobs": jobs}))
-    check("cron migration: only live jobs naming Telegram are selected",
+    check("cron migration: only live jobs meaning the home Telegram chat are selected",
           plugin.cron_jobs_to_migrate(cfg) == [("aaaa00000002", {"failure_deliver": "boxp_notify:cron"}),
                                                ("aaaa00000003", {"deliver": "boxp_notify:cron"}),
                                                ("aaaa00000007", {"deliver": "boxp_notify:cron"})])

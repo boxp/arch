@@ -17,8 +17,9 @@ channel is the only place that keeps the home inbox copy, the silence proof and 
   Telegram as before.
 * cron: home and Telegram (``BOXP_NOTIFY_TELEGRAM_MODE_CRON=both``), as before the switch.
 * New cron jobs: a ``pre_tool_call`` hook rewrites ``deliver`` / ``failure_deliver`` of the agent's
-  ``cronjob_manage`` create/update calls from Telegram (or the creating chat) to ``boxp_notify:cron``. Without
-  the cron patch a job addressed to Telegram would reach Telegram only and never the home inbox.
+  ``cronjob_manage`` create/update calls to ``boxp_notify:cron`` when the target means exactly the home
+  Telegram chat and topic (see ``cron_deliver_rewrite``); any other chat or platform stays as written.
+  Without the cron patch a job addressed to Telegram would reach Telegram only and never the home inbox.
 * Stored cron jobs still addressed to Telegram (saved earlier, or created with ``hermes cron create``) are
   moved the same way by the recovery loop, through ``hermes cron edit``.
 
@@ -940,15 +941,84 @@ CRON_TARGET = f"{NAME}:cron"
 CRON_TOOL = "cronjob_manage"  # the tool of the ``cronjob`` toolset (same name on v0.22.5 and v0.23.1)
 
 
-def _cron_targets(raw: Any) -> tuple[list[str], str, bool]:
+def _telegram_home(chat: Any, thread: Any) -> bool:
+    """Whether a Telegram chat and topic are exactly where this channel's Telegram copy goes. Any other
+    chat or topic stays on Telegram as written: moving it here would silently send it to the home chat."""
+    cfg = settings()
+    home_chat, home_thread = str(cfg["telegram_chat"] or ""), str(cfg["telegram_thread"] or "")
+    as_text = lambda value: "" if value is None else str(value).strip()
+    return bool(home_chat) and as_text(chat) == home_chat and as_text(thread) == home_thread
+
+
+def _only_telegram_home() -> bool:
+    """Whether the home Telegram chat is the only home channel of this gateway.
+
+    ``all`` (every home channel) and an ``origin`` with no recorded creating chat (the first home channel)
+    mean exactly the home Telegram chat only then. Another platform's ``*_HOME_CHANNEL`` or any
+    ``home_channel`` in config.yaml makes this false, and such a target stays as written."""
+    cfg = settings()
+    if not cfg["telegram_chat"] or str(cfg["telegram_chat"]) != _env("TELEGRAM_HOME_CHANNEL"):
+        return False
+    if str(cfg["telegram_thread"] or "") != (_env("TELEGRAM_CRON_THREAD_ID")
+                                             or _env("TELEGRAM_HOME_CHANNEL_THREAD_ID")):
+        return False
+    for key, value in os.environ.items():
+        if key.endswith("_HOME_CHANNEL") and key != "TELEGRAM_HOME_CHANNEL" and str(value).strip():
+            return False
+    try:
+        return "home_channel" not in (cfg["hermes_home"] / "config.yaml").read_text()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
+NO_PUSH_SURFACES = ("api_server",)  # a chat that cannot receive a later message: the job records no origin
+
+
+def _creating_origin() -> Any:
+    """The chat a job is being created from: a dict, ``None`` when cron records none for it (the home UI
+    and G2 talk through the API server), or ``False`` when it cannot be told (CLI, or no session context)."""
+    try:
+        from gateway.session_context import get_session_env as read
+    except Exception:
+        return False
+    platform = str(read("HERMES_SESSION_PLATFORM", "") or "").strip().lower()
+    if platform in NO_PUSH_SURFACES:
+        return None
+    chat = str(read("HERMES_SESSION_CHAT_ID", "") or "").strip()
+    if not (platform and chat):
+        return False
+    return {"platform": platform, "chat_id": chat, "thread_id": read("HERMES_SESSION_THREAD_ID", "") or None}
+
+
+def _moves_here(target: str, origin: Any) -> bool:
+    """Only a target that means exactly the home Telegram chat and topic moves; ``origin`` is the recorded
+    creating chat (dict), ``None`` for none recorded, ``False`` for unknown (then nothing is assumed)."""
+    low = target.lower()
+    if low == "telegram":
+        return True
+    if low == "all":
+        return _only_telegram_home()
+    if low == "origin":
+        if isinstance(origin, dict) and origin.get("platform"):
+            return (str(origin.get("platform")).lower() == "telegram"
+                    and _telegram_home(origin.get("chat_id"), origin.get("thread_id")))
+        return origin is not False and _only_telegram_home()
+    if low.startswith("telegram:"):
+        chat, _, thread = target.split(":", 1)[1].partition(":")
+        return _telegram_home(chat, thread)
+    return False
+
+
+def _cron_targets(raw: Any, origin: Any = None) -> tuple[list[str], str, bool]:
     """``(elements as written, the value with Telegram elements replaced, whether anything changed)``."""
     items = raw if isinstance(raw, (list, tuple)) else ([] if raw is None else str(raw).split(","))
     parts = [part for part in (str(item).strip() for item in items) if part]
     out: list[str] = []
     changed = False
     for part in parts:
-        low = part.lower()
-        if low in ("origin", "all", "telegram") or low.startswith("telegram:"):
+        if _moves_here(part, origin):
             part, changed = CRON_TARGET, True
         if part not in out:
             out.append(part)
@@ -959,24 +1029,30 @@ def cron_deliver_rewrite(tool_name: Any, args: Any) -> Optional[dict]:
     """``pre_tool_call`` directive that sends a new cron job's output through this channel.
 
     The ``cronjob_manage`` tool addresses a job to the chat it was created from when ``deliver`` is omitted
-    (``origin``), which for the Owner is Telegram. Those elements, ``all`` (every home channel, i.e.
-    Telegram) and explicit ``telegram[:chat[:thread]]`` targets become ``boxp_notify:cron``; anything else
-    (``local``, another platform, an existing ``boxp_notify`` target) is left as written. An update is
-    touched only for the fields it sets. ``failure_deliver`` follows the same rule when given (an omitted
-    one falls back to ``deliver``).
+    (``origin``). A target becomes ``boxp_notify:cron`` only when it means exactly the home Telegram chat
+    and topic: a bare ``telegram``, an explicit ``telegram:<chat>[:<thread>]`` naming them, an omitted
+    ``deliver`` / ``origin`` when the creating chat is that chat (or is the home UI / G2, for which cron
+    falls back to the first home channel, and Telegram is the only one), and ``all`` when Telegram is the
+    only home channel. Anything else (``local``, another platform or a chat on it, another Telegram chat or
+    topic, a job created from the CLI, an existing ``boxp_notify`` target) is left as written. An update is
+    touched only for the fields it sets, and an ``origin`` in an update is left alone (it means the chat
+    the job was created from, which is not visible here; the recovery loop moves the stored job if it
+    qualifies). ``failure_deliver`` follows the same rule when given (an omitted one falls back to
+    ``deliver``).
     """
     if tool_name != CRON_TOOL or not isinstance(args, dict):
         return None
     action = str(args.get("action") or "").strip().lower()
     if action not in ("create", "update"):
         return None
+    origin = _creating_origin() if action == "create" else False
     modified: dict[str, str] = {}
-    parts, value, changed = _cron_targets(args.get("deliver"))
-    if not parts and action == "create":
+    parts, value, changed = _cron_targets(args.get("deliver"), origin)
+    if not parts and action == "create" and _moves_here("origin", origin):
         value, changed = CRON_TARGET, True
     if changed:
         modified["deliver"] = value
-    parts, value, changed = _cron_targets(args.get("failure_deliver"))
+    parts, value, changed = _cron_targets(args.get("failure_deliver"), origin)
     if changed:
         modified["failure_deliver"] = value
     return {"action": "modify", "args": modified} if modified else None
@@ -1007,7 +1083,8 @@ def cron_jobs_to_migrate(cfg: dict) -> list[tuple[str, dict[str, str]]]:
     """Stored cron jobs that would still run and deliver to Telegram: ``[(job id, {field: new value})]``.
 
     Jobs saved before the hook existed, or created outside the agent (``hermes cron create``), never pass
-    ``pre_tool_call``. Finished or disabled jobs are left alone. A stored job with no ``deliver`` is local.
+    ``pre_tool_call``. Finished or disabled jobs are left alone, and so is a job addressed to a Telegram chat
+    or topic other than the home one (explicitly, or as the ``origin`` it was created from). A stored job with no ``deliver`` is local.
     """
     try:
         data = json.loads((cfg["hermes_home"] / "cron/jobs.json").read_text())
@@ -1022,7 +1099,7 @@ def cron_jobs_to_migrate(cfg: dict) -> list[tuple[str, dict[str, str]]]:
             continue
         fields = {}
         for field in ("deliver", "failure_deliver"):
-            _parts, value, changed = _cron_targets(job.get(field))
+            _parts, value, changed = _cron_targets(job.get(field), job.get("origin") or None)
             if changed:
                 fields[field] = value
         if fields:
