@@ -1,3 +1,5 @@
+import './activity.css'
+import { validateActivity, renderActivity, tickActivity } from './activity'
 import { createDictation, supportsDictation, appendDictation } from './dictation'
 import { attachmentSubmitAction, attachmentValidation } from './attachments'
 import { shouldSubmit } from './keys'
@@ -390,7 +392,7 @@ async function resumeInflight() {
   let r: Awaited<ReturnType<typeof call>> | null = null
   try { r = await call(`requests/${saved.requestId}`) } catch { r = null }
   // 200 に加え一時的な失敗（502 など）や通信例外でも追跡を再開し、poll 側で問い合わせを続ける（送信可能に戻すと再送で二重実行になり得る）。
-  if (!r || pollVerdict(r.status, !!r.data) !== 'terminal') { requestId = saved.requestId; accepted = true; started = Date.now(); addHistory('お知らせ', '再読み込み前の依頼の続きを追っています。'); show('thinking'); void poll(requestId, saved.expiresAt); return }
+  if (!r || pollVerdict(r.status, !!r.data) !== 'terminal') { renderActivity(el('activity'), null, { live: true }); requestId = saved.requestId; accepted = true; started = Date.now(); addHistory('お知らせ', '再読み込み前の依頼の続きを追っています。'); show('thinking'); void poll(requestId, saved.expiresAt); return }
   busy = false
   if (r.status === 404) { setInflight(null); addHistory('お知らせ', '前回の依頼は見つかりませんでした（新しい会話になった可能性があります）。'); show(state); return }
   // 401/403 は認証切れ。控えを残したまま未認証表示にして送信を止め、再ログイン後の再接続で続きを追う。それ以外の終端は控えを消して失敗を表示する。
@@ -400,7 +402,7 @@ async function resumeInflight() {
 async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
   let misses = 0
   while (requestId === id && Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, 1800))
+    await new Promise(resolve => setTimeout(resolve, 1000))
     let result
     const lost = () => { if (++misses >= 2 && !netDown) { netDown = true; connection.textContent = '通信が切れています（自動で問い合わせ中）'; show(state) } }
     try { result = await call(`requests/${id}`) } catch { lost(); continue }
@@ -411,6 +413,7 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
     if (netDown || misses) { misses = 0; netDown = false; connection.textContent = '接続中・Web 専用の会話'; error.textContent = ''; show(state) }
     if (verdict === 'terminal' || !result.data) { busy = false; requestId = ''; if (result.status !== 401 && result.status !== 403) setInflight(null); fail(result.status, result.data); return }
     const next = interpretRequest(result.data)
+    renderActivity(el('activity'), validateActivity(result.data.activity), { live: next.state === 'thinking' || next.state === 'approval' })
     if (next.state === 'approval' && next.approval) {
       if (approvalId !== next.approval.approvalId) { approvalId = next.approval.approvalId; approvalExpires = next.approval.expiresAt; el('approval-summary').textContent = next.approval.summary; el('approval-error').textContent = ''; addHistory('お知らせ', `確認が必要です: ${next.approval.summary}`); setBubble('実行する前に確認させてください、ご主人さま。') }
       show('approval')
@@ -605,6 +608,7 @@ async function sendText(text: string, from: 'composer' | 'pending' | QueueItem):
     if (typeof from === 'object') queue.putBack(from)
     else if (from === 'composer') { if (!message.value.trim()) message.value = text; else queue.putBack({ id: -Date.now(), text, addedAt: Date.now() }) }
   }
+  renderActivity(el('activity'), null, { live: true })
   clearSpeechResume(); voicePlayer.cancel(); speaker?.cancel(); if (actingEnabled) interruptActing()
   voiceTrouble = false; error.textContent = ''; busy = true; accepted = false; started = Date.now(); lastActivity = Date.now(); typingUntil = 0; delete reply.dataset.reply
   setBubble('…'); show('thinking')
@@ -669,7 +673,7 @@ approvalBox.addEventListener('keydown', e => {
   e.preventDefault(); next.focus()
 })
 document.addEventListener('focusin', e => { if (!approvalBox.hidden && !approvalBox.contains(e.target as Node) && e.target !== stop) el<HTMLButtonElement>('deny').focus() })
-setInterval(() => { if (!approvalBox.hidden && approvalExpires) { const s = Math.max(0, Math.round((approvalExpires - Date.now()) / 1000)); el('approval-expiry').textContent = s ? `あと ${s} 秒で期限切れになります（${new Date(approvalExpires).toLocaleTimeString('ja-JP')}）` : '期限が切れました。' } }, 1000)
+setInterval(() => { tickActivity(); if (!approvalBox.hidden && approvalExpires) { const s = Math.max(0, Math.round((approvalExpires - Date.now()) / 1000)); el('approval-expiry').textContent = s ? `あと ${s} 秒で期限切れになります（${new Date(approvalExpires).toLocaleTimeString('ja-JP')}）` : '期限が切れました。' } }, 1000)
 stop.addEventListener('click', async () => {
   if (!requestId || !accepted) return
   if (actingEnabled) interruptActing()

@@ -1,3 +1,4 @@
+import { createActivity } from './activity.js'
 import { join } from 'node:path'
 import { atomic, load } from './storage.js'
 import { extractViews, type View } from './views.js'
@@ -6,6 +7,7 @@ import type { Attachment } from './attachments.js'
 import type { createHermes } from './hermes.js'
 export type Input = { requestId: string; expiresAt: number } & ({ kind: 'text'; text: string; views?: true; attachments?: { meta: Attachment; data: Buffer }[] } | { kind: 'touch'; touch: { zone: 'head' | 'hand'; action: 'pat' | 'tap'; count: number } })
 type Entry = {
+  activity?: ReturnType<typeof createActivity>
   requestId: string
   payloadHash: string
   status: 'pending' | 'done' | 'failed' | 'unknown'
@@ -240,9 +242,19 @@ export function createConversation({ now, hermes, prefix, store, geocode = async
             void pending.pendingResult.then((result) => { pending.result = result })
           }, 280_000).unref?.()
         }
-      const onRun = (runId: string) => { entry.runId = runId; save(); try { resume?.onRun?.(runId) } catch { /* 保存失敗でも追跡は続ける */ } if (entry.cancelRequested) void hermes.stop(runId) }
+      let activityController: AbortController | undefined, activityRun: string | undefined
+      const watchActivity = (runId: string) => {
+        if (input.kind !== 'text' || activityRun === runId) return
+        activityController?.abort(); activityController = new AbortController(); activityRun = runId
+        entry.activity = createActivity(now)
+        const controller = activityController, activity = entry.activity
+        void hermes.events?.(runId, e => { if (!controller.signal.aborted) activity.apply(e) }, controller.signal).catch(() => {})
+      }
+      const onRun = (runId: string) => { watchActivity(runId); entry.runId = runId; save(); try { resume?.onRun?.(runId) } catch { /* 保存失敗でも追跡は続ける */ } if (entry.cancelRequested) void hermes.stop(runId) }
       if (resume?.runId) entry.runId = resume.runId
+      if (restored?.runId || resume?.runId) watchActivity((restored?.runId ?? resume?.runId)!)
       const applyResult = async (settled: Awaited<ReturnType<typeof hermes.run>>) => {
+          activityController?.abort(); entry.activity?.finish()
           const result = touchApproval ? { status: 'failed' as const, error: 'touch_approval_denied' } : entry.cancelRequested && settled.status === 'failed' ? { status: 'failed' as const, error: 'cancelled' } : settled
           // run 終了の確認は Hermes の実結果で行う（unknown/internal_error は終了未確認）。
           entry.upstreamEnded = settled.status === 'done' || (settled.status === 'failed' && settled.error !== 'internal_error')

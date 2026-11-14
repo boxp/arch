@@ -420,6 +420,7 @@ it('resumes a notification reply after a BFF restart without executing it twice 
       if (seen) return seen.body === body ? json(202, { run_id: seen.runId, replayed: true }) : json(409, { error: { code: 'idempotency_key_conflict' } })
       const runId = `run${++executions}`; keys.set(key, { body, runId }); return json(202, { run_id: runId })
     }
+    if (url.endsWith('/events')) return new Response(null, { status: 404 })
     polls.push(url.split('/').pop()!); return json(200, { status: 'completed', output: '了解しました' })
   }) as unknown as typeof fetch
   const dir = await mkdtemp(join(tmpdir(), 'resume-')), push = await createPush(dir, { subject: 'https://example.com', quietHours: '2-9' })
@@ -551,4 +552,15 @@ it('BOXP-524: lets owner and verifier transcribe but rejects notifier and unauth
     for (const who of ['owner', 'verifier']) { const r = await call(who); expect(r.status).toBe(200); expect(await r.json()).toMatchObject({ text: 'こんにちは' }) }
     expect(fetcher).toHaveBeenCalledTimes(2)
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
+})
+it('returns public activity for text but never reasoning or touch activity', async () => {
+  let settle: (r: any) => void = () => {}
+  const hermes = { run: (_id: string, _text: string, _session: string, _i: string, _cb: any, _a: any, onRun: any) => { onRun('run1'); return new Promise(r => { settle = r }) }, events: async (_id: string, emit: any) => { emit({ event: 'reasoning.available', text: 'SECRET-THOUGHT' }); emit({ event: 'tool.started', tool: 'web_search', tool_call_id: 'call1' }) }, approve: async () => 'ok', stop: async () => 'ok' } as unknown as ReturnType<typeof createHermes>
+  const server = createServer(createApp({ authenticate: async () => 'owner', hermes })); await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+  try {
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`, post = (body: object) => fetch(base + 'messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }), get = async (id: string) => (await fetch(base + 'requests/' + id)).json() as Promise<any>
+    await post({ requestId: 'activity-123', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }); const item = await get('activity-123'); expect(item.activity.steps[0]).toMatchObject({ tool: 'web_search', status: 'running' }); expect(JSON.stringify(item)).not.toContain('SECRET-THOUGHT')
+    settle({ status: 'done', text: 'ok' }); await new Promise(r => setTimeout(r, 10)); expect((await get('activity-123')).activity.steps[0].status).toBe('interrupted')
+    await post({ requestId: 'activity-touch-123', kind: 'touch', touch: { zone: 'head', action: 'pat', count: 1 }, expiresAt: Date.now() + 60000 }); expect((await get('activity-touch-123')).activity).toBeUndefined()
+  } finally { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())) }
 })

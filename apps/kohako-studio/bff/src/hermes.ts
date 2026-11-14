@@ -194,8 +194,55 @@ export function createHermes({
       return { status: 'unknown', error: 'hermes_unreachable' }
     }
   }
+  async function events(runId: string, onEvent: (event: Record<string, unknown>) => void, signal: AbortSignal): Promise<void> {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(runId)) return
+    let lastSeq = -1, failures = 0
+    while (!signal.aborted && failures < 30) {
+      const controller = new AbortController(), abort = () => controller.abort()
+      signal.addEventListener('abort', abort, { once: true })
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const reset = () => { clearTimeout(timer); timer = setTimeout(abort, 25000) }
+      try {
+        reset()
+        const response = await fetcher(url + '/v1/runs/' + runId + '/events', { headers: { ...auth, Accept: 'text/event-stream', ...(lastSeq >= 0 ? { 'Last-Event-ID': String(lastSeq) } : {}) }, signal: controller.signal, redirect: 'error' })
+        if (response.status >= 400 && response.status < 500) return
+        if (!response.ok || !response.body) throw Error('stream')
+        const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = ''
+        while (!signal.aborted) {
+          const chunk = await reader.read(); if (chunk.done) break
+          reset(); buffer += decoder.decode(chunk.value, { stream: true }); buffer = buffer.replace(/\r\n/g, '\n')
+          let end: number
+          while ((end = buffer.indexOf('\n\n')) >= 0) {
+            const frame = buffer.slice(0, end); buffer = buffer.slice(end + 2)
+            let id: string | undefined; const data: string[] = []; let closed = false
+            for (const line of frame.split('\n')) {
+              if (line.trim() === ': stream closed') closed = true
+              else if (line.startsWith('id:')) id = line.slice(3).trim()
+              else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''))
+            }
+            if (id && /^\d+$/.test(id) && Number.isSafeInteger(Number(id))) lastSeq = Number(id)
+            if (data.length) try {
+              const value: unknown = JSON.parse(data.join('\n'))
+              if (value && typeof value === 'object' && !Array.isArray(value)) {
+                failures = 0
+                const e = value as Record<string, unknown>; try { onEvent(e) } catch { /* 表示側の失敗は購読を止めない */ }
+                if (typeof e.event === 'string' && ['run.completed', 'run.failed', 'run.cancelled', 'run.interrupted'].includes(e.event)) return
+              }
+            } catch { /* 不正なフレームは捨てる */ }
+            if (closed) return
+          }
+          if (buffer.length > 256 * 1024) { void reader.cancel().catch(() => {}); break }
+        }
+      } catch { /* 再接続する */ }
+      finally { clearTimeout(timer); controller.abort(); signal.removeEventListener('abort', abort) }
+      if (signal.aborted) return
+      failures++
+      let wake: () => void = () => {}
+      try { await Promise.race([sleep(Math.min(5000, 1000 * 2 ** (failures - 1))), new Promise<void>(resolve => { wake = resolve; if (signal.aborted) resolve(); else signal.addEventListener('abort', wake, { once: true }) })]) } catch { return } finally { signal.removeEventListener('abort', wake) }
+    }
+  }
   return {
-    approve,
+    approve, events,
     async vaultImage(path: string): Promise<{ mime: string; data: Buffer } | undefined> {
       if (!path || path.length > 1500 || path.split('/').some(p => !p || p.startsWith('.')) || /[\\\x00-\x1f]/.test(path)) return undefined
       const result = await request(`/v1/kohako/vault-image?path=${encodeURIComponent(path)}`, { headers: auth }, 7 * 1024 * 1024)
