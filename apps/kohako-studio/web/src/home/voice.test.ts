@@ -99,3 +99,32 @@ it('ramps group limits from the preceding group while preserving units', async (
   expect(calls.map(x => x.length)).toEqual([20, 60, 80, 120, 120])
   expect(calls.join('')).toBe(units.join(''))
 })
+
+function mixSetup(options: { enabled?: boolean; unavailable?: boolean; decodeFails?: boolean } = {}) {
+  const audio = { src: '', duration: 2, onplaying: null as null | (() => void), onended: null as null | (() => void), onerror: null, play: vi.fn(async () => { audio.onplaying?.() }), pause: vi.fn(), load: vi.fn(), removeAttribute: vi.fn() }
+  const sources: { onended: null | (() => void); buffer: unknown; connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn>; start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }[] = []
+  const gains: { gain: { value: number }; connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }[] = []
+  const context = { state: 'running', destination: {}, decodeAudioData: vi.fn(async () => { if (options.decodeFails) throw Error('decode'); return { duration: 6 } }), createBufferSource: () => { const s = { onended: null, buffer: null, connect: vi.fn(), disconnect: vi.fn(), start: vi.fn(), stop: vi.fn() }; sources.push(s); return s }, createGain: () => { const g = { gain: { value: 0 }, connect: vi.fn(), disconnect: vi.fn() }; gains.push(g); return g } }
+  const events = { onSentence: vi.fn(), onChunkEnd: vi.fn(), onEnd: vi.fn(), onError: vi.fn() }
+  const player = createVoicePlayer({ fetcher: (async () => new Response('wav')) as typeof fetch, audio: audio as unknown as HTMLAudioElement, createUrl: () => 'blob:test', revokeUrl: vi.fn(), mixer: { enabled: () => options.enabled !== false, context: async () => options.unavailable ? null : context as unknown as AudioContext, gain: () => 0.7 } })
+  return { audio, sources, gains, events, player, context }
+}
+it('mixes sequential chunks and resumes at the requested index', async () => {
+  const { audio, sources, gains, events, player } = mixSetup()
+  player.speak(['skip', 'first。', 'second。'], events, 1); await tick()
+  expect(audio.play).not.toHaveBeenCalled(); expect(events.onSentence).toHaveBeenCalledWith(1, 'first。', 6)
+  expect(gains[0].gain.value).toBe(0.7); player.setVolume(0.2); expect(gains[0].gain.value).toBe(0.2)
+  sources[0].onended?.(); await tick(); expect(events.onChunkEnd).toHaveBeenCalledWith(1)
+  expect(events.onSentence).toHaveBeenCalledWith(2, 'second。', 6); sources[1].onended?.(); await tick()
+  expect(events.onChunkEnd).toHaveBeenCalledWith(2); expect(events.onEnd).toHaveBeenCalledOnce()
+})
+it('stops a mixed source and ignores its stale end on cancel', async () => {
+  const { sources, events, player } = mixSetup(); player.speak(['a', 'b'], events); await tick()
+  const ended = sources[0].onended; player.cancel(); expect(sources[0].stop).toHaveBeenCalledOnce(); expect(sources[0].disconnect).toHaveBeenCalled(); ended?.(); await tick()
+  expect(sources).toHaveLength(1); expect(events.onChunkEnd).not.toHaveBeenCalled(); expect(events.onEnd).not.toHaveBeenCalled(); expect(events.onError).not.toHaveBeenCalled()
+})
+it.each([{ decodeFails: true }, { unavailable: true }, { enabled: false }])('falls back to audio for %j', async options => {
+  const { player, audio, sources, events } = mixSetup(options); player.speak(['a'], events); await tick()
+  expect(audio.play).toHaveBeenCalledOnce(); expect(sources).toHaveLength(0); expect(events.onSentence).toHaveBeenCalledWith(0, 'a', 2)
+  audio.onended?.(); await tick(); expect(events.onEnd).toHaveBeenCalledOnce()
+})
