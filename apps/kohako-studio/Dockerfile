@@ -3,7 +3,7 @@ WORKDIR /src
 COPY web/package*.json ./
 RUN npm ci
 COPY web/ ./
-RUN npm run typecheck && npm test && npm run build
+RUN npm run typecheck && npm run check && npm test && npm run build
 
 # 試作候補: candidates/fetch.sh が取り出した各版を /kohako/candidates/<id>/ 用に個別ビルドする。
 FROM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d AS candidates-build
@@ -18,7 +18,7 @@ WORKDIR /src
 COPY bff/package*.json ./
 RUN npm ci
 COPY bff/ ./
-RUN npm run typecheck && npm test && npm run build
+RUN npm run typecheck && npm run check && npm test && npm run build
 
 # BOXP-501: runtime dependencies only (web-push), without the test/typecheck toolchain.
 FROM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d AS bff-deps

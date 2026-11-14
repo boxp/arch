@@ -6,9 +6,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "TZ=UTC vitest run"
+    "test": "TZ=UTC vitest run",
+    "lint": "biome lint --error-on-warnings .",
+    "format:check": "biome format .",
+    "check": "biome ci --error-on-warnings .",
+    "fix": "biome check --write ."
   },
   "devDependencies": {
+    "@biomejs/biome": "2.6.7",
     "@types/node": "22.20.5",
     "@types/web-push": "3.6.4",
     "typescript": "5.9.3",
