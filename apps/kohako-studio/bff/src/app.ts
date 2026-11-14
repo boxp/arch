@@ -32,7 +32,7 @@ export function createApp(opts: { authenticate: (headers: IncomingMessage['heade
   const geocode = createGeocoder({ fetcher })
   const conversations = opts.conversations ?? (opts.hermes ? { owner: createConversation({ now, hermes: opts.hermes, prefix: 'kohako-web', geocode }), verifier: createConversation({ now, hermes: opts.hermes, prefix: 'kohako-verify', geocode }) } : undefined)
   const awaitingApproval = (e: NonNullable<ReturnType<NonNullable<typeof conversations>['owner']['get']>>) => e.status === 'pending' && !!e.approval?.active && !e.approval.consumed
-  const view = (e: NonNullable<ReturnType<NonNullable<typeof conversations>['owner']['get']>>) => ({ requestId: e.requestId, status: awaitingApproval(e) ? 'approval' : e.status, ...(e.reply ? { reply: e.reply } : {}), ...(e.error ? { error: e.error } : {}), ...(awaitingApproval(e) && e.approval ? { approval: { approvalId: e.approval.approvalId, summary: e.approval.summary, expiresAt: e.approval.expiresAt } } : {}) })
+  const view = (e: NonNullable<ReturnType<NonNullable<typeof conversations>['owner']['get']>>) => { const activity = e.activity?.snapshot(); return ({ ...(activity ? { activity } : {}), requestId: e.requestId, status: awaitingApproval(e) ? 'approval' : e.status, ...(e.reply ? { reply: e.reply } : {}), ...(e.error ? { error: e.error } : {}), ...(awaitingApproval(e) && e.approval ? { approval: { approvalId: e.approval.approvalId, summary: e.approval.summary, expiresAt: e.approval.expiresAt } } : {}) }) }
   return async (req: IncomingMessage, res: ServerResponse) => {
     const json = (status: number, data: unknown) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(data)) }
     try {

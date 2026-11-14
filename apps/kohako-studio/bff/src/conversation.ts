@@ -1,3 +1,4 @@
+import { createActivity } from './activity.js'
 import { join } from 'node:path'
 import { atomic, load } from './storage.js'
 import { extractViews, type View } from './views.js'
@@ -6,6 +7,7 @@ import type { Attachment } from './attachments.js'
 import type { createHermes } from './hermes.js'
 export type Input = { requestId: string; expiresAt: number } & ({ kind: 'text'; text: string; views?: true; attachments?: { meta: Attachment; data: Buffer }[] } | { kind: 'touch'; touch: { zone: 'head' | 'hand'; action: 'pat' | 'tap'; count: number } })
 type Entry = {
+  activity?: ReturnType<typeof createActivity>
   requestId: string
   payloadHash: string
   status: 'pending' | 'done' | 'failed' | 'unknown'
@@ -57,7 +59,7 @@ export function approvalSummary(approval: { description: string; command: string
   lines.push(command ? `実行内容: ${command}${fullyShown ? '' : '（全文を表示できないため拒否のみ可能）'}` : '実行内容: （不明のため拒否のみ可能）')
   return { summary: lines.join('\n'), fullyShown }
 }
-export function createConversation({ now, hermes, prefix, store, geocode = async (views: View[]) => views, cancelSettleMs = 2000 }: { now: () => number; hermes: ReturnType<typeof createHermes>; prefix: string; store?: string; geocode?: (views: View[]) => Promise<View[]>; cancelSettleMs?: number }) {
+export function createConversation({ now, hermes, prefix, store, geocode = async (views: View[]) => views, cancelSettleMs = 2000, activityDrainMs = 2000 }: { now: () => number; hermes: ReturnType<typeof createHermes>; prefix: string; store?: string; geocode?: (views: View[]) => Promise<View[]>; cancelSettleMs?: number; activityDrainMs?: number }) {
   const entries = new Map<string, Entry>()
   let sessionStartedAt = now(),
     lastUse = sessionStartedAt,
@@ -240,9 +242,23 @@ export function createConversation({ now, hermes, prefix, store, geocode = async
             void pending.pendingResult.then((result) => { pending.result = result })
           }, 280_000).unref?.()
         }
-      const onRun = (runId: string) => { entry.runId = runId; save(); try { resume?.onRun?.(runId) } catch { /* 保存失敗でも追跡は続ける */ } if (entry.cancelRequested) void hermes.stop(runId) }
+      let activityController: AbortController | undefined, activityRun: string | undefined, activityDone: Promise<void> | undefined
+      const watchActivity = (runId: string) => {
+        if (input.kind !== 'text' || activityRun === runId) return
+        activityController?.abort(); activityController = new AbortController(); activityRun = runId
+        entry.activity = createActivity(now)
+        const controller = activityController, activity = entry.activity
+        activityDone = hermes.events?.(runId, e => { if (!controller.signal.aborted) activity.apply(e) }, controller.signal).catch(() => {})
+      }
+      const onRun = (runId: string) => { watchActivity(runId); entry.runId = runId; save(); try { resume?.onRun?.(runId) } catch { /* 保存失敗でも追跡は続ける */ } if (entry.cancelRequested) void hermes.stop(runId) }
       if (resume?.runId) entry.runId = resume.runId
+      if (restored?.runId || resume?.runId) watchActivity((restored?.runId ?? resume?.runId)!)
       const applyResult = async (settled: Awaited<ReturnType<typeof hermes.run>>) => {
+          // 結果の照会が SSE の完了通知より先に終わることがある。終了が確認できた run は、購読が終端まで読み切るのを
+          // 短時間だけ待ってから閉じる（成功した手順を「中断」と出さない・未受信の手順を落とさない）。停止依頼時と終了未確認時は待たない。
+          const runEnded = settled.status === 'done' || (settled.status === 'failed' && settled.error !== 'internal_error')
+          if (activityDone && runEnded && !entry.cancelRequested) await Promise.race([activityDone, new Promise<void>(r => setTimeout(r, activityDrainMs).unref?.())])
+          activityController?.abort(); entry.activity?.finish(settled.status === 'done' && !entry.cancelRequested)
           const result = touchApproval ? { status: 'failed' as const, error: 'touch_approval_denied' } : entry.cancelRequested && settled.status === 'failed' ? { status: 'failed' as const, error: 'cancelled' } : settled
           // run 終了の確認は Hermes の実結果で行う（unknown/internal_error は終了未確認）。
           entry.upstreamEnded = settled.status === 'done' || (settled.status === 'failed' && settled.error !== 'internal_error')
