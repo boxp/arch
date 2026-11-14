@@ -33,32 +33,99 @@ describe('場面', () => {
 })
 describe('結果カード', () => {
   it('箇条書き・https リンク・コードだけを取り出す', () => {
-    const cards = cardsFromText('予定です。\n- 10:00 定例\n- 15:00 歯医者\n詳しくは https://example.com/a?b=1 を。http://insecure.example は対象外。\n```\nls -la\n```')
-    expect(cards).toEqual([{ kind: 'code', text: 'ls -la' }, { kind: 'list', items: ['10:00 定例', '15:00 歯医者'] }, { kind: 'link', url: 'https://example.com/a?b=1', host: 'example.com' }])
+    const cards = cardsFromText(
+      '予定です。\n- 10:00 定例\n- 15:00 歯医者\n詳しくは https://example.com/a?b=1 を。http://insecure.example は対象外。\n```\nls -la\n```',
+    )
+    expect(cards).toEqual([
+      { kind: 'code', text: 'ls -la' },
+      { kind: 'list', items: ['10:00 定例', '15:00 歯医者'] },
+      { kind: 'link', url: 'https://example.com/a?b=1', host: 'example.com' },
+    ])
   })
   it('1 行だけの箇条書きや javascript: はカードにしない', () => {
     expect(cardsFromText('- ひとつだけ\njavascript:alert(1) <img src=x>')).toEqual([])
   })
   it('記号なしの短い行の列挙も一覧にする（文章の段落は一覧にしない）', () => {
-    expect(cardsFromText('ご主人さま、こんなことはどうですか。\n\n用事をひとつ進める\n散歩する\n振り返る\n\nhttps://www.jma.go.jp/')).toEqual([{ kind: 'list', items: ['用事をひとつ進める', '散歩する', '振り返る'] }, { kind: 'link', url: 'https://www.jma.go.jp/', host: 'www.jma.go.jp' }])
+    expect(
+      cardsFromText(
+        'ご主人さま、こんなことはどうですか。\n\n用事をひとつ進める\n散歩する\n振り返る\n\nhttps://www.jma.go.jp/',
+      ),
+    ).toEqual([
+      { kind: 'list', items: ['用事をひとつ進める', '散歩する', '振り返る'] },
+      { kind: 'link', url: 'https://www.jma.go.jp/', host: 'www.jma.go.jp' },
+    ])
     expect(cardsFromText('一文目です。\n二文目です。\n三文目です。')).toEqual([])
   })
-  it('句読点で URL を切る', () => { expect(cardsFromText('こちらです（https://a.example/x）。')).toEqual([{ kind: 'link', url: 'https://a.example/x', host: 'a.example' }]) })
+  it('句読点で URL を切る', () => {
+    expect(cardsFromText('こちらです（https://a.example/x）。')).toEqual([
+      { kind: 'link', url: 'https://a.example/x', host: 'a.example' },
+    ])
+  })
 })
 const line = (pts: [number, number, number][]): Point[] => pts.map(([x, y, time]) => ({ x, y, time }))
 describe('ふれあい', () => {
   it('タップ・なでる・長押し・縦スクロールを見分ける', () => {
-    expect(classifyTouch(line([[0, 0, 0], [2, 1, 150]]), 'hand')).toBe('tap')
-    expect(classifyTouch(line([[0, 0, 0], [0, 0, 700]]), 'head')).toBeNull()
-    expect(classifyTouch(line([[0, 0, 0], [30, 2, 150], [0, 3, 300], [30, 2, 450], [0, 1, 600]]), 'head')).toBe('pat')
-    expect(classifyTouch(line([[0, 0, 0], [30, 2, 150], [0, 3, 300], [30, 2, 450], [0, 1, 600]]), 'hand')).toBeNull()
-    expect(classifyTouch(line([[0, 0, 0], [5, 80, 200], [8, 160, 400]]), 'head')).toBeNull()
+    expect(
+      classifyTouch(
+        line([
+          [0, 0, 0],
+          [2, 1, 150],
+        ]),
+        'hand',
+      ),
+    ).toBe('tap')
+    expect(
+      classifyTouch(
+        line([
+          [0, 0, 0],
+          [0, 0, 700],
+        ]),
+        'head',
+      ),
+    ).toBeNull()
+    expect(
+      classifyTouch(
+        line([
+          [0, 0, 0],
+          [30, 2, 150],
+          [0, 3, 300],
+          [30, 2, 450],
+          [0, 1, 600],
+        ]),
+        'head',
+      ),
+    ).toBe('pat')
+    expect(
+      classifyTouch(
+        line([
+          [0, 0, 0],
+          [30, 2, 150],
+          [0, 3, 300],
+          [30, 2, 450],
+          [0, 1, 600],
+        ]),
+        'hand',
+      ),
+    ).toBeNull()
+    expect(
+      classifyTouch(
+        line([
+          [0, 0, 0],
+          [5, 80, 200],
+          [8, 160, 400],
+        ]),
+        'head',
+      ),
+    ).toBeNull()
   })
   it('台詞は 20 秒に 1 回、同じ反応を続けない、なですぎると控えめになる', () => {
-    const l = new TouchLimiter(), opts = { lines: true, quietOnly: false }
-    const a = l.react('tap', 'head', 0, opts), b = l.react('tap', 'head', 1000, opts)
+    const l = new TouchLimiter(),
+      opts = { lines: true, quietOnly: false }
+    const a = l.react('tap', 'head', 0, opts),
+      b = l.react('tap', 'head', 1000, opts)
     expect(a).toEqual({ reaction: 'nod', line: expect.any(String) })
-    expect(b.reaction).not.toBe('nod'); expect(b.line).toBeNull()
+    expect(b.reaction).not.toBe('nod')
+    expect(b.line).toBeNull()
     expect(l.react('tap', 'hand', 21_000, opts)).toEqual({ reaction: 'highFive', line: 'はい、ハイタッチです！' })
     for (let t = 22_000; t < 25_000; t += 1000) l.react('tap', 'head', t, opts)
     const over = l.react('pat', 'head', 25_500, opts)
@@ -69,7 +136,10 @@ describe('ふれあい', () => {
   })
   it('ひとこと OFF・作業中は台詞を出さない', () => {
     expect(new TouchLimiter().react('tap', 'head', 0, { lines: false, quietOnly: false }).line).toBeNull()
-    expect(new TouchLimiter().react('pat', 'head', 0, { lines: true, quietOnly: true })).toEqual({ reaction: 'quiet', line: null })
+    expect(new TouchLimiter().react('pat', 'head', 0, { lines: true, quietOnly: true })).toEqual({
+      reaction: 'quiet',
+      line: null,
+    })
   })
   it('モデル座標の範囲を画面の矩形へ写し、44px 以上にする', () => {
     expect(bboxOf([1, 2, 5, 9, 3, 0])).toEqual([1, 0, 5, 9])
@@ -85,11 +155,28 @@ describe('保存', () => {
     expect(parseResume('壊れた', 0)).toBeNull()
   })
   it('受理未確認の送信を形が合うときだけ戻す', () => {
-    expect(parseUnconfirmed('{"kind":"text","text":"やあ","requestId":"abcdefgh-1","expiresAt":5}')).toEqual({ kind: 'text', text: 'やあ', requestId: 'abcdefgh-1', expiresAt: 5 })
+    expect(parseUnconfirmed('{"kind":"text","text":"やあ","requestId":"abcdefgh-1","expiresAt":5}')).toEqual({
+      kind: 'text',
+      text: 'やあ',
+      requestId: 'abcdefgh-1',
+      expiresAt: 5,
+    })
     expect(parseUnconfirmed('{"kind":"text","text":1,"requestId":"abcdefgh","expiresAt":5}')).toBeNull()
   })
   it('不正な設定は既定値にする', () => {
-    expect(parsePrefs('{"touch":"yes","intensity":"loud","pinned":true}')).toEqual({ voice: 'kohaku', volume: 100, mix: true, touch: true, follow: true, lines: true, intensity: 'normal', pinned: true, reducedMotion: false, bgMotion: true, chestSway: true })
+    expect(parsePrefs('{"touch":"yes","intensity":"loud","pinned":true}')).toEqual({
+      voice: 'kohaku',
+      volume: 100,
+      mix: true,
+      touch: true,
+      follow: true,
+      lines: true,
+      intensity: 'normal',
+      pinned: true,
+      reducedMotion: false,
+      bgMotion: true,
+      chestSway: true,
+    })
     expect(parsePrefs('{"bgMotion":false}').bgMotion).toBe(false)
     expect(parsePrefs('{"voice":"browser"}').voice).toBe('browser')
     expect(parsePrefs('{"voice":"other"}').voice).toBe('kohaku')
@@ -113,11 +200,33 @@ describe('保存', () => {
 describe('home.html', () => {
   it('縦表示では時計と利用枠を隠す (BOXP-544)', () => {
     const css = readFileSync('src/home/style.css', 'utf8')
-    expect(css).toMatch(/body\[data-shape="portrait"\] \.clock-face,body\[data-shape="portrait"\] \.status-anchor\{display:none\}/)
+    expect(css).toMatch(
+      /body\[data-shape="portrait"\] \.clock-face,body\[data-shape="portrait"\] \.status-anchor\{display:none\}/,
+    )
   })
   it('必要な要素があり、インラインスクリプトがない', () => {
     const html = readFileSync('home.html', 'utf8')
-    for (const id of ['rig', 'reply', 'approval', 'allow', 'deny', 'message', 'send', 'stop', 'record', 'cards', 'history', 'settings', 'touch-open', 'reconnect', 'clock', 'state', 'pref-volume', 'pref-volume-value']) expect(html).toContain(`id="${id}"`)
+    for (const id of [
+      'rig',
+      'reply',
+      'approval',
+      'allow',
+      'deny',
+      'message',
+      'send',
+      'stop',
+      'record',
+      'cards',
+      'history',
+      'settings',
+      'touch-open',
+      'reconnect',
+      'clock',
+      'state',
+      'pref-volume',
+      'pref-volume-value',
+    ])
+      expect(html).toContain(`id="${id}"`)
     expect(html).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/)
     expect(html).toContain('href="studio.html"')
   })
@@ -143,11 +252,17 @@ describe('pollVerdict', () => {
 
 it('aggregates touches after quiet time and suppresses in-flight and frequent requests', () => {
   const b = new TouchBatcher()
-  b.add('head', 'pat', 0); b.add('head', 'pat', 500)
+  b.add('head', 'pat', 0)
+  b.add('head', 'pat', 500)
   expect(b.take(1699, true)).toBeNull()
   expect(b.take(1700, true)).toEqual({ zone: 'head', action: 'pat', count: 2 })
-  b.add('hand', 'tap', 2000); expect(b.take(4000, true)).toBeNull()
-  b.finish(); b.add('hand', 'tap', 4000); expect(b.take(5200, true)).toBeNull()
-  b.add('head', 'tap', 16000); expect(b.take(17200, false)).toBeNull()
-  b.add('hand', 'tap', 18000); expect(b.take(19200, true)).toEqual({ zone: 'hand', action: 'tap', count: 1 })
+  b.add('hand', 'tap', 2000)
+  expect(b.take(4000, true)).toBeNull()
+  b.finish()
+  b.add('hand', 'tap', 4000)
+  expect(b.take(5200, true)).toBeNull()
+  b.add('head', 'tap', 16000)
+  expect(b.take(17200, false)).toBeNull()
+  b.add('hand', 'tap', 18000)
+  expect(b.take(19200, true)).toEqual({ zone: 'hand', action: 'tap', count: 1 })
 })
