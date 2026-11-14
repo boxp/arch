@@ -86,7 +86,7 @@
 (defn telegram [req]
   (let [body (json/parse-string (slurp (:body req)) true)
         fail? (:telegram_fail (control))]
-    (log! "telegram" {:ok (not fail?) :chat_id (:chat_id body) :length (count (str (:text body))) :text (:text body)})
+    (log! "telegram" {:ok (not fail?) :chat_id (:chat_id body) :thread (:message_thread_id body) :length (count (str (:text body))) :text (:text body)})
     (if fail?
       {:status 502 :headers {"Content-Type" "application/json"} :body "{\"ok\":false,\"description\":\"lab injected\"}"}
       {:status 200 :headers {"Content-Type" "application/json"}
