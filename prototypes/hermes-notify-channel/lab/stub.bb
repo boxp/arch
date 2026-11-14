@@ -57,11 +57,14 @@
         stream? (boolean (:stream body))
         users (filter #(= "user" (:role %)) messages)
         prompt (text-of (:content (last users)))
-        scenario (or (second (re-find #"scenario=([a-z0-9-]+)" prompt)) "default")
         event (or (second (re-find #"event_id=(\S+)" prompt)) "none")
+        ;; BOXP-554: the dispatcher builds morning digests itself, so they carry no scenario.
+        scenario (or (second (re-find #"scenario=([a-z0-9-]+)" prompt))
+                     (when (str/includes? event "-digest-") "receipt-notify") "default")
         ticket (or (second (re-find #"ticket=(\S+)" prompt)) "BOXP-9001")
         after-tool? (= "tool" (:role (last messages)))
-        report (str "【Task Board 通知】" ticket " lab 本文 scenario=" scenario " event=" event)]
+        report (str (if (str/includes? event "-digest-") "【Task Board 朝の回収】" "【Task Board 通知】")
+                    ticket " lab **本文** scenario=" scenario " event=" event)]
     (log! "llm" {:scenario scenario :event event :stream stream? :messages (count messages) :after-tool after-tool?
                  :tools (mapv #(get-in % [:function :name]) (:tools body))
                  :last-role (:role (last messages))
@@ -74,6 +77,13 @@
                            (respond req stream? "" [(tool-call (note-command event ticket "silent"))]))
       "receipt-notify" (if after-tool? (respond req stream? report nil)
                            (respond req stream? "途中経過: Notes に記録します。" [(tool-call (note-command event ticket "notified"))]))
+      ;; BOXP-554: night handling (marker deferred, then silence) and a reply that arrives late.
+      "receipt-deferred" (if after-tool? (respond req stream? "[SILENT]" nil)
+                             (respond req stream? "" [(tool-call (note-command event ticket "deferred"))]))
+      "slow-notify" (if after-tool?
+                      (do (Thread/sleep (* 1000 (or (:slow_seconds (control)) 25))) (respond req stream? report nil))
+                      (respond req stream? "" [(tool-call (note-command event ticket "notified"))]))
+      "cron-report" (respond req stream? "ご主人さま、**lab の定期報告**です。\n- `項目` は正常です。" nil)
       "error" {:status 400 :headers {"Content-Type" "application/json"}
                :body (json/generate-string {:error {:message "lab injected failure" :type "invalid_request_error" :code "lab_failure"}})}
       "error500" {:status 500 :headers {"Content-Type" "application/json"}

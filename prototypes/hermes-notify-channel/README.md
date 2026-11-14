@@ -1,8 +1,13 @@
-# hermes-notify-channel（BOXP-546 隔離試作、BOXP-553 段階 1）
+# hermes-notify-channel（BOXP-546 隔離試作、BOXP-553 段階 1、BOXP-554 段階 2）
 
 **段階 1（BOXP-553）で、この plugin の写しを Alertmanager 通知だけに本番配備した。** 配備物は lolice
 `argoproj/hermes-agent/plugins/boxp-notify/`（既存 plugin と同じく ConfigMap から init container が入れる。
-image には入れていない）で、`plugin/boxp-notify/` と同一内容に保つ。Task Board 通知と cron の経路は試作のまま。
+image には入れていない）で、`plugin/boxp-notify/` と同一内容に保つ。
+
+**段階 2（BOXP-554）で、Task Board 通知と cron 通知をこの channel へ移す。** 本体 patch は image に残したまま
+（戻し先）で、新しい経路の通知には反応しない。Task Board は patch が反応しない別名の webhook route
+`task-board-channel`（lolice の init container が既存 route `task-board` から導出）を dispatcher の送信先にし、
+cron は job の届け先を `boxp_notify:cron` にする。戻す時は dispatcher の送信先 URL と job の届け先を戻す。
 
 Hermes 本体 patch（`docker/hermes-agent/patches/`）が担っている通知配送を、
 公式の拡張機構（`kind: platform` の plugin）だけで置き換えられるかを、本番に触れない環境で実測するためのもの。
@@ -29,13 +34,27 @@ Hermes 本体 patch（`docker/hermes-agent/patches/`）が担っている通知�
 | それ以外 | cron | `Projects/cron-deliveries/delivered-copies/cron-*.md` |
 
 - `send` が実配信。まず家の受信箱へ書き、書けない時だけ Telegram へ送る（`BOXP_NOTIFY_TELEGRAM_MODE=fallback`。`off` / `both` も可）。
-  直送は名前ごとに上書きできる。本番は `BOXP_NOTIFY_TELEGRAM_MODE_ALERTMANAGER=both` で、アラートは家と Telegram の両方へ届く。
+  直送は名前ごと、cron は `BOXP_NOTIFY_TELEGRAM_MODE_CRON` で上書きできる。本番は Alertmanager と cron が `both`（家と Telegram の両方）。
+- Task Board 通知は設定の mode ではなく、本体 patch と同じ取り決めで届け先を決める（dispatcher が読むファイルも同じ）:
+  - 正式報告（Notes に `result=notified|question` の記録があり、本文に `event=<id>` がある）は、
+    `Projects/task-board-events/delivery-routing.md` が `task-board: home` で、催促 route が登録済み・dispatcher の
+    準備状態（`home-reminder-ready.md`）が新しい間だけ、家の受信箱だけへ届ける（写しに `primary: home`。未読の催促と
+    家へ入らなかった時の Telegram 送信は dispatcher が行う）。受信箱へ書けない時は Telegram へ送り、写しは後から印なしで書く。
+  - 照合通知（配送要確認）、記録の無い報告、routing が `telegram` の時は Telegram へ送り、家へ印なしの写しを書く。
+  - 静音時間（dispatcher が公開する `quiet-policy.md`）、digest が引き取った event（`delivery-claims/`）、夜間に
+    `deferred` とした event の遅い報告は送らず、`delivery-receipts/<event>.md` に `quiet-held` を残す（朝の digest が回収）。
+  - 届けたら `sent`、どこにも届かなければ `uncertain`、記録つきの無通知は `silent` を `delivery-receipts/` に残す。
+    dispatcher はこれで event を完了・保留・再送停止にする。
+- cron は job id しか渡らないので、家の受信箱の job 名は scheduler の `cron/jobs.json` から読む。
+  Telegram へは、本文が 1 通に収まる時は Markdown（太字・code・link・見出し）を HTML に直して送り、拒否されたら素の本文で送る。
 - Telegram の宛先は `BOXP_NOTIFY_TELEGRAM_TOKEN` / `_CHAT_ID` / `_THREAD_ID`。無ければ gateway 自身の
   `TELEGRAM_BOT_TOKEN` / `TELEGRAM_HOME_CHANNEL` / `TELEGRAM_HOME_CHANNEL_THREAD_ID`（`deliver: telegram` と同じ届け先）。
 - 送る前に永続 receipt（`$HERMES_HOME/boxp-notify/receipts/`）を書き、同じ鍵は 1 回だけ届ける。
-  Task Board は `event id × (report|notice)`、cron と直送は `名前(job id) × 本文 × 時間幅` が鍵。
+  Task Board は `event id × (report|notice)`、cron と直送は `名前(job id) × 本文 × 直近の受理` が鍵。
   記録と受信箱のファイル名は「読める接頭辞＋鍵全体の hash」で、宛先名の長さに依らない。
-  直送は、直前の時間幅に同じ本文の記録があればそれと同じ通知として扱う（時間幅の境目をまたぐ再送対策）。
+  直送と cron は、同じ本文が「その宛先（job）の直近の通知」で、時間幅の内（直送 20 分、cron は
+  `BOXP_NOTIFY_CRON_DEDUP_SECONDS`、既定 300 秒）にある時だけ同じ通知の再送として扱う。cron は実行 ID が渡らないので、
+  同じ job が時間幅の内に同じ本文を続けて出すと 1 件にまとまる（job の最短間隔より短くしておく）。
 - 無通知にするのは、票 Notes に helper の `result=silent|deferred|continued` の receipt がある時だけ。channel に `allow_silence` は与えない。
 - `event=<id>` を含まない本文（上流の例外文・空応答の代替文など）は「配送要確認」の notice として 1 回だけ届ける。上流の文言には依存しない。
 - 家にも Telegram にも届けられなかった分は pending として残り、`connect` 後の定期回復で届ける。
@@ -60,6 +79,13 @@ lab/lab.sh down lab546a
   本番 image（digest 指定）と lolice の manifest（設定・route・plugin 一式）で動かす。
   `stage1.sh build <tag> <本番 image> <lolice/argoproj/hermes-agent>`、`stage1.sh run <tag> <名前> <証跡dir>`。
   `STAGE1_CONFIG=<file>` を付けて build すると、ConfigMap の `config.yaml` の代わりにその file（本番 PVC 上の手編集済みの写しなど）で動かす。
+- `lab/stage2.sh` は段階 2 の経路を、本番 image（digest 指定）の上で、lolice の init container の script をそのまま流して
+  配置し（ConfigMap を `/bootstrap`、plugin を `/bootstrap-plugins` に置く）、無改変の dispatcher（`task_board_events.bb`）を
+  event の送信元、`lab/home.bb` を擬似の家にして動かす。`stage2.sh build <tag> <本番 image> <lolice/argoproj/hermes-agent>`、
+  `stage2.sh run <tag> <名前> <証跡dir>`（約 12 分）。`STAGE2_CONFIG=<file>` で本番 PVC 上の config.yaml の写しを使う
+  （model だけ擬似 LLM へ向ける）。場面: 正式報告（家のみ→dispatcher 完了→未読催促）、同じ event の再投入、記録なし無通知、
+  記録つき無通知、例外、静音時間に入った後の報告（保留→朝の digest）、受信箱へ書けない時、routing を telegram にした時、
+  両方不通＋再起動、旧 route（本体 patch 経由）、cron（成功・失敗・同じ本文の再実行）、Alertmanager。
 - `LAB_CRON_ONLY=1` で cron の場面だけ、`LAB_RUN_ARGS="-e BOXP_NOTIFY_CRON_BUCKET_SECONDS=60"` で重複排除の時間幅を変えられる。
 - `lab/cron-standalone.sh` は gateway を起動せず `hermes cron tick` だけで cron を届ける場面。
 - `lab/home-dispatch.sh <証跡> <作業dir>` は出来た受信箱を無改変の配送係（`task_board_events.bb`）に読ませ、擬似の家が受け取った内容を出す。
@@ -71,6 +97,8 @@ lab/lab.sh down lab546a
 
 - gateway 外配送用の `standalone_sender_fn` は登録してあるが、実測した 2 版では `hermes cron tick` が adapter を自分で起こして `send` を呼ぶため、この口は呼ばれなかった（未実測）。
 - `lab-fail-home` / `lab-no-recovery` の印ファイルは障害を起こすための実測用。
-- Telegram 送信は 4000 字で分割するだけで、再送間隔の調整や書式変換は無い。
+- Telegram 送信は 4000 字で分割するだけで、再送間隔の調整は無い。書式変換は Task Board と cron の 1 通に収まる本文だけ。
+- Task Board と cron の通知も channel 宛では Telegram の会話 session へ mirror されない（返信の文脈は家の会話と本文・Notes）。
+- cron job の届け先は job ごとの設定なので、Telegram 宛のまま作られた job は従来どおり本体 patch の経路（Telegram＋家の写し）で届く。
 - 起動時自己検査は結果を journal と gateway の log（warning）に書くだけで、監視へは繋いでいない。
 - Alertmanager 通知は channel 宛になったので、Telegram の会話 session への mirror（`mirror_to_session`）は無い。
