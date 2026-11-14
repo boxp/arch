@@ -233,6 +233,10 @@ def write_home(cfg: dict, target: dict, decision: dict, key: str, metadata: Opti
                         {"id": ident, "text": decision["text"], "title": decision["text"].splitlines()[0][:200],
                          "firing": firing, "sent_at": sent_at})
         elif target["kind"] == "task-board":
+            if not target.get("ticket"):
+                # Not a recognised event id: never used as a file name (it could point outside the vault),
+                # and the dispatcher would not read it anyway. Telegram is the only egress.
+                return False
             suffix = ".notice" if decision["slot"] == "notice" else ""
             path = (cfg["vault"] / "Projects/task-board-events/delivered-copies"
                     / f"{target['event']}{suffix}.md")
@@ -255,12 +259,18 @@ def write_home(cfg: dict, target: dict, decision: dict, key: str, metadata: Opti
         return False
 
 
-def telegram_send(cfg: dict, text: str) -> tuple[bool, str]:
-    """Blocking Bot API call (run in a thread). Splits long text; no retry beyond the caller's."""
+def telegram_send(cfg: dict, text: str, progress: Optional[dict] = None) -> tuple[bool, str]:
+    """Blocking Bot API call (run in a thread). Splits long text; no retry beyond the caller's.
+
+    ``progress["chunks"]`` counts the chunks already accepted, so a retry resumes after them.
+    """
     if not (cfg["telegram_token"] and cfg["telegram_chat"]):
         return False, "telegram not configured"
+    progress = progress if progress is not None else {}
     ids = []
-    for start in range(0, max(len(text), 1), TELEGRAM_LIMIT):
+    for index, start in enumerate(range(0, max(len(text), 1), TELEGRAM_LIMIT)):
+        if index < int(progress.get("chunks", 0)):
+            continue
         body = json.dumps({"chat_id": cfg["telegram_chat"], "text": text[start:start + TELEGRAM_LIMIT]}).encode()
         request = urllib.request.Request(
             f"{cfg['telegram_base']}/bot{cfg['telegram_token']}/sendMessage", data=body,
@@ -271,6 +281,7 @@ def telegram_send(cfg: dict, text: str) -> tuple[bool, str]:
             if not reply.get("ok"):
                 return False, "telegram rejected"
             ids.append(str((reply.get("result") or {}).get("message_id", "")))
+            progress["chunks"] = index + 1
         except (urllib.error.URLError, OSError, ValueError) as error:
             return False, f"telegram {type(error).__name__}"
     return True, ",".join(ids)
@@ -283,7 +294,9 @@ async def deliver(cfg: dict, key: str, record: dict) -> dict:
     telegram, detail = record.get("telegram", False), record.get("telegram_detail", "")
     mode = cfg["telegram_mode"]
     if not telegram and (mode == "both" or (mode == "fallback" and not home)):
-        telegram, detail = await asyncio.to_thread(telegram_send, cfg, decision["text"])
+        progress = {"chunks": int(record.get("telegram_chunks", 0))}
+        telegram, detail = await asyncio.to_thread(telegram_send, cfg, decision["text"], progress)
+        record["telegram_chunks"] = progress["chunks"]
     record.update(home=home, telegram=telegram, telegram_detail=detail,
                   attempts=int(record.get("attempts", 0)) + 1, updated_at=now().isoformat())
     record["state"] = "delivered" if (home or telegram) else "pending"
