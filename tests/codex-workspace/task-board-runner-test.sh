@@ -6502,7 +6502,8 @@ test_outside_copy_reclaim() {
   # Stale runs kept for files outside the checkout: copies identical to a blob
   # on origin's default branch are removed, everything else stays.
   local tmp vault state source out mode old mid new co run copy ledger sha
-  for mode in on active activeself dryrun envoff flagoff locked latest recent; do
+  local real_git; real_git="$(command -v git)"
+  for mode in on active activeself dryrun envoff flagoff locked latest recent slow; do
     tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
     mkdir -p "$state/locks" "$tmp/proc/100"
     ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
@@ -6528,6 +6529,13 @@ test_outside_copy_reclaim() {
     cp "$source/asset.bin" "$copy/hard.bin"; ln "$copy/hard.bin" "$copy/hard2.bin"
     cp "$source/asset.bin" "$copy/linked/target.bin"; ln -s "$copy/linked/target.bin" "$run/link"
     git init -q "$copy/nested"; cp "$source/asset.bin" "$copy/nested/asset.bin"
+    # Referenced from another run and from the run records: links outside the run protect too.
+    mkdir -p "$copy/extdir" "$state/runs/BOXP-519"
+    cp "$source/asset.bin" "$copy/extlinked.bin"; ln -s "$copy/extlinked.bin" "$state/workspaces/BOXP-519/$new/ext-link"
+    cp "$source/asset.bin" "$copy/extdir/asset.bin"; ln -s "$copy/extdir" "$state/runs/BOXP-519/ext-dir"
+    # Hashing slower than the pass budget must end the pass without deleting.
+    mkdir -p "$tmp/bin"
+    printf '#!/usr/bin/env bash\ncase " $* " in *" hash-object "*) sleep 12 ;; esac\nexec %q "$@"\n' "$real_git" >"$tmp/bin/git"; chmod +x "$tmp/bin/git"
     case "$mode" in
       flagoff) echo '{:mode :on :outside-copies false}' >"$state/generated-reclaim.edn" ;;
       locked) echo "{}" >"$state/locks/BOXP-519.edn" ;;
@@ -6535,10 +6543,13 @@ test_outside_copy_reclaim() {
       active) echo "{:ticket \"BOXP-519\" :run-id \"$new\"}" >"$state/locks/BOXP-519.edn" ;;
       activeself) echo "{:ticket \"BOXP-519\" :run-id \"$old\"}" >"$state/locks/BOXP-519.edn" ;;
     esac
-    CODEX_TASK_BOARD_GENERATED_RECLAIM="$([[ "$mode" == dryrun ]] && echo dry-run || echo on)" \
+    local started=$SECONDS
+    PATH="$([[ "$mode" == slow ]] && echo "$tmp/bin:")$PATH" CODEX_TASK_BOARD_OUTSIDE_COPY_BUDGET_SECONDS="$([[ "$mode" == slow ]] && echo 3 || echo 600)" \
+      CODEX_TASK_BOARD_GENERATED_RECLAIM="$([[ "$mode" == dryrun ]] && echo dry-run || echo on)" \
       CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true CODEX_TASK_BOARD_OUTSIDE_COPY_RECLAIM="$([[ "$mode" == envoff ]] && echo off || echo on)" run_prune "$vault" "$state" >"$out" 2>&1 || { cat "$out" >&2; fail "prune failed: $mode"; }
     ledger="$state/metrics/outside-copy-reclaim-ledger.tsv"
-    for keep in unique.bin local.bin hard.bin hard2.bin linked/target.bin nested/asset.bin; do
+    [[ "$mode" != slow ]] || (( SECONDS - started < 11 )) || { cat "$out" >&2; fail 'outside-copy pass ran past its budget'; }
+    for keep in unique.bin local.bin hard.bin hard2.bin linked/target.bin nested/asset.bin extlinked.bin extdir/asset.bin; do
       [[ -f "$copy/$keep" ]] || { cat "$out" >&2; fail "outside-copy removed protected file $keep: $mode"; }
     done
     [[ -f "$run/note.md" && -f "$co/asset.bin" && -f "$source/asset.bin" ]] || fail "outside-copy touched unique/checkout files: $mode"
@@ -6552,6 +6563,9 @@ test_outside_copy_reclaim() {
     sha="$(awk -F'\t' '$4=="deploy/site/tool.bin"{print $5" "$8}' "$ledger")"
     [[ "$sha" == "$(git -C "$source" rev-parse origin/main:tool.bin) 100755" ]] || fail "ledger entry wrong: $sha"
     git --git-dir="$(awk -F'\t' '$4=="deploy/site/tool.bin"{print $6}' "$ledger")" cat-file blob "${sha% *}" | cmp -s - "$source/tool.bin" || fail 'ledger restore differs'
+    # The commit the blobs came from stays reachable after origin's branch moves on.
+    local pin; pin="$(awk -F'\t' '$4=="deploy/site/tool.bin"{print $9}' "$ledger")"
+    [[ "$pin" == refs/codex-task-board/outside-copy-reclaim/* && "$(git -C "$source" rev-parse "$pin")" == "$(git -C "$source" rev-parse origin/main)" ]] || fail "restore source not pinned: $pin"
     assert_file_contains "$state/metrics/workspace-capacity.edn" ':outside-copy-files 2'
     assert_file_contains "$state/metrics/outside-copy-scan-cache.edn" 'deploy/site/unique.bin'
     # Idempotent second pass.

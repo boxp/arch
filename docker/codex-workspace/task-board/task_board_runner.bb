@@ -6396,51 +6396,92 @@
 (defn outside-copy-origin-blobs
   "sha -> true for every blob in the remote-tracking default branch of the
   repository behind common-dir, or nil when it cannot be read. Only
-  remote-tracking refs count: their content is known to exist on GitHub."
+  remote-tracking refs count: their content is known to exist on GitHub.
+  :commit holds the commit the tree was listed from."
   [common-dir]
   (let [git (fn [& args] (command-result (into ["git" (str "--git-dir=" common-dir)] args) {:timeout-seconds 120}))
-        ref (some #(when (zero? (:exit (git "rev-parse" "--verify" "-q" (str % "^{commit}")))) %)
-                  ["refs/remotes/origin/HEAD" "refs/remotes/origin/main" "refs/remotes/origin/master"])
-        tree (when ref (git "ls-tree" "-r" "-z" ref))]
+        commit (some #(let [r (git "rev-parse" "--verify" "-q" (str % "^{commit}"))
+                            sha (str/trim (:out r))]
+                        (when (and (zero? (:exit r)) (re-matches #"[0-9a-f]{40,64}" sha)) sha))
+                     ["refs/remotes/origin/HEAD" "refs/remotes/origin/main" "refs/remotes/origin/master"])
+        tree (when commit (git "ls-tree" "-r" "-z" commit))]
     (when (and tree (zero? (:exit tree)))
-      (into {} (keep #(when-let [[_ sha] (re-matches #"(?s)(?:100644|100755) blob ([0-9a-f]+)\t.*" %)] [sha true]))
+      (into {:commit commit} (keep #(when-let [[_ sha] (re-matches #"(?s)(?:100644|100755) blob ([0-9a-f]+)\t.*" %)] [sha true]))
             (str/split (:out tree) #"\u0000")))))
+
+(defn outside-copy-pin!
+  "Keeps commit (and so every blob the ledger restores from) reachable in the
+  shared clone after origin's branch moves on and Git collects garbage.
+  Returns the ref name, or nil when the ref could not be written and read back."
+  [common-dir commit]
+  (let [ref (str "refs/codex-task-board/outside-copy-reclaim/" commit)
+        git (fn [& args] (command-result (into ["git" (str "--git-dir=" common-dir)] args) {:timeout-seconds 30}))]
+    (when (and commit
+               (zero? (:exit (git "update-ref" ref commit)))
+               (= commit (str/trim (:out (git "rev-parse" "--verify" "-q" (str ref "^{commit}"))))))
+      ref)))
+
+(defn outside-copy-link-targets
+  "Real paths (strings) that symlinks anywhere under the task-board state and
+  the workspaces resolve to, so a copy referenced from another run or from the
+  run records is kept. nil when the scan did not complete."
+  [timeout-seconds]
+  (let [all (vec (distinct (keep #(try (str (fs/real-path %)) (catch Exception _ nil)) [(root) (workspaces-dir)])))
+        roots (remove (fn [r] (some #(and (not= r %) (fs/starts-with? (fs/path r) (fs/path %))) all)) all)
+        scan (command-result (vec (concat ["find" "-P"] roots ["-type" "l" "-print0"])) {:timeout-seconds timeout-seconds})]
+    (when (and (seq roots) (zero? (:exit scan)))
+      (into #{} (keep #(try (str (fs/real-path %)) (catch Exception _ nil)))
+            (remove str/blank? (str/split (:out scan) #"\u0000"))))))
 
 (defn outside-copy-hashes
   "path -> raw blob sha (no clean filter). Files that vanish or cannot be
-  hashed are simply absent from the result."
-  [common-dir paths]
+  hashed are simply absent from the result. left returns the seconds the pass
+  may still run: every git call is bounded by it and hashing stops at zero."
+  [common-dir paths left]
   (let [prefix (if (zero? (:exit (command-result ["sh" "-c" "command -v nice >/dev/null && command -v ionice >/dev/null"]))) ["nice" "-n" "19" "ionice" "-c2" "-n7"] [])
-        one (fn [path] (let [r (command-result (into prefix ["git" (str "--git-dir=" common-dir) "hash-object" "--no-filters" "--" (str path)]) {:timeout-seconds 600})]
+        one (fn [path] (let [r (command-result (into prefix ["git" (str "--git-dir=" common-dir) "hash-object" "--no-filters" "--" (str path)]) {:timeout-seconds (max 1 (min 60 (left)))})]
                          (when (zero? (:exit r)) (str/trim (:out r)))))]
     (into {}
           (mapcat (fn [chunk]
-                    (let [r (try @(p/process (into prefix ["git" (str "--git-dir=" common-dir) "hash-object" "--no-filters" "--stdin-paths"])
-                                             {:in (str (str/join "\n" (map str chunk)) "\n") :out :string :err :string})
-                                 (catch Exception _ {:exit -1}))
+                    (let [r (if-not (pos? (left))
+                              {:exit -1}
+                              (try (let [proc (p/process (into prefix ["git" (str "--git-dir=" common-dir) "hash-object" "--no-filters" "--stdin-paths"])
+                                                         {:in (str (str/join "\n" (map str chunk)) "\n") :out :string :err :string})
+                                         res (deref proc (* 1000 (max 1 (left))) ::timeout)]
+                                     (if (= ::timeout res) (do (p/destroy-tree proc) {:exit -1}) res))
+                                   (catch Exception _ {:exit -1})))
                           lines (when (zero? (:exit r)) (str/split-lines (:out r)))]
                       (if (= (count lines) (count chunk))
                         (map vector chunk lines)
-                        (keep (fn [path] (when-let [sha (one path)] [path sha])) chunk)))))
+                        (keep (fn [path] (when (pos? (left)) (when-let [sha (one path)] [path sha]))) chunk)))))
           (partition-all 200 paths))))
 
 (defn outside-copy-files
   "Regular single-link files of at least min-bytes in the run that belong to
   no checkout (nested repositories included) and are not reachable through a
-  symlink. Each is {:path :rel :blocks-bytes :size :mtime}; nil on scan error."
-  [run-path min-bytes]
+  symlink, neither one inside the run nor one in external-targets (real paths
+  of link targets found elsewhere). Each is {:path :rel :blocks-bytes :size
+  :mtime}; nil on scan error or once left (seconds the pass may still run) ran out."
+  [run-path min-bytes external-targets left]
   (let [run-real (fs/real-path run-path)
+        limit #(max 1 (min 300 (left)))
+        linked? (fn [path] (loop [p path]
+                             (cond (nil? p) false
+                                   (contains? external-targets (str p)) true
+                                   (= p run-real) false
+                                   :else (recur (fs/parent p)))))
         checkouts (mapv fs/real-path (find-checkouts run-path))
-        scan (command-result ["find" "-P" (str run-real) "-name" ".git" "-prune" "-o" "-type" "f" "-links" "1" "-size" (str "+" (max 0 (dec min-bytes)) "c") "-printf" "%b\\t%s\\t%T@\\t%p\\0"] {:timeout-seconds 300})
-        links (command-result ["find" "-P" (str run-real) "-name" ".git" "-prune" "-o" "-type" "l" "-print0"] {:timeout-seconds 300})]
-    (when (and (zero? (:exit scan)) (zero? (:exit links)))
+        scan (command-result ["find" "-P" (str run-real) "-name" ".git" "-prune" "-o" "-type" "f" "-links" "1" "-size" (str "+" (max 0 (dec min-bytes)) "c") "-printf" "%b\\t%s\\t%T@\\t%p\\0"] {:timeout-seconds (limit)})
+        links (command-result ["find" "-P" (str run-real) "-name" ".git" "-prune" "-o" "-type" "l" "-print0"] {:timeout-seconds (limit)})]
+    (when (and (pos? (left)) (zero? (:exit scan)) (zero? (:exit links)))
       (let [targets (vec (distinct (keep #(try (fs/real-path %) (catch Exception _ nil)) (remove str/blank? (str/split (:out links) #"\u0000")))))]
         (vec (keep (fn [entry]
                      (when-let [[_ blocks size mtime file] (re-matches #"(?s)(\d+)\t(\d+)\t([0-9.]+)\t(.*)" entry)]
                        (let [path (fs/path file) rel (str (fs/relativize run-real path))]
                          (when (and (not (re-find #"[\t\n\r]" rel))
                                     (not-any? #(fs/starts-with? path %) checkouts)
-                                    (not-any? #(fs/starts-with? path %) targets))
+                                    (not-any? #(fs/starts-with? path %) targets)
+                                    (not (linked? path)))
                            {:path path :rel rel :blocks-bytes (* 512 (Long/parseLong blocks)) :size (Long/parseLong size) :mtime mtime}))))
                    (str/split (:out scan) #"\u0000")))))))
 
@@ -6469,7 +6510,13 @@
     (let [min-bytes (prune-setting "CODEX_TASK_BOARD_OUTSIDE_COPY_MIN_BYTES" #(parse-bounded-long % 65536 1))
           budget (prune-setting "CODEX_TASK_BOARD_OUTSIDE_COPY_BUDGET_SECONDS" #(parse-bounded-long % 600 1))
           deadline (.plusSeconds (java.time.Instant/now) budget)
-          done? #(or (stop?) (.isAfter (java.time.Instant/now) deadline))
+          ;; Seconds the pass may still run: every scan, hash and delete is bounded by it.
+          left #(if (stop?) 0 (.getSeconds (java.time.Duration/between (java.time.Instant/now) deadline)))
+          done? #(not (pos? (left)))
+          link-targets (outside-copy-link-targets (max 1 (min 300 (left))))
+          pins (atom {})
+          pin-of (fn [dir commit] (if (contains? @pins dir) (get @pins dir)
+                                      (let [v (outside-copy-pin! dir commit)] (swap! pins assoc dir v) v)))
           cache-path (fs/path (root) "metrics" "outside-copy-scan-cache.edn")
           loaded (let [v (try (read-edn-file cache-path {}) (catch Exception _ {}))] (if (map? v) v {}))
           cache (atom (into {} (filter (fn [[k v]] (and (string? k) (set? v) (fs/directory? (fs/path (workspaces-dir) k)))) loaded)))
@@ -6478,7 +6525,8 @@
                                  (let [v (outside-copy-origin-blobs dir)] (swap! blobs assoc dir v) v)))
           ledger (fs/path (root) "metrics" "outside-copy-reclaim-ledger.tsv")
           skip! (fn [reason] (swap! stats update-in [:outside-copy-skipped reason] (fnil inc 0)))]
-      (doseq [ticket-dir (child-directories (workspaces-dir)) :while (not (done?))
+      (when (nil? link-targets) (skip! "link-scan-failed"))
+      (doseq [ticket-dir (when link-targets (child-directories (workspaces-dir))) :while (not (done?))
               :let [ticket (fs/file-name ticket-dir)]]
         (try
           (if-let [reason (outside-copy-ticket-hold ticket true)]
@@ -6490,7 +6538,7 @@
                 (try
                   (if-let [reason (outside-copy-run-hold ticket run-id)]
                     (skip! (first (str/split reason #" ")))
-                    (let [files (outside-copy-files run min-bytes)
+                    (let [files (outside-copy-files run min-bytes link-targets left)
                           known (get @cache key #{})
                           fresh (remove #(known [(:rel %) (:size %) (:mtime %)]) files)]
                       (cond
@@ -6498,10 +6546,11 @@
                         (empty? fresh) nil
                         (empty? @sources) (skip! "no-origin-blobs")
                         :else
-                        (let [hashes (outside-copy-hashes (ffirst @sources) (map :path fresh))
+                        (let [hashes (outside-copy-hashes (ffirst @sources) (map :path fresh) left)
                               source-of (fn [sha] (some (fn [[dir m]] (when (get m sha) dir)) @sources))
                               matched (vec (keep (fn [f] (when-let [sha (get hashes (:path f))]
-                                                           (when-let [dir (source-of sha)] (assoc f :sha sha :source dir)))) fresh))
+                                                           (when-let [dir (source-of sha)]
+                                                             (assoc f :sha sha :source dir :commit (some (fn [[d m]] (when (= d dir) (:commit m))) @sources))))) fresh))
                               misses (into #{} (keep (fn [f] (when (and (get hashes (:path f)) (not (source-of (get hashes (:path f)))))
                                                                [(:rel f) (:size f) (:mtime f)]))) fresh)
                               bytes (reduce + 0 (map :blocks-bytes matched))
@@ -6516,17 +6565,20 @@
                               recheck (when (and (seq matched) (= mode :on))
                                         ((if active? (fn [_ f] (or (with-ticket-lock-guard ticket status) (f))) with-ticket-lock-guard) ticket
                                           #(or (status)
-                                               (let [again (into {} (map (juxt :path identity)) (or (outside-copy-files run min-bytes) []))
+                                               (let [again (into {} (map (juxt :path identity)) (or (outside-copy-files run min-bytes link-targets left) []))
                                                      still (filterv (fn [f] (contains? again (:path f))) matched)
-                                                     rehash (outside-copy-hashes (ffirst @sources) (map :path still))]
+                                                     rehash (outside-copy-hashes (ffirst @sources) (map :path still) left)]
                                                  (fs/create-dirs (fs/parent ledger))
-                                                 (doseq [f still]
-                                                   (if (and (= (:sha f) (get rehash (:path f)))
-                                                            (zero? (:exit (command-result ["git" (str "--git-dir=" (:source f)) "cat-file" "-e" (str (:sha f) "^{blob}")]))))
+                                                 (doseq [f still :while (pos? (left))
+                                                         ;; The restore source must outlive origin's branch: pin its commit first.
+                                                         :let [pin (pin-of (:source f) (:commit f))]]
+                                                   (if (and pin
+                                                            (= (:sha f) (get rehash (:path f)))
+                                                            (zero? (:exit (command-result ["git" (str "--git-dir=" (:source f)) "cat-file" "-e" (str (:sha f) "^{blob}")] {:timeout-seconds 30}))))
                                                      (try
                                                        (spit (str ledger)
                                                              (str (str/join "\t" [(str (now)) ticket run-id (:rel f) (:sha f) (:source f) (:blocks-bytes f)
-                                                                                  (if (owner-executable? (:path f)) "100755" "100644")]) "\n")
+                                                                                  (if (owner-executable? (:path f)) "100755" "100644") pin]) "\n")
                                                              :append true)
                                                        (fs/delete (:path f))
                                                        (vswap! removed inc) (vswap! removed-bytes + (:blocks-bytes f))
