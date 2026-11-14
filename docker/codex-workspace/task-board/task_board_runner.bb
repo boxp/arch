@@ -6393,13 +6393,22 @@
           (not (safe-run-workspace-path? ticket-id run-id path)) "unsafe-path"
           :else (stale-process-hold (fs/real-path path)))))
 
+(defn outside-copy-git
+  "Git against common-dir, bounded by the seconds the pass may still run (left)
+  and by cap. Not started once the budget ran out: reported as a failure."
+  [common-dir left cap & args]
+  (if (pos? (left))
+    (command-result (into ["git" (str "--git-dir=" common-dir)] args) {:timeout-seconds (max 1 (min cap (left)))})
+    {:exit -1 :out "" :err "outside-copy budget exhausted"}))
+
 (defn outside-copy-origin-blobs
   "sha -> true for every blob in the remote-tracking default branch of the
   repository behind common-dir, or nil when it cannot be read. Only
   remote-tracking refs count: their content is known to exist on GitHub.
-  :commit holds the commit the tree was listed from."
-  [common-dir]
-  (let [git (fn [& args] (command-result (into ["git" (str "--git-dir=" common-dir)] args) {:timeout-seconds 120}))
+  :commit holds the commit the tree was listed from. left returns the
+  seconds the pass may still run."
+  [common-dir left]
+  (let [git (fn [& args] (apply outside-copy-git common-dir left 120 args))
         commit (some #(let [r (git "rev-parse" "--verify" "-q" (str % "^{commit}"))
                             sha (str/trim (:out r))]
                         (when (and (zero? (:exit r)) (re-matches #"[0-9a-f]{40,64}" sha)) sha))
@@ -6413,9 +6422,9 @@
   "Keeps commit (and so every blob the ledger restores from) reachable in the
   shared clone after origin's branch moves on and Git collects garbage.
   Returns the ref name, or nil when the ref could not be written and read back."
-  [common-dir commit]
+  [common-dir commit left]
   (let [ref (str "refs/codex-task-board/outside-copy-reclaim/" commit)
-        git (fn [& args] (command-result (into ["git" (str "--git-dir=" common-dir)] args) {:timeout-seconds 30}))]
+        git (fn [& args] (apply outside-copy-git common-dir left 30 args))]
     (when (and commit
                (zero? (:exit (git "update-ref" ref commit)))
                (= commit (str/trim (:out (git "rev-parse" "--verify" "-q" (str ref "^{commit}"))))))
@@ -6438,7 +6447,7 @@
   hashed are simply absent from the result. left returns the seconds the pass
   may still run: every git call is bounded by it and hashing stops at zero."
   [common-dir paths left]
-  (let [prefix (if (zero? (:exit (command-result ["sh" "-c" "command -v nice >/dev/null && command -v ionice >/dev/null"]))) ["nice" "-n" "19" "ionice" "-c2" "-n7"] [])
+  (let [prefix (if (zero? (:exit (command-result ["sh" "-c" "command -v nice >/dev/null && command -v ionice >/dev/null"] {:timeout-seconds (max 1 (min 10 (left)))}))) ["nice" "-n" "19" "ionice" "-c2" "-n7"] [])
         one (fn [path] (let [r (command-result (into prefix ["git" (str "--git-dir=" common-dir) "hash-object" "--no-filters" "--" (str path)]) {:timeout-seconds (max 1 (min 60 (left)))})]
                          (when (zero? (:exit r)) (str/trim (:out r)))))]
     (into {}
@@ -6487,11 +6496,12 @@
 
 (defn outside-copy-common-dirs
   "Absolute common git dirs of the shared clones behind the ticket's run checkouts."
-  [ticket-dir]
+  [ticket-dir left]
   (vec (distinct
         (for [run (child-directories ticket-dir)
               co (try (find-checkouts run) (catch Exception _ []))
-              :let [r (generated-git co "rev-parse" "--path-format=absolute" "--git-common-dir")]
+              :while (pos? (left))
+              :let [r (command-result ["git" "-C" (str co) "rev-parse" "--path-format=absolute" "--git-common-dir"] {:timeout-seconds (max 1 (min 60 (left)))})]
               :let [dir (str/trim (:out r))]
               ;; A clone living inside a run can vanish with it; only shared
               ;; clones outside the workspaces are a durable restore source.
@@ -6516,13 +6526,13 @@
           link-targets (outside-copy-link-targets (max 1 (min 300 (left))))
           pins (atom {})
           pin-of (fn [dir commit] (if (contains? @pins dir) (get @pins dir)
-                                      (let [v (outside-copy-pin! dir commit)] (swap! pins assoc dir v) v)))
+                                      (let [v (outside-copy-pin! dir commit left)] (swap! pins assoc dir v) v)))
           cache-path (fs/path (root) "metrics" "outside-copy-scan-cache.edn")
           loaded (let [v (try (read-edn-file cache-path {}) (catch Exception _ {}))] (if (map? v) v {}))
           cache (atom (into {} (filter (fn [[k v]] (and (string? k) (set? v) (fs/directory? (fs/path (workspaces-dir) k)))) loaded)))
           blobs (atom {})
           blobs-of (fn [dir] (if (contains? @blobs dir) (get @blobs dir)
-                                 (let [v (outside-copy-origin-blobs dir)] (swap! blobs assoc dir v) v)))
+                                 (let [v (outside-copy-origin-blobs dir left)] (swap! blobs assoc dir v) v)))
           ledger (fs/path (root) "metrics" "outside-copy-reclaim-ledger.tsv")
           skip! (fn [reason] (swap! stats update-in [:outside-copy-skipped reason] (fnil inc 0)))]
       (when (nil? link-targets) (skip! "link-scan-failed"))
@@ -6532,7 +6542,7 @@
           (if-let [reason (outside-copy-ticket-hold ticket true)]
             (skip! reason)
             (let [active? (some? (outside-copy-active-run ticket))
-                  sources (delay (vec (keep (fn [dir] (when-let [m (blobs-of dir)] [dir m])) (outside-copy-common-dirs ticket-dir))))]
+                  sources (delay (vec (keep (fn [dir] (when-let [m (blobs-of dir)] [dir m])) (outside-copy-common-dirs ticket-dir left))))]
               (doseq [run (child-directories ticket-dir) :while (not (done?))
                       :let [run-id (fs/file-name run) key (str ticket "/" run-id)]]
                 (try
@@ -6574,7 +6584,7 @@
                                                          :let [pin (pin-of (:source f) (:commit f))]]
                                                    (if (and pin
                                                             (= (:sha f) (get rehash (:path f)))
-                                                            (zero? (:exit (command-result ["git" (str "--git-dir=" (:source f)) "cat-file" "-e" (str (:sha f) "^{blob}")] {:timeout-seconds 30}))))
+                                                            (zero? (:exit (outside-copy-git (:source f) left 30 "cat-file" "-e" (str (:sha f) "^{blob}")))))
                                                      (try
                                                        (spit (str ledger)
                                                              (str (str/join "\t" [(str (now)) ticket run-id (:rel f) (:sha f) (:source f) (:blocks-bytes f)

@@ -6503,7 +6503,7 @@ test_outside_copy_reclaim() {
   # on origin's default branch are removed, everything else stays.
   local tmp vault state source out mode old mid new co run copy ledger sha
   local real_git; real_git="$(command -v git)"
-  for mode in on active activeself dryrun envoff flagoff locked latest recent slow; do
+  for mode in on active activeself dryrun envoff flagoff locked latest recent slow slowtree; do
     tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
     mkdir -p "$state/locks" "$tmp/proc/100"
     ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
@@ -6535,7 +6535,8 @@ test_outside_copy_reclaim() {
     cp "$source/asset.bin" "$copy/extdir/asset.bin"; ln -s "$copy/extdir" "$state/runs/BOXP-519/ext-dir"
     # Hashing slower than the pass budget must end the pass without deleting.
     mkdir -p "$tmp/bin"
-    printf '#!/usr/bin/env bash\ncase " $* " in *" hash-object "*) sleep 12 ;; esac\nexec %q "$@"\n' "$real_git" >"$tmp/bin/git"; chmod +x "$tmp/bin/git"
+    # So must any other git call of the pass (listing origin's tree here): each is bounded by the time left.
+    printf '#!/usr/bin/env bash\ncase "$1 $* " in %s) sleep 12 ;; esac\nexec %q "$@"\n' "$([[ "$mode" == slowtree ]] && echo '--git-dir=*" ls-tree "*' || echo '*" hash-object "*')" "$real_git" >"$tmp/bin/git"; chmod +x "$tmp/bin/git"
     case "$mode" in
       flagoff) echo '{:mode :on :outside-copies false}' >"$state/generated-reclaim.edn" ;;
       locked) echo "{}" >"$state/locks/BOXP-519.edn" ;;
@@ -6544,11 +6545,11 @@ test_outside_copy_reclaim() {
       activeself) echo "{:ticket \"BOXP-519\" :run-id \"$old\"}" >"$state/locks/BOXP-519.edn" ;;
     esac
     local started=$SECONDS
-    PATH="$([[ "$mode" == slow ]] && echo "$tmp/bin:")$PATH" CODEX_TASK_BOARD_OUTSIDE_COPY_BUDGET_SECONDS="$([[ "$mode" == slow ]] && echo 3 || echo 600)" \
+    PATH="$([[ "$mode" == slow* ]] && echo "$tmp/bin:")$PATH" CODEX_TASK_BOARD_OUTSIDE_COPY_BUDGET_SECONDS="$([[ "$mode" == slow* ]] && echo 3 || echo 600)" \
       CODEX_TASK_BOARD_GENERATED_RECLAIM="$([[ "$mode" == dryrun ]] && echo dry-run || echo on)" \
       CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true CODEX_TASK_BOARD_OUTSIDE_COPY_RECLAIM="$([[ "$mode" == envoff ]] && echo off || echo on)" run_prune "$vault" "$state" >"$out" 2>&1 || { cat "$out" >&2; fail "prune failed: $mode"; }
     ledger="$state/metrics/outside-copy-reclaim-ledger.tsv"
-    [[ "$mode" != slow ]] || (( SECONDS - started < 11 )) || { cat "$out" >&2; fail 'outside-copy pass ran past its budget'; }
+    [[ "$mode" != slow* ]] || (( SECONDS - started < 11 )) || { cat "$out" >&2; fail "outside-copy pass ran past its budget: $mode"; }
     for keep in unique.bin local.bin hard.bin hard2.bin linked/target.bin nested/asset.bin extlinked.bin extdir/asset.bin; do
       [[ -f "$copy/$keep" ]] || { cat "$out" >&2; fail "outside-copy removed protected file $keep: $mode"; }
     done
