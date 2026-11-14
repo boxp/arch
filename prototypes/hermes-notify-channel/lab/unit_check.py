@@ -226,6 +226,23 @@ async def main():
     await plugin.recover(plugin.settings())
     check("alert refire: a retry of an unfinished notification is not a second one",
           not result.success and telegram["sent"].count(lost) == 1 and plugin.pending_count(plugin.settings()) == 0)
+    # (BOXP-553 review) the first firing is half delivered (home yes, Telegram down) when the alert resolves
+    # and fires again with the same text: the second firing is a new notification for the home inbox too,
+    # and recovery still finishes the first one on Telegram.
+    telegram.update(sent=[], fail=True)
+    half = alert.replace("abcd1234", "eeee0004")
+    half_gone = gone.replace("eeee0001", "eeee0004")
+    before = homes()
+    results = [await plugin.send_once(plugin.settings(), "direct:alertmanager", text, None)
+               for text in (half, half_gone, half)]
+    check("alert refire while half delivered: home gets fire, resolve and the second fire",
+          all(r.success for r in results) and homes() == before + 3 and results[0].message_id != results[2].message_id)
+    telegram["fail"] = False
+    await plugin.recover(plugin.settings())
+    await plugin.recover(plugin.settings())
+    check("alert refire while half delivered: Telegram recovers all three, once each",
+          sorted(telegram["sent"]) == sorted([half, half_gone, half]) and homes() == before + 3
+          and plugin.pending_count(plugin.settings()) == 0)
     telegram["sent"] = []
     resolved = "【Alertmanager 通知】発生中 0 件 / 解除 1 件\n\n✅ [WARNING] AiOpsOutcomeBurnSlow\n  解除 11/14 11:05 JST fp=abcd1234"
     check("alert: resolved-only title", plugin.alert_summary(resolved, "") == ("解除: AiOpsOutcomeBurnSlow", 0))

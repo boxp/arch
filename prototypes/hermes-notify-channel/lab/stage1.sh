@@ -40,6 +40,9 @@ post alertmanager s5 '{"event_type":"x"}'; sleep 6
 mark "S6 Telegram down -> home only, Telegram pending"
 x 'echo "{\"telegram_fail\":true}" > /lab/logs/control.json'
 post alertmanager s6 "$(alert aaaa0006 firing critical)"; sleep 8
+mark "S6b half delivered (home only), then resolved and firing again with the same text -> home gets all three"
+post alertmanager s6b-resolved "$(alert aaaa0006 resolved critical)"; sleep 6
+post alertmanager s6b-refire "$(alert aaaa0006 firing critical)"; sleep 8
 mark "S6 Telegram back -> recovery"
 x 'echo "{}" > /lab/logs/control.json'; sleep 25
 mark "S7 vault unwritable -> Telegram only, home pending"

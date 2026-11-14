@@ -64,7 +64,7 @@ lab/lab.sh down lab546a
 - `lab/cron-standalone.sh` は gateway を起動せず `hermes cron tick` だけで cron を届ける場面。
 - `lab/home-dispatch.sh <証跡> <作業dir>` は出来た受信箱を無改変の配送係（`task_board_events.bb`）に読ませ、擬似の家が受け取った内容を出す。
 - `python3 lab/unit_check.py` は image 無しで動く確認（`both` で Telegram だけ失敗した時の回復、送信中の回復との競合、別 process との排他、分割送信の途中停止からの再開、
-  長い宛先名での記録名の衝突なし、Alertmanager の種類別設定・title・回復・期限切れ、解除後に同じ本文で再発した通知が抑止されないこと）。上流の gateway は擬似に差し替えている。
+  長い宛先名での記録名の衝突なし、Alertmanager の種類別設定・title・回復・期限切れ、解除後に同じ本文で再発した通知が、最初の通知が片方だけ届いた状態でも抑止されないこと）。上流の gateway は擬似に差し替えている。
 - 証跡は `boxp-notify/journal.jsonl`（`send` の呼出しと判定）、`logs/telegram.jsonl`、`vault/`（家の受信箱）に残る。
 
 ## 試作のままにしてある点
