@@ -8,8 +8,13 @@ type Stub = { href?: string; children: Stub[]; append: (...items: Stub[]) => voi
 const stubElement = (): Stub => {
   const element: Stub = {
     children: [],
-    append: (...items) => { element.children.push(...items) },
-    appendChild: (item: Stub) => { element.children.push(item); return item },
+    append: (...items) => {
+      element.children.push(...items)
+    },
+    appendChild: (item: Stub) => {
+      element.children.push(item)
+      return item
+    },
     addEventListener: () => undefined,
     setAttribute: () => undefined,
     classList: { add: () => undefined, toggle: () => undefined },
@@ -19,10 +24,7 @@ const stubElement = (): Stub => {
   return element
 }
 
-const hrefs = (element: Stub): string[] => [
-  ...(element.href ? [element.href] : []),
-  ...element.children.flatMap(hrefs),
-]
+const hrefs = (element: Stub): string[] => [...(element.href ? [element.href] : []), ...element.children.flatMap(hrefs)]
 
 const render = (search: string): string[] => {
   vi.stubGlobal('location', { search, pathname: '/kohako/studio.html', hash: '' })
@@ -38,7 +40,7 @@ describe('試作の比較リンク', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it('v11r のリンクは v11r の比較ファイルを指す', () => {
-    const links = render('?model=kohako-full-v11r').filter(href => href.includes('/compare/'))
+    const links = render('?model=kohako-full-v11r').filter((href) => href.includes('/compare/'))
     expect(links).toHaveLength(4)
     for (const file of ['hair.jpg', 'pair.mp4', 'body.mp4', 'arm.mp4']) {
       expect(links).toContain(`./kohako/live2d/compare/kohako-full-v11r-${file}`)
@@ -46,7 +48,7 @@ describe('試作の比較リンク', () => {
   })
 
   it('v11q のリンクは v11q の比較ファイルを指す', () => {
-    const links = render('?model=kohako-full-v11q').filter(href => href.includes('/compare/'))
+    const links = render('?model=kohako-full-v11q').filter((href) => href.includes('/compare/'))
     expect(links).toHaveLength(4)
     for (const file of ['hair.jpg', 'pair.mp4', 'body.mp4', 'arm.mp4']) {
       expect(links).toContain(`./kohako/live2d/compare/kohako-full-v11q-${file}`)
@@ -54,7 +56,7 @@ describe('試作の比較リンク', () => {
   })
 
   it('v11p のリンクは v11p の配信ファイルだけを指す', () => {
-    const links = render('?model=kohako-full-v11p').filter(href => href.includes('/compare/'))
+    const links = render('?model=kohako-full-v11p').filter((href) => href.includes('/compare/'))
     expect(links).toHaveLength(4)
     for (const file of ['hair.jpg', 'pair.mp4', 'body.mp4', 'arm.mp4']) {
       const href = `./kohako/live2d/compare/kohako-full-v11p-${file}`
@@ -64,7 +66,7 @@ describe('試作の比較リンク', () => {
   })
 
   it('全身 v11o のリンクは v11o の配信ファイルだけを指す', () => {
-    const links = render('?model=kohako-full-v11o').filter(href => href.includes('/compare/'))
+    const links = render('?model=kohako-full-v11o').filter((href) => href.includes('/compare/'))
     expect(links).toHaveLength(6)
     for (const file of ['pair.mp4', 'body.mp4', 'skirt.jpg', 'thigh.jpg', 'blink.jpg', 'blink-seq.jpg']) {
       const href = `./kohako/live2d/compare/kohako-full-v11o-${file}`
@@ -74,7 +76,7 @@ describe('試作の比較リンク', () => {
   })
 
   it('全身 v11n のリンクは v11n の配信ファイルだけを指す', () => {
-    const links = render('?model=kohako-full-v11n').filter(href => href.includes('/compare/'))
+    const links = render('?model=kohako-full-v11n').filter((href) => href.includes('/compare/'))
     expect(links).toHaveLength(5)
     for (const file of ['pair.mp4', 'body.mp4', 'hair.jpg', 'skirt.jpg', 'thigh.jpg']) {
       const href = `./kohako/live2d/compare/kohako-full-v11n-${file}`
@@ -84,7 +86,7 @@ describe('試作の比較リンク', () => {
   })
 
   it('全身 v11m のリンクは v11m の配信ファイルだけを指す', () => {
-    const links = render('?model=kohako-full-v11m').filter(href => href.includes('/compare/'))
+    const links = render('?model=kohako-full-v11m').filter((href) => href.includes('/compare/'))
     expect(links).toHaveLength(5)
     for (const href of links) {
       expect(href).toContain('/compare/kohako-full-v11m-')
@@ -93,7 +95,7 @@ describe('試作の比較リンク', () => {
   })
 
   it('全身 v11l のリンクは v11l の配信ファイルだけを指す', () => {
-    const links = render('?model=kohako-full-v11l').filter(href => href.includes('/compare/'))
+    const links = render('?model=kohako-full-v11l').filter((href) => href.includes('/compare/'))
     expect(links.length).toBeGreaterThan(0)
     for (const href of links) {
       expect(href).toContain('/compare/kohako-full-v11l-')
@@ -102,7 +104,7 @@ describe('試作の比較リンク', () => {
   })
 
   it('全身 v11k のリンクは v11k の配信ファイルだけを指す', () => {
-    const links = render('?model=kohako-full-v11k').filter(href => href.includes('/compare/'))
+    const links = render('?model=kohako-full-v11k').filter((href) => href.includes('/compare/'))
     expect(links.length).toBeGreaterThan(0)
     for (const href of links) {
       expect(href).toContain('/compare/kohako-full-v11k-')
