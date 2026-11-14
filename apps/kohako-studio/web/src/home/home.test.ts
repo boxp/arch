@@ -111,6 +111,10 @@ describe('保存', () => {
   })
 })
 describe('home.html', () => {
+  it('縦表示では時計と利用枠を隠す (BOXP-544)', () => {
+    const css = readFileSync('src/home/style.css', 'utf8')
+    expect(css).toMatch(/body\[data-shape="portrait"\] \.clock-face,body\[data-shape="portrait"\] \.status-anchor\{display:none\}/)
+  })
   it('必要な要素があり、インラインスクリプトがない', () => {
     const html = readFileSync('home.html', 'utf8')
     for (const id of ['rig', 'reply', 'approval', 'allow', 'deny', 'message', 'send', 'stop', 'record', 'cards', 'history', 'settings', 'touch-open', 'reconnect', 'clock', 'state', 'pref-volume', 'pref-volume-value']) expect(html).toContain(`id="${id}"`)

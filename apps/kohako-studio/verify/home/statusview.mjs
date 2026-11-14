@@ -23,6 +23,13 @@ async function scenario(name, viewport, mode, scene = 'relax', large = false) {
   await page.waitForTimeout(500)
   const widget = await page.textContent('#status-widget')
   const boxes = await page.evaluate(() => { const rect = e => { if (!e) return null; for (let o = e; o; o = o.parentElement) if (+getComputedStyle(o).opacity === 0) return null; const s = getComputedStyle(e), r = e.getBoundingClientRect(); return s.display !== 'none' && s.visibility !== 'hidden' && +s.opacity > 0 && r.width && r.height ? { x: r.x, y: r.y, width: r.width, height: r.height } : null }; const ids = ['status-widget', 'form', 'message', 'send', 'stop', 'bubble', 'cards', 'trouble', 'character', 'greeting', 'clock', 'date']; return Object.fromEntries(ids.map(id => [id, rect(document.getElementById(id))])) })
+  if (viewport.height > viewport.width) {
+    check(await page.locator('.status-anchor').isHidden(), `${name}: portrait widget visible`)
+    check(await page.locator('#status-panel').isHidden(), `${name}: portrait panel visible`)
+    if (mode === 'fail') check(widget.includes('取得できません'), `${name}: failure missing`)
+    await page.screenshot({ path: `${outDir}/${name}-closed.png` })
+    out[name] = { widget, boxes }; await ctx.close(); return
+  }
   check(await page.locator('.stage #status-widget').count() === 1 && !!boxes['status-widget'], `${name}: widget not visible in stage`)
   for (const id of ['form', 'message', 'send', 'stop', 'bubble', 'cards', 'trouble', 'greeting', 'clock', 'date']) check(!overlap(boxes['status-widget'], boxes[id]), `${name}: widget overlaps ${id}`)
   if (viewport.width < 600 && scene !== 'relax') { const c = boxes.character; check(!overlap(boxes['status-widget'], { x: c.x + c.width * .2, y: c.y, width: c.width * .6, height: c.height }), `${name}: widget overlaps central character`) }

@@ -72,7 +72,7 @@ body[data-shape="portrait"] .bubble{left:4%;top:2%;width:92%;max-height:34%}
 body[data-shape="portrait"] .bubble::before{display:none}
 body[data-shape="portrait"][data-scene="show"] .bubble{max-height:22%}
 body[data-shape="portrait"] .cards{left:3%;right:3%;width:auto;top:25%;max-height:37%}
-body[data-shape="portrait"] .clock-face{left:0;right:0;top:3%;text-align:center}
+body[data-shape="portrait"] .clock-face,body[data-shape="portrait"] .status-anchor{display:none}
 body[data-shape="portrait"] .trouble{left:4%;right:4%;width:auto;top:38%}
 body[data-shape="portrait"][data-scene="offline"] .bubble{top:2%;bottom:auto;left:4%;width:92%;max-height:30%}
 body[data-shape="portrait"] .approval{left:4vw;right:4vw;width:auto;top:8%;transform:none}
