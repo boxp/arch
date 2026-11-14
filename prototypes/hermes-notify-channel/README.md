@@ -40,7 +40,7 @@ Hermes 本体 patch（`docker/hermes-agent/patches/`）が担っている通知�
 - `event=<id>` を含まない本文（上流の例外文・空応答の代替文など）は「配送要確認」の notice として 1 回だけ届ける。上流の文言には依存しない。
 - 家にも Telegram にも届けられなかった分は pending として残り、`connect` 後の定期回復で届ける。
   `both` では家と Telegram の両方へ届くまで pending のまま残し、届いていない側だけを回復で送る（片方でも届けば上流へは成功を返す）。
-  片方へ届いたまま 24 時間（`BOXP_NOTIFY_PENDING_MAX_AGE_SECONDS`）もう片方へ届かない分は `expired` にして再試行をやめる。
+  片方へ届いたまま、その届いた時点から 24 時間（`BOXP_NOTIFY_PENDING_MAX_AGE_SECONDS`）もう片方へ届かない分は `expired` にして再試行をやめる（作成時刻からではないので、両方が長く止まった後に片方だけ戻っても、もう片方の回復は続く）。
   どちらにも届いていない分は期限で捨てない。
 - `send` と回復は receipt ごとの同じ lock（process 内の lock ＋ lock ファイル）を取る。送信中の通知を回復が重ねて送ることは無い。
 

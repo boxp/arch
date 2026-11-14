@@ -276,6 +276,29 @@ async def main():
           plugin.pending_count(plugin.settings()) == 0 and len(telegram["sent"]) == 1)
     await plugin.recover(plugin.settings())
     check("expiry: an expired receipt is not delivered again", len(telegram["sent"]) == 1)
+    # 10b. both egresses down for longer than the age limit, then only the home inbox comes back: the limit
+    # counts from that first success, so Telegram is still recovered when it comes back later.
+    telegram.update(sent=[], fail=True)
+    (root / "state/lab-fail-home").touch()
+    fifth = alert.replace("abcd1234", "ffff0005")
+    result = await plugin.send_once(plugin.settings(), "direct:alertmanager", fifth, None)
+    await asyncio.sleep(1.2)  # older than the 1 s limit, never reached
+    (root / "state/lab-fail-home").unlink()
+    await plugin.recover(plugin.settings())  # home only
+    await plugin.recover(plugin.settings())  # must not expire: reached just now
+    check("long outage: one egress back does not expire the other",
+          not result.success and plugin.pending_count(plugin.settings()) == 1 and telegram["sent"] == [])
+    telegram["fail"] = False
+    await plugin.recover(plugin.settings())
+    check("long outage: the other egress is recovered once it is back",
+          plugin.pending_count(plugin.settings()) == 0 and telegram["sent"] == [fifth])
+    telegram.update(sent=[], fail=True)
+    await plugin.send_once(plugin.settings(), "direct:alertmanager", alert.replace("abcd1234", "ffff0006"), None)
+    await asyncio.sleep(1.2)
+    await plugin.recover(plugin.settings())
+    check("long outage: the limit still ends retries counted from the first success",
+          plugin.pending_count(plugin.settings()) == 0 and telegram["sent"] == [])
+    telegram["fail"] = False
     os.environ["BOXP_NOTIFY_TELEGRAM_CHAT_ID"] = os.environ["BOXP_NOTIFY_TELEGRAM_TOKEN"] = ""
     os.environ.update(TELEGRAM_BOT_TOKEN="gw", TELEGRAM_HOME_CHANNEL="42", TELEGRAM_HOME_CHANNEL_THREAD_ID="9",
                       BOXP_NOTIFY_TELEGRAM_THREAD_ID="")
