@@ -6364,19 +6364,32 @@
        (not= "off" (some-> (System/getenv "CODEX_TASK_BOARD_OUTSIDE_COPY_RECLAIM") str/trim str/lower-case))
        (not= false (try (:outside-copies (read-edn-file (fs/path (root) "generated-reclaim.edn") nil)) (catch Exception _ false)))))
 
+(defn outside-copy-active-run
+  "Run id of the live run holding the ticket lock, :unreadable when the lock
+  does not name one, nil when the ticket is not locked."
+  [ticket-id]
+  (when (fs/exists? (lock-path ticket-id) {:nofollow-links true})
+    (let [info (try (lock-prune-info (read-edn-file (lock-path ticket-id) nil) ticket-id) (catch Exception _ nil))]
+      (or (:active-run-id info) :unreadable))))
+
 (defn outside-copy-ticket-hold
   "Unlike generated-ticket-hold the ticket may be in any lane: only runs the
-  stale prune already treats as deletable are touched, under the ticket lock."
-  [ticket-id]
-  (cond (fs/exists? (lock-path ticket-id) {:nofollow-links true}) "locked"
-        (nil? (board-card-lanes ticket-id)) "board-unreadable"
-        (nil? (ticket-frontmatter-or-nil ticket-id)) "ticket-missing"))
+  stale prune already treats as deletable are touched. A ticket locked by a
+  live run is handled like the stale prune's locked-active path when
+  allow-active? is set: its other stale runs stay eligible."
+  ([ticket-id] (outside-copy-ticket-hold ticket-id false))
+  ([ticket-id allow-active?]
+   (let [active (outside-copy-active-run ticket-id)]
+     (cond (and active (or (not allow-active?) (= :unreadable active))) "locked"
+           (nil? (board-card-lanes ticket-id)) "board-unreadable"
+           (nil? (ticket-frontmatter-or-nil ticket-id)) "ticket-missing"))))
 
 (defn outside-copy-run-hold [ticket-id run-id]
   (let [path (run-workspace-dir ticket-id run-id)
         ids (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))
         decision (stale-run-decision run-id ids (now) (stale-retention-hours) (keep-latest-runs))]
-    (cond (not (:eligible? decision)) (:reason decision)
+    (cond (= run-id (outside-copy-active-run ticket-id)) "active-run"
+          (not (:eligible? decision)) (:reason decision)
           (not (safe-run-workspace-path? ticket-id run-id path)) "unsafe-path"
           :else (stale-process-hold (fs/real-path path)))))
 
@@ -6468,9 +6481,10 @@
       (doseq [ticket-dir (child-directories (workspaces-dir)) :while (not (done?))
               :let [ticket (fs/file-name ticket-dir)]]
         (try
-          (if-let [reason (outside-copy-ticket-hold ticket)]
+          (if-let [reason (outside-copy-ticket-hold ticket true)]
             (skip! reason)
-            (let [sources (delay (vec (keep (fn [dir] (when-let [m (blobs-of dir)] [dir m])) (outside-copy-common-dirs ticket-dir))))]
+            (let [active? (some? (outside-copy-active-run ticket))
+                  sources (delay (vec (keep (fn [dir] (when-let [m (blobs-of dir)] [dir m])) (outside-copy-common-dirs ticket-dir))))]
               (doseq [run (child-directories ticket-dir) :while (not (done?))
                       :let [run-id (fs/file-name run) key (str ticket "/" run-id)]]
                 (try
@@ -6492,10 +6506,16 @@
                                                                [(:rel f) (:size f) (:mtime f)]))) fresh)
                               bytes (reduce + 0 (map :blocks-bytes matched))
                               removed (volatile! 0) removed-bytes (volatile! 0)
+                              ;; A live run needs the guard for its heartbeat, so for
+                              ;; its ticket only the status is rechecked under the guard
+                              ;; and the files go outside it, as the stale prune does.
+                              status #(or (cond (not active?) (outside-copy-ticket-hold ticket)
+                                                (nil? (outside-copy-active-run ticket)) "lock-changed"
+                                                :else (outside-copy-ticket-hold ticket true))
+                                          (outside-copy-run-hold ticket run-id))
                               recheck (when (and (seq matched) (= mode :on))
-                                        (with-ticket-lock-guard ticket
-                                          #(or (outside-copy-ticket-hold ticket)
-                                               (outside-copy-run-hold ticket run-id)
+                                        ((if active? (fn [_ f] (or (with-ticket-lock-guard ticket status) (f))) with-ticket-lock-guard) ticket
+                                          #(or (status)
                                                (let [again (into {} (map (juxt :path identity)) (or (outside-copy-files run min-bytes) []))
                                                      still (filterv (fn [f] (contains? again (:path f))) matched)
                                                      rehash (outside-copy-hashes (ffirst @sources) (map :path still))]

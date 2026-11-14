@@ -6502,7 +6502,7 @@ test_outside_copy_reclaim() {
   # Stale runs kept for files outside the checkout: copies identical to a blob
   # on origin's default branch are removed, everything else stays.
   local tmp vault state source out mode old mid new co run copy ledger sha
-  for mode in on dryrun envoff flagoff locked latest recent; do
+  for mode in on active activeself dryrun envoff flagoff locked latest recent; do
     tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
     mkdir -p "$state/locks" "$tmp/proc/100"
     ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
@@ -6530,7 +6530,10 @@ test_outside_copy_reclaim() {
     git init -q "$copy/nested"; cp "$source/asset.bin" "$copy/nested/asset.bin"
     case "$mode" in
       flagoff) echo '{:mode :on :outside-copies false}' >"$state/generated-reclaim.edn" ;;
-      locked) echo '{}' >"$state/locks/BOXP-519.edn" ;;
+      locked) echo "{}" >"$state/locks/BOXP-519.edn" ;;
+      # A live run holds the ticket: its other stale runs stay eligible, as in the stale prune.
+      active) echo "{:ticket \"BOXP-519\" :run-id \"$new\"}" >"$state/locks/BOXP-519.edn" ;;
+      activeself) echo "{:ticket \"BOXP-519\" :run-id \"$old\"}" >"$state/locks/BOXP-519.edn" ;;
     esac
     CODEX_TASK_BOARD_GENERATED_RECLAIM="$([[ "$mode" == dryrun ]] && echo dry-run || echo on)" \
       CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true CODEX_TASK_BOARD_OUTSIDE_COPY_RECLAIM="$([[ "$mode" == envoff ]] && echo off || echo on)" run_prune "$vault" "$state" >"$out" 2>&1 || { cat "$out" >&2; fail "prune failed: $mode"; }
@@ -6539,12 +6542,12 @@ test_outside_copy_reclaim() {
       [[ -f "$copy/$keep" ]] || { cat "$out" >&2; fail "outside-copy removed protected file $keep: $mode"; }
     done
     [[ -f "$run/note.md" && -f "$co/asset.bin" && -f "$source/asset.bin" ]] || fail "outside-copy touched unique/checkout files: $mode"
-    if [[ "$mode" != on ]]; then
+    if [[ "$mode" != on && "$mode" != active ]]; then
       [[ -f "$copy/asset.bin" && -f "$copy/tool.bin" && ! -e "$ledger" ]] || { cat "$out" >&2; fail "outside-copy deleted when it must not: $mode"; }
       [[ "$mode" != dryrun ]] || assert_file_contains "$state/metrics/workspace-capacity.edn" ':outside-copy-would-allocated-bytes 4'
       continue
     fi
-    [[ ! -e "$copy/asset.bin" && ! -e "$copy/tool.bin" && -d "$copy" ]] || { cat "$out" >&2; fail 'identical outside copy not reclaimed'; }
+    [[ ! -e "$copy/asset.bin" && ! -e "$copy/tool.bin" && -d "$copy" ]] || { cat "$out" >&2; fail "identical outside copy not reclaimed: $mode"; }
     [[ "$(wc -l <"$ledger")" == 2 ]] || fail 'ledger line count'
     sha="$(awk -F'\t' '$4=="deploy/site/tool.bin"{print $5" "$8}' "$ledger")"
     [[ "$sha" == "$(git -C "$source" rev-parse origin/main:tool.bin) 100755" ]] || fail "ledger entry wrong: $sha"
