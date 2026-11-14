@@ -23,7 +23,18 @@ async function run(name, viewport, scene, variant = '') {
   await page.evaluate(({scene, variant}) => { const body = document.body; const apply = () => { if (body.dataset.scene !== scene) body.dataset.scene = scene; if (variant === 'kbd' && body.dataset.kbd !== '1') body.dataset.kbd = '1' }; apply(); new MutationObserver(apply).observe(body, { attributes: true, attributeFilter: ['data-scene', 'data-kbd'] }); if (scene === 'show') { document.querySelector('#cards').hidden = false; document.querySelector('#card-list').textContent = '結果カードの内容' } if (scene === 'work') { document.querySelector('#stop').hidden = false; document.querySelector('#send').textContent = 'キューに追加' } if (scene === 'offline') { document.querySelector('#trouble').hidden = false; document.querySelector('#error').textContent = '接続できませんでした。' } if (scene === 'confirm') { document.querySelector('#approval').hidden = false; document.querySelector('#approval-summary').textContent = '操作を実行しますか？' } if (variant === 'viewer') { body.dataset.viewer = 'open'; document.querySelector('#viewer').hidden = false; document.querySelector('#viewer-title').textContent = '表示'; document.querySelector('#viewer-body').textContent = '表示内容' } }, { scene, variant })
   if (variant === 'kbd') await page.locator('#message').focus()
   await page.waitForTimeout(150)
-  const data = await page.evaluate(() => { const selectors = ['.clock-face', '.status-anchor', '#status-widget', '.top', '.nav', '#form', '#message', '#send', '#stop', '#record', '#attach', '#bubble', '#cards', '#trouble', '#character', '#viewer', '#approval', '#allow', '#deny']; const rect = el => { if (!el || el.getClientRects().length === 0) return null; for (let e = el; e; e = e.parentElement) { const s = getComputedStyle(e); if (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) === 0) return null } const r = el.getBoundingClientRect(); return { x:r.x, y:r.y, width:r.width, height:r.height } }; return Object.fromEntries(selectors.map(s => [s, rect(document.querySelector(s))])) })
+  if (portrait && !baseline) {
+    await page.evaluate(() => {
+      const app = window.__kohakoHome
+      for (let i = 0; i < 3; i++) {
+        app.addHistory('あなた', `会話の質問 ${i + 1}。今日はどんなことをしましょうか。`)
+        app.setBubble(`コハコの返答 ${i + 1}。ご主人さまと一緒に楽しく過ごしましょう。`)
+        app.addHistory('コハコ', `コハコの返答 ${i + 1}。ご主人さまと一緒に楽しく過ごしましょう。`)
+      }
+      document.querySelector('#chatlog').scrollTop = document.querySelector('#chatlog').scrollHeight
+    })
+  }
+  const data = await page.evaluate(() => { const selectors = ['.clock-face', '.status-anchor', '#status-widget', '.top', '.nav', '#form', '#message', '#send', '#stop', '#record', '#attach', '#bubble', '#chatlog', '.stage', '#cards', '#trouble', '#character', '#viewer', '#approval', '#allow', '#deny']; const rect = el => { if (!el || el.getClientRects().length === 0) return null; for (let e = el; e; e = e.parentElement) { const s = getComputedStyle(e); if (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) === 0) return null } const r = el.getBoundingClientRect(); return { x:r.x, y:r.y, width:r.width, height:r.height } }; return Object.fromEntries(selectors.map(s => [s, rect(document.querySelector(s))])) })
   if (scene === 'offline') check(!!data['#trouble'], `${name}: trouble missing`); if (scene === 'confirm') check(!!data['#approval'], `${name}: approval missing`); if (scene === 'show') check(!!data['#cards'], `${name}: cards missing`); if (variant === 'viewer') check(!!data['#viewer'], `${name}: viewer missing`)
   for (const id of ['.top', '.nav', '#form', '#message', '#send', '#character']) check(!!data[id], `${name}: ${id} missing`)
   if (scene === 'work') check(!!data['#stop'], `${name}: stop missing`)
@@ -31,10 +42,33 @@ async function run(name, viewport, scene, variant = '') {
   if (!portrait) { if (scene === 'relax') check(!!data['.clock-face'], `${name}: clock hidden`); check(!!data['#status-widget'], `${name}: status hidden`) }
   for (const [id, r] of Object.entries(data)) if (r && portrait && !['.clock-face', '.status-anchor', '#status-widget'].includes(id)) check(r.x >= -1 && r.y >= -1 && r.x + r.width <= viewport.width + 1 && r.y + r.height <= viewport.height + 1, `${name}: ${id} outside viewport ${JSON.stringify(r)}`)
   const controls = ['#attach', '#message', '#record', '#send', '#stop']; for (let i = 0; i < controls.length; i++) for (const b of controls.slice(i + 1)) check(!overlaps(data[controls[i]], data[b]), `${name}: ${controls[i]} overlaps ${b}`)
-  if (portrait && scene === 'show') check(!overlaps(data['#bubble'], data['#cards']), `${name}: bubble overlaps cards`)
+  if (portrait && !baseline) {
+    const log = data['#chatlog'], stage = data['.stage'], character = data['#character']
+    check(!!log, `${name}: chatlog missing`)
+    if (!['show', 'viewer'].includes(variant) && scene !== 'show' && variant !== 'kbd') check(log && log.height >= stage.height * .55, `${name}: chatlog too short`)
+    check(character && character.height <= stage.height * .35, `${name}: character too tall`)
+    for (const id of ['#cards', '#viewer', '#form']) if (data[id] && !(id === '#cards' && variant === 'viewer')) check(!overlaps(log, data[id]), `${name}: chatlog overlaps ${id}`)
+    if (scene === 'talk' && !variant) {
+      const visibility = await page.evaluate(() => {
+        const log = document.querySelector('#chatlog'), user = [...document.querySelectorAll('#chatlog-list li[data-who="あなた"]')].at(-1), answer = document.querySelector('#bubble'), head = window.__kohakoHome.hitAreas().head
+        const visible = el => { const r = el.getBoundingClientRect(), l = log.getBoundingClientRect(); const x = (Math.max(r.left, l.left) + Math.min(r.right, l.right)) / 2, y = Math.max(r.top, l.top) + 15; return y < Math.min(r.bottom, l.bottom) && el.contains(document.elementFromPoint(x, y)) }
+        return { user: visible(user), answer: visible(answer), head: !!head && head.x >= 0 && head.y >= 0 && head.x + head.w <= innerWidth && head.y + head.h <= innerHeight }
+      })
+      for (const [key, value] of Object.entries(visibility)) check(value, `${name}: ${key} not visible`)
+    }
+  }
+  if (portrait && scene === 'show') check(!overlaps(data['#chatlog'], data['#cards']), `${name}: chatlog overlaps cards`)
   if (variant === 'viewer') check(!overlaps(data['#bubble'], data['#viewer']), `${name}: bubble overlaps viewer`)
-  if (scene === 'offline') check(!overlaps(data['#bubble'], data['#trouble']), `${name}: bubble overlaps trouble`)
-  await page.screenshot({ path: path.join(outDir, `${name}.png`), animations: 'disabled' }); cases[name] = data; await ctx.close()
+  if (scene === 'offline' && !portrait) check(!overlaps(data['#bubble'], data['#trouble']), `${name}: bubble overlaps trouble`)
+  await page.screenshot({ path: path.join(outDir, `${name}.png`), animations: 'disabled' })
+  if (name === 'p390-talk' && !baseline) {
+    const head = await page.evaluate(() => window.__kohakoHome.hitAreas().head)
+    if (head) {
+      await page.touchscreen.tap(head.x + head.w / 2, head.y + head.h / 2)
+      check(await page.evaluate(() => window.__kohakoHome.report.touches.some(t => t.zone === 'head')), `${name}: head touch not registered`)
+    }
+  }
+  cases[name] = data; await ctx.close()
 }
 try {
   for (const [label, viewport] of [['p360',{width:360,height:780}],['p390',{width:390,height:844}],['p412',{width:412,height:915}]]) for (const scene of ['relax','talk','show','work','offline','confirm']) await run(`${label}-${scene}`, viewport, scene)
@@ -46,5 +80,13 @@ try {
     await page.goto(`http://localhost:${port}/kohako/home.html`); await page.locator('#status-widget').click(); await page.setViewportSize({width:390,height:844}); await page.waitForFunction(() => document.body.dataset.shape === 'portrait'); check(await page.locator('#status-panel').isHidden(), 'resize: panel remains open'); check(await page.locator('#status-widget').getAttribute('aria-expanded') === 'false', 'resize: aria-expanded remains true'); await ctx.close()
   }
 } finally { await browser.close(); server.close() }
+if (!baseline && process.env.BASELINE_FILE) {
+  const before = JSON.parse(fs.readFileSync(process.env.BASELINE_FILE, 'utf8')).cases
+  for (const name of ['pc-relax', 'pc-talk', 'pc-show', 'landscape-relax', 'landscape-talk', 'landscape-show']) {
+    for (const selector of ['.clock-face', '.status-anchor', '#status-widget', '.top', '.nav', '#form', '#message', '#send', '#stop', '#record', '#attach', '#bubble', '#cards', '#trouble', '#character', '#viewer', '#approval', '#allow', '#deny']) {
+      check(JSON.stringify(cases[name]?.[selector]) === JSON.stringify(before[name]?.[selector]), `${name}: ${selector} differs from baseline`)
+    }
+  }
+}
 check(external.length === 0, `external requests: ${external.join(', ')}`)
 fs.writeFileSync(path.join(outDir, 'result.json'), JSON.stringify({ cases, external, failures }, null, 2)); console.log(JSON.stringify({ failures, external }, null, 2)); process.exit(failures.length ? 1 : 0)
