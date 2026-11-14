@@ -47,6 +47,17 @@
   {:id (str "call_" (subs (str (java.util.UUID/randomUUID)) 0 8)) :type "function"
    :function {:name "terminal" :arguments (json/generate-string {:command command})}})
 
+;; BOXP-556: the agent's own cron tool call. With tool search active the tool is deferred and the model
+;; reaches it through the `tool_call` bridge; the deliver rewrite hook must see the underlying call.
+(defn cron-call [name deliver]
+  {:id (str "call_" (subs (str (java.util.UUID/randomUUID)) 0 8)) :type "function"
+   :function {:name "tool_call"
+              :arguments (json/generate-string
+                          {:calls [{:name "cronjob_manage"
+                                    :arguments (cond-> {:action "create" :name name :schedule "every 12h"
+                                                        :prompt "cron lab scenario=cron-report"}
+                                                 deliver (assoc :deliver deliver))}]})}})
+
 (defn note-command [event ticket result]
   (str "printf '%s\\n' '- 2026-11-14 00:00:00 UTC [kohako-event]: [kohako-event] handled event=" event
        " run=lab result=" result " summary=lab' >> /lab/vault/Tickets/" ticket ".md"))
@@ -83,6 +94,12 @@
       "slow-notify" (if after-tool?
                       (do (Thread/sleep (* 1000 (or (:slow_seconds (control)) 25))) (respond req stream? report nil))
                       (respond req stream? "" [(tool-call (note-command event ticket "notified"))]))
+      "cron-create" (if after-tool? (respond req stream? "作成しました。" nil)
+                        (respond req stream? "" [(cron-call "lab-tool-origin" nil)]))
+      "cron-create-telegram" (if after-tool? (respond req stream? "作成しました。" nil)
+                                 (respond req stream? "" [(cron-call "lab-tool-telegram" "telegram:1000000001")]))
+      "cron-create-local" (if after-tool? (respond req stream? "作成しました。" nil)
+                              (respond req stream? "" [(cron-call "lab-tool-local" "local")]))
       "cron-report" (respond req stream? "ご主人さま、**lab の定期報告**です。\n- `項目` は正常です。" nil)
       "error" {:status 400 :headers {"Content-Type" "application/json"}
                :body (json/generate-string {:error {:message "lab injected failure" :type "invalid_request_error" :code "lab_failure"}})}

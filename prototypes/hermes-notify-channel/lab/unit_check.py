@@ -333,6 +333,92 @@ async def stage2():
     telegram.update(sent=[], bodies=[])
 
 
+def cron_rewrite():
+    """BOXP-556: new cron jobs addressed to Telegram or to the creating chat go through the channel."""
+    def deliver(args, tool="cronjob_manage"):
+        directive = plugin.cron_deliver_rewrite(tool, args)
+        return None if directive is None else (directive["action"], directive["args"])
+    to_channel = ("modify", {"deliver": "boxp_notify:cron"})
+    check("cron rewrite: a create without deliver (the creating chat) goes to the channel",
+          deliver({"action": "create", "schedule": "every 1h", "prompt": "x"}) == to_channel
+          and deliver({"action": "create", "deliver": ""}) == to_channel
+          and deliver({"action": "Create", "deliver": "origin"}) == to_channel)
+    check("cron rewrite: Telegram targets and all go to the channel, once",
+          deliver({"action": "create", "deliver": "telegram"}) == to_channel
+          and deliver({"action": "create", "deliver": "telegram:-100123:17"}) == to_channel
+          and deliver({"action": "create", "deliver": ["telegram", "origin"]}) == to_channel
+          and deliver({"action": "create", "deliver": "origin,all"}) == to_channel)
+    check("cron rewrite: other elements are kept in order",
+          deliver({"action": "create", "deliver": "local,telegram"}) == ("modify", {"deliver": "local,boxp_notify:cron"})
+          and deliver({"action": "update", "job_id": "a", "deliver": "telegram:1"}) == to_channel)
+    check("cron rewrite: local, the channel itself, other platforms and non-delivery updates are untouched",
+          deliver({"action": "create", "deliver": "local"}) is None
+          and deliver({"action": "create", "deliver": "boxp_notify:cron"}) is None
+          and deliver({"action": "create", "deliver": "discord:1"}) is None
+          and deliver({"action": "update", "job_id": "a", "prompt": "y"}) is None
+          and deliver({"action": "update", "job_id": "a", "failure_deliver": "local"}) is None)
+    check("cron rewrite: a Telegram failure target goes to the channel too",
+          deliver({"action": "update", "job_id": "a", "failure_deliver": "telegram"})
+          == ("modify", {"failure_deliver": "boxp_notify:cron"})
+          and deliver({"action": "create", "deliver": "boxp_notify:cron", "failure_deliver": "telegram:1"})
+          == ("modify", {"failure_deliver": "boxp_notify:cron"})
+          and deliver({"action": "create", "failure_deliver": "telegram:1"})
+          == ("modify", {"deliver": "boxp_notify:cron", "failure_deliver": "boxp_notify:cron"}))
+    check("cron rewrite: other actions, other tools and malformed calls are untouched",
+          deliver({"action": "list"}) is None and deliver({"action": "run", "job_id": "a"}) is None
+          and deliver({"action": "create"}, tool="terminal") is None and deliver({"action": "create"}, tool="cronjob") is None and deliver(None) is None
+          and deliver({"deliver": "telegram"}) is None)
+    os.environ["BOXP_NOTIFY_ENABLED"] = "1"
+    check("cron rewrite: the hook follows the switches",
+          plugin._cron_hook(tool_name="cronjob_manage", args={"action": "create"}, session_id="s") is not None
+          and not os.environ.update(BOXP_NOTIFY_CRON_REWRITE="0")
+          and plugin._cron_hook(tool_name="cronjob_manage", args={"action": "create"}) is None
+          and not os.environ.update(BOXP_NOTIFY_CRON_REWRITE="1", BOXP_NOTIFY_ENABLED="")
+          and plugin._cron_hook(tool_name="cronjob_manage", args={"action": "create"}) is None)
+    os.environ.pop("BOXP_NOTIFY_CRON_REWRITE", None)
+    # stored jobs: only jobs that will still run and still name Telegram are edited, through the CLI
+    os.environ["BOXP_NOTIFY_ENABLED"] = "1"
+    cfg = plugin.settings()
+    jobs_file = cfg["hermes_home"] / "cron/jobs.json"
+    jobs_file.parent.mkdir(parents=True, exist_ok=True)
+    jobs = [{"id": "aaaa00000001", "enabled": True, "state": "scheduled", "deliver": "boxp_notify:cron"},
+            {"id": "aaaa00000002", "enabled": True, "state": "scheduled", "deliver": "boxp_notify:cron",
+             "failure_deliver": "telegram:1"},
+            {"id": "aaaa00000003", "enabled": True, "state": "scheduled", "deliver": "origin"},
+            {"id": "aaaa00000004", "enabled": False, "state": "completed", "deliver": "telegram:1"},
+            {"id": "aaaa00000005", "enabled": True, "state": "scheduled", "deliver": "local"},
+            {"id": "aaaa00000006", "enabled": True, "state": "scheduled", "deliver": None},
+            {"id": "bad id; rm", "enabled": True, "state": "scheduled", "deliver": "telegram"},
+            {"id": "aaaa00000007", "enabled": True, "state": "scheduled", "deliver": "telegram:1"}]
+    jobs_file.write_text(json.dumps({"jobs": jobs}))
+    check("cron migration: only live jobs naming Telegram are selected",
+          plugin.cron_jobs_to_migrate(cfg) == [("aaaa00000002", {"failure_deliver": "boxp_notify:cron"}),
+                                               ("aaaa00000003", {"deliver": "boxp_notify:cron"}),
+                                               ("aaaa00000007", {"deliver": "boxp_notify:cron"})])
+    calls = []
+
+    def fake_cli(command, **_kw):
+        calls.append(command[1:])
+        if command[3] == "aaaa00000007":
+            return types.SimpleNamespace(returncode=1)
+        for job in jobs:
+            if job["id"] == command[3]:
+                job[command[4][2:].replace("-", "_")] = command[5]
+        jobs_file.write_text(json.dumps({"jobs": jobs}))
+        return types.SimpleNamespace(returncode=0)
+    moved = plugin.migrate_cron_jobs(cfg, run=fake_cli)
+    check("cron migration: edits go through `hermes cron edit`, a failed one is reported and not retried at once",
+          moved == 2 and calls == [["cron", "edit", "aaaa00000002", "--failure-deliver", "boxp_notify:cron"],
+                                   ["cron", "edit", "aaaa00000003", "--deliver", "boxp_notify:cron"],
+                                   ["cron", "edit", "aaaa00000007", "--deliver", "boxp_notify:cron"]]
+          and plugin.migrate_cron_jobs(cfg, run=fake_cli) == 0 and len(calls) == 3)
+    os.environ["BOXP_NOTIFY_CRON_REWRITE"] = "0"
+    plugin._cron_edit_failed.clear()
+    check("cron migration: follows the switch", plugin.migrate_cron_jobs(cfg, run=fake_cli) == 0 and len(calls) == 3)
+    os.environ.pop("BOXP_NOTIFY_CRON_REWRITE", None)
+    jobs_file.unlink()
+
+
 async def send(ev):
     return await plugin.send_once(plugin.settings(), f"tb:{ev}", f"報告 event={ev}", None)
 
@@ -601,6 +687,7 @@ async def main():
           (cfg["telegram_token"], cfg["telegram_chat"], cfg["telegram_thread"]) == ("gw", "42", "9")
           and plugin.self_check(cfg) == [])
     await stage2()
+    cron_rewrite()
 
 if not LIB:
     asyncio.run(main())

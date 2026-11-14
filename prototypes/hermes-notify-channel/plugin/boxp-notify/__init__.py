@@ -1,9 +1,10 @@
-"""Send-only notification channel (platform plugin). BOXP-546 prototype, BOXP-553 stage 1, BOXP-554 stage 2.
+"""Send-only notification channel (platform plugin). BOXP-546 prototype, BOXP-553 stage 1, BOXP-554 stage 2,
+BOXP-556 stage 3 (the Hermes image carries no core patch any more).
 
 A copy of this file is deployed from lolice ``argoproj/hermes-agent/plugins/boxp-notify``. Stage 1 moved the
-Alertmanager relay (``direct:alertmanager``) here. Stage 2 moves the Task Board and cron notifications; the
-core patches ``fix-task-board-delivery`` / ``fix-cron-delivery-copy`` stay in the image as the rollback path
-and do not see these deliveries (the patch reacts to the route name ``task-board`` and to Telegram targets):
+Alertmanager relay (``direct:alertmanager``) here, stage 2 the Task Board and cron notifications. Since
+stage 3 the former core patches ``fix-task-board-delivery`` / ``fix-cron-delivery-copy`` are gone, so this
+channel is the only place that keeps the home inbox copy, the silence proof and the de-duplication:
 
 * ``deliver: boxp_notify`` + ``deliver_extra.chat_id: "tb:{event_id}"`` on the webhook route
   ``task-board-channel``, ``deliver: "boxp_notify:cron"`` on a cron job.
@@ -15,6 +16,11 @@ and do not see these deliveries (the patch reacts to the route name ``task-board
   the reminder readiness decide between home-primary and Telegram-primary. Reconciliation notices go to
   Telegram as before.
 * cron: home and Telegram (``BOXP_NOTIFY_TELEGRAM_MODE_CRON=both``), as before the switch.
+* New cron jobs: a ``pre_tool_call`` hook rewrites ``deliver`` / ``failure_deliver`` of the agent's
+  ``cronjob_manage`` create/update calls from Telegram (or the creating chat) to ``boxp_notify:cron``. Without
+  the cron patch a job addressed to Telegram would reach Telegram only and never the home inbox.
+* Stored cron jobs still addressed to Telegram (saved earlier, or created with ``hermes cron create``) are
+  moved the same way by the recovery loop, through ``hermes cron edit``.
 
 Only ``gateway.platforms.base`` and ``gateway.config`` are imported from Hermes.
 """
@@ -881,6 +887,10 @@ class BoxpNotifyAdapter(BasePlatformAdapter):
                 await recover(settings())
             except Exception:
                 logger.exception("boxp-notify recovery pass failed")
+            try:
+                await asyncio.to_thread(migrate_cron_jobs, settings())
+            except Exception:
+                logger.exception("boxp-notify cron job migration failed")
             await asyncio.sleep(int(_env("BOXP_NOTIFY_RECOVERY_SECONDS", "60") or 60))
 
     async def disconnect(self) -> None:
@@ -926,6 +936,133 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     return {"success": True, "message_id": result.message_id} if result.success else {"error": result.error}
 
 
+CRON_TARGET = f"{NAME}:cron"
+CRON_TOOL = "cronjob_manage"  # the tool of the ``cronjob`` toolset (same name on v0.22.5 and v0.23.1)
+
+
+def _cron_targets(raw: Any) -> tuple[list[str], str, bool]:
+    """``(elements as written, the value with Telegram elements replaced, whether anything changed)``."""
+    items = raw if isinstance(raw, (list, tuple)) else ([] if raw is None else str(raw).split(","))
+    parts = [part for part in (str(item).strip() for item in items) if part]
+    out: list[str] = []
+    changed = False
+    for part in parts:
+        low = part.lower()
+        if low in ("origin", "all", "telegram") or low.startswith("telegram:"):
+            part, changed = CRON_TARGET, True
+        if part not in out:
+            out.append(part)
+    return parts, ",".join(out), changed
+
+
+def cron_deliver_rewrite(tool_name: Any, args: Any) -> Optional[dict]:
+    """``pre_tool_call`` directive that sends a new cron job's output through this channel.
+
+    The ``cronjob_manage`` tool addresses a job to the chat it was created from when ``deliver`` is omitted
+    (``origin``), which for the Owner is Telegram. Those elements, ``all`` (every home channel, i.e.
+    Telegram) and explicit ``telegram[:chat[:thread]]`` targets become ``boxp_notify:cron``; anything else
+    (``local``, another platform, an existing ``boxp_notify`` target) is left as written. An update is
+    touched only for the fields it sets. ``failure_deliver`` follows the same rule when given (an omitted
+    one falls back to ``deliver``).
+    """
+    if tool_name != CRON_TOOL or not isinstance(args, dict):
+        return None
+    action = str(args.get("action") or "").strip().lower()
+    if action not in ("create", "update"):
+        return None
+    modified: dict[str, str] = {}
+    parts, value, changed = _cron_targets(args.get("deliver"))
+    if not parts and action == "create":
+        value, changed = CRON_TARGET, True
+    if changed:
+        modified["deliver"] = value
+    parts, value, changed = _cron_targets(args.get("failure_deliver"))
+    if changed:
+        modified["failure_deliver"] = value
+    return {"action": "modify", "args": modified} if modified else None
+
+
+def _cron_rewrite_on() -> bool:
+    return _env("BOXP_NOTIFY_ENABLED") == "1" and _env("BOXP_NOTIFY_CRON_REWRITE", "1") == "1"
+
+
+def _cron_hook(*, tool_name=None, args=None, **_kwargs):
+    try:
+        if not _cron_rewrite_on():
+            return None
+        directive = cron_deliver_rewrite(tool_name, args)
+        if directive is not None:
+            journal(settings(), "cron_deliver_rewritten", action=str(args.get("action")),
+                    before={k: str(args.get(k))[:200] for k in directive["args"]}, after=directive["args"])
+        return directive
+    except Exception:
+        logger.exception("boxp-notify cron deliver rewrite failed")
+        return None
+
+
+_cron_edit_failed: dict[str, float] = {}
+
+
+def cron_jobs_to_migrate(cfg: dict) -> list[tuple[str, dict[str, str]]]:
+    """Stored cron jobs that would still run and deliver to Telegram: ``[(job id, {field: new value})]``.
+
+    Jobs saved before the hook existed, or created outside the agent (``hermes cron create``), never pass
+    ``pre_tool_call``. Finished or disabled jobs are left alone. A stored job with no ``deliver`` is local.
+    """
+    try:
+        data = json.loads((cfg["hermes_home"] / "cron/jobs.json").read_text())
+    except (OSError, ValueError):
+        return []
+    found = []
+    for job in (data.get("jobs") if isinstance(data, dict) else data) or []:
+        if not isinstance(job, dict) or job.get("enabled") is False or job.get("state") == "completed":
+            continue
+        job_id = str(job.get("id") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", job_id):
+            continue
+        fields = {}
+        for field in ("deliver", "failure_deliver"):
+            _parts, value, changed = _cron_targets(job.get(field))
+            if changed:
+                fields[field] = value
+        if fields:
+            found.append((job_id, fields))
+    return found
+
+
+def migrate_cron_jobs(cfg: dict, run=None) -> int:
+    """Point the stored jobs found by ``cron_jobs_to_migrate`` at this channel with the official
+    ``hermes cron edit``; the job file itself is only read. A job whose edit failed is retried after an hour."""
+    if not _cron_rewrite_on():
+        return 0
+    import shutil
+    import subprocess
+    import time
+    binary = shutil.which("hermes") or "/opt/hermes/bin/hermes"
+    done = 0
+    for job_id, fields in cron_jobs_to_migrate(cfg):
+        if time.monotonic() - _cron_edit_failed.get(job_id, -3600.0) < 3600:
+            continue
+        command = [binary, "cron", "edit", job_id]
+        for field, value in fields.items():
+            command += ["--" + field.replace("_", "-"), value]
+        try:
+            result = (run or subprocess.run)(command, capture_output=True, text=True, timeout=90)
+            ok = result.returncode == 0
+        except Exception as error:
+            ok, result = False, error
+        still = dict(cron_jobs_to_migrate(cfg)).get(job_id) if ok else fields
+        if still:
+            _cron_edit_failed[job_id] = time.monotonic()
+            journal(cfg, "cron_job_migration_failed", job_id=job_id, fields=fields,
+                    detail=(type(result).__name__ if isinstance(result, Exception) else f"exit={result.returncode}"))
+            logger.warning("boxp-notify could not move cron job %s to the channel", job_id)
+        else:
+            done += 1
+            journal(cfg, "cron_job_migrated", job_id=job_id, fields=fields)
+    return done
+
+
 def _enabled() -> Optional[dict]:
     # No home channel on purpose: lifecycle broadcasts go to home channels, and every target must be explicit.
     return {} if _env("BOXP_NOTIFY_ENABLED") == "1" else None
@@ -939,3 +1076,4 @@ def register(ctx) -> None:
         # Cron accepts a plugin platform as a `deliver` target only when it names this variable. It is left
         # unset: targets are always explicit (`boxp_notify:<name>`), there is no default home channel.
         cron_deliver_env_var="BOXP_NOTIFY_HOME_CHANNEL", standalone_sender_fn=_standalone_send)
+    ctx.register_hook("pre_tool_call", _cron_hook)

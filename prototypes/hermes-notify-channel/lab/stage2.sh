@@ -1,5 +1,6 @@
 #!/bin/sh
-# BOXP-554 lab: stage 2 (Task Board and cron on boxp_notify) on the production image, laid out by the
+# BOXP-554 / BOXP-556 lab: stage 2 (Task Board and cron on boxp_notify) and stage 3 (no core patch: old route
+# gone, vault image plugin, cron deliver rewrite) on a Hermes image, laid out by the
 # bootstrap init container's own script, with the real dispatcher as the event source and a fake home.
 # --network none; the LLM and Telegram are the loopback stub.
 # Usage: stage2.sh build <tag> <base-image> <lolice/argoproj/hermes-agent>
@@ -61,8 +62,13 @@ x 'touch /opt/data/boxp-notify/lab-fail-home; echo "{\"telegram_fail\":true}" > 
 event receipt-notify; tick; sleep 25
 docker restart "$name" >/dev/null; start; sleep 60
 x 'rm -f /opt/data/boxp-notify/lab-fail-home; echo "{}" > /lab/logs/control.json'; sleep 25; tick
-mark "T10 the old route task-board still works through the core patch (rollback path), the channel is not involved"
-event receipt-notify; LAB_ROUTE=task-board tick; sleep 20; LAB_ROUTE=task-board tick
+if x 'grep -q "\"task-board\":" /opt/data/webhook_subscriptions.json'; then
+  mark "T10 the old route task-board still works through the core patch (rollback path), the channel is not involved"
+  event receipt-notify; LAB_ROUTE=task-board tick; sleep 20; LAB_ROUTE=task-board tick
+else
+  mark "T10 (BOXP-556) the old route task-board is gone: a post to it is refused and nothing is delivered"
+  x "curl -sS -o /dev/null -w 'old-route http=%{http_code}\n' -X POST http://127.0.0.1:8644/webhooks/task-board -H 'Content-Type: application/json' -H 'X-Gitlab-Token: lab-secret' -H 'X-Request-ID: old-route-1' -H 'X-GitHub-Event: task-board.run-finished' -d '{\"event_id\":\"BOXP-9199-20261114T120099Z-aaaa0099-done\",\"event_type\":\"task-board.run-finished\",\"ticket_id\":\"BOXP-9199\",\"result\":\"scenario=notify\"}'"; sleep 10
+fi
 mark "T1 reminder: unread for over a minute"
 sleep 5; tick
 mark "C1 cron job on the channel -> home and Telegram"
@@ -78,6 +84,36 @@ alert() { printf '{"version":"4","groupKey":"{}:{alertname=\\"Lab\\"}","status":
 "$here/lab.sh" post "$name" alertmanager a1 "$(alert firing 0001-01-01T00:00:00Z)"; sleep 6
 "$here/lab.sh" post "$name" alertmanager a2 "$(alert firing 0001-01-01T00:00:00Z)"; sleep 6
 "$here/lab.sh" post "$name" alertmanager a3 "$(alert resolved 2026-11-14T03:05:00Z)"; sleep 8; tick
+if x 'test -d /opt/data/plugins/kohako-vault-image'; then
+  mark "V1 (BOXP-556) vault image route from the plugin: no key 401, image 200, traversal and non-image 404"
+  x 'mkdir -p /lab/vault/attachments && printf "\211PNG\r\n\032\nlab" > /lab/vault/attachments/lab.png && printf "secret" > /lab/vault/attachments/note.png'
+  v() { x "curl -sS -o /tmp/v.out -w '$1 http=%{http_code} ' $2 'http://127.0.0.1:8642/v1/kohako/vault-image?path=$3'; head -c 60 /tmp/v.out; echo"; }
+  v no-key "" attachments/lab.png
+  v wrong-key "-H 'Authorization: Bearer nope'" attachments/lab.png
+  v image "-H 'Authorization: Bearer lab-api-key-0123456789abcdef0123456789abcdef'" attachments/lab.png
+  v traversal "-H 'Authorization: Bearer lab-api-key-0123456789abcdef0123456789abcdef'" ../etc/passwd.png
+  v fake-image "-H 'Authorization: Bearer lab-api-key-0123456789abcdef0123456789abcdef'" attachments/note.png
+  x 'grep -h "kohako-vault-image" /opt/data/logs/*.log | tail -2' || true
+  mark "K1 (BOXP-556) the agent creates cron jobs: no target and Telegram become the channel, local stays"
+  for sc in cron-create cron-create-telegram cron-create-local; do
+    x "cd /opt/hermes; timeout 120 ./.venv/bin/hermes chat -Q -t cronjob -q 'lab scenario=$sc' 2>&1 | grep -v 'install out of sync' | tail -1" || echo "chat $sc failed"
+  done
+  mark "K2 (BOXP-556) jobs stored with a Telegram target (hermes cron create) are moved by the recovery loop"
+  x 'cd /opt/hermes; ./.venv/bin/hermes cron create --name lab-cli-telegram --deliver telegram:1000000001 "every 12h" "cron lab scenario=cron-report" 2>&1 | grep Created
+     ./.venv/bin/hermes cron create --name lab-cli-fd --deliver boxp_notify:cron --failure-deliver telegram:1000000001 "every 12h" "cron lab scenario=cron-report" 2>&1 | grep Created'
+  sleep 30
+  x 'grep cron_job_migrat /opt/data/boxp-notify/journal.jsonl' || echo "no migration journal"
+  x 'python3 -c "
+import json
+for j in json.load(open(\"/opt/data/cron/jobs.json\"))[\"jobs\"]:
+    print(\"job\", j.get(\"name\"), \"deliver=\" + str(j.get(\"deliver\")), \"failure_deliver=\" + str(j.get(\"failure_deliver\")))"'
+  x 'grep cron_deliver_rewritten /opt/data/boxp-notify/journal.jsonl' || echo "no rewrite journal"
+  mark "P1 (BOXP-556) plugin validation of every managed plugin on this image"
+  for p in kohako-g2-context kohako-g2-realtime kohako-vault-image boxp-notify boxp-ai-ops-observer boxp-langfuse-observer; do
+    x "cd /opt/hermes; ./.venv/bin/hermes plugins validate /opt/data/plugins/$p 2>&1 | grep -E '^(✗|Validation)' | tr '\n' ' '; echo ' <- $p'" || true
+  done
+  x 'cd /opt/hermes; ./.venv/bin/hermes --version 2>&1 | grep -m1 "Hermes Agent"; echo "core files carrying a boxp patch: $(grep -l "boxp_" gateway/*.py gateway/platforms/*.py cron/*.py | wc -l)"'
+fi
 mark "end"
 docker exec "$name" sh -c 'cd /opt/hermes && ./.venv/bin/hermes plugins validate /opt/data/plugins/boxp-notify 2>&1 | grep -v "install out of sync" | tail -15' > "$out.validate.txt" 2>&1 || true
 rm -rf "$out"; "$here/lab.sh" collect "$name" "$out"
