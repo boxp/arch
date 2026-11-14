@@ -621,3 +621,11 @@ it('smoothAngle はなで前後の頭の角度の跳びを毎フレーム小さ�
   expect(Math.abs(shown - 0.3)).toBeLessThan(0.05)
   expect(smoothAngle(5, 9, 0)).toBe(5)
 })
+
+it('BOXP-525: なでで閉じていく間はまばたきの戻りで目が開き直さない', async () => {
+  const { petEyeHold } = await import('./gesture')
+  expect(petEyeHold(0.78, 0.1, true)).toBe(0.1)
+  expect(petEyeHold(0.05, 0.1, true)).toBe(0.05)
+  expect(petEyeHold(0.78, 0.1, false)).toBe(0.78)
+  expect(petEyeHold(0.78, undefined, true)).toBe(0.78)
+})
