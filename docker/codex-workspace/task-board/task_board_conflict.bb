@@ -61,7 +61,7 @@
 ;; `gh pr view --json files` can stop at the first page, so the full list is read
 ;; through the paginated REST endpoint; the view's list is only the fallback.
 (defn fetch-pr-files [url]
-  (when-let [[_ owner repo n] (re-find #"https?://[^/]+/([^/]+)/([^/]+)/pull/(\\d+)" (or url ""))]
+  (when-let [[_ owner repo n] (re-find #"https?://[^/]+/([^/]+)/([^/]+)/pull/(\d+)" (or url ""))]
     (when-let [out (gh-out ["api" "--paginate" (str "repos/" owner "/" repo "/pulls/" n "/files?per_page=100") "--jq" ".[].filename"] 90000)]
       (vec (remove str/blank? (str/split-lines out))))))
 (defn fetch-pr [url]

@@ -85,4 +85,12 @@
       (is (= 0 (get-in data [:stages :pre :known_pairs])))
       (is (= 1 (get-in data [:stages :pre :unconfirmed]))))
     (fs/delete-tree r)))
+(deftest fetch-pr-files-test
+  ;; The PR number must match so the paginated listing is actually requested.
+  (let [calls (atom [])]
+    (with-redefs [task-board-conflict/gh-out (fn [args _] (swap! calls conj args) "a/b.clj\n\nc.md\n")]
+      (is (= ["a/b.clj" "c.md"] (task-board-conflict/fetch-pr-files "https://github.com/boxp/arch/pull/15024")))
+      (is (= ["api" "--paginate" "repos/boxp/arch/pulls/15024/files?per_page=100" "--jq" ".[].filename"] (first @calls)))
+      (is (nil? (task-board-conflict/fetch-pr-files "https://github.com/boxp/arch/issues/1")))
+      (is (= 1 (count @calls))))))
 (let [r (run-tests)] (fs/delete-tree root) (System/exit (if (zero? (+ (:fail r) (:error r))) 0 1)))
