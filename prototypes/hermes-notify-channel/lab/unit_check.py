@@ -154,6 +154,22 @@ async def stage2():
     await tb(digest, silence)
     check("gate: a digest ends silently only with the silent receipt", receipt(digest) == ("silent", "silent"))
 
+    e = ev(13)  # the receipt of a deferred silence cannot be written: not a success, nothing stored as done
+    note("BOXP-9002", e, "deferred")
+    fail = root / "state/lab-fail-home"
+    fail.touch()
+    result = await tb(e, silence)
+    check("gate: a deferred silence whose receipt cannot be written is a retryable failure, not stored",
+          not result.success and getattr(result, "retryable", False) and receipt(e) == (None, None)
+          and plugin.read_json(plugin.receipt_path(plugin.settings(), f"tb-{e}.report")) is None)
+    fail.unlink()
+    result = await tb(e, silence)
+    check("gate: the retry writes the receipt and succeeds",
+          result.success and receipt(e) == ("silent", "deferred") and state(e) == "suppressed")
+    (root / TBE / "delivery-receipts" / f"{e}.md").unlink()
+    result = await tb(e, silence)
+    check("gate: the same silence delivered again writes its receipt again",
+          result.success and receipt(e) == ("silent", "deferred") and len(telegram["sent"]) == 1)
     e = ev(4)  # a report whose marker is missing: delivered with the notice attached, to Telegram
     await tb(e, f"報告 event={e}")
     check("gate: a report without the marker goes to Telegram with the notice attached, receipt unresolved",

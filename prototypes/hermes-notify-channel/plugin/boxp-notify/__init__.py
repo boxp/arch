@@ -231,18 +231,21 @@ def vault_receipt(cfg: dict, event: str, state: str, classification: Optional[st
         return False
 
 
-def silence_receipt(cfg: dict, event: str, proof: str) -> None:
+def silence_receipt(cfg: dict, event: str, proof: str) -> bool:
     """A digest ends without a send, and a deferred event enters the digest, only on this proof of an
-    intentional silence. It never replaces the evidence of an earlier send."""
+    intentional silence. It never replaces the evidence of an earlier send.
+
+    False only when the receipt this silence needs could not be written: the dispatcher would then see
+    neither the hold nor the end of the event, so the caller must not report the silence as done."""
     expected = "silent" if "-digest-" in event else "deferred"
     if proof != expected:
-        return
+        return True
     if (read_json(cfg["vault"] / TB / "delivery-receipts" / f"{event}.md") or {}).get("state") in {"sent", "uncertain"}:
-        return
+        return True
     for slot in ("report", "notice"):
         if (read_json(receipt_path(cfg, f"tb-{event}.{slot}")) or {}).get("state") in {"delivered", "pending"}:
-            return
-    vault_receipt(cfg, event, "silent", proof)
+            return True
+    return vault_receipt(cfg, event, "silent", proof)
 
 
 def home_primary(cfg: dict) -> bool:
@@ -701,6 +704,8 @@ async def _send_claimed(cfg: dict, target: dict, decision: dict, key: str, chat_
     tracked = target["kind"] == "task-board" and bool(target.get("ticket"))
     if existing and existing.get("state") in {"suppressed", "held"} and decision["action"] == "deliver":
         existing = None  # nothing was sent under this key: a silence or a hold never consumes the report
+    if tracked and existing and existing.get("state") == "suppressed" and decision["action"] == "suppress":
+        existing = None  # the same silence again: write its receipt again, the dispatcher wants a fresh one
     if existing and existing.get("state") in {"delivered", "suppressed", "expired", "superseded"}:
         if tracked and existing["state"] == "delivered":
             # The dispatcher only trusts a receipt newer than its own delivery attempt.
@@ -716,8 +721,11 @@ async def _send_claimed(cfg: dict, target: dict, decision: dict, key: str, chat_
             journal(cfg, "notice_after_report_dropped", **base, report_state=report["state"])
             return SendResult(success=True, message_id=key)
     if decision["action"] == "suppress":
-        if tracked:
-            silence_receipt(cfg, target["event"], decision["proof"])
+        if tracked and not silence_receipt(cfg, target["event"], decision["proof"]):
+            # Same rule as the hold below: without the receipt the dispatcher can neither fold the event
+            # into the digest nor close it, so this is a retryable failure and nothing is stored as done.
+            journal(cfg, "silence_unrecorded", **base, proof=decision.get("proof"))
+            return SendResult(success=False, error="boxp-notify: silence unrecorded", retryable=True)
         if not existing:
             atomic_json(path, {"state": "suppressed", "target": target, "decision": decision,
                                "created_at": now().isoformat()})
