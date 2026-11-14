@@ -68,3 +68,18 @@ it('まとめて案内する時は対象全件を仮押さえし、他タブが�
     for (const id of otherTab) expect(calls).not.toContain(`POST notifications/${id}/announced`)
   } finally { vi.unstubAllGlobals() }
 })
+
+it('通知ごとに下書きを保持し、送信成功後に対象だけ破棄する', async () => {
+  const { ReplyDrafts } = await import('./inbox'), drafts = new ReplyDrafts()
+  drafts.set('A', '日本語の返信'); expect(drafts.get('A')).toBe('日本語の返信'); expect(drafts.get('B')).toBe('')
+  drafts.set('B', '別の返信'); expect(drafts.get('A')).toBe('日本語の返信')
+  drafts.clear('A'); expect(drafts.get('A')).toBe(''); expect(drafts.get('B')).toBe('別の返信')
+})
+
+it('詳細キーは内容の変化を検出し、既読・処理済み・受信時刻を無視する', async () => {
+  const { detailKey } = await import('./inbox')
+  const item = { eventId: 'event-1', title: '題', body: '本文', source: 'test', receivedAt: 'now' }
+  const key = detailKey(item)
+  expect(detailKey({ ...item, readAt: 'x', handledAt: 'x', receivedAt: 'later' })).toBe(key)
+  for (const change of [{ eventId: 'event-2' }, { title: '別' }, { body: '別' }, { source: '別' }, { ticketId: 'BOXP-1' }, { choices: ['選択'] }, { reply: { replyId: 'r', kind: 'text' as const, value: 'v', requestId: 'q', status: 'submitted' } }]) expect(detailKey({ ...item, ...change })).not.toBe(key)
+})
