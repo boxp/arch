@@ -48,8 +48,41 @@
   (let [files (vec (concat (map #(str "other/" % ".txt") (range 300)) ["docker/hermes-agent/last.txt"])) r (str (fs/create-temp-dir {:dir (or (System/getenv "TMPDIR") "/tmp") :prefix "conflict-large-"}))]
     (task-board-conflict/record-pr! r {:ticket "X" :pr "https://github.com/boxp/arch/pull/2" :files files})
     (let [event (first (:events (task-board-conflict/read-events r)))]
-      (is (= 300 (count (:files event)))) (is (= 301 (:files_count event))) (is (some #{"deploy:hermes-agent"} (:keys event))))
+      (is (= 301 (count (:files event)))) (is (= 301 (:files_count event))) (is (true? (:files_complete event))) (is (some #{"deploy:hermes-agent"} (:keys event))))
     (fs/delete-tree r))
   (is (= "arch" (task-board-conflict/repo-name-from-pr-url "https://github.com/boxp/arch/pull/7")))
   (is (some #{"deploy:kohako-studio"} (task-board-conflict/pre-keys {:repos ["boxp/arch"] :text "家画面"}))))
+(defn write-events! [r events]
+  (fs/create-dirs (fs/parent (task-board-conflict/event-path r)))
+  (spit (task-board-conflict/event-path r) (str/join (map #(str (json/generate-string %) "\n") events))))
+(defn report-json [r] (json/parse-string (:out (cli "report" "--root" r "--json")) true))
+(deftest open-pr-and-full-file-list-test
+  (let [r (str (fs/create-temp-dir {:dir (or (System/getenv "TMPDIR") "/tmp") :prefix "conflict-open-"}))
+        hot ["code:arch:apps/kohako-studio/verify/home"]
+        many (mapv #(str "other/" % ".txt") (range 300))
+        p-pr {:ticket "P" :stage "pr" :at "2026-01-01T01:00:00Z" :pr "https://github.com/boxp/arch/pull/1" :pr_created_at "2026-01-01T01:00:00Z" :files (conj many "apps/x/late.txt") :files_count 301 :files_complete true :keys ["code:arch:apps/x"]}
+        base [{:ticket "P" :stage "pre" :at "2026-01-01T00:00:00Z" :keys hot}
+              {:ticket "Q" :stage "pre" :at "2026-01-02T00:00:00Z" :keys hot}
+              {:ticket "Q" :stage "pr" :at "2026-01-02T01:00:00Z" :pr "https://github.com/boxp/arch/pull/2" :pr_created_at "2026-01-02T01:00:00Z" :pr_merged_at "2026-01-02T02:00:00Z" :files ["apps/x/late.txt"] :files_count 1 :files_complete true :keys ["code:arch:apps/x"]}]]
+    ;; P's PR is still open when Q starts a day later: the two are concurrent, and
+    ;; the shared file is the 301st of P's list.
+    (write-events! r (conj base p-pr))
+    (let [data (report-json r)]
+      (is (= 1 (:pairs data))) (is (= 1 (:open_pr_tickets data)))
+      (is (true? (:actual_overlap (first (:pair_details data)))))
+      (is (= 0 (get-in data [:stages :pre :needless])))
+      (is (pos? (get-in data [:stages :pre :wait_hours]))))
+    ;; Merged before Q started: not concurrent.
+    (write-events! r (conj base (assoc p-pr :pr_merged_at "2026-01-01T02:00:00Z")))
+    (is (= 0 (:pairs (report-json r))))
+    ;; A later record of the same PR supersedes the open one.
+    (write-events! r (conj base p-pr (assoc p-pr :at "2026-01-01T03:00:00Z" :pr_closed_at "2026-01-01T03:00:00Z")))
+    (is (= 0 (:pairs (report-json r))))
+    ;; An incomplete file list cannot prove "no overlap".
+    (write-events! r (conj base (assoc p-pr :files many :files_count 300 :files_complete false)))
+    (let [data (report-json r)]
+      (is (= 1 (:incomplete_file_tickets data)))
+      (is (= 0 (get-in data [:stages :pre :known_pairs])))
+      (is (= 1 (get-in data [:stages :pre :unconfirmed]))))
+    (fs/delete-tree r)))
 (let [r (run-tests)] (fs/delete-tree root) (System/exit (if (zero? (+ (:fail r) (:error r))) 0 1)))
