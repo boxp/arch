@@ -55,7 +55,7 @@ export function bleedZoom(
   const fitOf = (w: number) => Math.min(w / modelW, height / modelH),
     fit0 = fitOf(base),
     fit1 = fitOf(width)
-  if (!(fit0 > 0) || !(fit1 > 0)) return { zoom: baseZoom, fit: fit1 > 0 ? fit1 : 0 }
+  if (!(fit0 > 0) || !(fit1 > 0)) return { zoom: baseZoom, fit: Number.isNaN(fit1) ? 0 : Math.max(fit1, 0) }
   return { zoom: (baseZoom * fit0) / fit1, fit: fit0 }
 }
 

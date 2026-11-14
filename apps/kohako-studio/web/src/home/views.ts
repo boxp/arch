@@ -23,7 +23,8 @@ const str = (v: unknown, max: number, html = false) =>
   typeof v === 'string' &&
   v.length > 0 &&
   v.length <= max &&
-  !(html ? /[\x00-\x08\x0b-\x1f\x7f-\x9f]/ : /[\x00-\x1f\x7f-\x9f]/).test(v)
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: view 本文の制御文字を拒否する（html は改行・タブを許可するため範囲指定が必要）
+  !(html ? /[\x00-\x08\x0b-\x1f\x7f-\x9f]/ : /\p{Cc}/u).test(v)
 const numberIn = (v: unknown, min: number, max: number): v is number =>
   typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max
 function validGeo(v: unknown): v is Geo {
@@ -124,7 +125,9 @@ export function sanitizeHtml(
   doc: Document = new DOMParser().parseFromString(`<body>${html}</body>`, 'text/html'),
 ): string {
   if (doc.defaultView !== null) throw new Error('sanitizeHtml: browsing context を持つ文書では解析しない')
-  doc.body.querySelectorAll(DROP).forEach((e) => e.remove())
+  doc.body.querySelectorAll(DROP).forEach((e) => {
+    e.remove()
+  })
   for (const e of Array.from(doc.body.querySelectorAll('*')))
     for (const a of Array.from(e.attributes)) {
       const n = a.name.toLowerCase(),

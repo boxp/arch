@@ -1,3 +1,4 @@
+import { must } from '../must'
 import { pcm16 } from '../studio/model'
 
 export type DictationState = 'idle' | 'starting' | 'recording' | 'transcribing'
@@ -46,7 +47,9 @@ export function createDictation(deps: {
     r.processor.onaudioprocess = null
     r.processor.disconnect()
     r.source.disconnect()
-    r.stream.getTracks().forEach((t) => t.stop())
+    r.stream.getTracks().forEach((t) => {
+      t.stop()
+    })
     await r.context.close().catch(() => {})
   }
   async function cancel() {
@@ -68,7 +71,9 @@ export function createDictation(deps: {
     try {
       stream = await deps.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } })
       if (id !== generation) {
-        stream.getTracks().forEach((t) => t.stop())
+        stream.getTracks().forEach((t) => {
+          t.stop()
+        })
         return
       }
       context = deps.createContext()
@@ -109,7 +114,9 @@ export function createDictation(deps: {
       } else {
         processor?.disconnect()
         source?.disconnect()
-        stream?.getTracks().forEach((t) => t.stop())
+        stream?.getTracks().forEach((t) => {
+          t.stop()
+        })
         if (context) await context.close().catch(() => {})
       }
       if (id !== generation) return
@@ -167,7 +174,7 @@ export function createDictation(deps: {
         deps.onError('音声を認識できませんでした。')
       else if (result.status === 413) deps.onError('録音が長すぎます。')
       else if (result.status !== 200) deps.onError('音声認識に接続できませんでした。もう一度お試しください。')
-      else deps.onText((result.data!.text as string).trim())
+      else deps.onText((must(result.data).text as string).trim())
     } catch {
       if (id === generation) deps.onError('音声認識に接続できませんでした。もう一度お試しください。')
     } finally {

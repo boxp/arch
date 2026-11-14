@@ -1,3 +1,4 @@
+import { must } from './must.js'
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { request } from 'node:https'
@@ -84,7 +85,7 @@ export function createAuth(options: {
         const status = (await (options.review ?? tokenReview)(token, aud)).status
         if (status?.authenticated === true && status.user?.username === username && status.audiences?.includes(aud)) {
           for (const [k, expiry] of cache) if (expiry <= now) cache.delete(k)
-          if (cache.size >= 1000) cache.delete(cache.keys().next().value!)
+          if (cache.size >= 1000) cache.delete(must(cache.keys().next().value))
           cache.set(key, now + 60_000)
           return principal
         }

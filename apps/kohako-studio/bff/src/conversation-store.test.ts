@@ -1,3 +1,4 @@
+import { must } from './must.js'
 import { afterEach, expect, it, vi } from 'vitest'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -147,7 +148,7 @@ it('persists cancelRequested and denies approvals after restart instead of showi
   expect(approve).toHaveBeenCalledWith('run', 'deny', 'p1', 1)
   const approval = conv2.get('request')?.approval
   expect(approval).toMatchObject({ consumed: true, choice: 'deny', active: false })
-  expect(await conv2.approve('request', approval!.approvalId, 'once')).toBe('approval_conflict')
+  expect(await conv2.approve('request', must(approval).approvalId, 'once')).toBe('approval_conflict')
   await conv2.flush()
 })
 
@@ -155,7 +156,7 @@ it('keeps long replies and bounds the context, marking truncation on a code poin
   const dir = await mkdtemp(join(tmpdir(), 'kohako-conv-'))
   dirs.push(dir)
   const novel = '「第123話！」記号＠、彼女は言った。'.repeat(150).slice(0, 2600)
-  const long = 'あ'.repeat(23999) + '😀' + 'い'.repeat(6000)
+  const long = `${'あ'.repeat(23999)}😀${'い'.repeat(6000)}`
   const run = vi
     .fn()
     .mockResolvedValueOnce({ status: 'done', text: novel })
@@ -169,10 +170,10 @@ it('keeps long replies and bounds the context, marking truncation on a code poin
   conv.submit({ requestId: 'one', kind: 'text', text: 'x', expiresAt: 500 }, '')
   await vi.waitFor(() => expect(conv.get('one')?.status).toBe('done'))
   expect(conv.get('one')?.reply?.text).toBe(novel)
-  expect(conv.lastExchange!.reply.length).toBeLessThanOrEqual(1000)
+  expect(must(conv.lastExchange).reply.length).toBeLessThanOrEqual(1000)
   conv.submit({ requestId: 'two', kind: 'text', text: 'x', expiresAt: 500 }, '')
   await vi.waitFor(() => expect(conv.get('two')?.status).toBe('done'))
-  expect(conv.get('two')?.reply?.text).toBe('あ'.repeat(23999) + '\n（返答が長すぎるため、ここから先は省略されました）')
+  expect(conv.get('two')?.reply?.text).toBe(`${'あ'.repeat(23999)}\n（返答が長すぎるため、ここから先は省略されました）`)
   await conv.flush()
   expect(
     JSON.parse(await readFile(join(dir, 'conversations-test.json'), 'utf8')).lastExchange.reply.length,
