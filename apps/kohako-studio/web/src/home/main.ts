@@ -1,3 +1,5 @@
+import { classifyFailure, parseReauth, recentlyReloaded, REAUTH_KEY, serializeReauth } from './reauth'
+import { submitAction } from './composer'
 import { must } from '../must'
 import './activity.css'
 import { validateActivity, renderActivity, tickActivity } from './activity'
@@ -193,6 +195,16 @@ let state: State = 'offline',
   busy = false,
   accepted = false,
   netDown = false
+let authExpired = false,
+  intentionalReload = false,
+  typedSinceLoad = false
+const reconnect = el<HTMLButtonElement>('reconnect')
+const rawReauth = tab.get(REAUTH_KEY)
+let reauth = parseReauth(rawReauth, Date.now())
+if (rawReauth && !reauth) tab.set(REAUTH_KEY, null)
+const updateReconnect = () => {
+  reconnect.textContent = authExpired ? '再認証のため再読み込み' : '再接続'
+}
 let unconfirmed: Outgoing | null = parseUnconfirmed(tab.get(UNCONFIRMED_KEY))
 const setUnconfirmed = (o: Outgoing | null) => {
   unconfirmed = o
@@ -689,6 +701,7 @@ window.addEventListener('resize', () => {
 })
 window.visualViewport?.addEventListener('resize', () => refreshScene())
 message.addEventListener('input', () => {
+  typedSinceLoad = true
   typingUntil = Date.now() + 2000
   message.style.height = 'auto'
   message.style.height = `${Math.min(message.scrollHeight, window.innerHeight * 0.3)}px`
@@ -966,8 +979,16 @@ function setError(text: string) {
   if (text) addHistory('お知らせ', text)
 }
 function fail(status: number, data: Record<string, unknown> | null) {
-  setError(problem(status, data))
-  if (status === 401 || status === 403) {
+  authExpired = classifyFailure({ status }) === 'auth'
+  updateReconnect()
+  setError(
+    authExpired
+      ? recentlyReloaded(reauth, Date.now())
+        ? '再読み込みしても認証できませんでした。ログイン画面が開かない場合はブラウザで家のURLを開き直してください。'
+        : 'Cloudflare Access の認証が切れました。ボタンで画面を再読み込みしてログインし直してください。'
+      : problem(status, data),
+  )
+  if (authExpired) {
     enabled = false
     connection.textContent = '未認証'
     show('offline')
@@ -979,6 +1000,33 @@ async function initialize() {
     if (me.status !== 200) return fail(me.status, me.data)
     const conv = await call('conversation')
     if (conv.status !== 200 || !conv.data) return fail(conv.status, conv.data)
+    authExpired = false
+    updateReconnect()
+    reauth = parseReauth(tab.get(REAUTH_KEY), Date.now())
+    if (!reauth) tab.set(REAUTH_KEY, null)
+    if (reauth) {
+      let restored = 0
+      for (const text of reauth.queue) if (queue.add(text, Date.now()).ok) restored++
+      let merged = false
+      if (reauth.draft && !message.value) message.value = reauth.draft
+      else if (reauth.draft && (message.value !== reauth.draft || typedSinceLoad)) {
+        if (queue.add(reauth.draft, Date.now()).ok) restored++
+        else {
+          message.value = `${reauth.draft}\n${message.value}`
+          merged = true
+        }
+      }
+      if (restored) queue.hold('auth')
+      if (restored || reauth.draft)
+        addHistory(
+          'お知らせ',
+          merged
+            ? '再認証前の入力を入力中の文の前に戻しました（まだ送っていません）。'
+            : `再認証前の入力と送信待ち ${restored} 件を戻しました（まだ送っていません）。`,
+        )
+      tab.set(REAUTH_KEY, null)
+      reauth = null
+    }
     enabled = conv.data.enabled === true
     stt = enabled && !!conv.data.stt
     netDown = false
@@ -989,14 +1037,40 @@ async function initialize() {
     show(enabled ? 'idle' : 'offline')
     if (enabled) await resumeInflight()
   } catch {
+    authExpired = false
+    updateReconnect()
     setError('接続できませんでした。通信を確認して「再接続」を押してください。')
     show('offline')
   }
 }
-el('reconnect').addEventListener('click', () => {
-  error.textContent = ''
-  connection.textContent = '接続を確認中'
-  void initialize()
+reconnect.addEventListener('click', () => {
+  if (!authExpired) {
+    error.textContent = ''
+    connection.textContent = '接続を確認中'
+    void initialize()
+    return
+  }
+  if (
+    chips.length &&
+    !window.confirm('添付ファイルは再読み込みで外れます。再認証後に追加し直してください。再読み込みしますか？')
+  )
+    return
+  const now = Date.now(),
+    previous = parseReauth(tab.get(REAUTH_KEY), now)
+  const texts = queue.size ? queue.list().map((x) => x.text) : (previous?.queue ?? [])
+  const draft = message.value || previous?.draft || ''
+  const saved = serializeReauth({ v: 1, draft, queue: texts, at: now, reloadAt: now })
+  if (parseReauth(saved, now)) tab.set(REAUTH_KEY, saved)
+  else tab.set(REAUTH_KEY, null)
+  if (
+    tab.get(REAUTH_KEY) !== saved &&
+    (draft || texts.length) &&
+    !window.confirm(`入力中の文と送信待ち ${texts.length} 件は再読み込みで消えます。再読み込みしますか？`)
+  )
+    return
+  reconnect.disabled = true
+  intentionalReload = true
+  location.reload()
 })
 window.addEventListener('online', () => {
   if (!busy) void initialize()
@@ -1303,7 +1377,7 @@ function holdFor(): HoldReason | null {
 }
 function renderQueue() {
   const items = queue.list(),
-    pending = pendingFromQueue && unconfirmed ? unconfirmed : null
+    pending = unconfirmed
   queueBox.hidden = !items.length && !pending && !queueNote.textContent
   queueList.replaceChildren()
   if (pending) {
@@ -1349,6 +1423,7 @@ function renderQueue() {
         ? `いまの応答が終わったら、上から順に 1 件ずつ送ります（${items.length}/${QUEUE_MAX_ITEMS}）。`
         : 'まもなく先頭を送ります。'
       : ''
+  queueResume.textContent = pending ? '確認して再開' : '再開'
   queueResume.hidden = !held
   queueResume.disabled = busy
   queueClear.hidden = !items.length
@@ -1436,7 +1511,7 @@ queueClear.addEventListener('click', () => {
 })
 // 送信待ちはメモリだけに持つため、再読み込み・タブを閉じる前にブラウザの確認を出す（黙って再送・保存はしない）。
 window.addEventListener('beforeunload', (e) => {
-  if (queue.size) {
+  if (queue.size && !intentionalReload) {
     e.preventDefault()
     e.returnValue = ''
   }
@@ -1531,10 +1606,6 @@ el<HTMLFormElement>('form').addEventListener('submit', (event) => {
     }
     const pending = unconfirmed,
       same = !!pending.attachments && chips.every((x) => x.id && must(pending.attachments).includes(x.id))
-    if (same && message.value.trim() === pending.text) {
-      message.value = ''
-      message.style.height = ''
-    }
     addHistory(
       'お知らせ',
       same
@@ -1544,11 +1615,16 @@ el<HTMLFormElement>('form').addEventListener('submit', (event) => {
     void sendText(pending.text, 'pending')
     return
   }
-  if (queueing()) {
+  const action = submitAction({
+    hasUnconfirmed: !!unconfirmed,
+    queueing: queueing(),
+    confirmingBlocked: busy || dispatching || state === 'speaking',
+  })
+  if (action === 'enqueue') {
     enqueue(text)
     return
   }
-  if (unconfirmed && unconfirmed.text !== text) {
+  if (action === 'enqueue-and-confirm' && unconfirmed) {
     // 受理未確認の前回の発言がある間は、新しい本文を送信待ちへ積んでから前回分を同じ受付番号で確認・再送する（入力を消さず、順序も守る）。
     if (!enqueue(text)) return
     addHistory(
@@ -1677,8 +1753,7 @@ async function sendText(text: string, from: 'composer' | 'pending' | QueueItem):
   if (sendOutcomeUnknown(result ? result.status : null) || resending) {
     // 受理されたか不明。本文は控え（同じ受付番号）に残し、送信待ちには戻さない（戻すと二重に送り得る）。
     setUnconfirmed(payload)
-    if (from === 'composer' && !message.value.trim()) message.value = text
-    setError('送信結果を確認できません。もう一度送信すると、まず前回の受理状況を確認します（二重実行はしません）。')
+    setError('送信結果を確認できません。送信待ち欄の受理未確認行から、前回の受理状況を確認できます。')
     show('failed')
     return
   }
@@ -2370,15 +2445,13 @@ async function resumeUnconfirmed(pending: Outgoing) {
   busy = false
   // 401/403 は認証切れ。控えを残したまま未認証表示にして送信を止め、再ログイン後の再接続で受理状況を確認し直す。
   if (lookup && (lookup.status === 401 || lookup.status === 403) && unconfirmed === pending) {
-    message.value = pending.text
     fail(lookup.status, lookup.data)
     return
   }
   if (unconfirmed === pending) {
-    message.value = pending.text
     addHistory(
       'お知らせ',
-      '再読み込み前の送信の受理を確認できませんでした。もう一度送信すると、同じ受付番号で確認してから送ります（二重実行はしません）。',
+      '再読み込み前の送信の受理を確認できませんでした。送信待ち欄の受理未確認行から同じ受付番号で確認できます。',
     )
   }
   show(state)
