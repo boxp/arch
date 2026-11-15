@@ -7,6 +7,7 @@ describe('submitAction', () => {
     [true, false, false, 'enqueue-and-confirm'],
     [true, true, false, 'enqueue-and-confirm'],
     [true, true, true, 'enqueue'],
+    [true, false, true, 'enqueue'],
   ] as const)(
     'unconfirmed=%s queueing=%s blocked=%s gives %s',
     (hasUnconfirmed, queueing, confirmingBlocked, expected) => {
