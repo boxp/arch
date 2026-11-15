@@ -14,7 +14,7 @@ try {
   browser = await chromium.launch({ ...(process.env.CHROME ? { executablePath: process.env.CHROME } : {}), args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] })
   for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, false], ['mobile', { width: 412, height: 915 }, true]]) {
     results[device] = {}
-    for (const scenario of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n']) {
+    for (const scenario of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o']) {
       const ctx = await browser.newContext({ viewport, isMobile: mobile, hasTouch: mobile, serviceWorkers: 'block' }), page = await ctx.newPage()
       let lookupReady = false
       let mode = scenario === 'b' ? 'abort' : scenario === 'a' || scenario === 'e' || scenario === 'h' || scenario === 'i' || scenario === 'j' || scenario === 'k' || scenario === 'l' || scenario === 'm' ? 'ok' : 'auth', navigations = 0, meCalls = 0, lookupAuth = scenario === 'h'
@@ -47,6 +47,8 @@ try {
         if (scenario === 'l' || scenario === 'm') await ctx.addInitScript(() => { sessionStorage.setItem('kohako-home-unconfirmed', JSON.stringify({ kind: 'text', text: '同文', requestId: 'pending-lm523', expiresAt: Date.now() + 600000 })) })
         // n: 再読み込み後も認証できない画面で別の文を入力して再度押しても、前回退避した草稿・送信待ちを上書きしない。
         if (scenario === 'n') await ctx.addInitScript(() => { if (sessionStorage.getItem('n523')) return; sessionStorage.setItem('n523', '1'); const now = Date.now(); sessionStorage.setItem('kohako-home-reauth', JSON.stringify({ v: 1, draft: '旧下書き', queue: ['旧待ち'], at: now - 1000, reloadAt: now - 1000 })) })
+        // o: 前回退避分と今回の入力の合計が上限を超えて確認を取り消しても、前回退避した分を消さない。
+        if (scenario === 'o') await ctx.addInitScript(() => { if (sessionStorage.getItem('o523')) return; sessionStorage.setItem('o523', '1'); const now = Date.now(); sessionStorage.setItem('kohako-home-reauth', JSON.stringify({ v: 1, draft: 'x'.repeat(3995), queue: ['旧待ち'], at: now - 1000, reloadAt: now - 1000 })) })
         await page.goto(url)
         if (scenario === 'l' || scenario === 'm') {
           await page.waitForFunction(() => document.querySelector('#history')?.textContent.includes('受理を確認できませんでした'))
@@ -72,6 +74,26 @@ try {
           assert(v.includes('旧下書き') && v.includes('新しい文'), `草稿が上書きされた: ${v}`)
           assert((await page.locator('#queue-list').textContent()).includes('旧待ち'), '前回の送信待ちが消えた')
           assert(await page.evaluate(() => sessionStorage.getItem('kohako-home-reauth')) === null, '退避が残存'); assert(posts.length === 0, '予期しない POST')
+          results[device][scenario] = { pass: true, navigations, posts: posts.length, gets }; continue
+        }
+        if (scenario === 'o') {
+          await page.waitForFunction(() => document.querySelector('#reconnect')?.textContent === '再認証のため再読み込み', null, { timeout: 15000 })
+          const before = await page.evaluate(() => sessionStorage.getItem('kohako-home-reauth'))
+          assert(before && before.includes('旧待ち'), '前提の退避がない')
+          await page.locator('#message').fill('新しい文を十文字以上入力')
+          const nav0 = navigations, dialogs = []
+          page.once('dialog', d => { dialogs.push(d.message()); void d.dismiss() })
+          await page.locator('#reconnect').click(); await page.waitForTimeout(800)
+          assert(dialogs.length === 1, '上限超過の確認が出ない')
+          assert(navigations === nav0, '取消でも再読み込みした')
+          assert(await page.evaluate(() => sessionStorage.getItem('kohako-home-reauth')) === before, '取消で前回退避分が消えた')
+          mode = 'ok'
+          page.once('dialog', d => { void d.accept() })
+          await Promise.all([page.waitForNavigation(), page.locator('#reconnect').click()])
+          await page.waitForFunction(() => !document.querySelector('#send').disabled, null, { timeout: 8000 }); await page.waitForTimeout(800)
+          assert((await page.locator('#message').inputValue()) === 'x'.repeat(3995), '前回退避の草稿が戻らない')
+          assert((await page.locator('#queue-list').textContent()).includes('旧待ち'), '前回の送信待ちが消えた')
+          assert(posts.length === 0, '予期しない POST')
           results[device][scenario] = { pass: true, navigations, posts: posts.length, gets }; continue
         }
         if (scenario === 'k') {

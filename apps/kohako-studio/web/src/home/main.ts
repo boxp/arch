@@ -1063,14 +1063,15 @@ reconnect.addEventListener('click', () => {
     kept = previous?.draft ?? ''
   const draft = kept && typed && (typed !== kept || typedSinceLoad) ? `${kept}\n${typed}` : typed || kept
   const saved = serializeReauth({ v: 1, draft, queue: texts, at: now, reloadAt: now })
+  // 上限超過などで退避できない場合も、確認で取り消されたときに前回退避した分を消さないよう、保存済みの内容は書き換えない。
   if (parseReauth(saved, now)) tab.set(REAUTH_KEY, saved)
-  else tab.set(REAUTH_KEY, null)
-  if (
-    tab.get(REAUTH_KEY) !== saved &&
-    (draft || texts.length) &&
-    !window.confirm(`入力中の文と送信待ち ${texts.length} 件は再読み込みで消えます。再読み込みしますか？`)
-  )
-    return
+  if (tab.get(REAUTH_KEY) !== saved && (draft || texts.length)) {
+    const fresh = queue.list().length
+    const lost = previous
+      ? `今回の入力中の文と送信待ち ${fresh} 件は退避できる上限を超えるため再読み込みで消えます（前回退避した分は残ります）。`
+      : `入力中の文と送信待ち ${texts.length} 件は再読み込みで消えます。`
+    if (!window.confirm(`${lost}再読み込みしますか？`)) return
+  }
   reconnect.disabled = true
   intentionalReload = true
   location.reload()
