@@ -14,7 +14,7 @@ try {
   browser = await chromium.launch({ ...(process.env.CHROME ? { executablePath: process.env.CHROME } : {}), args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] })
   for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, false], ['mobile', { width: 412, height: 915 }, true]]) {
     results[device] = {}
-    for (const scenario of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm']) {
+    for (const scenario of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n']) {
       const ctx = await browser.newContext({ viewport, isMobile: mobile, hasTouch: mobile, serviceWorkers: 'block' }), page = await ctx.newPage()
       let lookupReady = false
       let mode = scenario === 'b' ? 'abort' : scenario === 'a' || scenario === 'e' || scenario === 'h' || scenario === 'i' || scenario === 'j' || scenario === 'k' || scenario === 'l' || scenario === 'm' ? 'ok' : 'auth', navigations = 0, meCalls = 0, lookupAuth = scenario === 'h'
@@ -45,6 +45,8 @@ try {
         // k: 初期化中に控えと同文を手入力しても、後の認証切れ再読込で草稿が保持される。
         if (scenario === 'k') await ctx.addInitScript(() => { if (sessionStorage.getItem('k523')) return; sessionStorage.setItem('k523', '1'); sessionStorage.setItem('kohako-home-unconfirmed', JSON.stringify({ kind: 'text', text: '同文', requestId: 'pending-k523', expiresAt: Date.now() + 600000 })) })
         if (scenario === 'l' || scenario === 'm') await ctx.addInitScript(() => { sessionStorage.setItem('kohako-home-unconfirmed', JSON.stringify({ kind: 'text', text: '同文', requestId: 'pending-lm523', expiresAt: Date.now() + 600000 })) })
+        // n: 再読み込み後も認証できない画面で別の文を入力して再度押しても、前回退避した草稿・送信待ちを上書きしない。
+        if (scenario === 'n') await ctx.addInitScript(() => { if (sessionStorage.getItem('n523')) return; sessionStorage.setItem('n523', '1'); const now = Date.now(); sessionStorage.setItem('kohako-home-reauth', JSON.stringify({ v: 1, draft: '旧下書き', queue: ['旧待ち'], at: now - 1000, reloadAt: now - 1000 })) })
         await page.goto(url)
         if (scenario === 'l' || scenario === 'm') {
           await page.waitForFunction(() => document.querySelector('#history')?.textContent.includes('受理を確認できませんでした'))
@@ -57,6 +59,19 @@ try {
           assert(await page.locator('#queue-list .q-text').count() === 1, '新しい同文が送信待ちに1件残っていない')
           assert(await page.locator('#queue-list .q-text').first().textContent() === '同文', '新しい同文が消えた')
           assert(posts.filter(x => x.requestId === 'pending-lm523').length === 0, '控えの受付番号で重複 POST')
+          results[device][scenario] = { pass: true, navigations, posts: posts.length, gets }; continue
+        }
+        if (scenario === 'n') {
+          await page.waitForFunction(() => document.querySelector('#reconnect')?.textContent === '再認証のため再読み込み', null, { timeout: 15000 })
+          assert((await page.locator('#error').textContent()).includes('再読み込みしても認証できませんでした'), '再認証失敗の案内なし')
+          await page.locator('#message').fill('新しい文')
+          mode = 'ok'; await page.route('**/kohako/home.html**', route => route.continue())
+          await Promise.all([page.waitForNavigation(), page.locator('#reconnect').click()])
+          await page.waitForFunction(() => !document.querySelector('#send').disabled, null, { timeout: 8000 }); await page.waitForTimeout(800)
+          const v = await page.locator('#message').inputValue()
+          assert(v.includes('旧下書き') && v.includes('新しい文'), `草稿が上書きされた: ${v}`)
+          assert((await page.locator('#queue-list').textContent()).includes('旧待ち'), '前回の送信待ちが消えた')
+          assert(await page.evaluate(() => sessionStorage.getItem('kohako-home-reauth')) === null, '退避が残存'); assert(posts.length === 0, '予期しない POST')
           results[device][scenario] = { pass: true, navigations, posts: posts.length, gets }; continue
         }
         if (scenario === 'k') {

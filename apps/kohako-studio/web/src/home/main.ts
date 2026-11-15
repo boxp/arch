@@ -1057,8 +1057,11 @@ reconnect.addEventListener('click', () => {
     return
   const now = Date.now(),
     previous = parseReauth(tab.get(REAUTH_KEY), now)
-  const texts = queue.size ? queue.list().map((x) => x.text) : (previous?.queue ?? [])
-  const draft = message.value || previous?.draft || ''
+  // 認証できないまま再度押した場合は、前回退避した分を上書きせず今回の入力と合わせて退避する。
+  const texts = [...(previous?.queue ?? []), ...queue.list().map((x) => x.text)]
+  const typed = message.value,
+    kept = previous?.draft ?? ''
+  const draft = kept && typed && (typed !== kept || typedSinceLoad) ? `${kept}\n${typed}` : typed || kept
   const saved = serializeReauth({ v: 1, draft, queue: texts, at: now, reloadAt: now })
   if (parseReauth(saved, now)) tab.set(REAUTH_KEY, saved)
   else tab.set(REAUTH_KEY, null)
