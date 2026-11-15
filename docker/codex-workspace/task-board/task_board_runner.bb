@@ -150,6 +150,21 @@
         (log! (str "ai ops ledger module unavailable (" ai-ops-module-path "): " (.getMessage e)))
         false))))
 
+(def conflict-module-path
+  (str (fs/path (fs/parent (fs/canonicalize *file*)) "task_board_conflict.bb")))
+(def conflict-module-loaded?
+  (delay (try (load-file conflict-module-path) true
+              (catch Throwable e (log! (str "conflict observation module unavailable: " (.getMessage e))) false))))
+(defn conflict-observe! [f-sym & args]
+  (try (when (and @conflict-module-loaded? ((resolve 'task-board-conflict/enabled?)))
+         (with-bindings {(resolve 'task-board-conflict/*warning-handler*) log!}
+           (apply (resolve f-sym) args)))
+       (catch Throwable e (log! (str "conflict observation failed: " (.getMessage e))) nil)))
+(defn conflict-declare-instruction [ticket-id]
+  (try (when (and @conflict-module-loaded? ((resolve 'task-board-conflict/enabled?)))
+         (str "Conflict observation (record only; it changes neither start nor merge): once your investigation shows what you will change, run once: bb " conflict-module-path " declare " ticket-id " --keys '<comma separated keys>' with keys like code:<repo>:<dir>, spec:<feature-or-contract>, deploy:<target>, res:<resource>. Skip it if you change nothing.\n"))
+       (catch Throwable e (log! (str "conflict observation prompt failed: " (.getMessage e))) nil)))
+
 (def subscription-module-path
   (str (fs/path (fs/parent (fs/canonicalize *file*)) "ai_subscription_usage.bb")))
 
@@ -2304,6 +2319,7 @@
                                   prepared))
                 "Use these per-run worktrees for repository changes. Do not edit shared checkouts under /home/boxp/ghq for this task.\n")
            "No repository worktree was prepared for this ticket.\n")
+         "Storage placement: put temporary clones, extra worktrees, caches, build outputs and verification copies inside this run workspace (it is cleaned up automatically). When verification needs a copy of a built site or large tracked assets, do not duplicate files already tracked in the repository; reference the checkout path or symlink into it, and delete such copies before the run ends; copies identical to origin are automatically removed from older runs. Do not create them under /home/boxp/ghq, ~/.cache or elsewhere in the home directory, where nothing cleans them up. Verification media (screenshots, screen recordings, rendered frames, comparison images, audio) must not be written or copied into the Obsidian vault, which syncs to a size-limited remote: keep the media that has to be kept under /home/boxp/verification-artifacts/<TICKET>/<label>/ (outside the vault, not cleaned up) and record in the vault only a text summary of the result and that path. Images the ticket itself asks for as deliverables are not verification media.\n"
          (when (seq unavailable)
            (str "Repositories that need preparation inside this run workspace:\n"
                 (str/join "" (map (fn [{:keys [repo message]}]
@@ -2765,6 +2781,7 @@
            "First inspect the ticket Notes, relevant repos, current git state, PR state if referenced, and tests.\n"
            "Do the requested work end to end where possible.\n"
            (append-note-instruction agent ticket-id)
+           (conflict-declare-instruction ticket-id)
            review-contract
            "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\n")
 
@@ -2774,6 +2791,7 @@
            "First verify whether the blocker is actually cleared. If still blocked, update Notes with the concrete blocker.\n"
            "Do the work end to end where possible.\n"
            (append-note-instruction agent ticket-id)
+           (conflict-declare-instruction ticket-id)
            review-contract
            "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\n")
 
@@ -2783,6 +2801,7 @@
            "First inspect the ticket Notes, relevant repos, current git state, and existing project conventions.\n"
            "Do the work end to end where possible, including focused validation.\n"
            (append-note-instruction agent ticket-id)
+           (conflict-declare-instruction ticket-id)
            review-contract
            "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\n")))))
 
@@ -4924,6 +4943,11 @@
                 (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
                 (record-ai-ops-event! ticket-id (:run-id lock) assignee action "started"
                                       {:event_type "run.started" :lane_from status :lane_to (ai-ops-run-lane status)})
+                (try (when (conflict-observe! 'task-board-conflict/enabled?)
+                       (conflict-observe! 'task-board-conflict/record-pre! (env "CODEX_TASK_BOARD_ROOT" default-root)
+                                          {:ticket ticket-id :run (:run-id lock) :agent assignee :action (name action)
+                                           :repos (ticket-repos ticket-id) :text (slurp (str (ticket-path ticket-id)))}))
+                     (catch Throwable e (log! (str "conflict observation pre failed: " (.getMessage e)))))
                 ;; The card actually moved: record the start transition as well so
                 ;; the ledger lane history matches the board (run.started is not a
                 ;; state transition for the aggregator).
@@ -4963,7 +4987,18 @@
                     gate-result (when (= "continue" intended)
                                   (review-gate! dir last-message))
                     _ (when gate-result
-                        (record-ai-ops-gate! ticket-id run-id assignee action gate-result))
+                        (record-ai-ops-gate! ticket-id run-id assignee action gate-result)
+                        (try (future
+                               (try (doseq [url (:pr-urls gate-result)]
+                                      (when (conflict-observe! 'task-board-conflict/enabled?)
+                                        (if-let [pr (conflict-observe! 'task-board-conflict/fetch-pr url)]
+                                          (conflict-observe! 'task-board-conflict/record-pr! (env "CODEX_TASK_BOARD_ROOT" default-root)
+                                                             (merge pr {:ticket ticket-id :run run-id :pr url
+                                                                        :gate-ok (:ok? gate-result)
+                                                                        :gate (when-not (:ok? gate-result) (some-> (:gate gate-result) name))}))
+                                          (log! (str "conflict observation PR fetch failed or timed out: " url)))))
+                                    (catch Throwable e (log! (str "conflict observation PR failed: " (.getMessage e))))))
+                             (catch Throwable e (log! (str "conflict observation future failed: " (.getMessage e))))))
                     _ (do (begin-lifecycle-commit!)
                           (reset! committing? true))
                     ;; localllm docs-edit: the document write was staged, not
@@ -5617,7 +5652,8 @@
         (let [metrics {:mode mode :new-bytes-est bytes :new-bytes-basis (cond (contains? #{:carryover :reuse} mode) "worktree-move-no-copy" (some? bytes) "git-ls-tree-blob-sum" :else "unavailable")
                        :moved (boolean (:reused-from worktree))}]
           (workspace-metrics-write! (merge {:event :workspace-prepare :ticket ticket-id :run run-id :repo (:repo worktree)
-                                           :reason (:reuse-fallback worktree) :reused-from (:reused-from worktree)} metrics))
+                                           :reason (:reuse-fallback worktree) :reused-from (:reused-from worktree)}
+                                          (when-let [r (:reuse-base-reason worktree)] {:reuse-base-reason r}) metrics))
           metrics))
       (catch Exception e (log! (str "workspace-metrics: warning " (.getMessage e)))))))
 
@@ -6261,9 +6297,16 @@
           (not (safe-run-workspace-path? ticket-id run-id path)) "unsafe-path"
           :else (stale-process-hold (fs/real-path path)))))
 
-(defn dehydrate-scan [run co checkouts min-bytes]
+(defn dehydrate-scan
+  "With allow-dirty? a checkout holding local changes is still scanned, but
+  every path git status reports (modified, staged, renamed, untracked) is
+  left alone: only tracked files identical to their index blob are listed."
+  [run co checkouts min-bytes allow-dirty?]
   (let [marker (dehydrated-marker co)
         status (generated-git co "status" "--porcelain" "-z" "--untracked-files=all")
+        ;; -z entries are "XY path"; a rename adds the bare source path.
+        changed (into #{} (mapcat #(if (and (> (count %) 3) (= \space (nth % 2))) [% (subs % 3)] [%]))
+                      (remove str/blank? (str/split (str (:out status)) #"\u0000")))
         nested? (some #(and (not= (str %) (str co))
                             (or (fs/starts-with? % co) (fs/starts-with? co %))) checkouts)]
     (cond
@@ -6271,7 +6314,7 @@
       nested? {:hold "nested-checkout"}
       (fs/exists? marker {:nofollow-links true}) {:already true}
       (not (zero? (:exit status))) {:hold "git-error"}
-      (not (str/blank? (:out status))) {:hold "uncommitted-changes"}
+      (and (not allow-dirty?) (not (str/blank? (:out status)))) {:hold "uncommitted-changes"}
       (some #(fs/exists? (fs/path (fs/parent marker) %) {:nofollow-links true})
             ["MERGE_HEAD" "rebase-merge" "rebase-apply" "CHERRY_PICK_HEAD" "REVERT_HEAD" "BISECT_LOG" "index.lock"]) {:hold "git-operation-in-progress"}
       :else
@@ -6288,7 +6331,7 @@
                 files (keep (fn [entry]
                               (when-let [[_ mode sha stage rel] (re-matches #"(?s)(100644|100755) ([0-9a-f]+) ([0-9])\t(.*)" entry)]
                                 (let [path (fs/path co rel)]
-                                  (when (and (= stage "0") (not (skipped rel))
+                                  (when (and (= stage "0") (not (skipped rel)) (not (changed rel))
                                              (fs/regular-file? path {:nofollow-links true})
                                              (>= (fs/get-attribute path "basic:size" {:nofollow-links true}) min-bytes)
                                              (= 1 (fs/get-attribute path "unix:nlink" {:nofollow-links true}))
@@ -6298,12 +6341,14 @@
                                                  (do (vswap! mismatches inc) false)))
                                     rel)))) (str/split (:out index) #"\u0000"))
                 bytes (reduce (fn [n rel] (let [v (generated-measure (fs/path co rel))] (if (and n v) (+ n v) (reduced nil)))) 0 files)]
-            (if (nil? bytes) {:hold "measurement-failed"} {:files (vec files) :bytes bytes :marker marker :hash-mismatches @mismatches})))))))
+            (if (nil? bytes) {:hold "measurement-failed"} {:files (vec files) :bytes bytes :marker marker :hash-mismatches @mismatches :status (:out status) :dirty (not (str/blank? (:out status)))})))))))
 
 (defn dehydrate-pass! [mode hours cap stop? stats count-done]
   (let [flag (fs/path (root) "generated-reclaim.edn")
         enabled? (and (not= "off" (some-> (System/getenv "CODEX_TASK_BOARD_GENERATED_RECLAIM_DEHYDRATE") str/trim str/lower-case))
                       (not= false (try (:dehydrate (read-edn-file flag nil)) (catch Exception _ false))))
+        allow-dirty? (and (not= "off" (some-> (System/getenv "CODEX_TASK_BOARD_DEHYDRATE_DIRTY") str/trim str/lower-case))
+                          (not= false (try (:dehydrate-dirty (read-edn-file flag nil)) (catch Exception _ false))))
         min-bytes (prune-setting "CODEX_TASK_BOARD_DEHYDRATE_MIN_BYTES" #(parse-bounded-long % 262144 1))]
     (when enabled?
       (doseq [ticket-dir (child-directories (workspaces-dir)) :while (and (not (stop?)) (< (count-done) cap))
@@ -6313,12 +6358,12 @@
         (try
           (let [checkouts (find-checkouts run)]
             (doseq [co checkouts :while (and (not (stop?)) (< (count-done) cap))]
-              (let [{:keys [hold already files bytes hash-mismatches]} (dehydrate-scan run co checkouts min-bytes)
+              (let [{:keys [hold already files bytes hash-mismatches dirty]} (dehydrate-scan run co checkouts min-bytes allow-dirty?)
                     display (str (fs/relativize run co))
                     recheck (when (and (not hold) (seq files) (= mode :on))
                               (with-ticket-lock-guard ticket
                                 #(or (generated-ticket-hold ticket) (dehydrate-run-hold ticket run-id hours)
-                                     (let [fresh (dehydrate-scan run co (find-checkouts run) min-bytes)]
+                                     (let [fresh (dehydrate-scan run co (find-checkouts run) min-bytes allow-dirty?)]
                                        (cond (:hold fresh) (:hold fresh)
                                              (not= files (:files fresh)) "candidates-changed"
                                              :else (try
@@ -6329,15 +6374,16 @@
                                                        (if-not (zero? (:exit (git-with-paths co ["update-index" "-z" "--skip-worktree" "--stdin"] files)))
                                                          "update-index-failed"
                                                          (do (doseq [rel files] (fs/delete (fs/path co rel)))
-                                                             (let [status (generated-git co "status" "--porcelain")]
-                                                               (when (or (not (zero? (:exit status))) (not (str/blank? (:out status)))) "post-verify-failed")))))
+                                                             ;; Local changes must read exactly as before.
+                                                             (let [status (generated-git co "status" "--porcelain" "-z" "--untracked-files=all")]
+                                                               (when (or (not (zero? (:exit status))) (not= (:out status) (:status fresh))) "post-verify-failed")))))
                                                      (catch Exception e (str "dehydrate-failed " (one-line (.getMessage e))))))))))
                     result (cond hold :held (= recheck "post-verify-failed") :held recheck :skipped-recheck (and (seq files) (= mode :on)) :reclaimed (seq files) :would-reclaim :else nil)
                     reason (or hold recheck)]
                 (when already (swap! stats update :already-dehydrated inc))
                 (when hash-mismatches (swap! stats update :dehydrate-hash-mismatches + hash-mismatches))
                 (when result
-                  (workspace-metrics-write! {:event :generated-reclaim :kind :tracked-dehydrate :ticket ticket :run run-id :path display :files (count files) :allocated-bytes bytes :result result :reason reason})
+                  (workspace-metrics-write! {:event :generated-reclaim :kind :tracked-dehydrate :ticket ticket :run run-id :path display :files (count files) :allocated-bytes bytes :result result :reason reason :dirty (boolean dirty)})
                   (if reason
                     (do (swap! stats update :held inc) (swap! stats update-in [:held-by-reason reason] (fnil inc 0)) (log! (str "generated-reclaim: hold " display " reason=" reason)))
                     (do (swap! stats update result inc)
@@ -6346,6 +6392,269 @@
                         (log! (str "generated-reclaim: dehydrate " display " files=" (count files) " bytes=" bytes (when (= result :would-reclaim) " (dry-run)")))))))))
           (catch Exception e (log! (str "generated-reclaim: dehydrate error " run " " (one-line (.getMessage e))))))))))
 
+(defn outside-copy-enabled? []
+  ;; Eligibility is the stale prune's own, so the pass follows its switch.
+  (and (stale-prune-enabled?)
+       (not= "off" (some-> (System/getenv "CODEX_TASK_BOARD_OUTSIDE_COPY_RECLAIM") str/trim str/lower-case))
+       (not= false (try (:outside-copies (read-edn-file (fs/path (root) "generated-reclaim.edn") nil)) (catch Exception _ false)))))
+
+(defn outside-copy-active-run
+  "Run id of the live run holding the ticket lock, :unreadable when the lock
+  does not name one, nil when the ticket is not locked."
+  [ticket-id]
+  (when (fs/exists? (lock-path ticket-id) {:nofollow-links true})
+    (let [info (try (lock-prune-info (read-edn-file (lock-path ticket-id) nil) ticket-id) (catch Exception _ nil))]
+      (or (:active-run-id info) :unreadable))))
+
+(defn outside-copy-ticket-hold
+  "Unlike generated-ticket-hold the ticket may be in any lane: only runs the
+  stale prune already treats as deletable are touched. A ticket locked by a
+  live run is handled like the stale prune's locked-active path when
+  allow-active? is set: its other stale runs stay eligible."
+  ([ticket-id] (outside-copy-ticket-hold ticket-id false))
+  ([ticket-id allow-active?]
+   (let [active (outside-copy-active-run ticket-id)]
+     (cond (and active (or (not allow-active?) (= :unreadable active))) "locked"
+           (nil? (board-card-lanes ticket-id)) "board-unreadable"
+           (nil? (ticket-frontmatter-or-nil ticket-id)) "ticket-missing"))))
+
+(defn outside-copy-run-hold [ticket-id run-id]
+  (let [path (run-workspace-dir ticket-id run-id)
+        ids (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))
+        decision (stale-run-decision run-id ids (now) (stale-retention-hours) (keep-latest-runs))]
+    (cond (= run-id (outside-copy-active-run ticket-id)) "active-run"
+          (not (:eligible? decision)) (:reason decision)
+          (not (safe-run-workspace-path? ticket-id run-id path)) "unsafe-path"
+          :else (stale-process-hold (fs/real-path path)))))
+
+(defn outside-copy-git
+  "Git against common-dir, bounded by the seconds the pass may still run (left)
+  and by cap. Not started once the budget ran out: reported as a failure."
+  [common-dir left cap & args]
+  (if (pos? (left))
+    (command-result (into ["git" (str "--git-dir=" common-dir)] args) {:timeout-seconds (max 1 (min cap (left)))})
+    {:exit -1 :out "" :err "outside-copy budget exhausted"}))
+
+(defn outside-copy-origin-blobs
+  "sha -> true for every blob in the remote-tracking default branch of the
+  repository behind common-dir, or nil when it cannot be read. Only
+  remote-tracking refs count: their content is known to exist on GitHub.
+  :commit holds the commit the tree was listed from. left returns the
+  seconds the pass may still run."
+  [common-dir left]
+  (let [git (fn [& args] (apply outside-copy-git common-dir left 120 args))
+        commit (some #(let [r (git "rev-parse" "--verify" "-q" (str % "^{commit}"))
+                            sha (str/trim (:out r))]
+                        (when (and (zero? (:exit r)) (re-matches #"[0-9a-f]{40,64}" sha)) sha))
+                     ["refs/remotes/origin/HEAD" "refs/remotes/origin/main" "refs/remotes/origin/master"])
+        tree (when commit (git "ls-tree" "-r" "-z" commit))]
+    (when (and tree (zero? (:exit tree)))
+      (into {:commit commit} (keep #(when-let [[_ sha] (re-matches #"(?s)(?:100644|100755) blob ([0-9a-f]+)\t.*" %)] [sha true]))
+            (str/split (:out tree) #"\u0000")))))
+
+(defn outside-copy-pin!
+  "Keeps commit (and so every blob the ledger restores from) reachable in the
+  shared clone after origin's branch moves on and Git collects garbage.
+  Returns the ref name, or nil when the ref could not be written and read back."
+  [common-dir commit left]
+  (let [ref (str "refs/codex-task-board/outside-copy-reclaim/" commit)
+        git (fn [& args] (apply outside-copy-git common-dir left 30 args))]
+    (when (and commit
+               (zero? (:exit (git "update-ref" ref commit)))
+               (= commit (str/trim (:out (git "rev-parse" "--verify" "-q" (str ref "^{commit}"))))))
+      ref)))
+
+(defn outside-copy-link-targets
+  "Real paths (strings) that symlinks anywhere under the task-board state and
+  the workspaces resolve to, so a copy referenced from another run or from the
+  run records is kept. nil when the scan did not complete."
+  [timeout-seconds]
+  (let [all (vec (distinct (keep #(try (str (fs/real-path %)) (catch Exception _ nil)) [(root) (workspaces-dir)])))
+        roots (remove (fn [r] (some #(and (not= r %) (fs/starts-with? (fs/path r) (fs/path %))) all)) all)
+        scan (command-result (vec (concat ["find" "-P"] roots ["-type" "l" "-print0"])) {:timeout-seconds timeout-seconds})]
+    (when (and (seq roots) (zero? (:exit scan)))
+      (into #{} (keep #(try (str (fs/real-path %)) (catch Exception _ nil)))
+            (remove str/blank? (str/split (:out scan) #"\u0000"))))))
+
+(defn outside-copy-hashes
+  "path -> raw blob sha (no clean filter). Files that vanish or cannot be
+  hashed are simply absent from the result. left returns the seconds the pass
+  may still run: every git call is bounded by it and hashing stops at zero."
+  [common-dir paths left]
+  (let [prefix (if (zero? (:exit (command-result ["sh" "-c" "command -v nice >/dev/null && command -v ionice >/dev/null"] {:timeout-seconds (max 1 (min 10 (left)))}))) ["nice" "-n" "19" "ionice" "-c2" "-n7"] [])
+        one (fn [path] (let [r (command-result (into prefix ["git" (str "--git-dir=" common-dir) "hash-object" "--no-filters" "--" (str path)]) {:timeout-seconds (max 1 (min 60 (left)))})]
+                         (when (zero? (:exit r)) (str/trim (:out r)))))]
+    (into {}
+          (mapcat (fn [chunk]
+                    (let [r (if-not (pos? (left))
+                              {:exit -1}
+                              (try (let [proc (p/process (into prefix ["git" (str "--git-dir=" common-dir) "hash-object" "--no-filters" "--stdin-paths"])
+                                                         {:in (str (str/join "\n" (map str chunk)) "\n") :out :string :err :string})
+                                         res (deref proc (* 1000 (max 1 (left))) ::timeout)]
+                                     (if (= ::timeout res) (do (p/destroy-tree proc) {:exit -1}) res))
+                                   (catch Exception _ {:exit -1})))
+                          lines (when (zero? (:exit r)) (str/split-lines (:out r)))]
+                      (if (= (count lines) (count chunk))
+                        (map vector chunk lines)
+                        (keep (fn [path] (when (pos? (left)) (when-let [sha (one path)] [path sha]))) chunk)))))
+          (partition-all 200 paths))))
+
+(defn outside-copy-files
+  "Regular single-link files of at least min-bytes in the run that belong to
+  no checkout (nested repositories included) and are not reachable through a
+  symlink, neither one inside the run nor one in external-targets (real paths
+  of link targets found elsewhere). Each is {:path :rel :blocks-bytes :size
+  :mtime}; nil on scan error or once left (seconds the pass may still run) ran out."
+  [run-path min-bytes external-targets left]
+  (let [run-real (fs/real-path run-path)
+        limit #(max 1 (min 300 (left)))
+        linked? (fn [path] (loop [p path]
+                             (cond (nil? p) false
+                                   (contains? external-targets (str p)) true
+                                   (= p run-real) false
+                                   :else (recur (fs/parent p)))))
+        checkouts (mapv fs/real-path (find-checkouts run-path))
+        scan (command-result ["find" "-P" (str run-real) "-name" ".git" "-prune" "-o" "-type" "f" "-links" "1" "-size" (str "+" (max 0 (dec min-bytes)) "c") "-printf" "%b\\t%s\\t%T@\\t%p\\0"] {:timeout-seconds (limit)})
+        links (command-result ["find" "-P" (str run-real) "-name" ".git" "-prune" "-o" "-type" "l" "-print0"] {:timeout-seconds (limit)})]
+    (when (and (pos? (left)) (zero? (:exit scan)) (zero? (:exit links)))
+      (let [targets (vec (distinct (keep #(try (fs/real-path %) (catch Exception _ nil)) (remove str/blank? (str/split (:out links) #"\u0000")))))]
+        (vec (keep (fn [entry]
+                     (when-let [[_ blocks size mtime file] (re-matches #"(?s)(\d+)\t(\d+)\t([0-9.]+)\t(.*)" entry)]
+                       (let [path (fs/path file) rel (str (fs/relativize run-real path))]
+                         (when (and (not (re-find #"[\t\n\r]" rel))
+                                    (not-any? #(fs/starts-with? path %) checkouts)
+                                    (not-any? #(fs/starts-with? path %) targets)
+                                    (not (linked? path)))
+                           {:path path :rel rel :blocks-bytes (* 512 (Long/parseLong blocks)) :size (Long/parseLong size) :mtime mtime}))))
+                   (str/split (:out scan) #"\u0000")))))))
+
+(defn outside-copy-common-dirs
+  "Absolute common git dirs of the shared clones behind the ticket's run checkouts."
+  [ticket-dir left]
+  (vec (distinct
+        (for [run (child-directories ticket-dir)
+              co (try (find-checkouts run) (catch Exception _ []))
+              :while (pos? (left))
+              :let [r (command-result ["git" "-C" (str co) "rev-parse" "--path-format=absolute" "--git-common-dir"] {:timeout-seconds (max 1 (min 60 (left)))})]
+              :let [dir (str/trim (:out r))]
+              ;; A clone living inside a run can vanish with it; only shared
+              ;; clones outside the workspaces are a durable restore source.
+              :when (and (zero? (:exit r)) (not (str/blank? dir))
+                         (try (not (fs/starts-with? (fs/real-path dir) (fs/real-path (workspaces-dir)))) (catch Exception _ false)))]
+          dir))))
+
+(defn outside-copy-reclaim-pass!
+  "Stale runs are kept whole when anything lies outside their checkouts. Most
+  of those bytes are verification copies of tracked assets, so files there
+  that are byte-identical to a blob on origin's default branch are removed
+  (ledger first, restorable with git cat-file). Unique files, directories,
+  checkouts and the retention rules are left as they are."
+  [mode stop? stats]
+  (when (outside-copy-enabled?)
+    (let [min-bytes (prune-setting "CODEX_TASK_BOARD_OUTSIDE_COPY_MIN_BYTES" #(parse-bounded-long % 65536 1))
+          budget (prune-setting "CODEX_TASK_BOARD_OUTSIDE_COPY_BUDGET_SECONDS" #(parse-bounded-long % 600 1))
+          deadline (.plusSeconds (java.time.Instant/now) budget)
+          ;; Seconds the pass may still run: every scan, hash and delete is bounded by it.
+          left #(if (stop?) 0 (.getSeconds (java.time.Duration/between (java.time.Instant/now) deadline)))
+          done? #(not (pos? (left)))
+          link-targets (outside-copy-link-targets (max 1 (min 300 (left))))
+          pins (atom {})
+          pin-of (fn [dir commit] (if (contains? @pins dir) (get @pins dir)
+                                      (let [v (outside-copy-pin! dir commit left)] (swap! pins assoc dir v) v)))
+          cache-path (fs/path (root) "metrics" "outside-copy-scan-cache.edn")
+          loaded (let [v (try (read-edn-file cache-path {}) (catch Exception _ {}))] (if (map? v) v {}))
+          cache (atom (into {} (filter (fn [[k v]] (and (string? k) (set? v) (fs/directory? (fs/path (workspaces-dir) k)))) loaded)))
+          blobs (atom {})
+          blobs-of (fn [dir] (if (contains? @blobs dir) (get @blobs dir)
+                                 (let [v (outside-copy-origin-blobs dir left)] (swap! blobs assoc dir v) v)))
+          ledger (fs/path (root) "metrics" "outside-copy-reclaim-ledger.tsv")
+          skip! (fn [reason] (swap! stats update-in [:outside-copy-skipped reason] (fnil inc 0)))]
+      (when (nil? link-targets) (skip! "link-scan-failed"))
+      (doseq [ticket-dir (when link-targets (child-directories (workspaces-dir))) :while (not (done?))
+              :let [ticket (fs/file-name ticket-dir)]]
+        (try
+          (if-let [reason (outside-copy-ticket-hold ticket true)]
+            (skip! reason)
+            (let [active? (some? (outside-copy-active-run ticket))
+                  sources (delay (vec (keep (fn [dir] (when-let [m (blobs-of dir)] [dir m])) (outside-copy-common-dirs ticket-dir left))))]
+              (doseq [run (child-directories ticket-dir) :while (not (done?))
+                      :let [run-id (fs/file-name run) key (str ticket "/" run-id)]]
+                (try
+                  (if-let [reason (outside-copy-run-hold ticket run-id)]
+                    (skip! (first (str/split reason #" ")))
+                    (let [files (outside-copy-files run min-bytes link-targets left)
+                          known (get @cache key #{})
+                          fresh (remove #(known [(:rel %) (:size %) (:mtime %)]) files)]
+                      (cond
+                        (nil? files) (skip! "scan-failed")
+                        (empty? fresh) nil
+                        (empty? @sources) (skip! "no-origin-blobs")
+                        :else
+                        (let [hashes (outside-copy-hashes (ffirst @sources) (map :path fresh) left)
+                              source-of (fn [sha] (some (fn [[dir m]] (when (get m sha) dir)) @sources))
+                              matched (vec (keep (fn [f] (when-let [sha (get hashes (:path f))]
+                                                           (when-let [dir (source-of sha)]
+                                                             (assoc f :sha sha :source dir :commit (some (fn [[d m]] (when (= d dir) (:commit m))) @sources))))) fresh))
+                              misses (into #{} (keep (fn [f] (when (and (get hashes (:path f)) (not (source-of (get hashes (:path f)))))
+                                                               [(:rel f) (:size f) (:mtime f)]))) fresh)
+                              bytes (reduce + 0 (map :blocks-bytes matched))
+                              removed (volatile! 0) removed-bytes (volatile! 0)
+                              ;; A live run needs the guard for its heartbeat, so for
+                              ;; its ticket only the status is rechecked under the guard
+                              ;; and the files go outside it, as the stale prune does.
+                              status #(or (cond (not active?) (outside-copy-ticket-hold ticket)
+                                                (nil? (outside-copy-active-run ticket)) "lock-changed"
+                                                :else (outside-copy-ticket-hold ticket true))
+                                          (outside-copy-run-hold ticket run-id))
+                              recheck (when (and (seq matched) (= mode :on))
+                                        ((if active? (fn [_ f] (or (with-ticket-lock-guard ticket status) (f))) with-ticket-lock-guard) ticket
+                                          #(or (status)
+                                               (let [again (into {} (map (juxt :path identity)) (or (outside-copy-files run min-bytes link-targets left) []))
+                                                     still (filterv (fn [f] (contains? again (:path f))) matched)
+                                                     rehash (outside-copy-hashes (ffirst @sources) (map :path still) left)]
+                                                 (fs/create-dirs (fs/parent ledger))
+                                                 (doseq [f still :while (pos? (left))
+                                                         ;; The restore source must outlive origin's branch: pin its commit first.
+                                                         :let [pin (pin-of (:source f) (:commit f))]]
+                                                   (if (and pin
+                                                            (= (:sha f) (get rehash (:path f)))
+                                                            (zero? (:exit (outside-copy-git (:source f) left 30 "cat-file" "-e" (str (:sha f) "^{blob}")))))
+                                                     (try
+                                                       (spit (str ledger)
+                                                             (str (str/join "\t" [(str (now)) ticket run-id (:rel f) (:sha f) (:source f) (:blocks-bytes f)
+                                                                                  (if (owner-executable? (:path f)) "100755" "100644") pin]) "\n")
+                                                             :append true)
+                                                       (fs/delete (:path f))
+                                                       (vswap! removed inc) (vswap! removed-bytes + (:blocks-bytes f))
+                                                       (catch Exception e
+                                                         (log! (str "generated-reclaim: outside-copy delete-failed " key "/" (:rel f) " " (one-line (.getMessage e))))))
+                                                     (swap! stats update :outside-copy-changed inc)))
+                                                 nil))))
+                              result (cond recheck :skipped-recheck (empty? matched) nil (= mode :on) :reclaimed :else :would-reclaim)]
+                          (when (seq misses) (swap! cache update key (fnil into #{}) misses))
+                          (when result
+                            (workspace-metrics-write! {:event :generated-reclaim :kind :outside-copy :ticket ticket :run run-id
+                                                       :files (if (= result :reclaimed) @removed (count matched))
+                                                       :allocated-bytes (if (= result :reclaimed) @removed-bytes bytes) :result result :reason recheck})
+                            (case result
+                              :skipped-recheck (skip! (first (str/split recheck #" ")))
+                              :reclaimed (do (swap! stats update :outside-copy-runs inc)
+                                             (swap! stats update :outside-copy-files + @removed)
+                                             (swap! stats update :outside-copy-allocated-bytes + @removed-bytes))
+                              :would-reclaim (do (swap! stats update :outside-copy-runs inc)
+                                                 (swap! stats update :outside-copy-files + (count matched))
+                                                 (swap! stats update :outside-copy-would-allocated-bytes + bytes)))
+                            (log! (str "generated-reclaim: outside-copy " key " result=" (name result) " files=" (count matched) " bytes=" bytes
+                                       (when recheck (str " reason=" (one-line recheck))))))))))
+                  (catch Exception e (log! (str "generated-reclaim: outside-copy run error " key " " (one-line (.getMessage e)))))))))
+          (catch Exception e (log! (str "generated-reclaim: outside-copy ticket error " ticket " " (one-line (.getMessage e)))))))
+      (try
+        (fs/create-dirs (fs/parent cache-path))
+        (let [temp (fs/create-temp-file {:dir (fs/parent cache-path) :prefix "outside-copy-cache-"})]
+          (spit (str temp) (pr-str @cache))
+          (fs/move temp cache-path {:replace-existing true :atomic-move true}))
+        (catch Exception e (log! (str "generated-reclaim: outside-copy cache write failed " (one-line (.getMessage e)))))))))
+
 (defn reclaim-generated-outputs! [{:keys [dry-run? stop?] :or {stop? (constantly false)}}]
   (let [configured (generated-reclaim-mode)
         mode (if (and dry-run? (not= :off configured)) :dry-run configured)
@@ -6353,7 +6662,8 @@
         cap (prune-setting "CODEX_TASK_BOARD_GENERATED_RECLAIM_MAX_PER_PASS" #(parse-bounded-long % 50 1))
         free #(try (.getUsableSpace (java.io.File. (str (workspaces-dir)))) (catch Exception _ nil))
         before (free)
-        stats (atom {:reclaimed 0 :would-reclaim 0 :held 0 :reclaimed-allocated-bytes 0 :would-reclaim-allocated-bytes 0 :dehydrated-files 0 :already-dehydrated 0 :dehydrate-hash-mismatches 0 :held-by-reason {} :skipped-tickets {} :skipped-runs {}})
+        stats (atom {:reclaimed 0 :would-reclaim 0 :held 0 :reclaimed-allocated-bytes 0 :would-reclaim-allocated-bytes 0 :dehydrated-files 0 :already-dehydrated 0 :dehydrate-hash-mismatches 0 :held-by-reason {} :skipped-tickets {} :skipped-runs {}
+                     :outside-copy-runs 0 :outside-copy-files 0 :outside-copy-allocated-bytes 0 :outside-copy-would-allocated-bytes 0 :outside-copy-changed 0 :outside-copy-skipped {}})
         count-done #(+ (:reclaimed @stats) (:would-reclaim @stats))]
     (when (not= mode :off)
       (doseq [ticket-dir (child-directories (workspaces-dir)) :while (and (not (stop?)) (< (count-done) cap))]
@@ -6414,8 +6724,118 @@
                   (catch Exception e (log! (str "generated-reclaim: run error " run-path " " (one-line (.getMessage e))))))))
             (catch Exception e (log! (str "generated-reclaim: ticket error " ticket-id " " (one-line (.getMessage e))))))))
       (dehydrate-pass! mode hours cap stop? stats count-done)
+      (outside-copy-reclaim-pass! mode stop? stats)
       (workspace-metrics-write! (merge {:event :generated-reclaim-summary :mode mode :fs-free-bytes-before before :fs-free-bytes-after (free)} @stats))
       (log! (str "generated-reclaim: summary " (one-line (pr-str (assoc @stats :mode mode))))))))
+
+(defn capacity-events []
+  (let [path (fs/path (root) "metrics" "workspace-capacity.edn")]
+    (if (fs/exists? path)
+      (with-open [reader (clojure.java.io/reader (str path))]
+        (doall (keep (fn [line]
+                       (when (str/includes? line ":capacity-attribution")
+                         (try (let [e (edn/read-string line)]
+                                (when (= :capacity-attribution (:event e))
+                                  (assoc e ::instant (java.time.Instant/parse (:at e)))))
+                              (catch Throwable _ nil))))
+                     (line-seq reader))))
+      [])))
+
+(defn capacity-top-fresh [areas]
+  (take 5 (sort-by (fn [[name data]] [(- (:fresh-bytes data)) name]) areas)))
+
+(defn capacity-attribution! []
+  (try
+    (when (prune-setting "CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION" parse-prune-enabled)
+      (let [instant (now)
+            events (capacity-events)
+            latest (last (sort-by ::instant events))
+            interval (prune-setting "CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES" #(parse-bounded-long % 50 0))]
+        (when (or (nil? latest) (not (.isAfter (::instant latest) (.minus instant (java.time.Duration/ofMinutes interval)))))
+          (let [root-path (or (not-empty (System/getenv "CODEX_TASK_BOARD_CAPACITY_ROOT")) "/home/boxp")
+                guard (prune-setting "CODEX_TASK_BOARD_CAPACITY_GUARD_BYTES" #(parse-bounded-long % 8589934592 0))
+                store (java.io.File. root-path)
+                total (.getTotalSpace store) free (.getUsableSpace store) used (- total free)
+                baseline (last (sort-by ::instant (filter #(and (not (.isAfter (::instant %) (.minus instant (java.time.Duration/ofHours 20))))
+                                                                  (not (.isBefore (::instant %) (.minus instant (java.time.Duration/ofDays 8))))
+                                                                  (number? (:fs-used-bytes %))
+                                                                  ;; Another root is another filesystem, and a scan that timed out or
+                                                                  ;; exited non-zero has partial per-area sums: neither is a valid
+                                                                  ;; baseline. Records written before :scan-complete existed are
+                                                                  ;; judged by their exit status (-1 = timed out).
+                                                                  (= root-path (:root %))
+                                                                  (if (contains? % :scan-complete) (true? (:scan-complete %)) (= 0 (:scan-exit %)))) events)))
+                hours (when baseline (/ (double (.toMillis (java.time.Duration/between (::instant baseline) instant))) 3600000.0))
+                delta (when baseline (- used (:fs-used-bytes baseline)))
+                rate (when baseline (long (Math/round (/ (* delta 24.0) hours))))
+                days (when (and rate (pos? rate)) (/ (double (Math/round (* 10.0 (max 0.0 (/ (double (- free guard)) rate))))) 10.0))
+                prefix (if (zero? (:exit (command-result ["sh" "-c" "command -v nice >/dev/null && command -v ionice >/dev/null"]))) ["nice" "-n" "19" "ionice" "-c2" "-n7"] [])
+                ;; Lowest best-effort priority, not the idle class: an idle-class scan gets no
+                ;; I/O while runs are busy, times out, and leaves no usable record.
+                scan-timeout (prune-setting "CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_TIMEOUT_SECONDS" #(parse-bounded-long % 900 1))
+                args (into prefix ["find" "-P" root-path "-xdev" "-ignore_readdir_race" "-type" "f" "-printf" "%b\t%T@\t%n\t%i\t%P\\0"])
+                started (System/nanoTime)
+                builder (java.lang.ProcessBuilder. ^java.util.List args)
+                _ (.redirectError builder java.lang.ProcessBuilder$Redirect/DISCARD)
+                proc (.start builder)
+                result (atom {:areas {} :subareas {} :workspaces {:bytes 0 :fresh-bytes 0 :by-kind {"node_modules" 0 "dist" 0 "git" 0 "other" 0}} :outside-workspaces {:bytes 0 :fresh-bytes 0} :scanned-bytes 0 :scanned-files 0})
+                seen (java.util.HashSet.)
+                fresh-cutoff (- (/ (.toEpochMilli instant) 1000.0) 86400.0)
+                scan (future
+                      ;; Killing a timed-out find closes this stream under the reader; the
+                      ;; partial sums are still recorded, marked incomplete below.
+                      (try
+                       (with-open [in (java.io.BufferedInputStream. (.getInputStream proc))]
+                         (let [record (java.io.ByteArrayOutputStream.)]
+                           (loop []
+                             (let [b (.read in)]
+                               (when (not= -1 b)
+                                 (if (zero? b)
+                                   (let [line (.toString record "UTF-8")
+                                         [blocks mtime links inode path] (str/split line #"\t" 5)
+                                         bytes (* 512 (Long/parseLong blocks))
+                                         fresh? (>= (Double/parseDouble mtime) fresh-cutoff)
+                                         parts (str/split path #"/")
+                                         area (if (> (count parts) 1) (first parts) "(root files)")
+                                         subarea (when (> (count parts) 1) (str (first parts) "/" (second parts)))
+                                         workspace? (str/starts-with? path ".codex-task-board/workspaces/")
+                                         kind (cond (some #{"node_modules"} (butlast parts)) "node_modules"
+                                                    (some #{"dist"} (butlast parts)) "dist"
+                                                    (some #{".git"} (butlast parts)) "git" :else "other")
+                                         fresh (if fresh? bytes 0)]
+                                     (.reset record)
+                                     (when (or (= "1" links) (.add seen inode))
+                                       (swap! result (fn [r]
+                                                       (cond-> (-> r (update :scanned-bytes + bytes) (update :scanned-files inc)
+                                                                   (update-in [:areas area :bytes] (fnil + 0) bytes)
+                                                                   (update-in [:areas area :fresh-bytes] (fnil + 0) fresh)
+                                                                   (update-in [(if workspace? :workspaces :outside-workspaces) :bytes] + bytes)
+                                                                   (update-in [(if workspace? :workspaces :outside-workspaces) :fresh-bytes] + fresh))
+                                                         subarea (update-in [:subareas subarea :bytes] (fnil + 0) bytes)
+                                                         subarea (update-in [:subareas subarea :fresh-bytes] (fnil + 0) fresh)
+                                                         workspace? (update-in [:workspaces :by-kind kind] + bytes))))))
+                                   (.write record b))
+                                 (recur))))))
+                       (catch java.io.IOException _ nil)))
+                completed (.waitFor proc scan-timeout java.util.concurrent.TimeUnit/SECONDS)
+                _ (when-not completed (.destroyForcibly proc))
+                _ @scan
+                exit (if completed (.exitValue proc) -1)
+                ;; A find that ends in time but non-zero (unreadable directory, I/O error) has
+                ;; skipped files, so its per-area sums are as partial as a timed-out scan.
+                complete (boolean (and completed (zero? exit)))
+                r @result
+                subareas (into (sorted-map-by (fn [a b] (let [c (compare (get-in r [:subareas b :bytes]) (get-in r [:subareas a :bytes]))] (if (zero? c) (compare a b) c))))
+                               (take 40 (sort-by (comp - :bytes val) (filter #(>= (:bytes (val %)) 536870912) (:subareas r)))))
+                area-deltas (if (and baseline complete) (into {} (keep (fn [area] (let [d (- (get-in r [:areas area :bytes] 0) (get-in baseline [:areas area :bytes] 0))] (when (>= (abs d) 268435456) [area d]))) (into (set (keys (:areas r))) (keys (:areas baseline))))) {})
+                event (merge r {:event :capacity-attribution :root root-path :fs-total-bytes total :fs-free-bytes free :fs-used-bytes used
+                                :scan-ms (quot (- (System/nanoTime) started) 1000000) :scan-exit exit :scan-complete complete :fresh-window-hours 24 :subareas subareas
+                                :baseline-at (:at baseline) :baseline-hours hours :used-delta-bytes delta :used-bytes-per-day rate :area-delta-bytes area-deltas :days-to-guard days})]
+            (workspace-metrics-write! event)
+            (log! (str "capacity-attribution: used=" used " free=" free " outside-workspaces=" (get-in r [:outside-workspaces :bytes])
+                       " fresh24h=" (reduce + 0 (map :fresh-bytes (vals (:areas r)))) " days-to-guard=" days
+                       " top-fresh=" (str/join "," (map (fn [[a v]] (str (one-line a) ":" (:fresh-bytes v))) (capacity-top-fresh (:areas r))))))))))
+    (catch Throwable e (log! (str "capacity-attribution: warning " (one-line (.getMessage e)))))))
 
 (defn prune-workspaces!
   ([] (prune-workspaces! {}))
@@ -6463,7 +6883,8 @@
            (let [store (let [dir (java.io.File. (str (workspaces-dir)))] (when (.isDirectory dir) dir))
                  capacity (assoc @(:capacity ctx) :fs-free-bytes (when store (.getUsableSpace store)) :fs-total-bytes (when store (.getTotalSpace store))
                                  :duration-ms (quot (- (System/nanoTime) started-nanos) 1000000))]
-             (workspace-metrics-write! (merge {:event :prune-summary} @(:stats ctx) capacity)))
+             (workspace-metrics-write! (merge {:event :prune-summary} @(:stats ctx) capacity))
+             (when (and (not dry-run?) (not (stop?))) (capacity-attribution!)))
            (catch Exception e (log! (str "workspace-metrics: warning " (.getMessage e))))))
        (log! (str "prune: summary deleted=" deleted
                   " stale-deleted=" stale-deleted
@@ -6492,8 +6913,13 @@
         prepares (filter #(= :workspace-prepare (:event %)) events)
         runs (filter #(= :prune-run (:event %)) events)
         latest (last (filter #(= :prune-summary (:event %)) events))
+        attribution (last (sort-by ::instant (capacity-events)))
         generated (reduce + 0 (keep #(when (= :new-checkout (:mode %)) (:new-bytes-est %)) prepares))
         reclaimed (reduce + 0 (keep #(when (= :deleted (:result %)) (:allocated-bytes %)) runs))]
+    (when attribution
+      (println "capacity-used-bytes=" (:fs-used-bytes attribution) "free-bytes=" (:fs-free-bytes attribution))
+      (println "capacity-days-to-guard=" (:days-to-guard attribution) "used-bytes-per-day=" (:used-bytes-per-day attribution))
+      (println "capacity-top-fresh=" (pr-str (capacity-top-fresh (:areas attribution)))))
     (println "prepare-by-mode=" (pr-str (frequencies (map :mode prepares))))
     (println "fallback-by-reason=" (pr-str (frequencies (keep :reason prepares))))
     (println "generated-bytes-est=" generated)

@@ -193,5 +193,16 @@ check "repo: BOXP-269 P0 PR file set -> worker only" "$WORKER" "$repo_root" \
   scripts/images/build-gpu-worker-image.sh scripts/images/verify-gpu-worker-image-s3.sh \
   scripts/images/verify-gpu-worker-image-s3.test.sh scripts/images/verify-gpu-worker-image.sh scripts/images/worker-node-config.py
 
+# BOXP-538 guard: the worker-only kubelet image GC role (PR #14961) must apply
+# to golyat-4 only, never to the control plane (control-plane.yml is not run).
+check "repo: BOXP-538 worker_kubelet_image_gc PR file set -> worker only" "$WORKER" "$repo_root" \
+  ansible/playbooks/worker-image.yml \
+  ansible/roles/worker_kubelet_image_gc/defaults/main.yml ansible/roles/worker_kubelet_image_gc/tasks/main.yml \
+  ansible/roles/worker_kubelet_image_gc/tasks/restore.yml \
+  ansible/roles/worker_kubelet_image_gc/templates/20-kubelet-config-dir.conf.j2 \
+  ansible/roles/worker_kubelet_image_gc/templates/50-image-gc.conf.j2 \
+  ansible/tests/test_worker_kubelet_image_gc.py docs/project_docs/BOXP-538/plan.md \
+  .github/scripts/ansible-apply-targets.test.sh
+
 echo "$((total - failures))/$total passed"
 [ "$failures" -eq 0 ]

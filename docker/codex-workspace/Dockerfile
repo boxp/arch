@@ -1,10 +1,10 @@
 FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
 
 # Keep pinned versions here covered by renovate.json5 customManagers when adding new tools.
-ARG CODEX_VERSION=0.167.0
-ARG CLAUDE_CODE_VERSION=2.1.321
+ARG CODEX_VERSION=0.167.2
+ARG CLAUDE_CODE_VERSION=2.1.322
 ARG EVEN_TERMINAL_VERSION=0.10.5
-ARG PI_AGENT_VERSION=1.5.0
+ARG PI_AGENT_VERSION=1.5.2
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.14
 ARG GH_VERSION=2.103.3
 ARG GHQ_VERSION=1.12.0
@@ -176,6 +176,7 @@ COPY recurring-events/ /opt/codex-workspace/recurring-events/
 COPY model-catalog.edn /opt/codex-workspace/model-catalog.edn
 COPY model-updates/ /opt/codex-workspace/model-updates/
 COPY infra-diagram-refresh/ /opt/codex-workspace/infra-diagram-refresh/
+COPY site-refresh/ /opt/codex-workspace/site-refresh/
 COPY skills/ /opt/codex-workspace/skills/
 RUN chmod 0755 /usr/local/bin/codex-workspace-entrypoint \
     && chmod 0755 /opt/codex-workspace/dotfiles-sync.sh \
@@ -185,6 +186,7 @@ RUN chmod 0755 /usr/local/bin/codex-workspace-entrypoint \
     && find /opt/codex-workspace/novel-board -type f -name "*.bb" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/recurring-events -type f -name "*.bb" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/model-updates -type f -name "*.bb" -exec chmod 0755 {} + \
+    && find /opt/codex-workspace/site-refresh -type f -name "*.bb" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/infra-diagram-refresh -type f \( -name "*.bb" -o -name "*.sh" \) -exec chmod 0755 {} +
 
 EXPOSE 2222 3456

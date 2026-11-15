@@ -7,7 +7,7 @@ export const QUEUE_MAX_CHARS = 500
 
 export type QueueItem = { id: number; text: string; addedAt: number }
 /** 自動送信を止めた理由。止まっている間は先頭を送らず、明示的な「再開」か「取消」を待つ。 */
-export type HoldReason = 'failed' | 'stopped' | 'auth' | 'unknown' | 'offline' | 'timeout'
+export type HoldReason = 'failed' | 'stopped' | 'auth' | 'unknown' | 'offline' | 'timeout' | 'speech'
 export type AddResult = { ok: true; item: QueueItem } | { ok: false; error: 'empty' | 'too_long' | 'full' }
 
 export const holdLabel: Record<HoldReason, string> = {
@@ -17,6 +17,7 @@ export const holdLabel: Record<HoldReason, string> = {
   unknown: '前の送信が受理されたか確認できないため',
   offline: '接続できないため',
   timeout: '前の依頼の確認がタイムアウトしたため',
+  speech: '読み上げが途中で止まったため（「続きから読む」で続きを読めます）',
 }
 
 export class MessageQueue {
@@ -24,9 +25,15 @@ export class MessageQueue {
   private seq = 0
   held: HoldReason | null = null
 
-  get size(): number { return this.items.length }
-  list(): readonly QueueItem[] { return this.items }
-  peek(): QueueItem | null { return this.items[0] ?? null }
+  get size(): number {
+    return this.items.length
+  }
+  list(): readonly QueueItem[] {
+    return this.items
+  }
+  peek(): QueueItem | null {
+    return this.items[0] ?? null
+  }
 
   /** 本文を末尾へ積む。空・長すぎ・上限超過では積まない（呼び出し側は入力欄の本文を消さない）。 */
   add(raw: string, now: number): AddResult {
@@ -41,14 +48,17 @@ export class MessageQueue {
 
   /** 待機中の 1 件を取り消す。送り出し済み（キューから外れたもの）は対象外。 */
   remove(id: number): boolean {
-    const i = this.items.findIndex(x => x.id === id)
+    const i = this.items.findIndex((x) => x.id === id)
     if (i < 0) return false
     this.items.splice(i, 1)
     if (!this.items.length) this.held = null
     return true
   }
 
-  clear(): void { this.items = []; this.held = null }
+  clear(): void {
+    this.items = []
+    this.held = null
+  }
 
   /** 先頭を送り出すために取り出す。保留中・空なら null（同じ項目を 2 回取り出すことはない）。 */
   take(): QueueItem | null {
@@ -58,7 +68,7 @@ export class MessageQueue {
 
   /** 受理されなかったことが確定した項目を先頭へ戻す（順序を保つ）。 */
   putBack(item: QueueItem): void {
-    if (this.items.some(x => x.id === item.id)) return
+    if (this.items.some((x) => x.id === item.id)) return
     this.items.unshift(item)
   }
 
@@ -69,7 +79,9 @@ export class MessageQueue {
     return true
   }
 
-  resume(): void { this.held = null }
+  resume(): void {
+    this.held = null
+  }
 }
 
 export const addErrorText: Record<'empty' | 'too_long' | 'full', string> = {

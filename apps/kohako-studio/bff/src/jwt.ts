@@ -23,7 +23,7 @@ export async function verifyAccessJwt(
     if (header?.alg !== 'RS256') return bad('algorithm')
     if (typeof header.kid !== 'string' || !header.kid) return bad('key')
     const jwk = await jwks.getKey(header.kid)
-    if (!jwk || jwk.kty !== 'RSA') return bad('key')
+    if (jwk?.kty !== 'RSA') return bad('key')
     if (
       !verify(
         'RSA-SHA256',

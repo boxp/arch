@@ -748,7 +748,7 @@
         (let [resp (http/post (home-url) {:headers {"content-type" "application/json"
                                                     "authorization" (str "Bearer " token)
                                                     "x-request-id" home-id}
-                                          :body (json/generate-string (if (= (:source copy) "hermes-cron") (:payload copy) (home-payload event home-id copy)))
+                                          :body (json/generate-string (if (#{"hermes-cron" "alertmanager"} (:source copy)) (:payload copy) (home-payload event home-id copy)))
                                           :timeout (* 1000 (env-long "CODEX_TASK_BOARD_EVENT_HTTP_TIMEOUT_SECONDS" "15"))
                                           :throw false})
               status (:status resp)
@@ -970,13 +970,41 @@
      {:home-sent 0} (fs/glob (cron-copy-dir) "*.md"))))
 
 
+(defn alert-copy-dir [] (str (fs/path (vault) "Projects/alertmanager-deliveries/delivered-copies")))
+
+(defn flush-alert-home! []
+  (if (str/blank? (home-url))
+    {:home-sent 0}
+    (reduce
+     (fn [acc path]
+       (try
+         (let [copy (json/parse-string (slurp (str path)) true)
+               id (:id copy) text (:text copy) sent (:sent_at copy)
+               age (when (string? sent) (- (.getEpochSecond (now)) (.getEpochSecond (.toInstant (java.time.OffsetDateTime/parse sent)))))
+               valid (and (string? id) (re-matches #"alert-[A-Za-z0-9_.-]{8,200}" id)
+                          (= (str id ".md") (str (fs/file-name path)))
+                          (string? text) (not (str/blank? text)) age)
+               state (when valid (read-home-state id))]
+           (cond
+             (not valid) acc
+             (contains? #{:sent :failed :skipped} (:status state)) acc
+             (home-waiting? state) acc
+             (> age (home-max-age-seconds)) (do (write-event! (home-dir) {:event-id id :status :skipped :reason "stale-copy" :updated-at (now-str)}) acc)
+             :else (send-home-copy! acc nil id state
+                                  {:source "alertmanager" :payload {:eventId id :source "alertmanager"
+                                   :eventType (if (and (number? (:firing copy)) (pos? (:firing copy))) "alert.firing" "alert.resolved")
+                                   :title (clip (if (and (string? (:title copy)) (not (str/blank? (:title copy)))) (:title copy) "Alertmanager 通知") 200)
+                                   :body (clip text 4000) :createdAt sent}})))
+         (catch Exception _ acc)))
+     {:home-sent 0} (fs/glob (alert-copy-dir) "*.md"))))
+
 (defn prune-home! []
   (let [max-age (* 86400 (done-retention-days))]
     (doseq [path (event-files (home-dir))
             :let [state (read-event path)]
             :when (and state (:updated-at state) (> (seconds-since (:updated-at state)) max-age))]
       (fs/delete-if-exists path))
-    (doseq [path (concat (fs/glob (str (fs/path (vault) "Projects/task-board-events/delivered-copies")) "*.md") (fs/glob (cron-copy-dir) "*.md"))
+    (doseq [path (concat (fs/glob (str (fs/path (vault) "Projects/task-board-events/delivered-copies")) "*.md") (fs/glob (cron-copy-dir) "*.md") (fs/glob (alert-copy-dir) "*.md"))
             :when (> (.getSeconds (java.time.Duration/between (.toInstant (fs/last-modified-time path)) (now))) max-age)]
       (fs/delete-if-exists path))))
 
@@ -998,7 +1026,8 @@
     (try (prune-done!) (prune-home!) (catch Exception e (log! (str "prune failed: " (.getMessage e)))))
     {:lane-events (count changes) :reconciled reconciled :digest digest :flushed flushed
      :home (try (flush-home!) (catch Exception e (log! (str "home inbox flush failed: " (.getMessage e))) {}))
-     :cron-home (try (flush-cron-home!) (catch Exception e (log! (str "cron home flush failed: " (.getMessage e))) {}))}))
+     :cron-home (try (flush-cron-home!) (catch Exception e (log! (str "cron home flush failed: " (.getMessage e))) {}))
+     :alert-home (try (flush-alert-home!) (catch Exception e (log! (str "alert home flush failed: " (.getMessage e))) {}))}))
 
 (defn loop! []
   (log! (str "task-board event dispatcher started, root=" (root) ", vault=" (vault)

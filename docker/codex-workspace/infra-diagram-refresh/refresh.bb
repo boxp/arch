@@ -314,7 +314,7 @@
                 "--acceptance" (str "- [ ] 差分ごとに、図へ反映したか対象外かと、その根拠が Notes にある\n"
                                     "- [ ] 反映があれば両図とサムネイルが実 URL で新版になり、前回の図を失っていない\n"
                                     "- [ ] 基準が配備の確認後に進み、次の定期チェックが無差分で終わる\n"
-                                    "- [ ] ooedo 除外と公開境界(両図は一般公開済み、portfolio stage は本人限定)を維持している。portfolio 本番切替はしていない")
+                                    "- [ ] ooedo 除外と公開境界(両図は一般公開済み、portfolio stage は本人限定)を維持している。portfolio 本番は deploy-portfolio.yml の配備と実 URL 照合が成功している")
                 "--context-file" body-file
                 "--plan" plan)))]
     (:id (json/parse-string out true))))

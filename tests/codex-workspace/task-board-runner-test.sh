@@ -7,6 +7,7 @@ unset CODEX_TASK_BOARD_CLAUDE_BIN
 unset CODEX_TASK_BOARD_FABLE_MODEL
 unset CODEX_TASK_BOARD_FABLE_AGENT
 unset CODEX_TASK_BOARD_FABLE_EXTRA_ARGS
+export CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=off
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb"
@@ -5456,7 +5457,10 @@ reuse_prepare() {
                             (apply original old args)))))
       (let [workspace (prepare-run-workspace! (System/getenv "TEST_TICKET") (System/getenv "TEST_RUN"))
             result (first (:repo-worktrees workspace))
-            prompt (workspace-prompt workspace)]
+            prompt (workspace-prompt workspace)
+            placement "Storage placement: put temporary clones, extra worktrees, caches, build outputs and verification copies inside this run workspace (it is cleaned up automatically). When verification needs a copy of a built site or large tracked assets, do not duplicate files already tracked in the repository; reference the checkout path or symlink into it, and delete such copies before the run ends; copies identical to origin are automatically removed from older runs. Do not create them under /home/boxp/ghq, ~/.cache or elsewhere in the home directory, where nothing cleans them up. Verification media (screenshots, screen recordings, rendered frames, comparison images, audio) must not be written or copied into the Obsidian vault, which syncs to a size-limited remote: keep the media that has to be kept under /home/boxp/verification-artifacts/<TICKET>/<label>/ (outside the vault, not cleaned up) and record in the vault only a text summary of the result and that path. Images the ticket itself asks for as deliverables are not verification media."]
+        (assert (clojure.string/includes? prompt placement))
+        (assert (clojure.string/includes? (workspace-prompt {:workspace-dir "/tmp/run" :repo-worktrees []}) placement))
         (when (:carryover result)
           (assert (clojure.string/includes? prompt "Carried over from previous run"))
           (assert (not (clojure.string/includes? prompt "private-untracked"))))
@@ -5853,6 +5857,7 @@ test_workspace_reuse_interplay() {
     assert_file_contains "$tmp/o" ':reused-from "20200102T000000Z"'
     assert_file_contains "$tmp/o" ':reuse-base-reason "studio-dist-dropped"'
     assert_file_contains "$tmp/state/runs/BOXP-908/20200103T000000Z/workspace-reuse.edn" ':reuse-base-reason "studio-dist-dropped"'
+    assert_file_contains "$tmp/state/metrics/workspace-capacity.edn" ':reuse-base-reason "studio-dist-dropped"'
     [[ ! -e "$old" && ! -e "$new/apps/kohako-studio/web/dist" && "$(cat "$new/apps/kohako-studio/web/public/copied.txt")" == efgh && "$(git -C "$new" rev-parse HEAD)" == "$(git -C "$tmp/source" rev-parse origin/main)" ]] || fail 'studio dist drop or reuse failed'
   else
     if [[ "$dist_case" == unknown ]]; then
@@ -5993,7 +5998,7 @@ test_dehydrate_holds() {
       operation) touch "$(git -C "$co" rev-parse --absolute-git-dir)/MERGE_HEAD" ;;
       hash) git -C "$co" update-index --assume-unchanged large; printf changed >>"$co/large" ;;
     esac
-    CODEX_TASK_BOARD_GENERATED_RECLAIM=on CODEX_TASK_BOARD_GENERATED_RECLAIM_DEHYDRATE="$([[ "$mode" == envflag ]] && echo off || echo on)" CODEX_TASK_BOARD_GENERATED_RECLAIM_MIN_AGE_HOURS="$([[ "$mode" == age ]] && echo 100 || echo 1)" run_prune "$vault" "$state" >"$out"
+    CODEX_TASK_BOARD_DEHYDRATE_DIRTY=off CODEX_TASK_BOARD_GENERATED_RECLAIM=on CODEX_TASK_BOARD_GENERATED_RECLAIM_DEHYDRATE="$([[ "$mode" == envflag ]] && echo off || echo on)" CODEX_TASK_BOARD_GENERATED_RECLAIM_MIN_AGE_HOURS="$([[ "$mode" == age ]] && echo 100 || echo 1)" run_prune "$vault" "$state" >"$out"
     [[ -f "$co/large" ]] || fail "dehydrate hold failed: $mode"
     case "$mode" in
       dirty) git -C "$co" checkout -- small ;;
@@ -6007,6 +6012,49 @@ test_dehydrate_holds() {
       operation) rm "$(git -C "$co" rev-parse --absolute-git-dir)/MERGE_HEAD" ;;
       hash) git -C "$co" update-index --no-assume-unchanged large; git -C "$co" checkout -- large ;;
     esac
+  done
+}
+
+test_dehydrate_dirty_keeps_changes() {
+  # A held Done run with local changes: only tracked files identical to the
+  # index blob are dehydrated; every changed/staged/untracked path is kept.
+  local tmp vault state source co run out mode gitdir before
+  for mode in on envoff flagoff; do
+    tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
+    mkdir -p "$state/locks" "$tmp/proc/100"
+    ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+    export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
+    make_prune_source_repo "$source"
+    head -c 307200 /dev/urandom >"$source/large"; head -c 307200 /dev/urandom >"$source/edited"
+    head -c 307200 /dev/urandom >"$source/moved"; echo small >"$source/small"
+    git -C "$source" add .; prune_git -C "$source" commit -qm large
+    write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+    write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+    run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
+    co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
+    echo change >>"$co/small"; printf local >>"$co/edited"
+    head -c 307200 /dev/urandom >"$co/untracked"
+    head -c 307200 /dev/urandom >"$co/staged"; git -C "$co" add staged
+    git -C "$co" mv moved renamed
+    before="$(git -C "$co" status --porcelain --untracked-files=all; sha256sum "$co/small" "$co/edited" "$co/untracked" "$co/staged" "$co/renamed")"
+    [[ "$mode" != flagoff ]] || echo '{:mode :on :dehydrate-dirty false}' >"$state/generated-reclaim.edn"
+    CODEX_TASK_BOARD_GENERATED_RECLAIM=on CODEX_TASK_BOARD_DEHYDRATE_DIRTY="$([[ "$mode" == envoff ]] && echo off || echo on)" run_prune "$vault" "$state" >"$out"
+    gitdir="$(git -C "$co" rev-parse --absolute-git-dir)"
+    [[ "$before" == "$(git -C "$co" status --porcelain --untracked-files=all; sha256sum "$co/small" "$co/edited" "$co/untracked" "$co/staged" "$co/renamed")" ]] || fail "local changes altered: $mode"
+    if [[ "$mode" != on ]]; then
+      [[ -f "$co/large" && ! -e "$gitdir/codex-task-board-dehydrated" ]] || fail "dirty dehydration not disabled: $mode"
+      continue
+    fi
+    [[ ! -e "$co/large" ]] || fail 'clean tracked file in dirty checkout not dehydrated'
+    [[ "$(tr '\0' '\n' <"$gitdir/codex-task-board-dehydrated")" == large ]] || fail 'marker lists a changed path'
+    assert_file_contains "$state/metrics/workspace-capacity.edn" ':dirty true'
+    CODEX_TASK_BOARD_ROOT="$state" TEST_RUNNER="$RUNNER" TEST_CO="$co" bb -e '
+      (System/setProperty "babashka.file" "/tmp/load-runner.bb")
+      (load-file (System/getenv "TEST_RUNNER"))
+      (assert (nil? (rehydrate-checkout! (fs/path (System/getenv "TEST_CO")))))' >"$out" 2>&1 || { cat "$out" >&2; fail 'rehydrate of dirty checkout failed'; }
+    [[ "$(sha256sum "$source/large" | cut -d' ' -f1)" == "$(sha256sum "$co/large" | cut -d' ' -f1)" ]] || fail 'restored content differs'
+    [[ ! -e "$gitdir/codex-task-board-dehydrated" ]] || fail 'marker retained'
+    [[ "$before" == "$(git -C "$co" status --porcelain --untracked-files=all; sha256sum "$co/small" "$co/edited" "$co/untracked" "$co/staged" "$co/renamed")" ]] || fail 'local changes altered by restore'
   done
 }
 
@@ -6379,6 +6427,152 @@ test_generated_reclaim_studio() {
   assert_file_contains "${tmp}/out" 'generated-reclaim: hold .*copied.txt'
   [[ "$(find "${state}/workspaces/BOXP-522" -name copied.txt -path '*/dist/*' | wc -l)" == 3 ]] || fail 'studio dist with modified HTML entry deleted'
   assert_file_contains "${tmp}/out" 'generated-reclaim: hold .*web/dist.* reason=inputs-modified'
+}
+
+test_capacity_attribution() {
+  local tmp vault state root metrics before
+  tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; root="$tmp/volume"; metrics="$state/metrics/workspace-capacity.edn"
+  mkdir -p "$root/one" "$root/two" "$root/.codex-task-board/workspaces/T-1/r/x/node_modules" "$vault" "$state"
+  printf fresh >"$root/one/fresh"; printf old >"$root/two/old"; touch -d '3 days ago' "$root/two/old"
+  printf link >"$root/one/link"; ln "$root/one/link" "$root/one/link2"
+  printf module >"$root/.codex-task-board/workspaces/T-1/r/x/node_modules/a"
+  printf odd >"$root/"$'tab\tand\nnewline'
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" run_prune "$vault" "$state" >"$tmp/out"
+  TEST_METRICS="$metrics" TEST_ROOT="$root" bb -e '
+    (require (quote [clojure.edn :as edn]))
+    (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))
+          bytes (fn [p] (* 512 (Long/parseLong (clojure.string/trim (:out (babashka.process/shell {:out :string} "stat" "-c" "%b" (str (System/getenv "TEST_ROOT") "/" p)))))))]
+      (assert e) (assert (= 5 (:scanned-files e))) (assert (pos? (get-in e [:areas "(root files)" :bytes])))
+      (assert (= (+ (bytes "one/fresh") (bytes "one/link")) (get-in e [:areas "one" :bytes])))
+      (assert (= (bytes "two/old") (get-in e [:areas "two" :bytes])))
+      (assert (zero? (get-in e [:areas "two" :fresh-bytes])))
+      (assert (= (get-in e [:areas "one" :bytes]) (get-in e [:areas "one" :fresh-bytes])))
+      (assert (pos? (get-in e [:workspaces :by-kind "node_modules"])))
+      (assert (nil? (:days-to-guard e))))'
+  before="$(grep -c ':event :capacity-attribution' "$metrics")"
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 run_prune "$vault" "$state" --dry-run >"$tmp/out"
+  [[ "$(grep -c ':event :capacity-attribution' "$metrics")" == "$before" ]] || fail 'dry run recorded attribution'
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" run_prune "$vault" "$state" >"$tmp/out"
+  [[ "$(grep -c ':event :capacity-attribution' "$metrics")" == "$before" ]] || fail 'interval ignored'
+  # Records from another root (another filesystem) or from a scan cut off by the
+  # timeout must not become the baseline for the growth rate.
+  TEST_METRICS="$metrics" bb -e '
+    (require (quote [clojure.edn :as edn]))
+    (let [path (System/getenv "TEST_METRICS") e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp path)))))
+          old (assoc e :at (str (.minus (java.time.Instant/now) (java.time.Duration/ofHours 24))) :fs-used-bytes (- (:fs-used-bytes e) 1000000000))]
+      (assert (true? (:scan-complete e)))
+      ;; Records written before :scan-complete existed are judged by :scan-exit.
+      (spit path (str (pr-str (assoc old :root "/elsewhere")) "\n" (pr-str (assoc old :scan-complete false)) "\n"
+                      (pr-str (dissoc (assoc old :scan-exit -1) :scan-complete)) "\n" (pr-str (dissoc (assoc old :scan-exit 1) :scan-complete)) "\n") :append true))'
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 CODEX_TASK_BOARD_CAPACITY_GUARD_BYTES=0 run_prune "$vault" "$state" >"$tmp/out"
+  TEST_METRICS="$metrics" bb -e '(require (quote [clojure.edn :as edn])) (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))] (assert (nil? (:baseline-at e))) (assert (nil? (:used-bytes-per-day e))))'
+  TEST_METRICS="$metrics" bb -e '
+    (require (quote [clojure.edn :as edn]))
+    (let [path (System/getenv "TEST_METRICS") e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp path)))))
+          baseline (assoc e :at (str (.minus (java.time.Instant/now) (java.time.Duration/ofHours 24))) :fs-used-bytes (- (:fs-used-bytes e) 1000000000))]
+      (spit path (str (pr-str baseline) "\n") :append true))'
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 CODEX_TASK_BOARD_CAPACITY_GUARD_BYTES=0 run_prune "$vault" "$state" >"$tmp/out"
+  TEST_METRICS="$metrics" bb -e '(require (quote [clojure.edn :as edn])) (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))] (assert (pos? (:used-bytes-per-day e))) (assert (number? (:days-to-guard e))))'
+  # A find that ends in time but non-zero (unreadable directory) skipped files:
+  # the record must say so and must not report per-area growth.
+  if [[ "$(id -u)" != 0 ]]; then
+    mkdir -p "$root/locked/inner"; printf hidden >"$root/locked/inner/f"; chmod 000 "$root/locked"
+    CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 CODEX_TASK_BOARD_CAPACITY_GUARD_BYTES=0 run_prune "$vault" "$state" >"$tmp/out"
+    chmod 755 "$root/locked"; rm -rf "$root/locked"
+    TEST_METRICS="$metrics" bb -e '(require (quote [clojure.edn :as edn])) (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))] (assert (pos? (:scan-exit e))) (assert (false? (:scan-complete e))) (assert (= {} (:area-delta-bytes e))))'
+  fi
+  # A scan cut off by the timeout is killed mid-read: the record must still be
+  # written, marked incomplete, instead of being lost to a closed-stream error.
+  mkdir -p "$tmp/slowbin"
+  printf '#!/bin/sh\nwhile :; do printf "8\\t0\\t1\\t1\\tone/fresh\\0"; done\n' >"$tmp/slowbin/find"; chmod +x "$tmp/slowbin/find"
+  before="$(grep -c ':event :capacity-attribution' "$metrics")"
+  PATH="$tmp/slowbin:$PATH" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_TIMEOUT_SECONDS=1 CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 CODEX_TASK_BOARD_CAPACITY_GUARD_BYTES=0 run_prune "$vault" "$state" >"$tmp/out"
+  [[ "$(grep -c ':event :capacity-attribution' "$metrics")" == "$((before + 1))" ]] || fail 'timed-out scan left no record'
+  TEST_METRICS="$metrics" bb -e '(require (quote [clojure.edn :as edn])) (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))] (assert (= -1 (:scan-exit e))) (assert (false? (:scan-complete e))) (assert (= {} (:area-delta-bytes e))))'
+  CODEX_TASK_BOARD_ROOT="$state" bb "$RUNNER" workspace-metrics >"$tmp/summary"
+  assert_file_contains "$tmp/summary" 'capacity-used-bytes='
+  assert_file_contains "$tmp/summary" 'capacity-days-to-guard='
+  assert_file_contains "$tmp/summary" 'capacity-top-fresh='
+  before="$(grep -c ':event :capacity-attribution' "$metrics")"
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=off CODEX_TASK_BOARD_CAPACITY_ROOT="$root" run_prune "$vault" "$state" >"$tmp/out"
+  [[ "$(grep -c ':event :capacity-attribution' "$metrics")" == "$before" ]] || fail 'off ignored'
+}
+
+test_outside_copy_reclaim() {
+  # Stale runs kept for files outside the checkout: copies identical to a blob
+  # on origin's default branch are removed, everything else stays.
+  local tmp vault state source out mode old mid new co run copy ledger sha
+  local real_git; real_git="$(command -v git)"
+  for mode in on active activeself dryrun envoff flagoff locked latest recent slow slowtree; do
+    tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
+    mkdir -p "$state/locks" "$tmp/proc/100"
+    ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+    export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
+    make_prune_source_repo "$source"
+    head -c 204800 /dev/urandom >"$source/asset.bin"; head -c 204800 /dev/urandom >"$source/tool.bin"; chmod +x "$source/tool.bin"
+    git -C "$source" add .; prune_git -C "$source" commit -qm assets
+    git -C "$source" update-ref refs/remotes/origin/main HEAD
+    # Committed only on a local branch: not known to exist on GitHub.
+    head -c 204800 /dev/urandom >"$source/local.bin"; git -C "$source" add local.bin; prune_git -C "$source" commit -qm local
+    write_board "$vault" "- [ ] [[Tickets/BOXP-519|BOXP-519: wip]] #ticket status::in-progress"
+    write_prune_ticket "$vault" BOXP-519 in-progress ""
+    old="$(date -u -d '30 hours ago' +%Y%m%dT%H%M%SZ)"; mid="$(date -u -d '20 hours ago' +%Y%m%dT%H%M%SZ)"; new="$(date -u -d '14 hours ago' +%Y%m%dT%H%M%SZ)"
+    [[ "$mode" != recent ]] || old="$(date -u -d '3 hours ago' +%Y%m%dT%H%M%SZ)"
+    [[ "$mode" != recent ]] || { mid="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"; new="$(date -u -d '1 hours ago' +%Y%m%dT%H%M%SZ)"; }
+    co="$(add_prune_run "$state" "$source" BOXP-519 "$new")"
+    mkdir -p "$state/workspaces/BOXP-519/$mid"
+    run="$state/workspaces/BOXP-519/$old"; [[ "$mode" != latest ]] || run="$state/workspaces/BOXP-519/$mid"
+    copy="$run/deploy/site"; mkdir -p "$copy/linked" "$copy/nested" "$run/ghq"
+    cp "$source/asset.bin" "$copy/asset.bin"; cp -p "$source/tool.bin" "$copy/tool.bin"
+    cp "$source/local.bin" "$copy/local.bin"
+    head -c 204800 /dev/urandom >"$copy/unique.bin"; echo note >"$run/note.md"
+    cp "$source/asset.bin" "$copy/hard.bin"; ln "$copy/hard.bin" "$copy/hard2.bin"
+    cp "$source/asset.bin" "$copy/linked/target.bin"; ln -s "$copy/linked/target.bin" "$run/link"
+    git init -q "$copy/nested"; cp "$source/asset.bin" "$copy/nested/asset.bin"
+    # Referenced from another run and from the run records: links outside the run protect too.
+    mkdir -p "$copy/extdir" "$state/runs/BOXP-519"
+    cp "$source/asset.bin" "$copy/extlinked.bin"; ln -s "$copy/extlinked.bin" "$state/workspaces/BOXP-519/$new/ext-link"
+    cp "$source/asset.bin" "$copy/extdir/asset.bin"; ln -s "$copy/extdir" "$state/runs/BOXP-519/ext-dir"
+    # Hashing slower than the pass budget must end the pass without deleting.
+    mkdir -p "$tmp/bin"
+    # So must any other git call of the pass (listing origin's tree here): each is bounded by the time left.
+    printf '#!/usr/bin/env bash\ncase "$1 $* " in %s) sleep 12 ;; esac\nexec %q "$@"\n' "$([[ "$mode" == slowtree ]] && echo '--git-dir=*" ls-tree "*' || echo '*" hash-object "*')" "$real_git" >"$tmp/bin/git"; chmod +x "$tmp/bin/git"
+    case "$mode" in
+      flagoff) echo '{:mode :on :outside-copies false}' >"$state/generated-reclaim.edn" ;;
+      locked) echo "{}" >"$state/locks/BOXP-519.edn" ;;
+      # A live run holds the ticket: its other stale runs stay eligible, as in the stale prune.
+      active) echo "{:ticket \"BOXP-519\" :run-id \"$new\"}" >"$state/locks/BOXP-519.edn" ;;
+      activeself) echo "{:ticket \"BOXP-519\" :run-id \"$old\"}" >"$state/locks/BOXP-519.edn" ;;
+    esac
+    local started=$SECONDS
+    PATH="$([[ "$mode" == slow* ]] && echo "$tmp/bin:")$PATH" CODEX_TASK_BOARD_OUTSIDE_COPY_BUDGET_SECONDS="$([[ "$mode" == slow* ]] && echo 3 || echo 600)" \
+      CODEX_TASK_BOARD_GENERATED_RECLAIM="$([[ "$mode" == dryrun ]] && echo dry-run || echo on)" \
+      CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true CODEX_TASK_BOARD_OUTSIDE_COPY_RECLAIM="$([[ "$mode" == envoff ]] && echo off || echo on)" run_prune "$vault" "$state" >"$out" 2>&1 || { cat "$out" >&2; fail "prune failed: $mode"; }
+    ledger="$state/metrics/outside-copy-reclaim-ledger.tsv"
+    [[ "$mode" != slow* ]] || (( SECONDS - started < 11 )) || { cat "$out" >&2; fail "outside-copy pass ran past its budget: $mode"; }
+    for keep in unique.bin local.bin hard.bin hard2.bin linked/target.bin nested/asset.bin extlinked.bin extdir/asset.bin; do
+      [[ -f "$copy/$keep" ]] || { cat "$out" >&2; fail "outside-copy removed protected file $keep: $mode"; }
+    done
+    [[ -f "$run/note.md" && -f "$co/asset.bin" && -f "$source/asset.bin" ]] || fail "outside-copy touched unique/checkout files: $mode"
+    if [[ "$mode" != on && "$mode" != active ]]; then
+      [[ -f "$copy/asset.bin" && -f "$copy/tool.bin" && ! -e "$ledger" ]] || { cat "$out" >&2; fail "outside-copy deleted when it must not: $mode"; }
+      [[ "$mode" != dryrun ]] || assert_file_contains "$state/metrics/workspace-capacity.edn" ':outside-copy-would-allocated-bytes 4'
+      continue
+    fi
+    [[ ! -e "$copy/asset.bin" && ! -e "$copy/tool.bin" && -d "$copy" ]] || { cat "$out" >&2; fail "identical outside copy not reclaimed: $mode"; }
+    [[ "$(wc -l <"$ledger")" == 2 ]] || fail 'ledger line count'
+    sha="$(awk -F'\t' '$4=="deploy/site/tool.bin"{print $5" "$8}' "$ledger")"
+    [[ "$sha" == "$(git -C "$source" rev-parse origin/main:tool.bin) 100755" ]] || fail "ledger entry wrong: $sha"
+    git --git-dir="$(awk -F'\t' '$4=="deploy/site/tool.bin"{print $6}' "$ledger")" cat-file blob "${sha% *}" | cmp -s - "$source/tool.bin" || fail 'ledger restore differs'
+    # The commit the blobs came from stays reachable after origin's branch moves on.
+    local pin; pin="$(awk -F'\t' '$4=="deploy/site/tool.bin"{print $9}' "$ledger")"
+    [[ "$pin" == refs/codex-task-board/outside-copy-reclaim/* && "$(git -C "$source" rev-parse "$pin")" == "$(git -C "$source" rev-parse origin/main)" ]] || fail "restore source not pinned: $pin"
+    assert_file_contains "$state/metrics/workspace-capacity.edn" ':outside-copy-files 2'
+    assert_file_contains "$state/metrics/outside-copy-scan-cache.edn" 'deploy/site/unique.bin'
+    # Idempotent second pass.
+    CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "$vault" "$state" >"$out" 2>&1 || fail 'second pass failed'
+    [[ "$(wc -l <"$ledger")" == 2 && -f "$copy/unique.bin" ]] || fail 'second pass changed state'
+  done
 }
 
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a

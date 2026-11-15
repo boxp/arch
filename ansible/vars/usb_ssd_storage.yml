@@ -1,0 +1,13 @@
+---
+# Standalone limited apply only: never identify these disks by sdX or the
+# all-zero RTL9210 USB serial, both of which are unsuitable identifiers.
+usb_ssd_storage_mount_path: /var/lib/longhorn-usb
+usb_ssd_storage_fstype: ext4
+usb_ssd_storage_options: defaults,noatime,nofail,x-systemd.device-timeout=30s
+usb_ssd_storage_dump: 0
+usb_ssd_storage_passno: 2
+usb_ssd_storage_nodes:
+  golyat-1:
+    uuid: f06fd95d-4136-46c2-ab6d-537d2670c5b0
+  golyat-3:
+    uuid: ef52a1bb-f02d-48b4-9e23-2e4c1ac0a1d9

@@ -1,0 +1,42 @@
+---
+# Roll back the drop-ins written by main.yml to their state before this run.
+# A file that existed before is restored from the template backup; a file this
+# run created is removed; an unchanged file is left as it was.
+- name: Restore previous kubelet drop-in contents from backup
+  ansible.builtin.copy:
+    src: "{{ item.backup_file }}"
+    dest: "{{ item.dest }}"
+    remote_src: true
+    mode: preserve
+  loop:
+    - "{{ worker_kubelet_image_gc_config }}"
+    - "{{ worker_kubelet_config_dir_unit }}"
+  loop_control:
+    label: "{{ item.dest | default('skipped') }}"
+  when:
+    - item is changed
+    - item.backup_file is defined
+
+- name: Remove kubelet drop-ins created by this run
+  ansible.builtin.file:
+    path: "{{ item.dest }}"
+    state: absent
+  loop:
+    - "{{ worker_kubelet_image_gc_config }}"
+    - "{{ worker_kubelet_config_dir_unit }}"
+  loop_control:
+    label: "{{ item.dest | default('skipped') }}"
+  when:
+    - item is changed
+    - item.backup_file is not defined
+
+- name: Remove restored kubelet drop-in backups
+  ansible.builtin.file:
+    path: "{{ item.backup_file }}"
+    state: absent
+  loop:
+    - "{{ worker_kubelet_image_gc_config }}"
+    - "{{ worker_kubelet_config_dir_unit }}"
+  loop_control:
+    label: "{{ item.dest | default('skipped') }}"
+  when: item.backup_file is defined

@@ -255,8 +255,12 @@ class WatchTest(unittest.TestCase):
             self.assertEqual(state["rooms"]["往路:4110040"], "full")
             self.assertEqual(state["observations"][0]["reason_code"], code)
             self.assertEqual(state["errors"]["往路:0"]["reason_code"], code)
-            self.assertEqual(len(messages), 1)
             self.assertNotIn("secret", str(state))
+            if code == "congestion":
+                self.assertEqual(messages, [])
+                self.assertFalse(w.run(cfg(), state, NOW + dt.timedelta(hours=6), lambda _: getter())[0])
+                continue
+            self.assertEqual(len(messages), 1)
             self.assertNotIn("https://", messages[0])
             self.assertFalse(w.run(cfg(), state, NOW + dt.timedelta(hours=1), lambda _: getter())[0])
             self.assertEqual(len(w.run(cfg(), state, NOW + dt.timedelta(hours=6), lambda _: getter())[0]), 1)
@@ -269,6 +273,79 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(state["rooms"]["往路:4120062"], "available")
         self.assertEqual(state["observations"][0]["cells"]["4120062"], "unknown")
         self.assertEqual(state["observations"][0]["reason_code"], "equipment_unknown")
+
+    def test_congestion_restart_transition_and_mixed_tick(self):
+        import json
+        import os
+        import subprocess
+        import sys
+
+        # Each tick is a new process running main(), with only local fixture input.
+        script = '''
+import datetime, importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("fixture", sys.argv[1])
+t = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(t)
+class Clock(datetime.datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return cls.fromisoformat(os.environ["FIXTURE_NOW"]).astimezone(tz)
+t.w.dt.datetime = Clock
+responses = iter(json.loads(os.environ["FIXTURE_RESPONSES"]))
+sys.argv = ["watch.py", sys.argv[2], sys.argv[3]]
+t.w.main(getter=lambda _: next(responses))
+'''
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            config = cfg()
+            config["legs"]["second"] = dict(LEG, queries=[QUERY])
+            start = NOW - dt.timedelta(hours=4)
+            (p / "config").write_text(json.dumps(config))
+            initial = {"schema_version": 1, "rooms": {"往路:4110040": "full", "second:4110040": "full"},
+                       "last_good": {"legacy": "preserved"}, "notifications": []}
+            (p / "state").write_text(json.dumps(initial))
+
+            def tick(hours, first, second):
+                env = dict(os.environ, FIXTURE_NOW=(start + dt.timedelta(hours=hours)).isoformat(),
+                           FIXTURE_RESPONSES=json.dumps([first, second]))
+                result = subprocess.run([sys.executable, "-c", script, __file__, str(p / "config"), str(p / "state")],
+                                        env=env, capture_output=True, text=True, check=True)
+                self.assertEqual(result.stderr, "")
+                return result.stdout, json.loads((p / "state").read_text())
+
+            for count, hours in enumerate((0, 1, 2, 6.5, 7), 1):
+                output, state = tick(hours, "混雑 20100946", html("空席あり") if hours == 7 else html())
+                if hours == 7:
+                    self.assertIn("【空席】", output)
+                    self.assertNotIn("【監視障害】", output)
+                else:
+                    self.assertEqual(output, "")
+                self.assertEqual(state["errors"]["往路:0"]["count"], count)
+                self.assertEqual(state["errors"]["往路:0"]["reason_code"], "congestion")
+                self.assertIsNone(state["errors"]["往路:0"]["last_alert"])
+                self.assertEqual(state["observations"][0]["cells"]["4110040"], "unknown")
+                self.assertEqual(dt.datetime.fromisoformat(state["observations"][0]["observed_at"]), start + dt.timedelta(hours=hours))
+                self.assertEqual(state["rooms"]["往路:4110040"], "full")
+                self.assertEqual(state["last_good"], initial["last_good"])
+            output, state = tick(7.1, "<html>broken</html>", html())
+            self.assertIn("【監視障害】", output)
+            self.assertIn("検索条件を確認できません", output)
+            self.assertEqual(state["errors"]["往路:0"]["count"], 6)
+            output, state = tick(7.2, "混雑 20100946", html())
+            self.assertEqual(output, "")
+            output, state = tick(7.3, "<html>broken</html>", html())
+            self.assertEqual(output, "")  # Existing six-hour alert suppression remains in force.
+            self.assertEqual(state["errors"]["往路:0"]["reason_code"], "conditions_missing")
+            previous_alert = state["errors"]["往路:0"]["last_alert"]
+            history = state["notifications"]
+            output, state = tick(14, "混雑 20100946", html())
+            self.assertEqual(output, "")
+            self.assertEqual(state["errors"]["往路:0"]["last_alert"], previous_alert)
+            self.assertEqual(state["notifications"], history)
+            output, state = tick(14.1, html(), html())
+            self.assertEqual(output, "")  # Congestion recovery is silent too.
+            self.assertEqual(state["errors"]["往路:0"]["count"], 0)
+            self.assertEqual(state["notifications"], history)
 
     def test_equipment_header_and_duplicate_cells(self):
         for h in [

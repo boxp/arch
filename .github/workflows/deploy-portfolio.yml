@@ -4,7 +4,9 @@ name: Deploy Portfolio Site
 # PR: 本番設定でビルド + Lighthouse CI（モバイル）のみ。
 # main push / workflow_dispatch: stage 設定でビルドし stage プロジェクト boxp-portfolio-stage
 # （https://portfolio-stage.b0xp.io/、Cloudflare Access で本人限定）へデプロイする。
-# 本番プロジェクト boxp-portfolio（b0xp.io / www.b0xp.io）へはこの phase ではデプロイしない。
+# 続けて同じ commit を本番設定でビルドし、本番プロジェクト shanghai（b0xp.io / www.b0xp.io）へデプロイする。
+# BOXP-539: Owner は更新ごとの本番承認を求めず、main への merge で本番まで反映する。
+# 配備前に配信中の本番 deployment を記録し、実 URL の HTML が build と一致しなければその版へ戻す。
 on:
   push:
     branches: [main]
@@ -20,8 +22,14 @@ on:
 permissions:
   contents: read
 
+# BOXP-539: main の run は stage から本番まで push 順に 1 本ずつ流す。本番 job だけを排他にすると、
+# 古い commit の stage が遅れて終わったときに古い版が最後に本番へ出る。待機中の古い run は新しい run に置き換わる。
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('deploy-portfolio-pr-{0}', github.ref) || 'deploy-portfolio-main' }}
+  cancel-in-progress: false
+
 jobs:
-  # PR は本番設定でビルドする。この dist は public repo の artifact になり、本番掲載が未承認の全体図のサムネイルは含めない。
+  # PR は本番設定でビルドする。この dist は public repo の artifact になるので、secret の全体図サムネイルは含めない。
   build:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -48,16 +56,16 @@ jobs:
         working-directory: apps/portfolio
         run: npm run build
 
-      # architecture の portfolio 本番への掲載は未承認なので、本番設定のビルドに URL も導線もサムネイルも残さない。
-      - name: Check production output has no unapproved diagram
+      # 両図のカードは本番にも出す (BOXP-442)。全体図のサムネイルは repo に無く、artifact にも入らない。
+      - name: Check production output links both diagrams without the private thumbnail
         working-directory: apps/portfolio
         run: |
           grep -q 'href="https://lolice-lineage.b0xp.io/"' dist/index.html
+          grep -q 'href="https://lolice-architecture.b0xp.io/"' dist/index.html
           test -s dist/diagrams/lolice-lineage.webp
           test ! -e dist/lineage.html
           test ! -e dist/architecture.html
           test ! -e dist/diagrams/lolice-architecture.webp
-          ! grep -rq 'lolice-architecture' dist
 
       - name: Upload dist
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -128,13 +136,103 @@ jobs:
           test ! -e dist/lineage.html
           test ! -e dist/architecture.html
 
-      # Stage only in this phase. Production (b0xp.io) is not deployed from here.
       - name: Deploy to Cloudflare Pages (stage)
         working-directory: apps/portfolio
         run: npx wrangler pages deploy dist --project-name "$STAGE_PROJECT_NAME" --branch main
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  # BOXP-539: stage の配備が通った同じ commit を本番へ出す。build や検査で止まれば配備せず、前の本番が配信を続ける。
+  deploy-production:
+    needs: deploy-stage
+    if: github.event_name != 'pull_request' && github.repository == 'boxp/arch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      deployments: write
+    # 全体図サムネイルの secret を持つ既存の main 限定環境。方針は変えない。
+    environment: portfolio-stage-private
+    env:
+      PRODUCTION_PROJECT: shanghai
+      PRODUCTION_URL: https://b0xp.io
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Record the production deployment to restore on failure
+        id: production
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: scripts/pages-production.sh record "$PRODUCTION_PROJECT" b0xp.io
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/portfolio/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/portfolio
+        run: npm ci
+
+      - name: Build (production settings)
+        working-directory: apps/portfolio
+        run: npm run build
+        env:
+          SITE_ENV: production
+          SITE_URL: ${{ env.PRODUCTION_URL }}
+
+      - name: Restore the private thumbnail
+        working-directory: apps/portfolio
+        env:
+          THUMBNAIL_B64_1: ${{ secrets.LOLICE_ARCHITECTURE_THUMBNAIL_B64 }}
+          THUMBNAIL_B64_2: ${{ secrets.LOLICE_ARCHITECTURE_THUMBNAIL_B64_2 }}
+        run: |
+          [ -n "$THUMBNAIL_B64_1" ] || { echo "LOLICE_ARCHITECTURE_THUMBNAIL_B64 is not set" >&2; exit 1; }
+          out=dist/diagrams/lolice-architecture.webp
+          printf '%s' "$THUMBNAIL_B64_1" "$THUMBNAIL_B64_2" | base64 -d > "$out"
+          [ "$(head -c 4 "$out")" = RIFF ] && [ "$(tail -c +9 "$out" | head -c 4)" = WEBP ] \
+            || { echo "thumbnail is not a WebP file" >&2; exit 1; }
+          [ "$(od -An -tu4 -j4 -N4 "$out" | tr -d ' ')" -eq "$(($(wc -c < "$out") - 8))" ] \
+            || { echo "thumbnail is truncated" >&2; exit 1; }
+          sha256sum "$out"
+
+      - name: Check production output has no stage settings
+        working-directory: apps/portfolio
+        run: |
+          grep -q 'href="https://lolice-lineage.b0xp.io/"' dist/index.html
+          grep -q 'href="https://lolice-architecture.b0xp.io/"' dist/index.html
+          test -s dist/diagrams/lolice-lineage.webp
+          test -s dist/diagrams/lolice-architecture.webp
+          test ! -e dist/lineage.html
+          test ! -e dist/architecture.html
+          grep -q "rel=\"canonical\" href=\"${PRODUCTION_URL}/index.html\"" dist/index.html
+          if grep -rIiE 'noindex|portfolio-stage|boxp-portfolio-stage' dist; then exit 1; fi
+          if grep -q 'Disallow: /' dist/robots.txt; then exit 1; fi
+
+      - name: Deploy to Cloudflare Pages (production)
+        working-directory: apps/portfolio
+        env:
+          PRODUCTION_BRANCH: ${{ steps.production.outputs.branch }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: >-
+          npx wrangler pages deploy dist
+          --project-name "$PRODUCTION_PROJECT"
+          --branch "$PRODUCTION_BRANCH"
+          --commit-hash "$GITHUB_SHA"
+          --commit-dirty=true
+
+      - name: Verify the live site and roll back on mismatch
+        env:
+          PREVIOUS_ID: ${{ steps.production.outputs.previous_id }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: scripts/pages-production.sh verify "$PRODUCTION_PROJECT" "${PRODUCTION_URL}/" apps/portfolio/dist "$PREVIOUS_ID"
 
   lighthouse:
     runs-on: ubuntu-latest
