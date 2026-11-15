@@ -1700,6 +1700,11 @@ async function sendText(text: string, from: 'composer' | 'pending' | QueueItem):
     if (decision === 'wait') {
       busy = false
       if (from === 'composer') giveBack()
+      // 照会が 401/403（Access 期限切れのリダイレクトを含む）なら認証切れ。控えと送信待ちは残したまま、再認証用の再読み込みボタンへ切り替える。
+      if (lookup && classifyFailure({ status: lookup.status }) === 'auth') {
+        fail(lookup.status, lookup.data)
+        return
+      }
       setError(
         '前回の送信が受理されたか確認できません。二重実行を避けるため、確認できるまで新しい送信は行いません。しばらくしてから再度送信してください。',
       )

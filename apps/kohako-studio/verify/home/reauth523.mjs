@@ -14,10 +14,10 @@ try {
   browser = await chromium.launch({ ...(process.env.CHROME ? { executablePath: process.env.CHROME } : {}), args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] })
   for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, false], ['mobile', { width: 412, height: 915 }, true]]) {
     results[device] = {}
-    for (const scenario of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o']) {
+    for (const scenario of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p']) {
       const ctx = await browser.newContext({ viewport, isMobile: mobile, hasTouch: mobile, serviceWorkers: 'block' }), page = await ctx.newPage()
       let lookupReady = false
-      let mode = scenario === 'b' ? 'abort' : scenario === 'a' || scenario === 'e' || scenario === 'h' || scenario === 'i' || scenario === 'j' || scenario === 'k' || scenario === 'l' || scenario === 'm' ? 'ok' : 'auth', navigations = 0, meCalls = 0, lookupAuth = scenario === 'h'
+      let mode = scenario === 'b' ? 'abort' : scenario === 'a' || scenario === 'e' || scenario === 'h' || scenario === 'i' || scenario === 'j' || scenario === 'k' || scenario === 'l' || scenario === 'm' || scenario === 'p' ? 'ok' : 'auth', navigations = 0, meCalls = 0, lookupAuth = scenario === 'h'
       const posts = [], gets = []
       page.on('framenavigated', frame => { if (frame === page.mainFrame()) navigations++ })
       await ctx.route('**/kohako/api/v1/**', async route => {
@@ -26,7 +26,7 @@ try {
         if (p === 'conversation') return json(200, { enabled: true, stt: false })
         if (p === 'status') return json(200, { schema: 'kohako-home-status/v1', quota: { state: 'ok', pools: [] }, tasks: { state: 'ok', inProgress: { total: 0, complete: true, byAgent: [], conflicts: [] } } })
         if (p === 'messages') { posts.push(req.postDataJSON()); return json(202, {}) }
-        if (p.startsWith('requests/')) { gets.push(p); if (mode === 'auth' || lookupAuth) return json(401, {}); if ((scenario === 'l' || scenario === 'm') && !lookupReady) return json(503, {}); if (scenario === 'e' || scenario === 'f' || scenario === 'g' || scenario === 'k') return json(503, {}); return json(200, { status: 'pending' }) }
+        if (p.startsWith('requests/')) { gets.push(p); if (mode === 'auth' || lookupAuth) return json(401, {}); if ((scenario === 'l' || scenario === 'm' || scenario === 'p') && !lookupReady) return json(503, {}); if (scenario === 'e' || scenario === 'f' || scenario === 'g' || scenario === 'k') return json(503, {}); return json(200, { status: 'pending' }) }
         return json(404, {})
       })
       const url = `http://localhost:${port}/kohako/home.html?acting=0&face=static`
@@ -44,7 +44,7 @@ try {
         if (scenario === 'i' || scenario === 'j') await ctx.addInitScript(() => { if (sessionStorage.getItem('i523')) return; sessionStorage.setItem('i523', '1'); const now = Date.now(); sessionStorage.setItem('kohako-home-reauth', JSON.stringify({ v: 1, draft: '下書き', queue: [], at: now - 1000, reloadAt: now - 1000 })) })
         // k: 初期化中に控えと同文を手入力しても、後の認証切れ再読込で草稿が保持される。
         if (scenario === 'k') await ctx.addInitScript(() => { if (sessionStorage.getItem('k523')) return; sessionStorage.setItem('k523', '1'); sessionStorage.setItem('kohako-home-unconfirmed', JSON.stringify({ kind: 'text', text: '同文', requestId: 'pending-k523', expiresAt: Date.now() + 600000 })) })
-        if (scenario === 'l' || scenario === 'm') await ctx.addInitScript(() => { sessionStorage.setItem('kohako-home-unconfirmed', JSON.stringify({ kind: 'text', text: '同文', requestId: 'pending-lm523', expiresAt: Date.now() + 600000 })) })
+        if (scenario === 'l' || scenario === 'm' || scenario === 'p') await ctx.addInitScript(() => { sessionStorage.setItem('kohako-home-unconfirmed', JSON.stringify({ kind: 'text', text: '同文', requestId: 'pending-lm523', expiresAt: Date.now() + 600000 })) })
         // n: 再読み込み後も認証できない画面で別の文を入力して再度押しても、前回退避した草稿・送信待ちを上書きしない。
         if (scenario === 'n') await ctx.addInitScript(() => { if (sessionStorage.getItem('n523')) return; sessionStorage.setItem('n523', '1'); const now = Date.now(); sessionStorage.setItem('kohako-home-reauth', JSON.stringify({ v: 1, draft: '旧下書き', queue: ['旧待ち'], at: now - 1000, reloadAt: now - 1000 })) })
         // o: 前回退避分と今回の入力の合計が上限を超えて確認を取り消しても、前回退避した分を消さない。
@@ -61,6 +61,23 @@ try {
           assert(await page.locator('#queue-list .q-text').count() === 1, '新しい同文が送信待ちに1件残っていない')
           assert(await page.locator('#queue-list .q-text').first().textContent() === '同文', '新しい同文が消えた')
           assert(posts.filter(x => x.requestId === 'pending-lm523').length === 0, '控えの受付番号で重複 POST')
+          results[device][scenario] = { pass: true, navigations, posts: posts.length, gets }; continue
+        }
+        // p: 受理未確認のまま新しい発言を送り、照会が 401 なら再認証の再読み込みボタンへ切り替える（控え・送信待ちは残し POST しない）。
+        if (scenario === 'p') {
+          await page.waitForFunction(() => document.querySelector('#history')?.textContent.includes('受理を確認できませんでした'))
+          await page.locator('#message').fill('新文')
+          lookupAuth = true; lookupReady = true
+          await page.locator('#send').click()
+          await page.waitForFunction(() => document.querySelector('#reconnect')?.textContent === '再認証のため再読み込み', null, { timeout: 8000 })
+          assert(await page.locator('#reconnect').isVisible(), '再読み込みボタンが見えない')
+          assert((await page.locator('#queue-list').textContent()).includes('新文'), '新しい発言が送信待ちに残っていない')
+          assert(await page.evaluate(() => JSON.parse(sessionStorage.getItem('kohako-home-unconfirmed') || 'null')?.requestId) === 'pending-lm523', '控えが失われた')
+          assert(posts.length === 0, '予期しない POST')
+          mode = 'auth'
+          await Promise.all([page.waitForEvent('framenavigated'), page.locator('#reconnect').click()])
+          await page.waitForTimeout(500)
+          assert(navigations === 2, `再読込回数 ${navigations}`)
           results[device][scenario] = { pass: true, navigations, posts: posts.length, gets }; continue
         }
         if (scenario === 'n') {
