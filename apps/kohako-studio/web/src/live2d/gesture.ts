@@ -6,6 +6,7 @@ import type { Player } from './rig'
 import type { RigModel } from './model'
 import { patchFaceTexture } from './face-texture'
 import { patchHair } from './hair-parts'
+import { ANCHORS, BACK_HAIR, bindBackHair, followAnchors, type BackHairRig } from './back-hair'
 import { atBind, bindPoint, BUST, chestGrid, createChestSpring, stepChest, type Bind } from './chest'
 import {
   addGhost,
@@ -1651,6 +1652,45 @@ export function createActingStage(
   } catch (e) {
     chestStatus = { ready: false, error: e instanceof Error ? e.message : String(e) }
   }
+  // BOXP-525: 肩より下の後ろ髪を、髪が描き込まれた袖・体の層と同じだけ動かす（左右を向いた時の長い髪の段ズレ）。
+  let backHair: BackHairRig | null = null,
+    backHairOut: Float32Array | null = null,
+    backHairStatus: Record<string, unknown> = { ready: false }
+  try {
+    const meshAt = (m: number) => p.meshes[m] as unknown as { vertices: number; indices: Uint16Array | Uint32Array }
+    const live = (m: number) =>
+      new Float32Array(rt.memory.buffer, rt.p2l_mesh_vertices(p.rig, m), meshAt(m).vertices * 2)
+    if (!meshAt(BACK_HAIR) || ANCHORS.some((m) => !meshAt(m))) throw new Error('後ろ髪または袖・体の層がありません')
+    backHair = bindBackHair(
+      live(BACK_HAIR).slice(),
+      ANCHORS.map((m) => ({ mesh: m, vertices: live(m).slice(), indices: meshAt(m).indices })),
+    )
+    backHairStatus = { ready: true, follow: backHair.binds.filter(Boolean).length, vertices: backHair.weights.length }
+  } catch (e) {
+    backHairStatus = { ready: false, error: e instanceof Error ? e.message : String(e) }
+  }
+  const stepBackHair = () => {
+    if (!backHair) return
+    const v = new Float32Array(
+      rt.memory.buffer,
+      rt.p2l_mesh_vertices(p.rig, BACK_HAIR),
+      (p.meshes[BACK_HAIR] as { vertices: number }).vertices * 2,
+    )
+    // 実行環境が頂点を作り直さなかったフレームに二重に掛けない。
+    if (backHairOut && backHairOut.length === v.length && backHairOut.every((x, i) => x === v[i])) return
+    const anchors = new Map<number, Float32Array>()
+    for (const m of ANCHORS)
+      anchors.set(
+        m,
+        new Float32Array(
+          rt.memory.buffer,
+          rt.p2l_mesh_vertices(p.rig, m),
+          (p.meshes[m] as { vertices: number }).vertices * 2,
+        ),
+      )
+    followAnchors(v, backHair, (m) => anchors.get(m))
+    backHairOut = v.slice()
+  }
   const stepChestSpring = (dt: number) => {
     if (!chest) return
     const v = new Float32Array(
@@ -1855,6 +1895,7 @@ export function createActingStage(
         () => rt.p2l_update_stages(p.rig, 0, 0),
       )
     stepChestSpring(dt)
+    stepBackHair()
   }
   // 今の腕を待機の腕へフェードで戻す（姿勢は止めたまま）。then はフェード後に呼ぶ。
   function switchOut(after?: () => void) {
@@ -1994,6 +2035,7 @@ export function createActingStage(
       parts: partsStatus,
       facePatch,
       hairPatch,
+      backHair: backHairStatus,
       emotion,
       gesture: clipName,
       armBlend,
