@@ -68,3 +68,13 @@
   - `main.ts`: 頭の上で始めた 1 本指のタッチだけ `touchstart` で既定動作を止め、縦になでてもスクロールに奪われないようにする（ふれあい OFF 等の抑止中は止めない）。
   - `petfollow.ts`: 寄る側は直近 0.7 秒の平均で決め、いったん寄った側は反対へ `|side|≥0.45` 寄るまで保つ。揺れの速度は約 0.12 秒前の点との平均にし、手が止まったら 0.15〜0.35 秒かけて弱める。
 - 結果（Playwright 1.56.1、PC 1280×800 / Pixel 7、縦・横・斜め）: 頭 X のフレーム間最大変化 旧 8.1〜9.3° → 新 0.38〜0.63°、1°超の跳び 旧 2〜4 回 → 新 0 回。Pixel 7 縦なでの `pointercancel` 旧あり → 新なし（なで中ずっと閉眼）。不規則入力の単体試験で頭の毎フレーム変化 < 0.5°。vitest 297/297、tsc、peteyes525 PASS、petvisible PASS（初回 touchoff の待機揺れ 1 件で FAIL、新旧とも再実行 PASS）。証跡 `/home/boxp/verification-artifacts/BOXP-525/r10-td01/opus/`（old/, new2/ の summary.json、sheets*/ の連続コマ、tilt/ の傾き姿勢 3 倍）。
+
+## 修正 r14（Owner 新報告: 左右向きの髪/衣装のゴミ・ズレ、髪下の影ズレ、もみあげ/頬のゴミ、笑顔の発話中に閉口）
+- 再現（配備 sha-14bf538 の抽出 build、Playwright 1.56.1）:
+  1. 閉じ目の笑顔（`smileClosed`、「よかった」「できました」等の文）で発話中、`report.mouth` は 0〜0.9 で動くのに `ParamMouthOpenY` が常に 0。
+  2. カーソルを画面端に置くと視線追従＋待機 clip で `ParamAngleX` が約 ±32° に達し、6 倍撮影で横髪の水平な段ズレ、もみあげと頬の境の黒い欠片、頭頂の輪郭線の浮きが見える。BOXP-525 以前の sha-c26e3a1 でも同じで、v11r モデル層（横髪が `ArtMeshFrontHair`/`ArtMeshFrontHairL`/`ArtMeshLayerL` に分割、前髪下の影が `ArtMeshFace` 側にある）由来。
+- 原因 1: 閉眼の上書き後の `p2l_update_stages`（再ステージ）は全パラメータを基底値（`setParameter` の値）から評価し直す。実測で口 0.8→0、頭 X/Y/Z・体・呼吸・髪の揺れ・視線も基底へ落ちていた。閉じ目の笑顔・なで中・なで後 1.2 秒は、口が閉じたままになるうえ頭の向きと髪の物理が毎フレーム落ち、髪と影の相対位置もずれていた。
+- 修正:
+  - `gesture.ts` `restageKeeping`: 上書きしない値は評価済みの値を一時的に基底へ入れて再ステージし、直後に元の基底（`setParameter` で置いた値、なければ既定値）へ戻す。
+  - `gesture.ts` `capYaw`: `ParamAngleX` を ±9° までは等倍、その先は ±14° へ tanh で飽和（モデルの確認範囲は頭 X ±15°）。
+- 残: ±14° でも、もみあげと頬の境の小さな暗い欠片は残る（正面でも小さく見える）。`ArtMeshFace` に焼き込まれたもみあげの画素と髪 mesh の相対変形の候補。次段で帰属して読み込み時に除く。
