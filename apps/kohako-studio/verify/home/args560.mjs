@@ -1,4 +1,4 @@
-// BOXP-560: 手順ごとの実引数の開閉表示を検証する。
+// BOXP-560: 手順の行の中に実行内容（実引数）を道具名と一緒に表示することを検証する。
 // 一覧と詳細の応答は BFF の実コード（activity.ts / secrets.ts をビルドしたもの）で作るので、伏字と上限は実物を通る。
 // 使い方: (bff で) npx tsc -p tsconfig.json --outDir <dir> → BFF_DIST=<dir> SITE=<site> node args560.mjs <out>
 import { chromium } from 'playwright'
@@ -108,13 +108,7 @@ for (const [device, viewport, mobile] of [
       setStage(n)
       await page.waitForTimeout(1400)
     },
-    toggle = (id) => page.locator(`[data-toggle-step="${id}"]`),
-    panel = (id) => page.locator(`#activity-args-${id}`),
-    openArgs = async (id) => {
-      await toggle(id).scrollIntoViewIfNeeded()
-      await toggle(id).click()
-      await page.waitForFunction((x) => document.querySelector(`#activity-args-${x} pre`), id, { timeout: 5000 })
-    },
+    row = (id) => page.locator(`li:has(> #activity-args-${id})`),
     field = (id, key) => page.locator(`#activity-args-${id} [data-key="${key}"] pre`).innerText(),
     label = (id, key) => page.locator(`#activity-args-${id} [data-key="${key}"] .activity-arg-label`).innerText()
   try {
@@ -124,15 +118,16 @@ for (const [device, viewport, mobile] of [
     await page.locator('#send').click()
     await page.waitForTimeout(1250)
     await advance(1)
+    check('手順一覧を畳んだままなら実行内容を取り寄せない', detailCalls.length === 0 && !(await page.locator('#activity').innerText()).includes('--short'))
     await page.locator('.activity-head').click()
-    check('引数は既定で閉じている', (await toggle('t1').getAttribute('aria-expanded')) === 'false' && (await panel('t1').isHidden()))
-    check('一覧の応答に引数の本文が無い', !(await page.locator('#activity').innerText()).includes('--short'))
-    await openArgs('t1')
-    check('実引数が届く前は開始通知の概要を出す', (await label('t1', 'preview')) === '概要（実引数は未取得）' && (await field('t1', 'preview')) === 'git status --short')
+    await page.waitForFunction(() => document.querySelector('#activity-args-t1 pre'), null, { timeout: 5000 })
+    check('引数を開く別のボタン・別欄が無い', (await page.locator('#activity-steps button').count()) === 0 && (await page.locator('#activity').innerText()).includes('terminal') && !(await page.locator('#activity').innerText()).includes('引数'))
+    check('実引数が届く前は開始通知の内容を行の中に出す', (await field('t1', 'preview')) === 'git status --short' && (await page.locator('#activity-args-t1 .activity-arg-label').isHidden()) && (await row('t1').innerText()).includes('terminal'))
     await advance(2)
-    check('実引数が届いたら開いたまま置き換わる', (await toggle('t1').getAttribute('aria-expanded')) === 'true' && (await field('t1', 'command')).startsWith('cd /srv/app && git status --short && curl -H "Authorization: Basic ［伏字］" https://example.com/api/items?page=2'))
+    await page.waitForFunction(() => document.querySelector('#activity-args-t6 [data-key="old_string"] pre') && document.querySelector('#activity-args-t1 [data-key="command"] pre'), null, { timeout: 8000 })
+    check('実引数が届いたら操作なしで置き換わる', (await field('t1', 'command')).startsWith('cd /srv/app && git status --short && curl -H "Authorization: Basic ［伏字］" https://example.com/api/items?page=2') && (await page.locator('#activity-args-t1 [data-key="preview"]').count()) === 0)
+    check('道具名と実行内容が同じ行にあり、短い概要を重ねない', (await row('t1').locator('.activity-tool').innerText()) === 'terminal' && (await row('t1').locator('#activity-args-t1').isVisible()) && (await page.locator('.activity-detail:visible').count()) === 0)
     check('terminal: コマンドと他の引数', (await label('t1', 'command')) === 'コマンド' && (await field('t1', 'timeout')) === '60')
-    for (const id of ['t2', 't3', 't4', 't5', 't6']) await openArgs(id)
     check('read_file: パスと範囲', (await field('t2', 'path')) === '/home/kohako/notes/2026-11-16 買い物メモ.md' && (await label('t2', 'path')) === 'パス' && (await field('t2', 'offset')) === '20' && (await label('t2', 'limit')) === '行数')
     check('web_search: 検索語', (await field('t3', 'query')) === '東京 天気 明日 降水確率' && (await label('t3', 'query')) === '検索語')
     check('skill_view: スキル名', (await field('t4', 'name')) === 'obsidian-task-board' && (await label('t4', 'name')) === 'スキル名' && (await field('t4', 'file_path')) === 'SKILL.md')
@@ -143,8 +138,8 @@ for (const [device, viewport, mobile] of [
     await page.locator('#activity-args-t5 pre').first().evaluate((e) => { e.scrollTop = 300 })
     const before = detailCalls.length
     await page.waitForTimeout(3600)
-    check('開いたままでも毎秒取り直さない', detailCalls.length === before)
-    check('作り直しても開閉とスクロール位置を保つ', (await toggle('t5').getAttribute('aria-expanded')) === 'true' && (await page.locator('#activity-args-t5 pre').first().evaluate((e) => e.scrollTop)) >= 250)
+    check('表示したままでも毎秒取り直さない', detailCalls.length === before)
+    check('作り直してもスクロール位置を保つ', (await page.locator('#activity-args-t5 pre').first().evaluate((e) => e.scrollTop)) >= 250)
     // スマホ縦では吹き出しは会話欄の中にあり、会話欄は固定の入力欄の下へスクロールして潜る（BOXP-544 の配置）。
     // そのため「重ならない」は、末尾まで送った時に手順表示の下端が入力欄より上に出て読めることで確かめる。
     await page.locator('#activity').evaluate((e) => e.scrollIntoView({ block: 'end' }))
@@ -167,16 +162,14 @@ for (const [device, viewport, mobile] of [
     check('停止・入力が最前面', Object.values(hit).every(Boolean))
     await page.screenshot({ path: path.join(out, `${device}-running.png`) })
     await advance(3)
-    check('完了後も開いたまま読める', (await page.locator('#reply').innerText()).includes('返答です') && (await toggle('t6').getAttribute('aria-expanded')) === 'true' && (await field('t6', 'old_string')).includes('retries = 1'))
-    await toggle('t6').scrollIntoViewIfNeeded()
+    check('完了後もそのまま読める', (await page.locator('#reply').innerText()).includes('返答です') && (await field('t6', 'old_string')).includes('retries = 1'))
+    await row('t6').scrollIntoViewIfNeeded()
     await page.screenshot({ path: path.join(out, `${device}-done-patch.png`) })
-    await toggle('t1').scrollIntoViewIfNeeded()
+    await row('t1').scrollIntoViewIfNeeded()
     await page.screenshot({ path: path.join(out, `${device}-done-terminal.png`) })
-    await toggle('t3').click()
-    check('閉じられる', (await panel('t3').isHidden()) && (await toggle('t3').getAttribute('aria-expanded')) === 'false')
-    await toggle('t3').focus()
-    await page.keyboard.press('Enter')
-    check('キーボードで開ける', await panel('t3').isVisible())
+    await page.locator('.activity-head').click()
+    await page.locator('.activity-head').click()
+    check('一覧を開き直しても取り直さない・読める', (await field('t3', 'query')) === '東京 天気 明日 降水確率' && detailCalls.length === before)
     const dom = await page.content()
     check('秘密値と思考が DOM に無い', SECRETS.every((s) => !dom.includes(s)))
     check('ページエラー 0', pageErrors.length === 0)

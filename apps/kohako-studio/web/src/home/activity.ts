@@ -61,7 +61,6 @@ const FIELD_LABELS: Record<string, string> = {
   url: 'URL',
   urls: 'URL',
   pattern: '検索パターン',
-  preview: '概要（実引数は未取得）',
 }
 export function fieldLabel(tool: string, key: string): string {
   if (key === 'path' && ['patch', 'write_file'].includes(tool)) return '対象'
@@ -245,17 +244,22 @@ let rootNode: HTMLElement | undefined,
   last = '',
   expanded = false
 const seen = new Map<string, { at: number; runningMs: number }>()
-// 開いている手順と取得済みの引数。1 秒ごとの作り直しでも閉じない・取り直さないよう、描画の外で持つ（次の依頼の開始で消す）。
+// 取得済みの実行内容。1 秒ごとの作り直しでも取り直さないよう、描画の外で持つ（次の依頼の開始で消す）。
 export type Loaded = { state: 'loading' | 'ready' | 'error'; detail?: StepDetail; forState?: 'full' | 'preview' }
-const open = new Set<string>(),
-  details = new Map<string, Loaded>(),
+const details = new Map<string, Loaded>(),
   // 一覧が最後に伝えた各手順の引数の状態。取得中に preview から full へ変わった時、応答が返ってから取り直すために持つ。
   argStates = new Map<string, 'full' | 'preview'>()
 /** 取得済みの引数が、一覧の伝える今の状態より古い（概要のまま実引数が届いた）なら取り直す。 */
 export const detailOutdated = (entry: Loaded | undefined, current: 'full' | 'preview' | undefined) =>
   entry?.state === 'ready' && current !== undefined && entry.forState !== current
+/** 実行内容（実引数、未取得の間は開始通知の要約）を表示できる時は、一覧の短い概要を重ねて出さない。 */
+export const showsArgs = (entry: Loaded | undefined) =>
+  !!entry?.detail && !entry.detail.omitted && entry.detail.fields.length > 0
 let loader: ((stepId: string) => Promise<unknown>) | undefined,
-  generation = 0
+  generation = 0,
+  active = 0
+const queue: string[] = []
+/** 手順の行の中に、道具名に続けて実行内容（コマンド・パス・検索語・コード・変更内容）を並べる。 */
 function fillPanel(panel: HTMLElement, id: string) {
   const entry = details.get(id),
     note = (text: string) => {
@@ -266,57 +270,76 @@ function fillPanel(panel: HTMLElement, id: string) {
     }
   const scroll = [...panel.querySelectorAll('pre')].map((x) => x.scrollTop)
   panel.replaceChildren()
-  if (!entry) return
-  const d = entry.detail
-  if (!d) {
-    panel.append(
-      note(entry.state === 'loading' ? '読み込み中…' : '引数を取得できませんでした（開き直すと再試行します）'),
-    )
-    return
-  }
-  if (d.omitted) panel.append(note('古い手順のため引数は保持していません'))
-  else if (!d.fields.length) panel.append(note('引数なし'))
-  for (const f of orderFields(d.fields)) {
-    const box = document.createElement('div')
-    box.className = 'activity-arg'
-    box.dataset.key = f.key
-    const label = document.createElement('span')
-    label.className = 'activity-arg-label'
-    label.textContent = `${fieldLabel(d.tool, f.key)}${f.truncated ? '（長いため末尾を省略）' : ''}`
-    const value = document.createElement('pre')
-    value.className = 'activity-arg-value'
-    value.tabIndex = 0
-    value.textContent = f.value
-    box.append(label, value)
-    panel.append(box)
-  }
-  if (entry.state === 'error') panel.append(note('最新の引数を取得できませんでした'))
+  const preview = panel.parentElement?.querySelector<HTMLElement>('.activity-detail')
+  if (preview) preview.hidden = showsArgs(entry)
+  const d = entry?.detail
+  if (d?.omitted) panel.append(note('古い手順のため実行内容は保持していません'))
+  if (d)
+    for (const f of orderFields(d.fields)) {
+      const box = document.createElement('div')
+      box.className = 'activity-arg'
+      box.dataset.key = f.key
+      const label = document.createElement('span')
+      label.className = 'activity-arg-label'
+      // 実引数が届く前の要約は項目名を付けず、そのまま実行内容として出す。
+      label.textContent = `${d.source === 'preview' ? '' : fieldLabel(d.tool, f.key)}${f.truncated ? '（長いため末尾を省略）' : ''}`
+      label.hidden = !label.textContent
+      const value = document.createElement('pre')
+      value.className = 'activity-arg-value'
+      value.tabIndex = 0
+      value.textContent = f.value
+      box.append(label, value)
+      panel.append(box)
+    }
+  if (entry?.state === 'error') panel.append(note('実行内容を取得できませんでした（一覧を開き直すと再試行します）'))
+  panel.hidden = !panel.childElementCount
   panel.querySelectorAll('pre').forEach((x, i) => {
     x.scrollTop = scroll[i] ?? 0
   })
 }
+const refill = (id: string) => {
+  const panel = rootNode?.querySelector<HTMLElement>(`.activity-args[data-step="${id}"]`)
+  if (panel) fillPanel(panel, id)
+}
+function pump() {
+  // 手順が多くても照会が一度に集中しないよう、同時に取り寄せるのは 4 件まで。
+  while (loader && active < 4 && queue.length) {
+    const id = must(queue.shift()),
+      gen = generation,
+      forState = details.get(id)?.forState ?? 'preview'
+    active++
+    loader(id)
+      .then(validateDetail, () => null)
+      .then((detail) => {
+        if (gen !== generation) return
+        active--
+        details.set(
+          id,
+          detail ? { state: 'ready', detail, forState } : { state: 'error', detail: details.get(id)?.detail, forState },
+        )
+        refill(id)
+        pump()
+        // 取得中に一覧の状態が変わっていた場合は、ここで 1 回だけ取り直す。
+        const current = argStates.get(id)
+        if (current && expanded && detailOutdated(details.get(id), current)) loadDetail(id, current)
+      })
+  }
+}
 function loadDetail(id: string, forState: 'full' | 'preview') {
   if (!loader) return
-  const gen = generation,
-    refill = () => {
-      const panel = rootNode?.querySelector<HTMLElement>(`.activity-args[data-step="${id}"]`)
-      if (panel) fillPanel(panel, id)
-    }
   details.set(id, { state: 'loading', detail: details.get(id)?.detail, forState })
-  refill()
-  loader(id)
-    .then(validateDetail, () => null)
-    .then((detail) => {
-      if (gen !== generation) return
-      details.set(
-        id,
-        detail ? { state: 'ready', detail, forState } : { state: 'error', detail: details.get(id)?.detail, forState },
-      )
-      refill()
-      // 取得中に最終の照会で状態が変わっていた場合、描画側は取得中の手順を取り直さないので、ここで 1 回だけ取り直す。
-      const current = argStates.get(id)
-      if (current && open.has(id) && detailOutdated(details.get(id), current)) loadDetail(id, current)
-    })
+  queue.push(id)
+  pump()
+}
+/** 手順一覧を開いている間だけ、まだ無い・古くなった実行内容を取り寄せる（畳んだままなら取り寄せない）。 */
+function ensureDetails(retryErrors: boolean) {
+  if (!expanded) return
+  for (const [id, state] of argStates) {
+    const entry = details.get(id)
+    // 失敗した手順は、一覧を開き直した時と、一覧の伝える状態が変わった時（実引数が届いた時）にだけ取り直す。
+    const failed = entry?.state === 'error' && (retryErrors || entry.forState !== state)
+    if (!entry || failed || detailOutdated(entry, state)) loadDetail(id, state)
+  }
 }
 export function tickActivity() {
   if (!rootNode) return
@@ -338,9 +361,10 @@ export function renderActivity(
     last = ''
     expanded = false
     seen.clear()
-    open.clear()
     details.clear()
     argStates.clear()
+    queue.length = 0
+    active = 0
     generation++
     return
   }
@@ -360,9 +384,6 @@ export function renderActivity(
   // 作り直しても、開閉ボタンの焦点と一覧のスクロール位置は保つ（キーボード操作・読み返しを邪魔しない）。
   const hadFocus = root.contains(document.activeElement) && document.activeElement?.classList.contains('activity-head'),
     oldTop = oldList?.scrollTop ?? 0,
-    focusedStep = root.contains(document.activeElement)
-      ? (document.activeElement as HTMLElement | null)?.dataset.toggleStep
-      : undefined,
     panelScroll = new Map<string, number[]>()
   root.querySelectorAll<HTMLElement>('.activity-args').forEach((p) => {
     panelScroll.set(
@@ -406,8 +427,10 @@ export function renderActivity(
     expanded = !expanded
     head.setAttribute('aria-expanded', String(expanded))
     list.hidden = !expanded
+    ensureDetails(true)
   }
   if (activity.dropped) list.append(make('li', 'activity-dropped', `古い手順 ${activity.dropped} 件は省略しました`))
+  argStates.clear()
   for (const s of activity.steps) {
     const li = document.createElement('li')
     li.dataset.kind = s.kind
@@ -431,39 +454,12 @@ export function renderActivity(
       if (s.result) li.append(make('span', 'activity-result', s.result))
       if (s.argsState && opts.loadDetail) {
         argStates.set(s.id, s.argsState)
-        const state = s.argsState,
-          toggle = make('button', 'activity-args-toggle', '引数') as HTMLButtonElement,
-          panel = make('div', 'activity-args')
-        toggle.type = 'button'
-        toggle.dataset.toggleStep = s.id
+        const panel = make('div', 'activity-args')
         panel.id = `activity-args-${s.id}`
         panel.dataset.step = s.id
         panel.dataset.tool = s.tool
-        panel.hidden = !open.has(s.id)
-        toggle.setAttribute('aria-controls', panel.id)
-        toggle.setAttribute('aria-expanded', String(open.has(s.id)))
-        toggle.setAttribute('aria-label', `${label.name}の引数`)
-        const stale = () => {
-          const entry = details.get(s.id)
-          return !entry || entry.state === 'error' || detailOutdated(entry, state)
-        }
-        toggle.onclick = () => {
-          const now = !open.has(s.id)
-          if (now) open.add(s.id)
-          else open.delete(s.id)
-          toggle.setAttribute('aria-expanded', String(now))
-          panel.hidden = !now
-          if (now) {
-            fillPanel(panel, s.id)
-            if (stale()) loadDetail(s.id, state)
-          }
-        }
-        li.append(toggle, panel)
-        if (open.has(s.id)) {
-          fillPanel(panel, s.id)
-          // 概要だけ表示していた手順に実引数が届いたら、開いたまま 1 回だけ取り直す。
-          if (detailOutdated(details.get(s.id), state)) loadDetail(s.id, state)
-        }
+        li.append(panel)
+        fillPanel(panel, s.id)
       }
       li.append(
         make(
@@ -485,7 +481,6 @@ export function renderActivity(
         x.scrollTop = tops[i] ?? 0
       })
   })
-  if (focusedStep)
-    root.querySelector<HTMLElement>(`[data-toggle-step="${focusedStep}"]`)?.focus({ preventScroll: true })
+  ensureDetails(false)
   tickActivity()
 }
