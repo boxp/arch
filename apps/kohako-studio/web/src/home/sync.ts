@@ -95,12 +95,25 @@ export class Seen {
     return this.mark(`d:${id}`)
   }
 }
+/**
+ * BFF の履歴に載っていた依頼の受付番号。次の履歴に無くなった番号（保持期限切れ・最新 50 件から外れた）を返し、
+ * 開いたままの端末の画面からも消せるようにする。履歴に一度も載っていない依頼（通知返信など）は対象にしない。
+ */
+export class Shared {
+  private ids = new Set<string>()
+  update(items: { requestId: string }[]): string[] {
+    const now = new Set(items.map((x) => x.requestId))
+    const gone = [...this.ids].filter((id) => !now.has(id))
+    this.ids = now
+    return gone
+  }
+}
 type Op =
   | { op: 'user'; id: string; text: string; at: number }
   | { op: 'reply'; id: string; text: string; views: View[]; at: number; latest: boolean }
   | { op: 'ended'; id: string; stopped: boolean; at: number }
-  | { op: 'divider'; at: number }
-  | { op: 'stale' }
+  | { op: 'divider'; id: string; at: number }
+  | { op: 'stale'; id: string }
   | { op: 'follow'; id: string; kind: 'text' | 'reply' }
 export function planSync(
   items: Item[],
@@ -111,7 +124,7 @@ export function planSync(
   items.forEach((item, i) => {
     const id = item.requestId
     if (i > 0 && !items[i - 1].current && item.current && ctx.seen.markDivider(id))
-      ops.push({ op: 'divider', at: item.at })
+      ops.push({ op: 'divider', id, at: item.at })
     if (item.text !== undefined && ctx.seen.markUser(id))
       ops.push({
         op: 'user',
@@ -134,7 +147,7 @@ export function planSync(
   })
   const last = items.at(-1)
   if (last && !last.current && last.status !== 'pending' && ctx.seen.markDivider(`stale:${last.requestId}`))
-    ops.push({ op: 'stale' })
+    ops.push({ op: 'stale', id: last.requestId })
   if (active && active.requestId !== ctx.trackingId && ctx.canFollow)
     ops.push({ op: 'follow', id: active.requestId, kind: active.kind })
   return ops

@@ -1,4 +1,4 @@
-import { Seen, planSync, validateTranscript } from './sync'
+import { Seen, Shared, planSync, validateTranscript } from './sync'
 import { classifyFailure, parseReauth, recentlyReloaded, REAUTH_KEY, serializeReauth } from './reauth'
 import { submitAction } from './composer'
 import { must } from '../must'
@@ -351,10 +351,11 @@ let lastReply = '',
   lastActivity = Date.now(),
   thinkingSince = 0,
   cardsOpen = false
-type Entry = { who: 'あなた' | 'コハコ' | 'お知らせ'; text: string; at: number }
+type Entry = { who: 'あなた' | 'コハコ' | 'お知らせ'; text: string; at: number; rid?: string }
 const history: Entry[] = []
 // BOXP-565: 端末間の会話共有。seen は履歴へ出した発言・返答の受付番号、remoteIds は他端末が送り、この端末が追っているだけの依頼。
 const seen = new Seen()
+const shared = new Shared()
 const remoteIds = new Set<string>()
 let transcriptRev = '',
   syncing = false,
@@ -380,8 +381,8 @@ function renderChat() {
   )
   chatlog.scrollTop = bottom ? chatlog.scrollHeight : top
 }
-function addHistory(who: Entry['who'], text: string, at = Date.now()) {
-  history.push({ who, text, at })
+function addHistory(who: Entry['who'], text: string, at = Date.now(), rid = '') {
+  history.push({ who, text, at, ...(rid ? { rid } : {}) })
   if (history.length > 100) history.shift()
   const li = document.createElement('li'),
     w = document.createElement('span'),
@@ -390,6 +391,7 @@ function addHistory(who: Entry['who'], text: string, at = Date.now()) {
   const list = el('history-list'),
     scroller = el('history'),
     bottom = atBottom(scroller.scrollTop, scroller.clientHeight, scroller.scrollHeight)
+  if (rid) li.dataset.rid = rid
   li.dataset.who = who
   w.className = 'who'
   w.textContent = `${who}（${time}）`
@@ -1188,7 +1190,7 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
         approvalExpires = next.approval.expiresAt
         el('approval-summary').textContent = next.approval.summary
         el('approval-error').textContent = ''
-        addHistory('お知らせ', `確認が必要です: ${next.approval.summary}`)
+        addHistory('お知らせ', `確認が必要です: ${next.approval.summary}`, Date.now(), id)
         setBubble('実行する前に確認させてください、ご主人さま。')
       }
       show('approval')
@@ -1218,7 +1220,7 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
       } else if (next.state === 'stopped') {
         seen.markEnd(id)
         setBubble('止めました。ほかにご用はありますか、ご主人さま。')
-        addHistory('お知らせ', '依頼を止めました。')
+        addHistory('お知らせ', '依頼を止めました。', Date.now(), id)
       }
       remoteIds.delete(id)
       void syncTranscript()
@@ -1305,7 +1307,7 @@ function deliver(text: string, views: View[] = [], id = '', quiet = false) {
   lastActivity = Date.now()
   reply.dataset.reply = '1'
   setBubble(text || '（空の返答でした）')
-  if (!id || seen.markReply(id)) addHistory('コハコ', text)
+  if (!id || seen.markReply(id)) addHistory('コハコ', text, Date.now(), id)
   renderCards(cardsFromText(text), views)
   const spoken = plainText(text)
   // 地図・利用枠グラフ・図はボタンを押さなくても返答と同時に開く（ボタンは閉じた後の再表示用）。
@@ -1710,7 +1712,12 @@ async function sendText(text: string, from: 'composer' | 'pending' | QueueItem):
       accepted = true
       setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true })
       if (seen.markUser(pending.requestId))
-        addHistory('あなた', pending.text + (pending.attachmentNames ?? []).map((x) => `\n📎 ${x}`).join(''))
+        addHistory(
+          'あなた',
+          pending.text + (pending.attachmentNames ?? []).map((x) => `\n📎 ${x}`).join(''),
+          Date.now(),
+          pending.requestId,
+        )
       if (pending.attachments) {
         for (let i = chips.length - 1; i >= 0; i--)
           if (chips[i].id && pending.attachments.includes(must(chips[i].id))) chips.splice(i, 1)
@@ -1771,7 +1778,12 @@ async function sendText(text: string, from: 'composer' | 'pending' | QueueItem):
     setUnconfirmed(null)
     accepted = true
     if (seen.markUser(payload.requestId))
-      addHistory('あなた', payload.text + (payload.attachmentNames ?? []).map((x) => `\n📎 ${x}`).join(''))
+      addHistory(
+        'あなた',
+        payload.text + (payload.attachmentNames ?? []).map((x) => `\n📎 ${x}`).join(''),
+        Date.now(),
+        payload.requestId,
+      )
     if (payload.attachments) {
       for (let i = chips.length - 1; i >= 0; i--)
         if (chips[i].id && payload.attachments.includes(must(chips[i].id))) chips.splice(i, 1)
@@ -2467,7 +2479,12 @@ async function resumeUnconfirmed(pending: Outgoing) {
     started = Date.now()
     setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true })
     if (seen.markUser(pending.requestId))
-      addHistory('あなた', pending.text + (pending.attachmentNames ?? []).map((x) => `\n📎 ${x}`).join(''))
+      addHistory(
+        'あなた',
+        pending.text + (pending.attachmentNames ?? []).map((x) => `\n📎 ${x}`).join(''),
+        Date.now(),
+        pending.requestId,
+      )
     if (pending.attachments) {
       for (let i = chips.length - 1; i >= 0; i--)
         if (chips[i].id && pending.attachments.includes(must(chips[i].id))) chips.splice(i, 1)
@@ -2509,7 +2526,7 @@ function followRequest(id: string, text: string): boolean {
   lastActivity = Date.now()
   delete reply.dataset.reply
   requestId = id
-  if (text && seen.markUser(id)) addHistory('あなた', text)
+  if (text && seen.markUser(id)) addHistory('あなた', text, Date.now(), id)
   setBubble('…')
   setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true })
   show('thinking')
@@ -2594,15 +2611,16 @@ async function syncTranscript() {
     if ('unchanged' in data) return
     const initial = firstSync
     firstSync = false
+    pruneHistory(shared.update(data.items))
     const ops = planSync(data.items, data.active, {
       seen,
       trackingId: requestId,
       canFollow: !busy && !unconfirmed && !touchActive && enabled && !parseResume(tab.get(INFLIGHT_KEY), Date.now()),
     })
     for (const op of ops) {
-      if (op.op === 'user') addHistory('あなた', op.text, op.at)
+      if (op.op === 'user') addHistory('あなた', op.text, op.at, op.id)
       else if (op.op === 'reply') {
-        addHistory('コハコ', op.text, op.at)
+        addHistory('コハコ', op.text, op.at, op.id)
         if (op.latest && !initial && !busy && state !== 'speaking' && state !== 'approval') {
           setBubble(op.text)
           reply.dataset.reply = '1'
@@ -2614,17 +2632,21 @@ async function syncTranscript() {
           'お知らせ',
           op.stopped ? 'この依頼は止められました。' : 'この依頼は結果を確認できませんでした。',
           op.at,
+          op.id,
         )
       else if (op.op === 'divider')
         addHistory(
           'お知らせ',
           'ここから現在の会話です（これより前は以前の会話の履歴で、続きの文脈には含まれません）。',
           op.at,
+          op.id,
         )
       else if (op.op === 'stale')
         addHistory(
           'お知らせ',
           'ここまでは以前の会話の履歴です（時間が空いたため、次の発言からは新しい会話になり、続きの文脈には含まれません）。',
+          Date.now(),
+          op.id,
         )
       else if (op.op === 'follow') {
         if (followRemote(op.id)) {
@@ -2651,3 +2673,23 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') void syncTranscript()
 })
 window.addEventListener('online', () => void syncTranscript())
+/**
+ * 共有履歴の保持期限（24 時間）や件数（最新 50 件）から外れた依頼を、開いたままのこの端末の画面からも消す。
+ * 対象は BFF の履歴に載っていた依頼の発言・返答・お知らせだけ（この端末だけのお知らせは対象外）。
+ */
+function pruneHistory(gone: string[]) {
+  if (!gone.length) return
+  const ids = new Set(gone)
+  const removed = history.filter((e) => e.rid && ids.has(e.rid))
+  if (!removed.length) return
+  for (let i = history.length - 1; i >= 0; i--) if (removed.includes(history[i])) history.splice(i, 1)
+  for (const li of el('history-list').querySelectorAll<HTMLElement>('li[data-rid]'))
+    if (ids.has(li.dataset.rid ?? '')) li.remove()
+  // 吹き出しに残っている返答も、履歴から消えたものなら表示を終える。
+  if (!busy && reply.dataset.reply === '1' && removed.some((e) => e.who === 'コハコ' && e.text === lastReply)) {
+    delete reply.dataset.reply
+    lastReply = ''
+    renderCards([], [])
+    setBubble('（前の返答は保存期間を過ぎたため、表示を終えました。）')
+  } else renderChat()
+}

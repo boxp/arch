@@ -12,6 +12,7 @@ const out = process.argv[2] || '/out',
   site = process.env.SITE || '/site',
   port = Number(process.env.PORT || 8815)
 const { createApp } = await import(pathToFileURL(path.resolve(process.env.BFF_DIST || '/bff-dist', 'app.js')).href)
+const { createConversation } = await import(pathToFileURL(path.resolve(process.env.BFF_DIST || '/bff-dist', 'conversation.js')).href)
 fs.mkdirSync(out, { recursive: true })
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.wasm': 'application/wasm' }
 
@@ -43,9 +44,20 @@ function backend() {
       return 'ok'
     },
   }
-  const app = createApp({ authenticate: async () => 'owner', hermes })
+  // 時計は検証側が進められる（保持期限 24 時間の確認用）。期限切れの見回りは 0.5 秒ごと。
+  let skew = 0
+  const now = () => Date.now() + skew
+  const conversations = {
+    owner: createConversation({ now, hermes, prefix: 'kohako-web', sweepMs: 500 }),
+    verifier: createConversation({ now, hermes, prefix: 'kohako-verify', sweepMs: 500 }),
+  }
+  const app = createApp({ authenticate: async () => 'owner', hermes, conversations, now })
   return {
     app,
+    conversations,
+    advance: (ms) => {
+      skew += ms
+    },
     runs,
     stops,
     approvals,
@@ -378,6 +390,45 @@ await scenario('i', '履歴 API が無い古い BFF（404）でも、エラー�
   ev.errorAfter = await A.page.locator('#error').textContent()
   assert(!ev.errorBefore && !ev.errorAfter, 'エラー表示なし')
   assert((await A.count('あなた', '古いBFFでの発言')) === 1 && (await A.count('コハコ', '古いBFFでの返答')) === 1, '発言と返答は 1 回ずつ')
+})
+
+await scenario('j', '保持期限（24 時間）を過ぎた会話は、誰も操作しなくても BFF から消え、開いたままの両端末の画面からも消える', async (be, open, ev) => {
+  const A = await open('A', 'pc'),
+    B = await open('B', 'pixel7')
+  await A.submit('期限で消える発言')
+  await wait(() => be.runs.length === 1, '依頼')
+  be.finish(0, '期限で消える返答。')
+  for (const d of [A, B]) {
+    await wait(d.has('あなた', '期限で消える発言'), `${d.name} に発言`)
+    await wait(d.has('コハコ', '期限で消える返答'), `${d.name} に返答`)
+  }
+  be.advance(23 * 3600_000)
+  await new Promise((r) => setTimeout(r, 7000))
+  ev.before = { A: await A.count('コハコ', '期限で消える返答'), B: await B.count('コハコ', '期限で消える返答') }
+  assert(ev.before.A === 1 && ev.before.B === 1, '23 時間後はまだ残る')
+  be.advance(2 * 3600_000)
+  // BFF は API を呼ばれなくても見回りで消す（端末の照会を待たずに直接確かめる）。
+  await wait(() => be.conversations.owner.get('none') === undefined, '見回り')
+  await new Promise((r) => setTimeout(r, 1500))
+  ev.bffItems = be.conversations.owner.transcript().items.length
+  assert(ev.bffItems === 0, 'BFF の履歴から消える')
+  for (const d of [A, B]) {
+    await wait(async () => (await d.count('あなた', '期限で消える発言')) === 0, `${d.name} から発言が消える`)
+    await wait(async () => (await d.count('コハコ', '期限で消える返答')) === 0, `${d.name} から返答が消える`)
+  }
+  ev.pageText = {
+    A: (await A.page.locator('body').innerText()).includes('期限で消える'),
+    B: (await B.page.locator('body').innerText()).includes('期限で消える'),
+  }
+  assert(!ev.pageText.A && !ev.pageText.B, '吹き出し・会話欄にも残らない')
+  await B.shot('j')
+  // 消えた後も新しい会話は通常どおり共有される（端末の時計と合わせるため、進めた時計を戻してから送る）。
+  be.advance(-25 * 3600_000)
+  await B.submit('期限後の新しい発言')
+  await wait(() => be.runs.length === 2, '新しい依頼')
+  be.finish(1, '期限後の返答。')
+  for (const d of [A, B]) await wait(d.has('コハコ', '期限後の返答'), `${d.name} に新しい返答`)
+  assert(be.runs.length === 2 && A.posts.length === 1 && B.posts.length === 1, '再送なし')
 })
 
 await browser.close()

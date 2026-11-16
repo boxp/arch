@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { planSync, Seen, validateTranscript } from './sync'
+import { planSync, Seen, Shared, validateTranscript } from './sync'
 
 test('履歴の検証と重複防止、追跡中の終端抑制', () => {
   const data = validateTranscript({
@@ -127,4 +127,15 @@ test('不正な応答は捨てる', () => {
     { ...ok, active: undefined },
   ])
     expect(validateTranscript(bad)).toBeNull()
+})
+
+test('履歴から外れた依頼（期限切れ・最新 50 件の外）だけを消す対象として返す', () => {
+  const shared = new Shared()
+  expect(shared.update([{ requestId: 'a' }, { requestId: 'b' }])).toEqual([])
+  expect(shared.update([{ requestId: 'a' }, { requestId: 'b' }, { requestId: 'c' }])).toEqual([])
+  expect(shared.update([{ requestId: 'b' }, { requestId: 'c' }])).toEqual(['a'])
+  // 一度返した番号は繰り返さない。履歴に載ったことのない番号（通知返信など）は対象にならない。
+  expect(shared.update([{ requestId: 'c' }])).toEqual(['b'])
+  expect(shared.update([])).toEqual(['c'])
+  expect(shared.update([])).toEqual([])
 })

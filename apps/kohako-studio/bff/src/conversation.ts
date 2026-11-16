@@ -105,6 +105,7 @@ export function createConversation({
   cancelSettleMs = 2000,
   activityDrainMs = 2000,
   argsIntervalMs = 1500,
+  sweepMs = 60_000,
 }: {
   now: () => number
   hermes: ReturnType<typeof createHermes>
@@ -114,6 +115,8 @@ export function createConversation({
   cancelSettleMs?: number
   activityDrainMs?: number
   argsIntervalMs?: number
+  /** 保持期限（24 時間）を過ぎた会話を消す見回りの間隔。0 で無効。 */
+  sweepMs?: number
 }) {
   const entries = new Map<string, Entry>()
   let sessionStartedAt = now(),
@@ -191,8 +194,19 @@ export function createConversation({
         entries.delete(id)
         changed = true
       }
+    // 直前の会話（本文つき）は 6 時間無操作で次の発言から使われなくなる。その時点で保存ファイルからも消す。
+    if (
+      (lastExchange || persistedExchange) &&
+      now() - lastUse > 6 * 3600_000 &&
+      ![...entries.values()].some((e) => e.status === 'pending')
+    ) {
+      lastExchange = persistedExchange = null
+      changed = true
+    }
     if (changed) save()
   }
+  // BOXP-565: 保存した会話本文・返答は、誰も API を呼ばなくても 24 時間で消す（保存ファイルからも消える）。
+  if (sweepMs > 0) setInterval(clean, sweepMs).unref?.()
   const conversation = {
     get rev() {
       return `${boot}-${counter}`
