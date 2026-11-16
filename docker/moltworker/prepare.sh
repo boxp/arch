@@ -19,7 +19,7 @@ if [ ! -f "${UPSTREAM_REF_FILE}" ]; then
   exit 1
 fi
 
-UPSTREAM_REF="$(tr -d '[:space:]' < "${UPSTREAM_REF_FILE}")"
+UPSTREAM_REF="$(tr -d '[:space:]' <"${UPSTREAM_REF_FILE}")"
 
 if [ -z "${UPSTREAM_REF}" ]; then
   echo "ERROR: UPSTREAM_REF is empty" >&2

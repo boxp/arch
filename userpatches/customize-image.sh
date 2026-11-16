@@ -18,28 +18,28 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y ansible python3-pip
 # The /tmp/overlay is where Armbian mounts external files
 echo "📋 Copying Ansible playbooks..."
 if [ -d "/tmp/overlay/ansible" ]; then
-    cp -r /tmp/overlay/ansible /root/ansible
+  cp -r /tmp/overlay/ansible /root/ansible
 else
-    echo "❌ Error: Ansible directory not found in /tmp/overlay/"
-    echo "📂 Available in overlay:"
-    ls -la /tmp/overlay/ 2>/dev/null || echo "Overlay not accessible"
-    exit 1
+  echo "❌ Error: Ansible directory not found in /tmp/overlay/"
+  echo "📂 Available in overlay:"
+  ls -la /tmp/overlay/ 2>/dev/null || echo "Overlay not accessible"
+  exit 1
 fi
 
 # Install Ansible collections
 echo "📦 Installing Ansible collections..."
 cd /root/ansible
 if [ -f "requirements.yml" ]; then
-    ansible-galaxy collection install -r requirements.yml
+  ansible-galaxy collection install -r requirements.yml
 else
-    echo "⚠️ requirements.yml not found"
+  echo "⚠️ requirements.yml not found"
 fi
 
 # Set node name from environment
 NODE_NAME="${ORANGEPI_NODE_NAME:-unknown}"
 
 # Create inventory for local execution
-cat > /root/ansible/inventory.ini << EOF
+cat >/root/ansible/inventory.ini <<EOF
 [all]
 localhost ansible_connection=local
 EOF
@@ -49,26 +49,26 @@ cd /root/ansible
 
 echo "📋 Running control-plane playbook..."
 if [ -f "playbooks/control-plane.yml" ]; then
-    ansible-playbook \
-        -i inventory.ini \
-        -e node_name="$NODE_NAME" \
-        -e chroot_build=true \
-        -c local \
-        playbooks/control-plane.yml
+  ansible-playbook \
+    -i inventory.ini \
+    -e node_name="$NODE_NAME" \
+    -e chroot_build=true \
+    -c local \
+    playbooks/control-plane.yml
 else
-    echo "⚠️ control-plane.yml not found"
+  echo "⚠️ control-plane.yml not found"
 fi
 
 echo "📋 Running node-specific playbook for $NODE_NAME..."
 if [ -f "playbooks/node-$NODE_NAME.yml" ]; then
-    ansible-playbook \
-        -i inventory.ini \
-        -e node_name="$NODE_NAME" \
-        -e chroot_build=true \
-        -c local \
-        playbooks/node-$NODE_NAME.yml
+  ansible-playbook \
+    -i inventory.ini \
+    -e node_name="$NODE_NAME" \
+    -e chroot_build=true \
+    -c local \
+    "playbooks/node-$NODE_NAME.yml"
 else
-    echo "⚠️ playbooks/node-$NODE_NAME.yml not found"
+  echo "⚠️ playbooks/node-$NODE_NAME.yml not found"
 fi
 
 # Cleanup

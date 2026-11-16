@@ -428,9 +428,9 @@ run_tick() {
   local state_root="$2"
   shift 2
   CODEX_TASK_BOARD_VAULT="${vault}" \
-  CODEX_TASK_BOARD_ROOT="${state_root}" \
-  CODEX_TASK_BOARD_LOCK_STALE_SECONDS="${CODEX_TASK_BOARD_LOCK_STALE_SECONDS:-180}" \
-  "$@" bb "${RUNNER}" tick
+    CODEX_TASK_BOARD_ROOT="${state_root}" \
+    CODEX_TASK_BOARD_LOCK_STALE_SECONDS="${CODEX_TASK_BOARD_LOCK_STALE_SECONDS:-180}" \
+    "$@" bb "${RUNNER}" tick
 }
 
 test_review_lane_retirement_contract() {
@@ -1421,7 +1421,7 @@ EOF
 }
 
 test_sigterm_writes_shutdown_marker_without_prestop() {
-  local tmp vault state output pid marker attempt
+  local tmp vault state output pid marker
   tmp="$(mktemp -d)"
   vault="${tmp}/vault"
   state="${tmp}/state"
@@ -1437,7 +1437,7 @@ test_sigterm_writes_shutdown_marker_without_prestop() {
     bb "${RUNNER}" loop >"${output}" 2>&1 &
   pid=$!
 
-  for attempt in $(seq 1 50); do
+  for _ in $(seq 1 50); do
     [[ -e "${state}/owners/old-pod.edn" ]] && break
     sleep 0.1
   done
@@ -2562,17 +2562,17 @@ EOF
   bb "${HELPER}" append-note BOXP-889 --vault "${real_dir}" --source "test" --note "real-path-note"
   bb "${HELPER}" append-note BOXP-889 --vault "${symlink_dir}" --source "test" --note "symlink-path-note"
 
-  grep -q "real-path-note" "${real_dir}/Tickets/BOXP-889.md" \
-    || fail "real-path note was not written"
-  grep -q "symlink-path-note" "${real_dir}/Tickets/BOXP-889.md" \
-    || fail "symlink-path note was not written"
+  grep -q "real-path-note" "${real_dir}/Tickets/BOXP-889.md" ||
+    fail "real-path note was not written"
+  grep -q "symlink-path-note" "${real_dir}/Tickets/BOXP-889.md" ||
+    fail "symlink-path note was not written"
 
   # With getCanonicalPath, symlink and real path resolve to the same canonical path,
   # producing only one lock file (not two distinct ones as with cross-vault).
   local lock_count
-  lock_count="$(ls "${lock_dir}" 2>/dev/null | grep -c 'BOXP-889' || echo 0)"
-  [ "${lock_count}" -eq 1 ] \
-    || fail "expected exactly 1 lock file for symlink/real-path (got ${lock_count}): same canonical path must share a lock"
+  lock_count="$(find "${lock_dir}" -mindepth 1 -maxdepth 1 -name '*BOXP-889*' 2>/dev/null | wc -l || true)"
+  [ "${lock_count}" -eq 1 ] ||
+    fail "expected exactly 1 lock file for symlink/real-path (got ${lock_count}): same canonical path must share a lock"
 }
 
 test_review_with_draft_pr_is_retried() {
@@ -3190,8 +3190,8 @@ EOF
   done
   ticket_file="${vault}/Tickets/BOXP-999.md"
   for i in $(seq 1 "${n}"); do
-    grep -q "concurrent-note-${i}" "${ticket_file}" \
-      || fail "note ${i} was lost in concurrent append-note writes"
+    grep -q "concurrent-note-${i}" "${ticket_file}" ||
+      fail "note ${i} was lost in concurrent append-note writes"
   done
 }
 
@@ -3225,16 +3225,16 @@ EOF
   bb "${HELPER}" append-note BOXP-888 --vault "${vault_a}" --source "test" --note "vault-a-note"
   bb "${HELPER}" append-note BOXP-888 --vault "${vault_b}" --source "test" --note "vault-b-note"
 
-  grep -q "vault-a-note" "${vault_a}/Tickets/BOXP-888.md" \
-    || fail "vault-a note was not written"
-  grep -q "vault-b-note" "${vault_b}/Tickets/BOXP-888.md" \
-    || fail "vault-b note was not written"
+  grep -q "vault-a-note" "${vault_a}/Tickets/BOXP-888.md" ||
+    fail "vault-a note was not written"
+  grep -q "vault-b-note" "${vault_b}/Tickets/BOXP-888.md" ||
+    fail "vault-b note was not written"
 
   # With path-hash prefixing each vault must produce a distinct lock file.
   # Without path hashing both vaults would share one lock file (count == 1).
-  lock_count="$(ls "${lock_dir}" 2>/dev/null | grep -c 'BOXP-888' || echo 0)"
-  [ "${lock_count}" -ge 2 ] \
-    || fail "expected >= 2 distinct lock files for cross-vault tickets (got ${lock_count}): separate vaults must not share a lock"
+  lock_count="$(find "${lock_dir}" -mindepth 1 -maxdepth 1 -name '*BOXP-888*' 2>/dev/null | wc -l || true)"
+  [ "${lock_count}" -ge 2 ] ||
+    fail "expected >= 2 distinct lock files for cross-vault tickets (got ${lock_count}): separate vaults must not share a lock"
 }
 
 test_concurrent_board_update_no_lost_writes() {
@@ -3308,7 +3308,8 @@ BOARD
     wait "${pid2}" || true
 
     board_content="$(cat "${vault}/Boards/Task Board.md")"
-    found_1=0; found_2=0
+    found_1=0
+    found_2=0
     echo "${board_content}" | grep -q "BOXP-701.*status::in-progress" && found_1=1 || true
     echo "${board_content}" | grep -q "BOXP-702.*status::in-progress" && found_2=1 || true
 
@@ -3317,8 +3318,8 @@ BOARD
     fi
   done
 
-  [ "${failures}" -eq 0 ] \
-    || fail "concurrent board updates lost entries in ${failures}/${rounds} rounds"
+  [ "${failures}" -eq 0 ] ||
+    fail "concurrent board updates lost entries in ${failures}/${rounds} rounds"
 }
 
 test_task_board_pbt_properties() { bb "${ROOT_DIR}/tests/codex-workspace/task_board_pbt_test.bb"; }

@@ -16,7 +16,7 @@ GUESTFS_MEMSIZE="${GUESTFS_MEMSIZE:-4096}"
 GUESTFS_SMP="${GUESTFS_SMP:-2}"
 
 case "$BASE_RELEASE" in
-  jammy|noble) ;;
+  jammy | noble) ;;
   *)
     echo "unsupported BASE_RELEASE: $BASE_RELEASE" >&2
     exit 2
@@ -187,10 +187,10 @@ qemu-img convert -O raw "$qcow_image" "$raw_image"
 xz -T0 -f "$raw_image"
 (
   cd "$(dirname "$compressed_image")"
-  sha256sum "$(basename "$compressed_image")" > "$(basename "$compressed_image").sha256"
+  sha256sum "$(basename "$compressed_image")" >"$(basename "$compressed_image").sha256"
 )
 
-cat > "$work_dir/image-info.json" <<EOF
+cat >"$work_dir/image-info.json" <<EOF
 {
   "node_name": "$NODE_NAME",
   "node_ip": "$expected_node_ip",

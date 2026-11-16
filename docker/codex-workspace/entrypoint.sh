@@ -95,7 +95,7 @@ configure_pi_agent() {
       name="$(basename "${entry}")"
       lower="${name,,}"
       case "${lower}" in
-        fd|rg|fd.exe|rg.exe|.*)
+        fd | rg | fd.exe | rg.exe | .*)
           continue
           ;;
       esac
