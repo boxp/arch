@@ -75,9 +75,9 @@ jobs:
           cp .trusted-aqua/aqua/aqua-policy.yaml aqua/aqua-policy.yaml
           rm -rf .trusted-aqua
 
-      - uses: aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329 # v4.1.0
+      - uses: aquaproj/aqua-installer@611554c6f0137ba41c8dd15aca8bee82504ea461 # v4.1.1
         with:
-          aqua_version: v2.64.0
+          aqua_version: v2.66.1
           policy_allow: aqua/aqua-policy.yaml
         env:
           AQUA_GITHUB_TOKEN: ${{steps.aqua_installer_token.outputs.token}}
@@ -120,7 +120,7 @@ jobs:
           repositories: >-
             ["${{github.event.repository.name}}"]
 
-      - uses: suzuki-shunsuke/tfaction@07a983968cbace490e9059103a7019a638c65e10 # v2.3.3
+      - uses: suzuki-shunsuke/tfaction@7e6ae7e4e2aa17f869f970f7fec8aa4b9de19138 # v2.3.5
         id: setup
         with:
           action: setup
@@ -138,13 +138,13 @@ jobs:
           role-session-name: ${{ steps.setup.outputs.aws_role_session_name }}
           aws-region: ${{ steps.setup.outputs.aws_region }}
 
-      - uses: suzuki-shunsuke/tfaction@07a983968cbace490e9059103a7019a638c65e10 # v2.3.3
+      - uses: suzuki-shunsuke/tfaction@7e6ae7e4e2aa17f869f970f7fec8aa4b9de19138 # v2.3.5
         id: target-config
 
         with:
           action: get-target-config
 
-      - uses: suzuki-shunsuke/tfaction@07a983968cbace490e9059103a7019a638c65e10 # v2.3.3
+      - uses: suzuki-shunsuke/tfaction@7e6ae7e4e2aa17f869f970f7fec8aa4b9de19138 # v2.3.5
         with:
           action: terraform-init
           github_token: ${{steps.generate_token.outputs.token}}
@@ -184,7 +184,7 @@ jobs:
               - name: registry.terraform.io/tailscale/tailscale
           GITHUB_TOKEN: ${{steps.pull_request_token.outputs.token}} # For github-comment
 
-      - uses: suzuki-shunsuke/tfaction@07a983968cbace490e9059103a7019a638c65e10 # v2.3.3
+      - uses: suzuki-shunsuke/tfaction@7e6ae7e4e2aa17f869f970f7fec8aa4b9de19138 # v2.3.5
         with:
           action: test
           github_token: ${{steps.generate_token.outputs.token}}
@@ -196,7 +196,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{secrets.gh_cloudflare_api_token}} # For cloudflare provider
           TRIVY_IGNOREFILE: ${{ github.workspace }}/.trivyignore
 
-      - uses: suzuki-shunsuke/tfaction@07a983968cbace490e9059103a7019a638c65e10 # v2.3.3
+      - uses: suzuki-shunsuke/tfaction@7e6ae7e4e2aa17f869f970f7fec8aa4b9de19138 # v2.3.5
         with:
           action: plan
           github_token: ${{steps.generate_token.outputs.token}}
