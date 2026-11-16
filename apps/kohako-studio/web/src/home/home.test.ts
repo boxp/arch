@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { SceneDirector, targetScene, type SceneInput } from './scene'
 import { cardsFromText } from './cards'
-import { bboxOf, classifyTouch, TouchLimiter, TouchBatcher, toScreenRect, type Point } from './touch'
+import { bboxOf, classifyTouch, fingerRect, TouchLimiter, TouchBatcher, toScreenRect, type Point } from './touch'
 import { parseResume, parseUnconfirmed, pollVerdict } from './resume'
 import { parsePrefs, parseVolume } from './prefs'
 
@@ -140,6 +140,11 @@ describe('ふれあい', () => {
       reaction: 'quiet',
       line: null,
     })
+  })
+  it('指のときだけ頭の判定を各辺へ短辺の 30%（12〜24px）広げる（BOXP-577）', () => {
+    expect(fingerRect({ x: 100, y: 50, w: 50, h: 60 })).toEqual({ x: 85, y: 35, w: 80, h: 90 })
+    expect(fingerRect({ x: 0, y: 0, w: 30, h: 30 })).toEqual({ x: -12, y: -12, w: 54, h: 54 })
+    expect(fingerRect({ x: 0, y: 0, w: 120, h: 116 })).toEqual({ x: -24, y: -24, w: 168, h: 164 })
   })
   it('モデル座標の範囲を画面の矩形へ写し、44px 以上にする', () => {
     expect(bboxOf([1, 2, 5, 9, 3, 0])).toEqual([1, 0, 5, 9])

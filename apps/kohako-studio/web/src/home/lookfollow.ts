@@ -59,3 +59,40 @@ export function blendLook(pose: readonly [number, number], follow: Look, weight:
 }
 export const followWeightFor = (pose: readonly [number, number]) =>
   pose[0] !== 0 || pose[1] !== 0 ? POSE_LOOK_WEIGHT : 1
+/** BOXP-577: 指を離してから視線を中立へ戻し始めるまで（ms）。マウスはカーソルが残るので向き続けるが、指は離すと位置が残らない。 */
+export const TOUCH_LOOK_LINGER_MS = 1200
+/**
+ * BOXP-577: タッチした位置へ視線を向けるための指の状態。触れている間は指の位置、離したら TOUCH_LOOK_LINGER_MS だけ離した位置を返し、
+ * 取消（ブラウザがスクロール等に切り替えた）ときはすぐに null（中立）へ戻す。最初に触れた 1 本の指だけを追う。時刻は performance.now()。
+ */
+export class TouchLook {
+  private id: number | null = null
+  private point: Look | null = null
+  private until = Infinity
+  down(id: number, p: Look) {
+    this.id = id
+    this.point = p
+    this.until = Infinity
+  }
+  move(id: number, p: Look) {
+    if (id === this.id) this.point = p
+  }
+  up(id: number, p: Look, now: number) {
+    if (id !== this.id) return
+    this.id = null
+    this.point = p
+    this.until = now + TOUCH_LOOK_LINGER_MS
+  }
+  cancel(id: number) {
+    if (id === this.id) this.clear()
+  }
+  clear() {
+    this.id = null
+    this.point = null
+    this.until = Infinity
+  }
+  at(now: number): Look | null {
+    if (this.point && now >= this.until) this.clear()
+    return this.point
+  }
+}

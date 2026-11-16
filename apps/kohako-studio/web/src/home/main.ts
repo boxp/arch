@@ -55,6 +55,7 @@ import {
   acts,
   bboxOf,
   classifyTouch,
+  fingerRect,
   HAND_MESHES,
   HEAD_MESHES,
   inside,
@@ -67,7 +68,7 @@ import {
 } from './touch'
 import { createVoicePlayer, splitVoiceSentences } from './voice'
 import { parsePrefs, parseVolume, type Prefs } from './prefs'
-import { blendLook, followWeightFor, lookTarget, smoothLook, type Look } from './lookfollow'
+import { blendLook, followWeightFor, lookTarget, smoothLook, TouchLook, type Look } from './lookfollow'
 import { parseResume, parseUnconfirmed, pollVerdict, type Inflight } from './resume'
 import { addErrorText, holdLabel, MessageQueue, QUEUE_MAX_ITEMS, type HoldReason, type QueueItem } from './queue'
 
@@ -2153,10 +2154,19 @@ rigCanvas.addEventListener('pointerdown', (e) => {
   const rect = rigCanvas.getBoundingClientRect(),
     x = e.clientX - rect.left,
     y = e.clientY - rect.top
+  // BOXP-577: 指のときは頭の判定を少し広げる（手の判定を優先し、広げた分は手に重ならない所だけ頭にする）。閉眼の判定も同じ矩形で行う。
+  const finger = e.pointerType === 'touch',
+    headRect = areas.head && finger ? fingerRect(areas.head) : areas.head
   const zone: Zone | null =
-    areas.head && inside(areas.head, x, y) ? 'head' : areas.hands.some((h) => inside(h, x, y)) ? 'hand' : null
+    areas.head && inside(areas.head, x, y)
+      ? 'head'
+      : areas.hands.some((h) => inside(h, x, y))
+        ? 'hand'
+        : headRect && inside(headRect, x, y)
+          ? 'head'
+          : null
   if (!zone) return
-  track = { id: e.pointerId, zone, headRect: areas.head, points: [{ x, y, time: performance.now() }] }
+  track = { id: e.pointerId, zone, headRect, points: [{ x, y, time: performance.now() }] }
 })
 rigCanvas.addEventListener('pointermove', (e) => {
   if (!track || e.pointerId !== track.id) return
@@ -2258,30 +2268,54 @@ document.addEventListener('keydown', (e) => {
   }
 })
 
-// BOXP-516: Studio と同じくカーソルの方向へ視線（目と頭の向き）を向ける。マウス／ペンの hover だけを対象にし、touch・スクロールには触れない。
-// イベントでは座標を控えるだけで、描画への反映は既存の描画ループで行う（通信はしない）。
+// BOXP-516: Studio と同じくカーソルの方向へ視線（目と頭の向き）を向ける。マウス／ペンは hover を追う。
+// BOXP-577: スマホ・タブレットでは触れた位置へ向ける（触れている間は指を追い、離すと少し残して中立へ、スクロール等で取り消されたら即中立）。
+// 受け身（passive）で座標を控えるだけで、スクロール・UI 操作は止めない。描画への反映は既存の描画ループで行う（通信はしない）。
 let lookPointer: Look | null = null,
   lookCurrent: Look = { x: 0, y: 0 },
   lookWeight = 0,
   lookApplied = false,
   lookFace: Look | null = null,
   lookFaceAt = 0
+const touchLook = new TouchLook(),
+  listen = { passive: true, capture: true } as const
 // ペンは画面に触れていない hover（buttons === 0）のときだけ追う。接触中（描く・スクロール・操作）は追従を止めて中立へ戻す。
 window.addEventListener(
   'pointermove',
   (e) => {
-    if (e.pointerType === 'mouse' || (e.pointerType === 'pen' && e.buttons === 0))
+    if (e.pointerType === 'mouse' || (e.pointerType === 'pen' && e.buttons === 0)) {
       lookPointer = { x: e.clientX, y: e.clientY }
-    else if (e.pointerType === 'pen') lookPointer = null
+      touchLook.clear()
+    } else if (e.pointerType === 'pen') lookPointer = null
+    else if (e.pointerType === 'touch') touchLook.move(e.pointerId, { x: e.clientX, y: e.clientY })
   },
-  { passive: true },
+  listen,
 )
 window.addEventListener(
   'pointerdown',
   (e) => {
     if (e.pointerType === 'pen') lookPointer = null
+    else if (e.pointerType === 'touch') {
+      // マウス併用端末では以前のマウス位置が残っていると、取り消し・離した後の待機終了時に中立でなくそこへ戻ってしまうため捨てる。
+      lookPointer = null
+      if (e.isPrimary) touchLook.down(e.pointerId, { x: e.clientX, y: e.clientY })
+    }
   },
-  { passive: true },
+  listen,
+)
+window.addEventListener(
+  'pointerup',
+  (e) => {
+    if (e.pointerType === 'touch') touchLook.up(e.pointerId, { x: e.clientX, y: e.clientY }, performance.now())
+  },
+  listen,
+)
+window.addEventListener(
+  'pointercancel',
+  (e) => {
+    if (e.pointerType === 'touch') touchLook.cancel(e.pointerId)
+  },
+  listen,
 )
 // 窓の外へ出た（relatedTarget なし）・窓が非アクティブ・非表示になったら中立へ戻す。
 document.addEventListener(
@@ -2293,9 +2327,13 @@ document.addEventListener(
 )
 window.addEventListener('blur', () => {
   lookPointer = null
+  touchLook.clear()
 })
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) lookPointer = null
+  if (document.hidden) {
+    lookPointer = null
+    touchLook.clear()
+  }
 })
 window.addEventListener('resize', () => {
   lookFaceAt = 0
@@ -2332,8 +2370,9 @@ function rigTick(now: number) {
       petShown(petOffset) ||
       touchGesture !== 'none' ||
       (!!acting?.snapshot.gesture && acting.snapshot.gesture !== 'none')
-    const enabled = prefs.follow && !reduced(),
-      active = !!lookPointer && enabled && !blocked
+    const pointer = touchLook.at(performance.now()) ?? lookPointer,
+      enabled = prefs.follow && !reduced(),
+      active = !!pointer && enabled && !blocked
     // 顔の中心は頭のメッシュから求める。視線で頭が動くと中心も動いて揺れ返すので、毎フレームではなく 0.5 秒ごと（リサイズ時は即時）に取り直す。
     if (active && (!lookFace || now - lookFaceAt > 500)) {
       computeAreas()
@@ -2345,7 +2384,7 @@ function rigTick(now: number) {
       lookFaceAt = now
     }
     const target = lookTarget(
-      lookPointer,
+      pointer,
       lookFace ?? { x: innerWidth / 2, y: innerHeight / 3 },
       { left: 0, top: 0, width: innerWidth, height: innerHeight },
       enabled,

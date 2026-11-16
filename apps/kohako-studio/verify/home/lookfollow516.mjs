@@ -15,6 +15,8 @@ const mean = xs => xs.reduce((s, x) => s + x, 0) / xs.length
 const r1 = x => Math.round(x * 10) / 10
 // 左右・上下それぞれの平均の差がこれ以上なら「向いて見える」とする（CSS px、顔の幅は PC で約 110px）。
 const X_MIN = 3, Y_MIN = 1.5, OFF_MAX = 1.5
+// スマホは顔の幅が PC の約 55%（Pixel 7 で約 60px）なので、触れた左右の瞳の差はこれ以上あればよい。
+const TOUCH_X_MIN = 1.5
 
 async function open(config, prefs) {
   const context = await browser.newContext(config), page = await context.newPage()
@@ -119,18 +121,45 @@ async function resize() {
   await o.context.close()
 }
 
-// スマホ（touch）: hover を要求せず、タップやスクロールで視線追従が動かない。頭のなでは従来どおり。
+// スマホ（touch）: hover を要求しない。BOXP-577: 触れている間は触れた位置へ視線が向き（最終描画の瞳で確認）、離すと少し残して中立へ戻り、
+// 取り消し（スクロールへの切替など）では即中立へ戻る。頭のなで中は追従が退き、なでの頭の傾きが出る。
 async function mobile() {
   if (ONLY && !ONLY.includes('pixel7')) return
-  const o = await open(devices['Pixel 7']), { page, a } = o, out = {}
-  await page.touchscreen.tap(20, 300); await page.waitForTimeout(500); out.tap = await o.follow()
+  const o = await open(devices['Pixel 7']), { page, a } = o, out = {}, vp = page.viewportSize(), cy = a.y + a.h * 0.45
+  const cdp = await page.context().newCDPSession(page), touch = (type, p) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: p ? [{ x: p[0], y: p[1] }] : [] })
+  // 左端・右端を指で押さえたまま（わずかに動かして）瞳の位置を測る。待機クリップの揺れを均すため交互に置き直す。
+  const samples = { left: [], right: [] }, follows = { left: [], right: [] }
+  for (let i = 0; i < 6; i++) for (const [j, [k, x]] of [['left', 8], ['right', vp.width - 8]].entries()) {
+    await touch('touchStart', [x, cy]); await touch('touchMove', [x, cy + 1]); await page.waitForTimeout(800 + JITTER[(i * 3 + j * 5) % JITTER.length])
+    for (let n = 0; n < 3; n++) { const m = await o.eyes(i === 5 && n === 0 ? `pixel7-touch-${k}` : null); if (m) samples[k].push(m); await page.waitForTimeout(170) }
+    follows[k].push(await o.follow()); await touch('touchEnd')
+  }
+  const all = [...samples.left, ...samples.right].map(m => m.n).sort((p, q) => p - q), median = all[Math.floor(all.length / 2)] ?? 0
+  const avg = k => mean(samples[k].filter(m => m.n >= median * 0.75).map(m => m.x))
+  out.eyeX = { left: r1(avg('left')), right: r1(avg('right')) }; out.dx = r1(out.eyeX.right - out.eyeX.left)
+  out.followLeft = follows.left.at(-1); out.followRight = follows.right.at(-1)
+  check(out.dx >= TOUCH_X_MIN, `pixel7: 触れた左右で瞳が動かない（差 ${out.dx}px）`)
+  check(follows.left.every(f => f?.active && f.target.x < 0) && follows.right.every(f => f?.active && f.target.x > 0), `pixel7: 触れている間に触れた側を向かない ${JSON.stringify(out.followLeft)} ${JSON.stringify(out.followRight)}`)
+  // タップ: 離した後も少し向き、約 1.2 秒後から中立へ戻る。
+  await page.waitForTimeout(3000)
+  await page.touchscreen.tap(20, cy); await page.waitForTimeout(400); out.tap = await o.follow()
+  await page.waitForTimeout(2400); out.tapAfter = await o.follow()
+  check(out.tap?.active && out.tap.target.x < 0, `pixel7: タップした側を向かない ${JSON.stringify(out.tap)}`)
+  check(!out.tapAfter?.active && out.tapAfter.weight < 0.05, `pixel7: タップの後に中立へ戻らない ${JSON.stringify(out.tapAfter)}`)
+  // 取り消し（ブラウザがスクロールへ切り替えた等）: 即中立。
+  await touch('touchStart', [vp.width - 20, cy]); await touch('touchMove', [vp.width - 21, cy]); await page.waitForTimeout(400); out.held = await o.follow()
+  await touch('touchCancel'); await page.waitForTimeout(100); out.cancel = await o.follow()
+  check(out.held?.active && out.held.target.x > 0, `pixel7: 押さえた側を向かない ${JSON.stringify(out.held)}`)
+  check(!out.cancel?.active && out.cancel.target.x === 0, `pixel7: 取り消しで中立へ戻らない ${JSON.stringify(out.cancel)}`)
   await page.mouse.wheel(0, 200); await page.waitForTimeout(400); out.scroll = await o.follow()
-  const cdp = await page.context().newCDPSession(page), hx = a.x + a.w / 2, hy = a.y + a.h * 0.3
-  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: hx, y: hy }] })
-  for (let i = 0; i < 8; i++) for (const dx of [-20, 20]) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: hx + dx, y: hy }] })
+  check(!out.scroll?.active, `pixel7: ホイールで視線追従が有効になった ${JSON.stringify(out.scroll)}`)
+  await page.waitForTimeout(1500)
+  const hx = a.x + a.w / 2, hy = a.y + a.h * 0.3
+  await touch('touchStart', [hx, hy])
+  for (let i = 0; i < 8; i++) for (const dx of [-20, 20]) await touch('touchMove', [hx + dx, hy])
   await page.waitForTimeout(200); out.pet = await page.evaluate(() => window.__kohakoHome.report.petFollow); out.during = await o.follow()
-  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await o.eyes('pixel7-after-pet')
-  check([out.tap, out.scroll, out.during].every(f => !f || !f.active), `pixel7: touch で視線追従が有効になった ${JSON.stringify(out)}`)
+  await touch('touchEnd'); await o.eyes('pixel7-after-pet')
+  check(!out.during?.active, `pixel7: なで中に視線追従が有効になった ${JSON.stringify(out.during)}`)
   check(Math.abs(out.pet.headZ) > 3, `pixel7: なでで頭が傾かない ${JSON.stringify(out.pet)}`)
   result.pixel7 = out; await o.context.close()
 }
