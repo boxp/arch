@@ -36,6 +36,7 @@ cleanup() {
       "$here/deadman.sh" disarm >>"$L" 2>&1 || true
     else
       log "RESTORE FAILED: 手動確認が必要 (dead-man は残す)"
+      ((rc != 0)) || rc=4
     fi
     "$here/tunnel.sh" down $PORT >>"$L" 2>&1 || true
   fi
@@ -54,6 +55,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 # gate が実際に自分の token で閉じた場合だけ cleanup で restore する。
 # close が gate 変更前に失敗した(他の利用者の状態が残る)場合は開け戻さない。
+# 閉鎖期限は close 開始前から数える（503 反映待ちも 90 分に含める）
+deadline=$(($(date +%s) + 90 * 60))
 close_rc=0
 "$here/ops.sh" close "$tok" >>"$L" 2>&1 || close_rc=$?
 g=$("$here/ops.sh" gate 2>>"$L" || echo unknown)
@@ -66,7 +69,6 @@ fi
   log "close NG rc=$close_rc gate=$g"
   exit 1
 }
-deadline=$(($(date +%s) + 90 * 60))
 # dead-man: workspace ごと止まって cleanup が走らなくても、node 側で最長 10 分後に gate を開け戻す（5 分ごとに延長、閉鎖期限を超えない）
 "$here/deadman.sh" arm "$tok" 600 >>"$L" 2>&1
 (while sleep 300; do

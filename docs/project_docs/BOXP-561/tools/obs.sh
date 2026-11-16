@@ -22,6 +22,7 @@ case $op in
     }
     (
       low=0
+      fail=0
       base=""
       while :; do
         line=$(ssh -o BatchMode=yes -o ConnectTimeout=10 $NODE "awk '/MemAvailable/{m=\$2} END{printf \"%s\", m}' /proc/meminfo; printf '\t'; cut -d' ' -f1 /proc/loadavg | tr -d '\n'; printf '\t'; sudo -n dmesg | grep -Eic 'GPU HANG|GPU reset' || true" 2>/dev/null || echo -e "NA\tNA\tNA")
@@ -30,6 +31,9 @@ case $op in
         printf '%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$mem" "$load" "$hang" "$g" >>"$dir/obs.tsv"
         if [[ $mem =~ ^[0-9]+$ ]]; then if ((mem < 12 * 1024 * 1024)); then low=$((low + 1)); else low=0; fi; fi
         [[ -z $base && $hang =~ ^[0-9]+$ ]] && base=$hang
+        # SSH や監視値の取得失敗が続いたら、メモリ・GPU 異常を検出できないので中止する
+        if [[ $mem =~ ^[0-9]+$ && $hang =~ ^[0-9]+$ ]]; then fail=0; else fail=$((fail + 1)); fi
+        if ((fail >= 2)); then echo "$(date -u +%FT%TZ) observation unavailable x2 (mem=$mem hang=$hang)" >>"$dir/ABORT"; fi
         if ((low >= 2)); then echo "$(date -u +%FT%TZ) MemAvailable<12GiB x2" >>"$dir/ABORT"; fi
         if [[ $hang =~ ^[0-9]+$ && -n $base ]] && ((hang > base)); then echo "$(date -u +%FT%TZ) GPU HANG/reset $base->$hang" >>"$dir/ABORT"; fi
         sleep 30

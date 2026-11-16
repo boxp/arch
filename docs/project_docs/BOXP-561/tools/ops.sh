@@ -77,6 +77,12 @@ case "${1:-}" in
       sleep 10
     done
     log "direct gemma4-26b: ${r:-timeout(deadline)}"
+    # 自分の token の閉鎖が残っている時だけ開ける（別の利用者が閉じ直した閉鎖は解除しない）
+    g=$(gate || echo unknown)
+    if [[ $g != "closed:BOXP-561-$tok" ]]; then
+      log "gate=$g は closed:BOXP-561-$tok ではないため open しない"
+      exit 1
+    fi
     bash "$RTAPI" gate "open:BOXP-561-$tok-end" 2>&1 | tail -1
     for _ in $(seq 30); do
       r2=$(chat $SVC gemma4-26b 120 || true)
