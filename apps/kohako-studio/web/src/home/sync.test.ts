@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { planSync, Seen, Shared, validateTranscript } from './sync'
+import { nextRev, planSync, Seen, Shared, validateTranscript } from './sync'
 
 test('履歴の検証と重複防止、追跡中の終端抑制', () => {
   const data = validateTranscript({
@@ -138,4 +138,15 @@ test('履歴から外れた依頼（期限切れ・最新 50 件の外）だけ�
   expect(shared.update([{ requestId: 'c' }])).toEqual(['b'])
   expect(shared.update([])).toEqual(['c'])
   expect(shared.update([])).toEqual([])
+})
+
+test('進行中の依頼を追えていない間は rev を覚えず、次回も追跡を試み直す', () => {
+  // 進行中が無い・進行中の依頼をこの端末が追っている: 変化なしの照会でよい。
+  expect(nextRev('r1', null, '')).toBe('r1')
+  expect(nextRev('r1', null, 'old')).toBe('r1')
+  expect(nextRev('r1', { requestId: 'a', kind: 'text' }, 'a')).toBe('r1')
+  // 何も追っていないのに追跡できなかった（送信中・承認待ちなど）。
+  expect(nextRev('r1', { requestId: 'a', kind: 'text' }, '')).toBe('')
+  // 前の依頼を追跡中に別端末が次の依頼を始めた: 前の依頼の完了後に次の依頼を追えるよう覚えない。
+  expect(nextRev('r1', { requestId: 'next', kind: 'text' }, 'prev')).toBe('')
 })

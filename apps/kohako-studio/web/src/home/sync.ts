@@ -152,3 +152,11 @@ export function planSync(
     ops.push({ op: 'follow', id: active.requestId, kind: active.kind })
   return ops
 }
+/**
+ * 次回の照会に付ける rev。進行中の依頼をこの端末がまだ追えていない間（別の依頼を追跡中・送信中など）は rev を
+ * 覚えず、次回も全文を受け取って追跡を試み直す。覚えてしまうと「変化なし」が返り続け、その依頼の進行状態・承認・
+ * 停止をこの端末で扱えなくなる。
+ */
+export function nextRev(rev: string, active: Active, trackingId: string): string {
+  return active && active.requestId !== trackingId ? '' : rev
+}

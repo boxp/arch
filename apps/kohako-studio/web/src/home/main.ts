@@ -1,4 +1,4 @@
-import { Seen, Shared, planSync, validateTranscript } from './sync'
+import { Seen, Shared, nextRev, planSync, validateTranscript } from './sync'
 import { classifyFailure, parseReauth, recentlyReloaded, REAUTH_KEY, serializeReauth } from './reauth'
 import { submitAction } from './composer'
 import { must } from '../must'
@@ -2655,7 +2655,7 @@ async function syncTranscript() {
         }
       }
     }
-    transcriptRev = data.active && !requestId ? '' : data.rev
+    transcriptRev = nextRev(data.rev, data.active, requestId)
   } catch {
     /* 古い BFF や一時的な通信失敗では何もしない */
   } finally {

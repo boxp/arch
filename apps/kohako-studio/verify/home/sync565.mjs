@@ -431,6 +431,49 @@ await scenario('j', '保持期限（24 時間）を過ぎた会話は、誰も�
   assert(be.runs.length === 2 && A.posts.length === 1 && B.posts.length === 1, '再送なし')
 })
 
+await scenario('k', '前の依頼を追跡中に別端末が次の依頼を始めても、前の依頼の完了後に次の依頼の進行状態・停止を追える', async (be, open, ev) => {
+  const A = await open('A', 'pc'),
+    B = await open('B', 'pixel7')
+  await A.submit('一つ目の依頼')
+  await wait(() => be.runs.length === 1, '一つ目')
+  await wait(() => B.visible('#stop'), 'B が一つ目を追跡')
+  // B の照会だけを止め、B が「一つ目を追跡中」のまま BFF 側で一つ目の完了と二つ目の開始が起きる状況を作る。
+  const first = be.runs[0].requestId
+  let release
+  const gate = new Promise((r) => (release = r))
+  await B.ctx.route(`**/kohako/api/v1/requests/${first}`, async (r) => {
+    await gate
+    await r.continue()
+  })
+  await new Promise((r) => setTimeout(r, 1500)) // 止める前に出ていた照会を終わらせる
+  be.finish(0, '一つ目の返答。')
+  await wait(A.has('コハコ', '一つ目の返答'), 'A に一つ目の返答')
+  await A.submit('二つ目の依頼')
+  await wait(() => be.runs.length === 2, '二つ目')
+  // B は一つ目を追跡中のまま、二つ目が進行中の履歴を受け取る（発言は出るが、まだ追跡には移れない）。
+  await wait(B.has('あなた', '二つ目の依頼'), 'B に二つ目の発言')
+  await new Promise((r) => setTimeout(r, 6000)) // その状態で次の同期も挟む
+  ev.heldReplyB = await B.count('コハコ', '一つ目の返答')
+  release()
+  await wait(B.has('コハコ', '一つ目の返答'), 'B に一つ目の返答')
+  // 一つ目の完了後、二つ目を追跡して作業中・停止ボタンが出る。
+  await wait(async () => (await B.count('お知らせ', '別の端末から送られた依頼の続きを追っています')) === 2, 'B が二つ目を追跡')
+  await wait(() => B.visible('#stop'), 'B に二つ目の停止ボタン')
+  ev.stateB = await B.state()
+  await B.shot('k-following-second')
+  await B.page.locator('#stop').click()
+  await wait(() => be.stops.length === 1, 'B からの停止が届く')
+  for (const d of [A, B]) await wait(async () => !(await d.visible('#stop')), `${d.name} の停止ボタンが消える`)
+  await new Promise((r) => setTimeout(r, 6000))
+  ev.stops = be.stops
+  ev.runs = be.runs.length
+  ev.posts = { A: A.posts.length, B: B.posts.length }
+  ev.replies = { A: await A.count('コハコ', '一つ目の返答'), B: await B.count('コハコ', '一つ目の返答') }
+  assert(be.stops.length === 1 && be.stops[0] === be.runs[1].runId, `二つ目だけが 1 回止まる ${JSON.stringify(be.stops)}`)
+  assert(be.runs.length === 2 && A.posts.length === 2 && B.posts.length === 0, '実行は 2 件・B は送信なし')
+  assert(ev.replies.A === 1 && ev.replies.B === 1, `返答の重複 ${JSON.stringify(ev.replies)}`)
+})
+
 await browser.close()
 server.close()
 fs.writeFileSync(path.join(out, 'result.json'), JSON.stringify({ pass: !failures.length, failures, results }, null, 1))
