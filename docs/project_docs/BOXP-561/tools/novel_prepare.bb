@@ -1,0 +1,32 @@
+#!/usr/bin/env bb
+(require '[babashka.fs :as fs] '[clojure.string :as str] '[clojure.java.io :as io])
+(import '[java.security MessageDigest] '[java.time ZonedDateTime ZoneId] '[java.time.format DateTimeFormatter])
+(def vault "/home/boxp/Documents/obsidian-headless/BOXP")
+(load-file (str (.getParent (io/file (System/getProperty "babashka.file"))) "/tmp.bb"))
+(defn files [p] (if (fs/exists? p) (->> (file-seq (io/file p)) (filter #(.isFile %)) (remove #(fs/sym-link? %))) []))
+(defn digest [f] (let [d (MessageDigest/getInstance "SHA-256") b (byte-array 65536)] (with-open [in (io/input-stream f)] (loop [] (let [n (.read in b)] (when (pos? n) (.update d b 0 n) (recur))))) (format "%064x" (BigInteger. 1 (.digest d)))))
+(let [[track root & opts] *command-line-args* dry? (= opts ["--dry-run"]) base (.getCanonicalPath (io/file (or root "")))]
+  (when-not (and (#{"synth" "real"} track) root (or (empty? opts) dry?) (under-tmp? base) (not (fs/exists? base))) (binding [*out* *err*] (println "usage: novel_prepare.bb synth|real NEW_ROOT [--dry-run]; root must be under workspace tmp and not exist")) (System/exit 2))
+  (let [setting (str vault "/ひとはこさんバース") drafts (str vault "/小説草案") fixture (str vault "/Projects/gemma4-31b-evaluation/artifacts/fixtures/synth-setting")
+        pairs (if (= track "synth") (map #(vector % (str "設定/" (fs/relativize fixture %))) (files fixture))
+                (concat (mapcat (fn [dir] (let [src (str setting "/" dir)] (map #(vector % (str "ひとはこさんバース/" dir "/" (fs/relativize src %))) (filter #(str/ends-with? (str %) ".md") (files src))))) ["世界観設定" "キャラ設定" "アイテム設定"])
+                        (map #(vector % (str "小説草案/" (fs/file-name %))) (filter #(and (.isFile %) (str/ends-with? (str %) ".md") (not (fs/sym-link? %))) (or (seq (.listFiles (io/file drafts))) [])))
+                        (map #(vector % (str "小説草案/AI執筆/" (fs/file-name %))) (take-last 10 (sort-by str (filter #(and (.isFile %) (str/ends-with? (str %) ".md") (not (fs/sym-link? %))) (or (seq (.listFiles (io/file (str drafts "/AI執筆")))) [])))))))
+        pairs (vec pairs)]
+    (if dry? (println (str "files=" (count pairs) " bytes=" (reduce + (map #(.length (io/file (first %))) pairs))))
+      (do (fs/create-dirs (str base "/小説草案/AI執筆"))
+          (doseq [[src dst] pairs] (let [to (str base "/" dst)] (fs/create-dirs (fs/parent to)) (fs/copy src to)))
+          (spit (str base "/着想メモ.md") "- 立冬の頃の温かい食べ物\n- 文化祭・学園祭シーズン\n- 紅葉の見頃\n")
+          (let [original (slurp (str vault "/Infrastructure/Codex Cron/prompts/daily-hitohako-news-novel.md"))
+                p (str/replace original vault base)
+                p (if (= track "synth") (reduce (fn [s dir] (str/replace s (str base "/ひとはこさんバース/" dir) (str base "/設定"))) p ["世界観設定" "キャラ設定" "アイテム設定"]) p)
+                p (str/replace p #"(?m)^1\. Web検索.*$" "1. 着想メモ.md から一つ選ぶ。")
+                p (str/replace p #"し、あわせて小説内のハイライトシーンの挿絵を1枚生成してください" "してください")
+                ;; synth: 合成設定「灯火街」は別世界なので、本番固有の名前を合成側の対応物へ置き換える
+                p (if (= track "synth") (-> p (str/replace "[[怪獣と魔力吸収]]" "[[monster-rules]]") (str/replace "ひとはこさんバース" "灯火街の設定（設定/）")) p)
+                p (str/replace p #"(?s)4\. 小説を書いた後、.*?(?=7\. 小説末尾)" "4. 挿絵は生成しない。末尾に『## 挿絵生成メモ』を置き『評価環境のため生成しない』と書く。\n")
+                p (str/replace p #"(?s)挿絵の方針:.*?(?=作風:)" "")
+                now (.format (ZonedDateTime/now (ZoneId/of "Asia/Tokyo")) (DateTimeFormatter/ofPattern "yyyy-MM-dd-HH-mm"))]
+            (spit (str base "/prompt.md") (str p "\nファイル名に使用する現在の日本標準時: " now "\n")))
+          (let [manifest (into (sorted-map) (map (fn [f] [(str (fs/relativize base f)) (digest f)]) (files base)))] (spit (str base "/manifest.before") (pr-str manifest)))
+          (println (str "files=" (count pairs) " bytes=" (reduce + (map #(.length (io/file (first %))) pairs))))))))
