@@ -21,7 +21,7 @@ button:focus-visible,a:focus-visible,textarea:focus-visible,input:focus-visible{
 .stage{position:relative;z-index:1;overflow:hidden;min-height:0}
 .character{position:absolute;z-index:2;overflow:hidden;left:3%;bottom:0;width:40%;height:100%;transition:left .3s ease,width .3s ease,height .3s ease,bottom .3s ease,right .3s ease}
 .character img{width:100%;height:100%;object-fit:contain;object-position:bottom}
-#rig{position:absolute;left:0;top:0;width:100%;height:100%;display:block;touch-action:pan-y}
+#rig{position:absolute;left:0;top:0;width:100%;height:100%;display:block;touch-action:pan-y;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
 /* BOXP-510 TD-02: 腕・袖がモデル枠の外へ振れても切れないよう、canvas を左右へ広げ（拡大率は rig.ts で補正し見た目の大きさは同じ）、.character は上下だけ切る。 */
 .character{--rig-bleed:25cqw;--rig-bleed-upper:60cqh}
 .character:not(.mini){overflow:visible;clip-path:inset(0 -100vmax)}

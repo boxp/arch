@@ -166,3 +166,12 @@ export class TouchBatcher {
     this.inflight = false
   }
 }
+
+/**
+ * BOXP-577: 指（touch）で頭をなでるときの判定。スマホ縦向きでは頭が 48px ほどで、指の接地点は数 mm ずれるため、
+ * 頭の少し外から触ると反応しなかった。指のときだけ、頭の矩形を各辺へ「短辺の 30%（12〜24px）」広げる。マウスはそのまま。
+ */
+export function fingerRect(r: Rect): Rect {
+  const m = Math.min(24, Math.max(12, Math.min(r.w, r.h) * 0.3))
+  return { x: r.x - m, y: r.y - m, w: r.w + m * 2, h: r.h + m * 2 }
+}

@@ -55,6 +55,7 @@ import {
   acts,
   bboxOf,
   classifyTouch,
+  fingerRect,
   HAND_MESHES,
   HEAD_MESHES,
   inside,
@@ -2153,10 +2154,19 @@ rigCanvas.addEventListener('pointerdown', (e) => {
   const rect = rigCanvas.getBoundingClientRect(),
     x = e.clientX - rect.left,
     y = e.clientY - rect.top
+  // BOXP-577: 指のときは頭の判定を少し広げる（手の判定を優先し、広げた分は手に重ならない所だけ頭にする）。閉眼の判定も同じ矩形で行う。
+  const finger = e.pointerType === 'touch',
+    headRect = areas.head && finger ? fingerRect(areas.head) : areas.head
   const zone: Zone | null =
-    areas.head && inside(areas.head, x, y) ? 'head' : areas.hands.some((h) => inside(h, x, y)) ? 'hand' : null
+    areas.head && inside(areas.head, x, y)
+      ? 'head'
+      : areas.hands.some((h) => inside(h, x, y))
+        ? 'hand'
+        : headRect && inside(headRect, x, y)
+          ? 'head'
+          : null
   if (!zone) return
-  track = { id: e.pointerId, zone, headRect: areas.head, points: [{ x, y, time: performance.now() }] }
+  track = { id: e.pointerId, zone, headRect, points: [{ x, y, time: performance.now() }] }
 })
 rigCanvas.addEventListener('pointermove', (e) => {
   if (!track || e.pointerId !== track.id) return
