@@ -317,6 +317,7 @@ const report: Record<string, unknown> = { loaded: false, errors: [] as string[],
 // 胸の揺れの状態は検査から読むときだけ求める（毎フレーム report を作らない）。
 Object.defineProperty(report, 'chest', { enumerable: true, get: () => stage?.report().chest ?? null })
 Object.defineProperty(report, 'hair', { enumerable: true, get: () => stage?.report().hairPatch ?? null })
+Object.defineProperty(report, 'face', { enumerable: true, get: () => stage?.report().facePatch ?? null })
 function interruptActing() {
   voicePlayer.cancel()
   speaker?.cancel()

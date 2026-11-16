@@ -404,8 +404,19 @@ describe('あごの輪郭外の下地', () => {
       ink: Rgba = [30, 20, 25, 255],
       hair: Rgba = [70, 55, 65, 255]
     const row = [skin, skin, hair, skin, skin, ink, blush, skin, skin]
-    expect(eraseJawRow(row, 8, 7, 0, 330)).toEqual([4, 3, 1, 0])
+    expect(eraseJawRow(row, 8, 7, 0, 350)).toEqual([4, 3, 1, 0])
     expect(eraseJawRow(row, 8, 7, 0, 280)).toEqual([])
-    expect(eraseJawRow([...row].reverse(), 0, 1, 8, 330)).toEqual([4, 5, 7, 8])
+    expect(eraseJawRow([...row].reverse(), 0, 1, 8, 350)).toEqual([4, 5, 7, 8])
+  })
+})
+
+describe('もみあげの先の行（BOXP-525 r15）', () => {
+  it('もみあげの先が頬に重なる行では、髪に挟まれた肌を透明にしない', () => {
+    const skin: Rgba = [240, 200, 180, 255],
+      ink: Rgba = [30, 20, 25, 255],
+      hair: Rgba = [70, 55, 65, 255]
+    const row = [skin, hair, skin, skin, skin, ink, skin, skin, skin]
+    for (const y of [334, 338, 342]) expect(eraseJawRow(row, 8, 7, 0, y)).toEqual([])
+    expect(eraseJawRow(row, 8, 7, 0, 346)).toEqual([4, 3, 2, 0])
   })
 })
