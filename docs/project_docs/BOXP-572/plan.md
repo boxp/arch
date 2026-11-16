@@ -43,3 +43,5 @@
   - SC2094: 同じファイルを読みながら追記していた箇所を、読んでから追記する形に変えた。
   - SC2143: grep -q に変えると pipefail 下で SIGPIPE による偽の合格が起こりうるため、理由付きの disable にした。
   - SC2016 / SC2012 / SC2088 / SC2319 / SC2043 は、意図を確認したうえで理由付きの行単位 disable にした。
+- 追加の除外: `.regomark/` は regomark の同梱物で、`shared.sha256` で固定されている。内容を変えると adr workflow が失敗するため除外した。
+- `actions.lock` (gh actions-lock) に lint-shell workflow を登録した。
