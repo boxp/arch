@@ -102,6 +102,16 @@ describe('実引数の詳細 (BOXP-560)', () => {
     ])
       expect(validateDetail(bad)).toBeNull()
   })
+  it('概要のまま取得した引数は、一覧が実引数ありに変わっていたら取り直す', async () => {
+    const { detailOutdated } = await import('./activity')
+    // 取得中に最終の照会で full へ変わり、概要の応答が後から返った場合。
+    expect(detailOutdated({ state: 'ready', forState: 'preview' }, 'full')).toBe(true)
+    expect(detailOutdated({ state: 'ready', forState: 'full' }, 'full')).toBe(false)
+    expect(detailOutdated({ state: 'loading', forState: 'preview' }, 'full')).toBe(false)
+    expect(detailOutdated({ state: 'error', forState: 'preview' }, 'full')).toBe(false)
+    expect(detailOutdated({ state: 'ready', forState: 'preview' }, undefined)).toBe(false)
+    expect(detailOutdated(undefined, 'full')).toBe(false)
+  })
   it('項目名を日本語にし、主な引数と変更内容を先に並べる', async () => {
     const { fieldLabel, orderFields } = await import('./activity')
     expect(fieldLabel('terminal', 'command')).toBe('コマンド')

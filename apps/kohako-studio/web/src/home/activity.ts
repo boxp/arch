@@ -246,9 +246,14 @@ let rootNode: HTMLElement | undefined,
   expanded = false
 const seen = new Map<string, { at: number; runningMs: number }>()
 // 開いている手順と取得済みの引数。1 秒ごとの作り直しでも閉じない・取り直さないよう、描画の外で持つ（次の依頼の開始で消す）。
-type Loaded = { state: 'loading' | 'ready' | 'error'; detail?: StepDetail; forState?: 'full' | 'preview' }
+export type Loaded = { state: 'loading' | 'ready' | 'error'; detail?: StepDetail; forState?: 'full' | 'preview' }
 const open = new Set<string>(),
-  details = new Map<string, Loaded>()
+  details = new Map<string, Loaded>(),
+  // 一覧が最後に伝えた各手順の引数の状態。取得中に preview から full へ変わった時、応答が返ってから取り直すために持つ。
+  argStates = new Map<string, 'full' | 'preview'>()
+/** 取得済みの引数が、一覧の伝える今の状態より古い（概要のまま実引数が届いた）なら取り直す。 */
+export const detailOutdated = (entry: Loaded | undefined, current: 'full' | 'preview' | undefined) =>
+  entry?.state === 'ready' && current !== undefined && entry.forState !== current
 let loader: ((stepId: string) => Promise<unknown>) | undefined,
   generation = 0
 function fillPanel(panel: HTMLElement, id: string) {
@@ -308,6 +313,9 @@ function loadDetail(id: string, forState: 'full' | 'preview') {
         detail ? { state: 'ready', detail, forState } : { state: 'error', detail: details.get(id)?.detail, forState },
       )
       refill()
+      // 取得中に最終の照会で状態が変わっていた場合、描画側は取得中の手順を取り直さないので、ここで 1 回だけ取り直す。
+      const current = argStates.get(id)
+      if (current && open.has(id) && detailOutdated(details.get(id), current)) loadDetail(id, current)
     })
 }
 export function tickActivity() {
@@ -332,6 +340,7 @@ export function renderActivity(
     seen.clear()
     open.clear()
     details.clear()
+    argStates.clear()
     generation++
     return
   }
@@ -421,6 +430,7 @@ export function renderActivity(
       if (s.detail) li.append(make('span', 'activity-detail', s.detail))
       if (s.result) li.append(make('span', 'activity-result', s.result))
       if (s.argsState && opts.loadDetail) {
+        argStates.set(s.id, s.argsState)
         const state = s.argsState,
           toggle = make('button', 'activity-args-toggle', '引数') as HTMLButtonElement,
           panel = make('div', 'activity-args')
@@ -435,7 +445,7 @@ export function renderActivity(
         toggle.setAttribute('aria-label', `${label.name}の引数`)
         const stale = () => {
           const entry = details.get(s.id)
-          return !entry || entry.state === 'error' || (entry.state === 'ready' && entry.forState !== state)
+          return !entry || entry.state === 'error' || detailOutdated(entry, state)
         }
         toggle.onclick = () => {
           const now = !open.has(s.id)
@@ -452,8 +462,7 @@ export function renderActivity(
         if (open.has(s.id)) {
           fillPanel(panel, s.id)
           // 概要だけ表示していた手順に実引数が届いたら、開いたまま 1 回だけ取り直す。
-          const entry = details.get(s.id)
-          if (entry?.state === 'ready' && entry.forState !== state) loadDetail(s.id, state)
+          if (detailOutdated(details.get(s.id), state)) loadDetail(s.id, state)
         }
       }
       li.append(

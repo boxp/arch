@@ -37,8 +37,9 @@ const RULES: [RegExp, string][] = [
     ),
     `$1${MASK}`,
   ],
-  // --name 値 / -name 値（値が引用符つきで空白を含む場合も）。
-  [new RegExp(`(--?${NAME.replace('(?<![A-Za-z0-9_.-])', '')}\\s+)(?:${QUOTED}|[^\\s-]\\S*)`, 'gi'), `$1${MASK}`],
+  // --name 値 / -name 値（値が引用符つきで空白を含む場合も）。値が - で始まる秘密もあるので、次の語は何であっても伏せる
+  // （--password --verbose の --verbose も伏字になるが、伏せ過ぎる側に倒す）。
+  [new RegExp(`(--?${NAME.replace('(?<![A-Za-z0-9_.-])', '')}\\s+)(?:${QUOTED}|\\S+)`, 'gi'), `$1${MASK}`],
   [
     new RegExp(`\\b((?:mysql|mariadb|mysqldump|mysqladmin)\\b[^\\n|;&]*?\\s-p)(?:${QUOTED}|[^\\s'"]\\S*)`, 'g'),
     `$1${MASK}`,
