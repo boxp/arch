@@ -11,6 +11,7 @@ for var in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE
 done
 if [[ $# != 1 && $# != 3 ]] || [[ $# == 3 && $2 != --base-ref ]] || [[ ! ${1:-} =~ ^[a-zA-Z0-9_-]+$ ]]; then echo "Usage: $0 <target> [--base-ref <git-ref>]" >&2; exit 1; fi
 target=$1; base_ref=${3:-}
+if [[ -n $base_ref ]] && ! git -C "$ROOT" rev-parse --verify --quiet "$base_ref^{commit}" >/dev/null; then echo "Base ref not found: $base_ref" >&2; exit 1; fi
 [[ -d "$ROOT/terraform/aws/$target" && -f "$HARNESS_DIR/targets/$target/verify.sh" ]] || { echo 'Unknown target' >&2; exit 1; }
 grep -Eq 'backend "local"' "$HARNESS_DIR/emulator-override.tf.tmpl" || { echo 'Local backend override missing' >&2; exit 1; }
 tf_version=$(sed -n 's/.*hashicorp\/terraform@v\([0-9.]*\).*/\1/p' "$ROOT/terraform/aws/$target/aqua/imports/terraform.yaml")
@@ -82,7 +83,12 @@ rc=0; tf plan -input=false -detailed-exitcode || rc=$?; [[ $rc == 2 ]] || { echo
 tf apply -input=false -auto-approve; "$HARNESS_DIR/targets/$target/verify.sh"; tf plan -input=false -detailed-exitcode
 finish_phase; phase=red-mutation
 docker cp "$HARNESS_DIR/targets/$target/red-mutation.tf" "$helper:/work/config/zz_red_override.tf"; tf apply -input=false -auto-approve
-rc=0; "$HARNESS_DIR/targets/$target/verify.sh" || rc=$?; [[ $rc == 1 ]] || { echo "Mutation not detected (verification exit $rc)" >&2; exit 1; }
+rc=0; out=$("$HARNESS_DIR/targets/$target/verify.sh") || rc=$?; printf '%s\n' "$out"
+[[ $rc == 1 ]] || { echo "Mutation not detected (verification exit $rc)" >&2; exit 1; }
+# Only the checks listed in red-mutation.expect may fail; any other failure (e.g. an API error) must not count as detection.
+failed_checks=$(grep '^FAIL: ' <<<"$out" | sed -e 's/^FAIL: //' -e 's/ (actual:.*//' | LC_ALL=C sort -u)
+expected_checks=$(LC_ALL=C sort -u "$HARNESS_DIR/targets/$target/red-mutation.expect")
+[[ -n $expected_checks && $failed_checks == "$expected_checks" ]] || { printf 'Unexpected failing checks:\n%s\nexpected:\n%s\n' "$failed_checks" "$expected_checks" >&2; exit 1; }
 docker exec "$helper" rm /work/config/zz_red_override.tf; tf apply -input=false -auto-approve; "$HARNESS_DIR/targets/$target/verify.sh"; tf plan -input=false -detailed-exitcode
 finish_phase; phase=destroy
 tf destroy -input=false -auto-approve; "$HARNESS_DIR/targets/$target/verify-destroyed.sh"
