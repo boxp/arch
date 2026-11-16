@@ -410,7 +410,6 @@ export class P2LPlayer {
     // Premultiplied throughout, as the page composites the canvas.
     const gl = this.canvas.getContext("webgl", { stencil: true, alpha: true, premultipliedAlpha: true });
     if (!gl) throw new Error("WebGL is not available");
-    this.trackMipmaps(gl);
     // 32-bit indices where available; otherwise meshes past 65535 vertices cannot draw.
     const wide = gl.getExtension("OES_element_index_uint") != null;
     this.indexType = wide ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
@@ -475,63 +474,6 @@ export class P2LPlayer {
     this.targetWidth = 0;
     this.targetHeight = 0;
     this.isolation = true;
-  }
-
-  /**
-   * Art textures (power-of-two, at least 256 texels) are mipmapped: the rig's atlas is drawn about 1.7–2.3 times
-   * smaller than it is, and plain bilinear sampling skips texels, so thin lines (cheek hatching, hair outlines,
-   * ornament strings) alias into stair steps and break up or shimmer as the head moves (BOXP-525).
-   * Any texture asked for LINEAR minification gets trilinear filtering instead, and pages that patch a texture
-   * with texSubImage2D get its mipmaps rebuilt before the next draw. Render targets (NEAREST) are untouched.
-   */
-  trackMipmaps(gl) {
-    const sizes = new WeakMap();
-    const dirty = new Set();
-    const bound = () => gl.getParameter(gl.TEXTURE_BINDING_2D);
-    const mippable = (size) => size != null && size[0] >= 256 && size[1] >= 256 && (size[0] & (size[0] - 1)) === 0 && (size[1] & (size[1] - 1)) === 0;
-    const texImage2D = gl.texImage2D.bind(gl);
-    const texSubImage2D = gl.texSubImage2D.bind(gl);
-    const texParameteri = gl.texParameteri.bind(gl);
-    gl.texImage2D = (...args) => {
-      const texture = bound();
-      if (texture && args[0] === gl.TEXTURE_2D && args[1] === 0) {
-        const source = args[5];
-        const size = args.length >= 9 ? [args[3], args[4]] : [source?.width ?? 0, source?.height ?? 0];
-        const previous = sizes.get(texture);
-        sizes.set(texture, { size, mip: previous?.mip === true && mippable(size) });
-        if (previous?.mip) dirty.add(texture);
-      }
-      return texImage2D(...args);
-    };
-    gl.texSubImage2D = (...args) => {
-      const texture = bound();
-      if (texture && args[1] === 0 && sizes.get(texture)?.mip) dirty.add(texture);
-      return texSubImage2D(...args);
-    };
-    gl.texParameteri = (target, name, value) => {
-      const texture = bound();
-      const entry = texture && target === gl.TEXTURE_2D ? sizes.get(texture) : undefined;
-      if (entry && name === gl.TEXTURE_MIN_FILTER) {
-        entry.mip = value === gl.LINEAR && mippable(entry.size);
-        if (entry.mip) {
-          dirty.add(texture);
-          return texParameteri(target, name, gl.LINEAR_MIPMAP_LINEAR);
-        }
-        dirty.delete(texture);
-      }
-      return texParameteri(target, name, value);
-    };
-    /** Rebuilds the mipmaps of textures created or patched since the last draw. */
-    this.flushMipmaps = () => {
-      if (dirty.size === 0) return;
-      const previous = bound();
-      for (const texture of dirty) {
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.generateMipmap(gl.TEXTURE_2D);
-      }
-      dirty.clear();
-      gl.bindTexture(gl.TEXTURE_2D, previous);
-    };
   }
 
   /** A texture to render into or copy pixels to, sampled pixel for pixel. */
@@ -683,7 +625,6 @@ export class P2LPlayer {
 
   draw() {
     const gl = this.gl;
-    this.flushMipmaps?.();
     const rt = this.rt;
     const canvas = this.canvas;
     const ratio = canvas.dataset.fullModel === 'true' ? Math.max(window.devicePixelRatio || 1, 2) : (window.devicePixelRatio || 1);

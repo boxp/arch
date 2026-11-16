@@ -6,6 +6,7 @@ import type { Player } from './rig'
 import type { RigModel } from './model'
 import { patchFaceTexture } from './face-texture'
 import { dimCrownRim, patchHair } from './hair-parts'
+import { installMipmaps, textureSizes } from './mipmaps'
 import { ANCHORS, BACK_HAIR, bindBackHair, followAnchors, SHOULDER_NOTCH, type BackHairRig } from './back-hair'
 import { atBind, bindPoint, BUST, chestGrid, createChestSpring, stepChest, type Bind } from './chest'
 import {
@@ -819,6 +820,14 @@ export function createActingStage(
     rt = p.rt,
     rests = new Map<number, Float32Array>(),
     done = new Map<number, number>()
+  // BOXP-525 r21: 縮小表示の細い線の欠け・ちらつき（頬のブレ）。以後の読み込み時補正の書き換えもミップマップへ反映する。
+  let mipmaps: number | string
+  try {
+    const mp = p as unknown as Parameters<typeof installMipmaps>[0] & { rt: Parameters<typeof textureSizes>[0] }
+    mipmaps = installMipmaps(mp, textureSizes(mp.rt, p.rig, mp.textures.length))
+  } catch (e) {
+    mipmaps = e instanceof Error ? e.message : String(e)
+  }
   // BOXP-525 r21: 前髪の頭頂の明るい帯（髪の左上の白い線）。顔の補正が写しを書き戻す前に変える。
   let crownRim: number | string
   try {
@@ -840,6 +849,7 @@ export function createActingStage(
     hairPatch = { error: e instanceof Error ? e.message : String(e) }
   }
   hairPatch.crownRim = crownRim
+  hairPatch.mipmaps = mipmaps
   // BOXP-525: 体の層の肩の上の切り欠き（描き込まれた髪の小片）を消す。左右を向いた時の細い継ぎ目と薄紫の帯。
   try {
     const pp = p as unknown as PartsPlayer
