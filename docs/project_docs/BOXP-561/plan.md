@@ -89,3 +89,12 @@ IQ3_S（557）は router 未登録のため、一段目では使わない。FN �
 3. FN の GPU 区間。
 4. Q27 の GPU 区間（N1 の結果で範囲を絞る）。
 5. 集計と推奨を Projects に書く。必要なら IQ3_S の二段目を Owner に提案する。
+
+## 実施結果（2026-11-16 12:25 UTC）
+
+段階 2〜5 を実施した。詳細は vault の `Projects/localllm-practical-eval/README.md`。
+
+- T1：QCN は 2/2 で 30 分以内に完了報告（1 本は runner の結果行を repo のファイルに書き出し、固定検証は不合格）。Q27・FN は修正内容は合格だが 30 分で完了報告に届かない。
+- N1/N2 小説：QCN の pi agent だけが完走（合成の採点 2/5、実バース本文は Owner の読み比べ待ち）。Q27 の agent は 38〜60 分で本文に届かず、FN の agent は指示逸脱で成果 0。一括生成は 3 モデルとも 1/5。
+- 推奨：localllm-coder の既定は QCN のまま。Qwen3.8 系への切替は推奨しない。二段目（IQ3_S など）は Owner 判断。
+- gate の閉鎖は各区間 90 分以内。workspace の計画停止による中断 5 回は、次の run の `recover.sh` か dead-man で復帰した。本番 vault の保護対象は評価による変更 0。
