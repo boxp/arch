@@ -427,6 +427,8 @@ export function renderActivity(
       button.setAttribute('aria-expanded', String(expanded))
       steps.hidden = !expanded
       ensureDetails(true)
+      // 開いた時は、前に上へ戻して読んでいたかどうかに関わらず最新の手順から見せる。
+      if (expanded) follower.reset()
       follower.pin(steps)
       onLayout?.()
     }

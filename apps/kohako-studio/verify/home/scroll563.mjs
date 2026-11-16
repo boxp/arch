@@ -64,8 +64,8 @@ for (const [device, viewport, mobile] of [['pc', { width: 1440, height: 900 }, f
     for (let i = 1; i < 30; i++) { await add(); if (i % 5 === 0 || i === 29) follows &&= await visible(); focus &&= await page.evaluate(() => document.activeElement === document.querySelector('#message')) }
     check('連続更新の間ずっと最新の手順が見える', follows)
     check('手順一覧の要素は作り直されない', await page.evaluate(() => window.savedList === document.querySelector('.activity-steps') && window.savedRow === window.savedList.firstElementChild))
-    await page.locator('.activity-steps').evaluate((e) => { e.scrollTop = 0; e.dispatchEvent(new Event('scroll')) })
-    if (mobile) await page.locator('#chatlog').evaluate((e) => { e.scrollTop = 0; e.dispatchEvent(new Event('scroll')) })
+    await page.locator('.activity-steps').evaluate((e) => { e.dispatchEvent(new WheelEvent('wheel', { deltaY: -9999, bubbles: true })); e.scrollTop = 0; e.dispatchEvent(new Event('scroll')) })
+    if (mobile) await page.locator('#chatlog').evaluate((e) => { e.dispatchEvent(new WheelEvent('wheel', { deltaY: -9999, bubbles: true })); e.scrollTop = 0; e.dispatchEvent(new Event('scroll')) })
     for (let i = 0; i < 5; i++) await add()
     check('上へ戻して読んでいる間は位置が動かない', await page.evaluate((portrait) => document.querySelector('.activity-steps').scrollTop <= 1 && (!portrait || document.querySelector('#chatlog').scrollTop <= 1), mobile))
     for (const selector of mobile ? ['#chatlog', '.activity-steps'] : ['.activity-steps']) await page.locator(selector).evaluate((e) => { e.scrollTop = e.scrollHeight; e.dispatchEvent(new Event('scroll')) })
@@ -85,6 +85,15 @@ for (const [device, viewport, mobile] of [['pc', { width: 1440, height: 900 }, f
     await page.screenshot({ path: path.join(out, `${device}-burst.png`) })
     await page.locator('.activity-head').click(); await page.locator('.activity-head').click()
     check('一覧を開いた時は最新の手順から見える', await visible())
+    // 畳むと外側の枠が縮んで位置が戻る。これを利用者の操作と取り違えて追従が止まらないこと。
+    let reopened = true
+    for (let k = 0; k < 12; k++) { await page.locator('.activity-head').click(); await page.waitForTimeout(k % 3 * 120); await page.locator('.activity-head').click(); await page.waitForTimeout(k % 2 * 250); reopened &&= await visible() }
+    check('閉じて開き直すことを繰り返しても最新の手順から見える', reopened)
+    await page.locator('.activity-steps').evaluate((e) => { e.dispatchEvent(new WheelEvent('wheel', { deltaY: -9999, bubbles: true })); e.scrollTop = 0; e.dispatchEvent(new Event('scroll')) })
+    await page.waitForTimeout(200)
+    const stopped = await page.evaluate(() => document.querySelector('.activity-steps').scrollTop <= 1)
+    await page.locator('.activity-head').click(); await page.locator('.activity-head').click(); await page.waitForTimeout(300)
+    check('上へ戻して読んだ後に閉じて開き直しても最新の手順から見える', stopped && (await visible()))
     await page.locator('#message').focus()
     const controls = await page.evaluate(() => {
       const stop = document.querySelector('#stop'), r = stop.getBoundingClientRect(), top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
