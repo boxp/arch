@@ -25,7 +25,7 @@ case $op in
       fail=0
       base=""
       while :; do
-        line=$(ssh -o BatchMode=yes -o ConnectTimeout=10 $NODE "awk '/MemAvailable/{m=\$2} END{printf \"%s\", m}' /proc/meminfo; printf '\t'; cut -d' ' -f1 /proc/loadavg | tr -d '\n'; printf '\t'; sudo -n dmesg | grep -Eic 'GPU HANG|GPU reset' || true" 2>/dev/null || echo -e "NA\tNA\tNA")
+        line=$(ssh -o BatchMode=yes -o ConnectTimeout=10 $NODE "awk '/MemAvailable/{m=\$2} END{printf \"%s\", m}' /proc/meminfo; printf '\t'; cut -d' ' -f1 /proc/loadavg | tr -d '\n'; printf '\t'; if d=\$(sudo -n dmesg 2>/dev/null); then printf '%s\n' \"\$d\" | grep -Eic 'GPU HANG|GPU reset' || true; else echo NA; fi" 2>/dev/null || echo -e "NA\tNA\tNA")
         g=$(kubectl -n local-llm get cm llama-server-admission -o jsonpath='{.data.state}' 2>/dev/null || echo NA)
         IFS=$'\t' read -r mem load hang <<<"$line"
         printf '%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$mem" "$load" "$hang" "$g" >>"$dir/obs.tsv"
