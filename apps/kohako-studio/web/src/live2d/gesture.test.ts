@@ -1016,3 +1016,17 @@ it('BOXP-525: capYaw は小さな向きを変えず、大きな左右の向き�
     last = next
   }
 })
+
+it('BOXP-525 TD-02: 下を見る時だけ上まぶたを視線に比例して下げ、正面・上・横では下げない', async () => {
+  const { lookDownLid, eyeOpenFor, LOOK_DOWN_LID } = await import('./gesture')
+  expect(lookDownLid(0)).toBe(0)
+  expect(lookDownLid(0.5)).toBe(0)
+  expect(lookDownLid(Number.NaN)).toBe(0)
+  expect(lookDownLid(-0.45)).toBeCloseTo(0.45 * LOOK_DOWN_LID)
+  expect(lookDownLid(-2)).toBe(LOOK_DOWN_LID)
+  for (let y = 0; y > -1; y -= 0.05) expect(lookDownLid(y - 0.05)).toBeGreaterThanOrEqual(lookDownLid(y))
+  // 閉じ切らない（下向きのまま目が開いて見える）。まばたき・なでの閉眼は min で優先される。
+  expect(1 - LOOK_DOWN_LID).toBeGreaterThan(0.5)
+  expect(eyeOpenFor(0.1, lookDownLid(-0.45), 0)).toBe(0.1)
+  expect(eyeOpenFor(1, lookDownLid(-0.45), 1)).toBe(0)
+})
