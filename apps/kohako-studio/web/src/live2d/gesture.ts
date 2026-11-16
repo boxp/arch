@@ -764,6 +764,31 @@ export const petEyeHold = (open: number, last: number | undefined, petOn: boolea
   petOn && typeof last === 'number' && Number.isFinite(last) ? Math.min(open, last) : open
 export const eyeOpenFor = (blinkOpen: number, emotionClosed: number, petClosed: number): number =>
   Math.min(blinkOpen, 1 - Math.max(emotionClosed, petClosed))
+// BOXP-525: 頭の左右の向き（ParamAngleX）を ±YAW_KNEE までは等倍、その先は ±YAW_MAX へ滑らかに飽和させる。
+export const YAW_KNEE = 9,
+  YAW_MAX = 14
+export function capYaw(v: number): number {
+  const a = Math.abs(v)
+  if (!(a > YAW_KNEE)) return v
+  return Math.sign(v) * (YAW_KNEE + (YAW_MAX - YAW_KNEE) * Math.tanh((a - YAW_KNEE) / (YAW_MAX - YAW_KNEE)))
+}
+// BOXP-525: 再ステージ（p2l_update_stages）は各パラメータを基底値（setParameter の値）から評価し直すため、
+// そのままでは clip・behavior（口パク・視線・呼吸）・表情・物理で決まった値が落ちる（閉じ目の笑顔で発話中も口が閉じたまま、
+// なで中や閉じ目の間だけ頭の向きと髪の揺れが消える）。上書きしない値は評価済みの値を一時的に基底へ入れて再ステージし、
+// 直後に元の基底へ戻す（次のフレームの clip・behavior に影響させない）。
+export function restageKeeping(
+  ids: readonly string[],
+  evaluated: readonly number[],
+  overridden: ReadonlySet<string>,
+  base: (id: string) => number,
+  set: (id: string, value: number) => void,
+  restage: () => void,
+): void {
+  const kept = ids.filter((id, i) => !overridden.has(id) && Number.isFinite(evaluated[i]))
+  for (const id of kept) set(id, evaluated[ids.indexOf(id)])
+  restage()
+  for (const id of kept) set(id, base(id))
+}
 
 export function createActingStage(
   player: Player,
@@ -806,6 +831,7 @@ export function createActingStage(
   } catch (e) {
     hairPatch = { error: e instanceof Error ? e.message : String(e) }
   }
+  let shownYaw = 0
   let petEyes = false,
     petClosed = 0,
     petHold = false,
@@ -1650,6 +1676,17 @@ export function createActingStage(
     p2l_mesh_colors: { value: hookColors },
   }) as Runtime
   const baseUpdate = p.update.bind(p)
+  // BOXP-525: 再ステージ後に戻す基底値。setParameter で置いた値を覚え、置いていないものは既定値。
+  const bases = new Map<string, number>(),
+    defaults = new Map<string, number>()
+  try {
+    for (const r of p.parameterRanges?.() ?? []) defaults.set(r.id, r.default)
+  } catch {}
+  const setBase = p.setParameter.bind(p)
+  p.setParameter = (id: string, value: number) => {
+    bases.set(id, value)
+    setBase(id, value)
+  }
   p.update = (dt: number) => {
     generation++
     if (greetSet) greetTime += dt
@@ -1753,6 +1790,8 @@ export function createActingStage(
     petHeld = petHold
     petTail = petHold ? PET_SMOOTH_TAIL : Math.max(0, petTail - dt)
     baseUpdate(dt)
+    const evaluated = typeof p.parameterValues === 'function' ? p.parameterValues() : []
+    const overridden = new Set<string>()
     let restage = false
     {
       const values = typeof p.parameterValues === 'function' ? p.parameterValues() : []
@@ -1763,9 +1802,23 @@ export function createActingStage(
           shownAngle[id] = smoothAngle(shownAngle[id], raw, dt)
           if (Math.abs(shownAngle[id] - raw) > 1e-4) {
             p.setParameter(id, shownAngle[id])
+            overridden.add(id)
             restage = true
           }
         } else shownAngle[id] = raw
+      }
+      // BOXP-525: 頭の左右の向きは、待機clip・視線追従（端で約 ±32°）・演技の和をモデルの確認範囲（±15°）に収める。
+      // 超えると横髪・もみあげ・前髪の影が別々の変形で動き、段ズレや欠片が見える。
+      const ix = p.parameters?.indexOf('ParamAngleX') ?? -1,
+        rawYaw = overridden.has('ParamAngleX') ? shownAngle.ParamAngleX : values[ix]
+      if (typeof rawYaw === 'number' && Number.isFinite(rawYaw)) {
+        const yaw = capYaw(rawYaw)
+        shownYaw = yaw
+        if (Math.abs(yaw - rawYaw) > 1e-4) {
+          p.setParameter('ParamAngleX', yaw)
+          overridden.add('ParamAngleX')
+          restage = true
+        }
       }
     }
     // BOXP-525: 自動まばたきの途中でも目が逆に開かないよう閉眼を重ねる。
@@ -1786,12 +1839,21 @@ export function createActingStage(
         const held = petEyeHold(open, shownEye[id], petEyes)
         if (closed > 0.001 || held !== open) {
           p.setParameter(id, held)
+          overridden.add(id)
           restage = true
         }
         shownEye[id] = held
       }
     }
-    if (restage) rt.p2l_update_stages(p.rig, 0, 0)
+    if (restage)
+      restageKeeping(
+        p.parameters ?? [],
+        evaluated,
+        overridden,
+        (id) => bases.get(id) ?? defaults.get(id) ?? 0,
+        setBase,
+        () => rt.p2l_update_stages(p.rig, 0, 0),
+      )
     stepChestSpring(dt)
   }
   // 今の腕を待機の腕へフェードで戻す（姿勢は止めたまま）。then はフェード後に呼ぶ。
@@ -1921,6 +1983,7 @@ export function createActingStage(
     report: () => ({
       supported: true,
       petEyes: petClosed,
+      yaw: shownYaw,
       chest: {
         ...chestStatus,
         enabled: chestEnabled,
