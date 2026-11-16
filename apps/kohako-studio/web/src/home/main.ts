@@ -6,7 +6,7 @@ import { validateActivity, renderActivity, tickActivity } from './activity'
 import { createDictation, supportsDictation, appendDictation } from './dictation'
 import { attachmentSubmitAction, attachmentValidation } from './attachments'
 import { shouldSubmit } from './keys'
-import { atBottom } from './scroll'
+import { atBottom, createFollower } from './scroll'
 import { chatEntries } from './chatlog'
 import { renderMarkdown, plainText } from './markdown'
 import { initInbox } from './inbox'
@@ -354,8 +354,12 @@ type Entry = { who: 'あなた' | 'コハコ' | 'お知らせ'; text: string; at
 const history: Entry[] = []
 const chatlog = el('chatlog'),
   chatList = el('chatlog-list')
+const chatFollower = createFollower(),
+  bubbleFollower = createFollower()
+chatFollower.attach(chatlog)
+bubbleFollower.attach(bubble)
 function renderChat() {
-  const bottom = atBottom(chatlog.scrollTop, chatlog.clientHeight, chatlog.scrollHeight),
+  const bottom = chatFollower.following(),
     top = chatlog.scrollTop
   chatList.replaceChildren(
     ...chatEntries(history, bubbleText).map((entry) => {
@@ -371,7 +375,8 @@ function renderChat() {
       return li
     }),
   )
-  chatlog.scrollTop = bottom ? chatlog.scrollHeight : top
+  if (bottom) chatFollower.pin(chatlog)
+  else chatlog.scrollTop = top
 }
 function addHistory(who: Entry['who'], text: string) {
   history.push({ who, text, at: Date.now() })
@@ -396,7 +401,7 @@ function addHistory(who: Entry['who'], text: string) {
 let touchLineTimer = 0,
   bubbleText = ''
 function setBubble(text: string, touch = false) {
-  const bottom = atBottom(chatlog.scrollTop, chatlog.clientHeight, chatlog.scrollHeight)
+  const bottom = chatFollower.following()
   clearTimeout(touchLineTimer)
   bubbleText = text
   reply.replaceChildren(renderMarkdown(text))
@@ -404,11 +409,12 @@ function setBubble(text: string, touch = false) {
   bubble.classList.toggle('touch', touch)
   bubbleTag.hidden = !touch
   bubble.scrollTop = 0
+  bubbleFollower.reset()
   // 吹き出しが別の内容に変わったら、前のお知らせの操作欄は閉じる（通知は受信箱に未読で残る）。
   el('notice-actions').hidden = true
   el('notice-status').textContent = ''
   renderChat()
-  if (bottom) chatlog.scrollTop = chatlog.scrollHeight
+  if (bottom) chatFollower.pin(chatlog)
   updateMessage()
 }
 function updateMessage() {
@@ -1106,6 +1112,7 @@ async function resumeInflight() {
   }
   // 200 に加え一時的な失敗（502 など）や通信例外でも追跡を再開し、poll 側で問い合わせを続ける（送信可能に戻すと再送で二重実行になり得る）。
   if (!r || pollVerdict(r.status, !!r.data) !== 'terminal') {
+    bubbleFollower.reset()
     renderActivity(el('activity'), null, { live: true })
     requestId = saved.requestId
     accepted = true
@@ -1170,6 +1177,10 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
       live: next.state === 'thinking' || next.state === 'approval',
       // 手順一覧を開いている間だけ、各手順の実行内容（実引数）を取り寄せて行の中に出す（BOXP-560）。
       loadDetail: async (stepId) => (await call(`requests/${id}/activity/${stepId}`)).data,
+      onLayout: () => {
+        if (body.dataset.shape === 'portrait') chatFollower.pin(chatlog)
+        else if (el('activity').dataset.live === '1' && !el('activity-steps')?.hidden) bubbleFollower.pin(bubble)
+      },
     })
     if (next.state === 'approval' && next.approval) {
       if (approvalId !== next.approval.approvalId) {
@@ -1658,6 +1669,7 @@ async function sendText(text: string, from: 'composer' | 'pending' | QueueItem):
       else queue.putBack({ id: -Date.now(), text, addedAt: Date.now() })
     }
   }
+  bubbleFollower.reset()
   renderActivity(el('activity'), null, { live: true })
   clearSpeechResume()
   voicePlayer.cancel()
