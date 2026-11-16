@@ -314,6 +314,16 @@ export function createApp(opts: {
       if (method === 'GET' && route === 'status')
         return opts.status ? json(200, await opts.status.get()) : json(503, { error: 'status_disabled' })
       if (method === 'GET' && route === 'me') return json(200, { authenticated: true })
+      if (method === 'GET' && route === 'conversation/transcript') {
+        if (!conv) return json(503, { error: 'conversation_disabled' })
+        const transcript = conv.transcript()
+        return json(
+          200,
+          new URL(req.url ?? '/', 'http://localhost').searchParams.get('rev') === transcript.rev
+            ? { rev: transcript.rev, unchanged: true }
+            : transcript,
+        )
+      }
       if (method === 'GET' && route === 'conversation')
         return json(200, {
           enabled: !!conv,

@@ -179,3 +179,15 @@ it('keeps long replies and bounds the context, marking truncation on a code poin
     JSON.parse(await readFile(join(dir, 'conversations-test.json'), 'utf8')).lastExchange.reply.length,
   ).toBeLessThanOrEqual(1000)
 })
+it('会話履歴に本文と復元済みの古い返答を載せ、変更を rev に反映する', async () => {
+  const { conv, dir } = await setup({ status: 'done', reply: { text: '古い返答', at: 100 } })
+  expect(conv.transcript().items[0]).toMatchObject({ requestId: 'request', reply: { text: '古い返答' } })
+  const rev = conv.rev
+  conv.submit({ requestId: 'new', kind: 'text', text: '新しい発言', expiresAt: 500 }, '')
+  expect(conv.rev).not.toBe(rev)
+  expect(conv.transcript().items[1]).toMatchObject({ text: '新しい発言', current: true, status: 'pending' })
+  expect(conv.transcript().active).toEqual({ requestId: 'new', kind: 'text' })
+  await conv.flush()
+  const saved = JSON.parse(await readFile(join(dir, 'conversations-test.json'), 'utf8'))
+  expect(saved.entries[1].text).toBe('新しい発言')
+})
