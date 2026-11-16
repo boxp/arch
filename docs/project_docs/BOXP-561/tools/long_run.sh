@@ -148,6 +148,11 @@ while kill -0 "$pid" 2>/dev/null; do
     lsize=$sz
     last=$(date +%s)
   elif (($(date +%s) - last > IDLE)); then
+    # 再開直後の長い prompt 再処理は events を出さない。llama-server の slot が処理中なら idle にしない
+    if [[ $(curl -s -m 10 "http://127.0.0.1:$port/slots?model=$model" | jq -r '.[0].is_processing' 2>/dev/null) == true ]]; then
+      last=$(date +%s)
+      continue
+    fi
     reason=idle
     kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || :
     break
