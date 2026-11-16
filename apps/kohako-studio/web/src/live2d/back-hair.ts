@@ -19,6 +19,20 @@ export const followWeight = (y: number): number => {
   return t * t * (3 - 2 * t)
 }
 
+/**
+ * 体の層 (ArtMeshTopwear) の、首の横から肩の袖の上へ出た切り欠き（左側、モデル座標、読み込み時の姿勢）。右側は CX で鏡映。
+ * 右下は衿の帯の上端（x 462〜469, y 445〜451）を避けて斜めに切る。ここには後ろ髪と同じ髪の絵と薄紫の縁が描き込まれているが、体の層は頭に付いて動かないため、左右を向くと
+ * 髪房・後ろ髪との間に細い横の継ぎ目と縦の薄紫の帯として見える。下には後ろ髪と袖の絵があるので消すだけでよい。
+ */
+export const SHOULDER_NOTCH: readonly (readonly [number, number])[] = [
+  [380, 378],
+  [482, 378],
+  [482, 432],
+  [458, 440],
+  [440, 452],
+  [380, 452],
+]
+
 export type HairBind = { mesh: number; tri: [number, number, number]; bary: [number, number, number] }
 
 /** 三角形 abc 上で p に最も近い点の重心座標（中なら p そのもの）と距離の二乗。 */

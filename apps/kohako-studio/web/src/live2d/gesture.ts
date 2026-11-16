@@ -6,7 +6,7 @@ import type { Player } from './rig'
 import type { RigModel } from './model'
 import { patchFaceTexture } from './face-texture'
 import { patchHair } from './hair-parts'
-import { ANCHORS, BACK_HAIR, bindBackHair, followAnchors, type BackHairRig } from './back-hair'
+import { ANCHORS, BACK_HAIR, bindBackHair, followAnchors, SHOULDER_NOTCH, type BackHairRig } from './back-hair'
 import { atBind, bindPoint, BUST, chestGrid, createChestSpring, stepChest, type Bind } from './chest'
 import {
   addGhost,
@@ -831,6 +831,15 @@ export function createActingStage(
     hairPatch = patchHair(p as unknown as PartsPlayer)
   } catch (e) {
     hairPatch = { error: e instanceof Error ? e.message : String(e) }
+  }
+  // BOXP-525: 体の層の肩の上の切り欠き（描き込まれた髪の小片）を消す。左右を向いた時の細い継ぎ目と薄紫の帯。
+  try {
+    const pp = p as unknown as PartsPlayer
+    hairPatch.notch =
+      eraseAtlas(pp, BODY, SHOULDER_NOTCH, () => false) +
+      eraseAtlas(pp, BODY, mirrorPolygon(SHOULDER_NOTCH, CX), () => false)
+  } catch (e) {
+    hairPatch.notch = e instanceof Error ? e.message : String(e)
   }
   let shownYaw = 0
   let petEyes = false,
