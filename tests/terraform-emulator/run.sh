@@ -12,7 +12,7 @@ done
 if [[ $# != 1 && $# != 3 ]] || [[ $# == 3 && $2 != --base-ref ]] || [[ ! ${1:-} =~ ^[a-zA-Z0-9_-]+$ ]]; then echo "Usage: $0 <target> [--base-ref <git-ref>]" >&2; exit 1; fi
 target=$1; base_ref=${3:-}
 [[ -d "$ROOT/terraform/aws/$target" && -f "$HARNESS_DIR/targets/$target/verify.sh" ]] || { echo 'Unknown target' >&2; exit 1; }
-grep -Eq 'backend "local"' "$HARNESS_DIR/override.tf" || { echo 'Local backend override missing' >&2; exit 1; }
+grep -Eq 'backend "local"' "$HARNESS_DIR/emulator-override.tf.tmpl" || { echo 'Local backend override missing' >&2; exit 1; }
 tf_version=$(sed -n 's/.*hashicorp\/terraform@v\([0-9.]*\).*/\1/p' "$ROOT/terraform/aws/$target/aqua/imports/terraform.yaml")
 [[ $tf_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Terraform version missing' >&2; exit 1; }
 tf_image=hashicorp/terraform:$tf_version
@@ -64,7 +64,7 @@ finish_phase; phase=init
 docker create --name "$helper" -v "$work:/work" --entrypoint /bin/sh "$tf_image" -c 'sleep 3600' >/dev/null
 docker start "$helper" >/dev/null
 docker exec "$helper" sh -c 'mkdir -p /work/config /work/state && chown -R 1000:1000 /work'
-copy_config() { docker exec "$helper" sh -c 'rm -f /work/config/*.tf /work/config/.terraform.lock.hcl'; docker cp "$1/." "$helper:/work/config/"; docker cp "$HARNESS_DIR/override.tf" "$helper:/work/config/zz_emulator_override.tf"; docker exec "$helper" chown -R 1000:1000 /work; }
+copy_config() { docker exec "$helper" sh -c 'rm -f /work/config/*.tf /work/config/.terraform.lock.hcl'; docker cp "$1/." "$helper:/work/config/"; docker cp "$HARNESS_DIR/emulator-override.tf.tmpl" "$helper:/work/config/zz_emulator_override.tf"; docker exec "$helper" chown -R 1000:1000 /work; }
 prepare_head() { mkdir -p "$tmp/head"; cp "$ROOT/terraform/aws/$target/"*.tf "$ROOT/terraform/aws/$target/.terraform.lock.hcl" "$tmp/head/"; }
 init() { docker run --rm -u 1000 -e HOME=/tmp -e TF_IN_AUTOMATION=1 -v "$work:/work" -w /work/config "$tf_image" init -input=false -lockfile=readonly; }
 prepare_head

@@ -10,7 +10,7 @@ Docker、curl、gpg/gpgv が必要。`TMPDIR` と `TF_EMULATOR_CACHE_DIR` で一
 
 実 AWS 認証情報が環境にある場合は拒否し、エミュレーターの認証情報だけを使う。実 state/backend は使わず、ローカル state を Docker ボリュームに置く。apply 時は内部ネットワークで外部 AWS への名前解決を確認し、テレメトリーを無効化する。init のみプロバイダー取得のためオンラインで実行する。
 
-AWS provider v6 の S3 Control ListTagsForResource はアカウント ID のホスト接頭辞を使用し、エミュレーターに到達できない。provider override でアカウント ID の取得を省略すると S3 GetBucketTagging にフォールバックする。override は backend/provider の接続設定のみを変更し、リソースは変更しない。
+AWS provider v6 の S3 Control ListTagsForResource はアカウント ID のホスト接頭辞を使用し、エミュレーターに到達できない。provider override でアカウント ID の取得を省略すると S3 GetBucketTagging にフォールバックする。override（`emulator-override.tf.tmpl`。リポジトリの `.gitignore` が `override.tf` を除外するため拡張子を変えて保持し、作業ボリュームへ `zz_emulator_override.tf` として配置する）は backend/provider の接続設定のみを変更し、リソースは変更しない。
 
 IAM ポリシーの評価、SCP、実際のクォータ、S3 Control/tag API 経路、リージョン分離、アカウント ID に基づく ARN、データプレーンの忠実性は保証しない。
 
