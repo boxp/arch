@@ -14,6 +14,10 @@
 6. モデルの読み込み（1 token の要求、上限 600 秒）を経て、PLAN の各手順を実行する。閉鎖の残りが 300 秒以下なら残りは打ち切る。
 7. 後始末（trap により、エラーや INT/TERM でも必ず通る）：観測を止め、直接経路で `gemma4-26b` を実推論する。gate を `open:BOXP-561-TOKEN-end` に戻し、LAN 経路でも実推論し、`/health` と models の件数を確認する。tunnel を下ろし、guard の verify を行う。
 
+## 中断からの復旧
+
+workspace の計画停止などで session.sh が SIGKILL/SIGTERM を受けると、cleanup が途中で止まり gate が `closed:BOXP-561-*` のまま残ることがある（2026-11-16 の qcn1 で発生、約 63 分で復旧）。各 run の開始時に必ず `recover.sh [GUARD_EDN]` を実行する。gate が BOXP-561 の closed なら直接経路を張り直して `ops.sh restore` を行い、残った tunnel/relay を片付け、guard を verify する。tunnel.sh up は ssh -N を背景に残すので、パイプ（`| tail`）につながず必ずファイルへリダイレクトすること。
+
 PLAN の手順：
 
 | 記号 | 内容 | 上限 |
