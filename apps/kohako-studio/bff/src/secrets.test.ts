@@ -83,6 +83,35 @@ describe('redactArgs', () => {
       { key: 'env', value: `{\n  "PATH": "/bin",\n  "GH_TOKEN": ${MASK}\n}`, truncated: false },
     ])
   })
+  it('auth / session を名前に含む項目は伏せ、author は伏せない', () => {
+    expect(
+      redactArgs({
+        auth: 'hunter2',
+        oauth_code: 'hunter2',
+        session: 'hunter2',
+        author: 'boxp',
+        opts: { auth: 'hunter2', basicAuth: { user: 'u' }, author: 'boxp' },
+        command: 'tool --auth hunter2 --author boxp; AUTH=hunter2 x; curl -d \'{"auth": "hunter2"}\' h',
+        header: 'Authorization: Bearer abcdefgh12345678',
+      }),
+    ).toEqual([
+      { key: 'auth', value: MASK, truncated: false },
+      { key: 'oauth_code', value: MASK, truncated: false },
+      { key: 'session', value: MASK, truncated: false },
+      { key: 'author', value: 'boxp', truncated: false },
+      {
+        key: 'opts',
+        value: `{\n  "auth": ${MASK},\n  "basicAuth": ${MASK},\n  "author": "boxp"\n}`,
+        truncated: false,
+      },
+      {
+        key: 'command',
+        value: `tool --auth ${MASK} --author boxp; AUTH=${MASK} x; curl -d '{"auth": ${MASK}}' h`,
+        truncated: false,
+      },
+      { key: 'header', value: `Authorization: Bearer ${MASK}`, truncated: false },
+    ])
+  })
   it('patch の置換前後を読める形で残し、中の秘密は伏せる', () => {
     const fields = redactArgs({
       mode: 'replace',

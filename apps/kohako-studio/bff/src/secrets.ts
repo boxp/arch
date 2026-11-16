@@ -6,8 +6,9 @@
 export const MASK = '［伏字］'
 export const VALUE_MAX = 20_000
 export const STEP_MAX = 60_000
+// auth は author / authority / authorization（専用規則が方式名を残して伏せる）を巻き込まないよう、後ろが or のものを除く。
 const WORD =
-  'pass(?:word|wd|phrase)|secret|token|api[-_ ]?key|access[-_ ]?key|credential|private[-_ ]?key|session[-_ ]?(?:id|key)'
+  'pass(?:word|wd|phrase)|secret|token|api[-_ ]?key|access[-_ ]?key|credential|private[-_ ]?key|session|auth(?!or)'
 // 名前は前後 40 字までしか見ない（区切りの無い長い文字列で処理時間が伸びないように）。
 const NAME = `(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]{0,40}(?:${WORD})[A-Za-z0-9_.-]{0,40}`
 const QUOTED = `\\$?'[^'\\n]*'|"(?:[^"\\\\\\n]|\\\\.)*"|\`[^\`\\n]*\``
