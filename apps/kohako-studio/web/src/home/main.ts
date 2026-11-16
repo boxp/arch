@@ -1,3 +1,4 @@
+import { Seen, Shared, nextRev, planSync, validateTranscript } from './sync'
 import { classifyFailure, parseReauth, recentlyReloaded, REAUTH_KEY, serializeReauth } from './reauth'
 import { submitAction } from './composer'
 import { must } from '../must'
@@ -350,8 +351,15 @@ let lastReply = '',
   lastActivity = Date.now(),
   thinkingSince = 0,
   cardsOpen = false
-type Entry = { who: 'あなた' | 'コハコ' | 'お知らせ'; text: string; at: number }
+type Entry = { who: 'あなた' | 'コハコ' | 'お知らせ'; text: string; at: number; rid?: string }
 const history: Entry[] = []
+// BOXP-565: 端末間の会話共有。seen は履歴へ出した発言・返答の受付番号、remoteIds は他端末が送り、この端末が追っているだけの依頼。
+const seen = new Seen()
+const shared = new Shared()
+const remoteIds = new Set<string>()
+let transcriptRev = '',
+  syncing = false,
+  firstSync = true
 const chatlog = el('chatlog'),
   chatList = el('chatlog-list')
 const chatFollower = createFollower(),
@@ -378,16 +386,17 @@ function renderChat() {
   if (bottom) chatFollower.pin(chatlog)
   else chatlog.scrollTop = top
 }
-function addHistory(who: Entry['who'], text: string) {
-  history.push({ who, text, at: Date.now() })
+function addHistory(who: Entry['who'], text: string, at = Date.now(), rid = '') {
+  history.push({ who, text, at, ...(rid ? { rid } : {}) })
   if (history.length > 100) history.shift()
   const li = document.createElement('li'),
     w = document.createElement('span'),
     t = document.createElement('span'),
-    time = new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
+    time = new Date(at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
   const list = el('history-list'),
     scroller = el('history'),
     bottom = atBottom(scroller.scrollTop, scroller.clientHeight, scroller.scrollHeight)
+  if (rid) li.dataset.rid = rid
   li.dataset.who = who
   w.className = 'who'
   w.textContent = `${who}（${time}）`
@@ -1000,6 +1009,7 @@ function fail(status: number, data: Record<string, unknown> | null) {
     connection.textContent = '未認証'
     show('offline')
   } else show('failed')
+  if (status === 429 && data?.error === 'busy') void syncTranscript()
 }
 async function initialize() {
   try {
@@ -1037,12 +1047,15 @@ async function initialize() {
     enabled = conv.data.enabled === true
     stt = enabled && !!conv.data.stt
     netDown = false
-    connection.textContent = enabled ? '接続中・Web 専用の会話' : '会話は無効です'
+    connection.textContent = enabled ? '接続中・Web 専用の会話（端末間で共有）' : '会話は無効です'
     el('features').textContent =
       `音声認識: ${stt ? '有効（家サーバー内のwhisper・保存なし）' : '無効'} ／ セッション開始: ${typeof conv.data.sessionStartedAt === 'number' ? new Date(conv.data.sessionStartedAt).toLocaleString('ja-JP') : '未開始'}`
     error.textContent = ''
     show(enabled ? 'idle' : 'offline')
-    if (enabled) await resumeInflight()
+    if (enabled) {
+      await syncTranscript()
+      await resumeInflight()
+    }
   } catch {
     authExpired = false
     updateReconnect()
@@ -1161,7 +1174,7 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
     if (netDown || misses) {
       misses = 0
       netDown = false
-      connection.textContent = '接続中・Web 専用の会話'
+      connection.textContent = '接続中・Web 専用の会話（端末間で共有）'
       error.textContent = ''
       show(state)
     }
@@ -1188,7 +1201,7 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
         approvalExpires = next.approval.expiresAt
         el('approval-summary').textContent = next.approval.summary
         el('approval-error').textContent = ''
-        addHistory('お知らせ', `確認が必要です: ${next.approval.summary}`)
+        addHistory('お知らせ', `確認が必要です: ${next.approval.summary}`, Date.now(), id)
         setBubble('実行する前に確認させてください、ご主人さま。')
       }
       show('approval')
@@ -1205,14 +1218,23 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
       } // 返答前に一瞬くつろぎへ戻らない
       show(next.state)
       if (next.state === 'done')
-        deliver(next.text ?? '', validateViews((result.data.reply as Record<string, unknown> | undefined)?.views))
+        deliver(
+          next.text ?? '',
+          validateViews((result.data.reply as Record<string, unknown> | undefined)?.views),
+          id,
+          remoteIds.has(id),
+        )
       else if (next.state === 'failed') {
+        seen.markEnd(id)
         setError('処理の結果を確認できませんでした。')
         show('failed')
       } else if (next.state === 'stopped') {
+        seen.markEnd(id)
         setBubble('止めました。ほかにご用はありますか、ご主人さま。')
-        addHistory('お知らせ', '依頼を止めました。')
+        addHistory('お知らせ', '依頼を止めました。', Date.now(), id)
       }
+      remoteIds.delete(id)
+      void syncTranscript()
       return
     }
   }
@@ -1286,7 +1308,7 @@ resumeSpeech.addEventListener('click', () => {
 })
 
 /** 返答を吹き出し・カード・履歴へ出し、演技と読み上げを始める（Studio と同じ）。 */
-function deliver(text: string, views: View[] = []) {
+function deliver(text: string, views: View[] = [], id = '', quiet = false) {
   clearSpeechResume()
   closeViewer(false)
   voiceTrouble = false
@@ -1296,18 +1318,18 @@ function deliver(text: string, views: View[] = []) {
   lastActivity = Date.now()
   reply.dataset.reply = '1'
   setBubble(text || '（空の返答でした）')
-  addHistory('コハコ', text)
+  if (!id || seen.markReply(id)) addHistory('コハコ', text, Date.now(), id)
   renderCards(cardsFromText(text), views)
   const spoken = plainText(text)
   // 地図・利用枠グラフ・図はボタンを押さなくても返答と同時に開く（ボタンは閉じた後の再表示用）。
   const first = views[0],
     firstButton = first && cardList.querySelector<HTMLButtonElement>('button[data-view]')
-  if (first && firstButton) openViewer(first, firstButton, false)
-  if (speech.checked && text && (prefs.voice === 'kohaku' || speaker)) {
+  if (!quiet && first && firstButton) openViewer(first, firstButton, false)
+  if (!quiet && speech.checked && text && (prefs.voice === 'kohaku' || speaker)) {
     speechChunks = splitVoiceSentences(splitSentences(spoken))
     speechNext = 0
     playReply()
-  } else if (actingEnabled && text) {
+  } else if (!quiet && actingEnabled && text) {
     const sentences = splitSentences(spoken),
       total = sentences.reduce((n, v) => n + Array.from(v.replace(/\s/g, '')).length, 0)
     acting?.beginReply()
@@ -1701,7 +1723,13 @@ async function sendText(text: string, from: 'composer' | 'pending' | QueueItem):
       requestId = pending.requestId
       accepted = true
       setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true })
-      addHistory('あなた', pending.text + (pending.attachmentNames ?? []).map((x) => `\n📎 ${x}`).join(''))
+      if (seen.markUser(pending.requestId))
+        addHistory(
+          'あなた',
+          pending.text + (pending.attachmentNames ?? []).map((x) => `\n📎 ${x}`).join(''),
+          Date.now(),
+          pending.requestId,
+        )
       if (pending.attachments) {
         for (let i = chips.length - 1; i >= 0; i--)
           if (chips[i].id && pending.attachments.includes(must(chips[i].id))) chips.splice(i, 1)
@@ -1761,7 +1789,13 @@ async function sendText(text: string, from: 'composer' | 'pending' | QueueItem):
   if (result && result.status === 202) {
     setUnconfirmed(null)
     accepted = true
-    addHistory('あなた', payload.text + (payload.attachmentNames ?? []).map((x) => `\n📎 ${x}`).join(''))
+    if (seen.markUser(payload.requestId))
+      addHistory(
+        'あなた',
+        payload.text + (payload.attachmentNames ?? []).map((x) => `\n📎 ${x}`).join(''),
+        Date.now(),
+        payload.requestId,
+      )
     if (payload.attachments) {
       for (let i = chips.length - 1; i >= 0; i--)
         if (chips[i].id && payload.attachments.includes(must(chips[i].id))) chips.splice(i, 1)
@@ -2417,6 +2451,7 @@ Object.assign(window, {
     history,
     addHistory,
     setBubble,
+    syncNow: () => syncTranscript(),
     debug: () => ({
       pointerDown,
       typingIn: typingUntil - Date.now(),
@@ -2455,7 +2490,13 @@ async function resumeUnconfirmed(pending: Outgoing) {
     accepted = true
     started = Date.now()
     setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true })
-    addHistory('あなた', pending.text + (pending.attachmentNames ?? []).map((x) => `\n📎 ${x}`).join(''))
+    if (seen.markUser(pending.requestId))
+      addHistory(
+        'あなた',
+        pending.text + (pending.attachmentNames ?? []).map((x) => `\n📎 ${x}`).join(''),
+        Date.now(),
+        pending.requestId,
+      )
     if (pending.attachments) {
       for (let i = chips.length - 1; i >= 0; i--)
         if (chips[i].id && pending.attachments.includes(must(chips[i].id))) chips.splice(i, 1)
@@ -2497,7 +2538,7 @@ function followRequest(id: string, text: string): boolean {
   lastActivity = Date.now()
   delete reply.dataset.reply
   requestId = id
-  addHistory('あなた', text)
+  if (text && seen.markUser(id)) addHistory('あなた', text, Date.now(), id)
   setBubble('…')
   setInflight({ requestId, expiresAt: Date.now() + 11 * 60_000, accepted: true })
   show('thinking')
@@ -2563,3 +2604,104 @@ const inbox = initInbox(followRequest, {
   },
 })
 window.setInterval(() => inbox.retry(), 2000)
+
+/**
+ * BFF が持つ会話履歴（直近 24 時間）と進行中の依頼を取り込み、他の端末で送った発言・返答をこの端末の履歴へ足す。
+ * 進行中の依頼が他端末のものなら受付番号で追い、実行状態・承認・停止を既存の照会で扱う。この端末からは何も送信しない
+ * （草稿・送信待ち・承認の選択は端末ごとのまま）。古い BFF（404）や一時的な失敗では何もしない。
+ */
+async function syncTranscript() {
+  if (!enabled || syncing || document.visibilityState !== 'visible') return
+  syncing = true
+  try {
+    const result = await call(
+      `conversation/transcript${transcriptRev ? `?rev=${encodeURIComponent(transcriptRev)}` : ''}`,
+    )
+    if (result.status !== 200) return
+    const data = validateTranscript(result.data)
+    if (!data) return
+    if ('unchanged' in data) return
+    const initial = firstSync
+    firstSync = false
+    pruneHistory(shared.update(data.items))
+    const ops = planSync(data.items, data.active, {
+      seen,
+      trackingId: requestId,
+      canFollow: !busy && !unconfirmed && !touchActive && enabled && !parseResume(tab.get(INFLIGHT_KEY), Date.now()),
+    })
+    for (const op of ops) {
+      if (op.op === 'user') addHistory('あなた', op.text, op.at, op.id)
+      else if (op.op === 'reply') {
+        addHistory('コハコ', op.text, op.at, op.id)
+        if (op.latest && !initial && !busy && state !== 'speaking' && state !== 'approval') {
+          setBubble(op.text)
+          reply.dataset.reply = '1'
+          lastReply = op.text
+          renderCards(cardsFromText(op.text), op.views)
+        }
+      } else if (op.op === 'ended')
+        addHistory(
+          'お知らせ',
+          op.stopped ? 'この依頼は止められました。' : 'この依頼は結果を確認できませんでした。',
+          op.at,
+          op.id,
+        )
+      else if (op.op === 'divider')
+        addHistory(
+          'お知らせ',
+          'ここから現在の会話です（これより前は以前の会話の履歴で、続きの文脈には含まれません）。',
+          op.at,
+          op.id,
+        )
+      else if (op.op === 'stale')
+        addHistory(
+          'お知らせ',
+          'ここまでは以前の会話の履歴です（時間が空いたため、次の発言からは新しい会話になり、続きの文脈には含まれません）。',
+          Date.now(),
+          op.id,
+        )
+      else if (op.op === 'follow') {
+        if (followRemote(op.id)) {
+          if (op.kind === 'reply') addHistory('お知らせ', '別の端末から通知への返信が送られました。')
+          addHistory('お知らせ', '別の端末から送られた依頼の続きを追っています。')
+        }
+      }
+    }
+    transcriptRev = nextRev(data.rev, data.active, requestId)
+  } catch {
+    /* 古い BFF や一時的な通信失敗では何もしない */
+  } finally {
+    syncing = false
+  }
+}
+function followRemote(id: string) {
+  remoteIds.add(id)
+  const followed = followRequest(id, '')
+  if (!followed) remoteIds.delete(id)
+  return followed
+}
+window.setInterval(() => void syncTranscript(), 5000)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') void syncTranscript()
+})
+window.addEventListener('online', () => void syncTranscript())
+/**
+ * 共有履歴の保持期限（24 時間）や件数（最新 50 件）から外れた依頼を、開いたままのこの端末の画面からも消す。
+ * 対象は BFF の履歴に載っていた依頼の発言・返答・お知らせだけ（この端末だけのお知らせは対象外）。
+ */
+function pruneHistory(gone: string[]) {
+  if (!gone.length) return
+  const ids = new Set(gone)
+  const removed = history.filter((e) => e.rid && ids.has(e.rid))
+  if (!removed.length) return
+  for (let i = history.length - 1; i >= 0; i--) if (removed.includes(history[i])) history.splice(i, 1)
+  for (const li of el('history-list').querySelectorAll<HTMLElement>('li[data-rid]'))
+    if (ids.has(li.dataset.rid ?? '')) li.remove()
+  // 吹き出しに残っている返答も、履歴から消えたものなら表示を終える。
+  if (!busy && reply.dataset.reply === '1' && removed.some((e) => e.who === 'コハコ' && e.text === lastReply)) {
+    delete reply.dataset.reply
+    lastReply = ''
+    renderCards([], [])
+    setBubble('（前の返答は保存期間を過ぎたため、表示を終えました。）')
+  } else renderChat()
+}

@@ -14,6 +14,7 @@ type Entry = {
   activity?: ReturnType<typeof createActivity>
   requestId: string
   payloadHash: string
+  text?: string
   status: 'pending' | 'done' | 'failed' | 'unknown'
   reply?: { text: string; at: number; views?: View[] }
   error?: string
@@ -104,6 +105,7 @@ export function createConversation({
   cancelSettleMs = 2000,
   activityDrainMs = 2000,
   argsIntervalMs = 1500,
+  sweepMs = 60_000,
 }: {
   now: () => number
   hermes: ReturnType<typeof createHermes>
@@ -113,6 +115,8 @@ export function createConversation({
   cancelSettleMs?: number
   activityDrainMs?: number
   argsIntervalMs?: number
+  /** 保持期限（24 時間）を過ぎた会話を消す見回りの間隔。0 で無効。 */
+  sweepMs?: number
 }) {
   const entries = new Map<string, Entry>()
   let sessionStartedAt = now(),
@@ -120,8 +124,11 @@ export function createConversation({
     lastExchange: { kind: 'text' | 'touch'; text: string; reply: string } | null = null
   // 会話ファイルに保存する直前の会話。通知返信（resume）の本文・返信は保存しない。
   let persistedExchange: { kind: 'text' | 'touch'; text: string; reply: string } | null = null
+  const boot = randomBytes(4).toString('hex')
+  let counter = 0
   let queue = Promise.resolve()
   const save = () => {
+    counter++
     if (!store) return
     // cancelRequested も保存する: 停止処理中に再起動しても、保留中の承認を通常の承認として再表示せず拒否するため。
     const snapshot = {
@@ -134,6 +141,7 @@ export function createConversation({
           ({
             requestId,
             payloadHash,
+            text,
             status,
             reply,
             error,
@@ -147,6 +155,7 @@ export function createConversation({
           }) => ({
             requestId,
             payloadHash,
+            ...(text === undefined ? {} : { text }),
             status,
             reply,
             error,
@@ -179,9 +188,62 @@ export function createConversation({
       )
       .digest('hex')
   function clean() {
-    for (const [id, e] of entries) if (e.status !== 'pending' && now() - e.createdAt > 86_400_000) entries.delete(id)
+    let changed = false
+    for (const [id, e] of entries)
+      if (e.status !== 'pending' && now() - e.createdAt > 86_400_000) {
+        entries.delete(id)
+        changed = true
+      }
+    // 直前の会話（本文つき）は 6 時間無操作で次の発言から使われなくなる。その時点で保存ファイルからも消す。
+    if (
+      (lastExchange || persistedExchange) &&
+      now() - lastUse > 6 * 3600_000 &&
+      ![...entries.values()].some((e) => e.status === 'pending')
+    ) {
+      lastExchange = persistedExchange = null
+      changed = true
+    }
+    if (changed) save()
   }
+  // BOXP-565: 保存した会話本文・返答は、誰も API を呼ばなくても 24 時間で消す（保存ファイルからも消える）。
+  if (sweepMs > 0) setInterval(clean, sweepMs).unref?.()
   const conversation = {
+    get rev() {
+      return `${boot}-${counter}`
+    },
+    /**
+     * BOXP-565: 同じ本人の別端末へ見せる会話履歴と進行中の依頼。なでる・通知返信（本文を保存しない）は items に含めない。
+     * current は「いま続きを話すと同じ Hermes session に入る」発言かどうか（履歴表示と会話の継続を区別する）。
+     */
+    transcript() {
+      clean()
+      const all = [...entries.values()]
+      const active = all.find((e) => e.status === 'pending' && e.kind !== 'touch')
+      // 6 時間無操作なら次の発言は新しい session になる（submit と同じ条件）。その場合、いまの履歴は続きの文脈に含まれない。
+      const live = now() - lastUse <= 6 * 3600_000 || all.some((e) => e.status === 'pending')
+      return {
+        // 時間経過で current が変わるときも端末が取り直せるよう、rev に含める。
+        rev: live ? this.rev : `${this.rev}-idle`,
+        sessionStartedAt,
+        items: all
+          .filter((e) => e.kind !== 'touch' && !e.resume)
+          .sort((a, b) => a.createdAt - b.createdAt)
+          .slice(-50)
+          .map((e) => ({
+            requestId: e.requestId,
+            at: e.createdAt,
+            current: live && e.sessionId === `${prefix}-${sessionStartedAt.toString(36)}`,
+            ...(e.text === undefined ? {} : { text: e.text }),
+            ...(e.attachments?.length ? { attachments: e.attachments.map((a) => a.name) } : {}),
+            status: e.status,
+            ...(e.error ? { error: e.error } : {}),
+            ...(e.reply ? { reply: e.reply } : {}),
+          })),
+        active: active
+          ? { requestId: active.requestId, kind: active.resume ? ('reply' as const) : ('text' as const) }
+          : null,
+      }
+    },
     flush: () => queue,
     async restore() {
       if (!store) return
@@ -332,6 +394,7 @@ export function createConversation({
       const entry: Entry = restored ?? {
         requestId: input.requestId,
         payloadHash: hash(input),
+        ...(input.kind === 'text' && !resume ? { text: input.text } : {}),
         status: 'pending',
         createdAt: now(),
         kind: input.kind,
