@@ -573,9 +573,15 @@ export function fillLashSlots(target: Atlas, spec: EyeSpec, lash: Layer, maxGap 
   return writes.length
 }
 
+/**
+ * あごの輪郭外の肌を透明にする行の範囲（モデル座標の y）。上端より上はもみあげの先が頬に重なる行で、
+ * 髪の房に挟まれた肌まで透明になり、明るい後ろ髪が透けて頬・もみあげのゴミに見えた（BOXP-525 r15、y 334〜342）。
+ */
+export const JAW_ROWS = { top: 344, bottom: 390 } as const
+
 /** 顔の中心から輪郭を越えた肌だけを透明にする（RGB も 0 にするので線形補間で白い縁は出ない）。 */
 export function eraseJawRow(pixels: Rgba[], center: number, start: number, end: number, modelY: number): number[] {
-  if (modelY < 305 || modelY > 390) return []
+  if (modelY < JAW_ROWS.top || modelY > JAW_ROWS.bottom) return []
   const step = end < start ? -1 : 1
   let edge = -1
   for (let i = start; step * (i - end) <= 0; i += step) {
@@ -806,7 +812,7 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
       centerU = face.forward(572, 350)[0]
     for (let v = y0; v < y1; v++) {
       const [, modelY] = face.inverse(centerU, v)
-      if (modelY < 305 || modelY > 390) continue
+      if (modelY < JAW_ROWS.top || modelY > JAW_ROWS.bottom) continue
       const center = Math.round(face.forward(572, modelY)[0]) - x0
       const row = Array.from({ length: w }, (_, x) => target.get(x + x0, v))
       for (const [side, inner, outer] of [
