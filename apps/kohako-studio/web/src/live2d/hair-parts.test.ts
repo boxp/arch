@@ -3,6 +3,7 @@ import {
   barycentric,
   CROWN_HAIR_LUMA,
   fillCyan,
+  fillUnderCrownStrip,
   dimRim,
   growLoopUv,
   growTassel,
@@ -90,6 +91,12 @@ describe('後ろ髪アトラスの孤立片', () => {
     expect(isBackHairFragment(264, 76)).toBe(false)
     expect(isBackHairFragment(256, 85)).toBe(false)
     expect(isBackHairFragment(280, 55)).toBe(false)
+  })
+  it('頭頂の帯（CROWN_STRIP）の範囲の画素は孤立片として消さない', async () => {
+    const { isBackHairFragment, CROWN_STRIP } = await import('./hair-parts')
+    for (let x = CROWN_STRIP.x0; x < CROWN_STRIP.x1; x++)
+      for (let y = CROWN_STRIP.y0; y < CROWN_STRIP.y1 + CROWN_STRIP.depth; y++)
+        expect(isBackHairFragment(x, y)).toBe(false)
   })
 })
 
@@ -226,5 +233,39 @@ describe('右の横髪の外側の縁 (BOXP-525 r22 上の右側のズレ)', () 
     expect(fillCyan(px, 4, 1, 0, 0, 4, 1)).toBe(2)
     expect(Array.from(px.slice(8, 12))).toEqual([60, 55, 90, 255])
     expect(Array.from(px.slice(12, 16))).toEqual([60, 55, 90, 255])
+  })
+})
+
+describe('後ろ髪の頭頂の帯の下 (BOXP-525 r23 髪の左上の白い線)', () => {
+  const strip = { x0: 0, full: 2, x1: 6, y0: 0, y1: 10, depth: 3 }
+  // 6×10、各列 y=1..3 が帯（輪郭線 y=1 と地 y=2,3）、その下は透明。
+  const make = () => {
+    const w = 6,
+      h = 10,
+      px = new Uint8Array(w * h * 4)
+    for (let x = 0; x < w; x++) {
+      px.set([10, 10, 20, 255], (1 * w + x) * 4)
+      px.set([60, 55, 90, 255], (2 * w + x) * 4)
+      px.set([62, 57, 92, 255], (3 * w + x) * 4)
+    }
+    return { px, w, h }
+  }
+  it('帯の直下を地の色で不透明にし、帯の上（背景側）は変えない', () => {
+    const { px, w, h } = make()
+    const n = fillUnderCrownStrip(px, w, h, 0, 0, strip)
+    expect(n).toBeGreaterThan(0)
+    // 先端側から増える: x=0 は 0 画素、x>=2 は 3 画素。
+    expect(px[(4 * w + 0) * 4 + 3]).toBe(0)
+    for (let y = 4; y <= 6; y++) expect(px[(y * w + 4) * 4 + 3]).toBe(255)
+    expect(px[(7 * w + 4) * 4 + 3]).toBe(0)
+    expect(px[(0 * w + 4) * 4 + 3]).toBe(0)
+    // 輪郭線の色は使わない。
+    expect(Array.from(px.slice((4 * w + 4) * 4, (4 * w + 4) * 4 + 3))).not.toEqual([10, 10, 20])
+  })
+  it('帯がない列は変えない', () => {
+    const w = 4,
+      h = 6,
+      px = new Uint8Array(w * h * 4)
+    expect(fillUnderCrownStrip(px, w, h, 0, 0, strip)).toBe(0)
   })
 })

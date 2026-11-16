@@ -236,6 +236,76 @@ export function isBackHairFragment(x: number, y: number): boolean {
   return x >= 250 && x < 264 && y >= 66 && y < 85
 }
 
+/**
+ * 後ろ髪の頭頂の外周の帯（輪郭線を含む細い弧）の範囲（v11r の 4096px アトラス座標）。帯の下は四角く透明に抜けており、
+ * 正面では前髪の頭頂が覆うが、左右を向くと前髪だけが動いて帯との間が開き、背景が「髪の左上の白い線」として透ける
+ * （BOXP-525 r23、本番版の +14° で背景を赤にした描画と部品の描き分けで確認）。
+ * x0〜full は先端（桜の上の毛先）側で埋める幅を 0 から増やす区間。
+ */
+export const CROWN_STRIP = { x0: 295, full: 307, x1: 337, y0: 10, y1: 80, depth: 10 } as const
+
+/**
+ * 乗算済みアルファの画素列（左上が (ox, oy) のアトラス切り出し）で、CROWN_STRIP の各列の最初の不透明な帯の直下を
+ * depth 画素だけ、帯の中の髪の地の色を下に敷いて不透明にする。帯の外周（上側・背景側）は変えない。変えた画素数を返す。
+ */
+export function fillUnderCrownStrip(
+  pixels: Uint8Array,
+  w: number,
+  h: number,
+  ox: number,
+  oy: number,
+  strip: { x0: number; full: number; x1: number; y0: number; y1: number; depth: number } = CROWN_STRIP,
+): number {
+  const at = (x: number, y: number) => ((y - oy) * w + (x - ox)) * 4
+  const inside = (x: number, y: number) => x >= ox && y >= oy && x < ox + w && y < oy + h
+  // 帯の中の髪の地（輪郭線より明るく、ハイライトより暗い）の色の中央値。
+  const ground: [number, number, number][] = []
+  const bottoms: [number, number][] = []
+  for (let x = strip.x0; x < strip.x1; x++) {
+    let top = -1,
+      bottom = -1
+    for (let y = strip.y0; y < strip.y1 && inside(x, y); y++) {
+      const opaque = (pixels[at(x, y) + 3] as number) > 128
+      if (opaque && top < 0) top = y
+      if (!opaque && top >= 0) {
+        bottom = y - 1
+        break
+      }
+    }
+    if (bottom < 0) continue
+    bottoms.push([x, bottom])
+    for (let y = top; y <= bottom; y++) {
+      const i = at(x, y),
+        a = pixels[i + 3] as number
+      if (a < 250) continue
+      const c: [number, number, number] = [pixels[i] as number, pixels[i + 1] as number, pixels[i + 2] as number]
+      const luma = c[0] * 0.3 + c[1] * 0.59 + c[2] * 0.11
+      if (luma >= HAIR_LINE_LUMA && luma <= CROWN_RIM_LUMA) ground.push(c)
+    }
+  }
+  if (!ground.length) return 0
+  const median = (k: number) => {
+    const v = ground.map((c) => c[k] as number).sort((a, b) => a - b)
+    return v[Math.floor(v.length / 2)] as number
+  }
+  const fill = [median(0), median(1), median(2)]
+  let changed = 0
+  for (const [x, bottom] of bottoms) {
+    const depth = Math.round(strip.depth * Math.min(1, Math.max(0, (x - strip.x0) / (strip.full - strip.x0))))
+    for (let y = bottom + 1; y <= bottom + depth && inside(x, y); y++) {
+      const i = at(x, y),
+        a = pixels[i + 3] as number
+      if (a >= 255) continue
+      // 既存の画素の下に地の色を敷く（乗算済みアルファの over 合成）。
+      for (let k = 0; k < 3; k++)
+        pixels[i + k] = Math.min(255, (pixels[i + k] as number) + Math.round(((fill[k] as number) * (255 - a)) / 255))
+      pixels[i + 3] = 255
+      changed++
+    }
+  }
+  return changed
+}
+
 /** 対象の層だけに、別素材を消した切り出しテクスチャを与える。消した画素数を返す。 */
 export function isolateHairStrand(p: PartsPlayer, mesh: number, fragmentOnly = false): number {
   const gl = p.gl,
@@ -285,21 +355,21 @@ export function isolateHairStrand(p: PartsPlayer, mesh: number, fragmentOnly = f
     const a = pixels[4 * i + 3] as number
     if (!a) continue
     // アトラスは乗算済みアルファなので、色を戻してから判定する。
-    const top = (Math.floor(i / w) + y0 + 0.5 - v0) / (v1 - v0) < STRAND_TOP
-    if (
-      fragmentOnly
-        ? !isBackHairFragment((i % w) + x0, Math.floor(i / w) + y0)
-        : covered?.[i] &&
-          (!top ||
-            !isForeignToHair(
-              ((pixels[4 * i] as number) * 255) / a,
-              ((pixels[4 * i + 1] as number) * 255) / a,
-              ((pixels[4 * i + 2] as number) * 255) / a,
-            ))
-    )
-      continue
+    // 後ろ髪（fragmentOnly）では孤立片の範囲（isBackHairFragment、x=250〜263）だけを消し、それ以外の画素
+    // （CROWN_STRIP の頭頂の帯を含む）はそのまま残す。髪房では三角形の外と、上側の島外の欠片を消す。
+    const inMesh = covered?.[i] === 1
+    const erase = fragmentOnly
+      ? isBackHairFragment((i % w) + x0, Math.floor(i / w) + y0)
+      : !inMesh ||
+        ((Math.floor(i / w) + y0 + 0.5 - v0) / (v1 - v0) < STRAND_TOP &&
+          isForeignToHair(
+            ((pixels[4 * i] as number) * 255) / a,
+            ((pixels[4 * i + 1] as number) * 255) / a,
+            ((pixels[4 * i + 2] as number) * 255) / a,
+          ))
+    if (!erase) continue
     pixels[4 * i] = pixels[4 * i + 1] = pixels[4 * i + 2] = pixels[4 * i + 3] = 0
-    if (fragmentOnly || covered?.[i]) erased++
+    if (fragmentOnly || inMesh) erased++
   }
   // BOXP-525 r22: 後ろ髪に重ねて描かれた耳の上の水色の飾り。横髪の外側の縁を消すと、左右を向いた時に横髪の同じ飾りと二重に見えるため髪の色で埋める。
   if (fragmentOnly) {
@@ -318,6 +388,8 @@ export function isolateHairStrand(p: PartsPlayer, mesh: number, fragmentOnly = f
       b1 = Math.max(b1, (info.uvs[2 * n + 1] as number) * height - y0)
     }
     if (a1 >= a0) erased += fillCyan(pixels, w, h, Math.floor(a0) - 4, Math.floor(b0), Math.ceil(a1) + 4, Math.ceil(b1))
+    // BOXP-525 r23: 頭頂の帯の下の透明な抜けを髪の地で埋め、左右を向いた時に前髪との間から背景が透けないようにする。
+    erased += fillUnderCrownStrip(pixels, w, h, x0, y0)
   }
   // 2 のべき乗の大きさに置き、p2l.js がミップマップを作れるようにする（縮小表示で細い線が欠けない）。
   const W = powerOfTwo(w),
