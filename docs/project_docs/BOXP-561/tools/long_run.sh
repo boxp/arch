@@ -2,6 +2,7 @@
 # BOXP-561 長時間評価（TD-02）: 固定の時間上限で打ち切らず、pi の session を保存して中断後に --continue で再開する。
 # 1 job = 1 モデル x 1 課題（n1 合成小説 / n2 実バース小説 / t1 Task Board）。job の状態は $BOXP561_TMP/long-MODEL-KIND/ に残る。
 # usage: long_run.sh MODEL KIND PORT   (BOXP561_TMP と BOXP561_OBS_DIR が必要。session.sh の L:KIND から呼ぶ)
+#        long_run.sh MODEL KIND finalize  最後の segment の meta.json から状態判定と後段判定だけをやり直す（GPU 不要）
 # 1 回の呼び出し = 1 segment。終わり方:
 #   exit   pi が自分で終了した → job 完了（成果の有無・品質は後段の check/verify で判定）
 #   abort  ABORT（閉鎖期限・メモリ・GPU 異常）や workspace 停止 → 未完のまま次の区間で再開
@@ -15,18 +16,72 @@ require_tmp
 BASE=d95b7cdc1209b5bc8d79f170fe656b2cda468628
 ARCH=$(git -C "$here" rev-parse --show-toplevel)
 model=${1:-} kind=${2:-} port=${3:-}
-[[ $model =~ ^(qwen3-coder-next|qwen38-flash-next|qwen38-27b)$ && $kind =~ ^(n1|n2|t1)$ && $port =~ ^[0-9]+$ ]] || {
-  echo "usage: long_run.sh MODEL n1|n2|t1 PORT" >&2
+[[ $model =~ ^(qwen3-coder-next|qwen38-flash-next|qwen38-27b)$ && $kind =~ ^(n1|n2|t1)$ && $port =~ ^([0-9]+|finalize)$ ]] || {
+  echo "usage: long_run.sh MODEL n1|n2|t1 PORT|finalize" >&2
   exit 2
 }
+IDLE=${BOXP561_IDLE_SEC:-1800}
+J=$BOXP561_TMP/long-$model-$kind
+log() { echo "$(date -u +%FT%TZ) [$model/$kind] $*" | tee -a "$J/job.log"; }
+# 状態判定と後段判定。segment の meta.json だけを見るので、finalize からも同じ処理になる
+finalize() {
+  local seg=$1 reason code wall jtools rep idles new
+  reason=$(jq -r .end "$seg/meta.json")
+  code=$(jq -r '."exit-code"' "$seg/meta.json")
+  wall=$(jq -r '."wall-seconds"' "$seg/meta.json")
+  jtools=$(jq '."job-tool-calls"' "$seg/meta.json")
+  rep=$(jq '."max-repeat"' "$seg/meta.json")
+  idles=$(cat "$J"/seg-*/meta.json | jq -s 'map(select(.end == "idle")) | length')
+  if [[ $reason == exit && $code == 0 ]]; then
+    new=completed
+  elif ((jtools > 600 || rep > 15)); then
+    new=nonconvergent
+  elif ((idles >= 2)); then
+    new=stalled
+  else
+    new=running
+  fi
+  echo "$new" >"$J/state"
+  log "segment $(basename "$seg") end=$reason rc=$code wall=${wall}s -> state=$new"
+  [[ $new == running ]] && return 0
+  # 終了した job の後段判定（成果の有無と品質の機械判定。本文は出さない）
+  case $kind in
+    n1 | n2)
+      "$here/novel_check.bb" "$J/root" >"$J/check.json"
+      log "check saved"
+      ;;
+    t1)
+      {
+        git -C "$J/arch" diff --binary "$BASE"
+        git -C "$J/arch" ls-files --others --exclude-standard -z | while IFS= read -r -d '' f; do
+          drc=0
+          (cd "$J/arch" && git diff --no-index --binary -- /dev/null "$f") || drc=$?
+          ((drc <= 1)) || exit 1
+        done
+      } >"$J/out/patch.diff"
+      "$here/t1_verify.sh" "$J/out/patch.diff" >"$J/out/verify.json" 2>>"$J/job.log" || true
+      log "verify $(cat "$J/out/verify.json")"
+      # t1_finish.bb は最後の assistant message の marker を見る。全 segment の events を連結して渡す
+      cat "$J"/seg-*/events.jsonl >"$J/out/events.jsonl"
+      cat "$J"/seg-*/meta.json | jq -s --arg m "$model" --argjson c "$code" '{model:$m, "exit-code":$c, "wall-seconds":(map(."wall-seconds")|add)}' >"$J/out/meta.json"
+      bb "$here/t1_finish.bb" "$J" >>"$J/job.log" 2>&1 || log "finish rc=$?"
+      ;;
+  esac
+}
+if [[ $port == finalize ]]; then
+  last=$(find "$J" -maxdepth 1 -name 'seg-*' -type d | sort | tail -1)
+  [[ -f $last/meta.json ]] || {
+    echo "no segment meta in $J" >&2
+    exit 1
+  }
+  finalize "$last"
+  exit 0
+fi
 obs=${BOXP561_OBS_DIR:?BOXP561_OBS_DIR required}
 [[ -d $obs && ! -e $obs/ABORT ]] || {
   echo "observer missing or aborted" >&2
   exit 1
 }
-IDLE=${BOXP561_IDLE_SEC:-1800}
-J=$BOXP561_TMP/long-$model-$kind
-log() { echo "$(date -u +%FT%TZ) [$model/$kind] $*" | tee -a "$J/job.log"; }
 st=$(cat "$J/state" 2>/dev/null || echo new)
 case $st in
   completed | stalled | nonconvergent)
@@ -122,40 +177,4 @@ bb -e '(require (quote [cheshire.core :as j]) (quote [clojure.string :as s]) (qu
           :max-repeat (or topn 0) :max-repeat-call (some-> top (subs 0 (min 200 (count top))))}]
    (spit (str seg "/meta.json") (j/generate-string m {:pretty true}))
    (println (j/generate-string (dissoc m :max-repeat-call))))' "$J" "$seg" "$reason" "$code" "$wall" | tee -a "$J/job.log"
-jtools=$(jq .\"job-tool-calls\" "$seg/meta.json")
-rep=$(jq '."max-repeat"' "$seg/meta.json")
-idles=$(grep -l '"end" : "idle"' "$J"/seg-*/meta.json 2>/dev/null | wc -l)
-if [[ $reason == exit && $code == 0 ]]; then
-  new=completed
-elif ((jtools > 600 || rep > 15)); then
-  new=nonconvergent
-elif ((idles >= 2)); then
-  new=stalled
-else
-  new=running
-fi
-echo "$new" >"$J/state"
-log "segment $(basename "$seg") end=$reason rc=$code wall=${wall}s -> state=$new"
-[[ $new == running ]] && exit 0
-# 終了した job の後段判定（成果の有無と品質の機械判定。本文は出さない）
-case $kind in
-  n1 | n2) "$here/novel_check.bb" "$J/root" >"$J/check.json" && log "check $(jq -c '{added:(.added|length? // .added)}' "$J/check.json" 2>/dev/null || echo saved)" ;;
-  t1)
-    {
-      git -C "$J/arch" diff --binary "$BASE"
-      git -C "$J/arch" ls-files --others --exclude-standard -z | while IFS= read -r -d '' f; do
-        drc=0
-        (cd "$J/arch" && git diff --no-index --binary -- /dev/null "$f") || drc=$?
-        ((drc <= 1)) || exit 1
-      done
-    } >"$J/out/patch.diff"
-    "$here/t1_verify.sh" "$J/out/patch.diff" >"$J/out/verify.json" 2>>"$J/job.log" || true
-    log "verify $(cat "$J/out/verify.json")"
-    # t1_finish.bb は最後の assistant message の marker を見る。全 segment の events を連結して渡す
-    cat "$J"/seg-*/events.jsonl >"$J/out/events.jsonl"
-    jq -n --arg m "$model" --argjson c "$code" --argjson s "$(cat "$J"/seg-*/meta.json | jq -s 'map(."wall-seconds")|add')" \
-      '{model:$m, "exit-code":$c, "wall-seconds":$s}' >"$J/out/meta.json"
-    bb "$here/t1_finish.bb" "$J" >>"$J/job.log" 2>&1 || log "finish rc=$?"
-    ;;
-esac
-exit 0
+finalize "$seg"
