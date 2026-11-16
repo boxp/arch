@@ -6,7 +6,7 @@
 # 「経路上の子以外の全エントリ」に全権限を付け、経路上のディレクトリ自体には何も付けない。
 # 兄弟のシンボリックリンクには規則を付けない。既存のハードリンクは対象外（評価前後の guard.bb digest 照合で検出する）。
 # 結果として PROTECTED_DIR 配下（シンボリックリンク経由を含む）と祖先ディレクトリの一覧取得は拒否され、それ以外は従来通り使える。
-# Landlock が使えない・ルール設定に失敗した場合は実行せず exit 126（fail closed）。
+# Landlock が使えない・ABI 3 (TRUNCATE 制御) 未満・ルール設定に失敗した場合は実行せず exit 126（fail closed）。
 # ctypes で syscall を直接呼ぶ必要があるため、bb / shell ではなく Python で書いている（同ディレクトリ relay.py と同様の例外）。
 import ctypes
 import os
@@ -48,13 +48,11 @@ def main(argv):
     abi = libc.syscall(SYS_CREATE_RULESET, None, ctypes.c_size_t(0), ctypes.c_uint32(LANDLOCK_CREATE_RULESET_VERSION))
     if abi < 1:
         die(f"Landlock が使えません (errno={ctypes.get_errno()})")
-    handled = (1 << 13) - 1  # ABI1: EXECUTE..MAKE_SYM
-    file_rights = FILE_RIGHTS_V1
-    if abi >= 2:
-        handled |= REFER
-    if abi >= 3:
-        handled |= TRUNCATE
-        file_rights |= TRUNCATE
+    # ABI 1・2 には TRUNCATE 制御が無く、open(O_RDONLY|O_TRUNC) 等で protected 内のファイルを切り詰められるため fail closed
+    if abi < 3:
+        die(f"Landlock ABI {abi} は TRUNCATE を制御できないため中止します (ABI 3 以上が必要)")
+    handled = ((1 << 13) - 1) | REFER | TRUNCATE  # ABI1: EXECUTE..MAKE_SYM + ABI2: REFER + ABI3: TRUNCATE
+    file_rights = FILE_RIGHTS_V1 | TRUNCATE
     attr = RulesetAttr(handled)
     rfd = libc.syscall(SYS_CREATE_RULESET, ctypes.byref(attr), ctypes.c_size_t(ctypes.sizeof(attr)), ctypes.c_uint32(0))
     if rfd < 0:
