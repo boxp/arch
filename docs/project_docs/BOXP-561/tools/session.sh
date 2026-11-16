@@ -33,6 +33,7 @@ cleanup() {
   log "cleanup rc=$rc"
   [[ -n ${wd:-} ]] && kill "$wd" 2>/dev/null || true
   [[ -n ${hb:-} ]] && kill "$hb" 2>/dev/null || true
+  [[ -n ${vw:-} ]] && kill "$vw" 2>/dev/null || true
   "$here/obs.sh" stop "$BOXP561_OBS_DIR" >>"$L" 2>&1 || true
   "$here/tunnel.sh" down $PORT >>"$L" 2>&1 || true
   if ((closed)); then
@@ -89,6 +90,12 @@ hb=$!
 "$here/ops.sh" drain >>"$L" 2>&1
 "$here/tunnel.sh" up $PORT >>"$L" 2>&1
 "$here/obs.sh" start "$BOXP561_OBS_DIR" >>"$L" 2>&1
+# 長時間評価（L:）を含む区間では、本番 vault を変更しうる tool 呼び出しを監視して ABORT する
+if [[ ,$plan, == *,L:* ]]; then
+  "$here/vaultwatch.sh" "$tok" "$model" >>"$L" 2>&1 &
+  vw=$!
+  log "vaultwatch started pid=$vw"
+fi
 # 閉鎖 90 分の上限: 期限で ABORT を作り、実行中の run を止める
 (
   sleep $((deadline - 180 - $(date +%s))) # restore の確認時間を期限内に残す

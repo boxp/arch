@@ -6,6 +6,7 @@
 # 1 回の呼び出し = 1 segment。終わり方:
 #   exit   pi が自分で終了した → job 完了（成果の有無・品質は後段の check/verify で判定）
 #   abort  ABORT（閉鎖期限・メモリ・GPU 異常）や workspace 停止 → 未完のまま次の区間で再開
+#   nonconvergent  実行中に下記の反復閾値を超えた → 止めて nonconvergent
 #   idle   events.jsonl が BOXP561_IDLE_SEC（既定 1800 秒）伸びない → 停止。2 回で stalled（進捗のない停止）
 # job 全体の tool 呼び出しが 600 を超えるか、同じ tool 呼び出し（名前+引数）が 15 回を超えたら nonconvergent（反復）として止める。
 set -euo pipefail
@@ -32,10 +33,11 @@ finalize() {
   jtools=$(jq '."job-tool-calls"' "$seg/meta.json")
   rep=$(jq '."max-repeat"' "$seg/meta.json")
   idles=$(cat "$J"/seg-*/meta.json | jq -s 'map(select(.end == "idle")) | length')
-  if [[ $reason == exit && $code == 0 ]]; then
-    new=completed
-  elif ((jtools > 600 || rep > 15)); then
+  # 閾値超過は exit 0 でも completed にしない（反復の末に終わった run を完了扱いにしない）
+  if [[ $reason == nonconvergent ]] || ((jtools > 600 || rep > 15)); then
     new=nonconvergent
+  elif [[ $reason == exit && $code == 0 ]]; then
+    new=completed
   elif ((idles >= 2)); then
     new=stalled
   else
@@ -137,7 +139,24 @@ pid=$!
 reason='exit'
 last=$s0
 lsize=0
+tick=0
+# 実行中の反復検出: job 全体（全 segment）の tool 呼び出し数と同一呼び出し（名前+引数）の最大回数を約 60 秒ごとに数える
+loopcheck() {
+  local sigs total top
+  sigs=$(cat "$J"/seg-*/events.jsonl 2>/dev/null | jq -R -c 'fromjson? | select(.type == "tool_execution_start") | [.toolName, .args]' 2>/dev/null || true)
+  [[ -n $sigs ]] || return 1
+  total=$(wc -l <<<"$sigs")
+  top=$(sort <<<"$sigs" | uniq -c | sort -rn | awk 'NR == 1 {print $1}')
+  ((total > 600 || top > 15)) || return 1
+  log "nonconvergent during run: tool-calls=$total max-repeat=$top"
+}
 while kill -0 "$pid" 2>/dev/null; do
+  tick=$((tick + 1))
+  if ((tick % 12 == 0)) && loopcheck; then
+    reason=nonconvergent
+    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || :
+    break
+  fi
   if [[ -e $obs/ABORT ]]; then
     reason=abort
     kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || :
