@@ -178,6 +178,21 @@ await scenario('a', '後から開いた別端末に、発言と返答の履歴�
   ev.bubbleB = await B.page.locator('#reply').textContent()
   await A.shot('a')
   await B.shot('a')
+  // 履歴の見出しと説明は、端末間で共有する実仕様（過去 24 時間・最新 50 件・以前の会話の扱い）に合っている。
+  for (const d of [A, B]) {
+    await d.page.locator('#history-open').click()
+    await wait(() => d.visible('#history'), `${d.name} の履歴を開く`)
+    const title = await d.page.locator('#history h2').textContent(),
+      note = await d.page.locator('#history .note').textContent()
+    ev[`historyTitle${d.name}`] = title
+    ev[`historyNote${d.name}`] = note
+    assert(title === '会話履歴', `${d.name} の見出しは「会話履歴」`)
+    assert(!/この画面を開いてから|この一覧は消え/.test(`${title}${note}`), `${d.name} にタブ内限定の旧文言が残っていない`)
+    assert(['24 時間', '50 件', '端末どうしで共有', '以前の会話', 'Telegram とは別'].every((s) => note.includes(s)), `${d.name} の説明が共有範囲を示す`)
+    await d.page.waitForTimeout(600) // 開く動きが終わってから撮る
+    await d.shot('a-history')
+    await d.page.locator('#history-close').click()
+  }
 })
 
 await scenario('b', '進行中の依頼が別端末にも作業中として出て、返答は各端末 1 回だけ出る', async (be, open, ev) => {
