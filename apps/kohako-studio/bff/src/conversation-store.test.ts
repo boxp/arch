@@ -187,6 +187,8 @@ it('会話履歴に本文と復元済みの古い返答を載せ、変更を rev
   expect(conv.rev).not.toBe(rev)
   expect(conv.transcript().items[1]).toMatchObject({ text: '新しい発言', current: true, status: 'pending' })
   expect(conv.transcript().active).toEqual({ requestId: 'new', kind: 'text' })
+  // 依頼の終了まで待ってから保存を確かめる（後続の保存が片付け中のディレクトリへ書かないように）。
+  await vi.waitFor(() => expect(conv.get('new')?.status).not.toBe('pending'))
   await conv.flush()
   const saved = JSON.parse(await readFile(join(dir, 'conversations-test.json'), 'utf8'))
   expect(saved.entries[1].text).toBe('新しい発言')
