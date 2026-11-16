@@ -1167,7 +1167,7 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
     const next = interpretRequest(result.data)
     renderActivity(el('activity'), validateActivity(result.data.activity), {
       live: next.state === 'thinking' || next.state === 'approval',
-      // 手順を開いた時だけ、その手順の実引数を取り寄せる（BOXP-560）。
+      // 手順一覧を開いている間だけ、各手順の実行内容（実引数）を取り寄せて行の中に出す（BOXP-560）。
       loadDetail: async (stepId) => (await call(`requests/${id}/activity/${stepId}`)).data,
     })
     if (next.state === 'approval' && next.approval) {

@@ -112,6 +112,17 @@ describe('実引数の詳細 (BOXP-560)', () => {
     expect(detailOutdated({ state: 'ready', forState: 'preview' }, undefined)).toBe(false)
     expect(detailOutdated(undefined, 'full')).toBe(false)
   })
+  it('実行内容を出せる時だけ、行の短い概要を置き換える', async () => {
+    const { showsArgs } = await import('./activity')
+    const d = { tool: 'terminal', fields: [{ key: 'command', value: 'date', truncated: false }] }
+    expect(showsArgs({ state: 'ready', detail: { ...d, source: 'args' } })).toBe(true)
+    expect(showsArgs({ state: 'loading', detail: { ...d, source: 'args' } })).toBe(true)
+    expect(showsArgs({ state: 'ready', detail: { ...d, source: 'preview' } })).toBe(true)
+    expect(showsArgs({ state: 'ready', detail: { ...d, source: 'args', fields: [] } })).toBe(false)
+    expect(showsArgs({ state: 'ready', detail: { ...d, source: 'args', omitted: true } })).toBe(false)
+    expect(showsArgs({ state: 'loading' })).toBe(false)
+    expect(showsArgs(undefined)).toBe(false)
+  })
   it('項目名を日本語にし、主な引数と変更内容を先に並べる', async () => {
     const { fieldLabel, orderFields } = await import('./activity')
     expect(fieldLabel('terminal', 'command')).toBe('コマンド')
@@ -125,5 +136,17 @@ describe('実引数の詳細 (BOXP-560)', () => {
     expect(
       orderFields([f('timeout'), f('new_string'), f('old_string'), f('zzz'), f('path')]).map((x) => x.key),
     ).toEqual(['path', 'old_string', 'new_string', 'timeout', 'zzz'])
+  })
+})
+describe('取り寄せの開始条件 (BOXP-560)', () => {
+  it('一覧を畳んでいる間は、待ち行列が残っていても新しい取り寄せを始めない', async () => {
+    const { canStartLoad } = await import('./activity')
+    expect(canStartLoad(true, 0, 5)).toBe(true)
+    expect(canStartLoad(true, 3, 1)).toBe(true)
+    expect(canStartLoad(true, 4, 1)).toBe(false)
+    expect(canStartLoad(true, 0, 0)).toBe(false)
+    // 5 件以上ある一覧を開いてすぐ畳んだ時: 取得中の 4 件が返っても残りは始めない。
+    expect(canStartLoad(false, 3, 2)).toBe(false)
+    expect(canStartLoad(false, 0, 2)).toBe(false)
   })
 })
