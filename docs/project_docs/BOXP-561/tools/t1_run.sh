@@ -11,7 +11,7 @@ obs=${BOXP561_OBS_DIR:?BOXP561_OBS_DIR required}; [[ -d $obs && ! -e $obs/ABORT 
 mkdir -p "$run/vault/Tickets" "$run/vault/Boards" "$run/root" "$run/out/coder-home/.pi/agent"; run=$(realpath -e "$run")
 cp "$here/fixtures/EVAL561-T1.md" "$run/vault/Tickets/EVAL561-T1.md"
 printf '## In Progress\n\n- [ ] [[Tickets/EVAL561-T1|EVAL561-T1: eval]] #ticket status::in-progress priority::medium repo::boxp/arch assignee::localllm-coder\n' > "$run/vault/Boards/Task Board.md"
-git -C "$ARCH" worktree add -q -b "eval561-t1-$(basename "$run")" "$run/arch" "$BASE"
+br="eval561-t1-$(basename "$(dirname "$run")")-$(basename "$run")"; git -C "$ARCH" worktree prune; git -C "$ARCH" worktree add -q -b "$br" "$run/arch" "$BASE"
 CODEX_TASK_BOARD_VAULT=$run/vault CODEX_TASK_BOARD_ROOT=$run/root bb "$here/t1_prompt.bb" EVAL561-T1 "$run" "$run/arch" "$run/out/prompt.md" >/dev/null
 home=$run/out/coder-home
 bb "$here/pi_models.bb" "$port" "$home/.pi/agent/models.json"
@@ -38,5 +38,5 @@ bb -e '(require (quote [cheshire.core :as j]) (quote [clojure.string :as s]))
      :tool-calls (count (filter #(= "tool_execution_start" (:type %)) es)) :assistant-turns (count ends)
      :models-seen seen :fallback (or (empty? seen) (boolean (some #(not= model %) seen))) :marker marker} {:pretty true})))' \
   "$run/out/events.jsonl" "$run/out/meta.json" "$start" "$wall" "$code" "$model"
-git -C "$ARCH" worktree remove --force "$run/arch"; git -C "$ARCH" branch -D "eval561-t1-$(basename "$run")" >/dev/null
+git -C "$ARCH" worktree remove --force "$run/arch"; git -C "$ARCH" branch -D "$br" >/dev/null
 cat "$run/out/meta.json"
