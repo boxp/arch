@@ -24,9 +24,10 @@ if [[ $g =~ ^closed:BOXP-561-([A-Za-z0-9-]+)$ ]]; then
     exit 1
   }
 fi
-# 中断で残った T1 の scratch worktree/branch を片付ける
+# 中断で残った T1 の scratch worktree/branch を片付ける。対象は今回復旧した token の session のものだけ
+# （t1_run.sh の branch 名は eval561-t1-sess-TOKEN-STEP。別の実行中 session の worktree には触れない）
 git -C "$here" worktree prune
-for b in $(git -C "$here" branch --list "eval561-t1-*" --format="%(refname:short)"); do
+for b in $([[ -n ${tok:-} ]] && git -C "$here" branch --list "eval561-t1-sess-$tok-*" --format="%(refname:short)"); do
   wt=$(git -C "$here" worktree list --porcelain | awk -v b="refs/heads/$b" "/^worktree /{w=\$2} \$0==\"branch \"b{print w}")
   [[ -n $wt ]] && git -C "$here" worktree remove --force "$wt"
   git -C "$here" branch -D "$b" >>"$L" 2>&1

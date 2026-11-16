@@ -89,9 +89,23 @@ hb=$!
 wd=$!
 # ready 待ち（600 秒）: 1 token 要求でモデルを読み込ませる
 t0=$(date +%s)
-r=$(curl -s -m 600 http://127.0.0.1:$PORT/v1/chat/completions -H content-type:application/json -d "{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"OK\"}],\"max_tokens\":1}" | jq -r '.model // .error.message // "ERR"')
-log "load $model -> $r in $(($(date +%s) - t0))s"
-[[ $r != ERR ]]
+# 読み込み中も ABORT（MemAvailable 低下・GPU HANG・閉鎖期限）を 5 秒ごとに確認し、検出したら要求を止める
+rm -f "$S/load.json"
+curl -s -m 600 -o "$S/load.json" http://127.0.0.1:$PORT/v1/chat/completions -H content-type:application/json -d "{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"OK\"}],\"max_tokens\":1}" &
+lp=$!
+while kill -0 $lp 2>/dev/null; do
+  if [[ -e $BOXP561_OBS_DIR/ABORT ]]; then
+    kill $lp 2>/dev/null || true
+    log "load 中に ABORT 検出、試験を開始しない: $(tr '\n' ' ' <"$BOXP561_OBS_DIR/ABORT")"
+    exit 1
+  fi
+  sleep 5
+done
+wait $lp || true
+r=$(jq -r '.model // empty' "$S/load.json" 2>/dev/null || true)
+log "load $model -> ${r:-NG $(jq -r '.error.message // empty' "$S/load.json" 2>/dev/null | head -c 200)} in $(($(date +%s) - t0))s"
+# 応答の model が要求したモデルと一致した時だけ成功（error.message 等は失敗）
+[[ $r == "$model" ]] || exit 1
 IFS=, read -ra steps <<<"$plan"
 for st in "${steps[@]}"; do
   left=$((deadline - $(date +%s)))
