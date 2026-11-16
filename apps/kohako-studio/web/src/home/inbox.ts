@@ -117,6 +117,7 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
     firstOpen = true,
     renderedKey: string | null = null
   const drafts = new ReplyDrafts()
+  const sending = new Set<string>()
   const call = async (path: string, method = 'GET', body?: unknown) => {
     const r = await fetch(`/kohako/api/v1/${path}`, {
       method,
@@ -153,6 +154,8 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
     void refresh()
   }
   const send = async (i: Item, kind: 'choice' | 'text', value: string, status: HTMLElement) => {
+    if (sending.has(i.eventId)) return false
+    sending.add(i.eventId)
     const key = `kohako-reply-${i.eventId}`,
       replyId = i.reply?.replyId ?? sessionStorage.getItem(key) ?? crypto.randomUUID()
     sessionStorage.setItem(key, replyId)
@@ -181,6 +184,8 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
     } catch {
       status.textContent = '返信を送信できませんでした。'
       return false
+    } finally {
+      sending.delete(i.eventId)
     }
   }
   async function tryAnnounce() {
@@ -337,14 +342,13 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
           void sendReply(r.kind, r.value)
         }),
       )
-    } else if (i.choices?.length)
-      for (const choice of i.choices)
+    } else {
+      for (const choice of i.choices ?? [])
         detail.append(
           button(choice, () => {
             void sendReply('choice', choice)
           }),
         )
-    else {
       const input = document.createElement('textarea')
       input.maxLength = 500
       input.placeholder = '返信を入力'
