@@ -77,7 +77,7 @@ jobs:
       - name: Install aqua
         uses: aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329
         with:
-          aqua_version: v2.64.0
+          aqua_version: v2.66.1
           working_directory: aqua
 
       - name: Setup SSH config
