@@ -33,5 +33,13 @@ for b in $(git -C "$here" branch --list "eval561-t1-*" --format="%(refname:short
 done
 # gate が閉じていなければ残った dead-man も止める（発火しても条件付き PATCH で 422 になるだけだが片付ける）
 [[ $(kubectl -n local-llm get cm llama-server-admission -o jsonpath="{.data.state}") == open:* ]] && { "$here/deadman.sh" disarm >>"$L" 2>&1 || true; }
-[[ -n ${1:-} ]] && "$here/guard.sh" verify "$1" 2>&1 | tail -1 | tee -a "$L"
+if [[ -n ${1:-} ]]; then
+  "$here/guard.sh" verify "$1" >"$BOXP561_TMP/recover-guard.out" 2>&1
+  grc=$?
+  tail -1 "$BOXP561_TMP/recover-guard.out" | tee -a "$L"
+  ((grc == 0)) || {
+    echo "GUARD MISMATCH: 保護対象の変更を検出、次の run を止める" | tee -a "$L"
+    exit 1
+  }
+fi
 exit 0

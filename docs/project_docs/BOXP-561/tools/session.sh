@@ -47,8 +47,9 @@ cleanup() {
 }
 "$here/guard.sh" snapshot "$S/guard.edn" >>"$L" 2>&1
 trap cleanup EXIT INT TERM
-"$here/ops.sh" close "$tok" >>"$L" 2>&1
+# close の途中失敗(gate 変更後の 503 確認 NG)でも cleanup で restore させるため先に立てる
 closed=1
+"$here/ops.sh" close "$tok" >>"$L" 2>&1
 deadline=$(($(date +%s) + 90 * 60))
 # dead-man: workspace ごと止まって cleanup が走らなくても、node 側で最長 10 分後に gate を開け戻す（5 分ごとに延長、閉鎖上限を超えない）
 "$here/deadman.sh" arm "$tok" 600 >>"$L" 2>&1
