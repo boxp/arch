@@ -1,0 +1,22 @@
+---
+import type { CollectionEntry } from 'astro:content';
+
+interface Props {
+  project: CollectionEntry<'projects'>['data'];
+}
+const { project } = Astro.props;
+const url = `https://github.com/${project.repo}`;
+---
+
+<li class="flex h-full flex-col rounded-lg border border-line bg-panel p-5">
+  <div class="flex items-baseline justify-between gap-3">
+    <h3 class="font-mono text-base font-semibold">
+      <a href={url} target="_blank" rel="noopener noreferrer" class="hover:text-accent">{project.name}</a>
+    </h3>
+    <time datetime={project.lastUpdated} class="shrink-0 text-xs text-muted">更新 {project.lastUpdated}</time>
+  </div>
+  <p class="mt-3 flex-1 text-sm leading-relaxed text-fg/90">{project.description}</p>
+  <ul class="mt-4 flex flex-wrap gap-2" aria-label="タグ">
+    {project.tags.map((tag) => <li class="rounded border border-line px-2 py-0.5 font-mono text-xs text-muted">{tag}</li>)}
+  </ul>
+</li>

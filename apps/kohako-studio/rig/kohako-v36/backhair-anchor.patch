@@ -1,0 +1,62 @@
+diff --git a/src/main/kotlin/io/github/psd2live/core/RigBuilder.kt b/src/main/kotlin/io/github/psd2live/core/RigBuilder.kt
+index aa52d36c..0d18ed63 100644
+--- a/src/main/kotlin/io/github/psd2live/core/RigBuilder.kt
++++ b/src/main/kotlin/io/github/psd2live/core/RigBuilder.kt
+@@ -2819,7 +2819,7 @@ object RigBuilder {
+ 		backHair?.let { frame ->
+ 			deformers += hairFollowWarp(backHairFollowWarpId, tr("model.deformer.backHairFollow"), frame, head, backHairPartId,
+ 				-config.rigTuning.backHairTurn / 100f, -config.rigTuning.backHairTilt / 100f,
+-				roll = HairRoll(headPivotCanvas.first, headPivotCanvas.second, faceFrame.bottom, config.rigTuning.hairRollHold / 100f))
++				roll = HairRoll(headPivotCanvas.first, headPivotCanvas.second, faceFrame.bottom, config.rigTuning.hairRollHold / 100f), anchor = true)
+ 			deformers += hairPhysicsWarp(
+ 				backHairPhysicsWarpId,
+ 				tr("model.deformer.backHairPhysics"),
+@@ -3274,22 +3274,45 @@ object RigBuilder {
+ 		pitchParallax: Float,
+ 		yawPerspective: Float = 0f,
+ 		roll: HairRoll? = null,
++		anchor: Boolean = false,
+ 	): Deformer.Warp {
+ 		val inHead = mapBounds(frame, head)
+ 		// Hair reaching below the chin bends with Angle Z rather than swinging out whole: its lower rows turn back.
+ 		val bends = roll != null && roll.hold > 0f && frame.bottom > roll.chinY + frame.height * 0.1f
++		// BOXP-441 TD-26 (kohako-v36 patch): long back hair with its roots on the head and its length on the body.
++		// Enabled only by P2L_BACKHAIR_ANCHOR=1; without it the generator is unchanged.
++		val env = System.getenv()
++		val anchored = anchor && bends && env["P2L_BACKHAIR_ANCHOR"] == "1"
++		val rows = if (anchored) (env["P2L_BACKHAIR_ROWS"]?.toIntOrNull() ?: 8) else 4
++		val followX = env["P2L_BACKHAIR_FX"]?.toFloatOrNull() ?: 0f
++		val followY = env["P2L_BACKHAIR_FY"]?.toFloatOrNull() ?: 0f
++		val rollGain = env["P2L_BACKHAIR_G"]?.toFloatOrNull() ?: 1f
+ 		val grid = warpGrid(
+ 			if (bends) ninePoseAxes() + axis(StandardParameters.ANGLE_Z, -30f, 0f, 30f) else ninePoseAxes(),
+ 			3,
+-			4,
++			rows,
+ 		) { u, v, values ->
+ 			val point = hairFollowPoint(inHead, u, v, values[0], values[1], yawParallax, pitchParallax, yawPerspective)
+-			if (!bends) point else {
++			if (!bends) point else if (anchored) {
++				val r = requireNotNull(roll)
++				val y = frame.top + v * frame.height; val x = frame.left + u * frame.width
++				val shoulder = env["P2L_BACKHAIR_SHOULDER_Y"]?.toFloatOrNull() ?: (r.chinY + 80f)
++				val t = ((y - r.chinY) / (shoulder - r.chinY).coerceAtLeast(1f)).coerceIn(0f, 1f)
++				val body = t * t * (3f - 2f * t)
++				val onHead = 1f - body
++				// The roots move with the head's turn and nod; the length below the shoulders cancels the head's tilt.
++				val radians = Math.toRadians((-values[2] * rollGain * body).toDouble())
++				val cos = kotlin.math.cos(radians).toFloat(); val sin = kotlin.math.sin(radians).toFloat()
++				val rx = x - r.pivotX; val ry = y - r.pivotY
++				val dx = (rx * cos - ry * sin - rx) + values[0] / 45f * followX * onHead
++				val dy = (rx * sin + ry * cos - ry) + values[1] / 30f * followY * onHead
++				point.first + dx / head.width to point.second + dy / head.height
++			} else {
+ 				val (dx, dy) = requireNotNull(roll).turnBack(frame.left + u * frame.width, frame.top + v * frame.height, frame.bottom, values[2])
+ 				point.first + dx / head.width to point.second + dy / head.height
+ 			}
+ 		}
+-		return Deformer.Warp(id, name, headWarpId, part, 4, 3, true, grid)
++		return Deformer.Warp(id, name, headWarpId, part, rows, 3, true, grid)
+ 	}
+ 
+ 	/**

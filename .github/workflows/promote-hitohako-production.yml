@@ -1,0 +1,70 @@
+name: Inspect or roll back hitohako production
+
+# BOXP-478 promoted the accepted fixed commit 1c1366ffa6 to hitohako.b0xp.io with this workflow.
+# BOXP-539: deploy-hitohako.yml now deploys every main push to production and rolls back
+# automatically when the live site does not match the build. This workflow keeps only the
+# manual inspect and rollback operations, so it can no longer redeploy the old fixed commit.
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Inspect production or roll back
+        required: true
+        default: inspect
+        type: choice
+        options: [inspect, rollback]
+      rollback_deployment_id:
+        description: Earlier production deployment UUID (required for rollback)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hitohako-production
+  cancel-in-progress: false
+
+env:
+  PRODUCTION_PROJECT: boxp-hitohako
+
+jobs:
+  production:
+    if: github.repository == 'boxp/arch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Inspect production and roll back when requested
+        env:
+          OPERATION: ${{ inputs.operation }}
+          ROLLBACK_ID: ${{ inputs.rollback_deployment_id }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          base="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${PRODUCTION_PROJECT}"
+          auth="Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
+
+          current="$(curl --fail-with-body -sS -H "$auth" "$base" | jq '.result | {
+            name, production_branch, domains,
+            deployment_id: .canonical_deployment.id,
+            url: .canonical_deployment.url,
+            commit: .canonical_deployment.deployment_trigger.metadata.commit_hash
+          }')"
+          echo "$current"
+          {
+            echo '## Production before operation'
+            echo '```json'
+            echo "$current"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$OPERATION" != rollback ]; then
+            exit 0
+          fi
+
+          echo "$ROLLBACK_ID" | grep -Eqi '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$'
+          target="$(curl --fail-with-body -sS -H "$auth" "$base/deployments/$ROLLBACK_ID")"
+          test "$(echo "$target" | jq -r '.result.environment')" = production
+          test "$(echo "$target" | jq -r '.result.latest_stage.status')" = success
+          curl --fail-with-body -sS -X POST -H "$auth" -H 'Content-Type: application/json' \
+            -d '{}' "$base/deployments/$ROLLBACK_ID/rollback" | jq '.result | {id, url}'

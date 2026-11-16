@@ -1,0 +1,21 @@
+;; 差分検出の規則。public repo に置くので、公開 IaC にある語だけを書く。
+{;; 図の対象外。Owner 指定で ooedo は personal pc なので収録しない。差分の種にもしない。
+ :exclude-fact-patterns ["(?i)ooedo"
+                         ;; CI の補助 workflow は図に出ない
+                         "^arch:workflow:(wc|test|scaffold|sync|schedule|actions|actionlint|gitleaks)[-.]"]
+ ;; これを超えて事実が減ったら、資源の削除ではなく収集異常として扱う
+ :max-removed-ratio 0.3
+ ;; 収集できた事実がこの数より少なければ収集異常
+ :min-iac-facts 200
+ :min-live-facts 50
+ ;; 公開 URL に出してよくない語。生成物に残っていたら配備しない
+ :forbidden-html-patterns ["(?i)ooedo"
+                           "lolice\\s*メンバー"
+                           "既定[はがの].{0,20}local-?llm"]
+ ;; 秘密らしき文字列(lineage の build.bb の検査と同じ観点)
+ :secret-html-patterns ["AKIA[0-9A-Z]{16}"
+                        "BEGIN [A-Z ]*PRIVATE"
+                        "gh[pousr]_[A-Za-z0-9]{20,}"]
+ ;; 両図に必ず残す表記
+ :required-html-patterns {"lineage" ["kohako\\.exe" "ゲーム参加者" "openai-codex"]
+                          "architecture" ["kohako\\.exe" "ゲーム参加者" "lolice-lineage\\.b0xp\\.io"]}}

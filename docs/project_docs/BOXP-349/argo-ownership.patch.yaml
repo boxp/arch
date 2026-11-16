@@ -1,0 +1,41 @@
+# PROPOSAL ONLY: merge into the two named Applications after approval.
+# Keep automated selfHeal/prune and all current syncOptions enabled.
+# Existing resources only: bootstrap/recreation must start gate closed and Qwen=0.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: local-llm
+  namespace: argocd
+spec:
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: llama-server
+      namespace: local-llm
+      jsonPointers: [/spec/replicas]
+    - group: ""
+      kind: ConfigMap
+      name: llama-server-admission
+      namespace: local-llm
+      jsonPointers: [/data/state]
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - RespectIgnoreDifferences=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: stable-diffusion
+  namespace: argocd
+spec:
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: qwen-image-eval
+      namespace: stable-diffusion
+      jsonPointers: [/spec/replicas]
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - RespectIgnoreDifferences=true

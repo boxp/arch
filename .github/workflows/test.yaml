@@ -35,6 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs:
+      - adr
       - conftest-verify
       - hide-comment
       - opa-fmt
@@ -45,6 +46,15 @@ jobs:
     if: failure()
     steps:
       - run: exit 1
+
+  adr:
+    # ADR の構造検査と Rego lint。全 PR で実行する。LLM は呼ばず secret も渡さない。
+    uses: ./.github/workflows/wc-adr.yaml
+    needs: path-filter
+    permissions:
+      contents: read
+    with:
+      ref: ${{needs.path-filter.outputs.merge_commit_sha}}
 
   conftest-verify:
     uses: ./.github/workflows/wc-conftest-verify.yaml
@@ -118,9 +128,6 @@ jobs:
       gh_app_id: ${{secrets.APP_ID}}
       gh_app_private_key: ${{secrets.APP_PRIVATE_KEY}}
       gh_cloudflare_api_token: ${{secrets.CLOUDFLARE_API_TOKEN}}
-      TAILSCALE_API_KEY: ${{secrets.TAILSCALE_API_KEY}}
-      TAILSCALE_TAILNET: ${{secrets.TAILSCALE_TAILNET}}
-      secrets: ${{toJSON(secrets)}}
 
   test-ansible:
     uses: ./.github/workflows/test-ansible.yml

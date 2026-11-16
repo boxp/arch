@@ -1,0 +1,30 @@
+---
+name: adr
+on:
+  workflow_call:
+    inputs:
+      ref:
+        required: false
+        type: string
+permissions: {}
+jobs:
+  adr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{inputs.ref}}
+          persist-credentials: false
+
+      - uses: aquaproj/aqua-installer@611554c6f0137ba41c8dd15aca8bee82504ea461 # v4.1.1
+        with:
+          aqua_version: v2.66.1
+          enable_aqua_install: "false"
+
+      # LLM は呼ばない。secret も渡さない。
+      - run: .regomark/check.sh
+        env:
+          AQUA_GITHUB_TOKEN: ${{github.token}}

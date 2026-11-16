@@ -1,0 +1,300 @@
+---
+- name: Verify
+  hosts: all
+  # normalize-case.yml は role のタスクでマニフェストを実際に書き換えるため、
+  # docker 環境での PID 待ち除外 (ansible_virtualization_type) に facts が要る。
+  gather_facts: true
+  vars:
+    # converge.yml と揃える (verify は別 play で role defaults を見ない)。
+    apiserver_goaway_chance: "0.001"
+  tasks:
+    - name: Read the kube-apiserver manifest
+      ansible.builtin.slurp:
+        src: /etc/kubernetes/manifests/kube-apiserver.yaml
+      register: apiserver_manifest_content
+      become: true
+
+    - name: Decode the manifest
+      ansible.builtin.set_fact:
+        apiserver_manifest_text: "{{ apiserver_manifest_content.content | b64decode }}"
+        apiserver_manifest_lines: "{{ (apiserver_manifest_content.content | b64decode).split('\n') }}"
+
+    - name: Assert the goaway flag was added exactly once with the declared value
+      ansible.builtin.assert:
+        that:
+          - apiserver_manifest_lines | select('match', '^\s*- --goaway-chance=') | list | length == 1
+          - ("- --goaway-chance=" ~ apiserver_goaway_chance) in apiserver_manifest_text
+        fail_msg: "--goaway-chance is missing, duplicated, or has an unexpected value"
+
+    # idempotence (molecule の 2 回目の converge) で重複追加されないことは上の「exactly once」が担う。
+    - name: Assert the flag follows --secure-port with the same indentation
+      ansible.builtin.assert:
+        that:
+          - "'    - --secure-port=6443\n    - --goaway-chance=' in apiserver_manifest_text"
+        fail_msg: "--goaway-chance was not inserted right after --secure-port with matching indentation"
+
+    - name: Assert the pre-existing flags survived
+      ansible.builtin.assert:
+        that:
+          - "'- --authorization-mode=Node,RBAC' in apiserver_manifest_text"
+          - "'- --advertise-address=192.168.10.102' in apiserver_manifest_text"
+        fail_msg: "existing kube-apiserver flags were altered"
+
+    - name: Assert the manifest is still a valid Pod document
+      ansible.builtin.assert:
+        that:
+          - (apiserver_manifest_text | from_yaml).kind == 'Pod'
+          - ((apiserver_manifest_text | from_yaml).spec.containers[0].command | select('match', '^--goaway-chance=') | list | length) == 1
+        fail_msg: "the edited manifest no longer parses as a Pod with a single --goaway-chance arg"
+
+    - name: Check the pristine backup
+      ansible.builtin.stat:
+        path: /var/backups/kubernetes-manifests/kube-apiserver.yaml.orig
+      register: apiserver_backup
+      become: true
+
+    - name: Read the pristine backup
+      ansible.builtin.slurp:
+        src: /var/backups/kubernetes-manifests/kube-apiserver.yaml.orig
+      register: apiserver_backup_content
+      become: true
+
+    - name: Assert the backup exists outside the static pod directory and predates the edit
+      ansible.builtin.assert:
+        that:
+          - apiserver_backup.stat.exists
+          - apiserver_backup.stat.mode == '0600'
+          - "'--goaway-chance' not in (apiserver_backup_content.content | b64decode)"
+        fail_msg: "the pristine kube-apiserver backup is missing or already contains the flag"
+
+    - name: Find stray files inside the static pod directory
+      ansible.builtin.find:
+        paths: /etc/kubernetes/manifests
+        file_type: file
+      register: static_pod_files
+
+    - name: Assert no backup was left inside the static pod directory
+      ansible.builtin.assert:
+        that:
+          - static_pod_files.files | map(attribute='path') | list == ['/etc/kubernetes/manifests/kube-apiserver.yaml']
+        fail_msg: "unexpected files in /etc/kubernetes/manifests (kubelet would load them as static pods)"
+
+    # ---- kube-system/kubeadm-config への保存経路 (mock kubectl / kubeadm 経由) ----
+    - name: Read the ClusterConfiguration held by the mock kubeadm store
+      ansible.builtin.slurp:
+        src: /var/lib/molecule-kubeadm/ClusterConfiguration.yaml
+      register: cc_store_content
+      become: true
+
+    - name: Read the upload-config log left by the mock kubeadm
+      ansible.builtin.slurp:
+        src: /var/lib/molecule-kubeadm/upload-config.log
+      register: cc_upload_log
+      become: true
+
+    - name: Parse the stored ClusterConfiguration
+      ansible.builtin.set_fact:
+        cc_stored: "{{ cc_store_content.content | b64decode | from_yaml }}"
+        cc_upload_lines: "{{ (cc_upload_log.content | b64decode).splitlines() }}"
+
+    - name: Assert goaway-chance was appended to apiServer.extraArgs exactly once, keeping existing args
+      ansible.builtin.assert:
+        that:
+          - cc_stored.apiServer.extraArgs | map(attribute='name') | list == ['authorization-mode', 'goaway-chance']
+          - (cc_stored.apiServer.extraArgs | selectattr('name', 'equalto', 'authorization-mode') | map(attribute='value') | list) == ['Node,RBAC']
+          - (cc_stored.apiServer.extraArgs | selectattr('name', 'equalto', 'goaway-chance') | map(attribute='value') | list) == [apiserver_goaway_chance]
+        fail_msg: "apiServer.extraArgs in the uploaded ClusterConfiguration is wrong: {{ cc_stored.apiServer.extraArgs | default('missing') }}"
+
+    - name: Assert the rest of the ClusterConfiguration survived the merge untouched
+      ansible.builtin.assert:
+        that:
+          - cc_stored.kind == 'ClusterConfiguration'
+          - cc_stored.apiVersion == 'kubeadm.k8s.io/v1beta4'
+          - cc_stored.kubernetesVersion == 'v1.36.1'
+          - cc_stored.controlPlaneEndpoint == '192.168.10.100:6443'
+          - cc_stored.apiServer.certSANs == ['192.168.10.100', 'k8s.example.internal']
+          - "cc_stored.controllerManager.extraArgs == [{'name': 'bind-address', 'value': '0.0.0.0'}]"
+          - cc_stored.etcd.local.dataDir == '/var/lib/etcd'
+          - "cc_stored.etcd.local.extraArgs == [{'name': 'listen-metrics-urls', 'value': 'http://0.0.0.0:2381'}]"
+          - cc_stored.networking.podSubnet == '10.244.0.0/16'
+          - cc_stored.networking.serviceSubnet == '10.96.0.0/12'
+          - cc_stored.certificatesDir == '/etc/kubernetes/pki'
+          - cc_stored.imageRepository == 'registry.k8s.io'
+        fail_msg: "keys other than apiServer.extraArgs changed in the uploaded ClusterConfiguration"
+
+    # molecule test は converge → idempotence (2 回目の converge) → verify の順なので、
+    # ここで upload が 1 回だけなら「2 回目は live と一致して書き戻さない」ことが確認できる。
+    - name: Assert upload-config ran exactly once across converge and idempotence
+      ansible.builtin.assert:
+        that:
+          - cc_upload_lines | length == 1
+          - cc_upload_lines[0] is match('^upload-config /etc/kubernetes/kubeadm-clusterconfig-goaway-merged\.yaml ')
+        fail_msg: "expected exactly one upload-config call, got: {{ cc_upload_lines }}"
+
+    - name: Check the merged ClusterConfiguration file handed to kubeadm
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubeadm-clusterconfig-goaway-merged.yaml
+      register: cc_merged_file
+      become: true
+
+    - name: Read the merged ClusterConfiguration file handed to kubeadm
+      ansible.builtin.slurp:
+        src: /etc/kubernetes/kubeadm-clusterconfig-goaway-merged.yaml
+      register: cc_merged_content
+      become: true
+
+    - name: Assert the merged file is root-only and matches what was uploaded
+      ansible.builtin.assert:
+        that:
+          - cc_merged_file.stat.exists
+          - cc_merged_file.stat.mode == '0600'
+          - (cc_merged_content.content | b64decode | from_yaml) == cc_stored
+        fail_msg: "the merged ClusterConfiguration file is missing, too permissive, or differs from the uploaded one"
+
+    # ---- 不正値の拒否 (codex-review 3 回目 P2 対応) ----
+    # Ansible の float フィルタは "invalid" を 0.0 にするため、範囲チェックだけだと不正な文字列が
+    # そのままマニフェストに書かれ kube-apiserver が crash-loop する。数値形式チェックで止まること、
+    # 範囲外も止まること、どちらも converge 済みのマニフェストを変えないことを確認する。
+    - name: Verify invalid goaway values are rejected before touching the manifest
+      ansible.builtin.include_tasks: reject-case.yml
+      loop:
+        - { value: "invalid", expect: "must be a plain decimal number" }
+        - { value: "1e-3", expect: "must be a plain decimal number" }
+        - { value: "nan", expect: "must be a plain decimal number" }
+        - { value: "0.5", expect: "must be between 0 and 0.02" }
+        - { value: "-0.001", expect: "must be a plain decimal number" }
+      loop_control:
+        loop_var: reject_case
+        label: "{{ reject_case.value }}"
+
+    # 新規 control plane 構築では kubeadm-config.yaml.j2 が値をそのまま書き出すため、
+    # 検証 (apiserver_goaway_validate.yml) が kubeadm.yml より前に include されている順序を固定する。
+    - name: Read the role task order
+      ansible.builtin.set_fact:
+        role_main_tasks: "{{ lookup('file', playbook_dir ~ '/../../tasks/main.yml') | regex_findall('include_tasks:\\s*(\\S+)') }}"
+
+    - name: Assert the goaway validation runs before the kubeadm config is rendered
+      ansible.builtin.assert:
+        that:
+          - "'apiserver_goaway_validate.yml' in role_main_tasks"
+          - role_main_tasks.index('apiserver_goaway_validate.yml') < role_main_tasks.index('kubeadm.yml')
+          - role_main_tasks.index('kubeadm.yml') < role_main_tasks.index('apiserver_goaway.yml')
+        fail_msg: "tasks/main.yml must include apiserver_goaway_validate.yml before kubeadm.yml: {{ role_main_tasks }}"
+
+    # ---- 非標準マニフェストの正規化 (codex-review 4 回目 P2 対応) ----
+    # フラグの有無を部分文字列で判定していると、コメントやアノテーションに "--goaway-chance" が
+    # あるだけで command へ追加されず、重複行があれば重複のまま残る。行単位判定で
+    # (a) コメント/アノテーション混入でも command に 1 行追加される
+    # (b) 重複 (値違い・"-" 後の空白違い・分離形式 "--goaway-chance" + 値) が 1 つに正規化される
+    # (c) 先行する initContainer / sidecar の command に "kube-apiserver" / --secure-port / --goaway-chance が
+    #     あっても、name: kube-apiserver コンテナの command だけが編集され他コンテナは不変
+    # ことと、いずれも 2 回目が no-op になることを確認する。
+    - name: Verify non-standard manifests are normalized to a single command flag line
+      ansible.builtin.include_tasks: normalize-case.yml
+      loop:
+        - name: comment-and-annotation-mention
+          # コメント行は構造化更新で残らない (kubeadm も書かない)。アノテーションは残る。
+          keep: "example.invalid/note: --goaway-chance=0.009 is managed by ansible"
+          manifest: |
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              annotations:
+                example.invalid/note: "--goaway-chance=0.009 is managed by ansible"
+              labels:
+                component: kube-apiserver
+                tier: control-plane
+              name: kube-apiserver
+              namespace: kube-system
+            spec:
+              containers:
+              - command:
+                - kube-apiserver
+                # note: --goaway-chance=0.009 is managed by ansible
+                - --advertise-address=192.168.10.102
+                - --allow-privileged=true
+                - --authorization-mode=Node,RBAC
+                - --secure-port=6443
+                - --service-cluster-ip-range=10.96.0.0/12
+                image: registry.k8s.io/kube-apiserver:v1.36.1
+                name: kube-apiserver
+              hostNetwork: true
+              priorityClassName: system-node-critical
+        - name: duplicated-flag-lines
+          keep: "- --service-cluster-ip-range=10.96.0.0/12"
+          # 分離形式の古い値が command に残っていないことも確認する
+          stale_values: ["0.004"]
+          manifest: |
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              labels:
+                component: kube-apiserver
+                tier: control-plane
+              name: kube-apiserver
+              namespace: kube-system
+            spec:
+              containers:
+              - command:
+                - kube-apiserver
+                - --advertise-address=192.168.10.102
+                -   --goaway-chance=0.002
+                - --allow-privileged=true
+                - --authorization-mode=Node,RBAC
+                - --secure-port=6443
+                - --goaway-chance=0.003
+                - --service-cluster-ip-range=10.96.0.0/12
+                - --goaway-chance=0.001
+                - --goaway-chance
+                - "0.004"
+                image: registry.k8s.io/kube-apiserver:v1.36.1
+                name: kube-apiserver
+              hostNetwork: true
+              priorityClassName: system-node-critical
+        - name: sidecar-and-init-container-mention
+          keep: "- --goaway-chance=0.009"
+          manifest: |
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              labels:
+                component: kube-apiserver
+                tier: control-plane
+              name: kube-apiserver
+              namespace: kube-system
+            spec:
+              initContainers:
+              - command:
+                - kube-apiserver
+                - --secure-port=6443
+                - --goaway-chance=0.009
+                image: registry.example.invalid/wait-for-etcd:1
+                name: wait-for-etcd
+              containers:
+              - command:
+                - /bin/audit-shipper
+                - --secure-port=6443
+                - --goaway-chance=0.009
+                image: registry.example.invalid/audit-shipper:1
+                name: audit-shipper
+              - command:
+                - kube-apiserver
+                - --advertise-address=192.168.10.102
+                - --allow-privileged=true
+                - --authorization-mode=Node,RBAC
+                - --secure-port=6443
+                - --service-cluster-ip-range=10.96.0.0/12
+                image: registry.k8s.io/kube-apiserver:v1.36.1
+                name: kube-apiserver
+              hostNetwork: true
+              priorityClassName: system-node-critical
+      loop_control:
+        loop_var: normalize_case
+        label: "{{ normalize_case.name }}"
+
+    # ---- check mode (plan-ansible.yml の --check) で失敗しないこと ----
+    # 有効化 PR の plan は実 CP に対して check mode で流れる。copy は「変更あり」を返すだけで
+    # ファイルを書かないため、再読込後の assert や PID / readyz 待ちを check mode でも走らせると
+    # plan が必ず失敗する。check mode では変更を報告するだけでマニフェストを書かないことを確認する。
+    - name: Verify the goaway tasks survive check mode without writing the manifest
+      ansible.builtin.include_tasks: check-mode-case.yml

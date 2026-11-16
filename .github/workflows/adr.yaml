@@ -1,0 +1,26 @@
+---
+name: adr
+# 必須 check への集約は test.yaml の adr job が担う。
+# この workflow は 2 つの穴を埋める。
+# - main への push で同じ検査を実行し、main の状態を確認する。
+# - test.yaml は pull_request_target で base の定義を使うため、検査の定義を変える PR は
+#   そちらでは新しい定義を実行できない。pull_request でその PR 自身の定義を実行する。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - .github/workflows/adr.yaml
+      - .github/workflows/wc-adr.yaml
+      - .regomark/**
+      - .regomark.yaml
+      - aqua/imports/regomark.yaml
+      - aqua/imports/regal.yaml
+      - aqua/imports/opa.yaml
+  workflow_dispatch:
+permissions: {}
+jobs:
+  adr:
+    uses: ./.github/workflows/wc-adr.yaml
+    permissions:
+      contents: read

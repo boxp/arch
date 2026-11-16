@@ -390,7 +390,7 @@ jobs:
 
       - name: 失敗ログを成果物に上げる
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cross-build-log
           path: /tmp/cross-build.log
@@ -424,7 +424,7 @@ jobs:
           sha256sum "$RUNNER_TEMP/codex-armv7.tar.gz" | tee "$RUNNER_TEMP/codex-armv7.tar.gz.sha256"
 
       - name: 成果物を上げる
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-armv7-${{ steps.ref.outputs.ref }}
           path: |

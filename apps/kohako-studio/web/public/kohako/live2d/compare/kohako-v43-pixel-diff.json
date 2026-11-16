@@ -1,0 +1,27 @@
+{
+  "eyes-neutral": {
+    "changed": 13826,
+    "outside_face": 0,
+    "outside_max": 0
+  },
+  "eyes-X -30": {
+    "changed": 13268,
+    "outside_face": 0,
+    "outside_max": 0
+  },
+  "eyes-X +30": {
+    "changed": 13423,
+    "outside_face": 0,
+    "outside_max": 0
+  },
+  "eyes-Y -20": {
+    "changed": 12818,
+    "outside_face": 0,
+    "outside_max": 0
+  },
+  "eyes-Y +20": {
+    "changed": 14808,
+    "outside_face": 0,
+    "outside_max": 0
+  }
+}

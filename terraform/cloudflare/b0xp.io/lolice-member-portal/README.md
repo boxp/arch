@@ -17,5 +17,5 @@ CI fails immediately — preventing silent breakage.
 
 | Secret name | Description |
 |---|---|
-| `CF_API_TOKEN` | Cloudflare API token (Zero Trust: Edit) |
+| `CF_API_TOKEN` | Cloudflare API token (Zero Trust: Edit。Access policy に加えて Gateway list `lolice-members` への追加にも使う。BOXP-330) |
 | `RESEND_API_KEY` | Resend API key for email notifications |

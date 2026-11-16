@@ -3,6 +3,19 @@
   hosts: all
   gather_facts: true
   tasks:
+    - name: Find leftover isolated APT preflight directories
+      ansible.builtin.find:
+        paths: /var/tmp
+        patterns: kubernetes-upgrade-apt-*
+        file_type: directory
+      register: isolated_apt_preflight_directories
+
+    - name: Assert isolated APT preflight state was removed
+      ansible.builtin.assert:
+        that:
+          - isolated_apt_preflight_directories.matched == 0
+        fail_msg: "Isolated APT preflight state was not removed"
+
     # Verify apt source template was correctly generated
     - name: Check kubernetes apt source file exists
       ansible.builtin.stat:

@@ -40,9 +40,48 @@
     update_cache: true
   become: true
 
+# BOXP-222: crio_version は apt repo の major.minor を決めるだけで、実際に入る deb 版は決めない。
+# crio_package_version (正確な deb revision) が指定されたときは kubernetes.yml と同じ baseline 比較を行い、
+# 「未導入または指定版未満なら cri-o=<指定版> を導入、指定版より新しければ downgrade せずスキップ」にする。
+# 未指定のときは従来どおり cri-o を state=present で導入する (repo 上の任意の版が入る)。
+- name: Check CRI-O package version against baseline
+  ansible.builtin.shell: |
+    set -eu
+    desired={{ crio_package_version | quote }}
+    installed="$(dpkg-query -W -f='${Version}' cri-o 2>/dev/null || true)"
+
+    if [ -z "$installed" ] || dpkg --compare-versions "$installed" lt "$desired"; then
+      printf 'cri-o=%s\n' "$desired"
+    elif dpkg --compare-versions "$installed" gt "$desired"; then
+      printf 'skip-newer:cri-o=%s\n' "$installed"
+    fi
+  args:
+    executable: /bin/bash
+  become: true
+  changed_when: false
+  check_mode: false
+  register: crio_package_version_check
+  when: (crio_package_version | default('')) | length > 0
+
 - name: Set CRI-O package spec
   ansible.builtin.set_fact:
-    crio_package_spec: "{{ 'cri-o=' ~ crio_package_version if (crio_package_version | default('')) | length > 0 else 'cri-o' }}"
+    crio_package_spec: >-
+      {{
+        (crio_package_version_check.stdout | default('') | trim
+         if (crio_package_version_check.stdout | default('')) is match('^cri-o=') else '')
+        if (crio_package_version | default('')) | length > 0
+        else 'cri-o'
+      }}
+    crio_package_newer_than_baseline: >-
+      {{
+        crio_package_version_check.stdout | default('') | trim
+        if (crio_package_version_check.stdout | default('')) is match('^skip-newer:') else ''
+      }}
+
+- name: Report CRI-O package newer than baseline
+  ansible.builtin.debug:
+    msg: "Skipping CRI-O package downgrade during normal apply: {{ crio_package_newer_than_baseline }}"
+  when: crio_package_newer_than_baseline | length > 0
 
 - name: Install CRI-O package
   ansible.builtin.apt:
@@ -53,6 +92,7 @@
     allow_downgrade: false
   become: true
   notify: Restart crio
+  when: crio_package_spec | length > 0
 
 - name: Hold CRI-O package to prevent automatic updates
   ansible.builtin.dpkg_selections:
@@ -91,6 +131,36 @@
       [crio.runtime]
       conmon_cgroup = "pod"
       cgroup_manager = "systemd"
+    mode: '0644'
+  become: true
+  notify: Restart crio
+
+- name: Assert CRI-O checkpoint/restore level is valid
+  ansible.builtin.assert:
+    that:
+      - crio_checkpoint_restore_level in ['none', 'checkpoint_only']
+    fail_msg: >-
+      crio_checkpoint_restore_level must be "none" or "checkpoint_only".
+      "checkpoint_restore" re-opens the restore path covered by CVE-2026-92574 / CVE-2026-15801 (BOXP-222).
+
+# BOXP-222: [crio.checkpoint_restore] は CRI-O 1.36.6 (CVE-2026-92574 / CVE-2026-15801 修正版) で
+# 追加されたテーブル。restore 経路を遮断する値を drop-in で明示し、既定値頼みにしない。
+# 1.36.6 未満の CRI-O は未知テーブルを無視する (toml.Decode は undecoded key を許容) ため
+# drop-in は無害だが効かない。その版は restore 系 CVE 自体が未修正なので、警告で可視化する。
+- name: Warn when CRI-O is older than the checkpoint/restore table (BOXP-222)
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: crio_version {{ crio_version }} is older than 1.36.6.
+      05-checkpoint-restore.conf will be written but ignored by this CRI-O, and the restore-path
+      fixes for CVE-2026-92574 / CVE-2026-15801 are not present. Upgrade CRI-O to 1.36.6 or newer.
+  when: crio_version is version('1.36.6', '<')
+
+- name: Configure CRI-O checkpoint/restore level
+  ansible.builtin.copy:
+    dest: /etc/crio/crio.conf.d/05-checkpoint-restore.conf
+    content: |
+      [crio.checkpoint_restore]
+      container_level_enabled = "{{ crio_checkpoint_restore_level }}"
     mode: '0644'
   become: true
   notify: Restart crio

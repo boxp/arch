@@ -1,0 +1,27 @@
+---
+# 「live が baseline より新しい」状態を作る: 役割の crio.yml を使って新しい revision を先に導入する。
+- name: Prepare a node that already runs a CRI-O newer than the baseline
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Update package cache
+      ansible.builtin.package:
+        update_cache: true
+      become: true
+
+    - name: Install packages required by the CRI-O tasks
+      ansible.builtin.package:
+        name:
+          - systemd
+          - curl
+          - gnupg
+          - ca-certificates
+        state: present
+      become: true
+
+    - name: Install the newer CRI-O revision through the role's CRI-O tasks
+      ansible.builtin.include_role:
+        name: ../../../../kubernetes_components
+        tasks_from: crio.yml
+      vars:
+        crio_package_version: "1.32.13-1.1"

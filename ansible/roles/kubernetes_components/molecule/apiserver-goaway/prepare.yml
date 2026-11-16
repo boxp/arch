@@ -1,0 +1,198 @@
+---
+- name: Prepare a control-plane node simulation with a kubeadm-style apiserver manifest
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Update package cache
+      ansible.builtin.package:
+        update_cache: true
+      become: true
+
+    - name: Install required packages for the simulation
+      ansible.builtin.package:
+        name:
+          - systemd
+          - dbus
+          - init
+          - iproute2
+          - kmod
+          - procps
+          - curl
+          - gnupg
+          - ca-certificates
+        state: present
+      become: true
+
+    - name: Create kernel modules directory
+      ansible.builtin.file:
+        path: /lib/modules
+        state: directory
+        mode: '0755'
+      become: true
+
+    - name: Create mock kernel modules for testing
+      ansible.builtin.shell: |
+        set -o pipefail
+        mkdir -p /lib/modules/$(uname -r)
+        touch /lib/modules/$(uname -r)/modules.dep
+        touch /lib/modules/$(uname -r)/modules.symbols
+      become: true
+      changed_when: false
+      failed_when: false
+
+    - name: Mock modprobe for container environment
+      ansible.builtin.copy:
+        dest: /usr/local/bin/modprobe
+        content: |
+          #!/bin/bash
+          echo "Mock modprobe: $*"
+          exit 0
+        mode: '0755'
+      become: true
+
+    - name: Create the static pod directory
+      ansible.builtin.file:
+        path: /etc/kubernetes/manifests
+        state: directory
+        mode: '0755'
+      become: true
+
+    # kubeadm が生成する kube-apiserver.yaml の抜粋。--secure-port 行の字下げ (4 スペース) と
+    # 既存フラグが残ることを検証するため、authorization-mode を含めておく。
+    - name: Write a kubeadm-style kube-apiserver static pod manifest without the goaway flag
+      ansible.builtin.copy:
+        dest: /etc/kubernetes/manifests/kube-apiserver.yaml
+        mode: '0600'
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            labels:
+              component: kube-apiserver
+              tier: control-plane
+            name: kube-apiserver
+            namespace: kube-system
+          spec:
+            containers:
+            - command:
+              - kube-apiserver
+              - --advertise-address=192.168.10.102
+              - --allow-privileged=true
+              - --authorization-mode=Node,RBAC
+              - --secure-port=6443
+              - --service-cluster-ip-range=10.96.0.0/12
+              image: registry.k8s.io/kube-apiserver:v1.36.1
+              name: kube-apiserver
+            hostNetwork: true
+            priorityClassName: system-node-critical
+      become: true
+
+    # ---- kube-system/kubeadm-config への保存経路 (tasks/apiserver_goaway.yml 後半) の模擬 ----
+    # 実クラスタも kubectl / kubeadm 本体も無いので、
+    #   - admin.conf: 存在チェックのゲートを通すだけのダミー (credential ではない)
+    #   - ClusterConfiguration: kubeadm が ConfigMap に保存する形式をファイルとして持つ
+    #   - kubectl: `get cm kubeadm-config -o jsonpath=...` に対してそのファイルを返す
+    #   - kubeadm: `init phase upload-config kubeadm --config FILE` で FILE をそのファイルへ書き戻す
+    # とし、「稼働中の値を読み、goaway-chance だけ足して書き戻す」マージ処理そのものを本物の
+    # タスクで通す。upload 回数はログに残し、2 回目の converge (idempotence) で再 upload
+    # されないことを verify.yml で確認する。
+    - name: Create the mock kubeadm state directory
+      ansible.builtin.file:
+        path: /var/lib/molecule-kubeadm
+        state: directory
+        mode: '0700'
+      become: true
+
+    - name: Write a placeholder admin.conf so the control-plane gate opens
+      ansible.builtin.copy:
+        dest: /etc/kubernetes/admin.conf
+        mode: '0600'
+        content: |
+          # molecule placeholder: only its existence matters, it carries no credentials
+          apiVersion: v1
+          kind: Config
+          clusters: []
+          contexts: []
+          users: []
+      become: true
+
+    # kubeadm が kube-system/kubeadm-config に保存する ClusterConfiguration の抜粋。
+    # apiServer.extraArgs に既存要素 (authorization-mode) を置き、それ以外のセクションも
+    # そのまま残ることを検証する。goaway-chance は含めない (追加経路を通す)。
+    - name: Seed the mock kubeadm ClusterConfiguration without the goaway flag
+      ansible.builtin.copy:
+        dest: /var/lib/molecule-kubeadm/ClusterConfiguration.yaml
+        mode: '0600'
+        content: |
+          apiServer:
+            certSANs:
+            - 192.168.10.100
+            - k8s.example.internal
+            extraArgs:
+            - name: authorization-mode
+              value: Node,RBAC
+          apiVersion: kubeadm.k8s.io/v1beta4
+          caCertificateValidityPeriod: 87600h0m0s
+          certificatesDir: /etc/kubernetes/pki
+          clusterName: kubernetes
+          controlPlaneEndpoint: 192.168.10.100:6443
+          controllerManager:
+            extraArgs:
+            - name: bind-address
+              value: 0.0.0.0
+          dns: {}
+          encryptionAlgorithm: RSA-2048
+          etcd:
+            local:
+              dataDir: /var/lib/etcd
+              extraArgs:
+              - name: listen-metrics-urls
+                value: http://0.0.0.0:2381
+          imageRepository: registry.k8s.io
+          kind: ClusterConfiguration
+          kubernetesVersion: v1.36.1
+          networking:
+            dnsDomain: cluster.local
+            podSubnet: 10.244.0.0/16
+            serviceSubnet: 10.96.0.0/12
+          proxy: {}
+          scheduler: {}
+      become: true
+
+    - name: Install a mock kubectl that serves the ClusterConfiguration from the mock store
+      ansible.builtin.copy:
+        dest: /usr/local/bin/kubectl
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          # molecule mock: only the exact read used by tasks/apiserver_goaway.yml is supported.
+          set -euo pipefail
+          args="$*"
+          case "$args" in
+            *"get cm kubeadm-config"*"jsonpath={.data.ClusterConfiguration}"*)
+              cat /var/lib/molecule-kubeadm/ClusterConfiguration.yaml
+              ;;
+            *)
+              echo "mock kubectl: unsupported invocation: $args" >&2
+              exit 1
+              ;;
+          esac
+      become: true
+
+    - name: Install a mock kubeadm that stores uploaded ClusterConfigurations
+      ansible.builtin.copy:
+        dest: /usr/local/bin/kubeadm
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          # molecule mock: only `init phase upload-config kubeadm --config FILE` is supported.
+          set -euo pipefail
+          if [ "${1:-}" = "init" ] && [ "${2:-}" = "phase" ] && [ "${3:-}" = "upload-config" ] \
+             && [ "${4:-}" = "kubeadm" ] && [ "${5:-}" = "--config" ] && [ -n "${6:-}" ]; then
+            cp "$6" /var/lib/molecule-kubeadm/ClusterConfiguration.yaml
+            echo "upload-config $6 $(date -u +%FT%TZ)" >> /var/lib/molecule-kubeadm/upload-config.log
+            exit 0
+          fi
+          echo "mock kubeadm: unsupported invocation: $*" >&2
+          exit 1
+      become: true

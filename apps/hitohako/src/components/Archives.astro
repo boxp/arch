@@ -1,0 +1,81 @@
+---
+import archives from "../data/archives.json";
+import links from "../data/links.json";
+import SectionHeading from "./SectionHeading.astro";
+const sorted = [...archives].sort((a, b) => b.date.localeCompare(a.date));
+const youtube = links.find((l) => l.id === "youtube")!;
+const twitch = links.find((l) => l.id === "twitch")!;
+---
+
+<section id="archives" class="section archives-band">
+  <div class="container">
+    <SectionHeading eyebrow="Streams" title="配信・アーカイブ" />
+    <p class="section-intro">最近の配信から。サムネイルを押すとその場で再生できます。</p>
+    <ul class="archive-grid">
+      {sorted.map((v, i) => (
+        <li class:list={["archive-card", { featured: i === 0 }]}>
+          <div class="yt-facade" data-yt-id={v.id} data-yt-title={v.title}>
+            <button type="button" class="yt-facade__btn" aria-label={`再生: ${v.title}`}>
+              <img
+                src={`https://i.ytimg.com/vi/${v.id}/${i === 0 ? "maxresdefault" : "sddefault"}.jpg`}
+                alt=""
+                width={i === 0 ? 1280 : 640}
+                height={i === 0 ? 720 : 480}
+                loading="lazy"
+                decoding="async"
+              />
+              <span class="play-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M8 4v16l13-8z" />
+                </svg>
+              </span>
+            </button>
+          </div>
+          <div class="archive-text">
+            <p class="archive-meta">
+              <span>{v.game}</span>
+              <time datetime={v.date}>{v.date.replaceAll("-", ".")}</time>
+            </p>
+            <h3>{v.title}</h3>
+            {v.note && <p class="archive-note">{v.note}</p>}
+            <a href={`https://www.youtube.com/watch?v=${v.id}`} target="_blank" rel="noopener noreferrer">
+              YouTube で見る
+            </a>
+          </div>
+        </li>
+      ))}
+    </ul>
+    <div class="archive-more">
+      <a class="button" href={youtube.url} target="_blank" rel="noopener noreferrer">
+        YouTube チャンネルでもっと見る
+      </a>
+      <a href={twitch.url} target="_blank" rel="noopener noreferrer">
+        Twitch ↗
+      </a>
+    </div>
+  </div>
+</section>
+<script>
+  const load = (box: HTMLElement) => {
+    const id = box.dataset.ytId;
+    const title = box.dataset.ytTitle ?? "YouTube video";
+    if (!id || box.dataset.loaded) return;
+    box.dataset.loaded = "true";
+    const iframe = document.createElement("iframe");
+    iframe.src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?autoplay=1&rel=0`;
+    iframe.title = title;
+    iframe.width = "560";
+    iframe.height = "315";
+    iframe.setAttribute(
+      "allow",
+      "accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share",
+    );
+    iframe.setAttribute("allowfullscreen", "");
+    iframe.setAttribute("referrerpolicy", "strict-origin-when-cross-origin");
+    box.replaceChildren(iframe);
+    iframe.focus();
+  };
+  document
+    .querySelectorAll<HTMLElement>(".yt-facade")
+    .forEach((box) => box.querySelector(".yt-facade__btn")?.addEventListener("click", () => load(box)));
+</script>

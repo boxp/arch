@@ -55,7 +55,7 @@ jobs:
           persist-credentials: false
 
       - name: Build Orange Pi image for ${{ matrix.node }}
-        uses: ./.github/actions/build-orange-pi-image
+        uses: $/.github/actions/build-orange-pi-image
         with:
           node_name: ${{ matrix.node }}
           aws_role_arn: arn:aws:iam::839695154978:role/GitHubActions_OrangePi_Build

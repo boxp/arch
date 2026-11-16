@@ -1,0 +1,23 @@
+---
+# check-mode-case.yml から ansible-playbook --check で実行される (plan-ansible.yml と同じ global check mode)。
+# task / block レベルの check_mode: true では magic 変数 ansible_check_mode が true にならないため、
+# 実際の plan と同じ --check で role を通す必要がある。
+- name: Run the GOMEMLIMIT tasks under global check mode
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    apiserver_gomemlimit_enabled: true
+    apiserver_gomemlimit: "1536MiB"
+  tasks:
+    - name: Include the GOMEMLIMIT tasks
+      ansible.builtin.include_role:
+        name: ../../../../kubernetes_components
+        tasks_from: apiserver_gomemlimit.yml
+
+    - name: Assert check mode reported the pending manifest change
+      ansible.builtin.assert:
+        that:
+          - ansible_check_mode
+          - apiserver_gomemlimit_manifest_edited | bool
+        fail_msg: "check mode must report the pending manifest change (edited={{ apiserver_gomemlimit_manifest_edited }})"

@@ -1,0 +1,3 @@
+# no probe host reachable from 60s -> every target recorded as failed -> halt at 240s
+0 200 200 200 200
+60 200 200 200 200 shanghai-1,shanghai-2,shanghai-3

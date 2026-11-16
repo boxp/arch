@@ -1,0 +1,30 @@
+---
+# BOXP-538: kubelet image GC for lolice workers.
+#
+# Longhorn marks a filesystem disk unschedulable (DiskPressure) once free space
+# drops to storage-minimal-available-percentage (25%), i.e. at 75% usage. The
+# kubelet image GC default only starts at 85%, so on workers whose root
+# filesystem is also the Longhorn disk (golyat-4) superseded images from
+# frequent digest updates piled up (836 images, ~540 GB) and Longhorn hit
+# DiskPressure long before the kubelet reclaimed anything. These settings make
+# the kubelet reclaim unused images first; they do not touch Longhorn's own
+# thresholds.
+worker_kubelet_image_gc_enabled: true
+
+# Start reclaiming unused images below Longhorn's 75% usage limit.
+worker_kubelet_image_gc_high_threshold_percent: 70
+worker_kubelet_image_gc_low_threshold_percent: 65
+# Unused images older than this are removed regardless of disk usage.
+worker_kubelet_image_maximum_gc_age: "168h"
+# Must stay below the Longhorn limit (100 - storage-minimal-available-percentage).
+worker_kubelet_image_gc_longhorn_usage_limit_percent: 75
+
+worker_kubelet_config_file: /etc/kubernetes/kubelet-config.yaml
+worker_kubelet_config_dir: /etc/kubernetes/kubelet.conf.d
+worker_kubelet_image_gc_config_file: "{{ worker_kubelet_config_dir }}/50-image-gc.conf"
+# Sorted after 10-kubeadm.conf (kubernetes_components) so this KUBELET_CONFIG_ARGS wins.
+worker_kubelet_config_dir_dropin: /etc/systemd/system/kubelet.service.d/20-kubelet-config-dir.conf
+
+# Set false to only lay down files (tests); chroot image builds never restart.
+worker_kubelet_image_gc_restart: true
+worker_kubelet_healthz_url: http://127.0.0.1:10248/healthz

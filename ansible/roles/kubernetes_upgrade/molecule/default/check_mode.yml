@@ -1,0 +1,178 @@
+---
+- name: Verify isolated APT preflight in check mode
+  hosts: all
+  become: true
+  tasks:
+    - name: Record host APT configuration before check-mode preflight
+      ansible.builtin.find:
+        paths:
+          - /etc/apt/sources.list.d
+          - /var/lib/apt/lists
+        recurse: true
+        get_checksum: true
+      register: apt_state_before
+
+    - name: Verify host APT hooks are not loaded
+      block:
+        - name: Install a container-only APT hook sentinel
+          ansible.builtin.copy:
+            dest: /etc/apt/apt.conf.d/99molecule-preflight-hook
+            content: 'APT::Update::Pre-Invoke { "touch /tmp/molecule-apt-hook-ran"; };'
+            mode: '0644'
+          check_mode: false
+          changed_when: false
+
+        - name: Run pre-upgrade checks in check mode
+          ansible.builtin.include_role:
+            name: kubernetes_upgrade
+            tasks_from: pre_checks.yml
+
+        - name: Inspect host hook sentinel
+          ansible.builtin.stat:
+            path: /tmp/molecule-apt-hook-ran
+          register: apt_hook_sentinel
+
+        - name: Assert isolated APT ignored the host hook
+          ansible.builtin.assert:
+            that:
+              - not apt_hook_sentinel.stat.exists
+      always:
+        - name: Remove container-only APT hook fixture
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /etc/apt/apt.conf.d/99molecule-preflight-hook
+            - /tmp/molecule-apt-hook-ran
+          check_mode: false
+          changed_when: false
+
+    - name: Record host APT configuration after check-mode preflight
+      ansible.builtin.find:
+        paths:
+          - /etc/apt/sources.list.d
+          - /var/lib/apt/lists
+        recurse: true
+        get_checksum: true
+      register: apt_state_after
+
+    - name: Assert check-mode preflight did not change host APT state
+      ansible.builtin.assert:
+        that:
+          - >-
+            (apt_state_before.files | map(attribute='path') | sort) ==
+            (apt_state_after.files | map(attribute='path') | sort)
+          - >-
+            (apt_state_before.files | sort(attribute='path') |
+            map(attribute='checksum') | list) ==
+            (apt_state_after.files | sort(attribute='path') |
+            map(attribute='checksum') | list)
+        fail_msg: "Check-mode APT preflight changed host APT source or list state"
+
+    - name: Reject an unavailable revision in check mode
+      block:
+        - name: Run isolated APT preflight with unavailable Kubernetes revision
+          ansible.builtin.include_role:
+            name: kubernetes_upgrade
+            tasks_from: apt_preflight.yml
+          vars:
+            kubernetes_upgrade_package: "1.35.1-999.999"
+
+        - name: Fail if unavailable revision was accepted
+          ansible.builtin.fail:
+            msg: "Isolated APT preflight accepted an unavailable revision"
+      rescue:
+        - name: Assert unavailable revision was rejected
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result is defined
+              - ansible_failed_task.name is match('^Resolve exact revisions from isolated APT lists')
+
+    - name: Reject an unreachable target repository in check mode
+      block:
+        - name: Run isolated APT preflight with unreachable CRI-O repository
+          ansible.builtin.include_role:
+            name: kubernetes_upgrade
+            tasks_from: apt_preflight.yml
+          vars:
+            kubernetes_upgrade_apt_preflight_crio_repository: "https://127.0.0.1:1/unavailable"
+
+        - name: Fail if unreachable repository was accepted
+          ansible.builtin.fail:
+            msg: "Isolated APT preflight accepted an unreachable repository"
+      rescue:
+        - name: Assert unreachable repository was rejected
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_task.name is match('^Update isolated APT lists from target repositories')
+
+    - name: Reject an unsigned repository in check mode
+      block:
+        - name: Create unsigned repository fixture
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: molecule-unsigned-apt-
+          register: unsigned_apt_fixture
+          check_mode: false
+          changed_when: false
+
+        - name: Make unsigned fixture readable by APT sandbox
+          ansible.builtin.file:
+            path: "{{ unsigned_apt_fixture.path }}"
+            mode: '0755'
+          check_mode: false
+          changed_when: false
+
+        - name: Write an unsigned Release file
+          ansible.builtin.copy:
+            dest: "{{ unsigned_apt_fixture.path }}/Release"
+            content: |
+              Origin: Molecule unsigned fixture
+              Label: Molecule unsigned fixture
+              Suite: stable
+              Codename: stable
+              Architectures: amd64 arm64
+              Description: Must be rejected without a Release signature
+            mode: '0644'
+          check_mode: false
+          changed_when: false
+
+        - name: Assert unsigned repository fails signature verification
+          block:
+            - name: Run isolated APT preflight with unsigned repository
+              ansible.builtin.include_role:
+                name: kubernetes_upgrade
+                tasks_from: apt_preflight.yml
+              vars:
+                kubernetes_upgrade_apt_preflight_crio_repository: "file://{{ unsigned_apt_fixture.path }}"
+
+            - name: Fail if unsigned repository was accepted
+              ansible.builtin.fail:
+                msg: "Isolated APT preflight accepted an unsigned repository"
+          rescue:
+            - name: Verify the failure came from unsigned index rejection
+              ansible.builtin.assert:
+                that:
+                  - ansible_failed_task.name is match('^Update isolated APT lists from target repositories')
+                  - "'is not signed' in ansible_failed_result.stderr"
+      always:
+        - name: Remove unsigned repository fixture
+          ansible.builtin.file:
+            path: "{{ unsigned_apt_fixture.path }}"
+            state: absent
+          when: unsigned_apt_fixture.path is defined
+          check_mode: false
+          changed_when: false
+
+    - name: Find leftover isolated APT preflight directories
+      ansible.builtin.find:
+        paths: /var/tmp
+        patterns: kubernetes-upgrade-apt-*
+        file_type: directory
+      register: isolated_apt_preflight_directories
+
+    - name: Assert check-mode preflight removed its temporary state
+      ansible.builtin.assert:
+        that:
+          - isolated_apt_preflight_directories.matched == 0
+        fail_msg: "Check-mode APT preflight did not remove temporary state"

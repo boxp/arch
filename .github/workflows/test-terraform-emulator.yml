@@ -1,0 +1,35 @@
+name: Test Terraform Emulator
+on:
+  pull_request:
+    paths:
+      - terraform/aws/longhorn/**
+      - tests/terraform-emulator/**
+      - .github/workflows/test-terraform-emulator.yml
+  push:
+    branches: [main]
+    paths:
+      - terraform/aws/longhorn/**
+      - tests/terraform-emulator/**
+      - .github/workflows/test-terraform-emulator.yml
+  workflow_dispatch: {}
+permissions: {}
+jobs:
+  test:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Run emulator test
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ -n "$BASE_REF" ]; then
+            tests/terraform-emulator/run.sh longhorn --base-ref "origin/$BASE_REF"
+          else
+            tests/terraform-emulator/run.sh longhorn
+          fi

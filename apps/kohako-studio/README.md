@@ -1,0 +1,47 @@
+# Kohako Web Studio
+
+Hermes の人格と既存 memory を使う Web 会話画面です。Telegram/G2 とは別の会話。共有されるのは Hermes の人格と既存 memory。独自の脳や memory は持ちません。移行元は even-g2-lab@4122e3e です。Web UI、PSD2Live runtime、公開承認済みの Kohako モデルを含みます。G2 固有機能、内部ログ、設定値は含みません。ライセンスは [LICENSES.md](LICENSES.md) を参照してください。
+
+Node 22 で `cd web && npm ci && npm run typecheck && npm run check && npm test && npm run build`、`cd bff && npm ci && npm run typecheck && npm run check && npm test` を実行します。`npm run check` は Biome（`biome.json`）の format / lint 検査で、warning も失敗扱いです。Docker build（PR の verify と main の配備 build）でも同じ検査を実行するため、違反があると image を作れません。整形と自動修正は `npm run fix` で行います（BOXP-549）。
+
+`docker build -t kohako-studio .` で共通イメージを作り、同一 Pod の二つの非 root コンテナとして実行します。既定コマンドは BFF (:8787)、Web (:8080) は `nginx -g 'daemon off;'` を指定します。Web は `/kohako/studio.html` と `/kohako/live2d.html` で公開し、API と `/healthz` は BFF にプロキシします。
+
+BFF は Owner 認証用に `KOHAKO_ACCESS_TEAM_DOMAIN`、`KOHAKO_ACCESS_AUD`、`KOHAKO_OWNER_EMAILS`、Hermes 接続用に `KOHAKO_HERMES_URL`、`KOHAKO_HERMES_KEY`、`KOHAKO_HERMES_TOOLSETS` を環境から読みます。音声認識には `KOHAKO_STT_URL` を任意で設定します。Verifier は `KOHAKO_VERIFIER_ENABLED=true` で有効になり、`KOHAKO_VERIFIER_USERNAME` で対象 ServiceAccount を指定できます。TokenReview の権限と専用 audience の投影 token が必要です。 Verifier は自動検証用に会話（承認は deny のみ）に加えて音声認識 `transcriptions` と読み上げ `tts` を使えます（BOXP-524 Owner承認）。通知API・承認の許可は Owner のみです。
+
+試作は Studio と Web リグ画面の選択欄で比較できます。クエリなしでは最新の試作 v12（担当不採用・本人確認用）を表示し、v0〜v3、v5、v6、v11 に戻せます。v4、v7〜v10 は p2lrt が消失したため比較画像と不採用理由を表示します。
+
+表情と動作の比較版は `/kohako/live2d.html?acting=1`（手動）と `/kohako/studio.html?acting=1`（会話連動）で開けます。クエリなしの表示は変わりません。文単位の感情はルールベースで判定し（`web/src/live2d/acting.ts`）、腕・表情は全身 v11r の頂点出力を描画直前に変形して足します（`web/src/live2d/gesture.ts`）。別 LLM による判定や新規素材は使っていません。
+
+## 試作候補（固定版）
+
+試作は通常版や `?acting=1` を上書きせず、`candidates/candidates.json` に候補として追加します（既存 ID の commit は差し替えない）。各候補の commit はタグ `kohako-studio-candidate/<id>` で保持し、CI の `candidates/fetch.sh` がその版の `web/` を取り出し、Docker の candidates ステージが `/kohako/candidates/<id>/` 用に個別ビルドします。候補ごとの JS と acting 素材は別パスで、モデル v11r・runtime・静止表情は通常版と同じ blob であることを fetch 時に検証して共用します。API は nginx で `/kohako/api/` へ書き換え、認証は通常と同じです。一覧は `/kohako/candidates.html`（Studio のフッターからリンク）。
+
+追加手順: commit をタグ `kohako-studio-candidate/<id>` で push → `candidates.json` に id・commit・状態・試した動作・問題点を追記 → 通常の PR。
+
+コハコの家 `/kohako/home.html` は日常利用のメイン画面で、Studio は開発用プロトタイプです。同じ BFF・認証を使い、ふれあいの反応はローカルのみ、会話は Web 専用セッションです。
+
+ホームの利用枠と進行中件数は認証済みの `GET /kohako/api/v1/status` から取得します。利用枠は共有プール単位で表示し、未観測・古い情報や取得失敗を区別します。進行中はボードの In Progress を一意 ID で数え、切り詰められた場合は下限を表示します。60 秒ごとに更新し、非表示中は停止、失敗時は最大 10 分まで間隔を延ばします。上流 URL は `KOHAKO_STATUS_QUOTA_URL` と `KOHAKO_STATUS_BOARD_URL` で設定でき、空文字で各上流を無効にできます。
+
+## 通知の受信箱
+
+`KOHAKO_DATA_DIR` に絶対パスの永続ディレクトリを指定すると受信箱と Web Push が有効になります。未設定では無効です。受信口は `KOHAKO_NOTIFIER_ENABLED=true` と専用 audience `kohako-bff-notifier` の Kubernetes TokenReview が必要です。送信元 ServiceAccount は `KOHAKO_NOTIFIER_USERNAME` で指定できます。通知は最大 500 件、購読は最大 20 端末です。重複イベントは内容を上書きせず、静音時間（既定は日本時間 2〜9 時）は Push を送りません。Telegram は引き続き利用できます。
+
+Push は Chrome・Edge・Firefox のデスクトップと Android に対応します。iOS/iPadOS 16.4 以降はホーム画面に追加した PWA で利用できます。OS の省電力や Push サービスなどにより配信は保証されません。通知の許可と解除は受信箱のボタンから端末ごとに操作します。
+
+## 可用性（BOXP-511）
+
+web はステートレスな複数レプリカ、BFF は単一 writer の 1 レプリカで動作する。BFF は停止時に処理と書き込みを待ち、会話追跡を保存する。再起動時は既存 run を追跡し、再送しない。通知返信は通知側で復元するため会話ファイルには保存しない。BFF 再起動中は nginx が JSON 503 を返す。`kohako-upstream.conf` は Kubernetes の ConfigMap で上書きする。
+
+家の会話では画像、PDF、UTF-8 テキストを最大3件添付できます（各5 MiBまで。1回の送信で画像は合計5.5 MiB、PDF・テキストの抽出本文は合計48KBまで。1件の本文が48KBを超える場合は先頭だけを渡し「一部省略」と表示します）。PDFの画像だけのページは文字を抽出できません。添付は会話に紐付けて最大24時間保存されます。
+
+家の音声入力はボタンで録音を開始・停止し、取消もできます。音声は家サーバー内の Whisper で認識し、保存しません。認識文は入力欄に追加され、自動送信されません。
+
+家からvault画像を見せる場合、コハコは実在するvault相対パスをURLエンコードして `![説明](kohako-vault:attachments%2Fexample.jpg)` と返します。PNG・JPEG・GIF・WebP各5 MiBまでを会話・履歴・通知本文に表示し、クリックすると認証付き原寸画像を開きます。SVG・PDF・動画・その他の形式はインライン表示非対応です。パス中の括弧は `%28` / `%29` にエンコードしてください。
+
+配信はOwnerのCloudflare Access認証を毎回検証し、BFFからHermesへ既存サーバーキーで取得します。verifier/notifierはvault画像を取得できません。Hermesは設定済み`OBSIDIAN_VAULT_PATH`以下の通常ファイルだけを読み、隠しパス・親参照・symlinkを拒否します。画像を複製せず、削除・移動・形式不正・認証切れ時は表示失敗を明示します。画面履歴は同じ本人の端末間で共有されます。画像自体はブラウザキャッシュへ保存しません。
+
+## 端末間の会話共有（BOXP-565）
+
+直近24時間・最大50件の発言と返答、進行中の実行状態・停止・承認を同じ本人の端末間で共有します。Hermes の同一 session を使うため、別端末からも同じ文脈で続きを話せます。同時送信は1件だけ受理します。
+
+未送信の草稿、送信待ち、受理未確認の控え、なでる反応、読み上げ、通知返信の本文、Telegram/G2 の会話は共有しません。本文は500字まで、BFF の `KOHAKO_DATA_DIR/conversations-kohako-web.json` に保存され、24時間で削除されます（誰も開いていなくても BFF が1分ごとに見回って消します）。開いたままの端末の画面からも、期限切れや最新50件から外れた発言・返答は次の同期で消えます。

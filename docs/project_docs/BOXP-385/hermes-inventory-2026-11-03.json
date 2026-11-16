@@ -1,0 +1,51 @@
+{
+  "billing_modes": {
+    "api": 0,
+    "local": 0,
+    "subscription": 0
+  },
+  "fields": {
+    "api_call_count": {
+      "defaults_to_zero": true,
+      "nonnull": 2153,
+      "positive": 2129
+    },
+    "cache_read_tokens": {
+      "defaults_to_zero": true,
+      "nonnull": 2153,
+      "positive": 1426
+    },
+    "cache_write_tokens": {
+      "defaults_to_zero": true,
+      "nonnull": 2153,
+      "positive": 0
+    },
+    "input_tokens": {
+      "defaults_to_zero": true,
+      "nonnull": 2153,
+      "positive": 2129
+    },
+    "output_tokens": {
+      "defaults_to_zero": true,
+      "nonnull": 2153,
+      "positive": 2129
+    },
+    "reasoning_tokens": {
+      "defaults_to_zero": true,
+      "nonnull": 2153,
+      "positive": 1701
+    },
+    "tool_call_count": {
+      "defaults_to_zero": true,
+      "nonnull": 2153,
+      "positive": 1315
+    }
+  },
+  "model_family_counts": {
+    "gemma": 12,
+    "qwen": 0
+  },
+  "sessions": 2153,
+  "state": "ok",
+  "with_parent": 1
+}

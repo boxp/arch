@@ -1,0 +1,72 @@
+name: Inspect or roll back portfolio production
+
+# BOXP-442 promoted the accepted fixed commit 938fea18 to b0xp.io with this workflow.
+# BOXP-539: deploy-portfolio.yml now deploys every main push to production and rolls back
+# automatically when the live site does not match the build. This workflow keeps only the
+# manual inspect and rollback operations, so it can no longer redeploy the old fixed commit.
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Inspect current production or roll back
+        required: true
+        default: inspect
+        type: choice
+        options: [inspect, rollback]
+      rollback_deployment_id:
+        description: Earlier production deployment UUID (required for rollback)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portfolio-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'boxp/arch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OPERATION: ${{ inputs.operation }}
+      ROLLBACK_ID: ${{ inputs.rollback_deployment_id }}
+    steps:
+      - name: Inspect production and validate the restoration point
+        id: production
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          node <<'JS'
+          const fs = require('node:fs');
+          const assert = require('node:assert/strict');
+          const base = `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/pages/projects/shanghai`;
+          async function api(path, method = 'GET') {
+            const r = await fetch(base + path, {method, headers: {Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`, 'Content-Type': 'application/json'}, ...(method === 'POST' ? {body: '{}'} : {})});
+            const d = await r.json();
+            if (!r.ok || !d.success) throw new Error(`Cloudflare ${r.status}: ${JSON.stringify(d.errors)}`);
+            return d.result;
+          }
+          (async () => {
+            const p = await api('');
+            assert.ok(p.domains.includes('b0xp.io'), 'Existing project must own b0xp.io');
+            const current = p.canonical_deployment;
+            assert.equal(current.environment, 'production');
+            assert.equal(current.latest_stage.status, 'success');
+            const saved = {project: p.name, production_branch: p.production_branch, source_type: p.source?.type ?? 'direct-upload', deployment_id: current.id, url: current.url, commit: current.deployment_trigger?.metadata?.commit_hash, domains: p.domains};
+            console.log(JSON.stringify(saved, null, 2));
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## Production before operation\n\n\`\`\`json\n${JSON.stringify(saved, null, 2)}\n\`\`\`\n`);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `branch=${p.production_branch}\n`);
+            if (process.env.OPERATION === 'inspect') return;
+            assert.match(process.env.ROLLBACK_ID, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+            const restore = await api(`/deployments/${process.env.ROLLBACK_ID}`);
+            assert.equal(restore.environment, 'production');
+            assert.equal(restore.latest_stage.status, 'success');
+            assert.equal(process.env.OPERATION, 'rollback');
+            const rolled = await api(`/deployments/${restore.id}/rollback`, 'POST');
+            console.log(`Restored deployment ${rolled.id}`);
+          })().catch(e => {console.error(e); process.exitCode = 1;});
+          JS

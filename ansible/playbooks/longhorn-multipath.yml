@@ -1,0 +1,182 @@
+---
+# BOXP-267: limited, reversible application of the Longhorn multipath exclusion
+# to one worker (run with --limit <node> -e longhorn_multipath_confirm=true).
+# The same drop-in is baked into worker images by worker-image.yml.
+- name: Exclude Longhorn iSCSI disks from multipath on a worker
+  hosts: workers
+  become: true
+  gather_facts: false
+  vars:
+    longhorn_multipath_dropin: /etc/multipath/conf.d/90-longhorn.conf
+  tasks:
+    - name: Require an explicit, single-node confirmation before mutation
+      ansible.builtin.assert:
+        that:
+          - longhorn_multipath_confirm | default(false) | bool
+          - ansible_play_hosts_all | length == 1
+        fail_msg: >-
+          Run with --limit <one worker> and -e longhorn_multipath_confirm=true after
+          recording the evidence for that node.
+
+    - name: Inspect device mapper maps without changing them
+      ansible.builtin.command: dmsetup ls --target multipath
+      register: longhorn_multipath_maps
+      changed_when: false
+      check_mode: false
+
+    - name: Refuse to reconfigure while any multipath map exists
+      ansible.builtin.assert:
+        that:
+          - longhorn_multipath_maps.stdout | trim == 'No devices found'
+        fail_msg: Existing multipath maps require a separate impact review. Do not flush maps.
+
+    - name: Check the daemon is already active without starting it
+      ansible.builtin.command: systemctl is-active multipathd  # noqa command-instead-of-module - read-only status probe
+      changed_when: false
+      check_mode: false
+
+    - name: Read effective configuration using the native parser without probing devices
+      ansible.builtin.command: multipath -t
+      register: longhorn_multipath_config
+      changed_when: false
+      check_mode: false
+
+    - name: Validate config directory and exceptions before changing configuration
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - "{{ lookup('ansible.builtin.file', '../files/verify_longhorn_multipath.py') }}"
+        stdin: "{{ longhorn_multipath_config.stdout }}"
+      changed_when: false
+      check_mode: false
+
+    - name: Inspect existing managed drop-in
+      ansible.builtin.stat:
+        path: "{{ longhorn_multipath_dropin }}"
+      register: longhorn_multipath_previous
+
+    - name: Preserve existing managed drop-in for rollback
+      ansible.builtin.slurp:
+        src: "{{ longhorn_multipath_dropin }}"
+      register: longhorn_multipath_previous_content
+      when: longhorn_multipath_previous.stat.exists
+
+    - name: Ensure the standard config directory exists
+      ansible.builtin.file:
+        path: /etc/multipath/conf.d
+        state: directory
+        mode: '0755'
+
+    - name: Install and validate the narrow exclusion before daemon reload
+      when: not ansible_check_mode
+      block:
+        - name: Install Longhorn-only device blacklist without changing the root configuration
+          ansible.builtin.copy:
+            content: "{{ lookup('ansible.builtin.file', '../files/longhorn-multipath.conf') }}\n"
+            dest: "{{ longhorn_multipath_dropin }}"
+            mode: '0644'
+
+        - name: Parse the complete candidate with multipath tools
+          ansible.builtin.command: multipath -t
+          register: longhorn_multipath_candidate
+          changed_when: false
+
+        - name: Require effective Longhorn device blacklist and no conflicting exceptions
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - "{{ lookup('ansible.builtin.file', '../files/verify_longhorn_multipath.py') }}"
+              - --require-blacklist
+            stdin: "{{ longhorn_multipath_candidate.stdout }}"
+          changed_when: false
+
+      rescue:
+        - name: Restore previous managed drop-in if present
+          ansible.builtin.copy:
+            content: "{{ longhorn_multipath_previous_content.content | b64decode }}"
+            dest: "{{ longhorn_multipath_dropin }}"
+            mode: "{{ longhorn_multipath_previous.stat.mode }}"
+          when: longhorn_multipath_previous.stat.exists
+
+        - name: Remove new drop-in if no previous file existed
+          ansible.builtin.file:
+            path: "{{ longhorn_multipath_dropin }}"
+            state: absent
+          when: not longhorn_multipath_previous.stat.exists
+
+        - name: Stop before reconfiguring the daemon
+          ansible.builtin.fail:
+            msg: Candidate validation failed; previous drop-in restored. Daemon was not reconfigured.
+
+    - name: Reconfigure the daemon and verify, restoring the previous drop-in on any failure
+      when: not ansible_check_mode
+      block:
+        - name: Recheck multipath maps immediately before daemon reconfiguration
+          ansible.builtin.command: dmsetup ls --target multipath
+          register: longhorn_multipath_maps_final
+          changed_when: false
+          failed_when: >-
+            longhorn_multipath_maps_final.rc != 0 or
+            longhorn_multipath_maps_final.stdout | trim != 'No devices found'
+
+        - name: Reconfigure the active daemon without stopping services or flushing maps
+          ansible.builtin.command: multipathd reconfigure
+          register: longhorn_multipath_reconfigure
+          changed_when: true
+          failed_when: >-
+            longhorn_multipath_reconfigure.rc != 0 or
+            longhorn_multipath_reconfigure.stdout | trim != 'ok'
+
+        - name: Read the daemon effective configuration
+          ansible.builtin.command: multipathd show config
+          register: longhorn_multipath_daemon_config
+          changed_when: false
+
+        - name: Verify the running daemon received the Longhorn device blacklist
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - "{{ lookup('ansible.builtin.file', '../files/verify_longhorn_multipath.py') }}"
+              - --require-blacklist
+            stdin: "{{ longhorn_multipath_daemon_config.stdout }}"
+          changed_when: false
+
+      rescue:
+        - name: Restore previous managed drop-in after daemon phase failure
+          ansible.builtin.copy:
+            content: "{{ longhorn_multipath_previous_content.content | b64decode }}"
+            dest: "{{ longhorn_multipath_dropin }}"
+            mode: "{{ longhorn_multipath_previous.stat.mode }}"
+          when: longhorn_multipath_previous.stat.exists
+
+        - name: Remove new drop-in after daemon phase failure if no previous file existed
+          ansible.builtin.file:
+            path: "{{ longhorn_multipath_dropin }}"
+            state: absent
+          when: not longhorn_multipath_previous.stat.exists
+
+        # Only needed once `multipathd reconfigure` was attempted: before that the
+        # daemon never read the candidate. Reload the restored (pre-change)
+        # configuration so the daemon does not keep or later pick up an unverified
+        # drop-in. Still a reload only; no stop/restart/flush.
+        - name: Reload the restored configuration into the daemon
+          ansible.builtin.command: multipathd reconfigure
+          register: longhorn_multipath_rollback_reconfigure
+          changed_when: true
+          failed_when: false
+          when: longhorn_multipath_reconfigure is defined and longhorn_multipath_reconfigure is not skipped
+
+        - name: Stop with the rollback outcome
+          ansible.builtin.fail:
+            msg: >-
+              Daemon reconfiguration or verification failed; previous drop-in state restored
+              ({{ 'file restored' if longhorn_multipath_previous.stat.exists else 'new drop-in removed' }}).
+              Daemon rollback reload:
+              {{ 'not needed (daemon never read the candidate)'
+                 if longhorn_multipath_rollback_reconfigure is skipped
+                 else ('ok' if longhorn_multipath_rollback_reconfigure.rc == 0
+                       and longhorn_multipath_rollback_reconfigure.stdout | trim == 'ok'
+                       else 'FAILED - inspect multipathd show config on this node before retrying') }}.

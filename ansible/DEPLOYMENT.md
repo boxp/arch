@@ -27,9 +27,9 @@ Host shanghai-3
 ```
 
 ### 3. 必要なツール
-- Ansible >= 2.12
+- Ansible >= 12.2.0（制御側。`uv sync --locked` で依存を導入）
 - cloudflared CLI
-- Python 3.8+
+- Python 3.11+（制御側。CI は Python 3.12。管理対象ノードの要件とは区別する）
 
 ## デプロイ手順
 

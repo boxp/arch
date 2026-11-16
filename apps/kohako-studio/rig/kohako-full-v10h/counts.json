@@ -1,0 +1,20 @@
+{
+  "kohako-full-v10g-idle4": 17670,
+  "kohako-full-v10g-idle10": 16954,
+  "kohako-full-v10g-bodyminus": 18483,
+  "kohako-full-v10g-bodyplus": 18517,
+  "kohako-full-v10g-angleminus": 18298,
+  "kohako-full-v10g-angleplus": 18286,
+  "kohako-full-v10g-zminus": 18563,
+  "kohako-full-v10g-zplus": 18360,
+  "kohako-full-v10g-rest": 18184,
+  "kohako-full-v10h-idle4": 17473,
+  "kohako-full-v10h-idle10": 16718,
+  "kohako-full-v10h-bodyminus": 18287,
+  "kohako-full-v10h-bodyplus": 18314,
+  "kohako-full-v10h-angleminus": 18130,
+  "kohako-full-v10h-angleplus": 18100,
+  "kohako-full-v10h-zminus": 18314,
+  "kohako-full-v10h-zplus": 18088,
+  "kohako-full-v10h-rest": 17991
+}

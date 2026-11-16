@@ -1,0 +1,26 @@
+---
+import links from "../data/links.json";
+import SectionHeading from "./SectionHeading.astro";
+---
+
+<section id="links" class="section links-section">
+  <div class="container">
+    <SectionHeading eyebrow="Links" title="公式リンク" />
+    <ul class="links-grid">
+      {links.map((l) => (
+        <li class:list={{ secondary: l.id === "b0xp" }}>
+          <a href={l.url} target="_blank" rel="noopener noreferrer">
+            <span>
+              <strong>{l.label}</strong>
+              <span>{l.name}</span>
+              <small>{l.desc}</small>
+            </span>
+            <span class="link-arrow" aria-hidden="true">
+              ↗
+            </span>
+          </a>
+        </li>
+      ))}
+    </ul>
+  </div>
+</section>

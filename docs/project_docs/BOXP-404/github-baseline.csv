@@ -1,0 +1,6 @@
+run,event,sha,queue_seconds,wall_seconds,job_seconds,url
+41759972118,pull_request,83ad9ed91576216d5c4f21f982cebae85bd3a79f,4,1168,1168,https://github.com/boxp/arch/actions/runs/41759972118
+41763110240,push,6df402663dd6da7b10fcb1fc358a0e07b6a741ef,4,1160,1160,https://github.com/boxp/arch/actions/runs/41763110240
+41769121688,pull_request,1c6b9980da8cb2bedac8aad71093ddc3c9f4da43,4,1177,1177,https://github.com/boxp/arch/actions/runs/41769121688
+41772316138,push,d9918e31957a47120de293ff630bd5d6c7298b69,3,1042,1042,https://github.com/boxp/arch/actions/runs/41772316138
+41810022614,pull_request,ff743225697dbbeb01dddb9ad3dc786988c77b65,11,1191,1191,https://github.com/boxp/arch/actions/runs/41810022614

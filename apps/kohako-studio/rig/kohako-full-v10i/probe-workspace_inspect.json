@@ -1,0 +1,355 @@
+{
+  "scope": "objects",
+  "state": "1ee1be35-46e1-4b71-86e7-2185d0e8ec98:1:0",
+  "project_id": "dd12b85b-ff5e-4ab6-afbd-6b7bd324dbab",
+  "history_node_id": "history-e69ba2a7-263e-41a7-9197-93ef5bef3fbc",
+  "items": [
+    {
+      "name": "hair front",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d4861697246726f6e7450687973696373",
+      "layerId": "hair_front",
+      "target": "mesh:ArtMeshFrontHair"
+    },
+    {
+      "name": "hair side left",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f4861697253696465",
+      "layerId": "hair_side_left",
+      "target": "mesh:ArtMeshFrontHairL"
+    },
+    {
+      "name": "hair side right",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f4861697253696465",
+      "layerId": "hair_side_right",
+      "target": "mesh:ArtMeshFrontHairR"
+    },
+    {
+      "name": "face smile",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d466163654e696e65506f7365",
+      "layerId": "face_smile",
+      "target": "mesh:ArtMeshFaceDetail"
+    },
+    {
+      "name": "eye mid left v44",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796553686170654c",
+      "layerId": "eye_mid_left_v44",
+      "target": "mesh:ArtMeshFaceDetail2"
+    },
+    {
+      "name": "eye mid right v44",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d457965536861706552",
+      "layerId": "eye_mid_right_v44",
+      "target": "mesh:ArtMeshFaceDetail3"
+    },
+    {
+      "name": "eye closed left",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796553686170654c",
+      "layerId": "eye_closed_left",
+      "target": "mesh:ArtMeshEyeCloseL"
+    },
+    {
+      "name": "eye closed right",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d457965536861706552",
+      "layerId": "eye_closed_right",
+      "target": "mesh:ArtMeshEyeCloseR"
+    },
+    {
+      "name": "mouth open",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d4d6f7574685368617065426f7468",
+      "layerId": "mouth_open",
+      "target": "mesh:ArtMeshMouthOpen"
+    },
+    {
+      "name": "eye left lash",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796553686170654c",
+      "layerId": "eye_left_lash",
+      "target": "mesh:ArtMeshEyelashL"
+    },
+    {
+      "name": "eye left iris",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796547617a654c",
+      "layerId": "eye_left_iris",
+      "target": "mesh:ArtMeshIridesL"
+    },
+    {
+      "name": "eye left white",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796553686170654c",
+      "layerId": "eye_left_white",
+      "target": "mesh:ArtMeshEyewhiteL"
+    },
+    {
+      "name": "eye right lash",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d457965536861706552",
+      "layerId": "eye_right_lash",
+      "target": "mesh:ArtMeshEyelashR"
+    },
+    {
+      "name": "eye right iris",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796547617a6552",
+      "layerId": "eye_right_iris",
+      "target": "mesh:ArtMeshIridesR"
+    },
+    {
+      "name": "eye right white",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d457965536861706552",
+      "layerId": "eye_right_white",
+      "target": "mesh:ArtMeshEyewhiteR"
+    },
+    {
+      "name": "braid_left",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f4272616964",
+      "layerId": "braid_left",
+      "target": "mesh:ArtMeshLayerL"
+    },
+    {
+      "name": "braid_right",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f4272616964",
+      "layerId": "braid_right",
+      "target": "mesh:ArtMeshLayerR"
+    },
+    {
+      "name": "face",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d46616365436f6e746f7572",
+      "layerId": "face",
+      "target": "mesh:ArtMeshFace"
+    },
+    {
+      "name": "neck",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64795a427265617468",
+      "layerId": "neck",
+      "target": "mesh:ArtMeshNeck"
+    },
+    {
+      "name": "hand_left",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f48616e64",
+      "layerId": "hand_left",
+      "target": "mesh:ArtMeshHandwearL"
+    },
+    {
+      "name": "hand_right",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f48616e64",
+      "layerId": "hand_right",
+      "target": "mesh:ArtMeshHandwearR"
+    },
+    {
+      "name": "arm_left",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f41726d",
+      "layerId": "arm_left",
+      "target": "mesh:ArtMeshHandwearL2"
+    },
+    {
+      "name": "arm_right",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f41726d",
+      "layerId": "arm_right",
+      "target": "mesh:ArtMeshHandwearR2"
+    },
+    {
+      "name": "panel_left",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f50616e656c",
+      "layerId": "panel_left",
+      "target": "mesh:ArtMeshBottomwearL"
+    },
+    {
+      "name": "panel_right",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f50616e656c",
+      "layerId": "panel_right",
+      "target": "mesh:ArtMeshBottomwearR"
+    },
+    {
+      "name": "body",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64795a427265617468",
+      "layerId": "body",
+      "target": "mesh:ArtMeshTopwear"
+    },
+    {
+      "name": "foot_left",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f466f6f74",
+      "layerId": "foot_left",
+      "target": "mesh:ArtMeshFootwearL"
+    },
+    {
+      "name": "foot_right",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f466f6f74",
+      "layerId": "foot_right",
+      "target": "mesh:ArtMeshFootwearR"
+    },
+    {
+      "name": "leg_left",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f4c6567",
+      "layerId": "leg_left",
+      "target": "mesh:ArtMeshLegwearL"
+    },
+    {
+      "name": "leg_right",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f4c6567",
+      "layerId": "leg_right",
+      "target": "mesh:ArtMeshLegwearR"
+    },
+    {
+      "name": "back_hair",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d486169724261636b50687973696373",
+      "layerId": "back_hair",
+      "target": "mesh:ArtMeshBackHair"
+    },
+    {
+      "name": "Body XY",
+      "parentId": null,
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64795859"
+    },
+    {
+      "name": "Body Lean / Proportion",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64795859",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64794c65616e"
+    },
+    {
+      "name": "Body Z / Breath",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64794c65616e",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64795a427265617468"
+    },
+    {
+      "name": "Head Z Rotation",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64795a427265617468",
+      "target": "rotation:modifier:m1:7368617265642f6465666f726d65723a4465666f726d48656164526f746174696f6e"
+    },
+    {
+      "name": "Head Container",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d48656164526f746174696f6e",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d48656164436f6e7461696e6572"
+    },
+    {
+      "name": "Front Hair Follow",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d48656164436f6e7461696e6572",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d4861697246726f6e74466f6c6c6f77"
+    },
+    {
+      "name": "Front Hair Physics",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d4861697246726f6e74466f6c6c6f77",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d4861697246726f6e7450687973696373"
+    },
+    {
+      "name": "hair side Pair",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d4861697246726f6e7450687973696373",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f4861697253696465"
+    },
+    {
+      "name": "Face Warp Deformer",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d48656164436f6e7461696e6572",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d466163654e696e65506f7365"
+    },
+    {
+      "name": "Eyes",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d466163654e696e65506f7365",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796573"
+    },
+    {
+      "name": "Left Eye Deformer",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796573",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796553686170654c"
+    },
+    {
+      "name": "Right Eye Deformer",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796573",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d457965536861706552"
+    },
+    {
+      "name": "Mouth Deformer",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d466163654e696e65506f7365",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d4d6f7574685368617065426f7468"
+    },
+    {
+      "name": "Left Iris 2D Retention",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796553686170654c",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d4972697350726573657276654c"
+    },
+    {
+      "name": "Left Gaze",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d4972697350726573657276654c",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796547617a654c"
+    },
+    {
+      "name": "Right Iris 2D Retention",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d457965536861706552",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d49726973507265736572766552"
+    },
+    {
+      "name": "Right Gaze",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d49726973507265736572766552",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d45796547617a6552"
+    },
+    {
+      "name": "braid Pair",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64795a427265617468",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f4272616964"
+    },
+    {
+      "name": "Face Deformer",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d466163654e696e65506f7365",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d46616365436f6e746f7572"
+    },
+    {
+      "name": "hand Pair",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64795a427265617468",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f48616e64"
+    },
+    {
+      "name": "arm Pair",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64795a427265617468",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f41726d"
+    },
+    {
+      "name": "panel Pair",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d426f64795a427265617468",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f50616e656c"
+    },
+    {
+      "name": "Legs",
+      "parentId": null,
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d4c656773"
+    },
+    {
+      "name": "foot Pair",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d4c656773",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f466f6f74"
+    },
+    {
+      "name": "leg Pair",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d4c656773",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d506169725f4c6567"
+    },
+    {
+      "name": "Back Hair Follow",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d48656164436f6e7461696e6572",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d486169724261636b466f6c6c6f77"
+    },
+    {
+      "name": "Back Hair Physics",
+      "parentId": "modifier:m1:7368617265642f6465666f726d65723a4465666f726d486169724261636b466f6c6c6f77",
+      "target": "warp:modifier:m1:7368617265642f6465666f726d65723a4465666f726d486169724261636b50687973696373"
+    },
+    {
+      "name": "Head",
+      "parentId": null,
+      "target": "part:modifier:m1:7368617265642f706172743a5061727448656164"
+    },
+    {
+      "name": "Front Hair",
+      "parentId": "modifier:m1:7368617265642f706172743a5061727448656164",
+      "target": "part:modifier:m1:7368617265642f706172743a506172744861697246726f6e74"
+    },
+    {
+      "name": "Body",
+      "parentId": null,
+      "target": "part:modifier:m1:7368617265642f706172743a50617274426f6479"
+    },
+    {
+      "name": "Face",
+      "parentId": "modifier:m1:7368617265642f706172743a5061727448656164",
+      "target": "part:modifier:m1:7368617265642f706172743a5061727446616365"
+    },
+    {
+      "name": "Back Hair",
+      "parentId": "modifier:m1:7368617265642f706172743a5061727448656164",
+      "target": "part:modifier:m1:7368617265642f706172743a50617274486169724261636b"
+    }
+  ],
+  "total": 63
+}

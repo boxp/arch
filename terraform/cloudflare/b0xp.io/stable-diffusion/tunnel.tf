@@ -18,6 +18,11 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "stable_diffusion" {
         hostname = cloudflare_dns_record.stable_diffusion.name
         service  = "http://stable-diffusion-webui.stable-diffusion.svc.cluster.local:7860"
       },
+      # BOXP-498: ComfyUI (MiniMax H3) の常時起動 gateway。backend は GPU 切替中だけ起動する。
+      {
+        hostname = cloudflare_dns_record.comfyui.name
+        service  = "http://comfyui.stable-diffusion.svc.cluster.local:8188"
+      },
       {
         service = "http_status:404"
       },

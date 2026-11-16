@@ -37,7 +37,6 @@
 ├── terraform/           # Terraformの設定ファイル（実際のインフラ定義）
 │   ├── aws/             # AWS関連のTerraform設定
 │   │   ├── external-secrets-operator/ # 外部シークレット操作オペレーターの設定
-│   │   ├── hitohub/                   # Hitohubアプリケーション用設定
 │   │   ├── k8s-ecr-token-updater/     # K8s用ECRトークン更新設定
 │   │   ├── palserver/                 # Palworldサーバー設定
 │   │   ├── tfaction/                  # TFAction用インフラ設定
@@ -46,7 +45,6 @@
 │   │   ├── boxp.tk/     # boxp.tkドメインの設定
 │   │   └── b0xp.io/     # b0xp.ioドメインの設定
 │   │       ├── argocd/  # ArgoCD関連の設定（DNSレコード、アクセス制御など）
-│   │       ├── hitohub/ # Hitohub関連の設定（DNSレコード、アクセス制御など）
 │   │       ├── k8s/     # Kubernetes関連の設定（CLoudflare Tunnel、DNSなど）
 │   │       │   ├── .terraform.lock.hcl # Terraformのロックファイル（依存関係バージョン固定）
 │   │       │   ├── .tfaction/          # TFActions関連の設定（自動生成ファイル）
@@ -107,7 +105,6 @@
 │   ├── calico/                      # Calicoネットワークプラグインの設定
 │   ├── descheduler/                 # ポッド再スケジューラの設定
 │   ├── external-secrets-operator/   # 外部シークレット操作ツールの設定
-│   ├── hitohub/                     # Hitohubアプリケーションの設定
 │   ├── k8s/                         # クラスター全体の設定
 │   ├── k8s-ecr-token-updater/       # AWS ECRトークン更新ツールの設定
 │   ├── kubernetes-dashboard/        # Kubernetesダッシュボードの設定

@@ -1,0 +1,23 @@
+name: Test USB SSD underlay
+on:
+  pull_request:
+    paths:
+      - ansible/files/usb-ssd-underlay.sh
+      - ansible/tests/usb_ssd_underlay_test.sh
+      - ansible/playbooks/usb-ssd-storage.yml
+      - ansible/vars/usb_ssd_storage.yml
+      - .github/workflows/test-usb-ssd-storage.yml
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test underlay protection
+        run: sudo bash ansible/tests/usb_ssd_underlay_test.sh

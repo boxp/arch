@@ -1,0 +1,622 @@
+{
+  "units": "837x1110 internal canvas, device pixels",
+  "criterion": "two-background transmittance >=223/255; 8-connected components of interior background or horizontal runs <=8 device px, x=192..641 y=48..519",
+  "versions": {
+    "v10h": {
+      "rest": {
+        "full_roi": {
+          "components": 10,
+          "area": 1898,
+          "component_class_counts": {
+            "G": 3,
+            "T": 4,
+            "F": 3,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 63,
+            "T": 1705,
+            "F": 129,
+            "other": 1
+          }
+        },
+        "upper_y_below_200_css": {
+          "components": 3,
+          "area": 79,
+          "component_class_counts": {
+            "G": 3,
+            "T": 0,
+            "F": 0,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 63,
+            "T": 1,
+            "F": 15,
+            "other": 0
+          }
+        }
+      },
+      "idle4": {
+        "full_roi": {
+          "components": 15,
+          "area": 1994,
+          "component_class_counts": {
+            "G": 3,
+            "T": 6,
+            "F": 6,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 67,
+            "T": 1662,
+            "F": 260,
+            "other": 5
+          }
+        },
+        "upper_y_below_200_css": {
+          "components": 8,
+          "area": 143,
+          "component_class_counts": {
+            "G": 3,
+            "T": 0,
+            "F": 5,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 67,
+            "T": 9,
+            "F": 67,
+            "other": 0
+          }
+        }
+      },
+      "idle10": {
+        "full_roi": {
+          "components": 36,
+          "area": 2348,
+          "component_class_counts": {
+            "G": 5,
+            "T": 16,
+            "F": 15,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 208,
+            "T": 1772,
+            "F": 353,
+            "other": 15
+          }
+        },
+        "upper_y_below_200_css": {
+          "components": 10,
+          "area": 388,
+          "component_class_counts": {
+            "G": 5,
+            "T": 2,
+            "F": 3,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 208,
+            "T": 79,
+            "F": 101,
+            "other": 0
+          }
+        }
+      },
+      "xminus": {
+        "full_roi": {
+          "components": 26,
+          "area": 2368,
+          "component_class_counts": {
+            "G": 7,
+            "T": 7,
+            "F": 12,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 304,
+            "T": 1790,
+            "F": 274,
+            "other": 0
+          }
+        },
+        "upper_y_below_200_css": {
+          "components": 13,
+          "area": 539,
+          "component_class_counts": {
+            "G": 7,
+            "T": 1,
+            "F": 5,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 304,
+            "T": 90,
+            "F": 145,
+            "other": 0
+          }
+        }
+      },
+      "xplus": {
+        "full_roi": {
+          "components": 20,
+          "area": 2306,
+          "component_class_counts": {
+            "G": 6,
+            "T": 6,
+            "F": 7,
+            "other": 1
+          },
+          "pixel_class_counts": {
+            "G": 442,
+            "T": 1698,
+            "F": 158,
+            "other": 8
+          }
+        },
+        "upper_y_below_200_css": {
+          "components": 8,
+          "area": 505,
+          "component_class_counts": {
+            "G": 6,
+            "T": 2,
+            "F": 0,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 442,
+            "T": 27,
+            "F": 36,
+            "other": 0
+          }
+        }
+      },
+      "zminus": {
+        "full_roi": {
+          "components": 27,
+          "area": 2449,
+          "component_class_counts": {
+            "G": 6,
+            "T": 10,
+            "F": 10,
+            "other": 1
+          },
+          "pixel_class_counts": {
+            "G": 142,
+            "T": 1898,
+            "F": 395,
+            "other": 14
+          }
+        },
+        "upper_y_below_200_css": {
+          "components": 11,
+          "area": 688,
+          "component_class_counts": {
+            "G": 6,
+            "T": 3,
+            "F": 2,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 142,
+            "T": 368,
+            "F": 178,
+            "other": 0
+          }
+        }
+      },
+      "zplus": {
+        "full_roi": {
+          "components": 37,
+          "area": 3056,
+          "component_class_counts": {
+            "G": 6,
+            "T": 22,
+            "F": 8,
+            "other": 1
+          },
+          "pixel_class_counts": {
+            "G": 388,
+            "T": 2308,
+            "F": 341,
+            "other": 19
+          }
+        },
+        "upper_y_below_200_css": {
+          "components": 9,
+          "area": 781,
+          "component_class_counts": {
+            "G": 6,
+            "T": 2,
+            "F": 1,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 388,
+            "T": 282,
+            "F": 108,
+            "other": 3
+          }
+        }
+      },
+      "bodyminus": {
+        "full_roi": {
+          "components": 23,
+          "area": 2759,
+          "component_class_counts": {
+            "G": 4,
+            "T": 14,
+            "F": 5,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 563,
+            "T": 1899,
+            "F": 292,
+            "other": 5
+          }
+        },
+        "upper_y_below_200_css": {
+          "components": 8,
+          "area": 784,
+          "component_class_counts": {
+            "G": 4,
+            "T": 2,
+            "F": 2,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 563,
+            "T": 121,
+            "F": 98,
+            "other": 2
+          }
+        }
+      },
+      "bodyplus": {
+        "full_roi": {
+          "components": 16,
+          "area": 3240,
+          "component_class_counts": {
+            "G": 6,
+            "T": 5,
+            "F": 5,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 619,
+            "T": 2208,
+            "F": 373,
+            "other": 40
+          }
+        },
+        "upper_y_below_200_css": {
+          "components": 8,
+          "area": 782,
+          "component_class_counts": {
+            "G": 6,
+            "T": 1,
+            "F": 1,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 619,
+            "T": 38,
+            "F": 101,
+            "other": 24
+          }
+        }
+      }
+    },
+    "v10j": {
+      "rest": {
+        "full_roi": {
+          "components": 10,
+          "area": 1898,
+          "component_class_counts": {
+            "G": 3,
+            "T": 4,
+            "F": 3,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 63,
+            "T": 1705,
+            "F": 129,
+            "other": 1
+          }
+        },
+        "upper_y_below_200_css": {
+          "components": 3,
+          "area": 79,
+          "component_class_counts": {
+            "G": 3,
+            "T": 0,
+            "F": 0,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 63,
+            "T": 1,
+            "F": 15,
+            "other": 0
+          }
+        }
+      },
+      "idle4": {
+        "full_roi": {
+          "components": 12,
+          "area": 1937,
+          "component_class_counts": {
+            "G": 3,
+            "T": 6,
+            "F": 3,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 56,
+            "T": 1656,
+            "F": 220,
+            "other": 5
+          }
+        },
+        "upper_y_below_200_css": {
+          "components": 5,
+          "area": 86,
+          "component_class_counts": {
+            "G": 3,
+            "T": 0,
+            "F": 2,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 56,
+            "T": 3,
+            "F": 27,
+            "other": 0
+          }
+        }
+      },
+      "idle10": {
+        "full_roi": {
+          "components": 34,
+          "area": 2077,
+          "component_class_counts": {
+            "G": 4,
+            "T": 16,
+            "F": 14,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 51,
+            "T": 1720,
+            "F": 291,
+            "other": 15
+          }
+        },
+        "upper_y_below_200_css": {
+          "components": 8,
+          "area": 117,
+          "component_class_counts": {
+            "G": 4,
+            "T": 2,
+            "F": 2,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 51,
+            "T": 27,
+            "F": 39,
+            "other": 0
+          }
+        }
+      },
+      "xminus": {
+        "full_roi": {
+          "components": 23,
+          "area": 1962,
+          "component_class_counts": {
+            "G": 4,
+            "T": 6,
+            "F": 13,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 51,
+            "T": 1711,
+            "F": 200,
+            "other": 0
+          }
+        },
+        "upper_y_below_200_css": {
+          "components": 10,
+          "area": 133,
+          "component_class_counts": {
+            "G": 4,
+            "T": 0,
+            "F": 6,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 51,
+            "T": 11,
+            "F": 71,
+            "other": 0
+          }
+        }
+      },
+      "xplus": {
+        "full_roi": {
+          "components": 19,
+          "area": 1943,
+          "component_class_counts": {
+            "G": 5,
+            "T": 5,
+            "F": 8,
+            "other": 1
+          },
+          "pixel_class_counts": {
+            "G": 63,
+            "T": 1677,
+            "F": 195,
+            "other": 8
+          }
+        },
+        "upper_y_below_200_css": {
+          "components": 7,
+          "area": 142,
+          "component_class_counts": {
+            "G": 5,
+            "T": 1,
+            "F": 1,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 63,
+            "T": 6,
+            "F": 73,
+            "other": 0
+          }
+        }
+      },
+      "zminus": {
+        "full_roi": {
+          "components": 22,
+          "area": 2341,
+          "component_class_counts": {
+            "G": 6,
+            "T": 7,
+            "F": 8,
+            "other": 1
+          },
+          "pixel_class_counts": {
+            "G": 132,
+            "T": 1852,
+            "F": 343,
+            "other": 14
+          }
+        },
+        "upper_y_below_200_css": {
+          "components": 7,
+          "area": 582,
+          "component_class_counts": {
+            "G": 6,
+            "T": 1,
+            "F": 0,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 132,
+            "T": 324,
+            "F": 126,
+            "other": 0
+          }
+        }
+      },
+      "zplus": {
+        "full_roi": {
+          "components": 35,
+          "area": 2706,
+          "component_class_counts": {
+            "G": 4,
+            "T": 22,
+            "F": 8,
+            "other": 1
+          },
+          "pixel_class_counts": {
+            "G": 82,
+            "T": 2294,
+            "F": 311,
+            "other": 19
+          }
+        },
+        "upper_y_below_200_css": {
+          "components": 7,
+          "area": 431,
+          "component_class_counts": {
+            "G": 4,
+            "T": 2,
+            "F": 1,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 82,
+            "T": 268,
+            "F": 78,
+            "other": 3
+          }
+        }
+      },
+      "bodyminus": {
+        "full_roi": {
+          "components": 20,
+          "area": 2138,
+          "component_class_counts": {
+            "G": 3,
+            "T": 13,
+            "F": 4,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 72,
+            "T": 1816,
+            "F": 245,
+            "other": 5
+          }
+        },
+        "upper_y_below_200_css": {
+          "components": 5,
+          "area": 163,
+          "component_class_counts": {
+            "G": 3,
+            "T": 1,
+            "F": 1,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 72,
+            "T": 38,
+            "F": 51,
+            "other": 2
+          }
+        }
+      },
+      "bodyplus": {
+        "full_roi": {
+          "components": 14,
+          "area": 2554,
+          "component_class_counts": {
+            "G": 5,
+            "T": 4,
+            "F": 5,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 64,
+            "T": 2174,
+            "F": 295,
+            "other": 21
+          }
+        },
+        "upper_y_below_200_css": {
+          "components": 6,
+          "area": 96,
+          "component_class_counts": {
+            "G": 5,
+            "T": 0,
+            "F": 1,
+            "other": 0
+          },
+          "pixel_class_counts": {
+            "G": 64,
+            "T": 4,
+            "F": 23,
+            "other": 5
+          }
+        }
+      }
+    }
+  }
+}
