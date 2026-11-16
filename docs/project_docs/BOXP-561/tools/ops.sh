@@ -45,6 +45,10 @@ case "${1:-}" in
   close)
     tok=${2:?TOKEN}
     bash "$RTAPI" gate "closed:BOXP-561-$tok" 2>&1 | tail -1
+    # 503 確認や状態取得の前に dead-man を張る（この間に workspace が止まっても node 側で開け戻す）
+    if [[ $(gate || true) == "closed:BOXP-561-$tok" ]]; then
+      "$(dirname -- "$0")/deadman.sh" arm "$tok" 600 || log "WARN dead-man arm failed"
+    fi
     for _ in $(seq 30); do
       c=$(curl -s -o /dev/null -m 5 -w '%{http_code}' $SVC/v1/models || true)
       [[ $c == 503 ]] && break

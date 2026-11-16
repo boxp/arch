@@ -69,7 +69,7 @@ fi
   log "close NG rc=$close_rc gate=$g"
   exit 1
 }
-# dead-man: workspace ごと止まって cleanup が走らなくても、node 側で最長 10 分後に gate を開け戻す（5 分ごとに延長、閉鎖期限を超えない）
+# dead-man: ops.sh close が gate 変更直後に張る。ここで張り直す。workspace ごと止まって cleanup が走らなくても、node 側で最長 10 分後に gate を開け戻す（5 分ごとに延長、閉鎖期限を超えない）
 "$here/deadman.sh" arm "$tok" 600 >>"$L" 2>&1
 (while sleep 300; do
   s=$((deadline - $(date +%s)))

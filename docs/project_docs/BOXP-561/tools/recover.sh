@@ -11,6 +11,12 @@ PORT=18561
 L=$BOXP561_TMP/recover.log
 g=$(kubectl -n local-llm get cm llama-server-admission -o jsonpath='{.data.state}')
 echo "$(date -u +%FT%TZ) gate=$g" | tee -a "$L"
+# 実行中の session.sh があれば、その tunnel/relay/gate/worktree には一切触れない
+if live=$(pgrep -af '^([^ ]*/)?bash [^ ]*/BOXP-561/tools/session\.sh ' | grep -v "^$$ "); then
+  echo "session 実行中のため復旧しない: $live" | tee -a "$L"
+  exit 1
+fi
+# 実行中 session が無い時だけ、残った固定ポートの tunnel/relay を片付ける
 "$here/tunnel.sh" down $PORT >>"$L" 2>&1
 if [[ $g =~ ^closed:BOXP-561-([A-Za-z0-9-]+)$ ]]; then
   tok=${BASH_REMATCH[1]}
