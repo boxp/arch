@@ -87,11 +87,116 @@ function atlasSize(p: PartsPlayer): [number, number] {
   }
 }
 
-/** 髪房の層だけに、別素材を消した切り出しテクスチャを与える（アトラスは他の層と共有なので直接は消さない）。消した画素数を返す。 */
-export function isolateHairStrand(p: PartsPlayer, mesh: number): number {
+/** n 以上の最小の 2 のべき乗。 */
+export function powerOfTwo(n: number): number {
+  let p = 1
+  while (p < n) p *= 2
+  return p
+}
+
+/**
+ * 前髪の頭頂（桜の右上）の外周。元の絵は外周を約 16 画素かけて透明へぼかし、輪郭線のすぐ内側に明るい帯（輝度 110〜150）を描く。
+ * 後ろ髪の層はこの下が四角く抜けているため、ぼかしから背景が透け、帯と合わせて「髪の左上の白い線」に見える
+ * （BOXP-525 r21、Owner 画像で指摘。範囲を色で塗った検証描画で、この範囲は前髪の頭頂だけに出ることを確認）。
+ * v11r の 4096px アトラス画素座標。
+ */
+export const CROWN_RIM = { x0: 3286, y0: 0, x1: 3392, y1: 42 } as const
+/** 帯とみなす輝度（ストレートアルファ）と、透明な外側からの距離（画素）。髪の地は輝度 50〜70。 */
+export const CROWN_RIM_LUMA = 85
+export const CROWN_RIM_REACH = 9
+/** 帯を置き換える髪の地の輝度。 */
+export const CROWN_HAIR_LUMA = 62
+/** ぼかしの不透明度に掛ける倍率（16 画素のぼかしを約 3 画素にし、最も外の輪郭線まで背景を透かさない）。 */
+export const CROWN_ALPHA_GAIN = 6
+
+/**
+ * 乗算済みアルファの画素列で、外周のぼかしの不透明度を gain 倍に締め、透明な外側から reach 画素以内の明るい画素を
+ * 色相を保ったまま髪の地の輝度へ落とす。桜色は対象外。変えた画素数を返す。
+ */
+export function dimRim(
+  pixels: Uint8Array,
+  w: number,
+  h: number,
+  reach = CROWN_RIM_REACH,
+  gain = CROWN_ALPHA_GAIN,
+): number {
+  // 範囲の外は「外側」とみなさない（切り出しの縁で髪の中まで落とさない）。
+  const clear = (x: number, y: number) =>
+    x >= 0 && y >= 0 && x < w && y < h && (pixels[(y * w + x) * 4 + 3] as number) < 8
+  const edits: { i: number; color: [number, number, number]; alpha: number }[] = []
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4,
+        a = pixels[i + 3] as number
+      if (a < 8) continue
+      const px = [pixels[i] as number, pixels[i + 1] as number, pixels[i + 2] as number, a] as const
+      if (isOrnamentPink(px)) continue
+      let color: [number, number, number] = [(px[0] * 255) / a, (px[1] * 255) / a, (px[2] * 255) / a]
+      const luma = color[0] * 0.3 + color[1] * 0.59 + color[2] * 0.11
+      let bright = false
+      if (luma > CROWN_RIM_LUMA)
+        for (let dy = -reach; dy <= reach && !bright; dy++)
+          for (let dx = -reach; dx <= reach && !bright; dx++)
+            if (dx * dx + dy * dy <= reach * reach && clear(x + dx, y + dy)) bright = true
+      if (bright) color = color.map((c) => (c * CROWN_HAIR_LUMA) / luma) as [number, number, number]
+      const alpha = Math.min(255, a * gain)
+      if (bright || alpha !== a) edits.push({ i, color, alpha })
+    }
+  for (const { i, color, alpha } of edits) {
+    for (let c = 0; c < 3; c++) pixels[i + c] = Math.min(alpha, Math.round(((color[c] as number) * alpha) / 255))
+    pixels[i + 3] = alpha
+  }
+  return edits.length
+}
+
+/**
+ * 前髪の頭頂の外周のぼかしを締め、明るい帯を髪の地の色にする（共有アトラスを直接変える）。変えた画素数を返す。
+ * 顔のテクスチャ補正（patchFaceTexture）より前に呼ぶ: 顔の補正は読み込み時のアトラスの写しを赤みの変化ごとに書き戻すため、後で変えると上書きされる。
+ */
+export function dimCrownRim(p: PartsPlayer, mesh: number = FRONT_HAIR, box = CROWN_RIM): number {
   const gl = p.gl,
     [width, height] = atlasSize(p),
     info = p.meshes[mesh] as Mesh
+  // 固定座標は v11r の 4096px アトラス専用。別サイズのモデルには適用しない。
+  if (width !== 4096 || height !== 4096) throw new Error('前髪のアトラスサイズが異なります')
+  const x0 = box.x0,
+    y0 = box.y0,
+    w = box.x1 - box.x0,
+    h = box.y1 - box.y0,
+    texture = p.textures[info.texture] as WebGLTexture,
+    framebuffer = gl.createFramebuffer(),
+    previous = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null,
+    pixels = new Uint8Array(w * h * 4)
+  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer)
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0)
+  try {
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('アトラスを読めません')
+    gl.readPixels(x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+  } finally {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, previous)
+    gl.deleteFramebuffer(framebuffer)
+  }
+  // 範囲内の明るい画素は前髪の頭頂の帯だけ（範囲を色で塗った検証描画で、他の層に出ないことを確認済み）。
+  // 三角形の被覆で絞ると、外周の三角形の縁で描かれる帯の上端が残る。
+  const changed = dimRim(pixels, w, h)
+  gl.bindTexture(gl.TEXTURE_2D, texture)
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+  return changed
+}
+
+/** 後ろ髪の桜の左上に浮く孤立片。v11r アトラス画素座標。 */
+export function isBackHairFragment(x: number, y: number): boolean {
+  return x >= 250 && x < 264 && y >= 66 && y < 85
+}
+
+/** 対象の層だけに、別素材を消した切り出しテクスチャを与える。消した画素数を返す。 */
+export function isolateHairStrand(p: PartsPlayer, mesh: number, fragmentOnly = false): number {
+  const gl = p.gl,
+    [width, height] = atlasSize(p),
+    info = p.meshes[mesh] as Mesh
+  // 固定座標は v11r の 4096px アトラス専用。別サイズのモデルには適用しない。
+  if (fragmentOnly && (width !== 4096 || height !== 4096)) throw new Error('後ろ髪のアトラスサイズが異なります')
   let u0 = Infinity,
     v0 = Infinity,
     u1 = -Infinity,
@@ -128,7 +233,7 @@ export function isolateHairStrand(p: PartsPlayer, mesh: number): number {
     gl.bindFramebuffer(gl.FRAMEBUFFER, previous)
     gl.deleteFramebuffer(framebuffer)
   }
-  const covered = triangleCoverage(info.uvs, info.indices, width, height, x0, y0, w, h)
+  const covered = fragmentOnly ? undefined : triangleCoverage(info.uvs, info.indices, width, height, x0, y0, w, h)
   let erased = 0
   for (let i = 0; i < w * h; i++) {
     const a = pixels[4 * i + 3] as number
@@ -136,30 +241,37 @@ export function isolateHairStrand(p: PartsPlayer, mesh: number): number {
     // アトラスは乗算済みアルファなので、色を戻してから判定する。
     const top = (Math.floor(i / w) + y0 + 0.5 - v0) / (v1 - v0) < STRAND_TOP
     if (
-      covered[i] &&
-      (!top ||
-        !isForeignToHair(
-          ((pixels[4 * i] as number) * 255) / a,
-          ((pixels[4 * i + 1] as number) * 255) / a,
-          ((pixels[4 * i + 2] as number) * 255) / a,
-        ))
+      fragmentOnly
+        ? !isBackHairFragment((i % w) + x0, Math.floor(i / w) + y0)
+        : covered?.[i] &&
+          (!top ||
+            !isForeignToHair(
+              ((pixels[4 * i] as number) * 255) / a,
+              ((pixels[4 * i + 1] as number) * 255) / a,
+              ((pixels[4 * i + 2] as number) * 255) / a,
+            ))
     )
       continue
     pixels[4 * i] = pixels[4 * i + 1] = pixels[4 * i + 2] = pixels[4 * i + 3] = 0
-    if (covered[i]) erased++
+    if (fragmentOnly || covered?.[i]) erased++
   }
+  // 2 のべき乗の大きさに置き、p2l.js がミップマップを作れるようにする（縮小表示で細い線が欠けない）。
+  const W = powerOfTwo(w),
+    H = powerOfTwo(h),
+    padded = new Uint8Array(W * H * 4)
+  for (let y = 0; y < h; y++) padded.set(pixels.subarray(y * w * 4, (y + 1) * w * 4), y * W * 4)
   const texture = gl.createTexture() as WebGLTexture
   gl.bindTexture(gl.TEXTURE_2D, texture)
   gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, padded)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
   const uvs = new Float32Array(info.uvs.length)
   for (let i = 0; i < info.vertices; i++) {
-    uvs[2 * i] = ((info.uvs[2 * i] as number) * width - x0) / w
-    uvs[2 * i + 1] = ((info.uvs[2 * i + 1] as number) * height - y0) / h
+    uvs[2 * i] = ((info.uvs[2 * i] as number) * width - x0) / W
+    uvs[2 * i + 1] = ((info.uvs[2 * i + 1] as number) * height - y0) / H
   }
   const uvBuffer = gl.createBuffer() as WebGLBuffer
   gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer)
@@ -283,6 +395,11 @@ export function patchHair(p: PartsPlayer): Record<string, unknown> {
     } catch (e) {
       result[`strand${mesh}`] = e instanceof Error ? e.message : String(e)
     }
+  }
+  try {
+    result.backFragment = isolateHairStrand(p, 31, true)
+  } catch (e) {
+    result.backFragment = e instanceof Error ? e.message : String(e)
   }
   try {
     result.ornament = extendOrnament(p)
