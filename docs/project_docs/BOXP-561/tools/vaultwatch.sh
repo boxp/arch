@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 長時間評価の補助監視: 対象モデルの job が本番 vault を変更しうる tool 呼び出しをしたら ABORT を作る（内容は出力しない）
+# 長時間評価の補助監視（二次防御、一次防御は実行前に拒否する vaultguard.ts）: 対象モデルの job が本番 vault を変更しうる tool 呼び出しをしたら ABORT を作る（内容は出力しない）
 # usage: vaultwatch.sh TOKEN MODEL
 L=${BOXP561_TMP:?BOXP561_TMP required}
 S=$L/sess-${1:?TOKEN}

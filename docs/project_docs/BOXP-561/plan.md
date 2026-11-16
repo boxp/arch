@@ -128,4 +128,5 @@ Owner は時間より実際のアウトプットを読み比べたい。そこ�
 
 - 区間は q27L1（151 分）、fnL1（34 分、vaultwatch の誤検知で中止）、fnL2（179 分）、fnL3（178 分）。どの区間でも受付の復帰と実推論を確認した。HANG は 0、MemAvailable の最小は 31.0 GiB。guard の差分は本番 cron と他の票による Board の変更だけで、評価による変更はなかった。
 - 運用中の修正は 3 点。状態判定の set -e 不具合（finalize を追加）、vaultwatch の追加、再処理中の idle 誤判定を防ぐ slot 確認。
+- レビュー後の追加: vaultwatch は tool 実行開始後の事後検出で書込みを防げないため、pi 拡張 `tools/vaultguard.ts` を `long_run.sh` で `-e` 読込みし、本番 vault 配下への write/edit と本番 vault のパス要素（obsidian-headless / Documents とその glob）を含む bash を実行前に拒否する（判定不能は拒否）。模擬サーバの tool 呼び出しで bash/write とも拒否・vault 変更 0 を確認。vaultwatch と guard は二次防御として残す。今回の評価結果は本変更前のもので、再計測はしていない（過去 T1 で本番 vault を ls した 6 呼び出しは今後は拒否される）。
 - 読み比べの入口は Obsidian の `Projects/localllm-practical-eval/読み比べ.md`。

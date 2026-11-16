@@ -133,7 +133,7 @@ log "segment $(basename "$seg") start resume=${#cont[@]}"
 s0=$(date +%s)
 (
   cd "$cwd"
-  exec env -i "${envargs[@]}" setsid pi -p --mode json --provider llama.cpp --model "$model" --session-dir "$J/pi-sessions" "${cont[@]}" --no-extensions --no-skills --no-mcp --no-prompt-templates --thinking off <"$seg/input.md" >"$seg/events.jsonl" 2>"$seg/stderr.log"
+  exec env -i "${envargs[@]}" setsid pi -p --mode json --provider llama.cpp --model "$model" --session-dir "$J/pi-sessions" "${cont[@]}" --no-extensions -e "$here/vaultguard.ts" --no-skills --no-mcp --no-prompt-templates --thinking off <"$seg/input.md" >"$seg/events.jsonl" 2>"$seg/stderr.log"
 ) &
 pid=$!
 reason='exit'
