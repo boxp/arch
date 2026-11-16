@@ -355,21 +355,21 @@ export function isolateHairStrand(p: PartsPlayer, mesh: number, fragmentOnly = f
     const a = pixels[4 * i + 3] as number
     if (!a) continue
     // アトラスは乗算済みアルファなので、色を戻してから判定する。
-    const top = (Math.floor(i / w) + y0 + 0.5 - v0) / (v1 - v0) < STRAND_TOP
-    if (
-      fragmentOnly
-        ? !isBackHairFragment((i % w) + x0, Math.floor(i / w) + y0)
-        : covered?.[i] &&
-          (!top ||
-            !isForeignToHair(
-              ((pixels[4 * i] as number) * 255) / a,
-              ((pixels[4 * i + 1] as number) * 255) / a,
-              ((pixels[4 * i + 2] as number) * 255) / a,
-            ))
-    )
-      continue
+    // 後ろ髪（fragmentOnly）では孤立片の範囲（isBackHairFragment、x=250〜263）だけを消し、それ以外の画素
+    // （CROWN_STRIP の頭頂の帯を含む）はそのまま残す。髪房では三角形の外と、上側の島外の欠片を消す。
+    const inMesh = covered?.[i] === 1
+    const erase = fragmentOnly
+      ? isBackHairFragment((i % w) + x0, Math.floor(i / w) + y0)
+      : !inMesh ||
+        ((Math.floor(i / w) + y0 + 0.5 - v0) / (v1 - v0) < STRAND_TOP &&
+          isForeignToHair(
+            ((pixels[4 * i] as number) * 255) / a,
+            ((pixels[4 * i + 1] as number) * 255) / a,
+            ((pixels[4 * i + 2] as number) * 255) / a,
+          ))
+    if (!erase) continue
     pixels[4 * i] = pixels[4 * i + 1] = pixels[4 * i + 2] = pixels[4 * i + 3] = 0
-    if (fragmentOnly || covered?.[i]) erased++
+    if (fragmentOnly || inMesh) erased++
   }
   // BOXP-525 r22: 後ろ髪に重ねて描かれた耳の上の水色の飾り。横髪の外側の縁を消すと、左右を向いた時に横髪の同じ飾りと二重に見えるため髪の色で埋める。
   if (fragmentOnly) {

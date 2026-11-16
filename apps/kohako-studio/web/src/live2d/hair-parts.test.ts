@@ -92,6 +92,12 @@ describe('後ろ髪アトラスの孤立片', () => {
     expect(isBackHairFragment(256, 85)).toBe(false)
     expect(isBackHairFragment(280, 55)).toBe(false)
   })
+  it('頭頂の帯（CROWN_STRIP）の範囲の画素は孤立片として消さない', async () => {
+    const { isBackHairFragment, CROWN_STRIP } = await import('./hair-parts')
+    for (let x = CROWN_STRIP.x0; x < CROWN_STRIP.x1; x++)
+      for (let y = CROWN_STRIP.y0; y < CROWN_STRIP.y1 + CROWN_STRIP.depth; y++)
+        expect(isBackHairFragment(x, y)).toBe(false)
+  })
 })
 
 describe('dimRim (BOXP-525 r21 髪の左上の白い線)', () => {
