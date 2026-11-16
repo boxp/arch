@@ -33,6 +33,22 @@ git show "$BASE:$S" >"$S"
 testonly=$(res)
 cp "$w/patched.sh" "$S"
 yaml_cases=$(grep -cE '^check .*\.yaml' "$T")
+# 追加された check 行が、票で指定した 3 入力と期待ノードをそれぞれ fixture に対して検証しているか
+grep -vxFf "$w/orig-checks" "$w/new-checks" >"$w/added-checks" || true
+required_cases=true
+# 期待値は引用込みで比較し、入力ファイルは行末（単独入力）であること
+has_case() { # EXPECTED_LITERAL INPUT
+  local l
+  while IFS= read -r l; do
+    [[ $l == *" $1 \"\$fixture\" $2" ]] && return 0
+  done <"$w/added-checks"
+  return 1
+}
+{ has_case "'[\"golyat-4\"]'" ansible/playbooks/node-golyat-4.yaml || has_case '"[\"golyat-4\"]"' ansible/playbooks/node-golyat-4.yaml; } || required_cases=false
+# shellcheck disable=SC2016 # テスト内の変数名をそのまま照合する
+has_case '"$CP"' ansible/playbooks/control-plane.yaml || required_cases=false
+# shellcheck disable=SC2016
+has_case '"$WORKER"' ansible/playbooks/worker-image.yaml || required_cases=false
 ap=${after%/*}
 at=${after#*/}
 tp=${testonly%/*}
@@ -42,9 +58,9 @@ allpass=false
 newfail=false
 [[ -n $testonly && $((tt - tp)) -ge 3 ]] && newfail=true
 accepted=false
-[[ $applies == true && $only == true && $kept == true && $allpass == true && $newfail == true && $achecks -eq $((bchecks + 3)) && $at -eq $((${before#*/} + 3)) && $yaml_cases -ge 3 ]] && accepted=true
+[[ $applies == true && $only == true && $kept == true && $allpass == true && $newfail == true && $achecks -eq $((bchecks + 3)) && $at -eq $((${before#*/} + 3)) && $yaml_cases -ge 3 && $required_cases == true ]] && accepted=true
 cd /
 git -C "$ARCH" worktree remove --force "$w/a"
 rm -rf "$w"
-printf '{"applies":%s,"files_changed":"%s","only_expected_files":%s,"checks_before":%s,"checks_after":%s,"existing_checks_kept_in_order":%s,"yaml_check_lines":%s,"tests_before":"%s","tests_test_only_on_old_script":"%s","tests_after":"%s","new_tests_fail_before":%s,"all_pass_after":%s,"accepted":%s}\n' \
-  "$applies" "${files% }" "$only" "$bchecks" "$achecks" "$kept" "$yaml_cases" "$before" "$testonly" "$after" "$newfail" "$allpass" "$accepted"
+printf '{"applies":%s,"files_changed":"%s","only_expected_files":%s,"checks_before":%s,"checks_after":%s,"existing_checks_kept_in_order":%s,"yaml_check_lines":%s,"required_yaml_cases":%s,"tests_before":"%s","tests_test_only_on_old_script":"%s","tests_after":"%s","new_tests_fail_before":%s,"all_pass_after":%s,"accepted":%s}\n' \
+  "$applies" "${files% }" "$only" "$bchecks" "$achecks" "$kept" "$yaml_cases" "$required_cases" "$before" "$testonly" "$after" "$newfail" "$allpass" "$accepted"

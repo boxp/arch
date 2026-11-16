@@ -66,12 +66,17 @@ case "${1:-}" in
     tok=${2:?TOKEN}
     port=${3:?PORT}
     r=""
+    # BOXP561_DEADLINE (epoch): 閉鎖期限。直接推論の確認はここまでに打ち切り、成否にかかわらず gate を開ける
+    dl=${BOXP561_DEADLINE:-$(($(date +%s) + 600))}
     for _ in $(seq 5); do
-      r=$(chat "http://127.0.0.1:$port" gemma4-26b 600 || true)
+      left=$((dl - 60 - $(date +%s)))
+      ((left > 10)) || break
+      ((left > 600)) && left=600
+      r=$(chat "http://127.0.0.1:$port" gemma4-26b "$left" || true)
       [[ $r == 5* ]] && break
       sleep 10
     done
-    log "direct gemma4-26b: $r"
+    log "direct gemma4-26b: ${r:-timeout(deadline)}"
     bash "$RTAPI" gate "open:BOXP-561-$tok-end" 2>&1 | tail -1
     for _ in $(seq 30); do
       r2=$(chat $SVC gemma4-26b 120 || true)

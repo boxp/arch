@@ -19,7 +19,8 @@ L=$S/session.log
 log() { echo "$(date -u +%FT%TZ) $*" | tee -a "$L"; }
 export BOXP561_OBS_DIR=$S/obs
 closed=0
-deadline=0
+# close 前に中断しても restore が期限切れ扱いにならないよう、仮の期限を置く
+deadline=$(($(date +%s) + 90 * 60))
 cleanup() {
   rc=$?
   trap - EXIT INT TERM
@@ -30,14 +31,18 @@ cleanup() {
   "$here/tunnel.sh" down $PORT >>"$L" 2>&1 || true
   if ((closed)); then
     "$here/tunnel.sh" up $PORT >>"$L" 2>&1 || true
-    if "$here/ops.sh" restore "$tok" $PORT >>"$L" 2>&1; then
+    # 復帰確認も閉鎖期限内に収める（ops.sh restore は BOXP561_DEADLINE を超えて待たない）
+    if BOXP561_DEADLINE=$deadline "$here/ops.sh" restore "$tok" $PORT >>"$L" 2>&1; then
       "$here/deadman.sh" disarm >>"$L" 2>&1 || true
     else
       log "RESTORE FAILED: 手動確認が必要 (dead-man は残す)"
     fi
     "$here/tunnel.sh" down $PORT >>"$L" 2>&1 || true
   fi
-  "$here/guard.sh" verify "$S/guard.edn" >>"$L" 2>&1 || log "GUARD MISMATCH"
+  if ! "$here/guard.sh" verify "$S/guard.edn" >>"$L" 2>&1; then
+    log "GUARD MISMATCH: 本番 vault に評価外の変更、次の区間に進まず確認すること"
+    ((rc != 0)) || rc=3
+  fi
   log "session end"
   exit $rc
 }
@@ -51,10 +56,10 @@ trap cleanup EXIT INT TERM
 closed=1
 "$here/ops.sh" close "$tok" >>"$L" 2>&1
 deadline=$(($(date +%s) + 90 * 60))
-# dead-man: workspace ごと止まって cleanup が走らなくても、node 側で最長 10 分後に gate を開け戻す（5 分ごとに延長、閉鎖上限を超えない）
+# dead-man: workspace ごと止まって cleanup が走らなくても、node 側で最長 10 分後に gate を開け戻す（5 分ごとに延長、閉鎖期限を超えない）
 "$here/deadman.sh" arm "$tok" 600 >>"$L" 2>&1
 (while sleep 300; do
-  s=$((deadline + 300 - $(date +%s)))
+  s=$((deadline - $(date +%s)))
   ((s > 600)) && s=600
   ((s > 0)) || break
   "$here/deadman.sh" arm "$tok" $s >>"$L" 2>&1 || true
@@ -67,7 +72,7 @@ hb=$!
 "$here/obs.sh" start "$BOXP561_OBS_DIR" >>"$L" 2>&1
 # 閉鎖 90 分の上限: 期限で ABORT を作り、実行中の run を止める
 (
-  sleep $((deadline - $(date +%s)))
+  sleep $((deadline - 180 - $(date +%s))) # restore の確認時間を期限内に残す
   echo "$(date -u +%FT%TZ) closure deadline" >>"$BOXP561_OBS_DIR/ABORT"
 ) &
 wd=$!
