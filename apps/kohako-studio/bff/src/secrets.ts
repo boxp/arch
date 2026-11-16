@@ -11,7 +11,8 @@ const WORD =
   'pass(?:word|wd|phrase)|secret|token|api[-_ ]?key|access[-_ ]?key|credential|private[-_ ]?key|session|auth(?!or)'
 // 名前は前後 40 字までしか見ない（区切りの無い長い文字列で処理時間が伸びないように）。
 const NAME = `(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]{0,40}(?:${WORD})[A-Za-z0-9_.-]{0,40}`
-const QUOTED = `\\$?'[^'\\n]*'|"(?:[^"\\\\\\n]|\\\\.)*"|\`[^\`\\n]*\``
+// 引用符つきの値は、閉じ引用符が無くても（入力が途中で切れた・複数行にまたがる）終わりまで伏せる。伏せ過ぎる側に倒す。
+const QUOTED = `"""[\\s\\S]*?(?:"""|$)|'''[\\s\\S]*?(?:'''|$)|\\$?'[^']*'?|"(?:[^"\\\\]|\\\\[\\s\\S])*"?|\`[^\`]*\`?`
 const RULES: [RegExp, string][] = [
   [/-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----|$)/g, MASK],
   // 認証ヘッダ: 方式名（Bearer 等）は残し、値を伏せる。Cookie は行末まで。
@@ -30,14 +31,20 @@ const RULES: [RegExp, string][] = [
   [/\b([a-z][a-z0-9+.-]{0,20}:\/\/)[^\s/@:]{8,500}@/gi, `$1${MASK}@`],
   // 秘密らしい名前の項目: NAME=値 / NAME: 値 / "name": "値"（JSON 文字列内の \"name\": \"値\" も）。
   [
-    new RegExp(`((?:\\\\?["'])?${NAME}(?:\\\\?["'])?\\s*[:=]\\s*)(?:\\\\"[^"]*"|${QUOTED}|[^\\s"'\`&|;,)}\\]]+)`, 'gi'),
+    new RegExp(
+      `((?:\\\\?["'])?${NAME}(?:\\\\?["'])?\\s*[:=]\\s*)(?:\\\\"[^"]*"?|${QUOTED}|[^\\s"'\`&|;,)}\\]]+)`,
+      'gi',
+    ),
     `$1${MASK}`,
   ],
   // --name 値 / -name 値（値が引用符つきで空白を含む場合も）。
   [new RegExp(`(--?${NAME.replace('(?<![A-Za-z0-9_.-])', '')}\\s+)(?:${QUOTED}|[^\\s-]\\S*)`, 'gi'), `$1${MASK}`],
-  [/\b((?:mysql|mariadb|mysqldump|mysqladmin)\b[^\n|;&]*?\s-p)(?:'[^'\n]*'|"[^"\n]*"|[^\s'"]\S*)/g, `$1${MASK}`],
-  [/\b(sshpass\s+-p\s*)(?:'[^'\n]*'|"[^"\n]*"|\S+)/g, `$1${MASK}`],
-  [/\b(curl\b[^\n|;&]*?\s(?:-u|--user)[\s=]+)(?:'[^'\n]*'|"[^"\n]*"|\S+)/g, `$1${MASK}`],
+  [
+    new RegExp(`\\b((?:mysql|mariadb|mysqldump|mysqladmin)\\b[^\\n|;&]*?\\s-p)(?:${QUOTED}|[^\\s'"]\\S*)`, 'g'),
+    `$1${MASK}`,
+  ],
+  [new RegExp(`\\b(sshpass\\s+-p\\s*)(?:${QUOTED}|\\S+)`, 'g'), `$1${MASK}`],
+  [new RegExp(`\\b(curl\\b[^\\n|;&]*?\\s(?:-u|--user)[\\s=]+)(?:${QUOTED}|\\S+)`, 'g'), `$1${MASK}`],
 ]
 export function redactSecrets(text: string): string {
   let out = text
@@ -56,11 +63,17 @@ const maskKeys = (value: unknown, depth = 0): unknown => {
   return value
 }
 export type ArgField = { key: string; value: string; truncated: boolean }
+// 伏字の前に入力を切る位置（巨大な引数で処理時間が伸びないように）。表示上限 max には依存させない。
+export const INPUT_MAX = VALUE_MAX * 4
+// 入力を切った時に、切り口の手前で表示から落とす長さ。途中で切れたトークンや URL が規則の最小長に届かず残るのを防ぐ。
+export const EDGE_GUARD = 2_000
 /** 改行とタブ以外の制御文字を落とし、伏字にしてから上限で切る（切った端に秘密の一部が残らないよう、伏字が先）。 */
 export function publicText(text: string, max: number): { value: string; truncated: boolean } {
-  // 伏字の前に入力そのものを上限の数倍で切る（巨大な引数で処理時間が伸びないように）。
-  const clean = redactSecrets(text.slice(0, max * 4).replace(/[^\P{Cc}\n\t]/gu, ''))
-  return { value: clean.slice(0, max), truncated: clean.length > max || text.length > max * 4 }
+  const cut = text.length > INPUT_MAX
+  const clean = redactSecrets((cut ? text.slice(0, INPUT_MAX) : text).replace(/[^\P{Cc}\n\t]/gu, ''))
+  // 入力を切った場合、閉じ引用符の無い値は上の規則が終わりまで伏せ、切り口付近の断片は表示しない。
+  const limit = Math.max(0, Math.min(max, cut ? clean.length - EDGE_GUARD : clean.length))
+  return { value: clean.slice(0, limit), truncated: cut || clean.length > limit }
 }
 export function redactArgs(args: Record<string, unknown>): ArgField[] {
   const fields: ArgField[] = []

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MASK, redactArgs, redactSecrets, STEP_MAX, VALUE_MAX } from './secrets.js'
+import { MASK, publicText, redactArgs, redactSecrets, STEP_MAX, VALUE_MAX } from './secrets.js'
 describe('redactSecrets', () => {
   it('普通のコマンド・パス・コードはそのまま読める', () => {
     for (const s of [
@@ -138,5 +138,40 @@ describe('redactArgs', () => {
     expect(fields.reduce((n, f) => n + f.value.length, 0)).toBeLessThanOrEqual(STEP_MAX)
     expect(fields[4].truncated).toBe(true)
     expect(redactArgs(Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`k${i}`, 1])))).toHaveLength(24)
+  })
+})
+describe('切れた入力・閉じ引用符の無い値 (codex review P0)', () => {
+  const secret = `hunter2${'x'.repeat(200_000)}`
+  it('上限を超えて閉じ引用符が切り落とされても秘密値の先頭が残らない', () => {
+    for (const text of [
+      `export password="${secret}"`,
+      `export password='${secret}'`,
+      `curl -u "${secret}" https://example.com`,
+      `mysql -p"${secret}" db`,
+      `tool --token "${secret}"`,
+      `{\\"password\\": \\"${secret}\\"}`,
+    ]) {
+      const [field] = redactArgs({ command: text })
+      expect(field.value, text.slice(0, 30)).not.toContain('hunter2')
+      expect(field.value).not.toContain('xxxx')
+      expect(field.truncated).toBe(true)
+    }
+  })
+  it('残り枠が小さくても伏字は全文に対して行う', () => {
+    const fields = redactArgs({ a: 'y'.repeat(STEP_MAX - 5), command: `password="hunter2 ${'z'.repeat(100)}"` })
+    expect(JSON.stringify(fields)).not.toContain('hunter2')
+  })
+  it('複数行にまたがる引用符つきの値・三連引用符も伏せる', () => {
+    expect(redactSecrets('password="line1\nhunter2"\necho ok')).toBe(`password=${MASK}\necho ok`)
+    expect(redactSecrets('secret = """a\nhunter2"""\nprint(1)')).toBe(`secret = ${MASK}\nprint(1)`)
+    expect(redactSecrets('password="hunter2')).toBe(`password=${MASK}`)
+  })
+  it('切り口にかかった短いトークン断片は表示しない', () => {
+    const text = `${'a '.repeat(VALUE_MAX * 2 - 4)}ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789`
+    const { value } = publicText(text, VALUE_MAX * 4)
+    expect(value).not.toContain('ghp_')
+  })
+  it('通常の引数は従来どおり読める', () => {
+    expect(redactSecrets('echo "hello world" && ls -la \'my dir\'')).toBe('echo "hello world" && ls -la \'my dir\'')
   })
 })
