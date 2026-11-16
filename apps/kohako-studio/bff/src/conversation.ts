@@ -103,6 +103,7 @@ export function createConversation({
   geocode = async (views: View[]) => views,
   cancelSettleMs = 2000,
   activityDrainMs = 2000,
+  argsIntervalMs = 1500,
 }: {
   now: () => number
   hermes: ReturnType<typeof createHermes>
@@ -111,6 +112,7 @@ export function createConversation({
   geocode?: (views: View[]) => Promise<View[]>
   cancelSettleMs?: number
   activityDrainMs?: number
+  argsIntervalMs?: number
 }) {
   const entries = new Map<string, Entry>()
   let sessionStartedAt = now(),
@@ -496,6 +498,7 @@ export function createConversation({
       }
       let activityController: AbortController | undefined,
         activityRun: string | undefined,
+        loadFinalArgs: (() => Promise<void>) | undefined,
         activityDone: Promise<void> | undefined
       const watchActivity = (runId: string) => {
         if (input.kind !== 'text' || activityRun === runId) return
@@ -505,11 +508,47 @@ export function createConversation({
         entry.activity = createActivity(now)
         const controller = activityController,
           activity = entry.activity
+        // BOXP-560: 実引数は開始通知に無いので、会話記録から呼び出し ID で引き当てる。記録への書き込み時期は Hermes 次第なので、
+        // 手順の開始・完了のたびに（間隔を空けて）照会し、run 終了時にもう一度照会する。失敗しても会話には影響させない。
+        let fetching = false,
+          again = false,
+          lastFetch = Number.NEGATIVE_INFINITY
+        const load = async () => {
+          if (!hermes.toolCalls || !entry.sessionId || !activity.needsArgs()) return
+          try {
+            activity.attachArgs(await hermes.toolCalls(entry.sessionId))
+          } catch {
+            /* 引数が取れなくても手順の表示は続ける */
+          }
+        }
+        const fetchArgs = () => {
+          if (fetching) {
+            again = true
+            return
+          }
+          fetching = true
+          void (async () => {
+            const wait = lastFetch + argsIntervalMs - now()
+            if (wait > 0) await new Promise<void>((r) => setTimeout(r, wait).unref?.())
+            if (controller.signal.aborted) return
+            lastFetch = now()
+            await load()
+          })().finally(() => {
+            fetching = false
+            if (again && !controller.signal.aborted) {
+              again = false
+              fetchArgs()
+            }
+          })
+        }
+        loadFinalArgs = load
         activityDone = hermes
           .events?.(
             runId,
             (e) => {
-              if (!controller.signal.aborted) activity.apply(e)
+              if (controller.signal.aborted) return
+              activity.apply(e)
+              if (e.event === 'tool.started' || e.event === 'tool.completed') void fetchArgs()
             },
             controller.signal,
           )
@@ -536,6 +575,9 @@ export function createConversation({
         if (activityDone && runEnded && !entry.cancelRequested)
           await Promise.race([activityDone, new Promise<void>((r) => setTimeout(r, activityDrainMs).unref?.())])
         activityController?.abort()
+        // 終了後の会話記録には全ての呼び出しが揃うので、未取得の引数を最後に 1 回だけ取りに行く（返答を待たせないよう上限つき）。
+        if (loadFinalArgs && runEnded)
+          await Promise.race([loadFinalArgs(), new Promise<void>((r) => setTimeout(r, 3000).unref?.())])
         entry.activity?.finish(settled.status === 'done' && !entry.cancelRequested)
         const result = touchApproval
           ? { status: 'failed' as const, error: 'touch_approval_denied' }

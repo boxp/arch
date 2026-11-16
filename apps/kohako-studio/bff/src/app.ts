@@ -321,6 +321,12 @@ export function createApp(opts: {
           stt: opts.sttUrl ? 'whisper' : null,
           sessionStartedAt: conv?.sessionStartedAt,
         })
+      // BOXP-560: 手順を開いた時だけ、その手順の実引数（伏字済み）を返す。依頼の照会と同じ認証・同じ会話（owner/verifier 別）の範囲。
+      const step = /^requests\/([A-Za-z0-9-]{8,64})\/activity\/(t\d{1,16})$/.exec(route)
+      if (step && conv && method === 'GET') {
+        const detail = conv.get(step[1])?.activity?.detail(step[2])
+        return detail ? json(200, detail) : json(404, { error: 'unknown_step' })
+      }
       const match = /^requests\/([A-Za-z0-9-]{8,64})(\/cancel)?$/.exec(route)
       if (match && conv && ((method === 'GET' && !match[2]) || (method === 'POST' && match[2]))) {
         const entry = conv.get(match[1])

@@ -10,6 +10,87 @@ type Tool = {
   runningMs?: number
   startMissing?: true
   result?: string
+  argsState?: 'full' | 'preview'
+}
+export type Field = { key: string; value: string; truncated: boolean }
+export type StepDetail = { tool: string; source: 'args' | 'preview'; fields: Field[]; omitted?: true }
+/** 手順を開いた時に取り寄せる実引数（BFF が伏字済み）。形が違えば表示しない。 */
+export function validateDetail(value: unknown): StepDetail | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const d = value as Record<string, unknown>
+  if (
+    typeof d.tool !== 'string' ||
+    !/^[A-Za-z0-9_.:-]{1,64}$/.test(d.tool) ||
+    (d.source !== 'args' && d.source !== 'preview') ||
+    !Array.isArray(d.fields) ||
+    d.fields.length > 24 ||
+    (d.omitted !== undefined && d.omitted !== true)
+  )
+    return null
+  const fields: Field[] = []
+  for (const v of d.fields) {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return null
+    const f = v as Record<string, unknown>
+    if (
+      typeof f.key !== 'string' ||
+      !/^[A-Za-z0-9_.-]{1,64}$/.test(f.key) ||
+      typeof f.value !== 'string' ||
+      f.value.length > 20001 ||
+      typeof f.truncated !== 'boolean'
+    )
+      return null
+    fields.push({ key: f.key, value: f.value, truncated: f.truncated })
+  }
+  return { tool: d.tool, source: d.source, fields, ...(d.omitted === true ? { omitted: true as const } : {}) }
+}
+const FIELD_LABELS: Record<string, string> = {
+  command: 'コマンド',
+  code: 'コード',
+  path: 'パス',
+  query: '検索語',
+  name: '名前',
+  file_path: 'ファイル',
+  old_string: '置換前',
+  new_string: '置換後',
+  patch: 'パッチ',
+  content: '内容',
+  mode: '方式',
+  replace_all: 'すべて置換',
+  offset: '開始行',
+  limit: '行数',
+  url: 'URL',
+  urls: 'URL',
+  pattern: '検索パターン',
+  preview: '概要（実引数は未取得）',
+}
+export function fieldLabel(tool: string, key: string): string {
+  if (key === 'path' && ['patch', 'write_file'].includes(tool)) return '対象'
+  if (key === 'name' && tool.startsWith('skill')) return 'スキル名'
+  return FIELD_LABELS[key] ?? key
+}
+/** 主な引数（コマンド・パス・検索語など）を先に、変更内容をその次に並べる。残りは届いた順。 */
+export function orderFields(fields: Field[]): Field[] {
+  const first = [
+    'command',
+    'code',
+    'query',
+    'name',
+    'path',
+    'file_path',
+    'url',
+    'urls',
+    'pattern',
+    'mode',
+    'old_string',
+    'new_string',
+    'patch',
+    'content',
+  ]
+  const rank = (k: string) => (first.includes(k) ? first.indexOf(k) : first.length)
+  return fields
+    .map((f, i) => ({ f, i }))
+    .sort((a, b) => rank(a.f.key) - rank(b.f.key) || a.i - b.i)
+    .map((x) => x.f)
 }
 type Note = { id: string; kind: 'note'; text: string; at: number }
 export type Activity = { steps: (Tool | Note)[]; writing: boolean; dropped: number }
@@ -52,6 +133,7 @@ export function validateActivity(value: unknown): Activity | null {
           s.runningMs >= 0 &&
           s.runningMs <= 86400000)) &&
       (s.startMissing === undefined || s.startMissing === true) &&
+      (s.argsState === undefined || s.argsState === 'full' || s.argsState === 'preview') &&
       (s.durationMs === undefined ||
         (typeof s.durationMs === 'number' &&
           Number.isInteger(s.durationMs) &&
@@ -69,6 +151,7 @@ export function validateActivity(value: unknown): Activity | null {
         ...(typeof s.durationMs === 'number' ? { durationMs: s.durationMs } : {}),
         ...(typeof s.runningMs === 'number' ? { runningMs: s.runningMs } : {}),
         ...(s.startMissing === true ? { startMissing: true as const } : {}),
+        ...(s.argsState === 'full' || s.argsState === 'preview' ? { argsState: s.argsState } : {}),
       })
   }
   return { steps, writing: a.writing, dropped: a.dropped as number }
@@ -162,6 +245,79 @@ let rootNode: HTMLElement | undefined,
   last = '',
   expanded = false
 const seen = new Map<string, { at: number; runningMs: number }>()
+// 開いている手順と取得済みの引数。1 秒ごとの作り直しでも閉じない・取り直さないよう、描画の外で持つ（次の依頼の開始で消す）。
+export type Loaded = { state: 'loading' | 'ready' | 'error'; detail?: StepDetail; forState?: 'full' | 'preview' }
+const open = new Set<string>(),
+  details = new Map<string, Loaded>(),
+  // 一覧が最後に伝えた各手順の引数の状態。取得中に preview から full へ変わった時、応答が返ってから取り直すために持つ。
+  argStates = new Map<string, 'full' | 'preview'>()
+/** 取得済みの引数が、一覧の伝える今の状態より古い（概要のまま実引数が届いた）なら取り直す。 */
+export const detailOutdated = (entry: Loaded | undefined, current: 'full' | 'preview' | undefined) =>
+  entry?.state === 'ready' && current !== undefined && entry.forState !== current
+let loader: ((stepId: string) => Promise<unknown>) | undefined,
+  generation = 0
+function fillPanel(panel: HTMLElement, id: string) {
+  const entry = details.get(id),
+    note = (text: string) => {
+      const p = document.createElement('p')
+      p.className = 'activity-args-note'
+      p.textContent = text
+      return p
+    }
+  const scroll = [...panel.querySelectorAll('pre')].map((x) => x.scrollTop)
+  panel.replaceChildren()
+  if (!entry) return
+  const d = entry.detail
+  if (!d) {
+    panel.append(
+      note(entry.state === 'loading' ? '読み込み中…' : '引数を取得できませんでした（開き直すと再試行します）'),
+    )
+    return
+  }
+  if (d.omitted) panel.append(note('古い手順のため引数は保持していません'))
+  else if (!d.fields.length) panel.append(note('引数なし'))
+  for (const f of orderFields(d.fields)) {
+    const box = document.createElement('div')
+    box.className = 'activity-arg'
+    box.dataset.key = f.key
+    const label = document.createElement('span')
+    label.className = 'activity-arg-label'
+    label.textContent = `${fieldLabel(d.tool, f.key)}${f.truncated ? '（長いため末尾を省略）' : ''}`
+    const value = document.createElement('pre')
+    value.className = 'activity-arg-value'
+    value.tabIndex = 0
+    value.textContent = f.value
+    box.append(label, value)
+    panel.append(box)
+  }
+  if (entry.state === 'error') panel.append(note('最新の引数を取得できませんでした'))
+  panel.querySelectorAll('pre').forEach((x, i) => {
+    x.scrollTop = scroll[i] ?? 0
+  })
+}
+function loadDetail(id: string, forState: 'full' | 'preview') {
+  if (!loader) return
+  const gen = generation,
+    refill = () => {
+      const panel = rootNode?.querySelector<HTMLElement>(`.activity-args[data-step="${id}"]`)
+      if (panel) fillPanel(panel, id)
+    }
+  details.set(id, { state: 'loading', detail: details.get(id)?.detail, forState })
+  refill()
+  loader(id)
+    .then(validateDetail, () => null)
+    .then((detail) => {
+      if (gen !== generation) return
+      details.set(
+        id,
+        detail ? { state: 'ready', detail, forState } : { state: 'error', detail: details.get(id)?.detail, forState },
+      )
+      refill()
+      // 取得中に最終の照会で状態が変わっていた場合、描画側は取得中の手順を取り直さないので、ここで 1 回だけ取り直す。
+      const current = argStates.get(id)
+      if (current && open.has(id) && detailOutdated(details.get(id), current)) loadDetail(id, current)
+    })
+}
 export function tickActivity() {
   if (!rootNode) return
   rootNode.querySelectorAll<HTMLElement>('[data-running-id]').forEach((el) => {
@@ -169,14 +325,23 @@ export function tickActivity() {
     if (at !== undefined) el.textContent = formatDuration(at.runningMs + Math.max(0, Date.now() - at.at))
   })
 }
-export function renderActivity(root: HTMLElement, activity: Activity | null, opts: { live: boolean }) {
+export function renderActivity(
+  root: HTMLElement,
+  activity: Activity | null,
+  opts: { live: boolean; loadDetail?: (stepId: string) => Promise<unknown> },
+) {
   rootNode = root
+  loader = opts.loadDetail
   if (!activity) {
     root.hidden = true
     root.replaceChildren()
     last = ''
     expanded = false
     seen.clear()
+    open.clear()
+    details.clear()
+    argStates.clear()
+    generation++
     return
   }
   const receivedAt = Date.now()
@@ -194,7 +359,17 @@ export function renderActivity(root: HTMLElement, activity: Activity | null, opt
     follow = !!oldList && oldList.scrollTop + oldList.clientHeight >= oldList.scrollHeight - 4
   // 作り直しても、開閉ボタンの焦点と一覧のスクロール位置は保つ（キーボード操作・読み返しを邪魔しない）。
   const hadFocus = root.contains(document.activeElement) && document.activeElement?.classList.contains('activity-head'),
-    oldTop = oldList?.scrollTop ?? 0
+    oldTop = oldList?.scrollTop ?? 0,
+    focusedStep = root.contains(document.activeElement)
+      ? (document.activeElement as HTMLElement | null)?.dataset.toggleStep
+      : undefined,
+    panelScroll = new Map<string, number[]>()
+  root.querySelectorAll<HTMLElement>('.activity-args').forEach((p) => {
+    panelScroll.set(
+      String(p.dataset.step),
+      [...p.querySelectorAll('pre')].map((x) => x.scrollTop),
+    )
+  })
   root.hidden = false
   root.dataset.live = opts.live ? '1' : '0'
   root.replaceChildren()
@@ -254,6 +429,42 @@ export function renderActivity(root: HTMLElement, activity: Activity | null, opt
       li.append(time)
       if (s.detail) li.append(make('span', 'activity-detail', s.detail))
       if (s.result) li.append(make('span', 'activity-result', s.result))
+      if (s.argsState && opts.loadDetail) {
+        argStates.set(s.id, s.argsState)
+        const state = s.argsState,
+          toggle = make('button', 'activity-args-toggle', '引数') as HTMLButtonElement,
+          panel = make('div', 'activity-args')
+        toggle.type = 'button'
+        toggle.dataset.toggleStep = s.id
+        panel.id = `activity-args-${s.id}`
+        panel.dataset.step = s.id
+        panel.dataset.tool = s.tool
+        panel.hidden = !open.has(s.id)
+        toggle.setAttribute('aria-controls', panel.id)
+        toggle.setAttribute('aria-expanded', String(open.has(s.id)))
+        toggle.setAttribute('aria-label', `${label.name}の引数`)
+        const stale = () => {
+          const entry = details.get(s.id)
+          return !entry || entry.state === 'error' || detailOutdated(entry, state)
+        }
+        toggle.onclick = () => {
+          const now = !open.has(s.id)
+          if (now) open.add(s.id)
+          else open.delete(s.id)
+          toggle.setAttribute('aria-expanded', String(now))
+          panel.hidden = !now
+          if (now) {
+            fillPanel(panel, s.id)
+            if (stale()) loadDetail(s.id, state)
+          }
+        }
+        li.append(toggle, panel)
+        if (open.has(s.id)) {
+          fillPanel(panel, s.id)
+          // 概要だけ表示していた手順に実引数が届いたら、開いたまま 1 回だけ取り直す。
+          if (detailOutdated(details.get(s.id), state)) loadDetail(s.id, state)
+        }
+      }
       li.append(
         make(
           'span',
@@ -267,5 +478,14 @@ export function renderActivity(root: HTMLElement, activity: Activity | null, opt
   root.append(head, list)
   list.scrollTop = follow ? list.scrollHeight : oldTop
   if (hadFocus) head.focus({ preventScroll: true })
+  root.querySelectorAll<HTMLElement>('.activity-args').forEach((p) => {
+    const tops = panelScroll.get(String(p.dataset.step))
+    if (tops)
+      p.querySelectorAll('pre').forEach((x, i) => {
+        x.scrollTop = tops[i] ?? 0
+      })
+  })
+  if (focusedStep)
+    root.querySelector<HTMLElement>(`[data-toggle-step="${focusedStep}"]`)?.focus({ preventScroll: true })
   tickActivity()
 }

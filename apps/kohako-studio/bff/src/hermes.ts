@@ -380,9 +380,61 @@ export function createHermes({
       }
     }
   }
+  async function toolCalls(sessionId: string): Promise<{ id: string; name: string; args: Record<string, unknown> }[]> {
+    if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(sessionId)) return []
+    try {
+      const result = await request(
+        `/api/sessions/${encodeURIComponent(sessionId)}/messages?order=latest&limit=200`,
+        { headers: auth },
+        2 * 1024 * 1024,
+        5000,
+      )
+      if (!Array.isArray(result.data?.data)) return []
+      const calls: { id: string; name: string; args: Record<string, unknown> }[] = []
+      for (const row of result.data.data) {
+        if (!row || typeof row !== 'object' || row.role !== 'assistant') continue
+        let items: unknown = row.tool_calls
+        if (typeof items === 'string') {
+          try {
+            items = JSON.parse(items)
+          } catch {
+            continue
+          }
+        }
+        if (!Array.isArray(items)) continue
+        for (const item of items) {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+          const id = item.id ?? item.call_id,
+            fn = item.function
+          if (
+            typeof id !== 'string' ||
+            !fn ||
+            typeof fn !== 'object' ||
+            Array.isArray(fn) ||
+            typeof fn.name !== 'string'
+          )
+            continue
+          let args: unknown = fn.arguments
+          if (typeof args === 'string') {
+            try {
+              args = JSON.parse(args)
+            } catch {
+              continue
+            }
+          }
+          if (!args || typeof args !== 'object' || Array.isArray(args)) continue
+          calls.push({ id, name: fn.name, args: args as Record<string, unknown> })
+        }
+      }
+      return calls
+    } catch {
+      return []
+    }
+  }
   return {
     approve,
     events,
+    toolCalls,
     async vaultImage(path: string): Promise<{ mime: string; data: Buffer } | undefined> {
       if (
         !path ||

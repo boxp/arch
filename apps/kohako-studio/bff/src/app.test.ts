@@ -1472,3 +1472,99 @@ it('returns public activity for text but never reasoning or touch activity', asy
     await new Promise<void>((r) => server.close(() => r()))
   }
 })
+it('serves redacted tool arguments only on demand, scoped to the same conversation (BOXP-560)', async () => {
+  let settle: (r: unknown) => void = () => {}
+  const sessions: string[] = []
+  const hermes = {
+    run: (_id: string, _text: string, _session: string, _i: string, _cb: Cb, _a: unknown, onRun: Cb) => {
+      onRun('run1')
+      return new Promise((r) => {
+        settle = r
+      })
+    },
+    events: async (_id: string, emit: Cb) => {
+      emit({ event: 'tool.started', tool: 'terminal', tool_call_id: 'call1', preview: 'git status' })
+    },
+    toolCalls: async (session: string) => {
+      sessions.push(session)
+      return [{ id: 'call1', name: 'terminal', args: { command: 'git status --short && echo --password hunter2' } }]
+    },
+    approve: async () => 'ok',
+    stop: async () => 'ok',
+  } as unknown as ReturnType<typeof createHermes>
+  let principal: 'owner' | 'verifier' | undefined = 'owner'
+  const server = createServer(createApp({ authenticate: async () => principal, hermes }))
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+  try {
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
+    await fetch(`${base}messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId: 'args-12345', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }),
+    })
+    await new Promise((r) => setTimeout(r, 20))
+    const list = await (await fetch(`${base}requests/args-12345`)).json()
+    expect(list.activity.steps[0]).toMatchObject({ id: 't1', tool: 'terminal', argsState: 'full' })
+    expect(JSON.stringify(list)).not.toMatch(/--short|hunter2/)
+    const res = await fetch(`${base}requests/args-12345/activity/t1`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-store')
+    expect(await res.json()).toEqual({
+      tool: 'terminal',
+      source: 'args',
+      fields: [{ key: 'command', value: 'git status --short && echo --password ［伏字］', truncated: false }],
+    })
+    expect(sessions[0]).toMatch(/^kohako-web-/)
+    expect((await fetch(`${base}requests/args-12345/activity/t2`)).status).toBe(404)
+    expect((await fetch(`${base}requests/unknown-12345/activity/t1`)).status).toBe(404)
+    expect((await fetch(`${base}requests/args-12345/activity/t1`, { method: 'POST' })).status).toBe(404)
+    // 検証用の会話からは Owner の手順を読めない。未認証は 401。
+    principal = 'verifier'
+    expect((await fetch(`${base}requests/args-12345/activity/t1`)).status).toBe(404)
+    principal = undefined
+    expect((await fetch(`${base}requests/args-12345/activity/t1`)).status).toBe(401)
+    settle({ status: 'done', text: 'ok' })
+  } finally {
+    server.closeAllConnections()
+    await new Promise<void>((r) => server.close(() => r()))
+  }
+})
+it('fetches arguments again when the run ends and keeps working when the transcript is unavailable (BOXP-560)', async () => {
+  const { createConversation } = await import('./conversation.js')
+  const run = async (toolCalls: (() => Promise<unknown[]>) | undefined) => {
+    const hermes = {
+      run: async (_id: string, _text: string, _session: string, _i: string, _cb: Cb, _a: unknown, onRun: Cb) => {
+        onRun('run1')
+        await new Promise((r) => setTimeout(r, 30))
+        return { status: 'done', text: 'ok' }
+      },
+      events: async (_id: string, emit: Cb) => {
+        emit({ event: 'tool.started', tool: 'read_file', tool_call_id: 'c1', preview: 'a.md' })
+        emit({ event: 'tool.completed', tool: 'read_file', tool_call_id: 'c1' })
+      },
+      toolCalls,
+      approve: async () => 'ok',
+      stop: async () => 'ok',
+    } as unknown as ReturnType<typeof createHermes>
+    const conv = createConversation({ now: Date.now, hermes, prefix: 'kohako-web', argsIntervalMs: 0 })
+    conv.submit({ requestId: 'args-end-123', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }, 'i')
+    await new Promise((r) => setTimeout(r, 120))
+    expect(conv.get('args-end-123')?.status).toBe('done')
+    return conv.get('args-end-123')?.activity?.detail('t1')
+  }
+  // 実行中は記録に無く、終了後の照会で初めて引数が得られる場合。
+  let n = 0
+  expect(
+    await run(async () =>
+      ++n < 2 ? [] : [{ id: 'c1', name: 'read_file', args: { path: '/srv/docs/a.md', offset: 10 } }],
+    ),
+  ).toMatchObject({
+    source: 'args',
+    fields: [
+      { key: 'path', value: '/srv/docs/a.md' },
+      { key: 'offset', value: '10' },
+    ],
+  })
+  expect(await run(async () => Promise.reject(Error('down')))).toMatchObject({ source: 'preview' })
+  expect(await run(undefined)).toMatchObject({ source: 'preview', fields: [{ key: 'preview', value: 'a.md' }] })
+})
