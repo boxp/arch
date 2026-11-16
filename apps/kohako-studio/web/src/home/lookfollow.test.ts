@@ -8,6 +8,8 @@ import {
   MIN_REACH,
   POSE_LOOK_WEIGHT,
   smoothLook,
+  TOUCH_LOOK_LINGER_MS,
+  TouchLook,
 } from './lookfollow'
 import { parsePrefs } from './prefs'
 const face = { x: 500, y: 300 },
@@ -82,5 +84,23 @@ describe('視線追従（BOXP-516）', () => {
     expect(parsePrefs('{"touch":false}').follow).toBe(true)
     expect(parsePrefs('{"follow":false}').follow).toBe(false)
     expect(parsePrefs('{"follow":"no"}').follow).toBe(true)
+  })
+})
+describe('タッチした位置への視線（BOXP-577）', () => {
+  it('触れている間は指の位置、離すと一定時間だけ残して中立へ、取消は即中立', () => {
+    const t = new TouchLook()
+    expect(t.at(0)).toBeNull()
+    t.down(1, { x: 10, y: 20 })
+    t.move(2, { x: 99, y: 99 })
+    expect(t.at(5000)).toEqual({ x: 10, y: 20 })
+    t.move(1, { x: 30, y: 40 })
+    t.up(1, { x: 35, y: 45 }, 1000)
+    expect(t.at(1000 + TOUCH_LOOK_LINGER_MS - 1)).toEqual({ x: 35, y: 45 })
+    expect(t.at(1000 + TOUCH_LOOK_LINGER_MS)).toBeNull()
+    t.down(3, { x: 1, y: 2 })
+    t.cancel(4)
+    expect(t.at(0)).toEqual({ x: 1, y: 2 })
+    t.cancel(3)
+    expect(t.at(0)).toBeNull()
   })
 })
