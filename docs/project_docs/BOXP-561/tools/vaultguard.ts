@@ -1,9 +1,10 @@
 // BOXP-561 長時間評価: 本番 vault を変更しうる tool 呼び出しを「実行前に」拒否する pi 拡張（long_run.sh が -e で読み込む）。
-// vaultwatch.sh は実行開始後の事後検出なので、こちらが一次防御。判定できない場合は拒否する（fail closed）。
+// OS レベルの一次防御は landlock_exec.py（pi と全子プロセスから本番 vault の読み書きをカーネルで拒否）。
+// 本拡張はその手前で、明示的に vault を指す tool 呼び出しを分かりやすい理由付きで止める補助層。判定できない場合は拒否する（fail closed）。
 // - write/edit: 対象パスを cwd 基準で解決し、存在する最も近い親を realpath して本番 vault 配下なら拒否
 // - bash: コマンド文字列に本番 vault を指しうるパス要素（obsidian-headless / Documents とその glob）を含めば読み書きを問わず拒否
 //   （bash の書込み先は静的に判定しきれないため。評価課題の資料はすべて隔離コピー側にある）
-//   変数の組み立て等で文字列照合を逃れる経路は残るため、vaultwatch.sh（事後 ABORT）と guard.bb（区間前後の digest 照合）を併用する
+//   変数の組み立て等で文字列照合を逃れる経路は landlock_exec.py が OS で拒否する。vaultwatch.sh（事後 ABORT）と guard.bb（digest 照合）は二次防御
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -85,6 +86,13 @@ export function decide(toolName: string, input: any, cwd: string): string | unde
       const p = input?.path ?? input?.file_path;
       if (typeof p !== "string" || p === "") return "path を判定できないため拒否しました";
       if (isProtectedPath(p, cwd)) return `本番 vault 配下 (${p}) への書込みは評価中は禁止です`;
+      return undefined;
+    }
+    if (toolName === "read" || toolName === "grep" || toolName === "find" || toolName === "ls") {
+      // 読取り系も本番 vault 配下は拒否する（合成課題の汚染・私的本文の混入を防ぐ）。path 省略は cwd を対象とみなす
+      const p = input?.path ?? input?.file_path ?? ".";
+      if (typeof p !== "string") return "path を判定できないため拒否しました";
+      if (isProtectedPath(p, cwd)) return `本番 vault 配下 (${p}) の参照は評価中は禁止です`;
       return undefined;
     }
     if (toolName === "bash") {
