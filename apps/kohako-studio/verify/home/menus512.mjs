@@ -1,4 +1,4 @@
-// BOXP-512 TD-01: ヘッダーと、ヘッダーから開くメニュー（読み上げ・ふれあい・受信箱・履歴・設定・Studio リンク）を
+// BOXP-512 TD-01: ヘッダーと、ヘッダーから開くメニュー（読み上げ・ふれあい・受信箱・履歴・設定）を
 // BFF の完全なモックで PC / Pixel 7 相当縦 / スマホ横 について開閉・操作・主要状態・画面内への収まりを確かめ、各状態の画像を残す。
 // 使い方: ビルドを SITE（既定 /site）の kohako/ に置き、`node menus512.mjs /out`。EMPTY=1 で通知 0 件の状態を撮る。
 import { chromium } from 'playwright'
@@ -93,7 +93,7 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     }
     r.push = await page.evaluate(() => [...document.querySelectorAll('#push-on,#push-off')].map(b => b.checkVisibility() && b.getBoundingClientRect().height >= 40)); check(r.push.every(Boolean), 'push buttons visible')
     await page.locator('#inbox-close').click(); check(!await shown('inbox'), 'inbox close')
-    r.studioLink = await page.evaluate(() => { const a = document.querySelector('.top a.link'); return { href: a.getAttribute('href'), visible: a.checkVisibility() } }); check(r.studioLink.href === 'studio.html' && r.studioLink.visible === (device === 'pc'), `studio link ${JSON.stringify(r.studioLink)}`)
+    r.studioLinkCount = await page.locator('a[href="studio.html"]').count(); check(r.studioLinkCount === 0, `studio link count ${r.studioLinkCount}`)
     r.calls = calls
   } catch (e) { failures.push(`${device}: ${e.message}`); await page.screenshot({ path: `${out}/${device}-failure.png` }).catch(() => {}) }
   await ctx.close()

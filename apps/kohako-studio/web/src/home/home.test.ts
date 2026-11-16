@@ -228,7 +228,7 @@ describe('home.html', () => {
     ])
       expect(html).toContain(`id="${id}"`)
     expect(html).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/)
-    expect(html).toContain('href="studio.html"')
+    expect(html).not.toContain('href="studio.html"')
   })
   it('腕が枠外へ振れても切れないよう canvas に左右の余白を持たせ、上下だけ切る (BOXP-510 TD-02)', () => {
     expect(readFileSync('home.html', 'utf8')).toMatch(/<canvas id="rig" data-bleed/)
