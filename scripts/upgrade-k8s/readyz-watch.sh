@@ -54,30 +54,89 @@ PORT=6443
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --vip) [[ $# -ge 2 ]] || usage; VIP_NAME="${2%%=*}"; VIP_IP="${2#*=}"; shift 2 ;;
-    --cp) [[ $# -ge 2 ]] || usage; CP_NAMES+=("${2%%=*}"); CP_IPS+=("${2#*=}"); shift 2 ;;
-    --out-dir) [[ $# -ge 2 ]] || usage; OUT_DIR="$2"; shift 2 ;;
-    --updating-node) [[ $# -ge 2 ]] || usage; UPDATING_NODE="$2"; shift 2 ;;
-    --interval) [[ $# -ge 2 ]] || usage; INTERVAL="$2"; shift 2 ;;
-    --halt-after) [[ $# -ge 2 ]] || usage; HALT_AFTER="$2"; shift 2 ;;
-    --duration) [[ $# -ge 2 ]] || usage; DURATION="$2"; shift 2 ;;
-    --stop-file) [[ $# -ge 2 ]] || usage; STOP_FILE="$2"; shift 2 ;;
-    --port) [[ $# -ge 2 ]] || usage; PORT="$2"; shift 2 ;;
-    -h|--help) usage ;;
-    *) echo "readyz-watch: unknown argument: $1" >&2; usage ;;
+    --vip)
+      [[ $# -ge 2 ]] || usage
+      VIP_NAME="${2%%=*}"
+      VIP_IP="${2#*=}"
+      shift 2
+      ;;
+    --cp)
+      [[ $# -ge 2 ]] || usage
+      CP_NAMES+=("${2%%=*}")
+      CP_IPS+=("${2#*=}")
+      shift 2
+      ;;
+    --out-dir)
+      [[ $# -ge 2 ]] || usage
+      OUT_DIR="$2"
+      shift 2
+      ;;
+    --updating-node)
+      [[ $# -ge 2 ]] || usage
+      UPDATING_NODE="$2"
+      shift 2
+      ;;
+    --interval)
+      [[ $# -ge 2 ]] || usage
+      INTERVAL="$2"
+      shift 2
+      ;;
+    --halt-after)
+      [[ $# -ge 2 ]] || usage
+      HALT_AFTER="$2"
+      shift 2
+      ;;
+    --duration)
+      [[ $# -ge 2 ]] || usage
+      DURATION="$2"
+      shift 2
+      ;;
+    --stop-file)
+      [[ $# -ge 2 ]] || usage
+      STOP_FILE="$2"
+      shift 2
+      ;;
+    --port)
+      [[ $# -ge 2 ]] || usage
+      PORT="$2"
+      shift 2
+      ;;
+    -h | --help) usage ;;
+    *)
+      echo "readyz-watch: unknown argument: $1" >&2
+      usage
+      ;;
   esac
 done
 
-[[ -n "$VIP_NAME" && -n "$VIP_IP" && "$VIP_NAME" != "$VIP_IP" ]] || { echo "readyz-watch: --vip NAME=IP is required" >&2; usage; }
-[[ ${#CP_NAMES[@]} -ge 1 ]] || { echo "readyz-watch: at least one --cp NAME=IP is required" >&2; usage; }
-[[ -n "$OUT_DIR" ]] || { echo "readyz-watch: --out-dir is required" >&2; usage; }
+[[ -n "$VIP_NAME" && -n "$VIP_IP" && "$VIP_NAME" != "$VIP_IP" ]] || {
+  echo "readyz-watch: --vip NAME=IP is required" >&2
+  usage
+}
+[[ ${#CP_NAMES[@]} -ge 1 ]] || {
+  echo "readyz-watch: at least one --cp NAME=IP is required" >&2
+  usage
+}
+[[ -n "$OUT_DIR" ]] || {
+  echo "readyz-watch: --out-dir is required" >&2
+  usage
+}
 for v in INTERVAL HALT_AFTER DURATION PORT; do
-  [[ "${!v}" =~ ^[0-9]+$ ]] || { echo "readyz-watch: --${v,,} must be a non-negative integer" >&2; usage; }
+  [[ "${!v}" =~ ^[0-9]+$ ]] || {
+    echo "readyz-watch: --${v,,} must be a non-negative integer" >&2
+    usage
+  }
   # Force base-10 so a leading zero (e.g. "0180") is not read as octal by $(( )) / [[ -gt ]].
   printf -v "$v" '%d' "$((10#${!v}))"
 done
-[[ "$DURATION" -gt 0 || -n "$STOP_FILE" ]] || { echo "readyz-watch: --duration or --stop-file is required" >&2; usage; }
-command -v jq >/dev/null 2>&1 || { echo "readyz-watch: jq is required" >&2; exit 64; }
+[[ "$DURATION" -gt 0 || -n "$STOP_FILE" ]] || {
+  echo "readyz-watch: --duration or --stop-file is required" >&2
+  usage
+}
+command -v jq >/dev/null 2>&1 || {
+  echo "readyz-watch: jq is required" >&2
+  exit 64
+}
 
 mkdir -p "$OUT_DIR"
 SAMPLES="$OUT_DIR/readyz-samples.jsonl"
@@ -179,7 +238,10 @@ PROBE_CANDIDATES=()
 for name in "${CP_NAMES[@]}"; do
   [[ "$name" == "$UPDATING_NODE" ]] || PROBE_CANDIDATES+=("$name")
 done
-[[ ${#PROBE_CANDIDATES[@]} -ge 1 ]] || { echo "readyz-watch: no probe-host candidate (all control planes excluded)" >&2; exit 64; }
+[[ ${#PROBE_CANDIDATES[@]} -ge 1 ]] || {
+  echo "readyz-watch: no probe-host candidate (all control planes excluded)" >&2
+  exit 64
+}
 
 ALL_IPS=("$VIP_IP" "${CP_IPS[@]}")
 
@@ -228,15 +290,25 @@ while :; do
   failed_cps=()
   idx=0
   for ip in "${ALL_IPS[@]}"; do
-    if [[ $idx -eq 0 ]]; then name="$VIP_NAME"; kind="vip"; else name="${CP_NAMES[$((idx - 1))]}"; kind="cp"; fi
+    if [[ $idx -eq 0 ]]; then
+      name="$VIP_NAME"
+      kind="vip"
+    else
+      name="${CP_NAMES[$((idx - 1))]}"
+      kind="cp"
+    fi
     excluded=false
     [[ "$kind" == "cp" && "$name" == "$UPDATING_NODE" ]] && excluded=true
     error=""
     if [[ -z "$PROBE_HOST" ]]; then
-      code="000"; error="probe_unreachable"
+      code="000"
+      error="probe_unreachable"
     else
       code="${code_for[$ip]:-000}"
-      [[ "$code" =~ ^[0-9]{3}$ ]] || { code="000"; error="probe_parse_error"; }
+      [[ "$code" =~ ^[0-9]{3}$ ]] || {
+        code="000"
+        error="probe_parse_error"
+      }
     fi
     ok=false
     [[ "$code" == "200" ]] && ok=true

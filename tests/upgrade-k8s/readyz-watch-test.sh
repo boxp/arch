@@ -195,7 +195,10 @@ assert_eq "$(jq -r 'select(.tick>=3) | .probe_host' "$OUT/artifact/readyz-sample
 
 echo "== case: stop file ends the watch (upgrade finished) with no halt"
 # Stop at 150s while VIP has been failing since 60s (90s < 180s): must end cleanly, no halt.
-OUT="$TMP/stop-file"; mkdir -p "$OUT"; echo "$START_EPOCH" >"$OUT/clock"; : >"$OUT/probe.log"
+OUT="$TMP/stop-file"
+mkdir -p "$OUT"
+echo "$START_EPOCH" >"$OUT/clock"
+: >"$OUT/probe.log"
 set +e
 env FAKE_CLOCK_FILE="$OUT/clock" FAKE_START="$START_EPOCH" FAKE_SCHEDULE="$FIXTURES/sustained-vip.schedule" \
   FAKE_PROBE_LOG="$OUT/probe.log" FAKE_VIP_IP="$VIP_IP" FAKE_CP1_IP="$CP1_IP" FAKE_CP2_IP="$CP2_IP" FAKE_CP3_IP="$CP3_IP" \
@@ -248,13 +251,20 @@ validate_minutes() {
   OBSERVE_MINUTES="$minutes" TARGET_NODE="$node" bash -c "$(cat "$TMP/observe-validate.sh"); echo \"\$OBSERVE_MINUTES\""
 }
 set +e
-out_08="$(validate_minutes 08 golyat-1 2>/dev/null)"; rc_08=$?
-out_060="$(validate_minutes 060 golyat-1 2>/dev/null)"; rc_060=$?
-validate_minutes 0 golyat-1 >/dev/null 2>&1; rc_0=$?
-validate_minutes 61 golyat-1 >/dev/null 2>&1; rc_61=$?
-validate_minutes 1e2 golyat-1 >/dev/null 2>&1; rc_bad=$?
-out_cp="$(validate_minutes "" shanghai-1 2>/dev/null)"; rc_cp=$?
-out_worker="$(validate_minutes "" golyat-1 2>/dev/null)"; rc_worker=$?
+out_08="$(validate_minutes 08 golyat-1 2>/dev/null)"
+rc_08=$?
+out_060="$(validate_minutes 060 golyat-1 2>/dev/null)"
+rc_060=$?
+validate_minutes 0 golyat-1 >/dev/null 2>&1
+rc_0=$?
+validate_minutes 61 golyat-1 >/dev/null 2>&1
+rc_61=$?
+validate_minutes 1e2 golyat-1 >/dev/null 2>&1
+rc_bad=$?
+out_cp="$(validate_minutes "" shanghai-1 2>/dev/null)"
+rc_cp=$?
+out_worker="$(validate_minutes "" golyat-1 2>/dev/null)"
+rc_worker=$?
 set -e
 assert_eq "$rc_08" 0 "08 must be accepted"
 assert_eq "$out_08" 8 "08 must be read as decimal 8"
@@ -270,9 +280,12 @@ assert_eq "$out_worker" 15 "worker default window"
 
 echo "== case: usage errors"
 set +e
-"$WATCH" --vip "vip=$VIP_IP" --out-dir "$TMP/usage" --duration 10 >/dev/null 2>&1; rc1=$?
-"$WATCH" --vip "vip=$VIP_IP" --cp "shanghai-1=$CP1_IP" --out-dir "$TMP/usage" >/dev/null 2>&1; rc2=$?
-"$WATCH" --vip "vip=$VIP_IP" --cp "shanghai-1=$CP1_IP" --out-dir "$TMP/usage" --duration 10 --updating-node shanghai-1 >/dev/null 2>&1; rc3=$?
+"$WATCH" --vip "vip=$VIP_IP" --out-dir "$TMP/usage" --duration 10 >/dev/null 2>&1
+rc1=$?
+"$WATCH" --vip "vip=$VIP_IP" --cp "shanghai-1=$CP1_IP" --out-dir "$TMP/usage" >/dev/null 2>&1
+rc2=$?
+"$WATCH" --vip "vip=$VIP_IP" --cp "shanghai-1=$CP1_IP" --out-dir "$TMP/usage" --duration 10 --updating-node shanghai-1 >/dev/null 2>&1
+rc3=$?
 set -e
 assert_eq "$rc1" 64 "missing --cp"
 assert_eq "$rc2" 64 "missing --duration/--stop-file"

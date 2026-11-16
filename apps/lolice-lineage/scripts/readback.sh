@@ -22,7 +22,10 @@ api() {
 }
 
 check() {
-  if [ "$2" = "$3" ]; then echo "PASS $1 ($2)"; else echo "FAIL $1 ($2, expected $3)"; failures=$((failures + 1)); fi
+  if [ "$2" = "$3" ]; then echo "PASS $1 ($2)"; else
+    echo "FAIL $1 ($2, expected $3)"
+    failures=$((failures + 1))
+  fi
 }
 
 flags=$(api "$account/workers/scripts/$script/subdomain" "script subdomain flags")

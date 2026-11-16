@@ -37,7 +37,7 @@ if ! mkdir "${lock_dir}" 2>/dev/null; then
   lock_stale_seconds="${CODEX_CRON_LOCK_STALE_SECONDS:-43200}"
   lock_mtime="$(stat -c %Y "${lock_dir}" 2>/dev/null || echo 0)"
   now_epoch="$(date -u +%s)"
-  if (( now_epoch - lock_mtime > lock_stale_seconds )); then
+  if ((now_epoch - lock_mtime > lock_stale_seconds)); then
     echo "removing stale codex cron lock: ${lock_dir}" >&2
     rm -rf "${lock_dir}"
     mkdir "${lock_dir}"
@@ -47,6 +47,8 @@ if ! mkdir "${lock_dir}" 2>/dev/null; then
   fi
 fi
 
+# Called by the EXIT trap below.
+# shellcheck disable=SC2329
 cleanup() {
   rmdir "${lock_dir}" 2>/dev/null || true
 }
@@ -81,7 +83,7 @@ args=()
 
 if [[ "${runner}" == "command" ]]; then
   # shell を通さず語に分けて実行する。agent は起動しない。
-  read -r -a args <<< "${CODEX_CRON_COMMAND:?CODEX_CRON_COMMAND is required}"
+  read -r -a args <<<"${CODEX_CRON_COMMAND:?CODEX_CRON_COMMAND is required}"
 elif [[ "${runner}" == "codex" ]]; then
   args=(exec --json --cd "${workdir}" --output-last-message "${last_message}")
 
@@ -133,7 +135,7 @@ else
 fi
 
 if [[ -n "${CODEX_CRON_EXTRA_ARGS:-}" && "${runner}" != "command" ]]; then
-  read -r -a extra_args <<< "${CODEX_CRON_EXTRA_ARGS}"
+  read -r -a extra_args <<<"${CODEX_CRON_EXTRA_ARGS}"
   args+=("${extra_args[@]}")
 fi
 
@@ -149,17 +151,17 @@ fi
   echo "stdout_log=${stdout_log}"
   echo "stderr_log=${stderr_log}"
   echo "${runner}_args=${args[*]}"
-} > "${run_dir}/metadata.env"
+} >"${run_dir}/metadata.env"
 
 set +e
 if [[ "${runner}" == "command" ]]; then
-  (cd "${workdir}" && "${args[@]}") > "${stdout_log}" 2> "${stderr_log}"
+  (cd "${workdir}" && "${args[@]}") >"${stdout_log}" 2>"${stderr_log}"
 elif [[ "${runner}" == "codex" ]]; then
-  codex "${args[@]}" - < "${prompt_file}" > "${stdout_log}" 2> "${stderr_log}"
+  codex "${args[@]}" - <"${prompt_file}" >"${stdout_log}" 2>"${stderr_log}"
 elif [[ "${runner}" == "cursor" ]]; then
-  cursor-agent "${args[@]}" "$(< "${prompt_file}")" > "${stdout_log}" 2> "${stderr_log}"
+  cursor-agent "${args[@]}" "$(<"${prompt_file}")" >"${stdout_log}" 2>"${stderr_log}"
 else
-  (cd "${workdir}" && claude "${args[@]}" "$(< "${prompt_file}")") > "${stdout_log}" 2> "${stderr_log}"
+  (cd "${workdir}" && claude "${args[@]}" "$(<"${prompt_file}")") >"${stdout_log}" 2>"${stderr_log}"
 fi
 exit_code=$?
 set -e
@@ -174,7 +176,7 @@ if [[ "${exit_code}" -ne 0 ]]; then
   status="error"
 fi
 
-cat > "${summary_file}" <<EOF
+cat >"${summary_file}" <<EOF
 {:job "${job_id}"
  :name "${job_name}"
  :runner "${runner}"

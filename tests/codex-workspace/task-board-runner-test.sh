@@ -19,12 +19,12 @@ root_guard_test() {
   t="$(mktemp -d)"
   bin="$t/bin"
   mkdir -p "$bin" "$t/vault/Boards" "$t/vault/Tickets" "$t/tmp"
-  cat > "$bin/id" <<'FAKE'
+  cat >"$bin/id" <<'FAKE'
 #!/bin/sh
 printf '%s\n' "${FAKE_UID_VALUE:-0}"
 FAKE
   chmod +x "$bin/id"
-  cat > "$t/vault/Boards/Task Board.md" <<'BOARD'
+  cat >"$t/vault/Boards/Task Board.md" <<'BOARD'
 # Task Board
 
 ## Backlog
@@ -39,7 +39,7 @@ FAKE
 
 ## Done
 BOARD
-  cat > "$t/vault/Tickets/BOXP-1.md" <<'TICKET'
+  cat >"$t/vault/Tickets/BOXP-1.md" <<'TICKET'
 ---
 id: BOXP-1
 type: task
@@ -57,7 +57,8 @@ TICKET
       local extra=()
       [[ "$mode" == dry ]] && extra=(--dry-run)
       if PATH="$bin:$PATH" bb -Djava.io.tmpdir="$t/tmp" "$HELPER" "$cmd" BOXP-1 --vault "$t/vault" "${extra[@]}" >"$t/out" 2>"$t/err"; then
-        echo "root $cmd $mode unexpectedly succeeded" >&2; return 1
+        echo "root $cmd $mode unexpectedly succeeded" >&2
+        return 1
       fi
       grep -Fq 'kubectl -n hermes-agent exec deploy/hermes-agent -c hermes-agent -- /command/s6-setuidgid hermes bb /opt/data/skills/note-taking/obsidian-task-board/bin/task-board.bb <command> ...' "$t/err"
       [[ ! -e "$t/tmp/task-board-locks" ]]
@@ -72,7 +73,6 @@ TICKET
   grep -Fq 'non-root write' "$t/vault/Tickets/BOXP-1.md"
   rm -rf "$t"
 }
-
 
 fail() {
   echo "error: $*" >&2
@@ -428,9 +428,9 @@ run_tick() {
   local state_root="$2"
   shift 2
   CODEX_TASK_BOARD_VAULT="${vault}" \
-  CODEX_TASK_BOARD_ROOT="${state_root}" \
-  CODEX_TASK_BOARD_LOCK_STALE_SECONDS="${CODEX_TASK_BOARD_LOCK_STALE_SECONDS:-180}" \
-  "$@" bb "${RUNNER}" tick
+    CODEX_TASK_BOARD_ROOT="${state_root}" \
+    CODEX_TASK_BOARD_LOCK_STALE_SECONDS="${CODEX_TASK_BOARD_LOCK_STALE_SECONDS:-180}" \
+    "$@" bb "${RUNNER}" tick
 }
 
 test_review_lane_retirement_contract() {
@@ -547,7 +547,9 @@ test_parallel_codex_runs() {
 test_fable_stream_json() {
   local tmp vault state bin last_message
   tmp="$(mktemp -d)"
-  vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
   mkdir -p "${bin}"
   make_fake_claude "${bin}"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-149|BOXP-149: stream]] #ticket status::in-progress"
@@ -560,7 +562,7 @@ test_fable_stream_json() {
   local observed finished
   observed="$(bb -e '(require (quote cheshire.core)) (println (:observed_at (cheshire.core/parse-string (slurp (first *command-line-args*)) true)))' "${state}/ai-ops/subscription/claude.json")"
   finished="$(stat -c %Y "$(find "${state}/runs/BOXP-149" -name events.jsonl -print -quit)")"
-  (( observed <= finished - 2 )) || fail "subscription observation was delayed until process exit"
+  ((observed <= finished - 2)) || fail "subscription observation was delayed until process exit"
 }
 
 test_claude_pump_drains_when_events_log_cannot_open() {
@@ -661,7 +663,10 @@ test_claude_pump_drains_when_events_log_cannot_open() {
 
 test_claude_result_survives_events_log_failure() {
   local tmp vault state bin last_message RUNNER
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
   mkdir -p "${bin}" "${tmp}/runner"
   cp "$(dirname "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb")"/*.bb "${tmp}/runner/"
   RUNNER="${tmp}/runner/task_board_runner.bb"
@@ -681,7 +686,10 @@ test_claude_result_survives_events_log_failure() {
 
 test_claude_stream_progress_prevents_idle_timeout_when_log_unwritable() {
   local tmp vault state bin last_message RUNNER
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
   mkdir -p "${bin}" "${tmp}/runner"
   cp "$(dirname "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb")"/*.bb "${tmp}/runner/"
   RUNNER="${tmp}/runner/task_board_runner.bb"
@@ -700,7 +708,10 @@ test_claude_stream_progress_prevents_idle_timeout_when_log_unwritable() {
 
 test_claude_events_log_omits_tool_payloads() {
   local tmp vault state bin events last_message
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
   mkdir -p "${bin}"
   make_fake_claude "${bin}"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-148|BOXP-148: stream privacy]] #ticket status::in-progress"
@@ -720,7 +731,10 @@ test_claude_events_log_omits_tool_payloads() {
 
 test_claude_run_survives_subscription_snapshot_failure() {
   local tmp vault state bin events last_message
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
   mkdir -p "${bin}" "${state}/ai-ops"
   # A regular file where the snapshot directory should be makes every
   # record-claude-rate-limit! call throw; the run itself must still finish.
@@ -739,7 +753,10 @@ test_claude_run_survives_subscription_snapshot_failure() {
 
 test_subscription_metrics_disabled_removes_prom() {
   local tmp vault state bin
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
   mkdir -p "${bin}"
   make_fake_codex "${bin}"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-146|BOXP-146: metrics]] #ticket status::in-progress"
@@ -809,13 +826,22 @@ test_explicit_claude_assignees_use_fixed_models_and_pinned_binary() {
 
   for assignee in claude-fable claude-opus claude-sonnet; do
     case "${assignee}" in
-      claude-fable) model=claude-fable-5-2; ticket=BOXP-163 ;;
-      claude-opus) model=claude-opus-5-5; ticket=BOXP-164 ;;
-      claude-sonnet) model=claude-sonnet-5-5; ticket=BOXP-165 ;;
+      claude-fable)
+        model=claude-fable-5-2
+        ticket=BOXP-163
+        ;;
+      claude-opus)
+        model=claude-opus-5-5
+        ticket=BOXP-164
+        ;;
+      claude-sonnet)
+        model=claude-sonnet-5-5
+        ticket=BOXP-165
+        ;;
     esac
     write_board "${vault}" "- [ ] [[Tickets/${ticket}|${ticket}: ${assignee}]] #ticket status::in-progress"
     write_ticket "${vault}" "${ticket}" in-progress "${assignee}"
-    : > "${prompt_log}"
+    : >"${prompt_log}"
 
     PATH="${path_bin}:$PATH" \
       CODEX_TASK_BOARD_CLAUDE_BIN="${pinned_bin}/claude" \
@@ -831,7 +857,7 @@ test_explicit_claude_assignees_use_fixed_models_and_pinned_binary() {
     assert_file_contains "${prompt_log}" "^Task Board assignee/agent: ${assignee}$"
     assert_file_contains "${prompt_log}" 'Claude Code routing policy'
     case "${assignee}" in
-      claude-fable|claude-opus)
+      claude-fable | claude-opus)
         assert_file_contains "${prompt_log}" 'Delegate independent investigation, implementation, file editing, and test execution to Codex'
         assert_file_contains "${prompt_log}" 'gpt-6.1-terra'
         assert_file_contains "${prompt_log}" 'Retain final judgment and verify delegated results'
@@ -843,6 +869,8 @@ test_explicit_claude_assignees_use_fixed_models_and_pinned_binary() {
         ;;
     esac
     assert_file_not_contains "${prompt_log}" 'Fable routing policy'
+    # The prompt must contain the literal ~ path.
+    # shellcheck disable=SC2088
     assert_file_contains "${prompt_log}" "~/.claude/skills/obsidian-task-board/bin/task-board.bb append-note ${ticket}"
     assert_run_summary_contains "${state}" "${ticket}" ":agent \"${assignee}\""
     assert_run_summary_contains "${state}" "${ticket}" ':status :succeeded'
@@ -850,8 +878,8 @@ test_explicit_claude_assignees_use_fixed_models_and_pinned_binary() {
     assert_file_contains "${vault}/Tickets/${ticket}.md" '^status: done$'
   done
 
-  [[ "$(sort -u "${executable_log}")" == "${pinned_bin}/claude" ]] \
-    || fail 'expected explicit Claude binary to win over PATH shadow'
+  [[ "$(sort -u "${executable_log}")" == "${pinned_bin}/claude" ]] ||
+    fail 'expected explicit Claude binary to win over PATH shadow'
 }
 
 test_fable_model_environment_is_legacy_only() {
@@ -982,8 +1010,8 @@ test_fable_idle_timeout_stops_agent_children() {
     # The process group is stopped correctly, but its orphaned child can remain
     # as a zombie until PID 1 reaps it. A zombie has no running agent process.
     child_state="$(ps -o stat= -p "${child_pid}" 2>/dev/null | tr -d '[:space:]' || true)"
-    [[ "${child_state}" == Z* ]] || ! kill -0 "${child_pid}" 2>/dev/null \
-      || fail "expected idle timeout to stop Fable child process ${child_pid} (state=${child_state:-unknown})"
+    [[ "${child_state}" == Z* ]] || ! kill -0 "${child_pid}" 2>/dev/null ||
+      fail "expected idle timeout to stop Fable child process ${child_pid} (state=${child_state:-unknown})"
   fi
 }
 
@@ -1255,7 +1283,6 @@ LOOP_PID=""
 start_loop_with_lock() {
   local vault="$1" state="$2" ticket="$3" output="$4" bin="$5"
   shift 5
-  local attempt
   PATH="${bin}:$PATH" \
     CODEX_TASK_BOARD_VAULT="${vault}" \
     CODEX_TASK_BOARD_ROOT="${state}" \
@@ -1264,7 +1291,7 @@ start_loop_with_lock() {
     CODEX_TASK_BOARD_POLL_SECONDS=60 \
     "$@" bb "${RUNNER}" loop >"${output}" 2>&1 &
   LOOP_PID=$!
-  for attempt in $(seq 1 200); do
+  for _ in $(seq 1 200); do
     [[ -e "${state}/locks/${ticket}.edn" ]] && break
     sleep 0.1
   done
@@ -1276,8 +1303,8 @@ start_loop_with_lock() {
 }
 
 wait_for_file() {
-  local file="$1" attempt
-  for attempt in $(seq 1 200); do
+  local file="$1"
+  for _ in $(seq 1 200); do
     [[ -s "${file}" ]] && return 0
     sleep 0.1
   done
@@ -1315,7 +1342,7 @@ test_sigterm_stops_in_flight_agent_and_keeps_lock_for_next_owner() {
   started="$(date +%s)"
   kill -TERM "${pid}"
   wait "${pid}" 2>/dev/null || true
-  elapsed=$(( $(date +%s) - started ))
+  elapsed=$(($(date +%s) - started))
   [[ "${elapsed}" -lt 15 ]] || fail "expected SIGTERM shutdown with a cooperative agent to finish quickly, took ${elapsed}s"
 
   # The agent and its child received TERM through the process group.
@@ -1371,8 +1398,8 @@ test_sigterm_kills_term_resistant_agent_within_grace() {
 
   start_loop_with_lock "${vault}" "${state}" BOXP-302 "${output}" "${bin}" \
     env CLAUDE_FAKE_IGNORES_TERM=true CLAUDE_FAKE_CHILD_IGNORES_TERM=true \
-        CLAUDE_FAKE_CHILD_PID_FILE="${child_pid_file}" CLAUDE_FAKE_CHILD_SLEEP=120 \
-        CODEX_TASK_BOARD_SHUTDOWN_AGENT_GRACE_SECONDS=2
+    CLAUDE_FAKE_CHILD_PID_FILE="${child_pid_file}" CLAUDE_FAKE_CHILD_SLEEP=120 \
+    CODEX_TASK_BOARD_SHUTDOWN_AGENT_GRACE_SECONDS=2
   pid="${LOOP_PID}"
   wait_for_file "${child_pid_file}"
   child_pid="$(cat "${child_pid_file}")"
@@ -1380,7 +1407,7 @@ test_sigterm_kills_term_resistant_agent_within_grace() {
   started="$(date +%s)"
   kill -TERM "${pid}"
   wait "${pid}" 2>/dev/null || true
-  elapsed=$(( $(date +%s) - started ))
+  elapsed=$(($(date +%s) - started))
   [[ "${elapsed}" -ge 2 && "${elapsed}" -lt 15 ]] || fail "expected bounded shutdown wait (2s grace) then KILL, took ${elapsed}s"
 
   assert_process_stopped "${child_pid}" "TERM-resistant agent child"
@@ -1421,7 +1448,7 @@ EOF
 }
 
 test_sigterm_writes_shutdown_marker_without_prestop() {
-  local tmp vault state output pid marker attempt
+  local tmp vault state output pid marker
   tmp="$(mktemp -d)"
   vault="${tmp}/vault"
   state="${tmp}/state"
@@ -1437,7 +1464,7 @@ test_sigterm_writes_shutdown_marker_without_prestop() {
     bb "${RUNNER}" loop >"${output}" 2>&1 &
   pid=$!
 
-  for attempt in $(seq 1 50); do
+  for _ in $(seq 1 50); do
     [[ -e "${state}/owners/old-pod.edn" ]] && break
     sleep 0.1
   done
@@ -2154,7 +2181,10 @@ test_review_with_ci_failure_is_blocked() {
 }
 
 review_severity_setup() {
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
   mkdir -p "${bin}"
   make_fake_codex "${bin}"
   make_fake_gh "${bin}"
@@ -2562,17 +2592,17 @@ EOF
   bb "${HELPER}" append-note BOXP-889 --vault "${real_dir}" --source "test" --note "real-path-note"
   bb "${HELPER}" append-note BOXP-889 --vault "${symlink_dir}" --source "test" --note "symlink-path-note"
 
-  grep -q "real-path-note" "${real_dir}/Tickets/BOXP-889.md" \
-    || fail "real-path note was not written"
-  grep -q "symlink-path-note" "${real_dir}/Tickets/BOXP-889.md" \
-    || fail "symlink-path note was not written"
+  grep -q "real-path-note" "${real_dir}/Tickets/BOXP-889.md" ||
+    fail "real-path note was not written"
+  grep -q "symlink-path-note" "${real_dir}/Tickets/BOXP-889.md" ||
+    fail "symlink-path note was not written"
 
   # With getCanonicalPath, symlink and real path resolve to the same canonical path,
   # producing only one lock file (not two distinct ones as with cross-vault).
   local lock_count
-  lock_count="$(ls "${lock_dir}" 2>/dev/null | grep -c 'BOXP-889' || echo 0)"
-  [ "${lock_count}" -eq 1 ] \
-    || fail "expected exactly 1 lock file for symlink/real-path (got ${lock_count}): same canonical path must share a lock"
+  lock_count="$(find "${lock_dir}" -mindepth 1 -maxdepth 1 -name '*BOXP-889*' 2>/dev/null | wc -l || true)"
+  [ "${lock_count}" -eq 1 ] ||
+    fail "expected exactly 1 lock file for symlink/real-path (got ${lock_count}): same canonical path must share a lock"
 }
 
 test_review_with_draft_pr_is_retried() {
@@ -2990,7 +3020,7 @@ test_ai_ops_alerts_section_absent_when_disabled() {
   PATH="${bin}:$PATH" \
     CODEX_FAKE_PROMPT_LOG="${prompt_log}" \
     CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
-    CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID= \
+    CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID='' \
     GRAFANA_URL='http://grafana.test:3000' \
     GRAFANA_SERVICE_ACCOUNT_TOKEN='glsa_fake_token_value' \
     CURL_FAKE_RESPONSE_FILE="${response}" \
@@ -3190,8 +3220,8 @@ EOF
   done
   ticket_file="${vault}/Tickets/BOXP-999.md"
   for i in $(seq 1 "${n}"); do
-    grep -q "concurrent-note-${i}" "${ticket_file}" \
-      || fail "note ${i} was lost in concurrent append-note writes"
+    grep -q "concurrent-note-${i}" "${ticket_file}" ||
+      fail "note ${i} was lost in concurrent append-note writes"
   done
 }
 
@@ -3225,16 +3255,16 @@ EOF
   bb "${HELPER}" append-note BOXP-888 --vault "${vault_a}" --source "test" --note "vault-a-note"
   bb "${HELPER}" append-note BOXP-888 --vault "${vault_b}" --source "test" --note "vault-b-note"
 
-  grep -q "vault-a-note" "${vault_a}/Tickets/BOXP-888.md" \
-    || fail "vault-a note was not written"
-  grep -q "vault-b-note" "${vault_b}/Tickets/BOXP-888.md" \
-    || fail "vault-b note was not written"
+  grep -q "vault-a-note" "${vault_a}/Tickets/BOXP-888.md" ||
+    fail "vault-a note was not written"
+  grep -q "vault-b-note" "${vault_b}/Tickets/BOXP-888.md" ||
+    fail "vault-b note was not written"
 
   # With path-hash prefixing each vault must produce a distinct lock file.
   # Without path hashing both vaults would share one lock file (count == 1).
-  lock_count="$(ls "${lock_dir}" 2>/dev/null | grep -c 'BOXP-888' || echo 0)"
-  [ "${lock_count}" -ge 2 ] \
-    || fail "expected >= 2 distinct lock files for cross-vault tickets (got ${lock_count}): separate vaults must not share a lock"
+  lock_count="$(find "${lock_dir}" -mindepth 1 -maxdepth 1 -name '*BOXP-888*' 2>/dev/null | wc -l || true)"
+  [ "${lock_count}" -ge 2 ] ||
+    fail "expected >= 2 distinct lock files for cross-vault tickets (got ${lock_count}): separate vaults must not share a lock"
 }
 
 test_concurrent_board_update_no_lost_writes() {
@@ -3308,7 +3338,8 @@ BOARD
     wait "${pid2}" || true
 
     board_content="$(cat "${vault}/Boards/Task Board.md")"
-    found_1=0; found_2=0
+    found_1=0
+    found_2=0
     echo "${board_content}" | grep -q "BOXP-701.*status::in-progress" && found_1=1 || true
     echo "${board_content}" | grep -q "BOXP-702.*status::in-progress" && found_2=1 || true
 
@@ -3317,8 +3348,8 @@ BOARD
     fi
   done
 
-  [ "${failures}" -eq 0 ] \
-    || fail "concurrent board updates lost entries in ${failures}/${rounds} rounds"
+  [ "${failures}" -eq 0 ] ||
+    fail "concurrent board updates lost entries in ${failures}/${rounds} rounds"
 }
 
 test_task_board_pbt_properties() { bb "${ROOT_DIR}/tests/codex-workspace/task_board_pbt_test.bb"; }
@@ -3372,51 +3403,81 @@ run_prune() {
   local state_root="$2"
   shift 2
   CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE="${CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE:-false}" \
-  CODEX_TASK_BOARD_VAULT="${vault}" \
-  CODEX_TASK_BOARD_ROOT="${state_root}" \
-  bb "${RUNNER}" prune-workspaces "$@"
+    CODEX_TASK_BOARD_VAULT="${vault}" \
+    CODEX_TASK_BOARD_ROOT="${state_root}" \
+    bb "${RUNNER}" prune-workspaces "$@"
 }
 
 test_stale_prune_studio_dist() {
   local tmp vault state bin source other known out ws ticket run co i dist
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  source="${tmp}/source"; other="${tmp}/other"; known="${tmp}/known"; out="${tmp}/out"; ws="${state}/workspaces"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  source="${tmp}/source"
+  other="${tmp}/other"
+  known="${tmp}/known"
+  out="${tmp}/out"
+  ws="${state}/workspaces"
   mkdir -p "${bin}" "${state}/locks" "${tmp}/proc/100"
   ln -s / "${tmp}/proc/100/cwd"
   echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"${tmp}/mountinfo"
   export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo"
-  make_fake_gh "${bin}"; make_prune_source_repo "${source}"
+  make_fake_gh "${bin}"
+  make_prune_source_repo "${source}"
   git -C "${source}" remote set-url origin https://github.com/boxp/arch.git
   mkdir -p "${source}/apps/kohako-studio/web/public"
   printf 'dist/\nresults/\n' >"${source}/.gitignore"
   printf 'abcd' >"${source}/apps/kohako-studio/web/public/copied.txt"
   touch "${source}/apps/kohako-studio/web/"{package.json,package-lock.json,vite.config.ts,candidates.html}
-  git -C "${source}" add .; prune_git -C "${source}" commit -q -m fixture
+  git -C "${source}" add .
+  prune_git -C "${source}" commit -q -m fixture
   git -C "${source}" update-ref refs/remotes/origin/main HEAD
   git -C "${source}" rev-list HEAD >"${known}"
-  git clone -q "${source}" "${other}"; git -C "${other}" remote set-url origin https://github.com/boxp/example.git
+  git clone -q "${source}" "${other}"
+  git -C "${other}" remote set-url origin https://github.com/boxp/example.git
   write_board "${vault}" ''
   for ticket in $(seq 920 933); do
-    ticket="BOXP-${ticket}"; write_prune_ticket "${vault}" "${ticket}" blocked 2020-01-01
+    ticket="BOXP-${ticket}"
+    write_prune_ticket "${vault}" "${ticket}" blocked 2020-01-01
     for i in 1 2 3 4; do
       run="2020010${i}T000000Z"
       if [[ "${ticket}" == BOXP-930 ]]; then co="$(add_prune_run "${state}" "${other}" "${ticket}" "${run}")"; else co="$(add_prune_run "${state}" "${source}" "${ticket}" "${run}")"; fi
-      dist="${co}/apps/kohako-studio/web/dist"; mkdir -p "${dist}/assets"
-      printf html >"${dist}/index.html"; printf entry >"${dist}/candidates.html"; printf asset >"${dist}/assets/main-Abc_1234.js"
+      dist="${co}/apps/kohako-studio/web/dist"
+      mkdir -p "${dist}/assets"
+      printf html >"${dist}/index.html"
+      printf entry >"${dist}/candidates.html"
+      printf asset >"${dist}/assets/main-Abc_1234.js"
       cp "${co}/apps/kohako-studio/web/public/copied.txt" "${dist}/copied.txt"
       if [[ "${i}" == 1 ]]; then
         case "${ticket}" in
           BOXP-921) echo x >"${dist}/render.png" ;;
           BOXP-922) printf wxyz >"${dist}/copied.txt" ;;
-          BOXP-923) echo x >"${co}/apps/kohako-studio/web/public/untracked.txt"; echo x >"${dist}/untracked.txt"; echo apps/kohako-studio/web/public/untracked.txt >>"$(git -C "${co}" rev-parse --git-path info/exclude)" ;;
+          BOXP-923)
+            echo x >"${co}/apps/kohako-studio/web/public/untracked.txt"
+            echo x >"${dist}/untracked.txt"
+            echo apps/kohako-studio/web/public/untracked.txt >>"$(git -C "${co}" rev-parse --git-path info/exclude)"
+            ;;
           BOXP-924) ln -s index.html "${dist}/link" ;;
           BOXP-925) ln "${dist}/index.html" "${dist}/studio.html" ;;
-          BOXP-926) mkdir -p "${co}/apps/g2-client/dist"; touch "${co}/apps/g2-client/dist/a" ;;
-          BOXP-927) mkdir -p "${co}/x/apps/kohako-studio/web/dist"; touch "${co}/x/apps/kohako-studio/web/dist/a" ;;
+          BOXP-926)
+            mkdir -p "${co}/apps/g2-client/dist"
+            touch "${co}/apps/g2-client/dist/a"
+            ;;
+          BOXP-927)
+            mkdir -p "${co}/x/apps/kohako-studio/web/dist"
+            touch "${co}/x/apps/kohako-studio/web/dist/a"
+            ;;
           BOXP-928) echo dirty >"${co}/dirty" ;;
-          BOXP-931) mkdir -p "${co}/results"; touch "${co}/results/a" ;;
+          BOXP-931)
+            mkdir -p "${co}/results"
+            touch "${co}/results/a"
+            ;;
           BOXP-933) printf html >"${dist}/extra.html" ;;
-          BOXP-932) git -C "${co}" rm -q --cached apps/kohako-studio/web/vite.config.ts; echo apps/kohako-studio/web/vite.config.ts >>"$(git -C "${co}" rev-parse --git-path info/exclude)" ;;
+          BOXP-932)
+            git -C "${co}" rm -q --cached apps/kohako-studio/web/vite.config.ts
+            echo apps/kohako-studio/web/vite.config.ts >>"$(git -C "${co}" rev-parse --git-path info/exclude)"
+            ;;
         esac
       fi
     done
@@ -3450,27 +3511,42 @@ test_stale_prune_studio_dist() {
 
 test_stale_prune_bff_dist() {
   local tmp vault state bin source other known out ws ticket run co i dist
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  source="${tmp}/source"; other="${tmp}/other"; known="${tmp}/known"; out="${tmp}/out"; ws="${state}/workspaces"
-  mkdir -p "${bin}" "${state}/locks" "${tmp}/proc/100"; ln -s / "${tmp}/proc/100/cwd"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  source="${tmp}/source"
+  other="${tmp}/other"
+  known="${tmp}/known"
+  out="${tmp}/out"
+  ws="${state}/workspaces"
+  mkdir -p "${bin}" "${state}/locks" "${tmp}/proc/100"
+  ln -s / "${tmp}/proc/100/cwd"
   echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"${tmp}/mountinfo"
   export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo"
-  make_fake_gh "${bin}"; make_prune_source_repo "${source}"
+  make_fake_gh "${bin}"
+  make_prune_source_repo "${source}"
   git -C "${source}" remote set-url origin https://github.com/boxp/arch.git
   mkdir -p "${source}/apps/kohako-studio/bff/src/sub"
   printf 'dist/\n' >"${source}/.gitignore"
   printf '{"compilerOptions":{"target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","strict":true,"skipLibCheck":true,"outDir":"dist","rootDir":"src","types":["node"]},"include":["src/**/*.ts"],"exclude":["src/**/*.test.ts","src/**/*.fixture.ts"]}' >"${source}/apps/kohako-studio/bff/tsconfig.json"
   touch "${source}/apps/kohako-studio/bff/"{package.json,package-lock.json} "${source}/apps/kohako-studio/bff/src/"{app.ts,app.test.ts} "${source}/apps/kohako-studio/bff/src/sub/x.ts"
-  git -C "${source}" add .; prune_git -C "${source}" commit -q -m fixture
-  git -C "${source}" update-ref refs/remotes/origin/main HEAD; git -C "${source}" rev-list HEAD >"${known}"
-  git clone -q "${source}" "${other}"; git -C "${other}" remote set-url origin https://github.com/boxp/example.git
+  git -C "${source}" add .
+  prune_git -C "${source}" commit -q -m fixture
+  git -C "${source}" update-ref refs/remotes/origin/main HEAD
+  git -C "${source}" rev-list HEAD >"${known}"
+  git clone -q "${source}" "${other}"
+  git -C "${other}" remote set-url origin https://github.com/boxp/example.git
   write_board "${vault}" ''
   for ticket in $(seq 940 954); do
-    ticket="BOXP-${ticket}"; write_prune_ticket "${vault}" "${ticket}" blocked 2020-01-01
+    ticket="BOXP-${ticket}"
+    write_prune_ticket "${vault}" "${ticket}" blocked 2020-01-01
     for i in 1 2 3 4; do
       run="2020010${i}T000000Z"
       if [[ "${ticket}" == BOXP-947 ]]; then co="$(add_prune_run "${state}" "${other}" "${ticket}" "${run}")"; else co="$(add_prune_run "${state}" "${source}" "${ticket}" "${run}")"; fi
-      dist="${co}/apps/kohako-studio/bff/dist"; mkdir -p "${dist}/sub"; touch "${dist}/app.js" "${dist}/sub/x.js"
+      dist="${co}/apps/kohako-studio/bff/dist"
+      mkdir -p "${dist}/sub"
+      touch "${dist}/app.js" "${dist}/sub/x.js"
       if [[ "${i}" == 1 ]]; then
         case "${ticket}" in
           BOXP-941) touch "${dist}/extra.png" ;;
@@ -3478,13 +3554,40 @@ test_stale_prune_bff_dist() {
           BOXP-943) touch "${dist}/gone.js" ;;
           BOXP-944) ln -s app.js "${dist}/link.js" ;;
           BOXP-945) ln "${dist}/app.js" "${dist}/other.js" ;;
-          BOXP-946) mkdir -p "${co}/x/apps/kohako-studio/bff/dist"; touch "${co}/x/apps/kohako-studio/bff/dist/a" ;;
+          BOXP-946)
+            mkdir -p "${co}/x/apps/kohako-studio/bff/dist"
+            touch "${co}/x/apps/kohako-studio/bff/dist/a"
+            ;;
           BOXP-948) echo dirty >"${co}/dirty" ;;
-          BOXP-949) git -C "${co}" rm -q --cached apps/kohako-studio/bff/tsconfig.json; echo apps/kohako-studio/bff/tsconfig.json >>"$(git -C "${co}" rev-parse --git-path info/exclude)" ;;
-          BOXP-950) printf '{"compilerOptions":{"outDir":"dist","rootDir":"src","sourceMap":true}}' >"${co}/apps/kohako-studio/bff/tsconfig.json"; git -C "${co}" add .; prune_git -C "${co}" commit -q -m sourcemap; git -C "${co}" rev-parse HEAD >>"${known}" ;;
-          BOXP-952) touch "${co}/apps/kohako-studio/bff/src/decl.d.ts"; git -C "${co}" add .; prune_git -C "${co}" commit -q -m declaration; git -C "${co}" rev-parse HEAD >>"${known}"; touch "${dist}/decl.d.js" ;;
-          BOXP-953) printf '{"compilerOptions":{"outDir":"dist","rootDir":"src","noEmit":true},"include":["src/**/*.ts"]}' >"${co}/apps/kohako-studio/bff/tsconfig.json"; git -C "${co}" add .; prune_git -C "${co}" commit -q -m noemit; git -C "${co}" rev-parse HEAD >>"${known}" ;;
-          BOXP-954) printf '{"compilerOptions":{"outDir":"dist","rootDir":"src"},"include":["src/sub/**/*.ts"]}' >"${co}/apps/kohako-studio/bff/tsconfig.json"; git -C "${co}" add .; prune_git -C "${co}" commit -q -m narrow-include; git -C "${co}" rev-parse HEAD >>"${known}" ;;
+          BOXP-949)
+            git -C "${co}" rm -q --cached apps/kohako-studio/bff/tsconfig.json
+            echo apps/kohako-studio/bff/tsconfig.json >>"$(git -C "${co}" rev-parse --git-path info/exclude)"
+            ;;
+          BOXP-950)
+            printf '{"compilerOptions":{"outDir":"dist","rootDir":"src","sourceMap":true}}' >"${co}/apps/kohako-studio/bff/tsconfig.json"
+            git -C "${co}" add .
+            prune_git -C "${co}" commit -q -m sourcemap
+            git -C "${co}" rev-parse HEAD >>"${known}"
+            ;;
+          BOXP-952)
+            touch "${co}/apps/kohako-studio/bff/src/decl.d.ts"
+            git -C "${co}" add .
+            prune_git -C "${co}" commit -q -m declaration
+            git -C "${co}" rev-parse HEAD >>"${known}"
+            touch "${dist}/decl.d.js"
+            ;;
+          BOXP-953)
+            printf '{"compilerOptions":{"outDir":"dist","rootDir":"src","noEmit":true},"include":["src/**/*.ts"]}' >"${co}/apps/kohako-studio/bff/tsconfig.json"
+            git -C "${co}" add .
+            prune_git -C "${co}" commit -q -m noemit
+            git -C "${co}" rev-parse HEAD >>"${known}"
+            ;;
+          BOXP-954)
+            printf '{"compilerOptions":{"outDir":"dist","rootDir":"src"},"include":["src/sub/**/*.ts"]}' >"${co}/apps/kohako-studio/bff/tsconfig.json"
+            git -C "${co}" add .
+            prune_git -C "${co}" commit -q -m narrow-include
+            git -C "${co}" rev-parse HEAD >>"${known}"
+            ;;
         esac
       fi
     done
@@ -3494,7 +3597,8 @@ test_stale_prune_bff_dist() {
   [[ ! -e "${ws}/BOXP-940/20200101T000000Z" && ! -e "${ws}/BOXP-940/20200102T000000Z" && -d "${ws}/BOXP-940/20200103T000000Z" && -d "${ws}/BOXP-940/20200104T000000Z" ]] || fail 'normal bff dist retention incorrect'
   for i in $(seq 941 954); do [[ -d "${ws}/BOXP-${i}/20200101T000000Z" ]] || fail "unsafe bff run removed: ${i}"; done
   for pair in '941 extra.png' '942 app.test.js' '943 gone.js' '944 link.js' '945 app.js' '952 decl.d.js'; do
-    read -r i path <<<"${pair}"; assert_file_contains "${out}" "BOXP-${i}/20200101T000000Z.*reason=ignored-unknown path=apps/kohako-studio/bff/dist/${path}"
+    read -r i path <<<"${pair}"
+    assert_file_contains "${out}" "BOXP-${i}/20200101T000000Z.*reason=ignored-unknown path=apps/kohako-studio/bff/dist/${path}"
   done
   assert_file_contains "${out}" 'BOXP-946/20200101T000000Z.*reason=ignored-unknown path=x/apps/kohako-studio/bff/dist/'
   assert_file_contains "${out}" 'BOXP-947/20200101T000000Z.*reason=ignored-unknown path=apps/kohako-studio/bff/dist/'
@@ -3512,72 +3616,94 @@ test_stale_prune_bff_dist() {
 test_workspace_reuse_bff_dist() {
   local tmp ws old dist mode
   for mode in enabled disabled both; do
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"
-  git -C "$tmp/source" remote set-url origin https://github.com/boxp/arch.git
-  mkdir -p "$tmp/source/apps/kohako-studio/bff/src"
-  printf 'dist/\n' >"$tmp/source/.gitignore"
-  printf '{"compilerOptions":{"outDir":"dist","rootDir":"src"},"include":["src/**/*.ts"]}' >"$tmp/source/apps/kohako-studio/bff/tsconfig.json"
-  touch "$tmp/source/apps/kohako-studio/bff/"{package.json,package-lock.json} "$tmp/source/apps/kohako-studio/bff/src/app.ts"
-  if [[ "$mode" == both ]]; then
-    mkdir -p "$tmp/source/apps/kohako-studio/web/public"
-    printf abcd >"$tmp/source/apps/kohako-studio/web/public/copied.txt"
-    touch "$tmp/source/apps/kohako-studio/web/"{package.json,package-lock.json,vite.config.ts}
-  fi
-  git -C "$tmp/source" add .; prune_git -C "$tmp/source" commit -q -m fixture
-  git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD; git -C "$tmp/source" rev-list HEAD >"$tmp/known"
-  old="$ws/BOXP-908/20200101T000000Z/ghq/github.com/boxp/arch"; mkdir -p "$(dirname "$old")"
-  git -C "$tmp/source" worktree add -q -b codex-task-board/BOXP-908-20200101T000000Z "$old" HEAD
-  dist="$old/apps/kohako-studio/bff/dist"; mkdir -p "$dist"; touch "$dist/app.js"
-  if [[ "$mode" == both ]]; then
-    mkdir -p "$old/apps/kohako-studio/web/dist"
-    printf abcd >"$old/apps/kohako-studio/web/dist/copied.txt"
-  fi
-  reuse_lock "$tmp" BOXP-908 20200102T000000Z
-  reuse_prepare "$tmp" BOXP-908 20200102T000000Z boxp/arch >"$tmp/o"
-  assert_file_contains "$tmp/o" ':reused-from "20200101T000000Z"'
-  old="$ws/BOXP-908/20200102T000000Z/ghq/github.com/boxp/arch"
-  [[ -f "$old/apps/kohako-studio/bff/dist/app.js" ]] || fail 'bff dist not carried over'
-  # An edited source on the new base keeps the output regenerable: reuse.
-  echo 'export {}' >"$tmp/source/apps/kohako-studio/bff/src/app.ts"; prune_git -C "$tmp/source" commit -q -am edit-source
-  git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD; git -C "$tmp/source" rev-list HEAD >"$tmp/known"
-  reuse_lock "$tmp" BOXP-908 20200103T000000Z
-  reuse_prepare "$tmp" BOXP-908 20200103T000000Z boxp/arch >"$tmp/o"
-  assert_file_contains "$tmp/o" ':reused-from "20200102T000000Z"'
-  old="$ws/BOXP-908/20200103T000000Z/ghq/github.com/boxp/arch"
-  [[ -f "$old/apps/kohako-studio/bff/dist/app.js" ]] || fail 'bff dist not carried over after source edit'
-  if [[ "$mode" == disabled ]]; then printf '{:reuse-drop-dist false}\n' >"$tmp/state/generated-reclaim.edn"; fi
-  if [[ "$mode" == both ]]; then printf efgh >"$tmp/source/apps/kohako-studio/web/public/copied.txt"; git -C "$tmp/source" add apps/kohako-studio/web/public/copied.txt; fi
-  git -C "$tmp/source" rm -q apps/kohako-studio/bff/src/app.ts; prune_git -C "$tmp/source" commit -q -m remove-source
-  git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD; git -C "$tmp/source" rev-list HEAD >"$tmp/known"
-  reuse_lock "$tmp" BOXP-908 20200104T000000Z
-  reuse_prepare "$tmp" BOXP-908 20200104T000000Z boxp/arch >"$tmp/o"
-  if [[ "$mode" == disabled ]]; then
-    assert_file_contains "$tmp/o" ':reuse-fallback "bff-dist-src-diff"'
-    [[ -f "$old/apps/kohako-studio/bff/dist/app.js" ]] || fail 'disabled bff dist changed'
-  else
-    assert_file_contains "$tmp/o" ':reused-from "20200103T000000Z"'
+    tmp="$(mktemp -d)"
+    reuse_fixture "$tmp"
+    ws="$tmp/state/workspaces"
+    git -C "$tmp/source" remote set-url origin https://github.com/boxp/arch.git
+    mkdir -p "$tmp/source/apps/kohako-studio/bff/src"
+    printf 'dist/\n' >"$tmp/source/.gitignore"
+    printf '{"compilerOptions":{"outDir":"dist","rootDir":"src"},"include":["src/**/*.ts"]}' >"$tmp/source/apps/kohako-studio/bff/tsconfig.json"
+    touch "$tmp/source/apps/kohako-studio/bff/"{package.json,package-lock.json} "$tmp/source/apps/kohako-studio/bff/src/app.ts"
     if [[ "$mode" == both ]]; then
-      assert_file_contains "$tmp/o" ':reuse-base-reason "studio-dist-dropped"'
-      [[ ! -e "$ws/BOXP-908/20200104T000000Z/ghq/github.com/boxp/arch/apps/kohako-studio/web/dist" ]] || fail 'studio dist not dropped'
-    else
-      assert_file_contains "$tmp/o" ':reuse-base-reason "bff-dist-dropped"'
+      mkdir -p "$tmp/source/apps/kohako-studio/web/public"
+      printf abcd >"$tmp/source/apps/kohako-studio/web/public/copied.txt"
+      touch "$tmp/source/apps/kohako-studio/web/"{package.json,package-lock.json,vite.config.ts}
     fi
-    [[ ! -e "$old" && ! -e "$ws/BOXP-908/20200104T000000Z/ghq/github.com/boxp/arch/apps/kohako-studio/bff/dist" ]] || fail 'bff dist not dropped'
-  fi
-  rm -rf "$tmp"
+    git -C "$tmp/source" add .
+    prune_git -C "$tmp/source" commit -q -m fixture
+    git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD
+    git -C "$tmp/source" rev-list HEAD >"$tmp/known"
+    old="$ws/BOXP-908/20200101T000000Z/ghq/github.com/boxp/arch"
+    mkdir -p "$(dirname "$old")"
+    git -C "$tmp/source" worktree add -q -b codex-task-board/BOXP-908-20200101T000000Z "$old" HEAD
+    dist="$old/apps/kohako-studio/bff/dist"
+    mkdir -p "$dist"
+    touch "$dist/app.js"
+    if [[ "$mode" == both ]]; then
+      mkdir -p "$old/apps/kohako-studio/web/dist"
+      printf abcd >"$old/apps/kohako-studio/web/dist/copied.txt"
+    fi
+    reuse_lock "$tmp" BOXP-908 20200102T000000Z
+    reuse_prepare "$tmp" BOXP-908 20200102T000000Z boxp/arch >"$tmp/o"
+    assert_file_contains "$tmp/o" ':reused-from "20200101T000000Z"'
+    old="$ws/BOXP-908/20200102T000000Z/ghq/github.com/boxp/arch"
+    [[ -f "$old/apps/kohako-studio/bff/dist/app.js" ]] || fail 'bff dist not carried over'
+    # An edited source on the new base keeps the output regenerable: reuse.
+    echo 'export {}' >"$tmp/source/apps/kohako-studio/bff/src/app.ts"
+    prune_git -C "$tmp/source" commit -q -am edit-source
+    git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD
+    git -C "$tmp/source" rev-list HEAD >"$tmp/known"
+    reuse_lock "$tmp" BOXP-908 20200103T000000Z
+    reuse_prepare "$tmp" BOXP-908 20200103T000000Z boxp/arch >"$tmp/o"
+    assert_file_contains "$tmp/o" ':reused-from "20200102T000000Z"'
+    old="$ws/BOXP-908/20200103T000000Z/ghq/github.com/boxp/arch"
+    [[ -f "$old/apps/kohako-studio/bff/dist/app.js" ]] || fail 'bff dist not carried over after source edit'
+    if [[ "$mode" == disabled ]]; then printf '{:reuse-drop-dist false}\n' >"$tmp/state/generated-reclaim.edn"; fi
+    if [[ "$mode" == both ]]; then
+      printf efgh >"$tmp/source/apps/kohako-studio/web/public/copied.txt"
+      git -C "$tmp/source" add apps/kohako-studio/web/public/copied.txt
+    fi
+    git -C "$tmp/source" rm -q apps/kohako-studio/bff/src/app.ts
+    prune_git -C "$tmp/source" commit -q -m remove-source
+    git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD
+    git -C "$tmp/source" rev-list HEAD >"$tmp/known"
+    reuse_lock "$tmp" BOXP-908 20200104T000000Z
+    reuse_prepare "$tmp" BOXP-908 20200104T000000Z boxp/arch >"$tmp/o"
+    if [[ "$mode" == disabled ]]; then
+      assert_file_contains "$tmp/o" ':reuse-fallback "bff-dist-src-diff"'
+      [[ -f "$old/apps/kohako-studio/bff/dist/app.js" ]] || fail 'disabled bff dist changed'
+    else
+      assert_file_contains "$tmp/o" ':reused-from "20200103T000000Z"'
+      if [[ "$mode" == both ]]; then
+        assert_file_contains "$tmp/o" ':reuse-base-reason "studio-dist-dropped"'
+        [[ ! -e "$ws/BOXP-908/20200104T000000Z/ghq/github.com/boxp/arch/apps/kohako-studio/web/dist" ]] || fail 'studio dist not dropped'
+      else
+        assert_file_contains "$tmp/o" ':reuse-base-reason "bff-dist-dropped"'
+      fi
+      [[ ! -e "$old" && ! -e "$ws/BOXP-908/20200104T000000Z/ghq/github.com/boxp/arch/apps/kohako-studio/bff/dist" ]] || fail 'bff dist not dropped'
+    fi
+    rm -rf "$tmp"
   done
 }
 
 test_stale_prune() {
   local tmp vault state bin source known out ws ticket run co i
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  source="${tmp}/source"; known="${tmp}/known"; out="${tmp}/out"; ws="${state}/workspaces"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  source="${tmp}/source"
+  known="${tmp}/known"
+  out="${tmp}/out"
+  ws="${state}/workspaces"
   mkdir -p "${bin}" "${state}/locks"
-  make_fake_gh "${bin}"; make_prune_source_repo "${source}"; git -C "${source}" rev-parse HEAD >"${known}"
+  make_fake_gh "${bin}"
+  make_prune_source_repo "${source}"
+  git -C "${source}" rev-parse HEAD >"${known}"
   write_board "${vault}" ""
   for ticket in BOXP-901 BOXP-902 BOXP-903 BOXP-904 BOXP-905 BOXP-906 BOXP-907 BOXP-908 BOXP-909 BOXP-910; do
     if [[ "${ticket}" == BOXP-907 ]]; then
-      write_prune_ticket "${vault}" "${ticket}" done "$(date -u +%Y-%m-%d)"
+      write_prune_ticket "${vault}" "${ticket}" "done" "$(date -u +%Y-%m-%d)"
     else
       write_prune_ticket "${vault}" "${ticket}" blocked 2020-01-01
     fi
@@ -3586,10 +3712,18 @@ test_stale_prune() {
       co="$(add_prune_run "${state}" "${source}" "${ticket}" "${run}")"
       if [[ "${i}" == 1 ]]; then
         case "${ticket}" in
-          BOXP-910|BOXP-902) echo dirty >"${co}/dirty" ;;
+          BOXP-910 | BOXP-902) echo dirty >"${co}/dirty" ;;
           BOXP-903) prune_commit "${co}" unpushed >/dev/null ;;
-          BOXP-904) echo results/ >>"$(git -C "${co}" rev-parse --git-path info/exclude)"; mkdir -p "${co}/results"; echo x >"${co}/results/out.bin" ;;
-          BOXP-905) printf 'node_modules/\n.terraform/\n' >>"$(git -C "${co}" rev-parse --git-path info/exclude)"; mkdir -p "${co}/node_modules" "${co}/.terraform"; touch "${co}/node_modules/x" "${co}/.terraform/x" ;;
+          BOXP-904)
+            echo results/ >>"$(git -C "${co}" rev-parse --git-path info/exclude)"
+            mkdir -p "${co}/results"
+            echo x >"${co}/results/out.bin"
+            ;;
+          BOXP-905)
+            printf 'node_modules/\n.terraform/\n' >>"$(git -C "${co}" rev-parse --git-path info/exclude)"
+            mkdir -p "${co}/node_modules" "${co}/.terraform"
+            touch "${co}/node_modules/x" "${co}/.terraform/x"
+            ;;
           BOXP-908) echo note >"${ws}/${ticket}/${run}/agent-notes.md" ;;
         esac
       fi
@@ -3600,7 +3734,8 @@ test_stale_prune() {
   printf '{:ticket "BOXP-910" :run-id "20200105T000000Z"}\n' >"${state}/locks/BOXP-910.edn"
   # Scan a fixture process table: CI hosts have root processes whose cwd is
   # unreadable, which the fail-closed scan would (correctly) treat as a hold.
-  mkdir -p "${tmp}/proc/100"; ln -s / "${tmp}/proc/100/cwd"
+  mkdir -p "${tmp}/proc/100"
+  ln -s / "${tmp}/proc/100/cwd"
   echo "22 1 0:21 / / rw - ext4 /dev/root rw" >"${tmp}/mountinfo"
   export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo"
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=false run_prune "${vault}" "${state}" >"${out}"
@@ -3629,7 +3764,8 @@ test_stale_prune() {
   assert_file_contains "${out}" 'reason=commit-not-on-github'
   # A live process inside an otherwise deletable stale run keeps it.
   co="$(add_prune_run "${state}" "${source}" BOXP-901 20191231T000000Z)"
-  mkdir -p "${tmp}/proc/101"; ln -s "${co}" "${tmp}/proc/101/cwd"
+  mkdir -p "${tmp}/proc/101"
+  ln -s "${co}" "${tmp}/proc/101/cwd"
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" >"${out}"
   [[ -d "${ws}/BOXP-901/20191231T000000Z" ]] || fail "stale run with live process removed"
   assert_file_contains "${out}" "reason=process-active"
@@ -3641,7 +3777,8 @@ test_stale_prune() {
     [[ "${i}" == 1 ]] && prune_commit "${co}" pushed >>"${known}"
   done
   printf '{:ticket "BOXP-911" :run-id "20200104T000000Z"}\n' >"${state}/locks/BOXP-911.edn"
-  mkdir -p "${state}/lock-guards"; touch "${state}/lock-guards/BOXP-911.lock"
+  mkdir -p "${state}/lock-guards"
+  touch "${state}/lock-guards/BOXP-911.lock"
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" GH_FAKE_GUARD_PROBE_FILE="${state}/lock-guards/BOXP-911.lock" GH_FAKE_GUARD_PROBE_LOG="${tmp}/guard-probe" \
     CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" >"${out}"
   [[ ! -e "${ws}/BOXP-911/20200101T000000Z" && -d "${ws}/BOXP-911/20200103T000000Z" && -d "${ws}/BOXP-911/20200104T000000Z" ]] || fail "locked ticket stale run retention incorrect"
@@ -3653,14 +3790,16 @@ test_stale_prune() {
   for i in 1 2 3 4; do
     co="$(add_prune_run "${state}" "${source}" BOXP-912 "2020010${i}T000000Z")"
     if [[ "${i}" -le 2 ]]; then
-      prune_commit "${co}" pushed >"${tmp}/sha-912-${i}"; cat "${tmp}/sha-912-${i}" >>"${known}"
+      prune_commit "${co}" pushed >"${tmp}/sha-912-${i}"
+      cat "${tmp}/sha-912-${i}" >>"${known}"
     fi
   done
-  mkdir -p "${state}/lock-guards"; touch "${state}/lock-guards/BOXP-912.lock"
+  mkdir -p "${state}/lock-guards"
+  touch "${state}/lock-guards/BOXP-912.lock"
   : >"${tmp}/guard-probe-912"
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" GH_FAKE_LOCK_ON_SHA="$(cat "${tmp}/sha-912-1")" GH_FAKE_LOCK_ON_LOOKUP="${state}/locks/BOXP-912.edn" GH_FAKE_LOCK_CONTENT='{:ticket "BOXP-912" :run-id "20200105T000000Z"}' \
-    GH_FAKE_GUARD_PROBE_FILE="${state}/lock-guards/BOXP-912.lock" GH_FAKE_GUARD_PROBE_LOG="${tmp}/guard-probe-912" \
-    CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" >"${out}"
+  GH_FAKE_GUARD_PROBE_FILE="${state}/lock-guards/BOXP-912.lock" GH_FAKE_GUARD_PROBE_LOG="${tmp}/guard-probe-912" \
+  CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" >"${out}"
   [[ -f "${state}/locks/BOXP-912.edn" && -d "${ws}/BOXP-912/20200102T000000Z" ]] || fail "run inspected under guard after concurrent claim"
   if grep -q '^held$' "${tmp}/guard-probe-912"; then fail "ticket guard held after concurrent claim"; fi
   rm -f "${state}/locks/BOXP-912.edn"
@@ -3689,7 +3828,7 @@ test_prune_workspaces() {
 
   # BOXP-301: old done, clean, commit is on GitHub -> run, branch and ticket dir are deleted.
   # A second checkout (independent clone outside ghq/) and a loose file go with the run.
-  write_prune_ticket "${vault}" BOXP-301 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-301 "done" 2020-01-01
   co="$(add_prune_run "${state}" "${source}" BOXP-301 "${old}")"
   prune_commit "${co}" pushed >>"${known}"
   git clone -q "${source}" "${ws}/BOXP-301/${old}/scratch/clone"
@@ -3698,7 +3837,7 @@ test_prune_workspaces() {
   printf '{:status :succeeded}\n' >"${state}/runs/BOXP-301/${old}/summary.edn"
 
   # BOXP-302: done but closed today -> kept.
-  write_prune_ticket "${vault}" BOXP-302 done "${today}"
+  write_prune_ticket "${vault}" BOXP-302 "done" "${today}"
   add_prune_run "${state}" "${source}" BOXP-302 "${old}" >/dev/null
 
   # BOXP-303: review with a stale closed date -> kept.
@@ -3707,23 +3846,23 @@ test_prune_workspaces() {
 
   # BOXP-304: old done but locked -> kept. The lock is written after the tick
   # below, which would otherwise recover it as stale.
-  write_prune_ticket "${vault}" BOXP-304 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-304 "done" 2020-01-01
   add_prune_run "${state}" "${source}" BOXP-304 "${old}" >/dev/null
 
   # BOXP-305: old done with an untracked file -> held.
-  write_prune_ticket "${vault}" BOXP-305 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-305 "done" 2020-01-01
   co="$(add_prune_run "${state}" "${source}" BOXP-305 "${old}")"
   printf 'wip\n' >"${co}/untracked.txt"
 
   # BOXP-306: old done with a commit that is not on GitHub -> held.
-  write_prune_ticket "${vault}" BOXP-306 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-306 "done" 2020-01-01
   co="$(add_prune_run "${state}" "${source}" BOXP-306 "${old}")"
   prune_commit "${co}" unpushed >/dev/null
 
   # BOXP-307: old done, HEAD detached at a pushed commit while the run branch
   # points to a local-only commit the worktree never had checked out -> run
   # deleted, branch kept.
-  write_prune_ticket "${vault}" BOXP-307 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-307 "done" 2020-01-01
   co="$(add_prune_run "${state}" "${source}" BOXP-307 "${old}")"
   git -C "${co}" checkout -q --detach
   git -C "${source}" update-ref "refs/heads/codex-task-board/BOXP-307-${old}" \
@@ -3736,16 +3875,16 @@ test_prune_workspaces() {
   add_prune_run "${state}" "${source}" BOXP-309 "${old}" >/dev/null
 
   # BOXP-310: old closed date but a recent run (reopened ticket) -> kept.
-  write_prune_ticket "${vault}" BOXP-310 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-310 "done" 2020-01-01
   add_prune_run "${state}" "${source}" BOXP-310 "${recent}" >/dev/null
 
   # BOXP-311: old done, origin is not GitHub -> held.
-  write_prune_ticket "${vault}" BOXP-311 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-311 "done" 2020-01-01
   mkdir -p "${ws}/BOXP-311/${old}"
   git clone -q "${source}" "${ws}/BOXP-311/${old}/clone"
 
   # BOXP-312: old done, independent clone with a local-only branch other than HEAD -> held.
-  write_prune_ticket "${vault}" BOXP-312 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-312 "done" 2020-01-01
   mkdir -p "${ws}/BOXP-312/${old}"
   clone="${ws}/BOXP-312/${old}/clone"
   git clone -q "${source}" "${clone}"
@@ -3755,7 +3894,7 @@ test_prune_workspaces() {
   git -C "${clone}" checkout -q main
 
   # BOXP-315: old done, independent clone with a local-only commit that only a tag points to -> held.
-  write_prune_ticket "${vault}" BOXP-315 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-315 "done" 2020-01-01
   mkdir -p "${ws}/BOXP-315/${old}"
   clone="${ws}/BOXP-315/${old}/clone"
   git clone -q "${source}" "${clone}"
@@ -3767,7 +3906,7 @@ test_prune_workspaces() {
 
   # BOXP-314: old done, HEAD is covered by a stale remote-tracking ref but the
   # commit is gone from GitHub -> held. Tracking refs alone are not proof.
-  write_prune_ticket "${vault}" BOXP-314 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-314 "done" 2020-01-01
   co="$(add_prune_run "${state}" "${source}" BOXP-314 "${old}")"
   git -C "${source}" update-ref refs/remotes/origin/stale "$(prune_commit "${co}" force-pushed-away)"
 
@@ -3779,12 +3918,12 @@ test_prune_workspaces() {
 
   # Dry run reports the plan and deletes nothing.
   snapshot="$(cd "${state}" && find workspaces locks runs | sort)"
-  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" --dry-run >"${out}" \
-    || fail "prune-workspaces --dry-run failed"
-  [[ "$(cd "${state}" && find workspaces locks runs | sort)" == "${snapshot}" ]] \
-    || fail "dry run must not change workspaces, locks or runs"
-  git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/BOXP-301-${old}" \
-    || fail "dry run must not delete branches"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" --dry-run >"${out}" ||
+    fail "prune-workspaces --dry-run failed"
+  [[ "$(cd "${state}" && find workspaces locks runs | sort)" == "${snapshot}" ]] ||
+    fail "dry run must not change workspaces, locks or runs"
+  git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/BOXP-301-${old}" ||
+    fail "dry run must not delete branches"
   assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-301/${old} \\(dry-run\\)$"
   assert_file_contains "${out}" "^prune: delete-empty ${ws}/BOXP-301 \\(dry-run\\)$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-305/${old} reason=uncommitted-changes checkout=ghq/github.com/boxp/example$"
@@ -3801,12 +3940,12 @@ test_prune_workspaces() {
   [[ -d "${ws}/BOXP-302/${old}" ]] || fail "expected done run inside retention to remain"
   [[ -d "${ws}/BOXP-303/${old}" ]] || fail "expected non-done run to remain"
   [[ -d "${ws}/BOXP-304/${old}" ]] || fail "expected locked ticket run to remain"
-  [[ -f "${ws}/BOXP-305/${old}/ghq/github.com/boxp/example/untracked.txt" ]] \
-    || fail "expected run with uncommitted changes to remain"
+  [[ -f "${ws}/BOXP-305/${old}/ghq/github.com/boxp/example/untracked.txt" ]] ||
+    fail "expected run with uncommitted changes to remain"
   [[ -d "${ws}/BOXP-306/${old}" ]] || fail "expected run with a commit missing on GitHub to remain"
   [[ ! -e "${ws}/BOXP-307" ]] || fail "expected run with pushed HEAD to be deleted"
-  git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/BOXP-307-${old}" \
-    || fail "expected run branch with a local-only tip to remain"
+  git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/BOXP-307-${old}" ||
+    fail "expected run branch with a local-only tip to remain"
   [[ ! -e "${ws}/BOXP-308" ]] || fail "expected empty ticket directory to be deleted"
   [[ -d "${ws}/BOXP-309/${old}" ]] || fail "expected run of a missing ticket to remain"
   [[ -d "${ws}/BOXP-310/${recent}" ]] || fail "expected recent run of an old done ticket to remain"
@@ -3819,8 +3958,8 @@ test_prune_workspaces() {
       fail "expected ${ticket} worktree to be unregistered from the source repository"
     fi
   done
-  git -C "${source}" worktree list --porcelain | grep -q "/workspaces/BOXP-305/" \
-    || fail "expected held worktree to stay registered"
+  git -C "${source}" worktree list --porcelain | grep -q "/workspaces/BOXP-305/" ||
+    fail "expected held worktree to stay registered"
   [[ -f "${state}/runs/BOXP-301/${old}/summary.edn" ]] || fail "prune must not touch runs/"
   [[ -f "${state}/locks/BOXP-304.edn" ]] || fail "prune must not touch locks/"
   [[ ! -e "${state}/state.edn" ]] || fail "prune must not write state.edn"
@@ -3835,12 +3974,12 @@ test_prune_workspaces() {
   [[ -z "$(sort "${tmp}/api.log" | uniq -d)" ]] || fail "expected GitHub lookups to be cached per prune pass"
 
   # A second pass is idempotent and keeps reporting held runs.
-  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
-    || fail "second prune-workspaces failed"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" ||
+    fail "second prune-workspaces failed"
   assert_file_contains "${out}" '^prune: summary deleted=0 stale-deleted=0 held=6 skipped=4 recent-runs=1 branches=0 empty-dirs=0 dry-run=false '
 
   # gh failures (auth, rate limit, network) are not treated as proof either way.
-  write_prune_ticket "${vault}" BOXP-313 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-313 "done" 2020-01-01
   co="$(add_prune_run "${state}" "${source}" BOXP-313 "${old}")"
   prune_commit "${co}" pushed-313 >>"${known}"
   cat >"${bin}/gh" <<'EOF'
@@ -3848,8 +3987,8 @@ test_prune_workspaces() {
 echo "gh: API rate limit exceeded (HTTP 403)" >&2
 exit 1
 EOF
-  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
-    || fail "prune-workspaces with failing gh failed"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" ||
+    fail "prune-workspaces with failing gh failed"
   [[ -d "${ws}/BOXP-313/${old}" ]] || fail "expected run to remain when gh cannot verify commits"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-313/${old} reason=github-check-failed sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
 }
@@ -3886,14 +4025,14 @@ test_prune_holds_checkout_over_commit_limit() {
   # The commit the worktree was created at is in the HEAD reflog, so it counts
   # towards the limit together with the unpushed commits.
   # BOXP-331: exactly 200 commits to verify, all on GitHub -> deleted.
-  write_prune_ticket "${vault}" BOXP-331 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-331 "done" 2020-01-01
   co="$(add_prune_run "${state}" "${source}" BOXP-331 "${old}")"
   prune_empty_commits "${co}" 199
   git -C "${co}" log -g --format=%H HEAD | sort -u >"${known}"
   [[ "$(wc -l <"${known}")" -eq 200 ]] || fail "expected 200 commits to verify in the fixture"
 
   # BOXP-332: 201 commits to verify -> held without asking GitHub about any of them.
-  write_prune_ticket "${vault}" BOXP-332 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-332 "done" 2020-01-01
   co="$(add_prune_run "${state}" "${source}" BOXP-332 "${old}")"
   prune_empty_commits "${co}" 200
   git -C "${co}" rev-list HEAD --not --remotes >"${tmp}/over-limit-shas"
@@ -3935,7 +4074,7 @@ test_prune_inspects_nested_checkouts() {
   write_board "${vault}" ""
 
   # BOXP-341: gitignored nested clone with an untracked file -> held.
-  write_prune_ticket "${vault}" BOXP-341 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-341 "done" 2020-01-01
   co="$(add_prune_run "${state}" "${source}" BOXP-341 "${old}")"
   nested="${co}/vendor/clone"
   git clone -q "${source}" "${nested}"
@@ -3944,7 +4083,7 @@ test_prune_inspects_nested_checkouts() {
   [[ -z "$(git -C "${co}" status --porcelain)" ]] || fail "expected the parent checkout to ignore the nested clone"
 
   # BOXP-342: gitignored nested clone with a commit that is not on GitHub -> held.
-  write_prune_ticket "${vault}" BOXP-342 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-342 "done" 2020-01-01
   co="$(add_prune_run "${state}" "${source}" BOXP-342 "${old}")"
   nested="${co}/vendor/clone"
   git clone -q "${source}" "${nested}"
@@ -3952,7 +4091,7 @@ test_prune_inspects_nested_checkouts() {
   prune_commit "${nested}" nested-unpushed >/dev/null
 
   # BOXP-343: gitignored nested clone with a stash -> held.
-  write_prune_ticket "${vault}" BOXP-343 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-343 "done" 2020-01-01
   co="$(add_prune_run "${state}" "${source}" BOXP-343 "${old}")"
   nested="${co}/vendor/clone"
   git clone -q "${source}" "${nested}"
@@ -3962,32 +4101,32 @@ test_prune_inspects_nested_checkouts() {
 
   # BOXP-344: clean nested clone and a clean nested worktree of the source
   # repository, all on GitHub -> deleted, both worktrees unregistered.
-  write_prune_ticket "${vault}" BOXP-344 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-344 "done" 2020-01-01
   co="$(add_prune_run "${state}" "${source}" BOXP-344 "${old}")"
   git clone -q "${source}" "${co}/vendor/clone"
   git -C "${co}/vendor/clone" remote set-url origin https://github.com/boxp/example.git
   git -C "${source}" worktree add -q --detach "${co}/vendor/worktree" HEAD
 
-  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" --dry-run >"${out}" \
-    || fail "prune-workspaces --dry-run with nested checkouts failed"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" --dry-run >"${out}" ||
+    fail "prune-workspaces --dry-run with nested checkouts failed"
   assert_file_contains "${out}" '^prune: summary deleted=1 stale-deleted=0 held=3 '
 
-  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
-    || fail "prune-workspaces with nested checkouts failed"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" ||
+    fail "prune-workspaces with nested checkouts failed"
 
-  [[ -f "${ws}/BOXP-341/${old}/ghq/github.com/boxp/example/vendor/clone/untracked.txt" ]] \
-    || fail "expected run with uncommitted changes in a nested clone to remain"
-  [[ -f "${ws}/BOXP-342/${old}/ghq/github.com/boxp/example/vendor/clone/nested-unpushed" ]] \
-    || fail "expected run with an unpushed commit in a nested clone to remain"
-  git -C "${ws}/BOXP-343/${old}/ghq/github.com/boxp/example/vendor/clone" rev-parse -q --verify refs/stash >/dev/null \
-    || fail "expected run with a stash in a nested clone to remain"
+  [[ -f "${ws}/BOXP-341/${old}/ghq/github.com/boxp/example/vendor/clone/untracked.txt" ]] ||
+    fail "expected run with uncommitted changes in a nested clone to remain"
+  [[ -f "${ws}/BOXP-342/${old}/ghq/github.com/boxp/example/vendor/clone/nested-unpushed" ]] ||
+    fail "expected run with an unpushed commit in a nested clone to remain"
+  git -C "${ws}/BOXP-343/${old}/ghq/github.com/boxp/example/vendor/clone" rev-parse -q --verify refs/stash >/dev/null ||
+    fail "expected run with a stash in a nested clone to remain"
   [[ ! -e "${ws}/BOXP-344" ]] || fail "expected run with clean nested checkouts to be deleted"
   if git -C "${source}" worktree list --porcelain | grep -q "/workspaces/BOXP-344/"; then
     fail "expected nested and parent worktrees to be unregistered from the source repository"
   fi
   for ticket in BOXP-341 BOXP-342 BOXP-343; do
-    git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/${ticket}-${old}" \
-      || fail "expected the branch of held run ${ticket} to remain"
+    git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/${ticket}-${old}" ||
+      fail "expected the branch of held run ${ticket} to remain"
   done
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-341/${old} reason=uncommitted-changes checkout=ghq/github.com/boxp/example/vendor/clone$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-342/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example/vendor/clone$"
@@ -4015,25 +4154,25 @@ test_prune_checks_reflog_commits() {
 
   # BOXP-351: independent clone whose only local commit was dropped by
   # `git reset --hard` and survives in the reflog alone -> held.
-  write_prune_ticket "${vault}" BOXP-351 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-351 "done" 2020-01-01
   mkdir -p "${ws}/BOXP-351/${old}"
   clone="${ws}/BOXP-351/${old}/clone"
   git clone -q "${source}" "${clone}"
   git -C "${clone}" remote set-url origin https://github.com/boxp/example.git
   prune_commit "${clone}" reset-away >/dev/null
   git -C "${clone}" reset -q --hard HEAD~1
-  [[ -z "$(git -C "${clone}" rev-list HEAD --branches --tags --not --remotes)" ]] \
-    || fail "expected the dropped commit to be reachable from the reflog only"
+  [[ -z "$(git -C "${clone}" rev-list HEAD --branches --tags --not --remotes)" ]] ||
+    fail "expected the dropped commit to be reachable from the reflog only"
 
   # BOXP-352: the same in a run worktree, whose HEAD reflog goes away with it -> held.
-  write_prune_ticket "${vault}" BOXP-352 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-352 "done" 2020-01-01
   co="$(add_prune_run "${state}" "${source}" BOXP-352 "${old}")"
   prune_commit "${co}" reset-away >/dev/null
   git -C "${co}" reset -q --hard HEAD~1
 
   # BOXP-353: amended in a worktree, and the commit from before the amend is
   # on GitHub as well -> run and branch deleted.
-  write_prune_ticket "${vault}" BOXP-353 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-353 "done" 2020-01-01
   co="$(add_prune_run "${state}" "${source}" BOXP-353 "${old}")"
   prune_commit "${co}" amended >>"${known}"
   prune_git -C "${co}" commit -q --amend -m amended-again
@@ -4042,35 +4181,35 @@ test_prune_checks_reflog_commits() {
   # BOXP-354: the worktree only ever saw pushed commits, but the run branch
   # was moved to a local-only commit and back from the source repository ->
   # run deleted, branch (and with it the branch reflog) kept.
-  write_prune_ticket "${vault}" BOXP-354 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-354 "done" 2020-01-01
   add_prune_run "${state}" "${source}" BOXP-354 "${old}" >/dev/null
   branch="refs/heads/codex-task-board/BOXP-354-${old}"
   dropped="$(prune_git -C "${source}" commit-tree -m dropped -p HEAD 'HEAD^{tree}')"
   git -C "${source}" update-ref -m test "${branch}" "${dropped}"
   git -C "${source}" update-ref -m test "${branch}" HEAD
-  git -C "${source}" log -g --format=%H "${branch}" | grep -qx "${dropped}" \
-    || fail "expected the dropped commit in the run branch reflog"
+  git -C "${source}" log -g --format=%H "${branch}" | grep -qx "${dropped}" ||
+    fail "expected the dropped commit in the run branch reflog"
 
-  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" --dry-run >"${out}" \
-    || fail "prune-workspaces --dry-run with reflog-only commits failed"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" --dry-run >"${out}" ||
+    fail "prune-workspaces --dry-run with reflog-only commits failed"
   assert_file_contains "${out}" '^prune: summary deleted=2 stale-deleted=0 held=2 skipped=0 recent-runs=0 branches=1 '
 
-  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
-    || fail "prune-workspaces with reflog-only commits failed"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" ||
+    fail "prune-workspaces with reflog-only commits failed"
 
-  [[ -n "$(git -C "${ws}/BOXP-351/${old}/clone" log -g --format=%H --grep-reflog='commit: reset-away' HEAD)" ]] \
-    || fail "expected clone with a commit left only in the reflog to remain"
-  [[ -n "$(git -C "${ws}/BOXP-352/${old}/ghq/github.com/boxp/example" log -g --format=%H --grep-reflog='commit: reset-away' HEAD)" ]] \
-    || fail "expected worktree with a commit left only in the reflog to remain"
-  git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/BOXP-352-${old}" \
-    || fail "expected the branch of a held run to remain"
+  [[ -n "$(git -C "${ws}/BOXP-351/${old}/clone" log -g --format=%H --grep-reflog='commit: reset-away' HEAD)" ]] ||
+    fail "expected clone with a commit left only in the reflog to remain"
+  [[ -n "$(git -C "${ws}/BOXP-352/${old}/ghq/github.com/boxp/example" log -g --format=%H --grep-reflog='commit: reset-away' HEAD)" ]] ||
+    fail "expected worktree with a commit left only in the reflog to remain"
+  git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/BOXP-352-${old}" ||
+    fail "expected the branch of a held run to remain"
   [[ ! -e "${ws}/BOXP-353" ]] || fail "expected run whose reflog commits are all on GitHub to be deleted"
   if git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/BOXP-353-${old}"; then
     fail "expected run branch whose reflog commits are all on GitHub to be deleted"
   fi
   [[ ! -e "${ws}/BOXP-354" ]] || fail "expected run whose worktree only saw pushed commits to be deleted"
-  git -C "${source}" log -g --format=%H "${branch}" | grep -qx "${dropped}" \
-    || fail "expected run branch with a local-only commit in its reflog to remain"
+  git -C "${source}" log -g --format=%H "${branch}" | grep -qx "${dropped}" ||
+    fail "expected run branch with a local-only commit in its reflog to remain"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-351/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=clone$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-352/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
   assert_file_contains "${out}" "^prune: delete-branch ${source}/.git codex-task-board/BOXP-353-${old}$"
@@ -4099,23 +4238,23 @@ test_prune_respects_board_lane() {
   # BOXP-362: card in Done and frontmatter done -> deleted.
   write_board "${vault}" "- [ ] [[Tickets/BOXP-361|BOXP-361: reopened]] #ticket status::in-progress"
   printf '%s\n' "- [x] [[Tickets/BOXP-362|BOXP-362: finished]] #ticket status::done" >>"${vault}/Boards/Task Board.md"
-  write_prune_ticket "${vault}" BOXP-361 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-361 "done" 2020-01-01
   add_prune_run "${state}" "${source}" BOXP-361 "${old}" >/dev/null
-  write_prune_ticket "${vault}" BOXP-362 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-362 "done" 2020-01-01
   add_prune_run "${state}" "${source}" BOXP-362 "${old}" >/dev/null
 
-  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
-    || fail "prune-workspaces with a reopened card failed"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" ||
+    fail "prune-workspaces with a reopened card failed"
   [[ -d "${ws}/BOXP-361/${old}" ]] || fail "expected run of a ticket whose card left Done to remain"
   [[ ! -e "${ws}/BOXP-362" ]] || fail "expected run of a ticket whose card is in Done to be deleted"
   assert_file_contains "${out}" '^prune: summary deleted=1 stale-deleted=0 held=0 skipped=1 .* skipped-detail=not-done:1( reclaimed-est-bytes=[0-9]+ held-bytes=[0-9]+)?$'
 
   # Without a readable board nothing is deleted.
-  write_prune_ticket "${vault}" BOXP-363 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-363 "done" 2020-01-01
   add_prune_run "${state}" "${source}" BOXP-363 "${old}" >/dev/null
   rm "${vault}/Boards/Task Board.md"
-  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
-    || fail "prune-workspaces without a board failed"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" ||
+    fail "prune-workspaces without a board failed"
   [[ -d "${ws}/BOXP-363/${old}" ]] || fail "expected run to remain when the board is missing"
   assert_file_contains "${out}" '^prune: summary deleted=0 stale-deleted=0 held=0 skipped=2 .* skipped-detail=board-unreadable:2( reclaimed-est-bytes=[0-9]+ held-bytes=[0-9]+)?$'
 }
@@ -4150,7 +4289,7 @@ start_prune_loop() {
   make_prune_source_repo "${source}"
   git -C "${source}" rev-parse HEAD >"${tmp}/known-shas"
   write_board "${vault}" ""
-  write_prune_ticket "${vault}" BOXP-321 done 2020-01-01
+  write_prune_ticket "${vault}" BOXP-321 "done" 2020-01-01
   add_prune_run "${state}" "${source}" BOXP-321 "${old}" >/dev/null
 
   PATH="${bin}:$PATH" \
@@ -4171,12 +4310,12 @@ stop_prune_loop() {
 }
 
 test_loop_prunes_in_background() {
-  local tmp attempt
+  local tmp
   tmp="$(mktemp -d)"
   start_prune_loop "${tmp}" env CODEX_TASK_BOARD_WORKSPACE_PRUNE_INTERVAL_SECONDS=2
 
   # The interval is 2s, so a second pass proves the schedule repeats.
-  for attempt in $(seq 1 150); do
+  for _ in $(seq 1 150); do
     [[ "$(grep -c '^prune: summary ' "${tmp}/runner.out" || true)" -ge 2 ]] && break
     sleep 0.1
   done
@@ -4189,11 +4328,11 @@ test_loop_prunes_in_background() {
 }
 
 test_loop_prune_can_be_disabled() {
-  local tmp attempt
+  local tmp
   tmp="$(mktemp -d)"
   start_prune_loop "${tmp}" env CODEX_TASK_BOARD_WORKSPACE_PRUNE=0
 
-  for attempt in $(seq 1 150); do
+  for _ in $(seq 1 150); do
     [[ "$(grep -c '^no supported-agent-assigned Task Board tickets$' "${tmp}/runner.out" || true)" -ge 3 ]] && break
     sleep 0.1
   done
@@ -4203,7 +4342,6 @@ test_loop_prune_can_be_disabled() {
   assert_file_contains "${tmp}/runner.out" '^workspace prune disabled by CODEX_TASK_BOARD_WORKSPACE_PRUNE$'
   assert_file_not_contains "${tmp}/runner.out" '^prune: '
 }
-
 
 test_ai_ops_ledger_records_run_lifecycle() {
   local tmp vault state bin ledger
@@ -4225,8 +4363,8 @@ test_ai_ops_ledger_records_run_lifecycle() {
   ledger="$(ls "${state}"/ai-ops/ledger/events-*.jsonl)"
   # JSON key order is not fixed: select each event by its id suffix, then check fields.
   grep ':ledger:started"' "${ledger}" | grep -q '"lane_from":"ready"' || fail "expected run.started from ready"
-  grep ':ledger:correction"' "${ledger}" | grep '"correction_class":"gate_defect"' | grep -q '"correction_origin":"agent-system"' \
-    || fail "expected an agent-system gate_defect correction"
+  grep ':ledger:correction"' "${ledger}" | grep '"correction_class":"gate_defect"' | grep -q '"correction_origin":"agent-system"' ||
+    fail "expected an agent-system gate_defect correction"
   grep ':ledger:finished"' "${ledger}" | grep -q '"status":"retrying"' || fail "expected a retrying run.finished"
   grep ':ledger:finished"' "${ledger}" | grep -q '"status":"succeeded"' || fail "expected a succeeded run.finished"
   grep ':ledger:lane"' "${ledger}" | grep -q '"lane_to":"ready"' || fail "expected lane.changed to ready"
@@ -4234,13 +4372,13 @@ test_ai_ops_ledger_records_run_lifecycle() {
   assert_file_not_contains "${ledger}" 'http'
   assert_file_not_contains "${ledger}" 'privacy_rejected'
   [[ "$(grep -c '"event_type":"run.started"' "${ledger}")" -eq 2 ]] || fail "expected two run.started ledger events"
-  grep ':ledger:lane-start"' "${ledger}" | grep '"lane_from":"ready"' | grep -q '"lane_to":"in-progress"' \
-    || fail "expected a start lane.changed ready -> in-progress"
+  grep ':ledger:lane-start"' "${ledger}" | grep '"lane_from":"ready"' | grep -q '"lane_to":"in-progress"' ||
+    fail "expected a start lane.changed ready -> in-progress"
   # Start Ready -> In Progress, finish In Progress -> Ready. A retry stays In
   # Progress: no lane.changed for in-progress -> in-progress.
   [[ "$(grep -c '"event_type":"lane.changed"' "${ledger}")" -eq 2 ]] || fail "expected two lane.changed ledger events"
-  grep ':ledger:correction"' "${ledger}" | grep -q '"confidence":"high"' \
-    || fail "expected a failed CI check to be a high-confidence correction"
+  grep ':ledger:correction"' "${ledger}" | grep -q '"confidence":"high"' ||
+    fail "expected a failed CI check to be a high-confidence correction"
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["ci" "fail"\] 1'
   # gate="all" is the overall denominator and must count the failure too.
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["all" "fail"\] 1'
@@ -4409,8 +4547,13 @@ budget_run_count() {
 
 test_gate_failure_budget_boundary_9_10_11() {
   local tmp vault state bin i assignee
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-369|BOXP-369: budget]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-369 in-progress codex boxp/example
 
@@ -4418,7 +4561,7 @@ test_gate_failure_budget_boundary_9_10_11() {
   # at 1/2 (the BOXP-360 pattern); assignees alternate (担当交代).  An env
   # budget above 10 must not loosen the initial limit.
   for i in 1 2 3 4 5 6 7 8 9; do
-    if (( i % 2 )); then assignee=codex; else assignee=codex-sol; fi
+    if ((i % 2)); then assignee=codex; else assignee=codex-sol; fi
     sed -i "s/^assignee: .*/assignee: ${assignee}/" "${vault}/Tickets/BOXP-369.md"
     budget_fail_tick "${vault}" "${state}" "${bin}" "unit-${i}-token=super-secret-token" 123 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=50
   done
@@ -4445,7 +4588,7 @@ test_gate_failure_budget_boundary_9_10_11() {
   budget_fail_tick "${vault}" "${state}" "${bin}" "unit-11" 123
   [[ "$(budget_run_count "${state}" BOXP-369)" == 10 ]] || fail "11th automatic attempt must not start"
   # A Notes-only PR does not increase the ticket budget.
-  printf '%s\n' '- see https://github.com/boxp/example/pull/777' >> "${vault}/Tickets/BOXP-369.md"
+  printf '%s\n' '- see https://github.com/boxp/example/pull/777' >>"${vault}/Tickets/BOXP-369.md"
   budget_set_lane "${vault}" BOXP-369 budget codex
   # A new PR for the same ticket cannot escape the ticket budget either.
   budget_fail_tick "${vault}" "${state}" "${bin}" "unit-11" 777
@@ -4454,8 +4597,13 @@ test_gate_failure_budget_boundary_9_10_11() {
 
 test_gate_failure_budget_evaluated_merged_pr() {
   local tmp vault state bin i out
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-448|BOXP-448: budget]] #ticket status::in-progress'
   write_ticket "${vault}" BOXP-448 in-progress codex boxp/example
   PATH="${bin}:$PATH" GH_FAKE_PR_STATE_124=MERGED GH_FAKE_CHECKS='[{"name":"first","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE=$'https://github.com/boxp/example/pull/124\nhttps://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/dev/null
@@ -4470,8 +4618,13 @@ test_gate_failure_budget_evaluated_merged_pr() {
 
 test_gate_failure_budget_multiple_prs_and_shared_pr() {
   local tmp vault state bin t
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-461|BOXP-461: multi pr]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-461 in-progress codex boxp/example
   # Each evaluated PR increases the ticket budget.
@@ -4491,7 +4644,7 @@ test_gate_failure_budget_multiple_prs_and_shared_pr() {
   for t in BOXP-462 BOXP-468 BOXP-470 BOXP-471; do
     write_board "${vault}" "- [ ] [[Tickets/${t}|${t}: shared pr]] #ticket status::in-progress"
     write_ticket "${vault}" "${t}" in-progress codex boxp/example
-    printf '%s\n' '- continue https://GitHub.com/BOXP/Example/pull/201/files' >> "${vault}/Tickets/${t}.md"
+    printf '%s\n' '- continue https://GitHub.com/BOXP/Example/pull/201/files' >>"${vault}/Tickets/${t}.md"
     budget_fail_tick "${vault}" "${state}" "${bin}" "case-${t}" 201 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
     [[ "$(budget_run_count "${state}" "${t}")" == 1 ]] || fail "historical PR limit must not block ${t}"
     assert_file_not_contains "${vault}/Tickets/${t}.md" 'gate-budget-grant boxp/example#201'
@@ -4500,8 +4653,13 @@ test_gate_failure_budget_multiple_prs_and_shared_pr() {
 
 test_gate_failure_budget_concurrent_start_on_shared_pr_is_serialized() {
   local tmp vault state bin t
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
   # Two tickets referencing PR 601 start in separate runner processes at
   # the same time: only one may hold the PR reservation.
   write_board "${vault}" "- [ ] [[Tickets/BOXP-472|BOXP-472: seed]] #ticket status::in-progress"
@@ -4511,13 +4669,13 @@ test_gate_failure_budget_concurrent_start_on_shared_pr_is_serialized() {
 - [ ] [[Tickets/BOXP-474|BOXP-474: race b]] #ticket status::in-progress"
   for t in BOXP-473 BOXP-474; do
     write_ticket "${vault}" "${t}" in-progress codex boxp/example
-    printf '%s\n' '- continue https://github.com/boxp/example/pull/601' >> "${vault}/Tickets/${t}.md"
+    printf '%s\n' '- continue https://github.com/boxp/example/pull/601' >>"${vault}/Tickets/${t}.md"
   done
   for t in BOXP-473 BOXP-474; do
     PATH="${bin}:$PATH" GH_FAKE_CHECKS='[{"name":"r","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_SLEEP=3 CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/601\nTASK_BOARD_RESULT: review' CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" tick --ticket "${t}" >/dev/null &
   done
   wait
-  [[ "$(( $(budget_run_count "${state}" BOXP-473) + $(budget_run_count "${state}" BOXP-474) ))" == 1 ]] || fail "concurrent starts on one PR must be serialized"
+  [[ "$(($(budget_run_count "${state}" BOXP-473) + $(budget_run_count "${state}" BOXP-474)))" == 1 ]] || fail "concurrent starts on one PR must be serialized"
   [[ "$(bb -e '(let [b (read-string (slurp (first *command-line-args*)))] (println (count (filter #(= "boxp/example#601" (:pr %)) (vals (:failures b))))))' "${state}/gate-failure-budget.edn")" == 2 ]] || fail "serialized failures must be recorded for PR 601"
   # The loser may start on a later tick after the reservation is released.
   for t in BOXP-473 BOXP-474; do
@@ -4530,8 +4688,13 @@ test_gate_failure_budget_concurrent_start_on_shared_pr_is_serialized() {
 
 test_gate_failure_budget_grant_resume_and_no_reset_on_success() {
   local tmp vault state bin out
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-463|BOXP-463: grant]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-463 in-progress codex boxp/example
   budget_fail_tick "${vault}" "${state}" "${bin}" a 301 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
@@ -4560,8 +4723,13 @@ test_gate_failure_budget_grant_resume_and_no_reset_on_success() {
 
 test_gate_failure_budget_stop_completes_after_interrupted_transition() {
   local tmp vault state bin
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-465|BOXP-465: interrupted]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-465 in-progress codex boxp/example
   budget_fail_tick "${vault}" "${state}" "${bin}" a 501 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3
@@ -4608,8 +4776,13 @@ test_gate_failure_budget_stop_completes_after_interrupted_transition() {
 
 test_gate_failure_budget_stop_reports_when_blocked_card_is_reassigned() {
   local tmp vault state bin
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-466|BOXP-466: reassigned]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-466 in-progress codex boxp/example
   budget_fail_tick "${vault}" "${state}" "${bin}" a 601 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
@@ -4648,8 +4821,13 @@ test_gate_failure_budget_stop_reports_when_blocked_card_is_reassigned() {
 
 test_gate_failure_budget_stop_is_written_once_under_concurrent_ticks() {
   local tmp vault state bin
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-468|BOXP-468: race stop]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-468 in-progress codex boxp/example
   budget_fail_tick "${vault}" "${state}" "${bin}" a 801 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
@@ -4676,8 +4854,13 @@ test_gate_failure_budget_stop_is_written_once_under_concurrent_ticks() {
 
 test_gate_failure_budget_stop_is_serialized_with_grant() {
   local tmp vault state bin i
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-469|BOXP-469: grant race]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-469 in-progress codex boxp/example
   budget_fail_tick "${vault}" "${state}" "${bin}" a 901 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
@@ -4706,13 +4889,15 @@ test_gate_failure_budget_stop_is_serialized_with_grant() {
   # the stop still holds the lock, the grant must not have been recorded.
   for i in $(seq 1 300); do
     if ! grep -q 'State:[[:space:]]*[RSD]' "/proc/${grant_pid}/status" 2>/dev/null; then break; fi
+    # Matches /proc fd symlink targets, which a glob cannot inspect.
+    # shellcheck disable=SC2010
     if ls -l "/proc/${grant_pid}/fd" 2>/dev/null | grep -q 'gate-failure-budget.lock'; then break; fi
     sleep 0.1
   done
   sleep 0.5
   assert_file_not_contains "${state}/gate-failure-budget.edn" ':scope :ticket, :key "BOXP-469", :amount 1'
   assert_file_not_contains "${vault}/Tickets/BOXP-469.md" 'gate-budget-stop-'
-  : > "${state}/test-gate-budget-stop-release"
+  : >"${state}/test-gate-budget-stop-release"
   wait "${grant_pid}" || fail "grant must succeed after the stop"
   # The grant returned: the stop must already have completed (the grant was
   # serialized behind the transition), and the card must not still be in the
@@ -4739,8 +4924,13 @@ test_gate_failure_budget_stop_is_serialized_with_grant() {
 
 test_gate_failure_budget_stricter_short_term_limit_still_applies() {
   local tmp vault state bin
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-464|BOXP-464: short]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-464 in-progress codex boxp/example
   budget_fail_tick "${vault}" "${state}" "${bin}" same 401 CODEX_TASK_BOARD_PR_GATE_RETRY_LIMIT=1
@@ -4751,7 +4941,8 @@ test_gate_failure_budget_stricter_short_term_limit_still_applies() {
 
 test_gate_failure_budget_concurrent_updates_do_not_lose_counts() {
   local tmp state i out
-  tmp="$(mktemp -d)"; state="${tmp}/state"
+  tmp="$(mktemp -d)"
+  state="${tmp}/state"
   # Concurrent processes append grants under the FileLock; none may be lost.
   for i in 1 2 3 4 5 6 7 8; do
     CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant BOXP-465 --amount 1 --by boxp >/dev/null &
@@ -4763,8 +4954,13 @@ test_gate_failure_budget_concurrent_updates_do_not_lose_counts() {
 
 test_gate_failure_budget_concurrent_ticks_do_not_lose_counts() {
   local tmp vault state bin
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-466|BOXP-466: race a]] #ticket status::in-progress
 - [ ] [[Tickets/BOXP-467|BOXP-467: race b]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-466 in-progress codex boxp/example
@@ -4780,7 +4976,10 @@ test_gate_failure_budget_concurrent_ticks_do_not_lose_counts() {
 test_delegation_gate_end_to_end() {
   local tmp vault state bin mode ticket summary
   for mode in success failed missing; do
-    tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+    tmp="$(mktemp -d)"
+    vault="${tmp}/vault"
+    state="${tmp}/state"
+    bin="${tmp}/bin"
     mkdir -p "${bin}" "${tmp}/codex-home/sessions"
     make_fake_claude "${bin}"
     cat >"${bin}/codex" <<'FAKE'
@@ -4826,7 +5025,11 @@ test_recoverable_delegation_failure_continues() {
   # BOXP-395: a run-local delegation failure stays with the worker, inside the
   # continuation limit. It does not wait for a person and cannot reach done.
   local tmp vault state bin ticket=BOXP-998 prompt_log
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"; prompt_log="${tmp}/prompt"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/prompt"
   mkdir -p "${bin}"
   make_fake_claude "${bin}"
   printf '#!/bin/sh\nexit 1\n' >"${bin}/codex"
@@ -4850,7 +5053,9 @@ test_recoverable_delegation_failure_continues() {
 
 test_helper_update_keeps_notes_copy() {
   local tmp vault board copy
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; board="${vault}/Boards/Task Board.md"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  board="${vault}/Boards/Task Board.md"
   copy='- [ ] [[Tickets/BOXP-993|BOXP-993: test]] #ticket status::in-progress assignee::boxp'
   write_board "${vault}" "${copy}"
   write_ticket "${vault}" BOXP-993 in-progress boxp
@@ -4868,7 +5073,10 @@ test_helper_update_keeps_notes_copy() {
 
 test_assignment_revisions() {
   local tmp vault state bin rev result code
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
   mkdir -p "${bin}"
   make_fake_codex "${bin}"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-990|BOXP-990: test]] #ticket status::in-progress assignee::boxp'
@@ -4895,13 +5103,19 @@ test_assignment_revisions() {
   assert_file_contains "${tmp}/starts" BOXP-990
   assert_file_contains "${vault}/Boards/Task Board.md" 'assignee::boxp'
   bb "${HELPER}" verify-dispatch BOXP-990 --vault "${vault}" --expected-rev "${rev}" --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["state"] == "started"'
-  sed -n '/\[\[Tickets\/BOXP-990|/p' "${vault}/Boards/Task Board.md" >>"${vault}/Boards/Task Board.md"
+  # Duplicate the card: read the line first, then append it.
+  local card
+  card="$(sed -n '/\[\[Tickets\/BOXP-990|/p' "${vault}/Boards/Task Board.md")"
+  printf '%s\n' "${card}" >>"${vault}/Boards/Task Board.md"
   bb "${HELPER}" show BOXP-990 --vault "${vault}" --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["consistency"]["duplicate-cards"] == 2'
 }
 
 test_assignment_superseded() {
   local tmp vault state bin
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
   mkdir -p "${bin}"
   make_fake_codex "${bin}"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-991|BOXP-991: test]] #ticket status::in-progress assignee::codex'
@@ -4912,7 +5126,10 @@ test_assignment_superseded() {
   bb "${HELPER}" update BOXP-991 --vault "${vault}" --lane Ready --assignee codex >/dev/null
   PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: done' run_tick "${vault}" "${state}" env >"${tmp}/tick" &
   local pid=$!
-  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  for _ in $(seq 1 100); do
+    [[ -e "${tmp}/starts" ]] && break
+    sleep 0.1
+  done
   [[ -e "${tmp}/starts" ]] || fail 'agent did not start'
   bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-991 --vault "${vault}" --required --text late --source test >/dev/null
   bb "${HELPER}" update BOXP-991 --vault "${vault}" --lane Ready --assignee boxp --note 'new assignment' >/dev/null
@@ -4927,10 +5144,14 @@ test_assignment_superseded() {
 
 test_assignment_repairs() {
   local tmp vault state bin old new rev1 rev2
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
   mkdir -p "${bin}"
   make_fake_codex "${bin}"
-  old="rs-0000"; new="pnhdlqrk-0000"
+  old="rs-0000"
+  new="pnhdlqrk-0000"
   # A newer ticket is a complete helper write whose card update was lost: the card is repaired and dispatched.
   write_board "${vault}" "- [ ] [[Tickets/BOXP-992|BOXP-992: test]] #ticket status::in-progress assignee::boxp rev::${old}"
   write_ticket "${vault}" BOXP-992 ready codex
@@ -4972,18 +5193,24 @@ test_assignment_repairs() {
   assert_file_contains "${vault}/Boards/Task Board.md" "rev::${rev1}"
 }
 
-
 test_dynamic_todo_midrun() {
   local tmp vault state bin pid rev board_rev
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-990|BOXP-990: test]] #ticket status::in-progress assignee::codex'
   write_ticket "${vault}" BOXP-990 in-progress codex
   bb "${HELPER}" update BOXP-990 --vault "${vault}" --lane Ready --assignee codex >/dev/null
   board_rev="$(sed -n 's/^board_rev: //p' "${vault}/Tickets/BOXP-990.md")"
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false CODEX_FAKE_ARG_LINES="${tmp}/args" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" &
   pid=$!
-  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  for _ in $(seq 1 100); do
+    [[ -e "${tmp}/starts" ]] && break
+    sleep 0.1
+  done
   [[ -e "${tmp}/starts" ]] || fail 'agent did not start'
   bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-990 --vault "${vault}" --required --text task --source test >/dev/null
   wait "${pid}"
@@ -5004,8 +5231,12 @@ test_dynamic_todo_midrun() {
 # Mock paths: agents and vaults below are isolated temporary fixtures.
 test_todo_optional_and_legacy() {
   local tmp vault state bin pid
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-980|BOXP-980: test]] #ticket status::in-progress assignee::codex'
   write_ticket "${vault}" BOXP-980 in-progress codex
   # Establish a received body before the optional-only mid-run addition.
@@ -5013,8 +5244,12 @@ test_todo_optional_and_legacy() {
   local rev
   rev="$(bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" status BOXP-980 --vault "${vault}" --json | bb -e '(require (quote cheshire.core)) (println (:rev (cheshire.core/parse-string (slurp *in*) true)))')"
   bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" ack BOXP-980 --vault "${vault}" --rev "${rev}" >/dev/null
-  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
-  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" &
+  pid=$!
+  for _ in $(seq 1 100); do
+    [[ -e "${tmp}/starts" ]] && break
+    sleep 0.1
+  done
   bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-980 --vault "${vault}" --optional --text optional --source test >/dev/null
   wait "${pid}"
   assert_file_contains "${vault}/Tickets/BOXP-980.md" '^status: done$'
@@ -5022,8 +5257,12 @@ test_todo_optional_and_legacy() {
   rm -rf "${vault}" "${state}" "${tmp}/starts"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-981|BOXP-981: test]] #ticket status::in-progress assignee::codex'
   write_ticket "${vault}" BOXP-981 in-progress codex
-  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/legacy" & pid=$!
-  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/legacy" &
+  pid=$!
+  for _ in $(seq 1 100); do
+    [[ -e "${tmp}/starts" ]] && break
+    sleep 0.1
+  done
   sed -i '/^## Summary$/a changed legacy body' "${vault}/Tickets/BOXP-981.md"
   wait "${pid}"
   assert_file_contains "${vault}/Tickets/BOXP-981.md" '^status: ready$'
@@ -5033,15 +5272,24 @@ test_todo_optional_and_legacy() {
 
 test_todo_post_move_recheck() {
   local tmp vault state bin pid
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-982|BOXP-982: test]] #ticket status::in-progress assignee::codex'
   write_ticket "${vault}" BOXP-982 in-progress codex
-  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_TODO_RECHECK_DIR="${tmp}" run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
-  for _ in $(seq 1 300); do [[ -e "${tmp}/moved" ]] && break; sleep 0.1; done
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_TODO_RECHECK_DIR="${tmp}" run_tick "${vault}" "${state}" env >"${tmp}/tick" &
+  pid=$!
+  for _ in $(seq 1 300); do
+    [[ -e "${tmp}/moved" ]] && break
+    sleep 0.1
+  done
   [[ -e "${tmp}/moved" ]] || fail 'post-move rendezvous missing'
   bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-982 --vault "${vault}" --required --text late --source test >/dev/null
-  touch "${tmp}/continue"; wait "${pid}"
+  touch "${tmp}/continue"
+  wait "${pid}"
   if [[ "${CODEX_TASK_BOARD_CONTINUATION_LIMIT:-8}" == 0 ]]; then
     assert_file_contains "${vault}/Tickets/BOXP-982.md" '^status: blocked$'
     assert_file_contains "${vault}/Tickets/BOXP-982.md" 'todo-gate-exhausted'
@@ -5073,16 +5321,25 @@ test_todo_post_move_recheck_exhausted() {
 
 test_todo_blocked_post_move_recheck() {
   local tmp vault state bin pid limit="${CODEX_TASK_BOARD_CONTINUATION_LIMIT:-8}"
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-986|BOXP-986: test]] #ticket status::in-progress assignee::codex'
   write_ticket "${vault}" BOXP-986 in-progress codex
-  PATH="${bin}:$PATH" CODEX_TASK_BOARD_CONTINUATION_LIMIT="${limit}" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: blocked' CODEX_TASK_BOARD_TEST_TODO_RECHECK_DIR="${tmp}" run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
-  for _ in $(seq 1 300); do [[ -e "${tmp}/moved" ]] && break; sleep 0.1; done
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_CONTINUATION_LIMIT="${limit}" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: blocked' CODEX_TASK_BOARD_TEST_TODO_RECHECK_DIR="${tmp}" run_tick "${vault}" "${state}" env >"${tmp}/tick" &
+  pid=$!
+  for _ in $(seq 1 300); do
+    [[ -e "${tmp}/moved" ]] && break
+    sleep 0.1
+  done
   [[ -e "${tmp}/moved" ]] || fail 'blocked post-move rendezvous missing'
   assert_file_contains "${vault}/Tickets/BOXP-986.md" '^status: blocked$'
   bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-986 --vault "${vault}" --required --text late --source test >/dev/null
-  touch "${tmp}/continue"; wait "${pid}"
+  touch "${tmp}/continue"
+  wait "${pid}"
   assert_run_summary_contains "${state}" BOXP-986 ':gate "held"'
   assert_file_contains "${state}/continuation-budget.edn" 'BOXP-986'
   local ledger
@@ -5111,10 +5368,15 @@ test_todo_blocked_post_move_recheck() {
   bb "${todo_module}" add BOXP-987 --vault "${vault2}" --required --text work --source test >/dev/null
   rev="$(bb "${todo_module}" status BOXP-987 --vault "${vault2}" --json | bb -e '(require (quote cheshire.core)) (println (:rev (cheshire.core/parse-string (slurp *in*) true)))')"
   bb "${todo_module}" ack BOXP-987 --vault "${vault2}" --rev "${rev}" >/dev/null
-  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: blocked' CODEX_TASK_BOARD_TEST_TODO_RECHECK_DIR="${tmp}" run_tick "${vault2}" "${state2}" env >"${tmp}/tick2" & pid=$!
-  for _ in $(seq 1 300); do [[ -e "${tmp}/moved" ]] && break; sleep 0.1; done
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: blocked' CODEX_TASK_BOARD_TEST_TODO_RECHECK_DIR="${tmp}" run_tick "${vault2}" "${state2}" env >"${tmp}/tick2" &
+  pid=$!
+  for _ in $(seq 1 300); do
+    [[ -e "${tmp}/moved" ]] && break
+    sleep 0.1
+  done
   bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-987 --vault "${vault2}" --optional --text later --source test >/dev/null
-  touch "${tmp}/continue"; wait "${pid}"
+  touch "${tmp}/continue"
+  wait "${pid}"
   assert_file_contains "${vault2}/Tickets/BOXP-987.md" '^status: blocked$'
   assert_file_not_contains "${vault2}/Tickets/BOXP-987.md" '判定直後の追加'
 }
@@ -5125,7 +5387,8 @@ test_todo_blocked_post_move_recheck_exhausted() {
 
 test_todo_plan_protection() {
   local tmp vault
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-983|BOXP-983: test]] #ticket status::in-progress assignee::codex'
   write_ticket "${vault}" BOXP-983 in-progress codex
   bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-983 --vault "${vault}" --required --text protected --source test >/dev/null
@@ -5137,12 +5400,20 @@ test_todo_plan_protection() {
 
 test_todo_budget_exhausted() {
   local tmp vault state bin pid
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-984|BOXP-984: test]] #ticket status::in-progress assignee::codex'
   write_ticket "${vault}" BOXP-984 in-progress codex
-  PATH="${bin}:$PATH" CODEX_TASK_BOARD_CONTINUATION_LIMIT=0 CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
-  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_CONTINUATION_LIMIT=0 CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" &
+  pid=$!
+  for _ in $(seq 1 100); do
+    [[ -e "${tmp}/starts" ]] && break
+    sleep 0.1
+  done
   bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-984 --vault "${vault}" --required --text task --source test >/dev/null
   wait "${pid}"
   assert_file_contains "${vault}/Tickets/BOXP-984.md" '^status: blocked$'
@@ -5153,8 +5424,12 @@ test_todo_budget_exhausted() {
 
 test_todo_hook_arguments() {
   local tmp vault state bin
-  tmp="$(mktemp -d)"; vault="${tmp}/vault with 'quote"; state="${tmp}/state with \"quote"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault with 'quote"
+  state="${tmp}/state with \"quote"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-985|BOXP-985: test]] #ticket status::in-progress assignee::codex'
   write_ticket "${vault}" BOXP-985 in-progress codex
   PATH="${bin}:$PATH" CODEX_FAKE_ARG_LINES="${tmp}/args" run_tick "${vault}" "${state}" env >"${tmp}/tick"
@@ -5172,23 +5447,37 @@ test_todo_hook_arguments() {
 
 test_todo_concurrent_writers() {
   local tmp vault state bin pid rev todo plan
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
   todo="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-986|BOXP-986: test]] #ticket status::in-progress assignee::codex'
   write_ticket "${vault}" BOXP-986 in-progress codex
   bb "${todo}" add BOXP-986 --vault "${vault}" --id TD-01 --required --text first --source test >/dev/null
   rev="$(bb "${todo}" status BOXP-986 --vault "${vault}" --json | bb -e '(require (quote cheshire.core)) (println (:rev (cheshire.core/parse-string (slurp *in*) true)))')"
   # Race helper writes with the runner's frontmatter and Notes writes. A stale
   # ack is an expected CAS failure and is retried after all changes settle.
-  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
-  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" &
+  pid=$!
+  for _ in $(seq 1 100); do
+    [[ -e "${tmp}/starts" ]] && break
+    sleep 0.1
+  done
   plan=$'- [x] TD-01【必須】first\n  - 由来: test'
-  bb "${HELPER}" update BOXP-986 --vault "${vault}" --plan "$plan" >"${tmp}/checkbox" 2>&1 & local c=$!
-  bb "${todo}" add BOXP-986 --vault "${vault}" --id TD-02 --optional --text second --source test >"${tmp}/add" & local a=$!
-  bb "${HELPER}" append-note BOXP-986 --vault "${vault}" --source test --note 'parallel note' >"${tmp}/note" & local n=$!
-  bb "${todo}" ack BOXP-986 --vault "${vault}" --rev "${rev}" >"${tmp}/ack" 2>&1 & local k=$!
-  wait "$a"; wait "$n"; wait "$k" || true
+  bb "${HELPER}" update BOXP-986 --vault "${vault}" --plan "$plan" >"${tmp}/checkbox" 2>&1 &
+  local c=$!
+  bb "${todo}" add BOXP-986 --vault "${vault}" --id TD-02 --optional --text second --source test >"${tmp}/add" &
+  local a=$!
+  bb "${HELPER}" append-note BOXP-986 --vault "${vault}" --source test --note 'parallel note' >"${tmp}/note" &
+  local n=$!
+  bb "${todo}" ack BOXP-986 --vault "${vault}" --rev "${rev}" >"${tmp}/ack" 2>&1 &
+  local k=$!
+  wait "$a"
+  wait "$n"
+  wait "$k" || true
   # If the add won, the plan guard correctly rejects the stale plan.
   wait "$c" || true
   wait "$pid"
@@ -5206,9 +5495,14 @@ test_todo_concurrent_writers() {
 
 test_todo_restart_delivery() {
   local tmp vault state bin old_run todo before rev
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"; old_run="20260710T000000Z"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  old_run="20260710T000000Z"
   todo="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb"
-  mkdir -p "${bin}" "${state}/locks" "${state}/runs/BOXP-987/${old_run}"; make_fake_codex "${bin}"
+  mkdir -p "${bin}" "${state}/locks" "${state}/runs/BOXP-987/${old_run}"
+  make_fake_codex "${bin}"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-987|BOXP-987: test]] #ticket status::in-progress assignee::codex'
   write_ticket "${vault}" BOXP-987 in-progress codex
   bb "${todo}" add BOXP-987 --vault "${vault}" --required --text restart-work --source test >/dev/null
@@ -5229,14 +5523,25 @@ test_todo_restart_delivery() {
 test_todo_preserves_existing_outcomes() {
   local tmp vault state bin pid mode
   for mode in continue nonzero; do
-    tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-    mkdir -p "${bin}"; make_fake_codex "${bin}"
+    tmp="$(mktemp -d)"
+    vault="${tmp}/vault"
+    state="${tmp}/state"
+    bin="${tmp}/bin"
+    mkdir -p "${bin}"
+    make_fake_codex "${bin}"
     write_board "${vault}" '- [ ] [[Tickets/BOXP-988|BOXP-988: test]] #ticket status::in-progress assignee::codex'
     write_ticket "${vault}" BOXP-988 in-progress codex
     local result=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: continue' exitcode=0
-    if [[ "$mode" == nonzero ]]; then result='TASK_BOARD_RESULT: done'; exitcode=2; fi
-    PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 CODEX_FAKE_EXIT="${exitcode}" CODEX_FAKE_MESSAGE="${result}" run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
-    for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+    if [[ "$mode" == nonzero ]]; then
+      result='TASK_BOARD_RESULT: done'
+      exitcode=2
+    fi
+    PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 CODEX_FAKE_EXIT="${exitcode}" CODEX_FAKE_MESSAGE="${result}" run_tick "${vault}" "${state}" env >"${tmp}/tick" &
+    pid=$!
+    for _ in $(seq 1 100); do
+      [[ -e "${tmp}/starts" ]] && break
+      sleep 0.1
+    done
     bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-988 --vault "${vault}" --required --text later --source test >/dev/null
     wait "${pid}"
     if [[ "$mode" == nonzero ]]; then
@@ -5252,18 +5557,28 @@ test_todo_existing_holds_win() {
   local tmp vault state bin pid mode todo
   todo="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb"
   for mode in review idle; do
-    tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-    mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_claude "${bin}"
+    tmp="$(mktemp -d)"
+    vault="${tmp}/vault"
+    state="${tmp}/state"
+    bin="${tmp}/bin"
+    mkdir -p "${bin}"
+    make_fake_codex "${bin}"
+    make_fake_claude "${bin}"
     if [[ "$mode" == review ]]; then
       write_board "${vault}" '- [ ] [[Tickets/BOXP-989|BOXP-989: test]] #ticket status::in-progress assignee::codex'
       write_ticket "${vault}" BOXP-989 in-progress codex
-      PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: continue' run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
+      PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: continue' run_tick "${vault}" "${state}" env >"${tmp}/tick" &
+      pid=$!
     else
       write_board "${vault}" '- [ ] [[Tickets/BOXP-989|BOXP-989: test]] #ticket status::in-progress assignee::fable'
       write_ticket "${vault}" BOXP-989 in-progress fable
-      PATH="${bin}:$PATH" CLAUDE_FAKE_START_LOG="${tmp}/starts" CLAUDE_FAKE_SLEEP=8 CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS=2 run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
+      PATH="${bin}:$PATH" CLAUDE_FAKE_START_LOG="${tmp}/starts" CLAUDE_FAKE_SLEEP=8 CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS=2 run_tick "${vault}" "${state}" env >"${tmp}/tick" &
+      pid=$!
     fi
-    for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+    for _ in $(seq 1 100); do
+      [[ -e "${tmp}/starts" ]] && break
+      sleep 0.1
+    done
     [[ -e "${tmp}/starts" ]] || fail 'mock agent did not start'
     bb "${todo}" add BOXP-989 --vault "${vault}" --required --text pending --source test >/dev/null
     wait "${pid}"
@@ -5282,57 +5597,69 @@ test_terminal_revision_lww_and_duplicates() {
   # norev: a legacy card without rev:: before the terminal stamp must not be
   # projected back either when the old Board copy is restored.
   for variant in rev norev; do
-  for mode in blocked done; do
-    tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-    mkdir -p "${bin}"; make_fake_codex "${bin}"
-    if [[ "${variant}" == rev ]]; then
-      write_board "${vault}" '- [ ] [[Tickets/BOXP-991|BOXP-991: test]] #ticket status::in-progress assignee::codex rev::old'
-      write_ticket "${vault}" BOXP-991 in-progress codex
-      sed -i '/^status:/a board_rev: old' "${vault}/Tickets/BOXP-991.md"
-    else
-      write_board "${vault}" '- [ ] [[Tickets/BOXP-991|BOXP-991: test]] #ticket status::in-progress assignee::codex'
-      write_ticket "${vault}" BOXP-991 in-progress codex
-    fi
-    cp "${vault}/Boards/Task Board.md" "${tmp}/old"
-    PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE="TASK_BOARD_RESULT: ${mode}" run_tick "${vault}" "${state}" env >"${tmp}/run"
-    assert_file_contains "${vault}/Tickets/BOXP-991.md" "^status: ${mode}$"
-    rev="$(sed -n 's/^board_rev: //p' "${vault}/Tickets/BOXP-991.md")"
-    [[ "$rev" != old && "$rev" =~ ^[a-z0-9]+-[0-9a-f]{4}$ ]] || fail 'missing fresh revision'
-    assert_file_contains "${vault}/Boards/Task Board.md" "rev::${rev}"
-    assert_run_summary_contains "${state}" BOXP-991 ':status :(blocked|succeeded)'
-    cp "${tmp}/old" "${vault}/Boards/Task Board.md"
-    for _ in 1 2 3; do PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/held-starts" CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 run_tick "${vault}" "${state}" env >>"${tmp}/sync"; done
-    assert_file_contains "${vault}/Tickets/BOXP-991.md" "^status: ${mode}$"
-    [[ ! -e "${tmp}/held-starts" ]] || fail 'restored card dispatched'
-    if [[ "${variant}" == rev ]]; then
-      assert_file_contains "${vault}/Boards/Task Board.md" "status::${mode}.*rev::${rev}"
-    else
-      # The pre-transition rev-less line is indistinguishable from a user who
-      # rebuilt it by hand: it is held (no projection / dispatch) but never
-      # rewritten, so a hand-made re-request is not reverted to ${mode}.
-      cmp -s "${tmp}/old" "${vault}/Boards/Task Board.md" || fail 'held rev-less card was rewritten'
-      assert_file_contains "${tmp}/sync" "WARN: BOXP-991 card equals the pre-transition rev-less line"
-      # A re-request moves the same rev-less line to another lane (here Ready,
-      # e.g. edited on a replica that still showed the old Board). It differs
-      # from the pre-transition Board and must be followed, not reverted.
-      sed -n '/BOXP-991/p' "${tmp}/old" >"${tmp}/line"
-      write_board "${vault}" ''
-      sed -i "/^## Ready/r ${tmp}/line" "${vault}/Boards/Task Board.md"
-      for _ in 1 2; do PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: continue' CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 run_tick "${vault}" "${state}" env >"${tmp}/rerequest"; done
-      assert_file_not_contains "${vault}/Tickets/BOXP-991.md" "^status: ${mode}$"
-      assert_file_not_contains "${vault}/Boards/Task Board.md" "BOXP-991.*status::${mode}"
-    fi
+    for mode in blocked "done"; do
+      tmp="$(mktemp -d)"
+      vault="${tmp}/vault"
+      state="${tmp}/state"
+      bin="${tmp}/bin"
+      mkdir -p "${bin}"
+      make_fake_codex "${bin}"
+      if [[ "${variant}" == rev ]]; then
+        write_board "${vault}" '- [ ] [[Tickets/BOXP-991|BOXP-991: test]] #ticket status::in-progress assignee::codex rev::old'
+        write_ticket "${vault}" BOXP-991 in-progress codex
+        sed -i '/^status:/a board_rev: old' "${vault}/Tickets/BOXP-991.md"
+      else
+        write_board "${vault}" '- [ ] [[Tickets/BOXP-991|BOXP-991: test]] #ticket status::in-progress assignee::codex'
+        write_ticket "${vault}" BOXP-991 in-progress codex
+      fi
+      cp "${vault}/Boards/Task Board.md" "${tmp}/old"
+      PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE="TASK_BOARD_RESULT: ${mode}" run_tick "${vault}" "${state}" env >"${tmp}/run"
+      assert_file_contains "${vault}/Tickets/BOXP-991.md" "^status: ${mode}$"
+      rev="$(sed -n 's/^board_rev: //p' "${vault}/Tickets/BOXP-991.md")"
+      [[ "$rev" != old && "$rev" =~ ^[a-z0-9]+-[0-9a-f]{4}$ ]] || fail 'missing fresh revision'
+      assert_file_contains "${vault}/Boards/Task Board.md" "rev::${rev}"
+      assert_run_summary_contains "${state}" BOXP-991 ':status :(blocked|succeeded)'
+      cp "${tmp}/old" "${vault}/Boards/Task Board.md"
+      for _ in 1 2 3; do PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/held-starts" CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 run_tick "${vault}" "${state}" env >>"${tmp}/sync"; done
+      assert_file_contains "${vault}/Tickets/BOXP-991.md" "^status: ${mode}$"
+      [[ ! -e "${tmp}/held-starts" ]] || fail 'restored card dispatched'
+      if [[ "${variant}" == rev ]]; then
+        assert_file_contains "${vault}/Boards/Task Board.md" "status::${mode}.*rev::${rev}"
+      else
+        # The pre-transition rev-less line is indistinguishable from a user who
+        # rebuilt it by hand: it is held (no projection / dispatch) but never
+        # rewritten, so a hand-made re-request is not reverted to ${mode}.
+        cmp -s "${tmp}/old" "${vault}/Boards/Task Board.md" || fail 'held rev-less card was rewritten'
+        assert_file_contains "${tmp}/sync" "WARN: BOXP-991 card equals the pre-transition rev-less line"
+        # A re-request moves the same rev-less line to another lane (here Ready,
+        # e.g. edited on a replica that still showed the old Board). It differs
+        # from the pre-transition Board and must be followed, not reverted.
+        sed -n '/BOXP-991/p' "${tmp}/old" >"${tmp}/line"
+        write_board "${vault}" ''
+        sed -i "/^## Ready/r ${tmp}/line" "${vault}/Boards/Task Board.md"
+        for _ in 1 2; do PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: continue' CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 run_tick "${vault}" "${state}" env >"${tmp}/rerequest"; done
+        assert_file_not_contains "${vault}/Tickets/BOXP-991.md" "^status: ${mode}$"
+        assert_file_not_contains "${vault}/Boards/Task Board.md" "BOXP-991.*status::${mode}"
+      fi
+    done
   done
-  done
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-990|BOXP-990: test]] #ticket status::in-progress assignee::codex rev::old'
   write_ticket "${vault}" BOXP-990 in-progress codex
   sed -i '/^status:/a board_rev: old' "${vault}/Tickets/BOXP-990.md"
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_FORCE_POST_COMMIT_EXCEPTION=true CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: done' run_tick "${vault}" "${state}" env >"${tmp}/exception"
   assert_run_summary_contains "${state}" BOXP-990 ':status :blocked'
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-992|BOXP-992: test]] #ticket status::in-progress assignee::codex rev::old'
   sed -i '/^## Done/a\\n- [x] [[Tickets/BOXP-992|BOXP-992: test]] #ticket status::done assignee::boxp rev::old done::2026-01-01' "${vault}/Boards/Task Board.md"
   write_ticket "${vault}" BOXP-992 in-progress codex
@@ -5347,16 +5674,23 @@ test_terminal_revision_lww_and_duplicates() {
 
 test_workspace_reuse() {
   local tmp source state bin old new known
-  tmp="$(mktemp -d)"; source="$tmp/source"; state="$tmp/state"; bin="$tmp/bin"; known="$tmp/known"
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  state="$tmp/state"
+  bin="$tmp/bin"
+  known="$tmp/known"
   mkdir -p "$bin" "$state/locks" "$tmp/proc/100"
   ln -s / "$tmp/proc/100/cwd"
   echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
-  make_fake_gh "$bin"; make_prune_source_repo "$source"
+  make_fake_gh "$bin"
+  make_prune_source_repo "$source"
   git -C "$source" rev-parse HEAD >"$known"
   old="$(add_prune_run "$state" "$source" BOXP-999 20200101T000000Z)"
   echo 'node_modules/' >>"$(git -C "$old" rev-parse --git-path info/exclude)"
-  mkdir -p "$old/node_modules"; echo keep >"$old/node_modules/data"
-  local inode; inode="$(stat -c %i "$old/node_modules/data")"
+  mkdir -p "$old/node_modules"
+  echo keep >"$old/node_modules/data"
+  local inode
+  inode="$(stat -c %i "$old/node_modules/data")"
   echo note >"$state/workspaces/BOXP-999/20200101T000000Z/note.txt"
   printf '{:run-id "20200102T000000Z"}\n' >"$state/locks/BOXP-999.edn"
   new="$state/workspaces/BOXP-999/20200102T000000Z/ghq/github.com/boxp/example"
@@ -5389,28 +5723,66 @@ test_workspace_reuse() {
 test_workspace_reuse_fallbacks() {
   local mode tmp source state bin old known reason before
   for mode in dirty untracked unpushed ignored venv nested process mount gh lock missing-lock disabled low switch; do
-    tmp="$(mktemp -d)"; source="$tmp/source"; state="$tmp/state"; bin="$tmp/bin"; known="$tmp/known"
+    tmp="$(mktemp -d)"
+    source="$tmp/source"
+    state="$tmp/state"
+    bin="$tmp/bin"
+    known="$tmp/known"
     mkdir -p "$bin" "$state/locks" "$tmp/proc/100"
     ln -s / "$tmp/proc/100/cwd"
     echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
-    make_fake_gh "$bin"; make_prune_source_repo "$source"
-    echo tracked >"$source/tracked"; git -C "$source" add tracked; prune_git -C "$source" commit -qm tracked
+    make_fake_gh "$bin"
+    make_prune_source_repo "$source"
+    echo tracked >"$source/tracked"
+    git -C "$source" add tracked
+    prune_git -C "$source" commit -qm tracked
     git -C "$source" rev-parse HEAD >"$known"
     old="$(add_prune_run "$state" "$source" BOXP-999 20200101T000000Z)"
     printf '{:run-id "20200102T000000Z"}\n' >"$state/locks/BOXP-999.edn"
     case "$mode" in
-      dirty) echo dirty >>"$old/tracked"; reason=uncommitted-changes ;;
-      untracked) echo x >"$old/untracked"; reason=uncommitted-changes ;;
-      unpushed) prune_commit "$old" unpushed >/dev/null; reason=commit-not-on-github ;;
-      ignored|venv) echo "$([[ "$mode" == venv ]] && echo .venv || echo unknown)/" >>"$(git -C "$old" rev-parse --git-path info/exclude)"; mkdir -p "$old/$([[ "$mode" == venv ]] && echo .venv || echo unknown)"; reason="$([[ "$mode" == venv ]] && echo path-bound-ignored || echo ignored-unknown)" ;;
-      nested) git init -q "$old/nested"; reason=nested-checkout ;;
-      process) ln -s "$old" "$tmp/proc/101"; rm "$tmp/proc/101"; mkdir "$tmp/proc/101"; ln -s "$old" "$tmp/proc/101/cwd"; reason=process-active ;;
-      mount) echo "23 22 0:22 / $old rw - ext4 /dev/root rw" >>"$tmp/mountinfo"; reason=mount-present ;;
+      dirty)
+        echo dirty >>"$old/tracked"
+        reason=uncommitted-changes
+        ;;
+      untracked)
+        echo x >"$old/untracked"
+        reason=uncommitted-changes
+        ;;
+      unpushed)
+        prune_commit "$old" unpushed >/dev/null
+        reason=commit-not-on-github
+        ;;
+      ignored | venv)
+        echo "$([[ "$mode" == venv ]] && echo .venv || echo unknown)/" >>"$(git -C "$old" rev-parse --git-path info/exclude)"
+        mkdir -p "$old/$([[ "$mode" == venv ]] && echo .venv || echo unknown)"
+        reason="$([[ "$mode" == venv ]] && echo path-bound-ignored || echo ignored-unknown)"
+        ;;
+      nested)
+        git init -q "$old/nested"
+        reason="nested-checkout"
+        ;;
+      process)
+        ln -s "$old" "$tmp/proc/101"
+        rm "$tmp/proc/101"
+        mkdir "$tmp/proc/101"
+        ln -s "$old" "$tmp/proc/101/cwd"
+        reason=process-active
+        ;;
+      mount)
+        echo "23 22 0:22 / $old rw - ext4 /dev/root rw" >>"$tmp/mountinfo"
+        reason=mount-present
+        ;;
       gh) reason=github-check-failed ;;
-      lock) echo '{:run-id "other"}' >"$state/locks/BOXP-999.edn"; reason=lock-not-owned ;;
-      missing-lock) rm "$state/locks/BOXP-999.edn"; reason=lock-not-owned ;;
+      lock)
+        echo '{:run-id "other"}' >"$state/locks/BOXP-999.edn"
+        reason=lock-not-owned
+        ;;
+      missing-lock)
+        rm "$state/locks/BOXP-999.edn"
+        reason=lock-not-owned
+        ;;
       disabled) reason=disabled ;;
-      low) reason=keep-latest-too-low ;;
+      low) reason="keep-latest-too-low" ;;
       switch) reason=switch-failed ;;
     esac
     before="$(git -C "$old" rev-parse HEAD) $(git -C "$old" branch --show-current) $(git -C "$old" status --porcelain)"
@@ -5475,7 +5847,8 @@ reuse_fixture() {
   mkdir -p "$tmp/bin" "$tmp/state/locks" "$tmp/proc/100"
   ln -s / "$tmp/proc/100/cwd"
   echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
-  make_fake_gh "$tmp/bin"; make_prune_source_repo "$tmp/source"
+  make_fake_gh "$tmp/bin"
+  make_prune_source_repo "$tmp/source"
   git -C "$tmp/source" rev-list HEAD >"$tmp/known"
 }
 
@@ -5483,18 +5856,27 @@ reuse_lock() { printf '{:ticket "%s" :run-id "%s"}\n' "$2" "$3" >"$1/state/locks
 
 test_workspace_carryover_preserves_work() {
   local tmp old new before head branch
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
-  echo initial >"$tmp/source/tracked"; git -C "$tmp/source" add tracked; prune_git -C "$tmp/source" commit -qm tracked
+  tmp="$(mktemp -d)"
+  reuse_fixture "$tmp"
+  echo initial >"$tmp/source/tracked"
+  git -C "$tmp/source" add tracked
+  prune_git -C "$tmp/source" commit -qm tracked
   old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z)"
   git -C "$old" switch -c custom-carryover >/dev/null
-  echo committed >"$old/committed"; git -C "$old" add committed; prune_git -C "$old" commit -qm unpushed
+  echo committed >"$old/committed"
+  git -C "$old" add committed
+  prune_git -C "$old" commit -qm unpushed
   echo modified >"$old/tracked"
-  printf '#!/bin/sh\necho called >>"%s"\nexit 99\n' "$tmp/gh-called" >"$tmp/bin/gh"; chmod +x "$tmp/bin/gh"
-  echo staged >"$old/staged"; git -C "$old" add staged
+  printf '#!/bin/sh\necho called >>"%s"\nexit 99\n' "$tmp/gh-called" >"$tmp/bin/gh"
+  chmod +x "$tmp/bin/gh"
+  echo staged >"$old/staged"
+  git -C "$old" add staged
   echo untracked >"$old/private-untracked"
   echo 'ignored/' >>"$(git -C "$old" rev-parse --git-path info/exclude)"
-  mkdir "$old/ignored"; echo ignored >"$old/ignored/data"
-  head="$(git -C "$old" rev-parse HEAD)"; branch="$(git -C "$old" branch --show-current)"
+  mkdir "$old/ignored"
+  echo ignored >"$old/ignored/data"
+  head="$(git -C "$old" rev-parse HEAD)"
+  branch="$(git -C "$old" branch --show-current)"
   before="$(git -C "$old" status --porcelain=v1 --untracked-files=all)"
   local hashes staged_before
   hashes="$(cd "$old" && find . -path ./.git -prune -o -type f -print0 | sort -z | xargs -0 sha256sum)"
@@ -5523,18 +5905,40 @@ test_workspace_carryover_preserves_work() {
 test_workspace_carryover_safety_fallbacks() {
   local case_name tmp old head
   for case_name in merge venv lock process mount nested; do
-    tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+    tmp="$(mktemp -d)"
+    reuse_fixture "$tmp"
     old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z)"
     head="$(git -C "$old" rev-parse HEAD)"
     printf '{:mode :on}\n' >"$tmp/state/workspace-carryover.edn"
     reuse_lock "$tmp" BOXP-901 20200102T000000Z
     case "$case_name" in
-      merge) echo "$head" >"$(git -C "$old" rev-parse --git-path MERGE_HEAD)"; expected=git-operation-in-progress ;;
-      venv) echo '.venv/' >>"$(git -C "$old" rev-parse --git-path info/exclude)"; mkdir "$old/.venv"; echo x >"$old/.venv/x"; expected=path-bound-ignored ;;
-      lock) reuse_lock "$tmp" BOXP-901 20200103T000000Z; expected=lock-not-owned ;;
-      process) mkdir "$tmp/proc/101"; ln -s "$old" "$tmp/proc/101/cwd"; expected=process-active ;;
-      mount) echo "23 22 0:22 / $old rw - ext4 /dev/root rw" >>"$tmp/mountinfo"; expected=mount-present ;;
-      nested) git init -q "$old/nested"; expected=nested-checkout ;;
+      merge)
+        echo "$head" >"$(git -C "$old" rev-parse --git-path MERGE_HEAD)"
+        expected=git-operation-in-progress
+        ;;
+      venv)
+        echo '.venv/' >>"$(git -C "$old" rev-parse --git-path info/exclude)"
+        mkdir "$old/.venv"
+        echo x >"$old/.venv/x"
+        expected="path-bound-ignored"
+        ;;
+      lock)
+        reuse_lock "$tmp" BOXP-901 20200103T000000Z
+        expected=lock-not-owned
+        ;;
+      process)
+        mkdir "$tmp/proc/101"
+        ln -s "$old" "$tmp/proc/101/cwd"
+        expected=process-active
+        ;;
+      mount)
+        echo "23 22 0:22 / $old rw - ext4 /dev/root rw" >>"$tmp/mountinfo"
+        expected=mount-present
+        ;;
+      nested)
+        git init -q "$old/nested"
+        expected="nested-checkout"
+        ;;
     esac
     reuse_prepare "$tmp" BOXP-901 20200102T000000Z >"$tmp/out"
     assert_file_contains "$tmp/out" ":reuse-fallback \"$expected\""
@@ -5545,7 +5949,8 @@ test_workspace_carryover_safety_fallbacks() {
 
 test_workspace_carryover_flag_modes_and_rollback() {
   local tmp old carried
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  tmp="$(mktemp -d)"
+  reuse_fixture "$tmp"
   old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z)"
   echo keep >"$old/untracked"
   printf '{:mode :canary :tickets ["BOXP-901"]}\n' >"$tmp/state/workspace-carryover.edn"
@@ -5575,30 +5980,11 @@ test_workspace_carryover_flag_modes_and_rollback() {
 
 test_workspace_carryover_skips_localllm_coder() {
   local tmp old head
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  tmp="$(mktemp -d)"
+  reuse_fixture "$tmp"
   old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z)"
-  echo keep >"$old/untracked"; head="$(git -C "$old" rev-parse HEAD)"
-  printf '{:mode :on}\n' >"$tmp/state/workspace-carryover.edn"
-  reuse_lock "$tmp" BOXP-901 20200102T000000Z
-  PATH="$tmp/bin:$PATH" GH_FAKE_KNOWN_SHAS="$tmp/known" CODEX_TASK_BOARD_ROOT="$tmp/state" \
-    CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo" \
-    TEST_RUNNER="$RUNNER" TEST_SOURCE="$tmp/source" bb -e '
-      (System/setProperty "babashka.file" "/tmp/load-runner.bb")
-      (load-file (System/getenv "TEST_RUNNER"))
-      (alter-var-root (var local-repo-path) (constantly (fn [_] (System/getenv "TEST_SOURCE"))))
-      (alter-var-root (var ticket-repos) (constantly (fn [_] ["boxp/example"])))
-      (let [r (first (:repo-worktrees (binding [*workspace-carryover-allowed?* false] (prepare-run-workspace! "BOXP-901" "20200102T000000Z"))))]
-        (assert (not (:carryover r)))
-        (assert (= "uncommitted-changes" (:reuse-fallback r))))' || fail 'localllm coder took the carryover path'
-  [[ -f "$old/untracked" && "$(git -C "$old" rev-parse HEAD)" == "$head" ]] || fail 'coder fallback touched the old worktree'
-}
-
-
-test_workspace_carryover_skips_localllm_coder() {
-  local tmp old head
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
-  old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z)"
-  echo keep >"$old/untracked"; head="$(git -C "$old" rev-parse HEAD)"
+  echo keep >"$old/untracked"
+  head="$(git -C "$old" rev-parse HEAD)"
   printf '{:mode :on}\n' >"$tmp/state/workspace-carryover.edn"
   reuse_lock "$tmp" BOXP-901 20200102T000000Z
   PATH="$tmp/bin:$PATH" GH_FAKE_KNOWN_SHAS="$tmp/known" CODEX_TASK_BOARD_ROOT="$tmp/state" \
@@ -5615,7 +6001,8 @@ test_workspace_carryover_skips_localllm_coder() {
 }
 test_workspace_carryover_chain_and_restart() {
   local tmp old second third
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  tmp="$(mktemp -d)"
+  reuse_fixture "$tmp"
   old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z)"
   echo keep >"$old/untracked"
   printf '{:mode :on}\n' >"$tmp/state/workspace-carryover.edn"
@@ -5632,8 +6019,11 @@ test_workspace_carryover_chain_and_restart() {
 
 test_workspace_metrics_ledger() {
   local tmp old ledger
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
-  echo payload >"$tmp/source/tracked"; git -C "$tmp/source" add tracked; prune_git -C "$tmp/source" commit -qm payload
+  tmp="$(mktemp -d)"
+  reuse_fixture "$tmp"
+  echo payload >"$tmp/source/tracked"
+  git -C "$tmp/source" add tracked
+  prune_git -C "$tmp/source" commit -qm payload
   reuse_lock "$tmp" BOXP-901 20200101T000000Z
   reuse_prepare "$tmp" BOXP-901 20200101T000000Z >"$tmp/out1"
   printf '{:mode :on}\n' >"$tmp/state/workspace-carryover.edn"
@@ -5647,10 +6037,11 @@ test_workspace_metrics_ledger() {
   assert_file_contains "$tmp/summary" 'generated-bytes-est='
   assert_file_contains "$tmp/summary" 'net-bytes-est='
 
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  tmp="$(mktemp -d)"
+  reuse_fixture "$tmp"
   write_board "$tmp/vault" ""
-  write_prune_ticket "$tmp/vault" BOXP-901 done 2020-01-01
-  write_prune_ticket "$tmp/vault" BOXP-902 done 2020-01-01
+  write_prune_ticket "$tmp/vault" BOXP-901 "done" 2020-01-01
+  write_prune_ticket "$tmp/vault" BOXP-902 "done" 2020-01-01
   add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z >/dev/null
   old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-902 20200101T000000Z)"
   echo keep >"$old/untracked"
@@ -5664,9 +6055,10 @@ test_workspace_metrics_ledger() {
     run_prune "$tmp/vault" "$tmp/state" >"$tmp/prune3"
 
   # A dry-run deletes nothing, so it is never counted as reclaimed space.
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  tmp="$(mktemp -d)"
+  reuse_fixture "$tmp"
   write_board "$tmp/vault" ""
-  write_prune_ticket "$tmp/vault" BOXP-901 done 2020-01-01
+  write_prune_ticket "$tmp/vault" BOXP-901 "done" 2020-01-01
   add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z >/dev/null
   PATH="$tmp/bin:$PATH" GH_FAKE_KNOWN_SHAS="$tmp/known" run_prune "$tmp/vault" "$tmp/state" --dry-run >"$tmp/prune-dry"
   [[ -d "$tmp/state/workspaces/BOXP-901/20200101T000000Z" ]] || fail 'dry-run deleted a run'
@@ -5679,9 +6071,10 @@ test_workspace_metrics_ledger() {
 
   # A ticket reopened while the pre-delete measurement runs is not deleted:
   # the final status recheck happens after measuring.
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  tmp="$(mktemp -d)"
+  reuse_fixture "$tmp"
   write_board "$tmp/vault" ""
-  write_prune_ticket "$tmp/vault" BOXP-901 done 2020-01-01
+  write_prune_ticket "$tmp/vault" BOXP-901 "done" 2020-01-01
   add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z >/dev/null
   cat >"$tmp/bin/du" <<DU
 #!/usr/bin/env bash
@@ -5695,16 +6088,17 @@ DU
   # Metrics never change prune decisions, and an unwritable ledger is harmless.
   local mode summary_on summary_off summary_ro summary_zero
   for mode in on off ro zero; do
-    tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+    tmp="$(mktemp -d)"
+    reuse_fixture "$tmp"
     write_board "$tmp/vault" ""
-    write_prune_ticket "$tmp/vault" BOXP-901 done 2020-01-01
-    write_prune_ticket "$tmp/vault" BOXP-902 done 2020-01-01
+    write_prune_ticket "$tmp/vault" BOXP-901 "done" 2020-01-01
+    write_prune_ticket "$tmp/vault" BOXP-902 "done" 2020-01-01
     add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z >/dev/null
     old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-902 20200101T000000Z)"
     echo keep >"$old/untracked"
     if [[ "$mode" == ro ]]; then echo blocker >"$tmp/state/metrics"; fi
     PATH="$tmp/bin:$PATH" GH_FAKE_KNOWN_SHAS="$tmp/known" CODEX_TASK_BOARD_WORKSPACE_METRICS="$([[ "$mode" == off ]] && echo off || echo on)" \
-      CODEX_TASK_BOARD_WORKSPACE_METRICS_MAX_MEASURE="$([[ "$mode" == zero ]] && echo 0 || echo 20)" \
+    CODEX_TASK_BOARD_WORKSPACE_METRICS_MAX_MEASURE="$([[ "$mode" == zero ]] && echo 0 || echo 20)" \
       run_prune "$tmp/vault" "$tmp/state" >"$tmp/prune" || fail "prune failed with metrics $mode"
     grep -o '^prune: summary deleted=[0-9]* stale-deleted=[0-9]* held=[0-9]* skipped=[0-9]* recent-runs=[0-9]* branches=[0-9]* empty-dirs=[0-9]*' "$tmp/prune" >"$tmp/summary-$mode"
     [[ -s "$tmp/summary-$mode" ]] || fail "no prune summary with metrics $mode"
@@ -5720,7 +6114,8 @@ DU
     eval "summary_$mode=\"\$(cat \"$tmp/summary-$mode\")\""
   done
   [[ "$summary_on" == "$summary_off" && "$summary_on" == "$summary_ro" && "$summary_on" == "$summary_zero" ]] || fail "metrics changed prune summary: $summary_on / $summary_off / $summary_ro"
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  tmp="$(mktemp -d)"
+  reuse_fixture "$tmp"
   reuse_lock "$tmp" BOXP-901 20200101T000000Z
   CODEX_TASK_BOARD_WORKSPACE_METRICS=off reuse_prepare "$tmp" BOXP-901 20200101T000000Z >"$tmp/out"
   [[ ! -e "$tmp/state/metrics" ]] || fail 'disabled metrics wrote files'
@@ -5728,7 +6123,9 @@ DU
 
 test_workspace_carryover_prune_interplay() {
   local tmp old vault
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"; vault="$tmp/vault"
+  tmp="$(mktemp -d)"
+  reuse_fixture "$tmp"
+  vault="$tmp/vault"
   write_board "$vault" ""
   write_prune_ticket "$vault" BOXP-901 in-progress 2020-01-01
   old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z)"
@@ -5745,8 +6142,11 @@ test_workspace_carryover_prune_interplay() {
 test_workspace_reuse_interplay() {
   local tmp ws old new dist out
   # Another ticket and another repository are never adopted; decisions are per repo.
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"
-  make_prune_source_repo "$tmp/other"; git -C "$tmp/other" remote set-url origin https://github.com/boxp/other.git
+  tmp="$(mktemp -d)"
+  reuse_fixture "$tmp"
+  ws="$tmp/state/workspaces"
+  make_prune_source_repo "$tmp/other"
+  git -C "$tmp/other" remote set-url origin https://github.com/boxp/other.git
   git -C "$tmp/other" rev-list HEAD >>"$tmp/known"
   old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-901 20200101T000000Z)"
   reuse_lock "$tmp" BOXP-902 20200102T000000Z
@@ -5760,7 +6160,8 @@ test_workspace_reuse_interplay() {
   [[ -e "$ws/BOXP-901/20200103T000000Z/ghq/github.com/boxp/other/.git" ]] || fail 'other repo not created fresh'
 
   # A claim that changes the lock before the move leaves the old run alone.
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"
+  tmp="$(mktemp -d)"
+  reuse_fixture "$tmp"
   old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-903 20200101T000000Z)"
   reuse_lock "$tmp" BOXP-903 20200102T000000Z
   TEST_LOCK_SWAP='{:ticket "BOXP-903" :run-id "20200103T000000Z"}' reuse_prepare "$tmp" BOXP-903 20200102T000000Z >"$tmp/o"
@@ -5768,7 +6169,9 @@ test_workspace_reuse_interplay() {
   [[ "$(git -C "$old" branch --show-current)" == codex-task-board/BOXP-903-20200101T000000Z ]] || fail 'race changed the old run'
 
   # A symlinked previous checkout is not followed into another run.
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"
+  tmp="$(mktemp -d)"
+  reuse_fixture "$tmp"
+  ws="$tmp/state/workspaces"
   old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-904 20200101T000000Z)"
   mkdir -p "$ws/BOXP-905/20200101T000000Z/ghq/github.com/boxp"
   ln -s "$old" "$ws/BOXP-905/20200101T000000Z/ghq/github.com/boxp/example"
@@ -5778,10 +6181,13 @@ test_workspace_reuse_interplay() {
   [[ "$(git -C "$old" branch --show-current)" == codex-task-board/BOXP-904-20200101T000000Z ]] || fail 'symlink followed'
 
   # Crash after the move and before the switch: the next run adopts it normally.
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"
+  tmp="$(mktemp -d)"
+  reuse_fixture "$tmp"
+  ws="$tmp/state/workspaces"
   old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-906 20200101T000000Z)"
   new="$ws/BOXP-906/20200102T000000Z/ghq/github.com/boxp/example"
-  mkdir -p "$(dirname "$new")"; git -C "$tmp/source" worktree move "$old" "$new"
+  mkdir -p "$(dirname "$new")"
+  git -C "$tmp/source" worktree move "$old" "$new"
   reuse_lock "$tmp" BOXP-906 20200103T000000Z
   reuse_prepare "$tmp" BOXP-906 20200103T000000Z >"$tmp/o"
   assert_file_contains "$tmp/o" ':reused-from "20200102T000000Z"'
@@ -5790,8 +6196,11 @@ test_workspace_reuse_interplay() {
 
   # Prune: a prior run stays protected before the reuse, and deleting it after
   # the reuse does not touch the worktree now owned by the active run.
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"
-  write_board "$tmp/vault" ''; write_prune_ticket "$tmp/vault" BOXP-907 blocked 2020-01-01
+  tmp="$(mktemp -d)"
+  reuse_fixture "$tmp"
+  ws="$tmp/state/workspaces"
+  write_board "$tmp/vault" ''
+  write_prune_ticket "$tmp/vault" BOXP-907 blocked 2020-01-01
   old="$(add_prune_run "$tmp/state" "$tmp/source" BOXP-907 20200101T000000Z)"
   mkdir -p "$ws/BOXP-907/20200102T000000Z"
   reuse_lock "$tmp" BOXP-907 20200102T000000Z
@@ -5813,86 +6222,101 @@ test_workspace_reuse_interplay() {
   # Verified dist is dropped on a public change unless disabled or unknown.
   local dist_case
   for dist_case in enabled disabled unknown late-unknown lock mode-off mode-dry-run mode-invalid invalid; do
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"
-  git -C "$tmp/source" remote set-url origin https://github.com/boxp/arch.git
-  mkdir -p "$tmp/source/apps/kohako-studio/web/public"
-  printf 'dist/\n' >"$tmp/source/.gitignore"
-  printf 'abcd' >"$tmp/source/apps/kohako-studio/web/public/copied.txt"
-  touch "$tmp/source/apps/kohako-studio/web/"{package.json,package-lock.json,vite.config.ts}
-  git -C "$tmp/source" add .; prune_git -C "$tmp/source" commit -q -m fixture
-  git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD
-  git -C "$tmp/source" rev-list HEAD >"$tmp/known"
-  old="$ws/BOXP-908/20200101T000000Z/ghq/github.com/boxp/arch"
-  mkdir -p "$(dirname "$old")"
-  git -C "$tmp/source" worktree add -q -b codex-task-board/BOXP-908-20200101T000000Z "$old" HEAD
-  dist="$old/apps/kohako-studio/web/dist"; mkdir -p "$dist/assets"
-  printf html >"$dist/index.html"; printf asset >"$dist/assets/main-Abc_1234.js"; printf abcd >"$dist/copied.txt"
-  reuse_lock "$tmp" BOXP-908 20200102T000000Z
-  reuse_prepare "$tmp" BOXP-908 20200102T000000Z boxp/arch >"$tmp/o"
-  assert_file_contains "$tmp/o" ':reused-from "20200101T000000Z"'
-  old="$ws/BOXP-908/20200102T000000Z/ghq/github.com/boxp/arch"
-  [[ -f "$old/apps/kohako-studio/web/dist/copied.txt" ]] || fail 'verified dist was not carried over'
-  printf 'efgh' >"$tmp/source/apps/kohako-studio/web/public/copied.txt"
-  git -C "$tmp/source" add .; prune_git -C "$tmp/source" commit -q -m public
-  git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD
-  git -C "$tmp/source" rev-list HEAD >"$tmp/known"
-  case "$dist_case" in
-    disabled) printf '{:reuse-drop-dist false}\n' >"$tmp/state/generated-reclaim.edn" ;;
-    mode-off) printf '{:mode :off}\n' >"$tmp/state/generated-reclaim.edn" ;;
-    mode-dry-run) printf '{:mode :dry-run}\n' >"$tmp/state/generated-reclaim.edn" ;;
-    mode-invalid) printf '{:mode :bogus}\n' >"$tmp/state/generated-reclaim.edn" ;;
-    invalid) printf '{:reuse-drop-dist :invalid}\n' >"$tmp/state/generated-reclaim.edn" ;;
-    unknown) printf notes >"$old/apps/kohako-studio/web/dist/notes.txt" ;;
-  esac
-  reuse_lock "$tmp" BOXP-908 20200103T000000Z
-  if [[ "$dist_case" == late-unknown ]]; then
-    TEST_DROP_LATE_UNKNOWN=1 reuse_prepare "$tmp" BOXP-908 20200103T000000Z boxp/arch >"$tmp/o"
-  elif [[ "$dist_case" == lock ]]; then
-    TEST_LOCK_SWAP='{:ticket "BOXP-908" :run-id "20200104T000000Z"}' reuse_prepare "$tmp" BOXP-908 20200103T000000Z boxp/arch >"$tmp/o"
-  else
-    reuse_prepare "$tmp" BOXP-908 20200103T000000Z boxp/arch >"$tmp/o"
-  fi
-  if [[ "$dist_case" == enabled ]]; then
-    new="$ws/BOXP-908/20200103T000000Z/ghq/github.com/boxp/arch"
-    assert_file_contains "$tmp/o" ':reused-from "20200102T000000Z"'
-    assert_file_contains "$tmp/o" ':reuse-base-reason "studio-dist-dropped"'
-    assert_file_contains "$tmp/state/runs/BOXP-908/20200103T000000Z/workspace-reuse.edn" ':reuse-base-reason "studio-dist-dropped"'
-    assert_file_contains "$tmp/state/metrics/workspace-capacity.edn" ':reuse-base-reason "studio-dist-dropped"'
-    [[ ! -e "$old" && ! -e "$new/apps/kohako-studio/web/dist" && "$(cat "$new/apps/kohako-studio/web/public/copied.txt")" == efgh && "$(git -C "$new" rev-parse HEAD)" == "$(git -C "$tmp/source" rev-parse origin/main)" ]] || fail 'studio dist drop or reuse failed'
-  else
-    if [[ "$dist_case" == unknown ]]; then
-      assert_file_contains "$tmp/o" ':reuse-fallback "ignored-unknown'
-      [[ -f "$old/apps/kohako-studio/web/dist/notes.txt" ]] || fail 'unknown file deleted'
+    tmp="$(mktemp -d)"
+    reuse_fixture "$tmp"
+    ws="$tmp/state/workspaces"
+    git -C "$tmp/source" remote set-url origin https://github.com/boxp/arch.git
+    mkdir -p "$tmp/source/apps/kohako-studio/web/public"
+    printf 'dist/\n' >"$tmp/source/.gitignore"
+    printf 'abcd' >"$tmp/source/apps/kohako-studio/web/public/copied.txt"
+    touch "$tmp/source/apps/kohako-studio/web/"{package.json,package-lock.json,vite.config.ts}
+    git -C "$tmp/source" add .
+    prune_git -C "$tmp/source" commit -q -m fixture
+    git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD
+    git -C "$tmp/source" rev-list HEAD >"$tmp/known"
+    old="$ws/BOXP-908/20200101T000000Z/ghq/github.com/boxp/arch"
+    mkdir -p "$(dirname "$old")"
+    git -C "$tmp/source" worktree add -q -b codex-task-board/BOXP-908-20200101T000000Z "$old" HEAD
+    dist="$old/apps/kohako-studio/web/dist"
+    mkdir -p "$dist/assets"
+    printf html >"$dist/index.html"
+    printf asset >"$dist/assets/main-Abc_1234.js"
+    printf abcd >"$dist/copied.txt"
+    reuse_lock "$tmp" BOXP-908 20200102T000000Z
+    reuse_prepare "$tmp" BOXP-908 20200102T000000Z boxp/arch >"$tmp/o"
+    assert_file_contains "$tmp/o" ':reused-from "20200101T000000Z"'
+    old="$ws/BOXP-908/20200102T000000Z/ghq/github.com/boxp/arch"
+    [[ -f "$old/apps/kohako-studio/web/dist/copied.txt" ]] || fail 'verified dist was not carried over'
+    printf 'efgh' >"$tmp/source/apps/kohako-studio/web/public/copied.txt"
+    git -C "$tmp/source" add .
+    prune_git -C "$tmp/source" commit -q -m public
+    git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD
+    git -C "$tmp/source" rev-list HEAD >"$tmp/known"
+    case "$dist_case" in
+      disabled) printf '{:reuse-drop-dist false}\n' >"$tmp/state/generated-reclaim.edn" ;;
+      mode-off) printf '{:mode :off}\n' >"$tmp/state/generated-reclaim.edn" ;;
+      mode-dry-run) printf '{:mode :dry-run}\n' >"$tmp/state/generated-reclaim.edn" ;;
+      mode-invalid) printf '{:mode :bogus}\n' >"$tmp/state/generated-reclaim.edn" ;;
+      invalid) printf '{:reuse-drop-dist :invalid}\n' >"$tmp/state/generated-reclaim.edn" ;;
+      unknown) printf notes >"$old/apps/kohako-studio/web/dist/notes.txt" ;;
+    esac
+    reuse_lock "$tmp" BOXP-908 20200103T000000Z
+    if [[ "$dist_case" == late-unknown ]]; then
+      TEST_DROP_LATE_UNKNOWN=1 reuse_prepare "$tmp" BOXP-908 20200103T000000Z boxp/arch >"$tmp/o"
     elif [[ "$dist_case" == lock ]]; then
-      assert_file_contains "$tmp/o" ':reuse-fallback "lock-not-owned"'
+      TEST_LOCK_SWAP='{:ticket "BOXP-908" :run-id "20200104T000000Z"}' reuse_prepare "$tmp" BOXP-908 20200103T000000Z boxp/arch >"$tmp/o"
     else
-      assert_file_contains "$tmp/o" ':reuse-fallback "studio-dist-public-diff"'
-      if [[ "$dist_case" == late-unknown ]]; then
-        [[ -f "$old/apps/kohako-studio/web/dist/notes.txt" ]] || fail 'late unknown file deleted'
-      fi
+      reuse_prepare "$tmp" BOXP-908 20200103T000000Z boxp/arch >"$tmp/o"
     fi
-    [[ -f "$old/apps/kohako-studio/web/dist/copied.txt" ]] || fail 'old dist changed'
-  fi
+    if [[ "$dist_case" == enabled ]]; then
+      new="$ws/BOXP-908/20200103T000000Z/ghq/github.com/boxp/arch"
+      assert_file_contains "$tmp/o" ':reused-from "20200102T000000Z"'
+      assert_file_contains "$tmp/o" ':reuse-base-reason "studio-dist-dropped"'
+      assert_file_contains "$tmp/state/runs/BOXP-908/20200103T000000Z/workspace-reuse.edn" ':reuse-base-reason "studio-dist-dropped"'
+      assert_file_contains "$tmp/state/metrics/workspace-capacity.edn" ':reuse-base-reason "studio-dist-dropped"'
+      [[ ! -e "$old" && ! -e "$new/apps/kohako-studio/web/dist" && "$(cat "$new/apps/kohako-studio/web/public/copied.txt")" == efgh && "$(git -C "$new" rev-parse HEAD)" == "$(git -C "$tmp/source" rev-parse origin/main)" ]] || fail 'studio dist drop or reuse failed'
+    else
+      if [[ "$dist_case" == unknown ]]; then
+        assert_file_contains "$tmp/o" ':reuse-fallback "ignored-unknown'
+        [[ -f "$old/apps/kohako-studio/web/dist/notes.txt" ]] || fail 'unknown file deleted'
+      elif [[ "$dist_case" == lock ]]; then
+        assert_file_contains "$tmp/o" ':reuse-fallback "lock-not-owned"'
+      else
+        assert_file_contains "$tmp/o" ':reuse-fallback "studio-dist-public-diff"'
+        if [[ "$dist_case" == late-unknown ]]; then
+          [[ -f "$old/apps/kohako-studio/web/dist/notes.txt" ]] || fail 'late unknown file deleted'
+        fi
+      fi
+      [[ -f "$old/apps/kohako-studio/web/dist/copied.txt" ]] || fail 'old dist changed'
+    fi
   done
 
   # A pushed run commit that changes public keeps its matching verified dist.
-  tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"
+  tmp="$(mktemp -d)"
+  reuse_fixture "$tmp"
+  ws="$tmp/state/workspaces"
   git -C "$tmp/source" remote set-url origin https://github.com/boxp/arch.git
   mkdir -p "$tmp/source/apps/kohako-studio/web/public"
   printf 'dist/\n' >"$tmp/source/.gitignore"
   printf 'abcd' >"$tmp/source/apps/kohako-studio/web/public/copied.txt"
   touch "$tmp/source/apps/kohako-studio/web/"{package.json,package-lock.json,vite.config.ts}
-  git -C "$tmp/source" add .; prune_git -C "$tmp/source" commit -q -m fixture
+  git -C "$tmp/source" add .
+  prune_git -C "$tmp/source" commit -q -m fixture
   git -C "$tmp/source" update-ref refs/remotes/origin/main HEAD
   old="$ws/BOXP-910/20200101T000000Z/ghq/github.com/boxp/arch"
   mkdir -p "$(dirname "$old")"
   git -C "$tmp/source" worktree add -q -b codex-task-board/BOXP-910-20200101T000000Z "$old" HEAD
   printf 'efgh' >"$old/apps/kohako-studio/web/public/copied.txt"
-  git -C "$old" add .; prune_git -C "$old" commit -q -m public
-  local old_head; old_head="$(git -C "$old" rev-parse HEAD)"
+  git -C "$old" add .
+  prune_git -C "$old" commit -q -m public
+  local old_head
+  old_head="$(git -C "$old" rev-parse HEAD)"
   git -C "$old" rev-list HEAD >"$tmp/known"
-  dist="$old/apps/kohako-studio/web/dist"; mkdir -p "$dist/assets"
-  printf html >"$dist/index.html"; printf asset >"$dist/assets/main-Abc_1234.js"; printf efgh >"$dist/copied.txt"
+  dist="$old/apps/kohako-studio/web/dist"
+  mkdir -p "$dist/assets"
+  printf html >"$dist/index.html"
+  printf asset >"$dist/assets/main-Abc_1234.js"
+  printf efgh >"$dist/copied.txt"
   reuse_lock "$tmp" BOXP-910 20200102T000000Z
   reuse_prepare "$tmp" BOXP-910 20200102T000000Z boxp/arch >"$tmp/o"
   assert_file_contains "$tmp/o" ':reused-from "20200101T000000Z"'
@@ -5910,14 +6334,22 @@ test_workspace_reuse_interplay() {
   # worktree to it would delete tracked assets that the run then re-expands.
   local main file inode case_name ticket
   for case_name in stale-source unmerged-head source-newer diverged-source; do
-    tmp="$(mktemp -d)"; reuse_fixture "$tmp"; ws="$tmp/state/workspaces"; ticket=BOXP-909
+    tmp="$(mktemp -d)"
+    reuse_fixture "$tmp"
+    ws="$tmp/state/workspaces"
+    ticket=BOXP-909
     old="$(add_prune_run "$tmp/state" "$tmp/source" "$ticket" 20200101T000000Z)"
     main="$(prune_commit "$old" asset)"
     git -C "$tmp/source" update-ref refs/remotes/origin/main "$main"
-    file="$old/asset"; inode="$(stat -c %i "$file")"
+    file="$old/asset"
+    inode="$(stat -c %i "$file")"
     case "$case_name" in
       unmerged-head) prune_commit "$old" feature >/dev/null ;;
-      source-newer) git -C "$tmp/source" merge -q --ff-only "$main"; main="$(prune_commit "$tmp/source" newer)"; git -C "$tmp/source" update-ref refs/remotes/origin/main "$main" ;;
+      source-newer)
+        git -C "$tmp/source" merge -q --ff-only "$main"
+        main="$(prune_commit "$tmp/source" newer)"
+        git -C "$tmp/source" update-ref refs/remotes/origin/main "$main"
+        ;;
       diverged-source) main="$(prune_commit "$tmp/source" local-only)" ;;
     esac
     git -C "$tmp/source" rev-list --all >"$tmp/known"
@@ -5937,27 +6369,45 @@ test_workspace_reuse_interplay() {
 
 test_claude_catalog_and_hold_resolution() {
   local tmp vault state bin catalog model_state args case_name expected source ticket summary
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
-  catalog="${tmp}/catalog.edn"; model_state="${tmp}/model-state.edn"; args="${tmp}/args"
-  mkdir -p "${bin}"; make_fake_claude "${bin}"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  catalog="${tmp}/catalog.edn"
+  model_state="${tmp}/model-state.edn"
+  args="${tmp}/args"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
   for case_name in missing previous invalid family; do
     ticket="BOXP-876"
     rm -rf "${vault}" "${state}" "${args}" "${catalog}" "${model_state}"
     case "${case_name}" in
-      missing) expected=claude-fable-5-2; source=builtin ;;
-      previous) expected=claude-fable-5-1; source=hold ;;
-      invalid) expected=claude-fable-5-2; source=catalog ;;
-      family) expected=claude-fable-5-2; source=builtin ;;
+      missing)
+        expected=claude-fable-5-2
+        source=builtin
+        ;;
+      previous)
+        expected=claude-fable-5-1
+        source=hold
+        ;;
+      invalid)
+        expected=claude-fable-5-2
+        source=catalog
+        ;;
+      family)
+        expected=claude-fable-5-2
+        source=builtin
+        ;;
     esac
     if [[ "${case_name}" != missing ]]; then
       if [[ "${case_name}" == family ]]; then
-        printf '%s\n' '{:version 1 :roles {"claude-fable" {:family "opus" :model "claude-opus-5-5"}}}' > "${catalog}"
+        printf '%s\n' '{:version 1 :roles {"claude-fable" {:family "opus" :model "claude-opus-5-5"}}}' >"${catalog}"
       else
-        printf '%s\n' '{:version 1 :roles {"claude-fable" {:family "fable" :model "claude-fable-5-2" :previous "claude-fable-5-1"}}}' > "${catalog}"
+        printf '%s\n' '{:version 1 :roles {"claude-fable" {:family "fable" :model "claude-fable-5-2" :previous "claude-fable-5-1"}}}' >"${catalog}"
       fi
     fi
-    [[ "${case_name}" != previous ]] || printf '%s\n' '{:hold {"claude-fable" "claude-fable-5-1"}}' > "${model_state}"
-    [[ "${case_name}" != invalid ]] || printf '%s\n' '{:hold {"claude-fable" "claude-opus-5-5"}}' > "${model_state}"
+    [[ "${case_name}" != previous ]] || printf '%s\n' '{:hold {"claude-fable" "claude-fable-5-1"}}' >"${model_state}"
+    [[ "${case_name}" != invalid ]] || printf '%s\n' '{:hold {"claude-fable" "claude-opus-5-5"}}' >"${model_state}"
     write_board "${vault}" "- [ ] [[Tickets/${ticket}|${ticket}: model]] #ticket status::in-progress"
     write_ticket "${vault}" "${ticket}" in-progress claude-fable
     CODEX_TASK_BOARD_CLAUDE_BIN="${bin}/claude" CODEX_TASK_BOARD_MODEL_CATALOG="${catalog}" \
@@ -5972,17 +6422,23 @@ test_claude_catalog_and_hold_resolution() {
 
 test_dehydrate_holds() {
   local tmp vault state source co run out mode
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; source="${tmp}/source"; out="${tmp}/out"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  source="${tmp}/source"
+  out="${tmp}/out"
   mkdir -p "${state}/locks" "${tmp}/proc/100"
   ln -s / "${tmp}/proc/100/cwd"
   echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"${tmp}/mountinfo"
   export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo"
   make_prune_source_repo "${source}"
-  head -c 307200 /dev/urandom >"${source}/large"; echo small >"${source}/small"
-  git -C "${source}" add .; prune_git -C "${source}" commit -qm large
+  head -c 307200 /dev/urandom >"${source}/large"
+  echo small >"${source}/small"
+  git -C "${source}" add .
+  prune_git -C "${source}" commit -qm large
   write_board "${vault}" ""
   echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"${vault}/Boards/Task Board.md"
-  write_prune_ticket "${vault}" BOXP-519 done "$(date -u +%Y-%m-%d)"
+  write_prune_ticket "${vault}" BOXP-519 "done" "$(date -u +%Y-%m-%d)"
   run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
   co="$(add_prune_run "${state}" "${source}" BOXP-519 "${run}")"
   for mode in dirty untracked locked blocked nondone hardlink symlink flag envflag age operation hash; do
@@ -5996,7 +6452,10 @@ test_dehydrate_holds() {
       symlink) ln -s "$co/large" "$state/workspaces/BOXP-519/$run/link" ;;
       flag) echo '{:mode :on :dehydrate false}' >"$state/generated-reclaim.edn" ;;
       operation) touch "$(git -C "$co" rev-parse --absolute-git-dir)/MERGE_HEAD" ;;
-      hash) git -C "$co" update-index --assume-unchanged large; printf changed >>"$co/large" ;;
+      hash)
+        git -C "$co" update-index --assume-unchanged large
+        printf changed >>"$co/large"
+        ;;
     esac
     CODEX_TASK_BOARD_DEHYDRATE_DIRTY=off CODEX_TASK_BOARD_GENERATED_RECLAIM=on CODEX_TASK_BOARD_GENERATED_RECLAIM_DEHYDRATE="$([[ "$mode" == envflag ]] && echo off || echo on)" CODEX_TASK_BOARD_GENERATED_RECLAIM_MIN_AGE_HOURS="$([[ "$mode" == age ]] && echo 100 || echo 1)" run_prune "$vault" "$state" >"$out"
     [[ -f "$co/large" ]] || fail "dehydrate hold failed: $mode"
@@ -6005,12 +6464,18 @@ test_dehydrate_holds() {
       untracked) rm "$co/untracked" ;;
       locked) rm "$state/locks/BOXP-519.edn" ;;
       blocked) sed -i 's/^status: blocked/status: done/' "$vault/Tickets/BOXP-519.md" ;;
-      nondone) write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md" ;;
+      nondone)
+        write_board "$vault" ""
+        echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+        ;;
       hardlink) rm "$tmp/hardlink" ;;
       symlink) rm "$state/workspaces/BOXP-519/$run/link" ;;
       flag) rm "$state/generated-reclaim.edn" ;;
       operation) rm "$(git -C "$co" rev-parse --absolute-git-dir)/MERGE_HEAD" ;;
-      hash) git -C "$co" update-index --no-assume-unchanged large; git -C "$co" checkout -- large ;;
+      hash)
+        git -C "$co" update-index --no-assume-unchanged large
+        git -C "$co" checkout -- large
+        ;;
     esac
   done
 }
@@ -6020,27 +6485,44 @@ test_dehydrate_dirty_keeps_changes() {
   # index blob are dehydrated; every changed/staged/untracked path is kept.
   local tmp vault state source co run out mode gitdir before
   for mode in on envoff flagoff; do
-    tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
+    tmp="$(mktemp -d)"
+    vault="$tmp/vault"
+    state="$tmp/state"
+    source="$tmp/source"
+    out="$tmp/out"
     mkdir -p "$state/locks" "$tmp/proc/100"
-    ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+    ln -s / "$tmp/proc/100/cwd"
+    echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
     export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
     make_prune_source_repo "$source"
-    head -c 307200 /dev/urandom >"$source/large"; head -c 307200 /dev/urandom >"$source/edited"
-    head -c 307200 /dev/urandom >"$source/moved"; echo small >"$source/small"
-    git -C "$source" add .; prune_git -C "$source" commit -qm large
-    write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
-    write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+    head -c 307200 /dev/urandom >"$source/large"
+    head -c 307200 /dev/urandom >"$source/edited"
+    head -c 307200 /dev/urandom >"$source/moved"
+    echo small >"$source/small"
+    git -C "$source" add .
+    prune_git -C "$source" commit -qm large
+    write_board "$vault" ""
+    echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+    write_prune_ticket "$vault" BOXP-519 "done" "$(date -u +%Y-%m-%d)"
     run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
     co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
-    echo change >>"$co/small"; printf local >>"$co/edited"
+    echo change >>"$co/small"
+    printf local >>"$co/edited"
     head -c 307200 /dev/urandom >"$co/untracked"
-    head -c 307200 /dev/urandom >"$co/staged"; git -C "$co" add staged
+    head -c 307200 /dev/urandom >"$co/staged"
+    git -C "$co" add staged
     git -C "$co" mv moved renamed
-    before="$(git -C "$co" status --porcelain --untracked-files=all; sha256sum "$co/small" "$co/edited" "$co/untracked" "$co/staged" "$co/renamed")"
+    before="$(
+      git -C "$co" status --porcelain --untracked-files=all
+      sha256sum "$co/small" "$co/edited" "$co/untracked" "$co/staged" "$co/renamed"
+    )"
     [[ "$mode" != flagoff ]] || echo '{:mode :on :dehydrate-dirty false}' >"$state/generated-reclaim.edn"
     CODEX_TASK_BOARD_GENERATED_RECLAIM=on CODEX_TASK_BOARD_DEHYDRATE_DIRTY="$([[ "$mode" == envoff ]] && echo off || echo on)" run_prune "$vault" "$state" >"$out"
     gitdir="$(git -C "$co" rev-parse --absolute-git-dir)"
-    [[ "$before" == "$(git -C "$co" status --porcelain --untracked-files=all; sha256sum "$co/small" "$co/edited" "$co/untracked" "$co/staged" "$co/renamed")" ]] || fail "local changes altered: $mode"
+    [[ "$before" == "$(
+      git -C "$co" status --porcelain --untracked-files=all
+      sha256sum "$co/small" "$co/edited" "$co/untracked" "$co/staged" "$co/renamed"
+    )" ]] || fail "local changes altered: $mode"
     if [[ "$mode" != on ]]; then
       [[ -f "$co/large" && ! -e "$gitdir/codex-task-board-dehydrated" ]] || fail "dirty dehydration not disabled: $mode"
       continue
@@ -6051,25 +6533,42 @@ test_dehydrate_dirty_keeps_changes() {
     CODEX_TASK_BOARD_ROOT="$state" TEST_RUNNER="$RUNNER" TEST_CO="$co" bb -e '
       (System/setProperty "babashka.file" "/tmp/load-runner.bb")
       (load-file (System/getenv "TEST_RUNNER"))
-      (assert (nil? (rehydrate-checkout! (fs/path (System/getenv "TEST_CO")))))' >"$out" 2>&1 || { cat "$out" >&2; fail 'rehydrate of dirty checkout failed'; }
+      (assert (nil? (rehydrate-checkout! (fs/path (System/getenv "TEST_CO")))))' >"$out" 2>&1 || {
+      cat "$out" >&2
+      fail 'rehydrate of dirty checkout failed'
+    }
     [[ "$(sha256sum "$source/large" | cut -d' ' -f1)" == "$(sha256sum "$co/large" | cut -d' ' -f1)" ]] || fail 'restored content differs'
     [[ ! -e "$gitdir/codex-task-board-dehydrated" ]] || fail 'marker retained'
-    [[ "$before" == "$(git -C "$co" status --porcelain --untracked-files=all; sha256sum "$co/small" "$co/edited" "$co/untracked" "$co/staged" "$co/renamed")" ]] || fail 'local changes altered by restore'
+    [[ "$before" == "$(
+      git -C "$co" status --porcelain --untracked-files=all
+      sha256sum "$co/small" "$co/edited" "$co/untracked" "$co/staged" "$co/renamed"
+    )" ]] || fail 'local changes altered by restore'
   done
 }
 
 test_dehydrate_reuse_restores() {
   local tmp vault state source co run new out bin known mode
   for mode in restore present; do
-    tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"; bin="$tmp/bin"; known="$tmp/known"
+    tmp="$(mktemp -d)"
+    vault="$tmp/vault"
+    state="$tmp/state"
+    source="$tmp/source"
+    out="$tmp/out"
+    bin="$tmp/bin"
+    known="$tmp/known"
     mkdir -p "$state/locks" "$tmp/proc/100" "$bin"
-    ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+    ln -s / "$tmp/proc/100/cwd"
+    echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
     export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
-    make_fake_gh "$bin"; make_prune_source_repo "$source"
-    head -c 307200 /dev/urandom >"$source/large"; git -C "$source" add .; prune_git -C "$source" commit -qm large
+    make_fake_gh "$bin"
+    make_prune_source_repo "$source"
+    head -c 307200 /dev/urandom >"$source/large"
+    git -C "$source" add .
+    prune_git -C "$source" commit -qm large
     git -C "$source" rev-parse HEAD >"$known"
-    write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
-    write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+    write_board "$vault" ""
+    echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+    write_prune_ticket "$vault" BOXP-519 "done" "$(date -u +%Y-%m-%d)"
     run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
     co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
     CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "$vault" "$state" >"$out"
@@ -6098,21 +6597,32 @@ test_dehydrate_reuse_restores() {
 
 test_dehydrate_prune_hold() {
   local tmp vault state source co run out bin known
-  tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"; bin="$tmp/bin"; known="$tmp/known"
+  tmp="$(mktemp -d)"
+  vault="$tmp/vault"
+  state="$tmp/state"
+  source="$tmp/source"
+  out="$tmp/out"
+  bin="$tmp/bin"
+  known="$tmp/known"
   mkdir -p "$state/locks" "$tmp/proc/100" "$bin"
-  ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+  ln -s / "$tmp/proc/100/cwd"
+  echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
   export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
-  make_fake_gh "$bin"; make_prune_source_repo "$source"
-  head -c 307200 /dev/urandom >"$source/large"; git -C "$source" add .; prune_git -C "$source" commit -qm large
+  make_fake_gh "$bin"
+  make_prune_source_repo "$source"
+  head -c 307200 /dev/urandom >"$source/large"
+  git -C "$source" add .
+  prune_git -C "$source" commit -qm large
   git -C "$source" rev-parse HEAD >"$known"
-  write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
-  write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+  write_board "$vault" ""
+  echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+  write_prune_ticket "$vault" BOXP-519 "done" "$(date -u +%Y-%m-%d)"
   run="20200101T000000Z"
   co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
   CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "$vault" "$state" >"$out"
   [[ ! -e "$co/large" ]] || fail 'setup dehydration failed'
   echo preserve >"$co/large"
-  write_prune_ticket "$vault" BOXP-519 done 2020-01-01
+  write_prune_ticket "$vault" BOXP-519 "done" 2020-01-01
   PATH="$bin:$PATH" GH_FAKE_KNOWN_SHAS="$known" run_prune "$vault" "$state" >"$out"
   [[ -f "$co/large" ]] || fail 'prune removed dehydrated path'
   assert_file_contains "$out" 'dehydrated-path-present'
@@ -6124,25 +6634,35 @@ test_dehydrate_prune_hold() {
 test_dehydrate_rehydrate_ignores_unrelated() {
   local tmp vault state source co run out mode gitdir
   for mode in unrelated leftover; do
-    tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
+    tmp="$(mktemp -d)"
+    vault="$tmp/vault"
+    state="$tmp/state"
+    source="$tmp/source"
+    out="$tmp/out"
     mkdir -p "$state/locks" "$tmp/proc/100"
-    ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+    ln -s / "$tmp/proc/100/cwd"
+    echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
     export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
     make_prune_source_repo "$source"
-    head -c 307200 /dev/urandom >"$source/large"; echo small >"$source/small"
-    git -C "$source" add .; prune_git -C "$source" commit -qm large
-    write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
-    write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+    head -c 307200 /dev/urandom >"$source/large"
+    echo small >"$source/small"
+    git -C "$source" add .
+    prune_git -C "$source" commit -qm large
+    write_board "$vault" ""
+    echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+    write_prune_ticket "$vault" BOXP-519 "done" "$(date -u +%Y-%m-%d)"
     run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
     co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
     CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "$vault" "$state" >"$out"
     gitdir="$(git -C "$co" rev-parse --absolute-git-dir)"
     [[ ! -e "$co/large" && -f "$gitdir/codex-task-board-dehydrated" ]] || fail 'setup dehydration failed'
     if [[ "$mode" == unrelated ]]; then
-      echo extra >"$co/untracked"; echo change >>"$co/small"
+      echo extra >"$co/untracked"
+      echo change >>"$co/small"
     else
       # A previous restore left the exact blob in place but kept the marker.
-      git -C "$co" update-index --no-skip-worktree large; git -C "$co" checkout-index -f large
+      git -C "$co" update-index --no-skip-worktree large
+      git -C "$co" checkout-index -f large
     fi
     CODEX_TASK_BOARD_ROOT="$state" TEST_RUNNER="$RUNNER" TEST_CO="$co" bb -e '
       (System/setProperty "babashka.file" "/tmp/load-runner.bb")
@@ -6150,9 +6670,14 @@ test_dehydrate_rehydrate_ignores_unrelated() {
       (let [co (fs/path (System/getenv "TEST_CO"))]
         (assert (not (dehydrated-present? co (dehydrated-marker co))))
         (assert (nil? (rehydrate-checkout! co)))
-        (assert (nil? (rehydrate-checkout! co))))' >"$out" 2>&1 || { cat "$out" >&2; fail "rehydrate failed: $mode"; }
+        (assert (nil? (rehydrate-checkout! co))))' >"$out" 2>&1 || {
+      cat "$out" >&2
+      fail "rehydrate failed: $mode"
+    }
     [[ "$(sha256sum "$source/large" | cut -d' ' -f1)" == "$(sha256sum "$co/large" | cut -d' ' -f1)" ]] || fail "restored content differs: $mode"
     [[ ! -e "$gitdir/codex-task-board-dehydrated" ]] || fail "marker retained: $mode"
+    # grep must read the whole listing; grep -q under pipefail can turn SIGPIPE into a false pass.
+    # shellcheck disable=SC2143
     [[ -z "$(git -C "$co" ls-files -t large | grep '^S ')" ]] || fail "skip-worktree retained: $mode"
     if [[ "$mode" == unrelated ]]; then
       [[ -f "$co/untracked" && "$(tail -n1 "$co/small")" == change ]] || fail 'unrelated changes not preserved'
@@ -6162,43 +6687,61 @@ test_dehydrate_rehydrate_ignores_unrelated() {
 
 test_dehydrate_rehydrate_keeps_mode_change() {
   local tmp vault state source co run out gitdir
-  tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
+  tmp="$(mktemp -d)"
+  vault="$tmp/vault"
+  state="$tmp/state"
+  source="$tmp/source"
+  out="$tmp/out"
   mkdir -p "$state/locks" "$tmp/proc/100"
-  ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+  ln -s / "$tmp/proc/100/cwd"
+  echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
   export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
   make_prune_source_repo "$source"
   head -c 307200 /dev/urandom >"$source/large"
-  git -C "$source" add .; prune_git -C "$source" commit -qm large
-  write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
-  write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+  git -C "$source" add .
+  prune_git -C "$source" commit -qm large
+  write_board "$vault" ""
+  echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+  write_prune_ticket "$vault" BOXP-519 "done" "$(date -u +%Y-%m-%d)"
   run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
   co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
   CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "$vault" "$state" >"$out"
   gitdir="$(git -C "$co" rev-parse --absolute-git-dir)"
   [[ ! -e "$co/large" && -f "$gitdir/codex-task-board-dehydrated" ]] || fail 'setup dehydration failed'
   # Same blob content restored locally, but with a local executable-bit change.
-  git -C "$co" cat-file blob "$(git -C "$co" rev-parse :large)" >"$co/large"; chmod 755 "$co/large"
+  git -C "$co" cat-file blob "$(git -C "$co" rev-parse :large)" >"$co/large"
+  chmod 755 "$co/large"
   CODEX_TASK_BOARD_ROOT="$state" TEST_RUNNER="$RUNNER" TEST_CO="$co" bb -e '
     (System/setProperty "babashka.file" "/tmp/load-runner.bb")
     (load-file (System/getenv "TEST_RUNNER"))
     (let [co (fs/path (System/getenv "TEST_CO"))]
       (assert (dehydrated-present? co (dehydrated-marker co)))
-      (assert (= "dehydrated-path-present" (rehydrate-checkout! co))))' >"$out" 2>&1 || { cat "$out" >&2; fail 'mode change not treated as conflict'; }
+      (assert (= "dehydrated-path-present" (rehydrate-checkout! co))))' >"$out" 2>&1 || {
+    cat "$out" >&2
+    fail 'mode change not treated as conflict'
+  }
   [[ -x "$co/large" && -f "$gitdir/codex-task-board-dehydrated" ]] || fail 'local mode change overwritten'
 }
 
 test_dehydrate_keeps_clean_filtered_bytes() {
   local tmp vault state source co run out
-  tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
+  tmp="$(mktemp -d)"
+  vault="$tmp/vault"
+  state="$tmp/state"
+  source="$tmp/source"
+  out="$tmp/out"
   mkdir -p "$state/locks" "$tmp/proc/100"
-  ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+  ln -s / "$tmp/proc/100/cwd"
+  echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
   export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
   make_prune_source_repo "$source"
   echo 'large.txt text' >"$source/.gitattributes"
   head -c 307200 < <(yes 'line of text for clean filter test') >"$source/large.txt"
-  git -C "$source" add .; prune_git -C "$source" commit -qm large
-  write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
-  write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+  git -C "$source" add .
+  prune_git -C "$source" commit -qm large
+  write_board "$vault" ""
+  echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+  write_prune_ticket "$vault" BOXP-519 "done" "$(date -u +%Y-%m-%d)"
   run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
   co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
   # Mixed line endings: the clean filter normalizes them back to the indexed blob.
@@ -6209,7 +6752,10 @@ test_dehydrate_keeps_clean_filtered_bytes() {
     (load-file (System/getenv "TEST_RUNNER"))
     (let [co (fs/path (System/getenv "TEST_CO"))
           sha (clojure.string/trim (:out (generated-git co "rev-parse" ":large.txt")))]
-      (assert (not (worktree-matches-blob? co "large.txt" sha))))' >"$out" 2>&1 || { cat "$out" >&2; fail 'clean-filtered bytes treated as blob'; }
+      (assert (not (worktree-matches-blob? co "large.txt" sha))))' >"$out" 2>&1 || {
+    cat "$out" >&2
+    fail 'clean-filtered bytes treated as blob'
+  }
   git -C "$co" update-index --assume-unchanged large.txt
   CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "$vault" "$state" >"$out"
   cmp -s "$co/large.txt" "$tmp/expected" || fail 'clean-filtered local bytes were dehydrated'
@@ -6217,17 +6763,24 @@ test_dehydrate_keeps_clean_filtered_bytes() {
 
 test_dehydrate_keeps_symlinked_dir_files() {
   local tmp vault state source co run out
-  tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
+  tmp="$(mktemp -d)"
+  vault="$tmp/vault"
+  state="$tmp/state"
+  source="$tmp/source"
+  out="$tmp/out"
   mkdir -p "$state/locks" "$tmp/proc/100"
-  ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+  ln -s / "$tmp/proc/100/cwd"
+  echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
   export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
   make_prune_source_repo "$source"
   mkdir -p "$source/assets"
   head -c 307200 /dev/urandom >"$source/assets/linked"
   head -c 307200 /dev/urandom >"$source/plain"
-  git -C "$source" add .; prune_git -C "$source" commit -qm assets
-  write_board "$vault" ""; echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
-  write_prune_ticket "$vault" BOXP-519 done "$(date -u +%Y-%m-%d)"
+  git -C "$source" add .
+  prune_git -C "$source" commit -qm assets
+  write_board "$vault" ""
+  echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"$vault/Boards/Task Board.md"
+  write_prune_ticket "$vault" BOXP-519 "done" "$(date -u +%Y-%m-%d)"
   run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
   co="$(add_prune_run "$state" "$source" BOXP-519 "$run")"
   # A symlink elsewhere in the run points at the directory, not the file.
@@ -6239,7 +6792,11 @@ test_dehydrate_keeps_symlinked_dir_files() {
 
 test_dehydrate_basic() {
   local tmp vault state source co run out
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; source="${tmp}/source"; out="${tmp}/out"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  source="${tmp}/source"
+  out="${tmp}/out"
   mkdir -p "${state}/locks" "${tmp}/proc/100"
   ln -s / "${tmp}/proc/100/cwd"
   echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"${tmp}/mountinfo"
@@ -6247,10 +6804,11 @@ test_dehydrate_basic() {
   make_prune_source_repo "${source}"
   head -c 307200 /dev/urandom >"${source}/large"
   echo small >"${source}/small"
-  git -C "${source}" add .; prune_git -C "${source}" commit -qm large
+  git -C "${source}" add .
+  prune_git -C "${source}" commit -qm large
   write_board "${vault}" ""
   echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"${vault}/Boards/Task Board.md"
-  write_prune_ticket "${vault}" BOXP-519 done "$(date -u +%Y-%m-%d)"
+  write_prune_ticket "${vault}" BOXP-519 "done" "$(date -u +%Y-%m-%d)"
   run="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
   co="$(add_prune_run "${state}" "${source}" BOXP-519 "${run}")"
   local second
@@ -6265,7 +6823,8 @@ test_dehydrate_basic() {
   [[ -z "$(git -C "${co}" status --porcelain)" ]] || fail 'dehydrated checkout dirty'
   [[ -f "$(git -C "${co}" rev-parse --absolute-git-dir)/codex-task-board-dehydrated" ]] || fail 'marker missing'
   assert_file_contains "${state}/metrics/workspace-capacity.edn" ':result :reclaimed'
-  local reclaimed_before; reclaimed_before="$(grep -c ':result :reclaimed' "${state}/metrics/workspace-capacity.edn")"
+  local reclaimed_before
+  reclaimed_before="$(grep -c ':result :reclaimed' "${state}/metrics/workspace-capacity.edn")"
   CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
   [[ "$(grep -c ':result :reclaimed' "${state}/metrics/workspace-capacity.edn")" == "${reclaimed_before}" ]] || fail 'duplicate reclaim event'
   [[ ! -e "${co}/large" ]] || fail 'dehydration not idempotent'
@@ -6273,22 +6832,30 @@ test_dehydrate_basic() {
 
 test_generated_reclaim_basic() {
   local tmp vault state source co run old i out
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; source="${tmp}/source"; out="${tmp}/out"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  source="${tmp}/source"
+  out="${tmp}/out"
   mkdir -p "${state}/locks" "${tmp}/proc/100"
   ln -s / "${tmp}/proc/100/cwd"
   echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"${tmp}/mountinfo"
   export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo"
   make_prune_source_repo "${source}"
-  printf '{}\n' >"${source}/package.json"; printf '{}\n' >"${source}/package-lock.json"
+  printf '{}\n' >"${source}/package.json"
+  printf '{}\n' >"${source}/package-lock.json"
   printf 'node_modules/\nnotes/\n' >"${source}/.gitignore"
-  git -C "${source}" add .; prune_git -C "${source}" commit -qm inputs
+  git -C "${source}" add .
+  prune_git -C "${source}" commit -qm inputs
   write_board "${vault}" ""
   echo '- [x] [[Tickets/BOXP-519|BOXP-519: done]] #ticket status::done' >>"${vault}/Boards/Task Board.md"
-  write_prune_ticket "${vault}" BOXP-519 done "$(date -u +%Y-%m-%d)"
+  write_prune_ticket "${vault}" BOXP-519 "done" "$(date -u +%Y-%m-%d)"
   for i in 3 2 1; do
     run="$(date -u -d "${i} hours ago" +%Y%m%dT%H%M%SZ)"
     co="$(add_prune_run "${state}" "${source}" BOXP-519 "${run}")"
-    mkdir -p "${co}/node_modules" "${co}/notes"; echo data >"${co}/node_modules/a"; echo keep >"${co}/notes/a"
+    mkdir -p "${co}/node_modules" "${co}/notes"
+    echo data >"${co}/node_modules/a"
+    echo keep >"${co}/notes/a"
     [[ "${i}" != 3 ]] || old="${co}"
   done
   CODEX_TASK_BOARD_GENERATED_RECLAIM=dry-run run_prune "${vault}" "${state}" >"${out}"
@@ -6364,10 +6931,22 @@ test_generated_reclaim_basic() {
       (reclaim-generated-outputs! {})' >"${out}"
     [[ -f "${old}/node_modules/a" ]] || fail "late ${mutation} change deleted output"
     case "${mutation}" in
-      input) assert_file_contains "${out}" 'reason=inputs-modified'; git -C "${old}" checkout -- package-lock.json ;;
-      hardlink) assert_file_contains "${out}" 'reason=nested-git-or-hardlink'; rm "${tmp}/late-hardlink" ;;
-      git) assert_file_contains "${out}" 'reason=nested-(checkout|git-or-hardlink)'; rmdir "${old}/node_modules/.git" ;;
-      symlink) assert_file_contains "${out}" 'reason=symlink-dependency'; rm "${old}/late-link" ;;
+      input)
+        assert_file_contains "${out}" 'reason=inputs-modified'
+        git -C "${old}" checkout -- package-lock.json
+        ;;
+      hardlink)
+        assert_file_contains "${out}" 'reason=nested-git-or-hardlink'
+        rm "${tmp}/late-hardlink"
+        ;;
+      git)
+        assert_file_contains "${out}" 'reason=nested-(checkout|git-or-hardlink)'
+        rmdir "${old}/node_modules/.git"
+        ;;
+      symlink)
+        assert_file_contains "${out}" 'reason=symlink-dependency'
+        rm "${old}/late-link"
+        ;;
     esac
   done
   echo changed >>"${old}/package-lock.json"
@@ -6382,9 +6961,11 @@ test_generated_reclaim_basic() {
   rm "${tmp}/hardlink"
   # A package whose manifest is not tracked cannot be regenerated from Git.
   mkdir -p "${old}/pkg/node_modules" "${tmp}/shared-target"
-  printf '{}\n' >"${old}/pkg/package.json"; echo data >"${old}/pkg/node_modules/b"
+  printf '{}\n' >"${old}/pkg/package.json"
+  echo data >"${old}/pkg/node_modules/b"
   # A symlinked node_modules is never a candidate and its target survives.
-  mkdir -p "${old}/linked"; echo shared >"${tmp}/shared-target/c"
+  mkdir -p "${old}/linked"
+  echo shared >"${tmp}/shared-target/c"
   ln -s "${tmp}/shared-target" "${old}/linked/node_modules"
   CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
   [[ ! -e "${old}/node_modules" && -f "${old}/notes/a" && -f "${old}/package.json" ]] || fail 'incorrect reclaimed outputs'
@@ -6398,23 +6979,31 @@ test_generated_reclaim_basic() {
 
 test_generated_reclaim_studio() {
   local tmp vault state source ticket co run i dist
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; source="${tmp}/source"
-  mkdir -p "${state}/locks" "${tmp}/proc/100"; ln -s / "${tmp}/proc/100/cwd"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  source="${tmp}/source"
+  mkdir -p "${state}/locks" "${tmp}/proc/100"
+  ln -s / "${tmp}/proc/100/cwd"
   echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"${tmp}/mountinfo"
   export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo"
-  make_prune_source_repo "${source}"; git -C "${source}" remote set-url origin https://github.com/boxp/arch.git
+  make_prune_source_repo "${source}"
+  git -C "${source}" remote set-url origin https://github.com/boxp/arch.git
   mkdir -p "${source}/apps/kohako-studio/web/public"
-  printf 'dist/\n' >"${source}/.gitignore"; printf abcd >"${source}/apps/kohako-studio/web/public/copied.txt"
+  printf 'dist/\n' >"${source}/.gitignore"
+  printf abcd >"${source}/apps/kohako-studio/web/public/copied.txt"
   touch "${source}/apps/kohako-studio/web/"{package.json,package-lock.json,vite.config.ts,candidates.html}
-  git -C "${source}" add .; prune_git -C "${source}" commit -qm fixture
+  git -C "${source}" add .
+  prune_git -C "${source}" commit -qm fixture
   write_board "${vault}" ''
   for ticket in BOXP-520 BOXP-521 BOXP-522; do
     echo "- [x] [[Tickets/${ticket}|${ticket}: done]] #ticket status::done" >>"${vault}/Boards/Task Board.md"
-    write_prune_ticket "${vault}" "${ticket}" done "$(date -u +%Y-%m-%d)"
+    write_prune_ticket "${vault}" "${ticket}" "done" "$(date -u +%Y-%m-%d)"
     for i in 3 2 1; do
       run="$(date -u -d "${i} hours ago" +%Y%m%dT%H%M%SZ)"
       co="$(add_prune_run "${state}" "${source}" "${ticket}" "${run}")"
-      dist="${co}/apps/kohako-studio/web/dist"; mkdir -p "${dist}"
+      dist="${co}/apps/kohako-studio/web/dist"
+      mkdir -p "${dist}"
       cp "${co}/apps/kohako-studio/web/public/copied.txt" "${dist}/copied.txt"
       if [[ "${i}" == 3 && "${ticket}" == BOXP-521 ]]; then printf wxyz >"${dist}/copied.txt"; fi
       # An uncommitted change to a tracked Vite HTML entry makes dist non-regenerable.
@@ -6431,10 +7020,17 @@ test_generated_reclaim_studio() {
 
 test_capacity_attribution() {
   local tmp vault state root metrics before
-  tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; root="$tmp/volume"; metrics="$state/metrics/workspace-capacity.edn"
+  tmp="$(mktemp -d)"
+  vault="$tmp/vault"
+  state="$tmp/state"
+  root="$tmp/volume"
+  metrics="$state/metrics/workspace-capacity.edn"
   mkdir -p "$root/one" "$root/two" "$root/.codex-task-board/workspaces/T-1/r/x/node_modules" "$vault" "$state"
-  printf fresh >"$root/one/fresh"; printf old >"$root/two/old"; touch -d '3 days ago' "$root/two/old"
-  printf link >"$root/one/link"; ln "$root/one/link" "$root/one/link2"
+  printf fresh >"$root/one/fresh"
+  printf old >"$root/two/old"
+  touch -d '3 days ago' "$root/two/old"
+  printf link >"$root/one/link"
+  ln "$root/one/link" "$root/one/link2"
   printf module >"$root/.codex-task-board/workspaces/T-1/r/x/node_modules/a"
   printf odd >"$root/"$'tab\tand\nnewline'
   CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" run_prune "$vault" "$state" >"$tmp/out"
@@ -6476,15 +7072,19 @@ test_capacity_attribution() {
   # A find that ends in time but non-zero (unreadable directory) skipped files:
   # the record must say so and must not report per-area growth.
   if [[ "$(id -u)" != 0 ]]; then
-    mkdir -p "$root/locked/inner"; printf hidden >"$root/locked/inner/f"; chmod 000 "$root/locked"
+    mkdir -p "$root/locked/inner"
+    printf hidden >"$root/locked/inner/f"
+    chmod 000 "$root/locked"
     CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 CODEX_TASK_BOARD_CAPACITY_GUARD_BYTES=0 run_prune "$vault" "$state" >"$tmp/out"
-    chmod 755 "$root/locked"; rm -rf "$root/locked"
+    chmod 755 "$root/locked"
+    rm -rf "$root/locked"
     TEST_METRICS="$metrics" bb -e '(require (quote [clojure.edn :as edn])) (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))] (assert (pos? (:scan-exit e))) (assert (false? (:scan-complete e))) (assert (= {} (:area-delta-bytes e))))'
   fi
   # A scan cut off by the timeout is killed mid-read: the record must still be
   # written, marked incomplete, instead of being lost to a closed-stream error.
   mkdir -p "$tmp/slowbin"
-  printf '#!/bin/sh\nwhile :; do printf "8\\t0\\t1\\t1\\tone/fresh\\0"; done\n' >"$tmp/slowbin/find"; chmod +x "$tmp/slowbin/find"
+  printf '#!/bin/sh\nwhile :; do printf "8\\t0\\t1\\t1\\tone/fresh\\0"; done\n' >"$tmp/slowbin/find"
+  chmod +x "$tmp/slowbin/find"
   before="$(grep -c ':event :capacity-attribution' "$metrics")"
   PATH="$tmp/slowbin:$PATH" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_TIMEOUT_SECONDS=1 CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 CODEX_TASK_BOARD_CAPACITY_GUARD_BYTES=0 run_prune "$vault" "$state" >"$tmp/out"
   [[ "$(grep -c ':event :capacity-attribution' "$metrics")" == "$((before + 1))" ]] || fail 'timed-out scan left no record'
@@ -6502,41 +7102,69 @@ test_outside_copy_reclaim() {
   # Stale runs kept for files outside the checkout: copies identical to a blob
   # on origin's default branch are removed, everything else stays.
   local tmp vault state source out mode old mid new co run copy ledger sha
-  local real_git; real_git="$(command -v git)"
+  local real_git
+  real_git="$(command -v git)"
   for mode in on active activeself dryrun envoff flagoff locked latest recent slow slowtree; do
-    tmp="$(mktemp -d)"; vault="$tmp/vault"; state="$tmp/state"; source="$tmp/source"; out="$tmp/out"
+    tmp="$(mktemp -d)"
+    vault="$tmp/vault"
+    state="$tmp/state"
+    source="$tmp/source"
+    out="$tmp/out"
     mkdir -p "$state/locks" "$tmp/proc/100"
-    ln -s / "$tmp/proc/100/cwd"; echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
+    ln -s / "$tmp/proc/100/cwd"
+    echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"$tmp/mountinfo"
     export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="$tmp/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="$tmp/mountinfo"
     make_prune_source_repo "$source"
-    head -c 204800 /dev/urandom >"$source/asset.bin"; head -c 204800 /dev/urandom >"$source/tool.bin"; chmod +x "$source/tool.bin"
-    git -C "$source" add .; prune_git -C "$source" commit -qm assets
+    head -c 204800 /dev/urandom >"$source/asset.bin"
+    head -c 204800 /dev/urandom >"$source/tool.bin"
+    chmod +x "$source/tool.bin"
+    git -C "$source" add .
+    prune_git -C "$source" commit -qm assets
     git -C "$source" update-ref refs/remotes/origin/main HEAD
     # Committed only on a local branch: not known to exist on GitHub.
-    head -c 204800 /dev/urandom >"$source/local.bin"; git -C "$source" add local.bin; prune_git -C "$source" commit -qm local
+    head -c 204800 /dev/urandom >"$source/local.bin"
+    git -C "$source" add local.bin
+    prune_git -C "$source" commit -qm local
     write_board "$vault" "- [ ] [[Tickets/BOXP-519|BOXP-519: wip]] #ticket status::in-progress"
     write_prune_ticket "$vault" BOXP-519 in-progress ""
-    old="$(date -u -d '30 hours ago' +%Y%m%dT%H%M%SZ)"; mid="$(date -u -d '20 hours ago' +%Y%m%dT%H%M%SZ)"; new="$(date -u -d '14 hours ago' +%Y%m%dT%H%M%SZ)"
+    old="$(date -u -d '30 hours ago' +%Y%m%dT%H%M%SZ)"
+    mid="$(date -u -d '20 hours ago' +%Y%m%dT%H%M%SZ)"
+    new="$(date -u -d '14 hours ago' +%Y%m%dT%H%M%SZ)"
     [[ "$mode" != recent ]] || old="$(date -u -d '3 hours ago' +%Y%m%dT%H%M%SZ)"
-    [[ "$mode" != recent ]] || { mid="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"; new="$(date -u -d '1 hours ago' +%Y%m%dT%H%M%SZ)"; }
+    [[ "$mode" != recent ]] || {
+      mid="$(date -u -d '2 hours ago' +%Y%m%dT%H%M%SZ)"
+      new="$(date -u -d '1 hours ago' +%Y%m%dT%H%M%SZ)"
+    }
     co="$(add_prune_run "$state" "$source" BOXP-519 "$new")"
     mkdir -p "$state/workspaces/BOXP-519/$mid"
-    run="$state/workspaces/BOXP-519/$old"; [[ "$mode" != latest ]] || run="$state/workspaces/BOXP-519/$mid"
-    copy="$run/deploy/site"; mkdir -p "$copy/linked" "$copy/nested" "$run/ghq"
-    cp "$source/asset.bin" "$copy/asset.bin"; cp -p "$source/tool.bin" "$copy/tool.bin"
+    run="$state/workspaces/BOXP-519/$old"
+    [[ "$mode" != latest ]] || run="$state/workspaces/BOXP-519/$mid"
+    copy="$run/deploy/site"
+    mkdir -p "$copy/linked" "$copy/nested" "$run/ghq"
+    cp "$source/asset.bin" "$copy/asset.bin"
+    cp -p "$source/tool.bin" "$copy/tool.bin"
     cp "$source/local.bin" "$copy/local.bin"
-    head -c 204800 /dev/urandom >"$copy/unique.bin"; echo note >"$run/note.md"
-    cp "$source/asset.bin" "$copy/hard.bin"; ln "$copy/hard.bin" "$copy/hard2.bin"
-    cp "$source/asset.bin" "$copy/linked/target.bin"; ln -s "$copy/linked/target.bin" "$run/link"
-    git init -q "$copy/nested"; cp "$source/asset.bin" "$copy/nested/asset.bin"
+    head -c 204800 /dev/urandom >"$copy/unique.bin"
+    echo note >"$run/note.md"
+    cp "$source/asset.bin" "$copy/hard.bin"
+    ln "$copy/hard.bin" "$copy/hard2.bin"
+    cp "$source/asset.bin" "$copy/linked/target.bin"
+    ln -s "$copy/linked/target.bin" "$run/link"
+    git init -q "$copy/nested"
+    cp "$source/asset.bin" "$copy/nested/asset.bin"
     # Referenced from another run and from the run records: links outside the run protect too.
     mkdir -p "$copy/extdir" "$state/runs/BOXP-519"
-    cp "$source/asset.bin" "$copy/extlinked.bin"; ln -s "$copy/extlinked.bin" "$state/workspaces/BOXP-519/$new/ext-link"
-    cp "$source/asset.bin" "$copy/extdir/asset.bin"; ln -s "$copy/extdir" "$state/runs/BOXP-519/ext-dir"
+    cp "$source/asset.bin" "$copy/extlinked.bin"
+    ln -s "$copy/extlinked.bin" "$state/workspaces/BOXP-519/$new/ext-link"
+    cp "$source/asset.bin" "$copy/extdir/asset.bin"
+    ln -s "$copy/extdir" "$state/runs/BOXP-519/ext-dir"
     # Hashing slower than the pass budget must end the pass without deleting.
     mkdir -p "$tmp/bin"
     # So must any other git call of the pass (listing origin's tree here): each is bounded by the time left.
-    printf '#!/usr/bin/env bash\ncase "$1 $* " in %s) sleep 12 ;; esac\nexec %q "$@"\n' "$([[ "$mode" == slowtree ]] && echo '--git-dir=*" ls-tree "*' || echo '*" hash-object "*')" "$real_git" >"$tmp/bin/git"; chmod +x "$tmp/bin/git"
+    # The generated fake git script expands these at its own run time.
+    # shellcheck disable=SC2016
+    printf '#!/usr/bin/env bash\ncase "$1 $* " in %s) sleep 12 ;; esac\nexec %q "$@"\n' "$([[ "$mode" == slowtree ]] && echo '--git-dir=*" ls-tree "*' || echo '*" hash-object "*')" "$real_git" >"$tmp/bin/git"
+    chmod +x "$tmp/bin/git"
     case "$mode" in
       flagoff) echo '{:mode :on :outside-copies false}' >"$state/generated-reclaim.edn" ;;
       locked) echo "{}" >"$state/locks/BOXP-519.edn" ;;
@@ -6546,26 +7174,42 @@ test_outside_copy_reclaim() {
     esac
     local started=$SECONDS
     PATH="$([[ "$mode" == slow* ]] && echo "$tmp/bin:")$PATH" CODEX_TASK_BOARD_OUTSIDE_COPY_BUDGET_SECONDS="$([[ "$mode" == slow* ]] && echo 3 || echo 600)" \
-      CODEX_TASK_BOARD_GENERATED_RECLAIM="$([[ "$mode" == dryrun ]] && echo dry-run || echo on)" \
-      CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true CODEX_TASK_BOARD_OUTSIDE_COPY_RECLAIM="$([[ "$mode" == envoff ]] && echo off || echo on)" run_prune "$vault" "$state" >"$out" 2>&1 || { cat "$out" >&2; fail "prune failed: $mode"; }
+    CODEX_TASK_BOARD_GENERATED_RECLAIM="$([[ "$mode" == dryrun ]] && echo dry-run || echo on)" \
+    CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true CODEX_TASK_BOARD_OUTSIDE_COPY_RECLAIM="$([[ "$mode" == envoff ]] && echo off || echo on)" run_prune "$vault" "$state" >"$out" 2>&1 || {
+      cat "$out" >&2
+      fail "prune failed: $mode"
+    }
     ledger="$state/metrics/outside-copy-reclaim-ledger.tsv"
-    [[ "$mode" != slow* ]] || (( SECONDS - started < 11 )) || { cat "$out" >&2; fail "outside-copy pass ran past its budget: $mode"; }
+    [[ "$mode" != slow* ]] || ((SECONDS - started < 11)) || {
+      cat "$out" >&2
+      fail "outside-copy pass ran past its budget: $mode"
+    }
     for keep in unique.bin local.bin hard.bin hard2.bin linked/target.bin nested/asset.bin extlinked.bin extdir/asset.bin; do
-      [[ -f "$copy/$keep" ]] || { cat "$out" >&2; fail "outside-copy removed protected file $keep: $mode"; }
+      [[ -f "$copy/$keep" ]] || {
+        cat "$out" >&2
+        fail "outside-copy removed protected file $keep: $mode"
+      }
     done
     [[ -f "$run/note.md" && -f "$co/asset.bin" && -f "$source/asset.bin" ]] || fail "outside-copy touched unique/checkout files: $mode"
     if [[ "$mode" != on && "$mode" != active ]]; then
-      [[ -f "$copy/asset.bin" && -f "$copy/tool.bin" && ! -e "$ledger" ]] || { cat "$out" >&2; fail "outside-copy deleted when it must not: $mode"; }
+      [[ -f "$copy/asset.bin" && -f "$copy/tool.bin" && ! -e "$ledger" ]] || {
+        cat "$out" >&2
+        fail "outside-copy deleted when it must not: $mode"
+      }
       [[ "$mode" != dryrun ]] || assert_file_contains "$state/metrics/workspace-capacity.edn" ':outside-copy-would-allocated-bytes 4'
       continue
     fi
-    [[ ! -e "$copy/asset.bin" && ! -e "$copy/tool.bin" && -d "$copy" ]] || { cat "$out" >&2; fail "identical outside copy not reclaimed: $mode"; }
+    [[ ! -e "$copy/asset.bin" && ! -e "$copy/tool.bin" && -d "$copy" ]] || {
+      cat "$out" >&2
+      fail "identical outside copy not reclaimed: $mode"
+    }
     [[ "$(wc -l <"$ledger")" == 2 ]] || fail 'ledger line count'
     sha="$(awk -F'\t' '$4=="deploy/site/tool.bin"{print $5" "$8}' "$ledger")"
     [[ "$sha" == "$(git -C "$source" rev-parse origin/main:tool.bin) 100755" ]] || fail "ledger entry wrong: $sha"
     git --git-dir="$(awk -F'\t' '$4=="deploy/site/tool.bin"{print $6}' "$ledger")" cat-file blob "${sha% *}" | cmp -s - "$source/tool.bin" || fail 'ledger restore differs'
     # The commit the blobs came from stays reachable after origin's branch moves on.
-    local pin; pin="$(awk -F'\t' '$4=="deploy/site/tool.bin"{print $9}' "$ledger")"
+    local pin
+    pin="$(awk -F'\t' '$4=="deploy/site/tool.bin"{print $9}' "$ledger")"
     [[ "$pin" == refs/codex-task-board/outside-copy-reclaim/* && "$(git -C "$source" rev-parse "$pin")" == "$(git -C "$source" rev-parse origin/main)" ]] || fail "restore source not pinned: $pin"
     assert_file_contains "$state/metrics/workspace-capacity.edn" ':outside-copy-files 2'
     assert_file_contains "$state/metrics/outside-copy-scan-cache.edn" 'deploy/site/unique.bin'
@@ -6577,7 +7221,10 @@ test_outside_copy_reclaim() {
 
 test_recheck_reservation_fires_and_retries() {
   local tmp vault state bin
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
   mkdir -p "${bin}"
   make_fake_codex "${bin}"
   sed -i "/^if grep -q .*Delegation contract:/,/^fi$/d" "${bin}/codex"
@@ -6596,7 +7243,10 @@ test_recheck_reservation_fires_and_retries() {
 
 test_recheck_reservation_owner_change_supersedes() {
   local tmp vault state bin
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
   mkdir -p "${bin}"
   make_fake_codex "${bin}"
   sed -i "/^if grep -q .*Delegation contract:/,/^fi$/d" "${bin}/codex"
@@ -6613,7 +7263,10 @@ test_recheck_reservation_owner_change_supersedes() {
 
 test_recheck_reservation_resumes_interrupted_firing() {
   local tmp vault state bin rev
-  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
   mkdir -p "${bin}"
   make_fake_codex "${bin}"
   sed -i "/^if grep -q .*Delegation contract:/,/^fi$/d" "${bin}/codex"
@@ -6637,17 +7290,23 @@ test_recheck_reservation_resumes_interrupted_firing() {
 
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a
 # deterministic subset in its own job, so vaults, processes and locks are isolated.
-mapfile -t cases < "${ROOT_DIR}/tests/codex-workspace/task-board-runner-cases.txt"
+mapfile -t cases <"${ROOT_DIR}/tests/codex-workspace/task-board-runner-cases.txt"
 if [[ -n "${TASK_BOARD_TEST_ONLY:-}" ]]; then
-  read -r -a cases <<< "${TASK_BOARD_TEST_ONLY}"
+  read -r -a cases <<<"${TASK_BOARD_TEST_ONLY}"
 fi
 shard="${TASK_BOARD_TEST_SHARD:-0}"
 shards="${TASK_BOARD_TEST_SHARDS:-1}"
-[[ "${shards}" =~ ^[1-9][0-9]*$ && "${shard}" =~ ^[0-9]+$ ]] && (( shard < shards )) || { echo 'invalid shard' >&2; exit 1; }
+if ! [[ "${shards}" =~ ^[1-9][0-9]*$ && "${shard}" =~ ^[0-9]+$ ]] || ((shard >= shards)); then
+  echo 'invalid shard' >&2
+  exit 1
+fi
 for i in "${!cases[@]}"; do
-  (( i % shards == shard )) || continue
+  ((i % shards == shard)) || continue
   t="${cases[$i]}"
-  declare -F "${t}" >/dev/null || { echo "unknown case: ${t}" >&2; exit 1; }
+  declare -F "${t}" >/dev/null || {
+    echo "unknown case: ${t}" >&2
+    exit 1
+  }
   start=${SECONDS}
   "${t}"
   echo "CASE ${t} $((SECONDS - start))s"

@@ -12,7 +12,7 @@ target_slug="${target//\//-}"
 branch="tfaction/renovate-plan-follow-up/pr-${pr_number}-${target_slug}"
 
 plan_file="${target}/tfplan.binary"
-if [[ ! -f "$plan_file" ]] || ! terraform show -json "$plan_file" | jq -e 'any(.resource_changes[]?; .address == "time_rotating.token_rotation" and any(.change.actions[]?; . != "no-op"))' > /dev/null; then
+if [[ ! -f "$plan_file" ]] || ! terraform show -json "$plan_file" | jq -e 'any(.resource_changes[]?; .address == "time_rotating.token_rotation" and any(.change.actions[]?; . != "no-op"))' >/dev/null; then
   echo "No token rotation change was found in ${plan_file}. Skip creating a Renovate plan follow-up PR."
   exit 0
 fi
@@ -34,11 +34,11 @@ if [[ ! -f "$failed_prs_file" ]]; then
   {
     echo "# This file is created and updated by tfaction for follow up pull requests."
     echo "# You can remove this file safely."
-  } > "$failed_prs_file"
+  } >"$failed_prs_file"
 fi
 
 if ! grep -Fxq "$pr_url" "$failed_prs_file"; then
-  echo "$pr_url" >> "$failed_prs_file"
+  echo "$pr_url" >>"$failed_prs_file"
 fi
 
 git add "$failed_prs_file"

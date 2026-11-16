@@ -20,4 +20,3 @@ export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/scratch/cache}"
 export HF_HOME="${HF_HOME:-/scratch/huggingface}"
 
 exec /app/webui.sh -f "$@"
-

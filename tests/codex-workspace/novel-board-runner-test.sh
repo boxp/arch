@@ -12,7 +12,10 @@ SEED="${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed"
 TMP="$(mktemp -d)"
 trap 'kill "${SERVER_PID:-0}" 2>/dev/null || true; [[ -n "${KEEP_TMP:-}" ]] || rm -rf "${TMP}"' EXIT
 
-fail() { echo "error: $*" >&2; exit 1; }
+fail() {
+  echo "error: $*" >&2
+  exit 1
+}
 assert_contains() { grep -Fq -- "$2" "$1" || fail "expected $1 to contain: $2"; }
 assert_not_contains() { if grep -Fq -- "$2" "$1"; then fail "expected $1 not to contain: $2"; fi; }
 count_matches() { grep -Fc -- "$2" "$1" || true; }
@@ -23,7 +26,7 @@ lane_of() {
 }
 card_line() { grep -F "[[Novels/$2|" "$1"; }
 
-PORT=$(( 20000 + RANDOM % 20000 ))
+PORT=$((20000 + RANDOM % 20000))
 MODE_FILE="${TMP}/llm-mode"
 REQ_LOG="${TMP}/llm-requests.log"
 echo normal >"${MODE_FILE}"
@@ -145,7 +148,6 @@ cat >"${TMP}/bin/fake-generate-image.bb" <<'EOF'
               (println out))))
 EOF
 chmod +x "${TMP}/bin/fake-generate-image.bb"
-
 
 # Vault editing helper (babashka) used to simulate human edits.
 cat >"${TMP}/bin/edit.bb" <<'EOF'
@@ -304,7 +306,7 @@ export FAKE_IMAGE_LOG="${TMP}/image.log"
 export FAKE_CLAUDE_MODE_FILE="${TMP}/claude-mode"
 export FAKE_CLAUDE_ARG_LOG="${TMP}/claude-args.log"
 export FAKE_EDIT_BB="${TMP}/bin/edit.bb"
-echo done >"${FAKE_CLAUDE_MODE_FILE}"
+echo "done" >"${FAKE_CLAUDE_MODE_FILE}"
 : >"${FAKE_CLAUDE_ARG_LOG}"
 
 tick() { bb "${RUNNER}" tick >>"${TMP}/runner.log" 2>&1; }
@@ -353,7 +355,11 @@ assert_contains "${VAULT}/Novels/NOVEL-1.md" "status: draft"
 assert_contains "${VAULT}/Novels/NOVEL-1.md" "action=groom agent=localllm model=gemma4-26b"
 # TBD placeholders were a blank slate for groom, and the first real entries replace them.
 assert_contains "${VAULT}/Novels/NOVEL-1.md" "- Title: 秋のテスト作品"
+# grep must read the whole section; grep -q under pipefail can turn SIGPIPE into a false pass.
+# shellcheck disable=SC2143
 [[ -z "$(sed -n '/^## Requirements$/,/^## /p' "${VAULT}/Novels/NOVEL-1.md" | grep -x 'TBD')" ]] || fail "groom output must replace the Requirements TBD"
+# grep must read the whole section; grep -q under pipefail can turn SIGPIPE into a false pass.
+# shellcheck disable=SC2143
 [[ -z "$(sed -n '/^## Run History$/,/^## /p' "${VAULT}/Novels/NOVEL-1.md" | grep -x 'TBD')" ]] || fail "first Run History entry must replace the TBD"
 echo "PASS: localllm groom moves to Draft with human hand-off"
 
@@ -361,8 +367,11 @@ echo "PASS: localllm groom moves to Draft with human hand-off"
 # 2. Unsupported assignee never rewrites the card and logs once
 # ---------------------------------------------------------------------------
 set_assignee NOVEL-1 pi
-tick; tick
+tick
+tick
 assert_contains "${BOARD}" "status::draft assignee::pi"
+# Backticks are literal Markdown in the expected text.
+# shellcheck disable=SC2016
 [[ "$(count_matches "${VAULT}/Novels/NOVEL-1.md" 'assignee `pi` は対応していない')" == "1" ]] || fail "unsupported assignee should be logged exactly once"
 [[ ! -d "${STATE}/runs/NOVEL-1" || "$(find "${STATE}/runs/NOVEL-1" -name summary.edn | wc -l)" == "1" ]] || fail "unsupported assignee must not start a run"
 echo "PASS: unsupported assignee untouched"
@@ -463,7 +472,7 @@ CURRENT_DRAFT="${VAULT}/${CURRENT_DRAFT_REL}.md"
 assert_contains "${CURRENT_DRAFT}" "改稿版テスト小説"
 assert_contains "${BOARD}" "status::review assignee::boxp"
 assert_contains "${STATE}/work/NOVEL-1/manuscript.md" "改稿版テスト小説"
-ls "${STATE}/work/NOVEL-1/" | grep -q "manuscript.prev-" || fail "previous manuscript must be kept"
+compgen -G "${STATE}/work/NOVEL-1/*manuscript.prev-*" >/dev/null || fail "previous manuscript must be kept"
 assert_contains "${VAULT}/Novels/NOVEL-1.md" "action=revise agent=localllm"
 echo normal >"${MODE_FILE}"
 echo "PASS: Review instructions gate and revise"
@@ -480,7 +489,8 @@ IMG="$(find "${VAULT}/小説草案/AI執筆/attachments" -name '*-highlight.png'
 [[ -s "${IMG}" ]] || fail "published illustration missing"
 assert_contains "${VAULT}/Novels/NOVEL-1.md" "published-path: 小説草案/AI執筆/"
 assert_contains "${BOARD}" "- [x] [[Novels/NOVEL-1|"
-tick; tick
+tick
+tick
 [[ "$(find "${VAULT}/小説草案/AI執筆" -maxdepth 1 -name '*.md' | wc -l)" == "1" ]] || fail "publish must be idempotent"
 [[ "$(count_matches "${VAULT}/Novels/NOVEL-1.md" 'published approved manuscript once')" == "1" ]] || fail "publish history must be written once"
 [[ ! -d "${VAULT}/NSFW" ]] || fail "SFW card must not touch NSFW directory"
@@ -719,9 +729,11 @@ add_card Draft "- [ ] [[Novels/NOVEL-6|NOVEL-6: 多重tickテスト]] #novel sta
 cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-6.md"
 write_requirements NOVEL-6
 echo slow >"${MODE_FILE}"
-tick & T1=$!
+tick &
+T1=$!
 sleep 1.5
-tick & T2=$!
+tick &
+T2=$!
 wait "${T1}" "${T2}"
 echo normal >"${MODE_FILE}"
 [[ "$(find "${STATE}/runs/NOVEL-6" -name summary.edn | wc -l)" == "1" ]] || fail "concurrent ticks must start exactly one run"
@@ -733,7 +745,8 @@ add_card Draft "- [ ] [[Novels/NOVEL-7|NOVEL-7: 人間移動テスト]] #novel s
 cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-7.md"
 write_requirements NOVEL-7
 echo slow >"${MODE_FILE}"
-tick & T1=$!
+tick &
+T1=$!
 sleep 1.5
 move_card NOVEL-7 Backlog
 wait "${T1}"
@@ -767,11 +780,11 @@ echo "PASS: planned shutdown recovery resumes In Progress card"
 # ---------------------------------------------------------------------------
 start_loop_as_old_pod() {
   # start_loop_as_old_pod <novel-id> <output>; sets LOOP_PID. Must not run in a subshell.
-  local id="$1" output="$2" attempt
+  local id="$1" output="$2"
   CODEX_NOVEL_BOARD_OWNER_ID=old-pod CODEX_NOVEL_BOARD_RUNNER_INSTANCE_ID=old-instance \
     CODEX_NOVEL_BOARD_POLL_SECONDS=60 bb "${RUNNER}" loop >"${output}" 2>&1 &
   LOOP_PID=$!
-  for attempt in $(seq 1 300); do
+  for _ in $(seq 1 300); do
     [[ -e "${STATE}/locks/${id}.edn" ]] && return 0
     sleep 0.1
   done
@@ -793,13 +806,16 @@ echo slow >"${FAKE_CLAUDE_MODE_FILE}"
 export FAKE_CLAUDE_CHILD_PID_FILE="${TMP}/claude-child.pid"
 rm -f "${FAKE_CLAUDE_CHILD_PID_FILE}"
 start_loop_as_old_pod NOVEL-70 "${TMP}/loop-cloud.log"
-for _ in $(seq 1 200); do [[ -s "${FAKE_CLAUDE_CHILD_PID_FILE}" ]] && break; sleep 0.1; done
+for _ in $(seq 1 200); do
+  [[ -s "${FAKE_CLAUDE_CHILD_PID_FILE}" ]] && break
+  sleep 0.1
+done
 [[ -s "${FAKE_CLAUDE_CHILD_PID_FILE}" ]] || fail "expected the fake agent to start its child"
 CHILD_PID="$(cat "${FAKE_CLAUDE_CHILD_PID_FILE}")"
 STARTED=$(date +%s)
 kill -TERM "${LOOP_PID}"
 wait "${LOOP_PID}" 2>/dev/null || true
-ELAPSED=$(( $(date +%s) - STARTED ))
+ELAPSED=$(($(date +%s) - STARTED))
 [[ "${ELAPSED}" -lt 15 ]] || fail "SIGTERM shutdown with a cooperative agent took ${ELAPSED}s"
 process_stopped "${CHILD_PID}" || fail "agent child ${CHILD_PID} should have been stopped through the process group"
 assert_contains "${TMP}/loop-cloud.log" "shutdown: signalling TERM to 1 in-flight agent process group"
@@ -815,7 +831,7 @@ assert_contains "${CLOUD_SUMMARY}" ":agent-exit-code"
 assert_contains "${BOARD}" "NOVEL-70: 停止中クラウド]] #novel status::in-progress assignee::claude-opus"
 assert_not_contains "${VAULT}/Novels/NOVEL-70.md" "failed: action=write"
 [[ ! -e "${STATE}/work/NOVEL-70/manuscript.md" ]] || fail "partial agent work must not be promoted to a manuscript"
-echo done >"${FAKE_CLAUDE_MODE_FILE}"
+echo "done" >"${FAKE_CLAUDE_MODE_FILE}"
 tick
 assert_contains "${VAULT}/Novels/NOVEL-70.md" "was marked interrupted after planned workspace shutdown of owner old-pod"
 [[ "$(count_matches "${VAULT}/Novels/NOVEL-70.md" "was marked interrupted")" == "1" ]] || fail "exactly one interrupted history line expected"
@@ -834,12 +850,15 @@ write_requirements NOVEL-71
 echo stream-stall >"${MODE_FILE}"
 STALL_BEFORE="$(count_requests stream-stall)"
 start_loop_as_old_pod NOVEL-71 "${TMP}/loop-stream.log"
-for _ in $(seq 1 300); do [[ -s "${STATE}/work/NOVEL-71/manuscript.partial.md" ]] && break; sleep 0.1; done
+for _ in $(seq 1 300); do
+  [[ -s "${STATE}/work/NOVEL-71/manuscript.partial.md" ]] && break
+  sleep 0.1
+done
 [[ -s "${STATE}/work/NOVEL-71/manuscript.partial.md" ]] || fail "expected partial text before SIGTERM"
 STARTED=$(date +%s)
 kill -TERM "${LOOP_PID}"
 wait "${LOOP_PID}" 2>/dev/null || true
-ELAPSED=$(( $(date +%s) - STARTED ))
+ELAPSED=$(($(date +%s) - STARTED))
 [[ "${ELAPSED}" -lt 15 ]] || fail "SIGTERM shutdown during a localllm stream took ${ELAPSED}s"
 assert_contains "${TMP}/loop-stream.log" "interrupted by planned workspace shutdown; lock kept for the next owner"
 [[ -e "${STATE}/locks/NOVEL-71.edn" ]] || fail "lock must stay for the next owner after planned shutdown"
@@ -850,7 +869,7 @@ assert_contains "$(evidence_of NOVEL-71)" ":status :shutdown"
 [[ -s "${STATE}/work/NOVEL-71/manuscript.partial.md" ]] || fail "partial text must be kept"
 [[ ! -e "${STATE}/work/NOVEL-71/manuscript.md" ]] || fail "partial text must not be promoted to a manuscript"
 [[ "$(lane_of "${BOARD}" NOVEL-71)" == "In Progress" ]] || fail "dying runner must not move the card"
-[[ "$(( $(count_requests stream-stall) - STALL_BEFORE ))" == "1" ]] || fail "the dying runner must not re-request the generation"
+[[ "$(($(count_requests stream-stall) - STALL_BEFORE))" == "1" ]] || fail "the dying runner must not re-request the generation"
 echo normal >"${MODE_FILE}"
 tick
 assert_contains "${VAULT}/Novels/NOVEL-71.md" "was marked interrupted after planned workspace shutdown of owner old-pod"
@@ -898,7 +917,7 @@ sed -n '/^## Reference Context$/,/^## Review Instructions$/p' "${VAULT}/Novels/N
 assert_not_contains "${TMP}/cloud-reference.txt" "読取 0"
 assert_not_contains "${TMP}/cloud-reference.txt" "不足/未解決: なし"
 assert_contains "${TMP}/cloud-reference.txt" "runner 未判定"
-echo done >"${FAKE_CLAUDE_MODE_FILE}"
+echo "done" >"${FAKE_CLAUDE_MODE_FILE}"
 echo "PASS: cloud route failures and groom"
 
 # ---------------------------------------------------------------------------
@@ -929,7 +948,7 @@ write_requirements NOVEL-15
 tick
 [[ "$(lane_of "${BOARD}" NOVEL-15)" == "Draft" ]] || fail "missing done marker must fail"
 assert_contains "${VAULT}/Novels/NOVEL-15.md" "NOVEL_BOARD_RESULT: done を返さずに終了"
-echo done >"${FAKE_CLAUDE_MODE_FILE}"
+echo "done" >"${FAKE_CLAUDE_MODE_FILE}"
 set_assignee NOVEL-15 claude-sonnet
 tick
 [[ "$(lane_of "${BOARD}" NOVEL-15)" == "Review" ]] || fail "cloud write should reach Review"
@@ -940,7 +959,7 @@ set_assignee NOVEL-15 claude-sonnet
 tick
 [[ "$(lane_of "${BOARD}" NOVEL-15)" == "Review" ]] || fail "unchanged revise should return to Review"
 assert_contains "${VAULT}/Novels/NOVEL-15.md" "原稿が変更されていません"
-echo done >"${FAKE_CLAUDE_MODE_FILE}"
+echo "done" >"${FAKE_CLAUDE_MODE_FILE}"
 echo "PASS: cloud marker and unchanged-revise checks"
 
 # Card moved away before the lock is taken: nothing runs
@@ -989,7 +1008,10 @@ echo "PASS: nsfw routing follows the card tag"
 add_card Review "- [ ] [[Novels/NOVEL-20|NOVEL-20: symlink境界]] #novel status::review assignee::boxp"
 cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-20.md"
 mkdir -p "${STATE}/work/NOVEL-20" "${TMP}/outside"
-{ echo '# Symlink test'; for _ in $(seq 1 40); do echo 'This manuscript is long enough for the draft sync validation.'; done; } >"${STATE}/work/NOVEL-20/manuscript.md"
+{
+  echo '# Symlink test'
+  for _ in $(seq 1 40); do echo 'This manuscript is long enough for the draft sync validation.'; done
+} >"${STATE}/work/NOVEL-20/manuscript.md"
 mkdir -p "${STATE}/runs/NOVEL-20/run-1"
 cat >"${STATE}/runs/NOVEL-20/run-1/summary.edn" <<'EOF'
 {:novel "NOVEL-20" :run-id "run-1" :status :succeeded :next-status "review"
@@ -1028,7 +1050,10 @@ echo "PASS: private symlink boundary"
 add_card Review "- [ ] [[Novels/NOVEL-22|NOVEL-22: stateなし既存草稿]] #novel status::review assignee::boxp"
 cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-22.md"
 mkdir -p "${STATE}/work/NOVEL-22" "${STATE}/runs/NOVEL-22/run-1" "${VAULT}/Novels/Drafts/NOVEL-22"
-{ echo '# State-less conflict'; for _ in $(seq 1 40); do echo 'This is an existing human-authored draft that must not be overwritten.'; done; } >"${STATE}/work/NOVEL-22/manuscript.md"
+{
+  echo '# State-less conflict'
+  for _ in $(seq 1 40); do echo 'This is an existing human-authored draft that must not be overwritten.'; done
+} >"${STATE}/work/NOVEL-22/manuscript.md"
 printf 'Human draft created before runner state existed.\n' >"${VAULT}/Novels/Drafts/NOVEL-22/manuscript.md"
 cat >"${STATE}/runs/NOVEL-22/run-1/summary.edn" <<'EOF'
 {:novel "NOVEL-22" :run-id "run-1" :status :succeeded :next-status "review"
@@ -1052,7 +1077,6 @@ sha256sum "${NEW_STATE22_PATH}" "${VAULT}/Novels/NOVEL-22.md" "${STATE22}" >"${T
 bb "${RUNNER}" sync-drafts NOVEL-22 >>"${TMP}/runner.log" 2>&1
 sha256sum -c "${TMP}/pending-conflict-before.sha" >/dev/null || fail "pending conflict recovery was not idempotent"
 echo "PASS: state-less existing draft is preserved"
-
 
 # ---------------------------------------------------------------------------
 # BOXP-249: assignee can be changed on the card or in the management note
@@ -1092,6 +1116,8 @@ echo "PASS: first introduction keeps the card value"
 set_assignee NOVEL-41 pi
 tick
 [[ "$(note_assignee NOVEL-41)" == "pi" ]] || fail "card edit should sync to the note"
+# Backticks are literal Markdown in the expected text.
+# shellcheck disable=SC2016
 [[ "$(count_matches "${VAULT}/Novels/NOVEL-41.md" 'assignee `pi` は対応していない')" == "1" ]] || fail "unsupported assignee logged once"
 set_note_assignee NOVEL-41 boxp
 tick
@@ -1100,6 +1126,8 @@ assert_contains "${BOARD}" "[[Novels/NOVEL-41|NOVEL-41: 初回導入テスト]] 
 set_note_assignee NOVEL-41 pi2
 tick
 assert_contains "${BOARD}" "status::draft assignee::pi2"
+# Backticks are literal Markdown in the expected text.
+# shellcheck disable=SC2016
 [[ "$(count_matches "${VAULT}/Novels/NOVEL-41.md" 'assignee `pi2` は対応していない')" == "1" ]] || fail "unsupported note assignee is logged once and kept"
 echo "PASS: card edit, unassign via note, unsupported via note"
 
@@ -1109,6 +1137,8 @@ set_note_assignee NOVEL-41 pi4
 tick
 assert_contains "${BOARD}" "status::draft assignee::pi3"
 [[ "$(note_assignee NOVEL-41)" == "pi3" ]] || fail "conflict should settle on the card value"
+# Backticks are literal Markdown in the expected text.
+# shellcheck disable=SC2016
 [[ "$(count_matches "${VAULT}/Novels/NOVEL-41.md" '担当の同時変更を検出しました: カード `pi3` / 管理ノート `pi4`')" == "1" ]] || fail "conflict is recorded once"
 sha256sum "${BOARD}" "${VAULT}/Novels/NOVEL-41.md" >"${TMP}/conflict.sha"
 tick
@@ -1122,7 +1152,8 @@ add_card Draft "- [ ] [[Novels/NOVEL-42|NOVEL-42: run中ノート変更テスト
 cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-42.md"
 write_requirements NOVEL-42
 echo slow >"${MODE_FILE}"
-tick & T1=$!
+tick &
+T1=$!
 sleep 1.5
 set_note_assignee NOVEL-42 pi
 wait "${T1}"
@@ -1132,6 +1163,8 @@ assert_contains "${BOARD}" "status::review assignee::boxp"
 [[ "$(note_assignee NOVEL-42)" == "pi" ]] || fail "a note re-assignment made during the run must survive the hand-off"
 tick
 assert_contains "${BOARD}" "status::review assignee::pi"
+# Backticks are literal Markdown in the expected text.
+# shellcheck disable=SC2016
 [[ "$(count_matches "${VAULT}/Novels/NOVEL-42.md" 'assignee `pi` は対応していない')" == "1" ]] || fail "handed-over note assignee is processed after the run"
 [[ "$(find "${STATE}/runs/NOVEL-42" -name summary.edn | wc -l)" == "1" ]] || fail "exactly one run expected for NOVEL-42"
 set_assignee NOVEL-42 boxp
@@ -1152,7 +1185,10 @@ echo "PASS: duplicated checkbox is stripped at scaffold"
 # ---------------------------------------------------------------------------
 # 15. Draft-stage Review Instructions are reflected, never ignored (BOXP-251)
 # ---------------------------------------------------------------------------
-set_instructions() { printf -- '%s\n' "$2" >"${TMP}/instructions.txt"; bb "${TMP}/bin/edit.bb" replace-section "${VAULT}/Novels/$1.md" "Review Instructions" "${TMP}/instructions.txt"; }
+set_instructions() {
+  printf -- '%s\n' "$2" >"${TMP}/instructions.txt"
+  bb "${TMP}/bin/edit.bb" replace-section "${VAULT}/Novels/$1.md" "Review Instructions" "${TMP}/instructions.txt"
+}
 latest_prompt() { find "${STATE}/runs/$1" -name prompt.md | sort | tail -n 1; }
 
 # localllm: Draft + new feedback -> Requirements / Outline revised, back to Draft/boxp, no manuscript
@@ -1172,6 +1208,8 @@ assert_contains "${VAULT}/Novels/NOVEL-60.md" "Requirements / Outline へ反映�
 assert_contains "${VAULT}/Novels/NOVEL-60.md" "反映: 舞台を冬に変更; 未反映: 登場人物の追加は参照資料に該当者がいないため未反映"
 assert_contains "${VAULT}/Novels/NOVEL-60.md" "同じ指示のまま agent を割り当てると初稿執筆を開始"
 assert_contains "${VAULT}/Novels/NOVEL-60.md" "- 舞台を冬に変更してください。"
+# grep must read the whole section; grep -q under pipefail can turn SIGPIPE into a false pass.
+# shellcheck disable=SC2143
 [[ -z "$(sed -n '/^## Change History$/,/^## /p' "${VAULT}/Novels/NOVEL-60.md" | grep -x 'TBD')" ]] || fail "Change History entry must replace the TBD"
 assert_contains "$(latest_prompt NOVEL-60)" "舞台を冬に変更してください"
 assert_contains "$(latest_prompt NOVEL-60)" "## Applied"
@@ -1238,7 +1276,7 @@ set_assignee NOVEL-61 claude-sonnet
 tick
 [[ "$(count_matches "${VAULT}/Novels/NOVEL-61.md" 'action=regroom agent=claude-sonnet from Draft')" == "3" ]] || fail "feedback left unapplied by a failed run must be retried as regroom, not write"
 [[ ! -f "${STATE}/work/NOVEL-61/manuscript.md" ]] || fail "retry must still not write the manuscript"
-echo done >"${FAKE_CLAUDE_MODE_FILE}"
+echo "done" >"${FAKE_CLAUDE_MODE_FILE}"
 echo "PASS: cloud regroom and unchanged-plan failure"
 
 # Backlog groom receives the feedback; feedback consumed by groom does not re-trigger at Draft
@@ -1468,9 +1506,8 @@ assert_contains "${PROMPT85}" "listing the setting notes you actually read"
 assert_not_contains "${PROMPT85}" "ALIAS-MARKER"
 grep -Fq -- "runner は本文未読・読取と未解決は agent の自己申告で runner 未検証" <<<"$(reference_context NOVEL-85)" || fail "cloud Reference Context must say the agent reads and the runner did not verify"
 if grep -Fq -- "読取 0" <<<"$(reference_context NOVEL-85)"; then fail "cloud Reference Context must not claim 読取 0"; fi
-echo done >"${FAKE_CLAUDE_MODE_FILE}"
+echo "done" >"${FAKE_CLAUDE_MODE_FILE}"
 echo "PASS: cloud groom receives the names-only exploration"
-
 
 # ---------------------------------------------------------------------------
 # 17. A card moved back from Draft to Backlog is re-groomed under the same id;
@@ -1491,7 +1528,7 @@ hold_reason_of() { # board needle
   grep -F -- "$2" "$1" | sed -n 's/.*⚠ runner: //p' | head -n 1
 }
 echo normal >"${MODE_FILE}"
-echo done >"${FAKE_CLAUDE_MODE_FILE}"
+echo "done" >"${FAKE_CLAUDE_MODE_FILE}"
 
 # A deleted work leaves private state behind; its number is never reissued.
 mkdir -p "${STATE}/assignee-sync"
@@ -1511,6 +1548,8 @@ tick
 [[ "$(lane_of "${BOARD}" "${RID}")" == "Draft" ]] || fail "first groom should reach Draft"
 assert_contains "${BOARD}" "[[Novels/${RID}|${RID}: 再整理テスト]] #novel status::draft assignee::boxp"
 FIRST_RUN="$(latest_run_id "${RID}")"
+# grep must read the whole section; grep -q under pipefail can turn SIGPIPE into a false pass.
+# shellcheck disable=SC2143
 [[ -z "$(run_history "${RID}" | grep -F '既存作品の再整理')" ]] || fail "a first groom must not be labelled as a re-groom"
 NOTES_AFTER_FIRST="$(note_count)"
 
@@ -1557,6 +1596,8 @@ assert_not_contains "${PROMPT2}" "## Applied"
 run_history "${RID}" | grep -F "run ${SECOND_RUN} started: action=groom" | grep -Fq -- "既存作品の再整理: 同じ ID・管理ノートのまま" || fail "re-groom must be labelled in Run History"
 change_history "${RID}" | grep -Fq -- "Backlog からの再整理で Requirements / Outline を更新（同じ ${RID}" || fail "re-groom must be recorded in Change History"
 reference_context "${RID}" | grep -Fq -- "${SECOND_RUN}" || fail "Reference Context must be replaced by the re-groom run"
+# grep must read the whole section; grep -q under pipefail can turn SIGPIPE into a false pass.
+# shellcheck disable=SC2143
 [[ -z "$(reference_context "${RID}" | grep -F "${FIRST_RUN}")" ]] || fail "Reference Context must not keep the first run"
 # The human's instructions stay in the note; the run consumed them (so Draft +
 # agent with the same text starts the first draft, as documented).
@@ -1599,7 +1640,10 @@ assert_contains "${TMP}/runner.log" "${RID} card link normalized in Draft"
 # A shortest-path link moved to Backlog with an agent is normalized and
 # re-groomed in the same tick (no new id).
 replace_line_containing "${BOARD}" "${RID}" "- [ ] [[${RID}]] #nsfw assignee::localllm"
-move_card_raw() { delete_line_containing "${BOARD}" "$1"; bb "${TMP}/bin/edit.bb" add-card "${BOARD}" "$2" "$1"; }
+move_card_raw() {
+  delete_line_containing "${BOARD}" "$1"
+  bb "${TMP}/bin/edit.bb" add-card "${BOARD}" "$2" "$1"
+}
 move_card_raw "- [ ] [[${RID}]] #nsfw assignee::localllm" Backlog
 tick
 [[ "$(lane_of "${BOARD}" "${RID}")" == "Draft" ]] || fail "shortest-path card with an agent should be re-groomed: $(grep -F "${RID}" "${BOARD}")"

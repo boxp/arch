@@ -32,6 +32,7 @@
 
 ### コミット前の必須チェック
 **重要**: コミット前に必ず以下のlintチェックを実行してください：
+- Shellスクリプトの場合: `scripts/lint-shell.sh`
 - Terraformの場合: `terraform fmt && terraform validate && tflint`
 - Ansibleの場合: `cd ansible && uv run ansible-lint`
 - GitHub Actionsの場合: `actionlint && ghalint run`

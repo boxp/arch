@@ -21,9 +21,9 @@ log() { echo "[dotfiles-sync] $(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
 
 is_valid_dotfiles_url() {
   local url="$1"
-  [[ "$url" == "https://github.com/boxp/dotfiles" ]] || \
-  [[ "$url" == "https://github.com/boxp/dotfiles.git" ]] || \
-  [[ "$url" == "git@github.com:boxp/dotfiles.git" ]]
+  [[ "$url" == "https://github.com/boxp/dotfiles" ]] ||
+    [[ "$url" == "https://github.com/boxp/dotfiles.git" ]] ||
+    [[ "$url" == "git@github.com:boxp/dotfiles.git" ]]
 }
 
 run_setup() {
@@ -59,7 +59,7 @@ sync_once() {
     return
   fi
 
-  if ! git -C "${TARGET_DIR}" rev-parse --git-dir > /dev/null 2>&1; then
+  if ! git -C "${TARGET_DIR}" rev-parse --git-dir >/dev/null 2>&1; then
     log "ERROR: ${TARGET_DIR} is not a git repository, skipping"
     return
   fi
@@ -79,8 +79,8 @@ sync_once() {
   log "fetch: ${fetch_output}"
 
   if [ "${FIRST_SYNC_DONE}" = "false" ]; then
-    if ! git -C "${TARGET_DIR}" diff --quiet HEAD 2>/dev/null || \
-       ! git -C "${TARGET_DIR}" diff --quiet --cached 2>/dev/null; then
+    if ! git -C "${TARGET_DIR}" diff --quiet HEAD 2>/dev/null ||
+      ! git -C "${TARGET_DIR}" diff --quiet --cached 2>/dev/null; then
       log "WARNING: tracked file changes detected at ${TARGET_DIR}, skipping sync and setup.sh"
       return
     fi
@@ -105,8 +105,8 @@ sync_once() {
     return
   fi
 
-  if ! git -C "${TARGET_DIR}" diff --quiet HEAD 2>/dev/null || \
-     ! git -C "${TARGET_DIR}" diff --quiet --cached 2>/dev/null; then
+  if ! git -C "${TARGET_DIR}" diff --quiet HEAD 2>/dev/null ||
+    ! git -C "${TARGET_DIR}" diff --quiet --cached 2>/dev/null; then
     log "WARNING: tracked file changes detected at ${TARGET_DIR}, skipping sync and setup.sh"
     SETUP_NEEDED=false
     return

@@ -506,8 +506,8 @@ model_job="$(bb -e '(let [j (first (filter #(= "model-updates" (:id %)) (:jobs (
 # (CI には /home/boxp が無いため、実行確認用の複製では command と workdir だけを差し替える)
 [[ ! -e "${seed_vault}/Infrastructure/Codex Cron/prompts/model-updates.md" ]] || fail "model-updates must not need a prompt file"
 selected="$(CODEX_CRON_ROOT="${seed_vault}/Infrastructure/Codex Cron" bb "${ROOT_DIR}/docker/codex-workspace/cron/select-codex-cron-job.bb" model-updates)" || fail "selector rejected seed model-updates job"
-grep -Fxq "CODEX_CRON_RUNNER='command'" <<< "${selected}" || fail "selector runner mismatch: ${selected}"
-grep -Fxq "CODEX_CRON_COMMAND='bb /opt/codex-workspace/model-updates/model_updates.bb tick'" <<< "${selected}" || fail "selector command mismatch: ${selected}"
+grep -Fxq "CODEX_CRON_RUNNER='command'" <<<"${selected}" || fail "selector runner mismatch: ${selected}"
+grep -Fxq "CODEX_CRON_COMMAND='bb /opt/codex-workspace/model-updates/model_updates.bb tick'" <<<"${selected}" || fail "selector command mismatch: ${selected}"
 cron_exec_root="${tmp}/cron-exec"
 mkdir -p "${cron_exec_root}"
 bb -e '(let [[src dst dst-dir] *command-line-args* r (clojure.edn/read-string (slurp src))] (spit dst (pr-str (update r :jobs (fn [js] (mapv #(if (= "model-updates" (:id %)) (assoc % :command "echo model-updates-ran" :workdir dst-dir) %) js))))))' \
@@ -529,8 +529,8 @@ if command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
   sudo install -d -o boxp -g boxp -m 0755 "${entrypoint_vault}"
   # 既存 registry に別 job と無効化済みの seed job があっても、足りない seed job だけを 1 回足す
   sudo -u boxp install -d -m 0755 "${entrypoint_vault}/Infrastructure/Codex Cron"
-  printf '%s\n' '{:version 1 :jobs [{:id "existing" :enabled true :runner "command" :command "true" :schedule "0 * * * *"} {:id "recurring-events-dry-run" :enabled false :schedule "1 2 * * *"}]}' \
-    | sudo -u boxp tee "${entrypoint_vault}/Infrastructure/Codex Cron/jobs.edn" >/dev/null
+  printf '%s\n' '{:version 1 :jobs [{:id "existing" :enabled true :runner "command" :command "true" :schedule "0 * * * *"} {:id "recurring-events-dry-run" :enabled false :schedule "1 2 * * *"}]}' |
+    sudo -u boxp tee "${entrypoint_vault}/Infrastructure/Codex Cron/jobs.edn" >/dev/null
   sudo env \
     CODEX_TASK_BOARD_VAULT="${entrypoint_vault}" \
     CODEX_WORKSPACE_RECURRING_EVENTS_SEED="${ROOT_DIR}/docker/codex-workspace/recurring-events/vault-seed" \

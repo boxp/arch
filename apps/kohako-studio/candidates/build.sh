@@ -4,7 +4,9 @@
 # 候補であることを示す帯を studio.html と live2d.html に入れる。index.json は一覧画面が読む。
 # usage: build.sh <candidates dir> <web dir with node_modules> <out dir>
 set -eu
-C=$1; DEPS=$2; OUT=$3
+C=$1
+DEPS=$2
+OUT=$3
 mkdir -p "$OUT"
 for dir in "$C"/src/*/web; do
   [ -d "$dir" ] || continue

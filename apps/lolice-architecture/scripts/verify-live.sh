@@ -11,7 +11,10 @@ body=$(mktemp)
 trap 'rm -f "$body"' EXIT
 
 report() {
-  if [ "$1" = 0 ]; then echo "PASS $2"; else echo "FAIL $2"; failures=$((failures + 1)); fi
+  if [ "$1" = 0 ]; then echo "PASS $2"; else
+    echo "FAIL $2"
+    failures=$((failures + 1))
+  fi
 }
 
 # args: label, expected status, curl arguments...
@@ -32,12 +35,16 @@ for _ in $(seq 1 12); do
 done
 if [ -n "$expected" ]; then
   [ "$served" = "$expected" ]
+  # The status of the preceding test is what is reported.
+  # shellcheck disable=SC2319
   report $? "/sha256 matches the expected hash ($served)"
 fi
 
 # Cloudflare rewrites HTML only for clients that ask for it, so ask the way a browser does.
 code=$(curl -sS -m 30 -H 'Accept: text/html' -H 'User-Agent: Mozilla/5.0' -o "$body" -w '%{http_code}' "https://$host/" || echo 000)
 [ "$code" = 200 ]
+# The status of the preceding test is what is reported.
+# shellcheck disable=SC2319
 report $? "anonymous GET / (status $code)"
 actual=$(sha256sum "$body" | cut -d' ' -f1)
 [ "$actual" = "$served" ]

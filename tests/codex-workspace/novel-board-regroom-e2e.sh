@@ -21,8 +21,14 @@ set -euo pipefail
 
 RUNNER="${NOVEL_BOARD_RUNNER:-/opt/codex-workspace/novel-board/novel_board_runner.bb}"
 SEED="${NOVEL_BOARD_SEED:-$(dirname "${RUNNER}")/vault-seed}"
-[[ -f "${RUNNER}" ]] || { echo "runner not found: ${RUNNER}" >&2; exit 2; }
-[[ -d "${SEED}" ]] || { echo "vault seed not found: ${SEED}" >&2; exit 2; }
+[[ -f "${RUNNER}" ]] || {
+  echo "runner not found: ${RUNNER}" >&2
+  exit 2
+}
+[[ -d "${SEED}" ]] || {
+  echo "vault seed not found: ${SEED}" >&2
+  exit 2
+}
 
 TMP="$(mktemp -d)"
 trap '[[ -n "${KEEP_TMP:-}" ]] || rm -rf "${TMP}"' EXIT
@@ -50,7 +56,8 @@ EOF
 
 export CODEX_NOVEL_BOARD_VAULT="${VAULT}"
 export CODEX_NOVEL_BOARD_ROOT="${STATE}"
-export CODEX_NOVEL_BOARD_OWNER_ID="regroom-e2e-$(date -u +%Y%m%dT%H%M%SZ)"
+CODEX_NOVEL_BOARD_OWNER_ID="regroom-e2e-$(date -u +%Y%m%dT%H%M%SZ)"
+export CODEX_NOVEL_BOARD_OWNER_ID
 export CODEX_NOVEL_BOARD_LOCALLLM_BASE_URL="${CODEX_NOVEL_BOARD_LOCALLLM_BASE_URL:-http://llama-server.local-llm.svc.cluster.local:8080/v1}"
 export CODEX_NOVEL_BOARD_LOCALLLM_MODEL="${CODEX_NOVEL_BOARD_LOCALLLM_MODEL:-gemma4-26b}"
 export CODEX_NOVEL_BOARD_IMAGE_SCRIPT=/bin/false
@@ -63,9 +70,13 @@ fail() {
   echo "FAIL: $*" >&2
   # Diagnostics (metadata only, no prompt / manuscript content): what the runner
   # said and how the last run ended, so a one-off failure is explainable.
-  echo "--- runner.log (tail)" >&2; tail -n 20 "${TMP}/runner.log" 2>/dev/null | cut -c1-400 >&2
-  echo "--- latest run summary.edn" >&2; find "${STATE}/runs" -name summary.edn 2>/dev/null | sort | tail -n 1 | xargs -r cat >&2; echo >&2
-  echo "--- lock / skip state" >&2; ls -R "${STATE}/locks" "${STATE}/skips" 2>/dev/null >&2
+  echo "--- runner.log (tail)" >&2
+  tail -n 20 "${TMP}/runner.log" 2>/dev/null | cut -c1-400 >&2
+  echo "--- latest run summary.edn" >&2
+  find "${STATE}/runs" -name summary.edn 2>/dev/null | sort | tail -n 1 | xargs -r cat >&2
+  echo >&2
+  echo "--- lock / skip state" >&2
+  ls -R "${STATE}/locks" "${STATE}/skips" 2>/dev/null >&2
   exit 1
 }
 tick() { bb "${RUNNER}" tick >>"${TMP}/runner.log" 2>&1; }
@@ -76,7 +87,8 @@ run_count() { find "${STATE}/runs/$1" -mindepth 1 -maxdepth 1 -type d 2>/dev/nul
 latest_run_id() { find "${STATE}/runs/$1" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1 | xargs -r basename; }
 section() { sed -n "/^## $2\$/,/^## /p" "${VAULT}/Novels/$1.md"; }
 move_line_to_lane() { # id lane : moves the card line verbatim (what the Kanban UI does)
-  local line; line="$(card_line "$1")"
+  local line
+  line="$(card_line "$1")"
   awk -v skip="${line}" '$0 != skip' "${BOARD}" >"${BOARD}.tmp"
   LINE="${line}" awk -v lane="## $2" '{ print } $0 == lane { print ""; print ENVIRON["LINE"] }' "${BOARD}.tmp" >"${BOARD}" && rm -f "${BOARD}.tmp"
 }
@@ -92,7 +104,7 @@ ID="$(grep -o 'NOVEL-[0-9]*: '"${TITLE}" "${BOARD}" | head -n 1 | cut -d: -f1)"
 [[ "$(lane_of "${ID}")" == "Draft" ]] || fail "first groom should reach Draft: $(card_line "${ID}")"
 [[ "$(note_count)" == "1" ]] || fail "one note expected after scaffold"
 FIRST="$(latest_run_id "${ID}")"
-echo "   ${ID} groomed in $(( $(date +%s) - START ))s (run ${FIRST})"
+echo "   ${ID} groomed in $(($(date +%s) - START))s (run ${FIRST})"
 
 echo "== 2. Draft -> Backlog (line moved verbatim), assignee localllm -> re-groom (real model)"
 move_line_to_lane "${ID}" Backlog
@@ -115,7 +127,7 @@ grep -Fq "status: draft" "${VAULT}/Novels/${ID}.md" || fail "frontmatter must fo
 [[ ! -e "${STATE}/work/${ID}/manuscript.md" ]] || fail "no manuscript may be written"
 [[ ! -d "${VAULT}/Novels/Drafts" ]] || fail "no draft folder may be created"
 [[ ! -d "${STATE}/published" ]] || [[ -z "$(ls -A "${STATE}/published")" ]] || fail "nothing may be published"
-echo "   ${ID} re-groomed in $(( $(date +%s) - START ))s (run ${SECOND})"
+echo "   ${ID} re-groomed in $(($(date +%s) - START))s (run ${SECOND})"
 
 echo "== summary (counts only)"
 echo "   id=${ID} notes=$(note_count) cards=$(grep -c "\[\[Novels/${ID}|" "${BOARD}") runs=$(run_count "${ID}") lane=$(lane_of "${ID}")"

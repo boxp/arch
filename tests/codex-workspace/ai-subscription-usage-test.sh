@@ -323,4 +323,4 @@ message="$(find "${tmp}/runner-state/runs/BOXP-149" -name last-message.md -print
 [[ "$(cat "${message}")" == 'TASK_BOARD_RESULT: done' ]]
 [[ -f "${tmp}/runner-state/ai-ops/subscription/claude.json" ]]
 grep -q '^status: done$' "${tmp}/vault/Tickets/BOXP-149.md"
-echo 'ai-subscription-usage tests passed' 
+echo 'ai-subscription-usage tests passed'

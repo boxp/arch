@@ -15,7 +15,7 @@ mkdir -p "$fixture"/ansible/{playbooks,files,templates,tests,vars,inventories/pr
   "$fixture"/ansible/roles/{shared_role,cp_role,worker_role,upgrade_role,orphan_role}/tasks \
   "$fixture"/ansible/roles/worker_role/molecule/default \
   "$fixture"/.github/workflows "$fixture"/docs
-cat > "$fixture/ansible/playbooks/control-plane.yml" <<'YML'
+cat >"$fixture/ansible/playbooks/control-plane.yml" <<'YML'
 - hosts: control_plane
   vars_files: [../vars/nodes.yml]
   roles:
@@ -25,7 +25,7 @@ cat > "$fixture/ansible/playbooks/control-plane.yml" <<'YML'
     - ansible.builtin.copy:
         content: "{{ lookup('ansible.builtin.file', '../files/cp-only.conf') }}"
 YML
-cat > "$fixture/ansible/playbooks/worker-image.yml" <<'YML'
+cat >"$fixture/ansible/playbooks/worker-image.yml" <<'YML'
 - hosts: workers
   vars_files: [../vars/nodes.yml, ../vars/worker_nodes.yml]
   roles:
@@ -35,33 +35,33 @@ cat > "$fixture/ansible/playbooks/worker-image.yml" <<'YML'
     - ansible.builtin.copy:
         content: "{{ lookup('ansible.builtin.file', '../files/worker-only.conf') }}"
 YML
-cat > "$fixture/ansible/playbooks/node-shanghai-2.yml" <<'YML'
+cat >"$fixture/ansible/playbooks/node-shanghai-2.yml" <<'YML'
 - hosts: shanghai-2
   tasks:
     - ansible.builtin.template:
         src: ../templates/shanghai-2.service.j2
 YML
-cat > "$fixture/ansible/playbooks/node-golyat-1.yml" <<'YML'
+cat >"$fixture/ansible/playbooks/node-golyat-1.yml" <<'YML'
 - hosts: golyat-1
 YML
-cat > "$fixture/ansible/playbooks/upgrade-k8s.yml" <<'YML'
+cat >"$fixture/ansible/playbooks/upgrade-k8s.yml" <<'YML'
 - hosts: all
   roles:
     - role: upgrade_role
 YML
-cat > "$fixture/ansible/playbooks/worker-standalone.yml" <<'YML'
+cat >"$fixture/ansible/playbooks/worker-standalone.yml" <<'YML'
 - hosts: workers
   tasks:
     - ansible.builtin.copy:
         content: "{{ lookup('ansible.builtin.file', '../files/worker-only.conf') }}"
 YML
-cat > "$fixture/ansible/playbooks/cp-extra.yml" <<'YML'
+cat >"$fixture/ansible/playbooks/cp-extra.yml" <<'YML'
 - hosts: control_plane
 YML
 # control-plane.yml imports cp-extra.yml
-echo "- import_playbook: cp-extra.yml" >> "$fixture/ansible/playbooks/control-plane.yml"
-echo "- ansible.builtin.copy: {src: ../files/role-asset.txt}" > "$fixture/ansible/roles/worker_role/tasks/main.yml"
-echo "- debug: {}" > "$fixture/ansible/roles/upgrade_role/tasks/main.yml"
+echo "- import_playbook: cp-extra.yml" >>"$fixture/ansible/playbooks/control-plane.yml"
+echo "- ansible.builtin.copy: {src: ../files/role-asset.txt}" >"$fixture/ansible/roles/worker_role/tasks/main.yml"
+echo "- debug: {}" >"$fixture/ansible/roles/upgrade_role/tasks/main.yml"
 touch "$fixture/ansible/files/"{cp-only.conf,worker-only.conf,role-asset.txt,unreferenced.conf} \
   "$fixture/ansible/templates/shanghai-2.service.j2" \
   "$fixture/ansible/vars/nodes.yml" "$fixture/ansible/vars/worker_nodes.yml" "$fixture/ansible/vars/unused.yml" \
@@ -131,12 +131,18 @@ check "worker change plus tests/docs stays worker" "$WORKER" "$fixture" ansible/
 # stdin form (space / newline separated, as emitted by tj-actions/changed-files)
 total=$((total + 1))
 actual="$(printf 'ansible/playbooks/worker-image.yml ansible/tests/test_x.py\ndocs/plan.md\n' | "$script" -C "$fixture" -)"
-if [ "$actual" = "$WORKER" ]; then echo "ok   stdin form"; else echo "FAIL stdin form: got $actual" >&2; failures=$((failures + 1)); fi
+if [ "$actual" = "$WORKER" ]; then echo "ok   stdin form"; else
+  echo "FAIL stdin form: got $actual" >&2
+  failures=$((failures + 1))
+fi
 
 # custom node list keeps group semantics
 total=$((total + 1))
 actual="$(ANSIBLE_APPLY_NODES="shanghai-1 golyat-4 golyat-5" "$script" -C "$fixture" ansible/playbooks/worker-image.yml)"
-if [ "$actual" = '["golyat-4","golyat-5"]' ]; then echo "ok   custom node list"; else echo "FAIL custom node list: got $actual" >&2; failures=$((failures + 1)); fi
+if [ "$actual" = '["golyat-4","golyat-5"]' ]; then echo "ok   custom node list"; else
+  echo "FAIL custom node list: got $actual" >&2
+  failures=$((failures + 1))
+fi
 
 # --explain writes one line per file to stderr and nothing extra to stdout
 total=$((total + 1))
@@ -144,24 +150,30 @@ explain="$("$script" -C "$fixture" --explain ansible/playbooks/worker-image.yml 
 if [ "$explain" = $'ansible/playbooks/worker-image.yml -> golyat-4\ndocs/plan.md -> (no node)' ]; then
   echo "ok   explain output"
 else
-  echo "FAIL explain output: got: $explain" >&2; failures=$((failures + 1))
+  echo "FAIL explain output: got: $explain" >&2
+  failures=$((failures + 1))
 fi
 
 # --nodes: explicit list is validated and canonically ordered
 total=$((total + 1))
 actual="$("$script" -C "$fixture" --nodes "golyat-4, shanghai-2")"
-if [ "$actual" = '["shanghai-2","golyat-4"]' ]; then echo "ok   --nodes ordering"; else echo "FAIL --nodes ordering: got $actual" >&2; failures=$((failures + 1)); fi
+if [ "$actual" = '["shanghai-2","golyat-4"]' ]; then echo "ok   --nodes ordering"; else
+  echo "FAIL --nodes ordering: got $actual" >&2
+  failures=$((failures + 1))
+fi
 for bad in "golyat-9" "" "shanghai-1,golyat-9"; do
   total=$((total + 1))
   if "$script" -C "$fixture" --nodes "$bad" >/dev/null 2>&1; then
-    echo "FAIL --nodes '$bad' should be rejected" >&2; failures=$((failures + 1))
+    echo "FAIL --nodes '$bad' should be rejected" >&2
+    failures=$((failures + 1))
   else
     echo "ok   --nodes rejects '$bad'"
   fi
 done
 total=$((total + 1))
 if "$script" -C "$fixture" --nodes golyat-4 ansible/uv.lock >/dev/null 2>&1; then
-  echo "FAIL --nodes with files should be rejected" >&2; failures=$((failures + 1))
+  echo "FAIL --nodes with files should be rejected" >&2
+  failures=$((failures + 1))
 else
   echo "ok   --nodes rejects mixing with files"
 fi

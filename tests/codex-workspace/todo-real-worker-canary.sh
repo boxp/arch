@@ -93,11 +93,21 @@ sed -n '/^---$/,/^---$/p' "${VAULT}/Tickets/${TICKET}.md" | grep -E '^(status|as
 sed -n '/^## Plan$/,/^## Notes$/p' "${VAULT}/Tickets/${TICKET}.md"
 ls "${WORK}"
 for summary in "${STATE}/runs/${TICKET}"/*/summary.edn; do
-  echo "${summary}"; grep -oE ':result "[a-z-]+"|:gate "[a-z]+"' "${summary}" | tr '\n' ' '; echo
+  echo "${summary}"
+  grep -oE ':result "[a-z-]+"|:gate "[a-z]+"' "${summary}" | tr '\n' ' '
+  echo
 done
 for delivery in "${STATE}/runs/${TICKET}"/*/todo-delivery.edn; do
-  [[ -e "${delivery}" ]] && { echo "${delivery}"; cat "${delivery}"; echo; }
+  [[ -e "${delivery}" ]] && {
+    echo "${delivery}"
+    cat "${delivery}"
+    echo
+  }
 done
 
-[[ "${status}" == done && -e "${WORK}/extra" && -e "${WORK}/step3" ]] \
-  && echo "CANARY PASS ${ASSIGNEE}" || { echo "CANARY FAIL ${ASSIGNEE}"; exit 1; }
+if [[ "${status}" == "done" && -e "${WORK}/extra" && -e "${WORK}/step3" ]]; then
+  echo "CANARY PASS ${ASSIGNEE}"
+else
+  echo "CANARY FAIL ${ASSIGNEE}"
+  exit 1
+fi

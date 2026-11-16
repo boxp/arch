@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-fail() { echo "$*" >&2; exit 1; }
-immutable() { local attrs; attrs=$(lsattr -d -- "$1") || fail "Cannot inspect attributes: $1"; attrs=${attrs%% *}; [[ $attrs == *i* ]]; }
+fail() {
+  echo "$*" >&2
+  exit 1
+}
+immutable() {
+  local attrs
+  attrs=$(lsattr -d -- "$1") || fail "Cannot inspect attributes: $1"
+  attrs=${attrs%% *}
+  [[ $attrs == *i* ]]
+}
 protect() {
   local dir=$1 mode=$2 changed=false
   if [[ ! -e $dir && ! -L $dir ]]; then
@@ -28,24 +36,38 @@ protect() {
 if [[ ${1:-} == --internal ]]; then
   parent=$2 rel=$3 mode=$4
   tmp=$(mktemp -d)
-  cleanup() { if mountpoint -q "$tmp"; then umount "$tmp"; fi; rmdir "$tmp"; }
+  # Invoked by the EXIT trap.
+  # shellcheck disable=SC2329
+  cleanup() {
+    if mountpoint -q "$tmp"; then umount "$tmp"; fi
+    rmdir "$tmp"
+  }
   trap cleanup EXIT
   mount --bind "$parent" "$tmp"
   protect "$tmp/$rel" "$mode"
   exit
 fi
-path= uuid= mode=
+path='' uuid='' mode=''
 while (($#)); do
   case $1 in
-    --path) path=${2:?}; shift 2 ;;
-    --uuid) uuid=${2:?}; shift 2 ;;
-    --mode) mode=${2:?}; shift 2 ;;
+    --path)
+      path=${2:?}
+      shift 2
+      ;;
+    --uuid)
+      uuid=${2:?}
+      shift 2
+      ;;
+    --mode)
+      mode=${2:?}
+      shift 2
+      ;;
     *) fail "Unknown argument: $1" ;;
   esac
 done
-[[ $path == /* && $path != / && -n $uuid && ( $mode == check || $mode == apply ) ]] || fail 'Expected --path absolute-path --uuid UUID --mode check|apply'
+[[ $path == /* && $path != / && -n $uuid && ($mode == check || $mode == apply) ]] || fail 'Expected --path absolute-path --uuid UUID --mode check|apply'
 if info=$(findmnt -n -o SOURCE,UUID,FSTYPE --mountpoint "$path"); then
-  read -r source actual_uuid fstype <<< "$info"
+  read -r _ actual_uuid fstype <<<"$info"
   [[ $actual_uuid == "$uuid" && $fstype == ext4 ]] || fail "Mounted filesystem UUID or type mismatch: $info"
   immutable "$path" && fail 'Mounted SSD root is immutable; manual inspection required'
   parent=$(findmnt -n -o TARGET -T "$(dirname "$path")")

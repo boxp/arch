@@ -4,7 +4,7 @@ set -eu
 name=$1
 h() { docker exec -u hermes "$name" sh -c "cd /opt/hermes; HOME=/opt/data ./.venv/bin/hermes $1 2>&1 | grep -v 'install out of sync'"; }
 ids=$(h "cron list" | awk '/\[active\]/{print $1}')
-for round in 1 2; do
+for _ in 1 2; do
   for id in $ids; do h "cron run $id" | tail -1; done
   sleep 100
 done
