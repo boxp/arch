@@ -901,6 +901,7 @@ export function createActingStage(
   let shownYaw = 0
   let petEyes = false,
     petClosed = 0,
+    lookLidShown = 0,
     petHold = false,
     petHeld = false,
     petTail = 0
@@ -1891,7 +1892,8 @@ export function createActingStage(
     if (updateMouth) p.lipSync(surprised > 0.001 ? 0.28 * surprised : 0)
     mouthOverride = !speaking && surprised > 0.001
     // BOXP-525: 待機クリップ停止中も前フレームの閉眼値を引きずらず、まばたきを再評価する。
-    if (Math.max(wasClosed, eyeClosed, petClosed) > 0.001) {
+    // 下を見る時のまぶた（lookLidShown）で置いた値も同じく基底に残さない（正面へ戻したら開くように）。
+    if (Math.max(wasClosed, eyeClosed, petClosed, lookLidShown) > 0.001) {
       p.setParameter('ParamEyeLOpen', 1)
       p.setParameter('ParamEyeROpen', 1)
     }
@@ -1945,6 +1947,7 @@ export function createActingStage(
       const values = typeof p.parameterValues === 'function' ? p.parameterValues() : []
       // 下を見る時のまぶた（表情の閉眼と同じく、まばたきとは min で重ねる）。
       const lookLid = lookDownLid(values[p.parameters?.indexOf('ParamEyeBallY') ?? -1] ?? 0)
+      lookLidShown = lookLid
       const faceClosed = Math.max(eyeClosed, lookLid),
         closed = Math.max(faceClosed, petLid)
       for (const id of ['ParamEyeLOpen', 'ParamEyeROpen']) {

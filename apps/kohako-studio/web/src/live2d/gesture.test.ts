@@ -1030,3 +1030,40 @@ it('BOXP-525 TD-02: 下を見る時だけ上まぶたを視線に比例して下
   expect(eyeOpenFor(0.1, lookDownLid(-0.45), 0)).toBe(0.1)
   expect(eyeOpenFor(1, lookDownLid(-0.45), 1)).toBe(0)
 })
+
+// BOXP-525 TD-02 (codex-review P1): 下向きで置いた開眼値が基底に残ったまま、視線を正面へ戻しても目が開かない、を防ぐ。
+it('BOXP-525 TD-02: 下を見た後に正面へ戻すと、待機クリップ停止中でも目が元の開きへ戻る', () => {
+  const ids = ['ParamEyeLOpen', 'ParamEyeROpen', 'ParamEyeBallY']
+  const base: Record<string, number> = {},
+    current = [1, 1, 0],
+    memory = new WebAssembly.Memory({ initial: 1 })
+  let gazeY = -1
+  // 待機クリップ停止中を模す: 開眼値は基底からそのまま評価（まばたき無し）、視線だけ behavior が決める。
+  const evaluate = () =>
+    ids.forEach((id, i) => {
+      current[i] = id === 'ParamEyeBallY' ? gazeY : (base[id] ?? 1)
+    })
+  const player = {
+    rig: 0,
+    expressions: [],
+    parameters: ids,
+    meshes: Array.from({ length: 33 }, () => ({ vertices: 0 })),
+    expression() {},
+    parameterRanges: () => ids.map((id) => ({ id, min: -1, max: 1, default: id === 'ParamEyeBallY' ? 0 : 1 })),
+    parameterValues: () => [...current],
+    setParameter(id: string, value: number) {
+      base[id] = value
+    },
+    update(_dt: number) {
+      evaluate()
+    },
+    rt: { memory, p2l_render_commands: () => 0, p2l_mesh_vertices: () => 0, p2l_update_stages: evaluate },
+  }
+  createActingStage(player as unknown as Player, { id: 'kohako-full-v11r' } as RigModel)
+  for (let i = 0; i < 30; i++) player.update(1 / 60)
+  expect(current[0]).toBeLessThan(0.7)
+  gazeY = 0
+  for (let i = 0; i < 30; i++) player.update(1 / 60)
+  expect(current[0]).toBeCloseTo(1)
+  expect(current[1]).toBeCloseTo(1)
+})
