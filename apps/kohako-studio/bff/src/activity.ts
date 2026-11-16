@@ -1,3 +1,4 @@
+import { type ArgField, publicText, redactArgs } from './secrets.js'
 export type ActivityStep = {
   id: string
   kind: 'tool'
@@ -8,7 +9,19 @@ export type ActivityStep = {
   durationMs?: number
   runningMs?: number
   startMissing?: true
+  /** 開いて読める実引数があるか。full=会話記録から得た実引数、preview=開始通知の要約のみ（BOXP-560）。 */
+  argsState?: 'full' | 'preview'
 }
+export type StepDetail = { tool: string; source: 'args' | 'preview'; fields: ArgField[]; omitted?: true }
+type Internal = ActivityStep & {
+  hermesAt?: number
+  call?: string
+  preview?: { value: string; truncated: boolean }
+  args?: ArgField[]
+  omitted?: true
+}
+// 全手順で保持する引数の合計字数。超えたら古い手順の引数から捨てる（捨てたことは詳細で伝える）。
+const ARGS_TOTAL_MAX = 400_000
 export type Activity = { steps: ActivityStep[]; writing: boolean; dropped: number }
 // コハコの途中発言・ツールの引数・ツールの出力は任意の文字列で、秘密値を伏字規則では見分け切れない（例: mysql -pabc123、URL のパス、引用符内の値）。
 // そのため Hermes 由来の自由な文字列は一切公開しない。公開するのは、道具の名前・状態・所要時間と、下の固定一覧に一致したプログラム名だけ（一覧に無いものは何も載せない）。
@@ -142,12 +155,12 @@ export function publicDetail(tool: string, preview: string): string {
   return ''
 }
 export function createActivity(now: () => number) {
-  const steps: (ActivityStep & { hermesAt?: number; call?: string })[] = [],
+  const steps: Internal[] = [],
     ids = new Map<string, string>()
   let writing = false,
     dropped = 0,
     serial = 0
-  const add = (step: ActivityStep & { hermesAt?: number; call?: string }) => {
+  const add = (step: Internal) => {
     steps.push(step)
     if (steps.length > 40) {
       let i = steps.findIndex((s) => s.status !== 'running')
@@ -173,7 +186,9 @@ export function createActivity(now: () => number) {
         if (call && ids.has(call)) return
         const id = `t${++serial}`,
           tool = toolName(e.tool),
-          detail = typeof e.preview === 'string' ? publicDetail(tool, e.preview) : ''
+          detail = typeof e.preview === 'string' ? publicDetail(tool, e.preview) : '',
+          // 開始通知の要約は、実引数を取得できるまでの代わりとして伏字化して持つ（一覧の応答には載せない）。
+          preview = typeof e.preview === 'string' && e.preview.trim() ? publicText(e.preview, 2000) : undefined
         if (call) ids.set(call, id)
         const timestamp =
           typeof e.timestamp === 'number' && Number.isFinite(e.timestamp) && e.timestamp > 0 ? e.timestamp : undefined
@@ -186,6 +201,7 @@ export function createActivity(now: () => number) {
           ...(timestamp === undefined ? {} : { hermesAt: timestamp }),
           ...(call ? { call } : {}),
           ...(detail ? { detail } : {}),
+          ...(preview ? { preview } : {}),
         })
       } else if (e.event === 'tool.completed') {
         const call = callId(e.tool_call_id),
@@ -234,11 +250,37 @@ export function createActivity(now: () => number) {
       for (const step of steps) if (step.status === 'running') step.status = completed ? 'unconfirmed' : 'interrupted'
       writing = false
     },
+    /** 会話記録から得た呼び出し（id・引数）を、同じ呼び出し ID の手順へ結びつける。 */
+    attachArgs(calls: { id: string; name: string; args: Record<string, unknown> }[]) {
+      for (const c of calls) {
+        const step = steps.find((s) => s.call === c.id && !s.args && !s.omitted)
+        if (step) step.args = redactArgs(c.args)
+      }
+      const size = (s: Internal) => s.args?.reduce((n, f) => n + f.value.length, 0) ?? 0
+      let total = steps.reduce((n, s) => n + size(s), 0)
+      for (const s of steps) {
+        if (total <= ARGS_TOTAL_MAX) break
+        if (!s.args) continue
+        total -= size(s)
+        s.args = undefined
+        s.omitted = true
+      }
+    },
+    needsArgs: () => steps.some((s) => s.call && !s.args && !s.omitted),
+    detail(id: string): StepDetail | undefined {
+      const s = steps.find((x) => x.id === id)
+      if (!s) return undefined
+      if (s.args) return { tool: s.tool, source: 'args', fields: s.args }
+      if (s.omitted) return { tool: s.tool, source: 'args', fields: [], omitted: true }
+      return s.preview ? { tool: s.tool, source: 'preview', fields: [{ key: 'preview', ...s.preview }] } : undefined
+    },
     snapshot(): Activity | undefined {
       return steps.length || writing
         ? {
-            steps: steps.map(({ hermesAt, call, ...s }) => ({
+            // 引数・要約の本文は載せない（開いた時だけ detail で返す）。
+            steps: steps.map(({ hermesAt, call, preview, args, omitted, ...s }) => ({
               ...s,
+              ...(args || omitted ? { argsState: 'full' as const } : preview ? { argsState: 'preview' as const } : {}),
               ...(s.status === 'running' ? { runningMs: Math.max(0, now() - s.startedAt) } : {}),
             })),
             writing,

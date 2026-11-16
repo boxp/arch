@@ -77,3 +77,43 @@ describe('activity', () => {
     )
   })
 })
+describe('実引数の詳細 (BOXP-560)', () => {
+  it('一覧の argsState と詳細応答を厳格に検証する', async () => {
+    const { validateActivity, validateDetail } = await import('./activity')
+    const step = { id: 't1', kind: 'tool', tool: 'terminal', status: 'done', startedAt: 1 }
+    expect(
+      validateActivity({ steps: [{ ...step, argsState: 'full' }], writing: false, dropped: 0 })?.steps[0],
+    ).toMatchObject({
+      argsState: 'full',
+    })
+    expect(validateActivity({ steps: [{ ...step, argsState: 'x' }], writing: false, dropped: 0 })?.steps).toEqual([])
+    const ok = { tool: 'terminal', source: 'args', fields: [{ key: 'command', value: 'git status', truncated: false }] }
+    expect(validateDetail(ok)).toEqual(ok)
+    expect(validateDetail({ ...ok, omitted: true })).toMatchObject({ omitted: true })
+    for (const bad of [
+      null,
+      { ...ok, source: 'output' },
+      { ...ok, tool: 'a b' },
+      { ...ok, fields: [{ key: 'bad key', value: '', truncated: false }] },
+      { ...ok, fields: [{ key: 'k', value: 'x'.repeat(20002), truncated: false }] },
+      { ...ok, fields: [{ key: 'k', value: 1, truncated: false }] },
+      { ...ok, fields: Array.from({ length: 25 }, () => ok.fields[0]) },
+      { ...ok, omitted: 'yes' },
+    ])
+      expect(validateDetail(bad)).toBeNull()
+  })
+  it('項目名を日本語にし、主な引数と変更内容を先に並べる', async () => {
+    const { fieldLabel, orderFields } = await import('./activity')
+    expect(fieldLabel('terminal', 'command')).toBe('コマンド')
+    expect(fieldLabel('read_file', 'path')).toBe('パス')
+    expect(fieldLabel('patch', 'path')).toBe('対象')
+    expect(fieldLabel('skill_view', 'name')).toBe('スキル名')
+    expect(fieldLabel('web_search', 'query')).toBe('検索語')
+    expect(fieldLabel('execute_code', 'code')).toBe('コード')
+    expect(fieldLabel('x', 'custom_key')).toBe('custom_key')
+    const f = (key: string) => ({ key, value: '', truncated: false })
+    expect(
+      orderFields([f('timeout'), f('new_string'), f('old_string'), f('zzz'), f('path')]).map((x) => x.key),
+    ).toEqual(['path', 'old_string', 'new_string', 'timeout', 'zzz'])
+  })
+})

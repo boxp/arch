@@ -1,0 +1,65 @@
+# BOXP-560: コハコの家 tool call の実引数を展開して処理を追えるようにする
+
+## 目的
+
+家の手順一覧（BOXP-548）で、道具名・所要時間に加えて、各手順の実引数を必要な時に展開して読めるようにする。
+
+- terminal のコマンド、read_file のパス、web_search の検索語、skill_view のスキル名、execute_code の内容
+- patch / write_file の対象パスと変更内容（置換前後、またはパッチ差分）（TD-01）
+- それ以外の道具も引数を項目ごとに表示する
+
+含めないもの: 内部思考の公開、認証の緩和、外部 SaaS へのログ送信、秘密の積極収集、道具の出力（結果）の公開。
+
+## 方針の変更点（Owner 判断）
+
+BOXP-548 では伏字規則の漏れ指摘が続いたため「Hermes 由来の自由な文字列は一切公開しない」とした。本票で Owner がこれを見直し、
+「通常の実引数は読める」「明確な認証秘密は保護する」の両立を求めた。そのため次の前提に変える。
+
+- 見るのは家に認証済みの Owner 本人だけ（既存の認証をそのまま使う。緩めない）。対象は Owner 自身のエージェントが実行した引数。
+- 伏せる対象は「明確な認証秘密」の形に限る（下記）。任意の位置に書かれた形の決まっていない秘密値まで見分けることは目標にしない
+  （それを目標にすると 548 と同じく引数を何も出せなくなる）。残る限界は下に明記する。
+- 既定では畳んだまま。一覧の応答（1 秒ごとの照会）には引数を載せず、手順を開いた時だけ個別に取り寄せる。
+- 引数は BFF のメモリにだけ置き、会話ファイル・ログ・外部へは書かない。次の依頼の開始で消える。
+
+## 実データの出どころ（Hermes v0.23.1 のソースで確認）
+
+- `GET /v1/runs/{id}/events` の `tool.started` は `preview`（主引数 1 つの表示用要約）しか持たない。
+  read_file はファイル名のみ、terminal / execute_code は 1 行に要約、patch はパスのみで変更内容が無い。これだけでは要件を満たせない。
+- `GET /api/sessions/{session_id}/messages` は会話記録を返し、assistant の `tool_calls[].function.arguments` に実引数（JSON 文字列）、
+  `tool_calls[].id` に呼び出し ID がある。BFF は run 作成時に `session_id` を自分で指定しているので、同じ ID で照会できる。
+- Hermes のイメージは上流ソースに手を入れない方針（BOXP-556）なので、Hermes 側は変更しない。
+
+未確認（配備後に実イベントで確かめる）: 会話記録への書き込みが手順の実行中に済むか、終了後になるか。
+どちらでも成り立つよう、実引数が未取得の間は `preview`（伏字化済み）を「概要」として出し、取得でき次第実引数に置き換える。
+
+## 構成
+
+- BFF `secrets.ts`（新規）: `redactSecrets(text)`。伏せる形:
+  - PEM 秘密鍵ブロック
+  - `Authorization:` / `Proxy-Authorization:` ヘッダ値、`Bearer <値>`、`Cookie:` / `Set-Cookie:` の値
+  - 既知の接頭辞つきトークン（`sk-`、`ghp_` 等 GitHub、`github_pat_`、`xox?-`、`AKIA…`、`AIza…`、`glpat-`、`hf_`、`npm_`、JWT 形式）
+  - URL の利用者情報（`scheme://user:pass@`）
+  - 名前に password / passwd / secret / token / api key / access key / credential / private key / session / auth を含む項目の値
+    （`NAME=値`、`"name": "値"`、`--name 値`、`--name=値`）
+  - `mysql -p値` 系、`sshpass -p 値`、`curl -u user:pass`
+  - JSON 引数のキー名が上の語を含む場合はその値全体
+- BFF `hermes.ts`: `toolCalls(sessionId)`。会話記録の末尾を読み、`{id, name, arguments}` だけ取り出す（本文・思考は読み捨てる）。
+- BFF `activity.ts`: 手順に `preview`（伏字化・上限つき）と `args` を保持。`snapshot()` は従来の項目に `argsState`（full=実引数あり / preview=開始通知の要約のみ）だけ足す。
+  `detail(stepId)` が項目の一覧（キー・値・切り詰めの有無）を返す。値は項目ごと 20,000 字、手順ごと 60,000 字、全体 400,000 字まで。
+- BFF `conversation.ts`: `tool.started` / `tool.completed` を受けた時と run 終了時に会話記録を照会（間引き、失敗しても会話は続く）。
+- BFF `app.ts`: `GET /kohako/api/v1/requests/{id}/activity/{stepId}`（既存の依頼照会と同じ認証・同じ所有者確認、`Cache-Control: no-store`）。
+- Web `activity.ts` / `activity.css`: 手順ごとに「引数」を開閉。開いた時に取り寄せて等幅で表示（textContent のみ）、長い値は枠内でスクロール。
+  patch は「対象」「置換前」「置換後」または「パッチ」を分けて表示。再描画しても開閉状態と取得済みの内容を保つ。
+
+## 残る限界（画面の使い方として報告する）
+
+- 形の決まっていない秘密値（例: `echo 値 | 何か`、位置引数のパスワード、独自形式のトークン）は伏せられない。
+- 逆に、秘密らしい名前の項目は無害な値でも伏せる。
+- 道具の出力は表示しない。
+- 上限を超えた値は末尾を切り、切ったことを表示する。古い手順（40 件超）は従来どおり省略する。
+
+## 検証
+
+- vitest: 伏字、会話記録からの引数の取り出し（思考・本文を持ち出さない）、詳細 API の認証と所有者確認、Web の検証と描画。
+- `verify/home/args560.mjs`（応答は BFF の実コード activity.ts / secrets.ts で生成、PC / Pixel 7 縦）: 開閉、各道具の表示、秘密が DOM に出ない、入力・停止・承認と重ならない、外部通信 0。
+- 配備後: 配備版で実イベントから画面までを確認。検証画像は `/home/boxp/verification-artifacts/BOXP-560/` に置き vault には保存しない。

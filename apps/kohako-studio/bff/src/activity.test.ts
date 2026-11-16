@@ -14,7 +14,16 @@ describe('activity', () => {
     a.finish()
     const snap = must(a.snapshot())
     expect(snap.steps).toEqual([
-      { id: 't1', kind: 'tool', tool: 'terminal', detail: 'ls', status: 'done', startedAt: 123, durationMs: 1234 },
+      {
+        id: 't1',
+        kind: 'tool',
+        tool: 'terminal',
+        detail: 'ls',
+        status: 'done',
+        startedAt: 123,
+        durationMs: 1234,
+        argsState: 'preview',
+      },
     ])
     expect(JSON.stringify(snap)).not.toMatch(/SECRET-THOUGHT|private-id|途中です|最終返答/)
   })
@@ -159,5 +168,71 @@ describe('activity', () => {
       ['tool_call', 'Langfuse · list !', ''],
     ] as const)
       expect(publicDetail(tool, input)).toBe(expected)
+  })
+})
+describe('実引数の詳細 (BOXP-560)', () => {
+  it('一覧には本文を載せず、開いた時だけ伏字済みの引数を返す', () => {
+    const a = createActivity(() => 1)
+    a.apply({
+      event: 'tool.started',
+      tool: 'terminal',
+      tool_call_id: 'c1',
+      preview: 'curl -H "Authorization: Bearer abcdef123456" x',
+    })
+    a.apply({ event: 'tool.started', tool: 'patch', tool_call_id: 'c2', preview: '/srv/app/a.ts' })
+    a.apply({ event: 'tool.started', tool: 'memory' })
+    expect(a.needsArgs()).toBe(true)
+    expect(must(a.snapshot()).steps.map((s) => s.argsState)).toEqual(['preview', 'preview', undefined])
+    expect(JSON.stringify(a.snapshot())).not.toMatch(/Authorization|\/srv\/app/)
+    // 実引数が届くまでは開始通知の要約（伏字済み）を返す。
+    expect(a.detail('t1')).toEqual({
+      tool: 'terminal',
+      source: 'preview',
+      fields: [{ key: 'preview', value: 'curl -H "Authorization: Bearer ［伏字］" x', truncated: false }],
+    })
+    expect(a.detail('t3')).toBeUndefined()
+    expect(a.detail('t9')).toBeUndefined()
+    a.attachArgs([
+      {
+        id: 'c2',
+        name: 'patch',
+        args: { mode: 'replace', path: '/srv/app/a.ts', old_string: 'a = 1', new_string: 'a = 2' },
+      },
+      {
+        id: 'c1',
+        name: 'terminal',
+        args: { command: 'echo ghp_abcdefghijklmnopqrstuvwxyz0123456789 && ls /srv', timeout: 30 },
+      },
+      { id: 'other-run', name: 'terminal', args: { command: 'x' } },
+    ])
+    expect(a.needsArgs()).toBe(false)
+    expect(a.detail('t2')).toEqual({
+      tool: 'patch',
+      source: 'args',
+      fields: [
+        { key: 'mode', value: 'replace', truncated: false },
+        { key: 'path', value: '/srv/app/a.ts', truncated: false },
+        { key: 'old_string', value: 'a = 1', truncated: false },
+        { key: 'new_string', value: 'a = 2', truncated: false },
+      ],
+    })
+    expect(must(a.detail('t1')).fields[0].value).toBe('echo ［伏字］ && ls /srv')
+    const snap = JSON.stringify(a.snapshot())
+    expect(snap).not.toMatch(/ghp_|\/srv|a = 2|c1|c2/)
+    expect(must(a.snapshot()).steps.map((s) => s.argsState)).toEqual(['full', 'full', undefined])
+  })
+  it('保持する引数の合計が上限を超えたら古い手順から捨て、捨てたことを返す', () => {
+    const a = createActivity(() => 1)
+    for (let i = 1; i <= 9; i++) a.apply({ event: 'tool.started', tool: 'write_file', tool_call_id: `c${i}` })
+    a.attachArgs(
+      Array.from({ length: 9 }, (_, i) => ({
+        id: `c${i + 1}`,
+        name: 'write_file',
+        args: { a: 'x'.repeat(20000), b: 'y'.repeat(20000), c: 'z'.repeat(20000) },
+      })),
+    )
+    expect(a.detail('t1')).toEqual({ tool: 'write_file', source: 'args', fields: [], omitted: true })
+    expect(must(a.detail('t9')).fields).toHaveLength(3)
+    expect(a.needsArgs()).toBe(false)
   })
 })
