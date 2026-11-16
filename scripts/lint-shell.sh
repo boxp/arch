@@ -21,6 +21,8 @@ if (($# == 0)); then
   set -- .
 fi
 mapfile -d '' -t files < <(git ls-files -z -- "$@" "${excludes[@]}")
+# Process substitution hides the exit status of git ls-files; propagate it.
+wait "$!"
 targets=()
 for file in "${files[@]}"; do
   [[ -f "$file" ]] || continue
