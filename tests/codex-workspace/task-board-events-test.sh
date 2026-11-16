@@ -179,9 +179,9 @@ run_events() {
   local vault="$1" state="$2"
   shift 2
   CODEX_TASK_BOARD_VAULT="${vault}" \
-  CODEX_TASK_BOARD_ROOT="${state}" \
-  CODEX_TASK_BOARD_EVENT_QUIET_HOURS="${CODEX_TASK_BOARD_EVENT_QUIET_HOURS:-off}" \
-  "$@" bb "${EVENTS}" tick
+    CODEX_TASK_BOARD_ROOT="${state}" \
+    CODEX_TASK_BOARD_EVENT_QUIET_HOURS="${CODEX_TASK_BOARD_EVENT_QUIET_HOURS:-off}" \
+    "$@" bb "${EVENTS}" tick
 }
 
 record() {
@@ -237,9 +237,12 @@ test_home_inbox_copy_is_independent_of_telegram() {
   FAKE_PORT="${home_port}" FAKE_LOG="${CASE_TMP}/home.log" FAKE_MODE_FILE="${CASE_TMP}/home-mode" \
     bb "${CASE_TMP}/home.clj" >"${CASE_TMP}/home.out" 2>&1 &
   home_pid=$!
-  for _ in $(seq 1 50); do grep -q listening "${CASE_TMP}/home.out" 2>/dev/null && break; sleep 0.2; done
+  for _ in $(seq 1 50); do
+    grep -q listening "${CASE_TMP}/home.out" 2>/dev/null && break
+    sleep 0.2
+  done
   local home_env=(CODEX_TASK_BOARD_EVENT_HOME_URL="http://127.0.0.1:${home_port}/kohako/api/v1/notifications/ingest"
-                  CODEX_TASK_BOARD_EVENT_HOME_TOKEN_FILE="${CASE_TMP}/token")
+    CODEX_TASK_BOARD_EVENT_HOME_TOKEN_FILE="${CASE_TMP}/token")
 
   # Home down: Telegram delivery is still accepted, the home copy waits for a retry.
   echo 500 >"${CASE_TMP}/home-mode"
@@ -364,12 +367,13 @@ test_home_inbox_copy_is_independent_of_telegram() {
   [[ ! -e "${CASE_STATE}/outbox/home/alert-broken123.edn" ]] || fail "malformed alert copy must be ignored"
 
   # Unset URL = rollback: nothing is sent to the home inbox.
-  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-902 r2 in-progress done done >/dev/null
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-902 r2 in-progress "done" "done" >/dev/null
   run_events "${CASE_VAULT}" "${CASE_STATE}" env \
     CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
   assert_file_not_contains "${CASE_TMP}/home.log" 'BOXP-902'
   [[ ! -e "${CASE_STATE}/outbox/home/BOXP-902-r2-done.report.edn" ]] || fail "disabled home copy must not write state"
-  kill "${home_pid}" 2>/dev/null || true; wait "${home_pid}" 2>/dev/null || true
+  kill "${home_pid}" 2>/dev/null || true
+  wait "${home_pid}" 2>/dev/null || true
   stop_receiver
 }
 
@@ -423,7 +427,7 @@ test_wrong_secret_is_rejected_and_retried_with_backoff() {
 test_duplicate_event_id_is_reported_as_duplicate() {
   new_case
   start_receiver "${CASE_TMP}" "${CASE_PORT}"
-  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress done done >/dev/null
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress "done" "done" >/dev/null
   run_events "${CASE_VAULT}" "${CASE_STATE}" env \
     CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
   # Force a redelivery of the same id by resetting the file to pending.
@@ -638,7 +642,7 @@ test_review_lane_migration_is_silent() {
   run_events "${CASE_VAULT}" "${CASE_STATE}" env >/dev/null
   [[ "$(count_files "${CASE_STATE}/outbox/pending")" -eq 0 ]] || fail "migration out of Review must not notify"
   # A later real transition of the same card still notifies.
-  move_card "${CASE_VAULT}" BOXP-901 Done done
+  move_card "${CASE_VAULT}" BOXP-901 Done "done"
   run_events "${CASE_VAULT}" "${CASE_STATE}" env >/dev/null
   [[ "$(count_files "${CASE_STATE}/outbox/pending")" -eq 1 ]] || fail "a real transition after migration must notify"
 }

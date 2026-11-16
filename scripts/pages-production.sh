@@ -19,11 +19,14 @@ api() {
   else
     out="$(curl --fail-with-body -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "${base}${path}")"
   fi
-  [ "$(jq -r '.success' <<<"$out")" = true ] || { echo "Cloudflare API error: $(jq -c '.errors' <<<"$out")" >&2; return 1; }
+  [ "$(jq -r '.success' <<<"$out")" = true ] || {
+    echo "Cloudflare API error: $(jq -c '.errors' <<<"$out")" >&2
+    return 1
+  }
   jq '.result' <<<"$out"
 }
 
-summary() { [ -z "${GITHUB_STEP_SUMMARY:-}" ] || printf '%s\n' "$@" >> "$GITHUB_STEP_SUMMARY"; }
+summary() { [ -z "${GITHUB_STEP_SUMMARY:-}" ] || printf '%s\n' "$@" >>"$GITHUB_STEP_SUMMARY"; }
 
 cmd="${1:?usage}"
 PROJECT="${2:?project}"
@@ -32,8 +35,11 @@ case "$cmd" in
   record)
     domain="${3:?domain}"
     project="$(api GET '')"
-    jq -e --arg d "$domain" '.domains | index($d)' <<<"$project" >/dev/null \
-      || { echo "project ${PROJECT} does not own ${domain}" >&2; exit 1; }
+    jq -e --arg d "$domain" '.domains | index($d)' <<<"$project" >/dev/null ||
+      {
+        echo "project ${PROJECT} does not own ${domain}" >&2
+        exit 1
+      }
     current="$(jq '{production_branch, deployment_id: .canonical_deployment.id, url: .canonical_deployment.url,
       environment: .canonical_deployment.environment, status: .canonical_deployment.latest_stage.status,
       commit: .canonical_deployment.deployment_trigger.metadata.commit_hash}' <<<"$project")"
@@ -47,7 +53,7 @@ case "$cmd" in
     {
       echo "previous_id=${previous}"
       echo "branch=$(jq -r '.production_branch' <<<"$current")"
-    } >> "${GITHUB_OUTPUT:-/dev/stdout}"
+    } >>"${GITHUB_OUTPUT:-/dev/stdout}"
     ;;
   verify)
     url="${3:?url}" dist="${4:?dist}" previous="${5:-}"

@@ -240,7 +240,7 @@ AI_OPS_REPO="${repo_root}" AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
 concurrent_root="${tmp}/concurrent"
 procs=4
 per_proc=25
-for i in $(seq 1 "${procs}"); do
+for _ in $(seq 1 "${procs}"); do
   AI_OPS_MODULE="${module}" AI_OPS_ROOT="${concurrent_root}" AI_OPS_N="${per_proc}" bb -e '
 (load-file (System/getenv "AI_OPS_MODULE"))
 (def run "20261029T055735Z-3652ef0a-df77-40e5-87fb-1105d53cbe57")
@@ -280,7 +280,10 @@ AI_OPS_LOCK="${held_root}/ai-ops/ledger.lock" bb -e '
   (Thread/sleep 4000))
 ' &
 holder=$!
-for _ in $(seq 1 100); do [ -f "${held_root}/ai-ops/ledger.lock.held" ] && break; sleep 0.05; done
+for _ in $(seq 1 100); do
+  [ -f "${held_root}/ai-ops/ledger.lock.held" ] && break
+  sleep 0.05
+done
 CODEX_TASK_BOARD_AI_OPS_LEDGER_LOCK_TIMEOUT_MS=300 AI_OPS_MODULE="${module}" AI_OPS_ROOT="${held_root}" bb -e '
 (load-file (System/getenv "AI_OPS_MODULE"))
 (def root (System/getenv "AI_OPS_ROOT"))
@@ -333,7 +336,10 @@ AI_OPS_LOCK="${spool_root}/ai-ops/ledger.lock" bb -e '
   (Thread/sleep 2500))
 ' &
 holder=$!
-for _ in $(seq 1 100); do [ -f "${spool_root}/ai-ops/ledger.lock.held" ] && break; sleep 0.05; done
+for _ in $(seq 1 100); do
+  [ -f "${spool_root}/ai-ops/ledger.lock.held" ] && break
+  sleep 0.05
+done
 CODEX_TASK_BOARD_AI_OPS_LEDGER_LOCK_TIMEOUT_MS=200 AI_OPS_MODULE="${module}" AI_OPS_ROOT="${spool_root}" bb -e '
 (load-file (System/getenv "AI_OPS_MODULE"))
 (def run "20261029T055735Z-3652ef0a-df77-40e5-87fb-1105d53cbe57")
@@ -703,7 +709,10 @@ AI_OPS_LOCK="${sli_root}/ai-ops/sli.lock" bb -e '
   (Thread/sleep 3000))
 ' &
 sli_holder=$!
-for _ in $(seq 1 100); do [ -f "${sli_root}/ai-ops/sli.lock.held" ] && break; sleep 0.05; done
+for _ in $(seq 1 100); do
+  [ -f "${sli_root}/ai-ops/sli.lock.held" ] && break
+  sleep 0.05
+done
 AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
 (require (quote [babashka.fs :as fs]))
 (load-file (System/getenv "AI_OPS_MODULE"))

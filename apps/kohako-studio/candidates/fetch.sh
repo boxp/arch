@@ -13,16 +13,29 @@ mkdir -p "$C/src"
 shared() { git ls-tree -r "$1" -- "$P/live2d/kohako/kohako-full-v11r.p2lrt" "$P/live2d/sample" "$P/studio" | sort; }
 base=$(shared HEAD)
 jq -r '.candidates[] | [.id, .commit] | @tsv' "$C/candidates.json" | while IFS=$'\t' read -r id commit; do
-  [[ "$id" =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]] || { echo "invalid candidate id: $id" >&2; exit 1; }
-  [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid commit for $id" >&2; exit 1; }
+  [[ "$id" =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]] || {
+    echo "invalid candidate id: $id" >&2
+    exit 1
+  }
+  [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "invalid commit for $id" >&2
+    exit 1
+  }
   ref="refs/tags/kohako-studio-candidate/$id"
   git fetch --no-tags --depth=1 origin "+$ref:$ref"
   got=$(git rev-parse "$ref^{commit}")
-  [ "$got" = "$commit" ] || { echo "$ref is $got, expected $commit" >&2; exit 1; }
+  [ "$got" = "$commit" ] || {
+    echo "$ref is $got, expected $commit" >&2
+    exit 1
+  }
   missing=$(comm -23 <(shared "$commit") <(printf "%s\n" "$base"))
-  [ -z "$missing" ] || { echo "$id: model/runtime differ from the current version:" >&2; printf "%s\n" "$missing" >&2; exit 1; }
+  [ -z "$missing" ] || {
+    echo "$id: model/runtime differ from the current version:" >&2
+    printf "%s\n" "$missing" >&2
+    exit 1
+  }
   mkdir -p "$C/src/$id"
-  git archive "$commit" -- "$W" ":(exclude)$P/live2d/compare" ":(exclude)$P/live2d/kohako" ":(exclude)$P/live2d/sample" ":(exclude)$P/studio" \
-    | tar -x --strip-components=2 -C "$C/src/$id"
+  git archive "$commit" -- "$W" ":(exclude)$P/live2d/compare" ":(exclude)$P/live2d/kohako" ":(exclude)$P/live2d/sample" ":(exclude)$P/studio" |
+    tar -x --strip-components=2 -C "$C/src/$id"
   echo "candidate $id @ $commit"
 done

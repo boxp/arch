@@ -95,15 +95,30 @@ check_elf() {
   local info machine
   info="$(arm-linux-gnueabihf-readelf -h -l "$1")"
   machine="$(awk -F: '/Machine:/ {gsub(/^ +/, "", $2); print $2}' <<<"$info")"
-  grep -q 'ELF32' <<<"$info" || { echo "::error::$1 is not ELF32"; return 1; }
-  [ "$machine" = "ARM" ] || { echo "::error::$1 has machine '$machine'"; return 1; }
-  grep -q 'hard-float ABI' <<<"$(arm-linux-gnueabihf-readelf -h "$1")" || { echo "::error::$1 is not hard-float"; return 1; }
-  grep -qF '/lib/ld-linux-armhf.so.3' <<<"$info" || { echo "::error::$1 has an unexpected interpreter"; return 1; }
+  grep -q 'ELF32' <<<"$info" || {
+    echo "::error::$1 is not ELF32"
+    return 1
+  }
+  [ "$machine" = "ARM" ] || {
+    echo "::error::$1 has machine '$machine'"
+    return 1
+  }
+  grep -q 'hard-float ABI' <<<"$(arm-linux-gnueabihf-readelf -h "$1")" || {
+    echo "::error::$1 is not hard-float"
+    return 1
+  }
+  grep -qF '/lib/ld-linux-armhf.so.3' <<<"$info" || {
+    echo "::error::$1 has an unexpected interpreter"
+    return 1
+  }
   # glibc of the IS01 userland (Debian bookworm).
   local newest
   newest="$(arm-linux-gnueabihf-readelf -V "$1" | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)"
   echo "$1: newest required symbol version $newest"
-  [ "$(printf '%s\nGLIBC_2.36\n' "$newest" | sort -V | tail -1)" = "GLIBC_2.36" ] || { echo "::error::$1 requires $newest"; return 1; }
+  [ "$(printf '%s\nGLIBC_2.36\n' "$newest" | sort -V | tail -1)" = "GLIBC_2.36" ] || {
+    echo "::error::$1 requires $newest"
+    return 1
+  }
 }
 
 phase_deps() {
@@ -167,7 +182,10 @@ phase_jdk() {
   rm -f "$dest/libjvm.a"
   rm -rf "$src"
   for lib in java nio net zip; do
-    grep -q 'Machine: *ARM' <<<"$(arm-linux-gnueabihf-readelf -h "$dest/lib$lib.a")" || { echo "::error::lib$lib.a is not ARM"; exit 1; }
+    grep -q 'Machine: *ARM' <<<"$(arm-linux-gnueabihf-readelf -h "$dest/lib$lib.a")" || {
+      echo "::error::lib$lib.a is not ARM"
+      exit 1
+    }
   done
 }
 
@@ -183,6 +201,8 @@ phase_graal() {
   setup_graal
 
   local src="$WORK/graal/substratevm/src" obj="$WORK/clib-obj" fallbacks
+  # ARM_CFLAGS is a space-separated flag list that must be split into words.
+  # shellcheck disable=SC2206
   local cflags=($ARM_CFLAGS -g -fPIC -O2 -D_LITTLE_ENDIAN -ffunction-sections -fdata-sections -fvisibility=hidden -D_FORTIFY_SOURCE=0 -D_GNU_SOURCE)
   local includes=("-I$src/com.oracle.svm.native.libchelper/include" "-I$BOOT_JDK/include" "-I$BOOT_JDK/include/linux")
   mkdir -p "$obj/chelper" "$obj/jvm" "$ARM32_CLIBRARIES"
@@ -337,11 +357,13 @@ check_barriers() {
     echo "::error::$1 has legacy CP15 barriers"
     return 1
   fi
-  grep -qE '\bdmb\b' <<<"$disassembly" || { echo "::error::$1 has no dmb barrier"; return 1; }
+  grep -qE '\bdmb\b' <<<"$disassembly" || {
+    echo "::error::$1 has no dmb barrier"
+    return 1
+  }
 }
 
 phase_hello() {
-  local run
   setup_graal
   write_hello
   (cd "$WORK/hello" && native_image_arm32 -cp . Hello "$OUT/hello-arm32")
@@ -350,14 +372,17 @@ phase_hello() {
   expect_output 'Hello ARM32 from native-image' "$OUT/hello-arm32"
   write_contention
   (cd "$WORK/contention" && native_image_arm32 -cp . Contention "$WORK/contention/contention-arm32")
-  for run in 1 2 3 4 5 6 7 8 9 10; do
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
     expect_output 'contended 2000000' "$WORK/contention/contention-arm32"
   done
   write_volatile_stress
   (cd "$WORK/volatile" && native_image_arm32 -cp . VolatileStress "$WORK/volatile/volatile-arm32")
   expect_output 'volatile ok' "$WORK/volatile/volatile-arm32"
   # 64-bit volatile accesses have to use the exclusive pair: ldrd alone is not single-copy atomic on ARMv7 without LPAE.
-  grep -qE '\bldrexd\b' <<<"$(arm-linux-gnueabihf-objdump -d "$WORK/volatile/volatile-arm32")" || { echo "::error::no ldrexd in the volatile test image"; exit 1; }
+  grep -qE '\bldrexd\b' <<<"$(arm-linux-gnueabihf-objdump -d "$WORK/volatile/volatile-arm32")" || {
+    echo "::error::no ldrexd in the volatile test image"
+    exit 1
+  }
 }
 
 phase_babashka() {

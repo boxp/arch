@@ -18,7 +18,7 @@ for doc in docs/*.md; do
     status=1
   fi
 done
-if (( $(wc -l < README.md) > 40 )); then
+if (($(wc -l <README.md) > 40)); then
   printf 'README.md が 40 行を超えています\n' >&2
   status=1
 fi

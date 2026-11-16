@@ -9,10 +9,17 @@ ds=${PROM_DS_UID:-P1809F7CD0C75ACF3}
 tmp=$(mktemp -d "$(dirname "$out")/.collect-live.XXXXXX")
 trap 'rm -rf "$tmp" "$out.tmp"' EXIT
 # token をプロセス引数に出さない
-q(){ curl -fsS -m 30 -G -H @<(printf 'Authorization: Bearer %s\n' "$GRAFANA_SERVICE_ACCOUNT_TOKEN") "$GRAFANA_URL/api/datasources/proxy/uid/$ds/api/v1/query" --data-urlencode "query=$1"; }
-kj(){ kubectl get --request-timeout=60s "$@" -o json; }
-get(){ local name=$1 filter=$2; shift 2; kj "$@" | jq "$filter" > "$tmp/$name.json"; }
-prom(){ local name=$1 query=$2; q "$query" | jq '[.data.result[]|{k:(.metric|to_entries[0].value),v:.value[1]}]' > "$tmp/$name.json"; }
+q() { curl -fsS -m 30 -G -H @<(printf 'Authorization: Bearer %s\n' "$GRAFANA_SERVICE_ACCOUNT_TOKEN") "$GRAFANA_URL/api/datasources/proxy/uid/$ds/api/v1/query" --data-urlencode "query=$1"; }
+kj() { kubectl get --request-timeout=60s "$@" -o json; }
+get() {
+  local name=$1 filter=$2
+  shift 2
+  kj "$@" | jq "$filter" >"$tmp/$name.json"
+}
+prom() {
+  local name=$1 query=$2
+  q "$query" | jq '[.data.result[]|{k:(.metric|to_entries[0].value),v:.value[1]}]' >"$tmp/$name.json"
+}
 
 get apps '[.items[]|{name:.metadata.name,sync:.status.sync.status,health:.status.health.status}]' applications.argoproj.io -A
 get appsets '[.items[]|.metadata.name]' applicationsets.argoproj.io -A
@@ -36,5 +43,5 @@ jq -n --arg at "$(date -u +%FT%TZ)" \
   --slurpfile pvc "$tmp/pvc.json" --slurpfile es "$tmp/es.json" --slurpfile sm "$tmp/sm.json" \
   --slurpfile rj "$tmp/rj.json" --slurpfile bt "$tmp/bt.json" --slurpfile vols "$tmp/vols.json" \
   --slurpfile place "$tmp/place.json" --slurpfile up "$tmp/up.json" --slurpfile tun "$tmp/tun.json" \
-  '{observed_at:$at,applications:$apps[0],applicationsets:$appsets[0],namespaces:$ns[0],workloads:$wl[0],services:$svc[0],nodes:$nodes[0],pvcs:$pvc[0],externalsecrets:$es[0],monitors:$sm[0],recurringjobs:$rj[0],backuptargets:$bt[0],longhorn_volumes:$vols[0],placement:$place[0],prometheus:{up:$up[0],tunnels:$tun[0]}}' > "$out.tmp"
+  '{observed_at:$at,applications:$apps[0],applicationsets:$appsets[0],namespaces:$ns[0],workloads:$wl[0],services:$svc[0],nodes:$nodes[0],pvcs:$pvc[0],externalsecrets:$es[0],monitors:$sm[0],recurringjobs:$rj[0],backuptargets:$bt[0],longhorn_volumes:$vols[0],placement:$place[0],prometheus:{up:$up[0],tunnels:$tun[0]}}' >"$out.tmp"
 mv "$out.tmp" "$out"

@@ -39,31 +39,85 @@ REPORT=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --image) IMAGE="$2"; shift 2 ;;
-    --root) ROOT="$2"; shift 2 ;;
-    --node) NODE_NAME="$2"; shift 2 ;;
-    --node-ip) NODE_IP="$2"; shift 2 ;;
-    --interface) INTERFACE="$2"; shift 2 ;;
-    --gpu-host-tools) GPU_HOST_TOOLS="$2"; shift 2 ;;
-    --kubernetes-package-version) K8S_PKG="$2"; shift 2 ;;
-    --crio-package-version) CRIO_PKG="$2"; shift 2 ;;
-    --gateway) GATEWAY="$2"; shift 2 ;;
-    --static-network) STATIC_NETWORK="$2"; shift 2 ;;
-    --require-longhorn-multipath) REQUIRE_LONGHORN_MULTIPATH="$2"; shift 2 ;;
-    --report) REPORT="$2"; shift 2 ;;
-    -h|--help) usage ;;
-    *) echo "unknown argument: $1" >&2; usage ;;
+    --image)
+      IMAGE="$2"
+      shift 2
+      ;;
+    --root)
+      ROOT="$2"
+      shift 2
+      ;;
+    --node)
+      NODE_NAME="$2"
+      shift 2
+      ;;
+    --node-ip)
+      NODE_IP="$2"
+      shift 2
+      ;;
+    --interface)
+      INTERFACE="$2"
+      shift 2
+      ;;
+    --gpu-host-tools)
+      GPU_HOST_TOOLS="$2"
+      shift 2
+      ;;
+    --kubernetes-package-version)
+      K8S_PKG="$2"
+      shift 2
+      ;;
+    --crio-package-version)
+      CRIO_PKG="$2"
+      shift 2
+      ;;
+    --gateway)
+      GATEWAY="$2"
+      shift 2
+      ;;
+    --static-network)
+      STATIC_NETWORK="$2"
+      shift 2
+      ;;
+    --require-longhorn-multipath)
+      REQUIRE_LONGHORN_MULTIPATH="$2"
+      shift 2
+      ;;
+    --report)
+      REPORT="$2"
+      shift 2
+      ;;
+    -h | --help) usage ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage
+      ;;
   esac
 done
 
 [ -n "$IMAGE" ] || [ -n "$ROOT" ] || usage
 [ -z "$IMAGE" ] || [ -z "$ROOT" ] || usage
 for required in NODE_NAME NODE_IP INTERFACE GPU_HOST_TOOLS K8S_PKG CRIO_PKG; do
-  [ -n "${!required}" ] || { echo "missing --$(echo "$required" | tr '[:upper:]_' '[:lower:]-')" >&2; usage; }
+  [ -n "${!required}" ] || {
+    echo "missing --$(echo "$required" | tr '[:upper:]_' '[:lower:]-')" >&2
+    usage
+  }
 done
-case "$GPU_HOST_TOOLS" in true|false) ;; *) echo "--gpu-host-tools must be true or false" >&2; exit 2 ;; esac
-case "$STATIC_NETWORK" in true|false) ;; *) echo "--static-network must be true or false" >&2; exit 2 ;; esac
-case "$REQUIRE_LONGHORN_MULTIPATH" in true|false) ;; *) echo "--require-longhorn-multipath must be true or false" >&2; exit 2 ;; esac
+case "$GPU_HOST_TOOLS" in true | false) ;; *)
+  echo "--gpu-host-tools must be true or false" >&2
+  exit 2
+  ;;
+esac
+case "$STATIC_NETWORK" in true | false) ;; *)
+  echo "--static-network must be true or false" >&2
+  exit 2
+  ;;
+esac
+case "$REQUIRE_LONGHORN_MULTIPATH" in true | false) ;; *)
+  echo "--require-longhorn-multipath must be true or false" >&2
+  exit 2
+  ;;
+esac
 
 # Paths copied out of the image. Everything the checks below read must be here.
 EXTRACT_PATHS=(/etc /home /root /opt /usr/local/sbin /var/lib/dpkg/status)
@@ -78,8 +132,14 @@ cleanup() {
 trap cleanup EXIT
 
 if [ -n "$IMAGE" ]; then
-  [ -f "$IMAGE" ] || { echo "image not found: $IMAGE" >&2; exit 2; }
-  command -v virt-copy-out >/dev/null || { echo "virt-copy-out (libguestfs-tools) is required for --image" >&2; exit 2; }
+  [ -f "$IMAGE" ] || {
+    echo "image not found: $IMAGE" >&2
+    exit 2
+  }
+  command -v virt-copy-out >/dev/null || {
+    echo "virt-copy-out (libguestfs-tools) is required for --image" >&2
+    exit 2
+  }
   tmp_dir="$(mktemp -d)"
   ROOT="$tmp_dir/root"
   export LIBGUESTFS_BACKEND="${LIBGUESTFS_BACKEND:-direct}"
@@ -90,7 +150,10 @@ if [ -n "$IMAGE" ]; then
   done
 fi
 
-[ -d "$ROOT" ] || { echo "root tree not found: $ROOT" >&2; exit 2; }
+[ -d "$ROOT" ] || {
+  echo "root tree not found: $ROOT" >&2
+  exit 2
+}
 ROOT="${ROOT%/}"
 
 failures=0
@@ -103,8 +166,14 @@ record() {
   report_lines+=("$line")
 }
 ok() { record "ok: $*"; }
-warn() { warnings=$((warnings + 1)); record "warn: $*"; }
-fail() { failures=$((failures + 1)); record "FAIL: $*"; }
+warn() {
+  warnings=$((warnings + 1))
+  record "warn: $*"
+}
+fail() {
+  failures=$((failures + 1))
+  record "FAIL: $*"
+}
 
 check_file_contains() {
   # check_file_contains <label> <relative path> <grep -E pattern>
@@ -179,8 +248,8 @@ check_file_contains identity etc/hostname "^${NODE_NAME}\$"
 check_file_contains identity etc/lolice-worker-image "^node_name=${NODE_NAME}\$"
 check_file_contains identity etc/lolice-worker-image "^kubernetes_version=${K8S_PKG%%-*}\$"
 check_file_contains identity etc/lolice-worker-image "^crio_package_version=${CRIO_PKG}\$"
-check_file_contains identity etc/lolice-worker-image "^static_network=$( [ "$STATIC_NETWORK" = true ] && echo True || echo False)\$"
-check_file_contains identity etc/lolice-worker-image "^gpu_runtime=$( [ "$GPU_HOST_TOOLS" = true ] && echo True || echo False)\$"
+check_file_contains identity etc/lolice-worker-image "^static_network=$([ "$STATIC_NETWORK" = true ] && echo True || echo False)\$"
+check_file_contains identity etc/lolice-worker-image "^gpu_runtime=$([ "$GPU_HOST_TOOLS" = true ] && echo True || echo False)\$"
 
 # --- network ------------------------------------------------------------------
 if [ "$STATIC_NETWORK" = true ]; then
@@ -192,16 +261,28 @@ if [ "$STATIC_NETWORK" = true ]; then
   check_present network etc/systemd/system/multi-user.target.wants/systemd-networkd.service
   if [ -f "$ROOT/$net" ]; then
     other_addresses="$(grep -E '^Address=' "$ROOT/$net" | grep -vE "^Address=${NODE_IP}/24\$" || true)"
-    [ -z "$other_addresses" ] && ok "network: single static address" || fail "network: unexpected addresses: $other_addresses"
+    if [ -z "$other_addresses" ]; then
+      ok "network: single static address"
+    else
+      fail "network: unexpected addresses: $other_addresses"
+    fi
   fi
   if [ -d "$ROOT/etc/netplan" ]; then
     static_netplan="$(grep -lE "addresses|${NODE_IP}" "$ROOT"/etc/netplan/*.yaml 2>/dev/null || true)"
-    [ -z "$static_netplan" ] && ok "network: no static netplan configuration" || fail "network: static netplan configuration present: $static_netplan"
+    if [ -z "$static_netplan" ]; then
+      ok "network: no static netplan configuration"
+    else
+      fail "network: static netplan configuration present: $static_netplan"
+    fi
   else
     ok "network: no netplan directory"
   fi
   other_networkd="$(find "$ROOT/etc/systemd/network" -maxdepth 1 -name '*.network' ! -name 20-wired.network 2>/dev/null || true)"
-  [ -z "$other_networkd" ] && ok "network: 20-wired.network is the only .network unit" || warn "network: additional networkd units: $other_networkd"
+  if [ -z "$other_networkd" ]; then
+    ok "network: 20-wired.network is the only .network unit"
+  else
+    warn "network: additional networkd units: $other_networkd"
+  fi
 else
   check_absent network etc/systemd/network/20-wired.network
 fi
@@ -240,13 +321,17 @@ check_file_contains ssh etc/ssh/sshd_config "^PermitRootLogin no\$"
 check_present ssh etc/systemd/system/multi-user.target.wants/ssh.service
 check_present ssh etc/systemd/system/ssh.service.wants/lolice-ssh-hostkeys.service
 host_keys="$(find "$ROOT/etc/ssh" -maxdepth 1 -name 'ssh_host_*_key' 2>/dev/null || true)"
-[ -z "$host_keys" ] && ok "ssh: no baked host keys (generated on first boot)" || fail "ssh: baked host keys present: $host_keys"
+if [ -z "$host_keys" ]; then
+  ok "ssh: no baked host keys (generated on first boot)"
+else
+  fail "ssh: baked host keys present: $host_keys"
+fi
 auth_keys=home/boxp/.ssh/authorized_keys
 if [ -s "$ROOT/$auth_keys" ]; then
   if grep -vqE '^(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp[0-9]+|sk-(ssh-ed25519|ecdsa-sha2-nistp256))@?' "$ROOT/$auth_keys"; then
     fail "users: $auth_keys contains a line that is not a public key"
   else
-    ok "users: $auth_keys has $(wc -l < "$ROOT/$auth_keys") public key(s)"
+    ok "users: $auth_keys has $(wc -l <"$ROOT/$auth_keys") public key(s)"
   fi
 else
   fail "users: $auth_keys missing or empty"
@@ -258,9 +343,9 @@ check_file_contains users etc/passwd "^boxp:"
 check_present grow-rootfs usr/local/sbin/lolice-grow-rootfs
 check_present grow-rootfs etc/systemd/system/multi-user.target.wants/lolice-grow-rootfs.service
 # systemd treats a missing/empty file or the literal "uninitialized" as first boot.
-if [ -f "$ROOT/etc/machine-id" ] && [ -s "$ROOT/etc/machine-id" ] \
-   && [ "$(tr -d '[:space:]' < "$ROOT/etc/machine-id")" != uninitialized ]; then
-  fail "sysprep: etc/machine-id is not empty ($(tr -d '[:space:]' < "$ROOT/etc/machine-id"))"
+if [ -f "$ROOT/etc/machine-id" ] && [ -s "$ROOT/etc/machine-id" ] &&
+  [ "$(tr -d '[:space:]' <"$ROOT/etc/machine-id")" != uninitialized ]; then
+  fail "sysprep: etc/machine-id is not empty ($(tr -d '[:space:]' <"$ROOT/etc/machine-id"))"
 else
   ok "sysprep: machine-id reset"
 fi
@@ -291,8 +376,8 @@ secret_hits="$(grep -rIlE \
   -e 'gh[pousr]_[A-Za-z0-9]{30,}' \
   -e 'CF-Access-Client-Secret' \
   -e 'ANSIBLE_SSH_PRIVATE_KEY' \
-  "$ROOT/etc" "$ROOT/home" "$ROOT/root" "$ROOT/opt" 2>/dev/null \
-  | grep -vE '/etc/ssl/|/etc/ca-certificates' || true)"
+  "$ROOT/etc" "$ROOT/home" "$ROOT/root" "$ROOT/opt" 2>/dev/null |
+  grep -vE '/etc/ssl/|/etc/ca-certificates' || true)"
 if [ -z "$secret_hits" ]; then
   ok "secrets: no credential patterns in etc/home/root/opt"
 else
@@ -303,7 +388,7 @@ fi
 summary="summary: node=${NODE_NAME} failures=${failures} warnings=${warnings}"
 record "$summary"
 if [ -n "$REPORT" ]; then
-  printf '%s\n' "${report_lines[@]}" > "$REPORT"
+  printf '%s\n' "${report_lines[@]}" >"$REPORT"
 fi
 if [ "$failures" -ne 0 ]; then
   echo "Image verification FAILED for ${NODE_NAME} (${failures} failure(s))" >&2

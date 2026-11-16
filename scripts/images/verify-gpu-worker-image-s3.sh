@@ -32,26 +32,63 @@ bucket="" node="" image="" checksum_file="" since="" git_sha="${GITHUB_SHA:-}" r
 worker_nodes_file="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/ansible/vars/worker_nodes.yml"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --bucket) bucket="$2"; shift 2 ;;
-    --node) node="$2"; shift 2 ;;
-    --image) image="$2"; shift 2 ;;
-    --checksum-file) checksum_file="$2"; shift 2 ;;
-    --worker-nodes-file) worker_nodes_file="$2"; shift 2 ;;
-    --since) since="$2"; shift 2 ;;
-    --git-sha) git_sha="$2"; shift 2 ;;
-    --report) report="$2"; shift 2 ;;
+    --bucket)
+      bucket="$2"
+      shift 2
+      ;;
+    --node)
+      node="$2"
+      shift 2
+      ;;
+    --image)
+      image="$2"
+      shift 2
+      ;;
+    --checksum-file)
+      checksum_file="$2"
+      shift 2
+      ;;
+    --worker-nodes-file)
+      worker_nodes_file="$2"
+      shift 2
+      ;;
+    --since)
+      since="$2"
+      shift 2
+      ;;
+    --git-sha)
+      git_sha="$2"
+      shift 2
+      ;;
+    --report)
+      report="$2"
+      shift 2
+      ;;
     *) usage ;;
   esac
 done
 [ -n "$bucket" ] && [ -n "$node" ] && [ -n "$image" ] && [ -n "$checksum_file" ] || usage
-[ -f "$image" ] || { echo "image not found: $image" >&2; exit 1; }
-[ -f "$checksum_file" ] || { echo "checksum file not found: $checksum_file" >&2; exit 1; }
+[ -f "$image" ] || {
+  echo "image not found: $image" >&2
+  exit 1
+}
+[ -f "$checksum_file" ] || {
+  echo "checksum file not found: $checksum_file" >&2
+  exit 1
+}
 [ -n "$report" ] || report="$(mktemp)"
 
 final_name="$(basename "$image")"
-case "$final_name" in *.img.xz) ;; *) echo "image must end in .img.xz: $final_name" >&2; exit 1 ;; esac
+case "$final_name" in *.img.xz) ;; *)
+  echo "image must end in .img.xz: $final_name" >&2
+  exit 1
+  ;;
+esac
 expected="$(cut -d' ' -f1 "$checksum_file")"
-[[ "$expected" =~ ^[0-9a-f]{64}$ ]] || { echo "bad digest in $checksum_file: $expected" >&2; exit 1; }
+[[ "$expected" =~ ^[0-9a-f]{64}$ ]] || {
+  echo "bad digest in $checksum_file: $expected" >&2
+  exit 1
+}
 local_size="$(stat -c %s "$image")"
 stable_prefix="images/${node}"
 artifact_prefix="images/artifacts/${node}"
@@ -59,8 +96,14 @@ artifact_key="${artifact_prefix}/${final_name}"
 latest_key="${stable_prefix}/latest.img.xz"
 
 failures=0 warnings=0
-fail() { echo "fail: $*"; failures=$((failures + 1)); }
-warn() { echo "warn: $*"; warnings=$((warnings + 1)); }
+fail() {
+  echo "fail: $*"
+  failures=$((failures + 1))
+}
+warn() {
+  echo "warn: $*"
+  warnings=$((warnings + 1))
+}
 ok() { echo "ok: $*"; }
 
 {
@@ -68,7 +111,7 @@ ok() { echo "ok: $*"; }
   echo
   echo "| key | size (bytes) | last modified | etag |"
   echo "|---|---|---|---|"
-} > "$report"
+} >"$report"
 
 head_object() {
   aws s3api head-object --bucket "$bucket" --key "$1" --output json
@@ -86,13 +129,13 @@ for key in \
   "${stable_prefix}/latest.verify.txt"; do
   if ! head="$(head_object "$key" 2>&1)"; then
     fail "head-object ${key}: ${head}"
-    echo "| ${key} | missing | - | - |" >> "$report"
+    echo "| ${key} | missing | - | - |" >>"$report"
     continue
   fi
   size="$(jq -r .ContentLength <<<"$head")"
   modified="$(jq -r .LastModified <<<"$head")"
   etag="$(jq -r .ETag <<<"$head" | tr -d '"')"
-  echo "| ${key} | ${size} | ${modified} | ${etag} |" >> "$report"
+  echo "| ${key} | ${size} | ${modified} | ${etag} |" >>"$report"
   case "$key" in
     *.img.xz)
       if [ "$size" = "$local_size" ]; then
@@ -148,14 +191,14 @@ fi
   echo
   echo "| key | last modified | state |"
   echo "|---|---|---|"
-} >> "$report"
+} >>"$report"
 # worker_nodes.yml keys are the 2-space indented mapping keys under
 # worker_nodes: (ansible/tests/test_worker_nodes.py checks this parse against PyYAML).
 mapfile -t other_nodes < <(awk '/^worker_nodes:/{f=1; next} f && /^  [A-Za-z0-9_-]+:/{sub(/^  /,""); sub(/:.*/,""); print}' "$worker_nodes_file" | grep -vx "$node" || true)
 for other in "${other_nodes[@]}"; do
   key="images/${other}/latest.img.xz"
   if ! head="$(head_object "$key" 2>/dev/null)"; then
-    echo "| ${key} | - | absent |" >> "$report"
+    echo "| ${key} | - | absent |" >>"$report"
     ok "${key} absent (never built)"
     continue
   fi
@@ -180,13 +223,13 @@ for other in "${other_nodes[@]}"; do
   else
     ok "${key} last modified ${modified}, before this run"
   fi
-  echo "| ${key} | ${modified} | ${state} |" >> "$report"
+  echo "| ${key} | ${modified} | ${state} |" >>"$report"
 done
 
 {
   echo
   echo "- local image: ${final_name} (${local_size} bytes, sha256 ${expected})"
   echo "- s3-verification: $([ "$failures" -eq 0 ] && echo passed || echo "failed (${failures})") (warnings: ${warnings})"
-} >> "$report"
+} >>"$report"
 echo "summary: node=${node} s3-verification failures=${failures} warnings=${warnings} report=${report}"
 [ "$failures" -eq 0 ]

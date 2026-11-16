@@ -48,11 +48,11 @@ for workflow in "$@"; do
         --jq '.workflow_runs[] | [.status, .id, .created_at, .conclusion, .head_sha, .html_url] | @tsv'
     )"
     [ -n "$page_runs" ] || break
-    runs+="$(awk -F'\t' -v OFS='\t' '$1 == "completed" { print $2, $3, $4, $5, $6 }' <<< "$page_runs")"$'\n'
-    [ "$(awk 'NF { c++ } END { print c + 0 }' <<< "$runs")" -lt "$LIMIT" ] || break
+    runs+="$(awk -F'\t' -v OFS='\t' '$1 == "completed" { print $2, $3, $4, $5, $6 }' <<<"$page_runs")"$'\n'
+    [ "$(awk 'NF { c++ } END { print c + 0 }' <<<"$runs")" -lt "$LIMIT" ] || break
     page=$((page + 1))
   done
-  runs="$(awk -v n="$LIMIT" 'NF && c < n { print; c++ }' <<< "$runs")"
+  runs="$(awk -v n="$LIMIT" 'NF && c < n { print; c++ }' <<<"$runs")"
 
   while IFS=$'\t' read -r id created conclusion sha url; do
     [ -n "$id" ] || continue
@@ -76,7 +76,7 @@ for workflow in "$@"; do
       blocked_count=$((blocked_count + 1))
       printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$workflow" "$id" "$created" "$conclusion" "${sha:0:9}" "$url"
     fi
-  done <<< "$runs"
+  done <<<"$runs"
 
   echo "# ${workflow}: latest=${latest_state:-none} blocked=${blocked_count} (直近 ${LIMIT} 件)" >&2
   if [ "$latest_state" = "blocked" ]; then

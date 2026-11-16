@@ -56,7 +56,7 @@ while [ $# -gt 0 ]; do
       done
       shift
       ;;
-    -h|--help)
+    -h | --help)
       sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
@@ -120,8 +120,8 @@ playbooks_referencing() {
 roles_referencing() {
   local needle="$1"
   [ -d "$ROLE_DIR" ] || return 0
-  grep -rlF --exclude-dir=molecule -w -- "$needle" "$ROLE_DIR" 2>/dev/null \
-    | awk -F/ '{print $3}' | sort -u || true
+  grep -rlF --exclude-dir=molecule -w -- "$needle" "$ROLE_DIR" 2>/dev/null |
+    awk -F/ '{print $3}' | sort -u || true
 }
 
 nodes_for_role() {
@@ -159,16 +159,16 @@ nodes_for_file() {
     *) return 0 ;;
   esac
   case "$f" in
-    *.md|ansible/tests/*|ansible/.ansible-lint|ansible/roles/*/molecule/*|*/__pycache__/*|*.pyc)
+    *.md | ansible/tests/* | ansible/.ansible-lint | ansible/roles/*/molecule/* | */__pycache__/* | *.pyc)
       return 0
       ;;
-    ansible/playbooks/*.yml|ansible/playbooks/*.yaml)
+    ansible/playbooks/*.yml | ansible/playbooks/*.yaml)
       nodes_for_playbook "$f"
       ;;
     ansible/roles/*/*)
       nodes_for_role "$(echo "$f" | cut -d/ -f3)"
       ;;
-    ansible/files/*|ansible/templates/*|ansible/vars/*.yml|ansible/vars/*.yaml)
+    ansible/files/* | ansible/templates/* | ansible/vars/*.yml | ansible/vars/*.yaml)
       nodes_for_asset "$f"
       ;;
     ansible/group_vars/control_plane.yml)

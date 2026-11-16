@@ -29,7 +29,7 @@ if [[ ! "$NODE_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
 fi
 
 case "$INSTALL_GPU_HOST_TOOLS" in
-  auto|true|false) ;;
+  auto | true | false) ;;
   *)
     echo "INSTALL_GPU_HOST_TOOLS must be auto, true, or false: $INSTALL_GPU_HOST_TOOLS" >&2
     exit 2
@@ -37,7 +37,7 @@ case "$INSTALL_GPU_HOST_TOOLS" in
 esac
 
 case "$CONFIGURE_STATIC_NETWORK" in
-  true|false) ;;
+  true | false) ;;
   *)
     echo "CONFIGURE_STATIC_NETWORK must be true or false: $CONFIGURE_STATIC_NETWORK" >&2
     exit 2
@@ -65,14 +65,14 @@ if ! python3 -c 'import yaml' 2>/dev/null; then
 fi
 node_config="$("$node_config_python" "$script_dir/worker-node-config.py" "$NODE_NAME" --repo-root "$repo_root")"
 echo "$node_config"
-expected_node_ip="$(grep '^NODE_IP=' <<< "$node_config" | cut -d= -f2-)"
-expected_interface="$(grep '^NETWORK_INTERFACE=' <<< "$node_config" | cut -d= -f2-)"
-expected_gpu_host_tools="$(grep '^GPU_HOST_TOOLS=' <<< "$node_config" | cut -d= -f2-)"
-expected_gateway="$(grep '^GATEWAY=' <<< "$node_config" | cut -d= -f2-)"
-expected_k8s_package="$(grep '^KUBERNETES_PACKAGE_VERSION=' <<< "$node_config" | cut -d= -f2-)"
-expected_k8s_version="$(grep '^KUBERNETES_VERSION=' <<< "$node_config" | cut -d= -f2-)"
-expected_crio_package="$(grep '^CRIO_PACKAGE_VERSION=' <<< "$node_config" | cut -d= -f2-)"
-expected_crio_version="$(grep '^CRIO_VERSION=' <<< "$node_config" | cut -d= -f2-)"
+expected_node_ip="$(grep '^NODE_IP=' <<<"$node_config" | cut -d= -f2-)"
+expected_interface="$(grep '^NETWORK_INTERFACE=' <<<"$node_config" | cut -d= -f2-)"
+expected_gpu_host_tools="$(grep '^GPU_HOST_TOOLS=' <<<"$node_config" | cut -d= -f2-)"
+expected_gateway="$(grep '^GATEWAY=' <<<"$node_config" | cut -d= -f2-)"
+expected_k8s_package="$(grep '^KUBERNETES_PACKAGE_VERSION=' <<<"$node_config" | cut -d= -f2-)"
+expected_k8s_version="$(grep '^KUBERNETES_VERSION=' <<<"$node_config" | cut -d= -f2-)"
+expected_crio_package="$(grep '^CRIO_PACKAGE_VERSION=' <<<"$node_config" | cut -d= -f2-)"
+expected_crio_version="$(grep '^CRIO_VERSION=' <<<"$node_config" | cut -d= -f2-)"
 
 if [ "$INSTALL_GPU_HOST_TOOLS" = auto ]; then
   INSTALL_GPU_HOST_TOOLS="$expected_gpu_host_tools"
