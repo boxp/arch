@@ -185,6 +185,52 @@ export function dimCrownRim(p: PartsPlayer, mesh: number = FRONT_HAIR, box = CRO
   return changed
 }
 
+/** 輪郭線とみなす暗さ（ストレートアルファの輝度）。 */
+export const HAIR_LINE_LUMA = 45
+/** 後ろ髪の耳の上の水色の飾りのある範囲（モデル座標、読み込み時の姿勢）。 */
+export const BACK_ORNAMENT = { x0: 690, y0: 200, x1: 735, y1: 310 } as const
+
+/** 乗算済みアルファの画素が飾りの水色か。 */
+export function isCyan(r: number, g: number, b: number, a: number): boolean {
+  if (a < 32) return false
+  const k = 255 / a
+  return b * k > 150 && g * k > 110 && b * k - r * k > 50
+}
+
+/** 範囲内の水色の画素を、同じ行の左側（髪の内側）の最も近い、水色でも輪郭線でもない不透明な画素の色で埋める。変えた画素数を返す。 */
+export function fillCyan(
+  pixels: Uint8Array,
+  w: number,
+  h: number,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+): number {
+  let changed = 0
+  const at = (x: number, y: number) => (y * w + x) * 4
+  for (let y = Math.max(0, y0); y < Math.min(h, y1); y++)
+    for (let x = Math.max(0, x0); x < Math.min(w, x1); x++) {
+      const i = at(x, y),
+        a = pixels[i + 3] as number
+      if (!isCyan(pixels[i] as number, pixels[i + 1] as number, pixels[i + 2] as number, a)) continue
+      for (let k = x - 1; k >= Math.max(0, x - 16); k--) {
+        const j = at(k, y),
+          b = pixels[j + 3] as number
+        if (b < 200 || isCyan(pixels[j] as number, pixels[j + 1] as number, pixels[j + 2] as number, b)) continue
+        // 飾りや髪の輪郭線（暗い線）の色は使わず、髪の地の色で埋める。
+        const luma =
+          (((pixels[j] as number) * 0.3 + (pixels[j + 1] as number) * 0.59 + (pixels[j + 2] as number) * 0.11) * 255) /
+          b
+        if (luma < HAIR_LINE_LUMA) continue
+        for (let c = 0; c < 3; c++) pixels[i + c] = Math.round(((pixels[j + c] as number) * a) / b)
+        changed++
+        break
+      }
+    }
+  return changed
+}
+
 /** 後ろ髪の桜の左上に浮く孤立片。v11r アトラス画素座標。 */
 export function isBackHairFragment(x: number, y: number): boolean {
   return x >= 250 && x < 264 && y >= 66 && y < 85
@@ -254,6 +300,24 @@ export function isolateHairStrand(p: PartsPlayer, mesh: number, fragmentOnly = f
       continue
     pixels[4 * i] = pixels[4 * i + 1] = pixels[4 * i + 2] = pixels[4 * i + 3] = 0
     if (fragmentOnly || covered?.[i]) erased++
+  }
+  // BOXP-525 r22: 後ろ髪に重ねて描かれた耳の上の水色の飾り。横髪の外側の縁を消すと、左右を向いた時に横髪の同じ飾りと二重に見えるため髪の色で埋める。
+  if (fragmentOnly) {
+    const pos = new Float32Array(p.rt.memory.buffer, p.rt.p2l_mesh_vertices(p.rig, mesh), info.vertices * 2)
+    let a0 = Infinity,
+      b0 = Infinity,
+      a1 = -Infinity,
+      b1 = -Infinity
+    for (let n = 0; n < info.vertices; n++) {
+      const x = pos[2 * n] as number,
+        y = pos[2 * n + 1] as number
+      if (x < BACK_ORNAMENT.x0 || x > BACK_ORNAMENT.x1 || y < BACK_ORNAMENT.y0 || y > BACK_ORNAMENT.y1) continue
+      a0 = Math.min(a0, (info.uvs[2 * n] as number) * width - x0)
+      a1 = Math.max(a1, (info.uvs[2 * n] as number) * width - x0)
+      b0 = Math.min(b0, (info.uvs[2 * n + 1] as number) * height - y0)
+      b1 = Math.max(b1, (info.uvs[2 * n + 1] as number) * height - y0)
+    }
+    if (a1 >= a0) erased += fillCyan(pixels, w, h, Math.floor(a0) - 4, Math.floor(b0), Math.ceil(a1) + 4, Math.ceil(b1))
   }
   // 2 のべき乗の大きさに置き、p2l.js がミップマップを作れるようにする（縮小表示で細い線が欠けない）。
   const W = powerOfTwo(w),
@@ -593,4 +657,86 @@ export function growTasselMesh(p: PartsPlayer, mesh: number = FRONT_HAIR): Tasse
   info.uvs = uvs
   info.uvBuffer = uvBuffer
   return rig
+}
+
+/**
+ * 右の横髪 (ArtMeshFrontHairL) の外側の縁（BOXP-525 r22、Owner 画像「上の右側のズレ」）。
+ * 元の絵は外側の輪郭が「暗い線・明るい列・暗い線・明るい縁・半透明」の二重になっており、ぎざぎざの画素が
+ * 縮小表示で点線のように見える。また上端が水平に切れていて、その角が後ろ髪の輪郭より外へ段として出る。
+ * 下には後ろ髪 (ArtMeshBackHair) が一本の輪郭線で描かれている（横髪を外した描画で確認）ので、横髪の外側の帯を
+ * なめらかに透明にして後ろ髪の輪郭を見せる。v11r の 4096px アトラス画素座標。右隣の別素材 (x ≥ 3892) は含めない。
+ */
+export const SIDE_RIM = { x0: 3855, y0: 212, x1: 3889, y1: 340 } as const
+/** 外周から消す幅・透明へ移る幅（画素）と、外周の位置を平らにする上下の行数。 */
+export const SIDE_TRIM = 7
+export const SIDE_RAMP = 3
+export const SIDE_SMOOTH = 6
+/** 範囲の下端で削る幅を 0 へ戻す行数。 */
+export const SIDE_TAPER = 24
+
+/**
+ * 乗算済みアルファの画素列で、行ごとの外周（最も右の不透明度 128 以上の画素）を上下 smooth 行の中央値で平らにし、
+ * そこから trim 画素内側より外を ramp 画素かけて透明にする（下端 taper 行で削る幅を 0 へ戻す）。変えた画素数を返す。
+ */
+export function trimOuterFringe(
+  pixels: Uint8Array,
+  w: number,
+  h: number,
+  trim = SIDE_TRIM,
+  ramp = SIDE_RAMP,
+  smooth = SIDE_SMOOTH,
+  taper = SIDE_TAPER,
+): number {
+  const edge: number[] = []
+  for (let y = 0; y < h; y++) {
+    let r = -1
+    for (let x = w - 1; x >= 0 && r < 0; x--) if ((pixels[(y * w + x) * 4 + 3] as number) >= 128) r = x
+    edge.push(r)
+  }
+  let changed = 0
+  for (let y = 0; y < h; y++) {
+    if ((edge[y] as number) < 0) continue
+    const near = edge
+      .slice(Math.max(0, y - smooth), y + smooth + 1)
+      .filter((r) => r >= 0)
+      .sort((a, b) => a - b)
+    // 範囲の下端では削る幅を 0 へ戻し、削った所と削らない所の間に段を作らない。
+    const cut = (near[Math.floor(near.length / 2)] as number) - trim * Math.min(1, (h - 1 - y) / taper)
+    for (let x = Math.max(0, Math.ceil(cut)); x < w; x++) {
+      const i = (y * w + x) * 4,
+        k = Math.max(0, Math.min(1, 1 - (x - cut) / ramp))
+      if (k >= 1 || !(pixels[i + 3] as number)) continue
+      for (let c = 0; c < 4; c++) pixels[i + c] = Math.round((pixels[i + c] as number) * k)
+      changed++
+    }
+  }
+  return changed
+}
+
+/** 右の横髪の外側の明るい縁と上端の角を消す（共有アトラスを直接変える）。顔のテクスチャ補正より前に呼ぶ。 */
+export function trimSideRim(p: PartsPlayer, mesh = 2, box = SIDE_RIM): number {
+  const gl = p.gl,
+    [width, height] = atlasSize(p),
+    info = p.meshes[mesh] as Mesh
+  if (width !== 4096 || height !== 4096) throw new Error('横髪のアトラスサイズが異なります')
+  const w = box.x1 - box.x0,
+    h = box.y1 - box.y0,
+    texture = p.textures[info.texture] as WebGLTexture,
+    framebuffer = gl.createFramebuffer(),
+    previous = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null,
+    pixels = new Uint8Array(w * h * 4)
+  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer)
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0)
+  try {
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('アトラスを読めません')
+    gl.readPixels(box.x0, box.y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+  } finally {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, previous)
+    gl.deleteFramebuffer(framebuffer)
+  }
+  const changed = trimOuterFringe(pixels, w, h)
+  gl.bindTexture(gl.TEXTURE_2D, texture)
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, box.x0, box.y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+  return changed
 }

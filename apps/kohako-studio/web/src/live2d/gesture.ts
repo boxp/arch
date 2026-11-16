@@ -13,6 +13,7 @@ import {
   patchHair,
   stepTasselVertices,
   type TasselRig,
+  trimSideRim,
 } from './hair-parts'
 import { installMipmaps, textureSizes } from './mipmaps'
 import { ANCHORS, BACK_HAIR, bindBackHair, followAnchors, SHOULDER_NOTCH, type BackHairRig } from './back-hair'
@@ -850,6 +851,13 @@ export function createActingStage(
   } catch (e) {
     tasselPaste = e instanceof Error ? e.message : String(e)
   }
+  // BOXP-525 r22: 右の横髪の外側の明るい縁（点線状の二重輪郭）と上端の角（右上の段）。
+  let sideRim: number | string
+  try {
+    sideRim = trimSideRim(p as unknown as PartsPlayer)
+  } catch (e) {
+    sideRim = e instanceof Error ? e.message : String(e)
+  }
   let facePatch: Record<string, unknown>
   try {
     facePatch = patchFaceTexture(p as unknown as Parameters<typeof patchFaceTexture>[0])
@@ -874,6 +882,7 @@ export function createActingStage(
     hairPatch.tassel = e instanceof Error ? e.message : String(e)
   }
   hairPatch.crownRim = crownRim
+  hairPatch.sideRim = sideRim
   hairPatch.mipmaps = mipmaps
   // BOXP-525: 体の層の肩の上の切り欠き（描き込まれた髪の小片）を消す。左右を向いた時の細い継ぎ目と薄紫の帯。
   try {

@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   barycentric,
   CROWN_HAIR_LUMA,
+  fillCyan,
   dimRim,
   growLoopUv,
   growTassel,
+  isCyan,
   isForeignToHair,
   isOrnamentPink,
   nearOrnament,
@@ -12,6 +14,7 @@ import {
   pasteOver,
   powerOfTwo,
   stepTasselVertices,
+  trimOuterFringe,
 } from './hair-parts'
 
 describe('isForeignToHair (BOXP-525 頬・もみあげのゴミ)', () => {
@@ -182,5 +185,46 @@ describe('房飾りの 3 段目右 (BOXP-525 r22 組み飾りの下部の途切�
   it('頂点が見つからなければ失敗する', () => {
     const uv = new Float32Array([0, 0, 10, 0, 0, 10])
     expect(() => growTassel(uv, [0, 1, 2], [{ at: [50, 50], by: [1, 1] }])).toThrow()
+  })
+})
+
+describe('右の横髪の外側の縁 (BOXP-525 r22 上の右側のズレ)', () => {
+  // w×h の不透明な横帯（各行 0..edge-1 が不透明）を作る。
+  const band = (w: number, edges: number[]) => {
+    const px = new Uint8Array(w * edges.length * 4)
+    edges.forEach((e, y) => {
+      for (let x = 0; x < e; x++) px.set([40, 40, 60, 255], (y * w + x) * 4)
+    })
+    return px
+  }
+  it('外周を上下の中央値で平らにしてから一定の幅を透明にする（1 行だけ飛び出た画素も消える）', () => {
+    const w = 20,
+      edges = [15, 15, 18, 15, 15]
+    const px = band(w, edges)
+    const n = trimOuterFringe(px, w, edges.length, 4, 1, 2, 1)
+    expect(n).toBeGreaterThan(0)
+    // 最下行は taper で削らないので、それより上を見る。
+    for (let y = 0; y < edges.length - 1; y++) {
+      expect(px[(y * w + 9) * 4 + 3]).toBe(255)
+      expect(px[(y * w + 11) * 4 + 3]).toBe(0)
+    }
+  })
+  it('下端では削る幅を 0 へ戻す', () => {
+    const w = 20,
+      edges = [15, 15, 15, 15, 15]
+    const px = band(w, edges)
+    trimOuterFringe(px, w, edges.length, 4, 1, 2, 4)
+    // 最下行は削らない。
+    expect(px[(4 * w + 14) * 4 + 3]).toBe(255)
+    expect(px[(0 * w + 14) * 4 + 3]).toBe(0)
+  })
+  it('水色の飾りを左側の髪の地の色で埋め、輪郭線の色は使わない', () => {
+    expect(isCyan(80, 200, 240, 255)).toBe(true)
+    expect(isCyan(150, 142, 190, 255)).toBe(false)
+    // [地, 線, 水色, 水色]
+    const px = new Uint8Array([60, 55, 90, 255, 10, 10, 20, 255, 80, 200, 240, 255, 80, 200, 240, 255])
+    expect(fillCyan(px, 4, 1, 0, 0, 4, 1)).toBe(2)
+    expect(Array.from(px.slice(8, 12))).toEqual([60, 55, 90, 255])
+    expect(Array.from(px.slice(12, 16))).toEqual([60, 55, 90, 255])
   })
 })
