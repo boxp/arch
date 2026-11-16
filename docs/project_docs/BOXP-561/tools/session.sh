@@ -9,6 +9,12 @@ source "$here/common.sh"
 require_tmp
 model=${1:-} tok=${2:-} plan=${3:-}
 PORT=18561
+# 1 回の閉鎖の上限（分）。既定 90。TD-02 の長時間評価では最大 180 まで延ばす（期限で止まった job は次の区間で再開する）
+CMIN=${BOXP561_CLOSURE_MIN:-90}
+if ! [[ $CMIN =~ ^[0-9]+$ ]] || ((CMIN < 30 || CMIN > 180)); then
+  echo "BOXP561_CLOSURE_MIN must be 30..180" >&2
+  exit 2
+fi
 [[ $model =~ ^(qwen3-coder-next|qwen38-flash-next|qwen38-27b)$ && $tok =~ ^[A-Za-z0-9-]+$ && -n $plan ]] || {
   echo "usage: session.sh MODEL TOKEN PLAN" >&2
   exit 2
@@ -20,13 +26,14 @@ log() { echo "$(date -u +%FT%TZ) $*" | tee -a "$L"; }
 export BOXP561_OBS_DIR=$S/obs
 closed=0
 # close 前に中断しても restore が期限切れ扱いにならないよう、仮の期限を置く
-deadline=$(($(date +%s) + 90 * 60))
+deadline=$(($(date +%s) + CMIN * 60))
 cleanup() {
   rc=$?
   trap - EXIT INT TERM
   log "cleanup rc=$rc"
   [[ -n ${wd:-} ]] && kill "$wd" 2>/dev/null || true
   [[ -n ${hb:-} ]] && kill "$hb" 2>/dev/null || true
+  [[ -n ${vw:-} ]] && kill "$vw" 2>/dev/null || true
   "$here/obs.sh" stop "$BOXP561_OBS_DIR" >>"$L" 2>&1 || true
   "$here/tunnel.sh" down $PORT >>"$L" 2>&1 || true
   if ((closed)); then
@@ -56,7 +63,7 @@ trap cleanup EXIT INT TERM
 # gate が実際に自分の token で閉じた場合だけ cleanup で restore する。
 # close が gate 変更前に失敗した(他の利用者の状態が残る)場合は開け戻さない。
 # 閉鎖期限は close 開始前から数える（503 反映待ちも 90 分に含める）
-deadline=$(($(date +%s) + 90 * 60))
+deadline=$(($(date +%s) + CMIN * 60))
 close_rc=0
 "$here/ops.sh" close "$tok" >>"$L" 2>&1 || close_rc=$?
 g=$("$here/ops.sh" gate 2>>"$L" || echo unknown)
@@ -83,6 +90,12 @@ hb=$!
 "$here/ops.sh" drain >>"$L" 2>&1
 "$here/tunnel.sh" up $PORT >>"$L" 2>&1
 "$here/obs.sh" start "$BOXP561_OBS_DIR" >>"$L" 2>&1
+# 長時間評価（L:）を含む区間では、本番 vault を変更しうる tool 呼び出しを監視して ABORT する
+if [[ ,$plan, == *,L:* ]]; then
+  "$here/vaultwatch.sh" "$tok" "$model" >>"$L" 2>&1 &
+  vw=$!
+  log "vaultwatch started pid=$vw"
+fi
 # 閉鎖 90 分の上限: 期限で ABORT を作り、実行中の run を止める
 (
   sleep $((deadline - 180 - $(date +%s))) # restore の確認時間を期限内に残す
@@ -139,6 +152,10 @@ for st in "${steps[@]}"; do
       log "$st verify $(cat "$S/$st/out/verify.json")"
       # runner の結果処理を当て、受入へ回る結果かつ固定検証合格の時だけ scratch 票を Done へ動かす
       bb "$here/t1_finish.bb" "$S/$st" >>"$L" 2>&1 || log "$st finish rc=$?"
+      ;;
+    L:n1 | L:n2 | L:t1)
+      # 長時間評価: 時間上限なしで実行し、中断時は次の区間で session を再開する（long_run.sh）
+      "$here/long_run.sh" "$model" "${st#L:}" $PORT >>"$L" 2>&1 || log "$st rc=$?"
       ;;
     *) log "unknown step $st" ;;
   esac
