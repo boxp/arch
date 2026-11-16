@@ -14,7 +14,7 @@ inflight() { ssh -o BatchMode=yes "$NODE" "curl -s -m 5 http://$(podip):9901/sta
 chat() { # URL MODEL -> content|model|tok/s
   curl -s -m "${3:-600}" "$1/v1/chat/completions" -H content-type:application/json \
     -d "{\"model\":\"$2\",\"messages\":[{\"role\":\"user\",\"content\":\"2+3は？数字だけ答えて\"}],\"max_tokens\":8,\"temperature\":0}" \
-    | jq -r '[(.choices[0].message.content // "ERR"), (.model // "-"), (.timings.predicted_per_second // 0 | tostring)] | join("|")'; }
+    | jq -r '[(.choices[0].message.content // "ERR"), (.model // "-"), (.timings.predicted_per_second // 0 | tostring)] | join("|")' 2>/dev/null; }  # 復帰直後の 503（非 JSON）は空として再試行
 case "${1:-}" in
 preflight)
   bad=0
