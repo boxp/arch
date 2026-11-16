@@ -408,3 +408,189 @@ export function patchHair(p: PartsPlayer): Record<string, unknown> {
   }
   return result
 }
+
+/**
+ * 房飾り（桜の下の組み紐に 2 列×3 段で下がる房）の 3 段目右（BOXP-525 r22、Owner 画像「組み飾りの下部が途切れている」）。
+ * 元のアトラスでは 3 段目右の房の絵が描かれておらず、組み紐の右下が斜めに切れている。前髪の外周の頂点もその切れ目を通る。
+ * 2 段目右の房（と周りの紺の地）を 1 段下へ写し、外周の頂点 3 つを位置と UV を同じだけ外へ出して写した房まで描く。
+ * v11r の 4096px アトラス画素座標（写し元の範囲と、1 段の間隔）。
+ */
+export const TASSEL_SRC = { x0: 3274, y0: 161, x1: 3290, y1: 183 } as const
+export const TASSEL_STEP: readonly [number, number] = [1, 23]
+/** 広げる外周の頂点（UV のアトラス画素座標。位置は待機の動きで変わるため UV で探す）と UV の移動量（アトラス画素）。 */
+export const TASSEL_GROW: readonly { at: readonly [number, number]; by: readonly [number, number] }[] = [
+  { at: [3285.8, 192.5], by: [4.7, 0.5] },
+  { at: [3281.5, 203.8], by: [8, 3.5] },
+  { at: [3271.9, 208.0], by: [1, 2] },
+]
+
+/**
+ * 乗算済みアルファの画素列 pixels（w×h、左上 = 範囲の (0,0)）で、src の範囲を step だけずらした先へ上から重ねる。
+ * 3 段目右の位置は紺の地が不透明に描かれている（房だけが無い）ため、房と地をまとめて上に描く。
+ * 写し元の下端 fade 行は不透明度を段階的に下げて縁をなじませる。変えた画素数を返す。
+ */
+export function pasteOver(
+  pixels: Uint8Array,
+  w: number,
+  h: number,
+  src: { x0: number; y0: number; x1: number; y1: number },
+  step: readonly [number, number],
+  fade = 2,
+): number {
+  const copy = pixels.slice()
+  let changed = 0
+  for (let y = src.y0; y < src.y1; y++)
+    for (let x = src.x0; x < src.x1; x++) {
+      const tx = x + step[0],
+        ty = y + step[1]
+      if (x < 0 || y < 0 || x >= w || y >= h || tx < 0 || ty < 0 || tx >= w || ty >= h) continue
+      const s = (y * w + x) * 4,
+        d = (ty * w + tx) * 4,
+        k = Math.min(1, (src.y1 - y) / (fade + 1)),
+        keep = 1 - ((copy[s + 3] as number) * k) / 255
+      if (!(copy[s + 3] as number)) continue
+      for (let c = 0; c < 4; c++)
+        pixels[d + c] = Math.min(255, Math.round((copy[s + c] as number) * k + (copy[d + c] as number) * keep))
+      changed++
+    }
+  return changed
+}
+
+/** 点 p の三角形 abc に対する重心座標（外でも外挿する）。 */
+export function barycentric(
+  p: readonly [number, number],
+  a: readonly [number, number],
+  b: readonly [number, number],
+  c: readonly [number, number],
+): [number, number, number] {
+  const d = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1])
+  if (Math.abs(d) < 1e-9) return [1, 0, 0]
+  const u = ((b[1] - c[1]) * (p[0] - c[0]) + (c[0] - b[0]) * (p[1] - c[1])) / d,
+    v = ((c[1] - a[1]) * (p[0] - c[0]) + (a[0] - c[0]) * (p[1] - c[1])) / d
+  return [u, v, 1 - u - v]
+}
+
+export type TasselRig = { moved: { n: number; tri: [number, number, number]; bary: [number, number, number] }[] }
+
+/**
+ * 外周の頂点を UV で by だけ動かし、位置は「動かさない頂点の最寄りの三角形」の重心座標で外挿して毎フレーム求める
+ * （UV と位置が同じだけ動くので絵は縮まない）。uvPx は画素単位の UV（その場で書き換える）。
+ */
+export function growTassel(
+  uvPx: Float32Array,
+  indices: ArrayLike<number>,
+  grow = TASSEL_GROW,
+  tolerance = 1.5,
+): TasselRig {
+  const count = uvPx.length / 2,
+    targets: { n: number; by: readonly [number, number] }[] = []
+  for (const g of grow) {
+    let best = -1,
+      bestD = tolerance
+    for (let n = 0; n < count; n++) {
+      const d = Math.hypot((uvPx[2 * n] as number) - g.at[0], (uvPx[2 * n + 1] as number) - g.at[1])
+      if (d < bestD) {
+        bestD = d
+        best = n
+      }
+    }
+    if (best < 0) throw new Error('房飾りの外周の頂点が見つかりません')
+    targets.push({ n: best, by: g.by })
+  }
+  const movedSet = new Set(targets.map((t) => t.n)),
+    uvAt = (n: number): [number, number] => [uvPx[2 * n] as number, uvPx[2 * n + 1] as number]
+  const moved = targets.map(({ n, by }) => {
+    const goal: [number, number] = [(uvPx[2 * n] as number) + by[0], (uvPx[2 * n + 1] as number) + by[1]]
+    let tri: [number, number, number] | null = null,
+      bestD = Number.POSITIVE_INFINITY
+    for (let i = 0; i + 2 < indices.length; i += 3) {
+      const t: [number, number, number] = [indices[i] as number, indices[i + 1] as number, indices[i + 2] as number]
+      if (t.some((k) => movedSet.has(k))) continue
+      const [a, b, c] = t.map(uvAt) as [[number, number], [number, number], [number, number]],
+        area = Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))
+      if (area < 4) continue
+      const d = Math.hypot((a[0] + b[0] + c[0]) / 3 - goal[0], (a[1] + b[1] + c[1]) / 3 - goal[1])
+      if (d < bestD) {
+        bestD = d
+        tri = t
+      }
+    }
+    if (!tri) throw new Error('房飾りの外挿に使う三角形がありません')
+    const bary = barycentric(goal, uvAt(tri[0]), uvAt(tri[1]), uvAt(tri[2]))
+    uvPx[2 * n] = goal[0]
+    uvPx[2 * n + 1] = goal[1]
+    return { n, tri, bary }
+  })
+  return { moved }
+}
+
+/** 今の頂点 v（その場で書き換える）の広げた外周の頂点を、結び付けた三角形の今の位置から求める。 */
+export function stepTasselVertices(v: Float32Array, rig: TasselRig): void {
+  for (const { n, tri, bary } of rig.moved)
+    for (const k of [0, 1] as const)
+      v[2 * n + k] =
+        bary[0] * (v[2 * tri[0] + k] as number) +
+        bary[1] * (v[2 * tri[1] + k] as number) +
+        bary[2] * (v[2 * tri[2] + k] as number)
+}
+
+/**
+ * 房飾りの 3 段目右へ 2 段目右の房を写す（共有アトラスを直接変える）。写した画素数を返す。
+ * 顔のテクスチャ補正（patchFaceTexture）より前に呼ぶ: 顔の補正は読み込み時のアトラスの写しを書き戻すため、後で変えると上書きされる。
+ */
+export function pasteTassel(p: PartsPlayer, mesh: number = FRONT_HAIR): number {
+  const gl = p.gl,
+    [width, height] = atlasSize(p),
+    info = p.meshes[mesh] as Mesh
+  if (width !== 4096 || height !== 4096) throw new Error('前髪のアトラスサイズが異なります')
+  const x0 = TASSEL_SRC.x0 - 2,
+    y0 = TASSEL_SRC.y0 - 2,
+    w = TASSEL_SRC.x1 - TASSEL_SRC.x0 + 4 + TASSEL_STEP[0],
+    h = TASSEL_SRC.y1 - TASSEL_SRC.y0 + 4 + TASSEL_STEP[1],
+    texture = p.textures[info.texture] as WebGLTexture,
+    framebuffer = gl.createFramebuffer(),
+    previous = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null,
+    pixels = new Uint8Array(w * h * 4)
+  gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer)
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0)
+  try {
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('アトラスを読めません')
+    gl.readPixels(x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+  } finally {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, previous)
+    gl.deleteFramebuffer(framebuffer)
+  }
+  const pasted = pasteOver(
+    pixels,
+    w,
+    h,
+    { x0: 2, y0: 2, x1: 2 + TASSEL_SRC.x1 - TASSEL_SRC.x0, y1: 2 + TASSEL_SRC.y1 - TASSEL_SRC.y0 },
+    TASSEL_STEP,
+  )
+  gl.bindTexture(gl.TEXTURE_2D, texture)
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+  return pasted
+}
+
+/**
+ * 前髪の外周を写した房まで広げる（UV を変え、位置は毎フレーム stepTasselVertices で求める）。結び付けを返す。
+ * patchHair（髪飾りの外周の UV 拡張）の後に呼ぶ。
+ */
+export function growTasselMesh(p: PartsPlayer, mesh: number = FRONT_HAIR): TasselRig {
+  const gl = p.gl,
+    [width, height] = atlasSize(p),
+    info = p.meshes[mesh] as Mesh
+  if (width !== 4096 || height !== 4096) throw new Error('前髪のアトラスサイズが異なります')
+  const uvPx = new Float32Array(info.uvs.length)
+  for (let i = 0; i < uvPx.length; i++) uvPx[i] = (info.uvs[i] as number) * (i % 2 ? height : width)
+  const rig = growTassel(uvPx, info.indices),
+    uvs = new Float32Array(info.uvs.length)
+  for (let i = 0; i < uvs.length; i++) uvs[i] = (uvPx[i] as number) / (i % 2 ? height : width)
+  const uvBuffer = gl.createBuffer() as WebGLBuffer
+  gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer)
+  gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW)
+  info.uvs = uvs
+  info.uvBuffer = uvBuffer
+  return rig
+}

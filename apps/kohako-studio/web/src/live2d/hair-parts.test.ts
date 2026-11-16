@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import {
+  barycentric,
   CROWN_HAIR_LUMA,
   dimRim,
   growLoopUv,
+  growTassel,
   isForeignToHair,
   isOrnamentPink,
   nearOrnament,
   outerLoop,
+  pasteOver,
   powerOfTwo,
+  stepTasselVertices,
 } from './hair-parts'
 
 describe('isForeignToHair (BOXP-525 頬・もみあげのゴミ)', () => {
@@ -136,5 +140,47 @@ describe('dimRim のぼかし (BOXP-525 r21 背景が透ける白い線)', () =>
 describe('powerOfTwo (BOXP-525 r21 ミップマップ用の切り出し)', () => {
   it('n 以上の最小の 2 のべき乗', () => {
     expect([1, 2, 3, 255, 256, 257, 1100].map(powerOfTwo)).toEqual([1, 2, 4, 256, 256, 512, 2048])
+  })
+})
+
+describe('房飾りの 3 段目右 (BOXP-525 r22 組み飾りの下部の途切れ)', () => {
+  it('pasteOver は写し元を上から重ね、下端だけ不透明度を下げる', () => {
+    // 1x4: 上 2 行が写し元（不透明の赤）、下 2 行が写し先（不透明の紺）。
+    const px = new Uint8Array([255, 0, 0, 255, 255, 0, 0, 255, 0, 0, 80, 255, 0, 0, 80, 255])
+    const n = pasteOver(px, 1, 4, { x0: 0, y0: 0, x1: 1, y1: 2 }, [0, 2], 1)
+    expect(n).toBe(2)
+    expect(Array.from(px.slice(8, 12))).toEqual([255, 0, 0, 255])
+    // 最下行は半分だけ重なる。
+    expect(px[12]).toBe(128)
+    expect(px[14]).toBe(40)
+    expect(px[15]).toBe(255)
+  })
+  it('barycentric は三角形の外でも外挿する', () => {
+    const [a, b, c] = barycentric([2, 0], [0, 0], [1, 0], [0, 1])
+    expect(a).toBeCloseTo(-1)
+    expect(b).toBeCloseTo(2)
+    expect(c).toBeCloseTo(0)
+  })
+  it('growTassel は指定の外周の頂点の UV を動かし、位置は動かさない三角形からの外挿で同じだけ動かす', () => {
+    // 2x2 の格子（UV = 位置）。頂点 3 (10,10) を (+2, +1) 広げる。
+    const uv = new Float32Array([0, 0, 10, 0, 0, 10, 10, 10, 20, 0])
+    const indices = [0, 1, 2, 1, 3, 2, 1, 4, 3]
+    const rig = growTassel(uv, indices, [{ at: [10, 10], by: [2, 1] }])
+    expect(rig.moved.map((m) => m.n)).toEqual([3])
+    expect(Array.from(uv.slice(6, 8))).toEqual([12, 11])
+    // 位置が UV と同じ配置なら、外挿の結果も同じ位置になる（絵が縮まない）。
+    const v = new Float32Array([0, 0, 10, 0, 0, 10, 10, 10, 20, 0])
+    stepTasselVertices(v, rig)
+    expect(v[6]).toBeCloseTo(12)
+    expect(v[7]).toBeCloseTo(11)
+    // 全体が平行移動しても付いていく。
+    const moved = v.map((x, i) => x + (i % 2 ? 5 : -3))
+    stepTasselVertices(moved, rig)
+    expect(moved[6]).toBeCloseTo(9)
+    expect(moved[7]).toBeCloseTo(16)
+  })
+  it('頂点が見つからなければ失敗する', () => {
+    const uv = new Float32Array([0, 0, 10, 0, 0, 10])
+    expect(() => growTassel(uv, [0, 1, 2], [{ at: [50, 50], by: [1, 1] }])).toThrow()
   })
 })
