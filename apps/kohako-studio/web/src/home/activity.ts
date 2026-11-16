@@ -301,9 +301,12 @@ const refill = (id: string) => {
   const panel = rootNode?.querySelector<HTMLElement>(`.activity-args[data-step="${id}"]`)
   if (panel) fillPanel(panel, id)
 }
+/** 新しい取り寄せを始めてよいか。一覧を畳んでいる間は、待ち行列に残っていても始めない（同時は 4 件まで）。 */
+export const canStartLoad = (open: boolean, running: number, queued: number) => open && running < 4 && queued > 0
 function pump() {
   // 手順が多くても照会が一度に集中しないよう、同時に取り寄せるのは 4 件まで。
-  while (loader && active < 4 && queue.length) {
+  // 畳んだ後は、取得中の応答が返っても残りを始めない（開き直した時に ensureDetails から再開する）。
+  while (loader && canStartLoad(expanded, active, queue.length)) {
     const id = must(queue.shift()),
       gen = generation,
       forState = details.get(id)?.forState ?? 'preview'
@@ -340,6 +343,8 @@ function ensureDetails(retryErrors: boolean) {
     const failed = entry?.state === 'error' && (retryErrors || entry.forState !== state)
     if (!entry || failed || detailOutdated(entry, state)) loadDetail(id, state)
   }
+  // 畳んでいる間に待たせていた分を再開する。
+  pump()
 }
 export function tickActivity() {
   if (!rootNode) return

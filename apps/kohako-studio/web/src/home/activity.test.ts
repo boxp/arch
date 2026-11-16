@@ -138,3 +138,15 @@ describe('実引数の詳細 (BOXP-560)', () => {
     ).toEqual(['path', 'old_string', 'new_string', 'timeout', 'zzz'])
   })
 })
+describe('取り寄せの開始条件 (BOXP-560)', () => {
+  it('一覧を畳んでいる間は、待ち行列が残っていても新しい取り寄せを始めない', async () => {
+    const { canStartLoad } = await import('./activity')
+    expect(canStartLoad(true, 0, 5)).toBe(true)
+    expect(canStartLoad(true, 3, 1)).toBe(true)
+    expect(canStartLoad(true, 4, 1)).toBe(false)
+    expect(canStartLoad(true, 0, 0)).toBe(false)
+    // 5 件以上ある一覧を開いてすぐ畳んだ時: 取得中の 4 件が返っても残りは始めない。
+    expect(canStartLoad(false, 3, 2)).toBe(false)
+    expect(canStartLoad(false, 0, 2)).toBe(false)
+  })
+})
