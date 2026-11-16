@@ -9,7 +9,50 @@ import * as path from "node:path";
 
 const VAULT_ROOT = process.env.BOXP561_PROTECTED_ROOT || "/home/boxp/Documents/obsidian-headless";
 // obsidian-task-board（scratch vault 向け task-board.bb）は T1 で正当に使うので、本番 vault のパス要素とその glob 形だけを拒否する
-const BASH_DENY = /obsidian-head|documents|\/doc[^/\s]*[*?[]|\/obs[^/\s]*[*?[]/i;
+const BASH_DENY = /obsidian-head|documents/i;
+// 本番 vault パスの各要素（home / boxp / Documents / obsidian-headless …）。glob の各セグメントがこのどれかに一致しうるなら拒否する
+// （`cd /home/boxp; rm -rf Doc*/obs*/BOXP` のような相対 glob や `*` 単独も対象。大文字小文字は nocaseglob を考慮し無視）
+const VAULT_PARTS = Array.from(new Set(
+  [VAULT_ROOT, "/home/boxp/Documents/obsidian-headless"].flatMap((r) => r.split("/")).filter((x) => x !== ""),
+));
+
+function globSegmentRegex(seg: string): RegExp | undefined {
+  let re = "";
+  for (let i = 0; i < seg.length; i++) {
+    const ch = seg[i];
+    if (ch === "*") re += ".*";
+    else if (ch === "?") re += ".";
+    else if (ch === "[") {
+      const end = seg.indexOf("]", i + 2);
+      if (end < 0) return undefined; // 解釈できない括弧は呼び出し側で拒否
+      let body = seg.slice(i + 1, end);
+      if (body.startsWith("!") || body.startsWith("^")) body = "^" + body.slice(1);
+      re += "[" + body.replace(/\\/g, "\\\\") + "]";
+      i = end;
+    } else re += ch.replace(/[.+^${}()|\\\]]/g, "\\$&");
+  }
+  return new RegExp("^" + re + "$", "i");
+}
+
+// glob を含むセグメントが本番 vault のパス要素に一致しうるかを判定する（判定不能は一致扱い）
+export function globHitsVault(command: string): boolean {
+  const tokens = command.split(/[\s;|&()<>=:,{}`]+/);
+  for (const tok of tokens) {
+    if (!/[*?[]/.test(tok)) continue;
+    for (const seg of tok.split("/")) {
+      if (!/[*?[]/.test(seg)) continue;
+      let re: RegExp | undefined;
+      try {
+        re = globSegmentRegex(seg);
+      } catch {
+        return true;
+      }
+      if (!re) return true;
+      if (VAULT_PARTS.some((part) => re!.test(part))) return true;
+    }
+  }
+  return false;
+}
 
 function realish(p: string): string {
   let cur = p;
@@ -47,7 +90,9 @@ export function decide(toolName: string, input: any, cwd: string): string | unde
     if (toolName === "bash") {
       const c = input?.command;
       if (typeof c !== "string") return "command を判定できないため拒否しました";
-      if (BASH_DENY.test(c)) return "評価中は本番 vault を指しうるコマンドは実行できません。作業ディレクトリ内の資料だけを使ってください";
+      // 引用符・バックスラッシュによる分割（Doc"uments"、D\ocuments 等）は除去してから照合する
+      const norm = c.replace(/["'\\]/g, "");
+      if (BASH_DENY.test(norm) || globHitsVault(norm)) return "評価中は本番 vault を指しうるコマンドは実行できません。作業ディレクトリ内の資料だけを使ってください";
       return undefined;
     }
     return undefined;

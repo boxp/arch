@@ -130,3 +130,4 @@ Owner は時間より実際のアウトプットを読み比べたい。そこ�
 - 運用中の修正は 3 点。状態判定の set -e 不具合（finalize を追加）、vaultwatch の追加、再処理中の idle 誤判定を防ぐ slot 確認。
 - レビュー後の追加: vaultwatch は tool 実行開始後の事後検出で書込みを防げないため、pi 拡張 `tools/vaultguard.ts` を `long_run.sh` で `-e` 読込みし、本番 vault 配下への write/edit と本番 vault のパス要素（obsidian-headless / Documents とその glob）を含む bash を実行前に拒否する（判定不能は拒否）。模擬サーバの tool 呼び出しで bash/write とも拒否・vault 変更 0 を確認。vaultwatch と guard は二次防御として残す。今回の評価結果は本変更前のもので、再計測はしていない（過去 T1 で本番 vault を ls した 6 呼び出しは今後は拒否される）。
 - 読み比べの入口は Obsidian の `Projects/localllm-practical-eval/読み比べ.md`。
+- レビュー後の追加2: `cd /home/boxp; rm -rf Doc*/obs*/BOXP` のような相対 glob が拒否されない穴を修正。bash は引用符/バックスラッシュを除いてから照合し、glob を含む各パスセグメントを正規表現化して本番 vault パスの要素（home/boxp/Documents/obsidian-headless）のどれかに一致しうれば拒否（`*` 単独・`[D]ocuments`・`?ocuments` も拒否、解釈できない括弧は拒否）。`*.md`・`tests/*.sh`・scratch 向け task-board.bb は許可。13 ケースで期待どおり。
