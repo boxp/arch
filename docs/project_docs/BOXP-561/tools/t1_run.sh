@@ -4,7 +4,7 @@
 set -euo pipefail
 here=$(cd -- "$(dirname -- "$0")" && pwd -P); source "$here/common.sh"; require_tmp
 BASE=d95b7cdc1209b5bc8d79f170fe656b2cda468628   # origin/main 2026-11-16、BOXP-382 の不具合が残っていることを確認済み
-ARCH=/home/boxp/.codex-task-board/workspaces/BOXP-561/20261116T044943Z-fe6f7509-4d0a-4be5-9d94-813888e79502/ghq/github.com/boxp/arch
+ARCH=$(git -C "$here" rev-parse --show-toplevel)   # この run の arch worktree（run ごとに変わるので固定しない）
 model=${1:-} run=${2:-} port=${3:-}
 [[ $model =~ ^(qwen3-coder-next|qwen38-flash-next|qwen38-27b)$ && $port =~ ^[0-9]+$ && -n $run ]] && under_tmp "$run" && [[ ! -e $run ]] || { echo "usage: t1_run.sh MODEL NEW_RUNDIR PORT" >&2; exit 2; }
 obs=${BOXP561_OBS_DIR:?BOXP561_OBS_DIR required}; [[ -d $obs && ! -e $obs/ABORT ]] || { echo "observer missing or aborted" >&2; exit 1; }

@@ -3,7 +3,7 @@
 set -uo pipefail
 here=$(cd -- "$(dirname -- "$0")" && pwd -P); source "$here/common.sh"; require_tmp || exit 2
 BASE=d95b7cdc1209b5bc8d79f170fe656b2cda468628
-ARCH=/home/boxp/.codex-task-board/workspaces/BOXP-561/20261116T044943Z-fe6f7509-4d0a-4be5-9d94-813888e79502/ghq/github.com/boxp/arch
+ARCH=$(git -C "$here" rev-parse --show-toplevel)   # この run の arch worktree（run ごとに変わるので固定しない）
 S=.github/scripts/ansible-apply-targets.sh; T=.github/scripts/ansible-apply-targets.test.sh
 patch=$(realpath -e "${1:?usage: t1_verify.sh PATCH}") || exit 2
 w=$(mktemp -d "$BOXP561_TMP/t1v.XXXX"); git -C "$ARCH" worktree add -q --detach "$w/a" "$BASE"; cd "$w/a"
