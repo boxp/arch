@@ -775,6 +775,11 @@ export const petEyeHold = (open: number, last: number | undefined, petOn: boolea
   petOn && typeof last === 'number' && Number.isFinite(last) ? Math.min(open, last) : open
 export const eyeOpenFor = (blinkOpen: number, emotionClosed: number, petClosed: number): number =>
   Math.min(blinkOpen, 1 - Math.max(emotionClosed, petClosed))
+// BOXP-525 TD-02: v11r の虹彩は上端（まつ毛に隠れる位置）で水平に切れた絵なので、視線を下げる（ParamEyeBallY < 0）と
+// 切れた上端と白目の帯がまつ毛の下に出て「瞳の上が途切れる」。下を見る時は上まぶたも視線に合わせて下げ、切れ目を隠す。
+export const LOOK_DOWN_LID = 0.45
+export const lookDownLid = (eyeBallY: number): number =>
+  Number.isFinite(eyeBallY) && eyeBallY < 0 ? Math.min(1, -eyeBallY) * LOOK_DOWN_LID : 0
 // BOXP-525: 頭の左右の向き（ParamAngleX）を ±YAW_KNEE までは等倍、その先は ±YAW_MAX へ滑らかに飽和させる。
 export const YAW_KNEE = 9,
   YAW_MAX = 14
@@ -896,6 +901,7 @@ export function createActingStage(
   let shownYaw = 0
   let petEyes = false,
     petClosed = 0,
+    lookLidShown = 0,
     petHold = false,
     petHeld = false,
     petTail = 0
@@ -1886,7 +1892,8 @@ export function createActingStage(
     if (updateMouth) p.lipSync(surprised > 0.001 ? 0.28 * surprised : 0)
     mouthOverride = !speaking && surprised > 0.001
     // BOXP-525: 待機クリップ停止中も前フレームの閉眼値を引きずらず、まばたきを再評価する。
-    if (Math.max(wasClosed, eyeClosed, petClosed) > 0.001) {
+    // 下を見る時のまぶた（lookLidShown）で置いた値も同じく基底に残さない（正面へ戻したら開くように）。
+    if (Math.max(wasClosed, eyeClosed, petClosed, lookLidShown) > 0.001) {
       p.setParameter('ParamEyeLOpen', 1)
       p.setParameter('ParamEyeROpen', 1)
     }
@@ -1936,15 +1943,25 @@ export function createActingStage(
     }
     // BOXP-525: 自動まばたきの途中でも目が逆に開かないよう閉眼を重ねる。
     const petLid = petClosed * petClosed * (3 - 2 * petClosed)
-    const closed = Math.max(eyeClosed, petLid)
     {
       const values = typeof p.parameterValues === 'function' ? p.parameterValues() : []
+      // 下を見る時のまぶた（表情の閉眼と同じく、まばたきとは min で重ねる）。
+      const lookLid = lookDownLid(values[p.parameters?.indexOf('ParamEyeBallY') ?? -1] ?? 0)
+      lookLidShown = lookLid
+      const faceClosed = Math.max(eyeClosed, lookLid),
+        closed = Math.max(faceClosed, petLid)
       for (const id of ['ParamEyeLOpen', 'ParamEyeROpen']) {
         const index = p.parameters?.indexOf(id) ?? -1,
           blink = values[index]
         const hasBlink = typeof blink === 'number' && Number.isFinite(blink)
         const open =
-          closed > 0.001 ? (hasBlink ? eyeOpenFor(blink, eyeClosed, petLid) : 1 - closed) : hasBlink ? blink : undefined
+          closed > 0.001
+            ? hasBlink
+              ? eyeOpenFor(blink, faceClosed, petLid)
+              : 1 - closed
+            : hasBlink
+              ? blink
+              : undefined
         if (open === undefined) {
           delete shownEye[id]
           continue
