@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # BOXP-561: GPU 区間の受付操作。deployment の scale は行わない。
-# usage: ops.sh preflight | close TOKEN | drain | restore TOKEN PORT | status
+# usage: ops.sh preflight | close TOKEN | drain | restore TOKEN PORT | gate | status
 set -euo pipefail
 NODE=192.168.10.107
 RTAPI=/home/boxp/Documents/obsidian-headless/BOXP/Projects/strata-localllm-evaluation/artifacts/boxp383/scripts/rtapi.sh
@@ -87,9 +87,10 @@ case "${1:-}" in
     log "health=$(curl -s -o /dev/null -m 5 -w '%{http_code}' $SVC/health) models=$(curl -s -m 10 $SVC/v1/models | jq '.data|length') gate=$(gate)"
     [[ $r2 == 5* ]]
     ;;
+  gate) gate ;;
   status) log "gate=$(gate) mem_kB=$(mem_kb) hang=$(hangs) loaded=$(curl -s -m 10 $SVC/v1/models | jq -r '[.data[]|select(.status.value=="loaded")|.id]|join(",")')" ;;
   *)
-    echo "usage: ops.sh preflight | close TOKEN | drain | restore TOKEN PORT | status" >&2
+    echo "usage: ops.sh preflight | close TOKEN | drain | restore TOKEN PORT | gate | status" >&2
     exit 2
     ;;
 esac

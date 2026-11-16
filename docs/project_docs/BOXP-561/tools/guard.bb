@@ -8,7 +8,7 @@
   (let [dirs [(str vault "/ひとはこさんバース") (str vault "/小説草案/AI執筆")]
         roots (mapcat #(if (fs/directory? %) (file-seq (io/file %)) (throw (ex-info "protected directory missing" {}))) dirs)
         drafts (or (seq (.listFiles (io/file (str vault "/小説草案")))) [])
-        files (concat roots drafts [(io/file (str vault "/Tickets/BOXP-382.md"))])
+        files (concat roots drafts [(io/file (str vault "/Tickets/BOXP-382.md")) (io/file (str vault "/Boards/Task Board.md"))])
         board (slurp (str vault "/Boards/Task Board.md"))]
     {:files (into (sorted-map) (map (fn [f] [(str (fs/relativize vault f)) (digest f)]) (filter #(and (.isFile %) (not (fs/sym-link? %))) files))) :eval-card-count (count (re-seq #"EVAL561-[A-Za-z0-9-]+" board))}))
 (let [[op path] *command-line-args*]

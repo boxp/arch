@@ -52,9 +52,20 @@ cleanup() {
 }
 "$here/guard.sh" snapshot "$S/guard.edn" >>"$L" 2>&1
 trap cleanup EXIT INT TERM
-# close の途中失敗(gate 変更後の 503 確認 NG)でも cleanup で restore させるため先に立てる
-closed=1
-"$here/ops.sh" close "$tok" >>"$L" 2>&1
+# gate が実際に自分の token で閉じた場合だけ cleanup で restore する。
+# close が gate 変更前に失敗した(他の利用者の状態が残る)場合は開け戻さない。
+close_rc=0
+"$here/ops.sh" close "$tok" >>"$L" 2>&1 || close_rc=$?
+g=$("$here/ops.sh" gate 2>>"$L" || echo unknown)
+if [[ $g == "closed:BOXP-561-$tok" ]]; then
+  closed=1
+elif [[ $g == unknown ]]; then
+  log "gate 状態を取得できない: 自動 restore はしない、手動確認が必要"
+fi
+((close_rc == 0)) || {
+  log "close NG rc=$close_rc gate=$g"
+  exit 1
+}
 deadline=$(($(date +%s) + 90 * 60))
 # dead-man: workspace ごと止まって cleanup が走らなくても、node 側で最長 10 分後に gate を開け戻す（5 分ごとに延長、閉鎖期限を超えない）
 "$here/deadman.sh" arm "$tok" 600 >>"$L" 2>&1

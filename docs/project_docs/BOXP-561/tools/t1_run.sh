@@ -54,7 +54,15 @@ wall=$(($(date +%s) - s0))
 # runner の localllm-coder-diff! と同じく base からの diff + untracked を patch にする
 {
   git -C "$run/arch" diff --binary "$BASE"
-  git -C "$run/arch" ls-files --others --exclude-standard -z | while IFS= read -r -d '' f; do git -C "$run/arch" diff --no-index --binary -- /dev/null "$f" || true; done
+  git -C "$run/arch" ls-files --others --exclude-standard -z | while IFS= read -r -d '' f; do
+    # diff --no-index は差分ありで 1。2 以上(読めない等)は patch 欠落になるので失敗にする
+    drc=0
+    (cd "$run/arch" && git diff --no-index --binary -- /dev/null "$f") || drc=$?
+    ((drc <= 1)) || {
+      echo "untracked diff failed: $f rc=$drc" >&2
+      exit 1
+    }
+  done
 } >"$run/out/patch.diff"
 bb -e '(require (quote [cheshire.core :as j]) (quote [clojure.string :as s]))
  (let [[ev out start wall code model] *command-line-args*
