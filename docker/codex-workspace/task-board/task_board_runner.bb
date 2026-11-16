@@ -4682,18 +4682,27 @@
   (with-recheck-lock
     (fn []
       (let [db (read-rechecks) r (get db ticket)]
-        (when (and (= :fired (:state r)) (= rev (:fired-rev r)))
+        (when (and (contains? #{:fired :firing} (:state r)) (= rev (:fired-rev r)))
           (write-rechecks! (assoc db ticket (assoc r :state :consumed :consumed-run-id run-id)))
           (update-frontmatter! ticket {:recheck_state "consumed"})
           true)))))
 (defn prepare-blocked-retry! [ticket rev run-id]
   (when-not (consume-recheck! ticket rev run-id)
     (clear-continuation-budget! ticket)))
+(defn recheck-side-state
+  "Classify one durable side (frontmatter or card) of a reservation as still
+  at the reserved revision (:original), already handed back (:fired), or
+  changed by someone else (nil)."
+  [r status assignee rev]
+  (cond
+    (not= "blocked" status) nil
+    (and (= "boxp" assignee) (= (:board-rev r) rev)) :original
+    (and (:fired-rev r) (= (:resume-assignee r) assignee) (= (:fired-rev r) rev)) :fired))
 (defn sweep-rechecks! []
   (with-recheck-lock
     (fn []
       (doseq [[ticket r] (read-rechecks)
-              :when (and (= :pending (:state r))
+              :when (and (contains? #{:pending :firing} (:state r))
                          (or (nil? @only-ticket) (= @only-ticket ticket))
                          (try (not (.isAfter (java.time.Instant/parse (:due r)) (java.time.Instant/now)))
                               (catch Exception _ false)))]
@@ -4703,24 +4712,34 @@
         (let [fm (when (fs/exists? (ticket-path ticket)) (ticket-frontmatter ticket))
               cards (filter #(= ticket (:ticket-id %)) (parse-board-cards (vec (read-lines (board-path)))))
               card (when (= 1 (count cards)) (first cards))
+              fm-side (when fm (recheck-side-state r (:status fm) (:assignee fm) (:board_rev fm)))
+              card-side (when card (recheck-side-state r (:status card) (attr-value (:line card) "assignee") (card-rev card)))
               changed (cond (nil? fm) "票なし" (nil? card) "カードなし/重複"
                             (or (not= "blocked" (:status fm)) (not= "blocked" (:status card))) "レーン"
-                            (or (not= "boxp" (:assignee fm)) (not= "boxp" (attr-value (:line card) "assignee"))) "担当"
-                            (not= (:board-rev r) (:board_rev fm)) "board_rev"
-                            (not= (:board-rev r) (card-rev card)) "カードのboard_rev")]
+                            (nil? fm-side) "担当/board_rev"
+                            (nil? card-side) "カードの担当/board_rev")]
           (cond
             changed (do (write-rechecks! (assoc (read-rechecks) ticket (assoc r :state :superseded :reason changed)))
                         (when fm (update-frontmatter! ticket {:recheck_state "superseded"})
                               (append-note! ticket (str "再確認予約 " (:id r) " は票の状態変更(" changed ")により取消"))))
             (or (fs/exists? (lock-path ticket)) (contains? @in-flight-futures ticket)) nil
-            :else (let [rev (new-rev) minutes (max 0 (quot (- (.getEpochSecond (java.time.Instant/now))
-                                                               (.getEpochSecond (java.time.Instant/parse (:due r)))) 60))]
-                    (move-card! ticket "blocked" (:resume-assignee r) rev)
+            :else (let [;; Write-ahead: persist the hand-back revision before
+                        ;; touching the card/frontmatter so an interruption
+                        ;; between those writes is resumed by the next sweep
+                        ;; (and accepted by consume-recheck!) instead of being
+                        ;; misread as an Owner change and superseded.
+                        rev (or (:fired-rev r) (new-rev))
+                        r (assoc r :state :firing :fired-rev rev)
+                        minutes (max 0 (quot (- (.getEpochSecond (java.time.Instant/now))
+                                                (.getEpochSecond (java.time.Instant/parse (:due r)))) 60))]
+                    (write-rechecks! (assoc (read-rechecks) ticket r))
+                    (when (= :original card-side)
+                      (move-card! ticket "blocked" (:resume-assignee r) rev))
                     (update-frontmatter! ticket {:assignee (:resume-assignee r) :board_rev rev :recheck_state "fired"})
-                    (write-rechecks! (assoc (read-rechecks) ticket (assoc r :state :fired :fired-rev rev :fired-at (now-str))))
                     (append-note! ticket (str "再確認予約 " (:id r) " 期限到来 (期限=" (:due r) ", 超過=" minutes
                                               "分): Blocked のまま元担当 " (:resume-assignee r)
-                                              " へ正規再投入 (blocked-retry、継続予算は維持)")))))))
+                                              " へ正規再投入 (blocked-retry、継続予算は維持)"))
+                    (write-rechecks! (assoc (read-rechecks) ticket (assoc r :state :fired :fired-at (now-str)))))))))
           ;; One broken ticket must not stop the tick for every other card.
           (catch Exception e
             (log! (str "recheck sweep failed for " ticket ": " (.getMessage e)))))))))
@@ -7419,7 +7438,7 @@
         (let [db (read-rechecks) fm (ticket-frontmatter ticket)
               cards (filter #(= ticket (:ticket-id %)) (parse-board-cards (vec (read-lines (board-path)))))
               card (when (= 1 (count cards)) (first cards))]
-          (when (= :pending (:state (get db ticket))) (fail "pending reservation exists"))
+          (when (contains? #{:pending :firing} (:state (get db ticket))) (fail "pending reservation exists"))
           (when-not (and (= "blocked" (:status fm)) (= "boxp" (:assignee fm))
                          (= "blocked" (:status card)) (= "boxp" (attr-value (:line card) "assignee"))
                          (not (str/blank? (:board_rev fm)))
@@ -7443,7 +7462,7 @@
          (keep (fn [{:keys [ticket-id status]}]
                  (when (and (= "blocked" status) (fs/exists? (ticket-path ticket-id))
                             (= "boxp" (:assignee (ticket-frontmatter ticket-id)))
-                            (not= :pending (:state (get db ticket-id))))
+                            (not (contains? #{:pending :firing} (:state (get db ticket-id)))))
                    (let [lines (str/split-lines (slurp (str (ticket-path ticket-id))))
                          line (last (filter #(str/includes? % "Blocked transition recorded:") lines))
                          run-id (some-> (re-find #"(?:^|;\s*)run=([^;\s]+)" (or line "")) second)]
