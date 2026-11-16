@@ -12,6 +12,9 @@ describe('redactSecrets', () => {
       'curl -sS https://example.com/a/b?c=d | jq .items',
       'mysql -h db -P 3306 -u root app -e "select 1"',
       'ssh git@github.com',
+      'curl -fsSL -o out.json -X PUT -H "User-Agent: x" --url https://example.com/-u/a',
+      'docker login ghcr.io',
+      'redis-cli -h r ping',
       'for f in *.md; do wc -l "$f"; done',
       'print(sum(x for x in range(10)))',
       '今日の天気 東京',
@@ -52,12 +55,41 @@ describe('redactSecrets', () => {
     ["mysqldump -p'abc 123' db", 'abc 123'],
     ['sshpass -p hunter2 ssh a@b', 'hunter2'],
     ['curl -u admin:hunter2 https://x', 'hunter2'],
+    ['curl -uadmin:hunter2 https://example.com', 'hunter2'],
+    ['curl -sSuadmin:hunter2 https://example.com', 'hunter2'],
+    ['curl -sSu admin:hunter2 https://example.com', 'hunter2'],
+    ['curl --user=admin:hunter2 https://example.com', 'hunter2'],
+    ['curl -x http://p:3128 -Uadmin:hunter2 https://example.com', 'hunter2'],
+    ['curl --proxy-user admin:hunter2 https://example.com', 'hunter2'],
+    ['docker login -u bob -phunter2 ghcr.io', 'hunter2'],
+    ['docker login -u bob -p hunter2 ghcr.io', 'hunter2'],
+    ['redis-cli -h r -a hunter2 ping', 'hunter2'],
+    ['Authorization: Digest username="bob", response="hunter2"', 'hunter2'],
+    ['Authorization: Digest username="bob", response="hunter2"', 'bob'],
+    ['curl -H \'Authorization: Digest username="bob", realm="r", response="hunter2"\' https://x', 'hunter2'],
+    ['{"Authorization":"Digest username=\\"bob\\", response=\\"hunter2\\""}', 'hunter2'],
+    [
+      'Authorization: AWS4-HMAC-SHA256 Credential=AK/2026/x, SignedHeaders=host, Signature=deadbeefcafe',
+      'deadbeefcafe',
+    ],
+    ['Proxy-Authorization: Negotiate YIIabc123 extra456', 'extra456'],
+    ['Authorization: hunter2 hunter3', 'hunter3'],
+    ['Authorization: Bearer abc123, response="hunter2"', 'hunter2'],
     ['-----BEGIN OPENSSH PRIVATE KEY-----\nAAAAB3Nza\n-----END OPENSSH PRIVATE KEY-----', 'AAAAB3Nza'],
     ['-----BEGIN RSA PRIVATE KEY-----\nMIIEow', 'MIIEow'],
   ])('%s の秘密値を伏せる', (text, secret) => {
     const out = redactSecrets(text)
     expect(out).not.toContain(secret)
     expect(out).toContain(MASK)
+  })
+  it('認証ヘッダが「方式名 + 1語」の時は後ろの URL を残す', () => {
+    expect(redactSecrets('curl -H "Authorization: Bearer abcdef1234567890" https://x/y')).toBe(
+      `curl -H "Authorization: Bearer ${MASK}" https://x/y`,
+    )
+    expect(redactSecrets('{"Authorization":"Basic dXNlcjpwYXNz","url":"https://x"}')).toBe(
+      `{"Authorization":"Basic ${MASK}","url":"https://x"}`,
+    )
+    expect(redactSecrets('curl -uadmin:hunter2 https://example.com')).toBe(`curl -u${MASK} https://example.com`)
   })
   it('伏せた値の前後は残す', () => {
     expect(redactSecrets('curl -H "Authorization: Bearer abcdef1234567890" https://example.com/x')).toBe(

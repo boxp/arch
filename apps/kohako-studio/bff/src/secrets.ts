@@ -16,10 +16,13 @@ const QUOTED = `"""[\\s\\S]*?(?:"""|$)|'''[\\s\\S]*?(?:'''|$)|\\$?'[^']*'?|"(?:[
 const RULES: [RegExp, string][] = [
   [/-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----|$)/g, MASK],
   // 認証ヘッダ: 方式名（Bearer 等）は残し、値を伏せる。Cookie は行末まで。
+  // 「方式名 + 1語」(Basic / Bearer / Token) 以外（Digest や AWS4-HMAC-SHA256 のように項目が並ぶもの、方式名の無いもの）は
+  // どの語が秘密か決められないので行末まで伏せる。同じ行の後ろ（URL 等）も伏字になるが、伏せ過ぎる側に倒す。
   [
-    /((?:proxy-)?authorization\\?["']?\s*[:=]\s*\\?["']?(?:(?:basic|bearer|digest|token)\s+)?)[^\s"'\\]+/gi,
-    `$1${MASK}`,
+    /((?:proxy-)?authorization\\?["']?\s*[:=])(?!\s*\\?["']?(?:basic|bearer|token)\s+[^\s"'\\,]+(?:\\?["'](?:\s|[,})\]]|$)|\s|$))(\s*\\?["']?)[^\n]+/gi,
+    `$1$2${MASK}`,
   ],
+  [/((?:proxy-)?authorization\\?["']?\s*[:=]\s*\\?["']?(?:(?:basic|bearer|token)\s+)?)[^\s"'\\]+/gi, `$1${MASK}`],
   [/((?:set-)?cookie\\?["']?\s*[:=]\s*\\?["']?)[^"'\n\\]+/gi, `$1${MASK}`],
   [/\b(bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, `$1${MASK}`],
   [
@@ -45,7 +48,14 @@ const RULES: [RegExp, string][] = [
     `$1${MASK}`,
   ],
   [new RegExp(`\\b(sshpass\\s+-p\\s*)(?:${QUOTED}|\\S+)`, 'g'), `$1${MASK}`],
-  [new RegExp(`\\b(curl\\b[^\\n|;&]*?\\s(?:-u|--user)[\\s=]+)(?:${QUOTED}|\\S+)`, 'g'), `$1${MASK}`],
+  // curl の利用者指定: -u 値 / -u値 / -sSu 値（短い指定のまとめ書き）/ --user 値 / --user=値、代理用の -U / --proxy-user も。
+  [
+    new RegExp(`\\b(curl\\b[^\\n|;&]*?\\s(?:-[A-Za-z]*?[uU]\\s*|--(?:proxy-)?user[\\s=]+))(?:${QUOTED}|\\S+)`, 'g'),
+    `$1${MASK}`,
+  ],
+  // docker login -p 値 等と redis-cli -a 値（空白なしの -p値 / -a値 も）。
+  [new RegExp(`\\b(login\\b[^\\n|;&]*?\\s-p\\s*)(?:${QUOTED}|\\S+)`, 'g'), `$1${MASK}`],
+  [new RegExp(`\\b(redis-cli\\b[^\\n|;&]*?\\s-a\\s*)(?:${QUOTED}|\\S+)`, 'g'), `$1${MASK}`],
 ]
 export function redactSecrets(text: string): string {
   let out = text
