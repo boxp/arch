@@ -938,3 +938,64 @@ it('BOXP-525: なでで閉じていく間はまばたきの戻りで目が開き
   expect(petEyeHold(0.78, 0.1, false)).toBe(0.78)
   expect(petEyeHold(0.78, undefined, true)).toBe(0.78)
 })
+
+// BOXP-525: 閉じ目の笑顔・なでで再ステージしても、口パク（behavior）や待機の頭の向き（clip）が基底値へ落ちない。
+it('BOXP-525: 再ステージで口パクと頭の向きが基底値へ落ちない', () => {
+  const ids = ['ParamEyeLOpen', 'ParamEyeROpen', 'ParamMouthOpenY', 'ParamAngleX']
+  const base: Record<string, number> = {},
+    current = [1, 1, 0, 0],
+    memory = new WebAssembly.Memory({ initial: 1 })
+  const evaluate = (lip: number | null) =>
+    ids.forEach((id, i) => {
+      current[i] = base[id] ?? (id.includes('EyeL') || id.includes('EyeR') ? 1 : 0)
+      if (lip !== null && id === 'ParamMouthOpenY') current[i] = lip
+      if (lip !== null && id === 'ParamAngleX') current[i] += 12
+    })
+  const player = {
+    rig: 0,
+    expressions: ['smile'],
+    parameters: ids,
+    meshes: Array.from({ length: 33 }, () => ({ vertices: 0 })),
+    expression() {},
+    parameterRanges: () =>
+      ids.map((id) => ({ id, min: 0, max: 1, default: id.includes('Open') && id !== 'ParamMouthOpenY' ? 1 : 0 })),
+    parameterValues: () => [...current],
+    setParameter(id: string, value: number) {
+      base[id] = value
+    },
+    update(_dt: number) {
+      evaluate(0.8)
+    },
+    rt: {
+      memory,
+      p2l_render_commands: () => 0,
+      p2l_mesh_vertices: () => 0,
+      p2l_update_stages() {
+        evaluate(null)
+      },
+    },
+  }
+  const stage = createActingStage(player as unknown as Player, { id: 'kohako-full-v11r' } as RigModel)
+  stage.setEmotion('smileClosed')
+  stage.setViseme?.({ open: 0.8, width: 1 })
+  for (let i = 0; i < 60; i++) player.update(1 / 60)
+  expect(current[0]).toBeLessThan(0.05)
+  expect(current[2]).toBeCloseTo(0.8)
+  expect(Math.abs(current[3] - 12)).toBeLessThan(1)
+  // 再ステージ用に入れた評価済みの値は基底に残さない（次フレームで二重に足されない）。
+  expect(base.ParamMouthOpenY ?? 0).toBe(0)
+})
+
+it('restageKeeping は上書きした値を除いて評価済みの値で再ステージし、基底を戻す', async () => {
+  const { restageKeeping } = await import('./gesture')
+  const log: string[] = []
+  restageKeeping(
+    ['a', 'b', 'c'],
+    [1, 2, Number.NaN],
+    new Set(['b']),
+    () => 0,
+    (id, v) => log.push(`${id}=${v}`),
+    () => log.push('restage'),
+  )
+  expect(log).toEqual(['a=1', 'restage', 'a=0'])
+})
