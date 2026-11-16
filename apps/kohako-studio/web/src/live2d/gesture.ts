@@ -764,6 +764,14 @@ export const petEyeHold = (open: number, last: number | undefined, petOn: boolea
   petOn && typeof last === 'number' && Number.isFinite(last) ? Math.min(open, last) : open
 export const eyeOpenFor = (blinkOpen: number, emotionClosed: number, petClosed: number): number =>
   Math.min(blinkOpen, 1 - Math.max(emotionClosed, petClosed))
+// BOXP-525: 頭の左右の向き（ParamAngleX）を ±YAW_KNEE までは等倍、その先は ±YAW_MAX へ滑らかに飽和させる。
+export const YAW_KNEE = 9,
+  YAW_MAX = 14
+export function capYaw(v: number): number {
+  const a = Math.abs(v)
+  if (!(a > YAW_KNEE)) return v
+  return Math.sign(v) * (YAW_KNEE + (YAW_MAX - YAW_KNEE) * Math.tanh((a - YAW_KNEE) / (YAW_MAX - YAW_KNEE)))
+}
 // BOXP-525: 再ステージ（p2l_update_stages）は各パラメータを基底値（setParameter の値）から評価し直すため、
 // そのままでは clip・behavior（口パク・視線・呼吸）・表情・物理で決まった値が落ちる（閉じ目の笑顔で発話中も口が閉じたまま、
 // なで中や閉じ目の間だけ頭の向きと髪の揺れが消える）。上書きしない値は評価済みの値を一時的に基底へ入れて再ステージし、
@@ -823,6 +831,7 @@ export function createActingStage(
   } catch (e) {
     hairPatch = { error: e instanceof Error ? e.message : String(e) }
   }
+  let shownYaw = 0
   let petEyes = false,
     petClosed = 0,
     petHold = false,
@@ -1798,6 +1807,19 @@ export function createActingStage(
           }
         } else shownAngle[id] = raw
       }
+      // BOXP-525: 頭の左右の向きは、待機clip・視線追従（端で約 ±32°）・演技の和をモデルの確認範囲（±15°）に収める。
+      // 超えると横髪・もみあげ・前髪の影が別々の変形で動き、段ズレや欠片が見える。
+      const ix = p.parameters?.indexOf('ParamAngleX') ?? -1,
+        rawYaw = overridden.has('ParamAngleX') ? shownAngle.ParamAngleX : values[ix]
+      if (typeof rawYaw === 'number' && Number.isFinite(rawYaw)) {
+        const yaw = capYaw(rawYaw)
+        shownYaw = yaw
+        if (Math.abs(yaw - rawYaw) > 1e-4) {
+          p.setParameter('ParamAngleX', yaw)
+          overridden.add('ParamAngleX')
+          restage = true
+        }
+      }
     }
     // BOXP-525: 自動まばたきの途中でも目が逆に開かないよう閉眼を重ねる。
     const petLid = petClosed * petClosed * (3 - 2 * petClosed)
@@ -1961,6 +1983,7 @@ export function createActingStage(
     report: () => ({
       supported: true,
       petEyes: petClosed,
+      yaw: shownYaw,
       chest: {
         ...chestStatus,
         enabled: chestEnabled,

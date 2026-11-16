@@ -999,3 +999,20 @@ it('restageKeeping は上書きした値を除いて評価済みの値で再ス�
   )
   expect(log).toEqual(['a=1', 'restage', 'a=0'])
 })
+
+it('BOXP-525: capYaw は小さな向きを変えず、大きな左右の向きを ±YAW_MAX 未満へ滑らかに収める', async () => {
+  const { capYaw, YAW_KNEE, YAW_MAX } = await import('./gesture')
+  expect(capYaw(0)).toBe(0)
+  expect(capYaw(5)).toBe(5)
+  expect(capYaw(-YAW_KNEE)).toBe(-YAW_KNEE)
+  expect(capYaw(32)).toBeLessThan(YAW_MAX)
+  expect(capYaw(32)).toBeGreaterThan(YAW_MAX - 0.5)
+  expect(capYaw(-32)).toBeCloseTo(-capYaw(32))
+  let last = capYaw(-40)
+  for (let v = -40; v <= 40; v += 0.5) {
+    const next = capYaw(v)
+    expect(next).toBeGreaterThanOrEqual(last)
+    expect(next - last).toBeLessThanOrEqual(0.5 + 1e-9)
+    last = next
+  }
+})
