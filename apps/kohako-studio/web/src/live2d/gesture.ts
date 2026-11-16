@@ -5,7 +5,16 @@ import type { ActingStage, Emotion, Gesture } from './acting'
 import type { Player } from './rig'
 import type { RigModel } from './model'
 import { patchFaceTexture } from './face-texture'
-import { dimCrownRim, patchHair } from './hair-parts'
+import {
+  dimCrownRim,
+  FRONT_HAIR,
+  growTasselMesh,
+  pasteTassel,
+  patchHair,
+  stepTasselVertices,
+  type TasselRig,
+  trimSideRim,
+} from './hair-parts'
 import { installMipmaps, textureSizes } from './mipmaps'
 import { ANCHORS, BACK_HAIR, bindBackHair, followAnchors, SHOULDER_NOTCH, type BackHairRig } from './back-hair'
 import { atBind, bindPoint, BUST, chestGrid, createChestSpring, stepChest, type Bind } from './chest'
@@ -835,6 +844,20 @@ export function createActingStage(
   } catch (e) {
     crownRim = e instanceof Error ? e.message : String(e)
   }
+  // BOXP-525 r22: 房飾りの 3 段目右の途切れ。2 段目右の房を写す（顔の補正が写しを書き戻す前）。
+  let tasselPaste: number | string
+  try {
+    tasselPaste = pasteTassel(p as unknown as PartsPlayer)
+  } catch (e) {
+    tasselPaste = e instanceof Error ? e.message : String(e)
+  }
+  // BOXP-525 r22: 右の横髪の外側の明るい縁（点線状の二重輪郭）と上端の角（右上の段）。
+  let sideRim: number | string
+  try {
+    sideRim = trimSideRim(p as unknown as PartsPlayer)
+  } catch (e) {
+    sideRim = e instanceof Error ? e.message : String(e)
+  }
   let facePatch: Record<string, unknown>
   try {
     facePatch = patchFaceTexture(p as unknown as Parameters<typeof patchFaceTexture>[0])
@@ -848,7 +871,18 @@ export function createActingStage(
   } catch (e) {
     hairPatch = { error: e instanceof Error ? e.message : String(e) }
   }
+  // BOXP-525 r22: 写した房まで前髪の外周を広げる（頂点は毎フレーム補正）。写しに失敗したら広げない。
+  let tassel: TasselRig | null = null,
+    tasselOut: Float32Array | null = null
+  try {
+    if (typeof tasselPaste !== 'number') throw new Error(tasselPaste)
+    tassel = growTasselMesh(p as unknown as PartsPlayer)
+    hairPatch.tassel = { pasted: tasselPaste, moved: tassel.moved.map((m) => m.n) }
+  } catch (e) {
+    hairPatch.tassel = e instanceof Error ? e.message : String(e)
+  }
   hairPatch.crownRim = crownRim
+  hairPatch.sideRim = sideRim
   hairPatch.mipmaps = mipmaps
   // BOXP-525: 体の層の肩の上の切り欠き（描き込まれた髪の小片）を消す。左右を向いた時の細い継ぎ目と薄紫の帯。
   try {
@@ -1718,6 +1752,18 @@ export function createActingStage(
     followAnchors(v, backHair, (m) => anchors.get(m))
     backHairOut = v.slice()
   }
+  const stepTassel = () => {
+    if (!tassel) return
+    const v = new Float32Array(
+      rt.memory.buffer,
+      rt.p2l_mesh_vertices(p.rig, FRONT_HAIR),
+      (p.meshes[FRONT_HAIR] as { vertices: number }).vertices * 2,
+    )
+    // 実行環境が頂点を作り直さなかったフレームに二重に掛けない（外挿は冪等だが写しの比較で省く）。
+    if (tasselOut && tasselOut.length === v.length && tasselOut.every((x, i) => x === v[i])) return
+    stepTasselVertices(v, tassel)
+    tasselOut = v.slice()
+  }
   const stepChestSpring = (dt: number) => {
     if (!chest) return
     const v = new Float32Array(
@@ -1923,6 +1969,7 @@ export function createActingStage(
       )
     stepChestSpring(dt)
     stepBackHair()
+    stepTassel()
   }
   // 今の腕を待機の腕へフェードで戻す（姿勢は止めたまま）。then はフェード後に呼ぶ。
   function switchOut(after?: () => void) {
