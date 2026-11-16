@@ -1,0 +1,30 @@
+#!/usr/bin/env bb
+(require '[babashka.fs :as fs] '[clojure.string :as str] '[clojure.java.io :as io] '[clojure.edn :as edn] '[cheshire.core :as json] '[babashka.process :as proc])
+(import '[java.security MessageDigest])
+(load-file (str (.getParent (io/file (System/getProperty "babashka.file"))) "/tmp.bb"))
+(defn digest [f] (let [d (MessageDigest/getInstance "SHA-256") b (byte-array 65536)] (with-open [in (io/input-stream f)] (loop [] (let [n (.read in b)] (when (pos? n) (.update d b 0 n) (recur))))) (format "%064x" (BigInteger. 1 (.digest d)))))
+(defn metrics [text]
+  (let [chars (count text) japanese (count (re-seq #"[\p{IsHan}\p{IsHiragana}\p{IsKatakana}]" text))
+        roundtrip (:out (proc/sh {:in text} "bash" "-o" "pipefail" "-c" "iconv -c -f UTF-8 -t CP932 | iconv -f CP932 -t UTF-8"))
+        maxfreq #(if (seq %) (apply max (vals (frequencies %))) 0)]
+    {:chars chars :japanese-ratio (if (zero? chars) 0.0 (double (/ japanese chars)))
+     :fullwidth-commas (count (re-seq #"，" text)) :non-cp932-chars (- (.codePointCount text 0 (.length text)) (.codePointCount roundtrip 0 (.length roundtrip)))
+     :ascii-word-runs (count (re-seq #"[A-Za-z]{3,}" text)) :max-repeated-line (maxfreq (str/split-lines text))
+     :max-repeated-50gram (maxfreq (if (>= chars 50) (map #(subs text % (+ % 50)) (range (inc (- chars 50)))) []))}))
+(let [[root] *command-line-args*]
+  (when-not (and root (= 1 (count *command-line-args*)) (under-tmp? root) (fs/exists? (str root "/manifest.before"))) (binding [*out* *err*] (println "usage: novel_check.bb ROOT")) (System/exit 2))
+  (let [before (edn/read-string (slurp (str root "/manifest.before")))
+        all (->> (file-seq (io/file root)) (filter #(.isFile %)) (remove #(fs/sym-link? %)) (remove #(= "manifest.before" (str (fs/relativize root %)))))
+        after (into {} (map (fn [f] [(str (fs/relativize root f)) (digest f)]) all))
+        prefix "小説草案/AI執筆/" inside? #(str/starts-with? % prefix)
+        new (filter #(and (inside? %) (not (contains? before %))) (keys after)) outs (filter #(str/ends-with? % ".md") new)
+        text (str/join "\n" (map #(slurp (str root "/" %)) outs))
+        body (first (str/split text #"(?m)^## (?:追加設定メモ|着想元メモ|挿絵生成メモ|使用設定)(?:[ \t]*$)" 2))
+        links (map second (re-seq #"\[\[([^\]]+)\]\]|\[[^\]]+\]\(([^)]+)\)" ""))
+        wikilinks (map second (re-seq #"\[\[([^\]]+)\]\]" text))
+        mdlinks (map second (re-seq #"\[[^\]]+\]\(([^)]+)\)" text))
+        basenames (set (map #(str (fs/file-name %)) (keys after)))
+        wiki-exists? (fn [x] (let [target (first (str/split x #"[|#]")) name (str (fs/file-name target))] (or (contains? basenames name) (contains? basenames (str name ".md")))))
+        md-exists? (fn [x] (let [target (first (str/split x #"#"))] (boolean (some (fn [out] (let [f (io/file (.getParent (io/file root out)) target) p (.getCanonicalPath f)] (and (str/starts-with? p (str (.getCanonicalPath (io/file root)) "/")) (.isFile f)))) outs))))
+        changed (filter #(and (contains? before %) (not= (get before %) (get after %))) (keys after)) added-outside (filter #(and (not (inside? %)) (not (contains? before %))) (keys after)) removed (filter #(not (contains? after %)) (keys before))]
+    (println (json/generate-string {:new-files (count new) :filename-matches (count (filter #(re-matches #"\d{4}-\d{2}-\d{2}-\d{2}-\d{2}_.+\.md" (str (fs/file-name %))) outs)) :existing-changed (count changed) :outside-added (count added-outside) :outside-changed-or-added (+ (count changed) (count added-outside)) :existing-removed (count removed) :outside-removed (count removed) :full (metrics text) :body (metrics body) :headings (into {} (map (fn [h] [h (str/includes? text (str "## " h))]) ["追加設定メモ" "着想元メモ" "挿絵生成メモ" "使用設定"])) :setting-links (+ (count wikilinks) (count mdlinks)) :existing-setting-links (+ (count (filter wiki-exists? wikilinks)) (count (filter md-exists? mdlinks)))}))))
