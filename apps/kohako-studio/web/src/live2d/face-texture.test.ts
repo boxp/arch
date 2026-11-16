@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   eraseJawRow,
+  extendIrisCap,
   arcX,
   boundaryLoops,
   capLoops,
@@ -418,5 +419,64 @@ describe('もみあげの先の行（BOXP-525 r15）', () => {
     const row = [skin, hair, skin, skin, skin, ink, skin, skin, skin]
     for (const y of [334, 338, 342]) expect(eraseJawRow(row, 8, 7, 0, y)).toEqual([])
     expect(eraseJawRow(row, 8, 7, 0, 346)).toEqual([4, 3, 2, 0])
+  })
+})
+
+describe('虹彩の上側の描き足し（BOXP-525 TD-02）', () => {
+  const spec: EyeSpec = {
+    lash: 13,
+    iris: 14,
+    white: 15,
+    top: 279,
+    bottom: 297,
+    strip: 275,
+    left: [
+      [279, 510],
+      [297, 510],
+    ],
+    right: [
+      [279, 540],
+      [297, 540],
+    ],
+  }
+  const body: Rgba = [60, 70, 180, 255],
+    shadow: Rgba = [90, 80, 110, 200]
+  // 上端 y=279 で水平に切れた虹彩と、その上のまぶたの影の帯。
+  const make = () => {
+    const target = atlas(900, 400)
+    for (let x = 505; x <= 545; x++) {
+      for (let y = 279; y <= 296; y++) if (x >= 510 && x <= 540) target.set(x, y, body)
+      for (let y = 274; y <= 277; y++) target.set(x, y, shadow)
+    }
+    return target
+  }
+  it('上端より上へ丸い上側を描き、中は虹彩の色・縁は暗い輪郭線にする', () => {
+    const target = make()
+    expect(extendIrisCap(target, spec, identity)).toBeGreaterThan(0)
+    // 中央は上端より 6 上まで不透明な虹彩の色（影の帯の色ではない）。
+    for (const y of [278, 275, 273]) {
+      const p = target.get(525, y)
+      expect(p[3]).toBe(255)
+      expect(p[2]).toBeGreaterThan(p[0] * 1.5)
+    }
+    // 丸いので、端の列は中央より低い位置で終わる。
+    const topOf = (x: number) => {
+      for (let y = 265; y < 279; y++) if (target.get(x, y)[3] > 128) return y
+      return 279
+    }
+    expect(topOf(512)).toBeGreaterThan(topOf(525) + 2)
+    // 楕円の外に残っていた影の帯は透明（下を見ると白目が見える）。
+    expect(target.get(508, 275)[3]).toBe(0)
+    expect(target.get(542, 276)[3]).toBe(0)
+  })
+  it('元の虹彩（上端より下）は書き換えない', () => {
+    const target = make()
+    extendIrisCap(target, spec, identity)
+    for (const [x, y] of [
+      [525, 285],
+      [511, 290],
+      [539, 296],
+    ] as const)
+      expect(target.get(x, y)).toEqual(body)
   })
 })

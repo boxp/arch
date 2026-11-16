@@ -510,6 +510,100 @@ export function rebakeEye(
   return count
 }
 
+/** 虹彩の上側を描き足す高さ（モデル座標）。虹彩のメッシュは上端の約 11 上まで覆っている。 */
+export const IRIS_CAP = 9
+/** 描き足す丸い上側の縦の半径（上端から数えた頂点までの高さに、元の絵の角の丸み分を足したもの）。 */
+const IRIS_CAP_CORNER = 5
+const IRIS_CAP_RING = 1.1,
+  IRIS_CAP_SOFT = 0.45,
+  IRIS_CAP_BRIGHT = 140
+/**
+ * BOXP-525 TD-02: v11r の虹彩の絵は上端（待機時にまつ毛の下へ隠れる位置）で水平に切れていて、その上はまぶたの影の帯しかない。
+ * 下を見ると虹彩が白目に対して 3〜6 下がるので、切れた上端と影の帯がまつ毛の下に出て「瞳の上が途切れる」。
+ * 虹彩の層の上端より上へ、元の絵の角の丸みに続く楕円の上側を描き足す（中は列ごとに上端のすぐ下の色、外周は輪郭線の色）。
+ * 楕円の外に残る影の帯は透明にして白目を見せる。rebakeEye の後に呼ぶ（虹彩の輪郭線を移し終えた絵を読む）。
+ */
+export function extendIrisCap(target: Atlas, spec: EyeSpec, iris: Layer, reach = IRIS_CAP): number {
+  const read = sampler(target, iris)
+  const sideY = spec.top + IRIS_CAP_CORNER
+  const left = arcX(spec.left, sideY),
+    right = arcX(spec.right, sideY),
+    cx = (left + right) / 2,
+    hw = (right - left) / 2,
+    rv = reach + IRIS_CAP_CORNER
+  // 列ごとの元の絵の上端（不透明になる最初の行）と、そのすぐ下の色。
+  const columns = new Map<number, { y: number; color: Rgba } | null>()
+  const column = (x: number) => {
+    const key = Math.round(x * 2) / 2
+    if (!columns.has(key)) {
+      let found: { y: number; color: Rgba } | null = null
+      for (let y = spec.top - 1; y <= sideY + 2 && !found; y += 0.25) {
+        if (read(key, y)[3] < 200) continue
+        // 左右に少し広げて平均し、ハイライトの白い縁など明るい画素は除く（縦の筋にならないように）。
+        const samples = [0.5, 1, 1.5, 2]
+          .flatMap((d) => [-2, -1, 0, 1, 2].map((dx) => read(key + dx, y + d)))
+          .filter((p) => p[3] >= 200 && luma(p) < IRIS_CAP_BRIGHT)
+        if (!samples.length) continue
+        const color = [0, 1, 2, 3].map(
+          (c) => samples.reduce((s, p) => s + (p[c] as number), 0) / samples.length,
+        ) as Rgba
+        found = { y, color }
+      }
+      columns.set(key, found)
+    }
+    return columns.get(key) ?? null
+  }
+  // 外周の輪郭線の色: 左右の弧の上で最も暗い画素。
+  let ring: Rgba = [40, 36, 80, 255]
+  {
+    let best = Number.POSITIVE_INFINITY
+    for (const [arc, out] of [
+      [spec.left, -1],
+      [spec.right, 1],
+    ] as const)
+      for (let y = sideY; y <= sideY + 4; y += 0.5)
+        for (let d = -1.5; d <= 1; d += 0.25) {
+          const p = read(arcX(arc, y) + out * d, y)
+          if (p[3] >= 230 && luma(p) < best) {
+            best = luma(p)
+            ring = p
+          }
+        }
+  }
+  let painted = 0
+  const box = { x0: left - 3.5, x1: right + 3.5, y0: spec.top - reach - 3, y1: sideY }
+  eachTexel(target, iris, box, (u, v, x, y) => {
+    const own = target.get(u, v),
+      col = column(x),
+      // 元の絵の上端より下は触らない（元の虹彩はそのまま）。
+      below = col && y >= col.y
+    if (below) return
+    const nx = (x - cx) / hw,
+      ny = (sideY - y) / rv
+    const e = Math.sqrt(nx * nx + ny * ny)
+    // 楕円の縁からの距離（モデル座標の近似）。
+    const inset = (1 - e) * Math.min(hw, rv)
+    if (inset <= -IRIS_CAP_SOFT || !col) {
+      // 楕円の外の、虹彩の弧の内側に残る影の帯は透明にする（下を見たとき白目が見えるように）。
+      if (y < spec.top + 1 && own[3] > 0) {
+        target.set(u, v, [0, 0, 0, 0])
+        painted++
+      }
+      return
+    }
+    // 上へ行くほど少し暗く（虹彩の上側の陰）、縁は輪郭線の色。
+    const shade = Math.min(1, Math.max(0, (col.y - y) / rv)) * 0.35
+    let body: Rgba = mix(col.color, ring, shade)
+    const t = Math.min(1, Math.max(0, (IRIS_CAP_RING - inset) / IRIS_CAP_RING + 0.5))
+    body = mix(body, ring, inset < IRIS_CAP_RING ? Math.min(1, t) : 0)
+    const alpha = Math.min(1, Math.max(0, (inset + IRIS_CAP_SOFT) / (2 * IRIS_CAP_SOFT)))
+    const fill: Rgba = [body[0] * alpha, body[1] * alpha, body[2] * alpha, body[3] * alpha]
+    target.set(u, v, own[3] > 0 && y >= spec.top - 1 ? over(own, fill) : fill)
+    painted++
+  })
+  return painted
+}
+
 /** まつ毛の上下の線の間にある細い隙間の最大の高さ（アトラスの画素）。実測で 6〜7。白目との間は 9 以上。 */
 export const LASH_SLOT_MAX = 7
 const LASH_SOLID = 200,
@@ -776,6 +870,7 @@ export function patchFaceTexture(p: GlPlayer): Record<string, unknown> {
     const brows = rebakeBrows(source, target, of(BROW_MESH), of(FACE_MESH), of(BANGS_MESH))
     const eyes = EYE_SPECS.map((s) => ({
       ...rebakeEye(source, target, s, of(s.lash), of(s.iris), of(s.white)),
+      irisCap: extendIrisCap(target, s, of(s.iris)),
       lashSlots: fillLashSlots(target, s, of(s.lash)),
     }))
     const holes = EYE_SPECS.map((s) => {
