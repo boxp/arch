@@ -8,6 +8,15 @@ import { createDictation, supportsDictation, appendDictation } from './dictation
 import { attachmentSubmitAction, attachmentValidation } from './attachments'
 import { shouldSubmit } from './keys'
 import { atBottom, createFollower } from './scroll'
+import {
+  mapChunks,
+  estimatePosition,
+  createReadFollowState,
+  textRange,
+  highlight,
+  scrollReading,
+  type Span,
+} from './readfollow'
 import { chatEntries } from './chatlog'
 import { renderMarkdown, plainText } from './markdown'
 import { initInbox } from './inbox'
@@ -384,8 +393,9 @@ function renderChat() {
       return li
     }),
   )
-  if (bottom) chatFollower.pin(chatlog)
+  if (bottom && !readingFollowsChat()) chatFollower.pin(chatlog)
   else chatlog.scrollTop = top
+  if (readingFollowsChat()) updateReading()
 }
 function addHistory(who: Entry['who'], text: string, at = Date.now(), rid = '') {
   history.push({ who, text, at, ...(rid ? { rid } : {}) })
@@ -411,6 +421,7 @@ function addHistory(who: Entry['who'], text: string, at = Date.now(), rid = '') 
 let touchLineTimer = 0,
   bubbleText = ''
 function setBubble(text: string, touch = false) {
+  if (reading) clearReading()
   const bottom = chatFollower.following()
   clearTimeout(touchLineTimer)
   bubbleText = text
@@ -424,7 +435,8 @@ function setBubble(text: string, touch = false) {
   el('notice-actions').hidden = true
   el('notice-status').textContent = ''
   renderChat()
-  if (bottom) chatFollower.pin(chatlog)
+  if (bottom && !readingFollowsChat()) chatFollower.pin(chatlog)
+  if (readingFollowsChat()) updateReading()
   updateMessage()
 }
 function updateMessage() {
@@ -1250,7 +1262,60 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
 let speechChunks: string[] = [],
   speechNext = 0
 const resumeSpeech = el<HTMLButtonElement>('resume-speech')
+const readFollowButton = el<HTMLButtonElement>('read-follow'),
+  readFollow = createReadFollowState()
+let readSpans: Span[] = [],
+  readGroup: { first: number; last: number; start: number; duration: number; boundary?: number } | null = null,
+  readTimer = 0,
+  reading = false
+const readScroller = () => (chatlog.contains(bubble) ? chatlog : bubble)
+function readingFollowsChat() {
+  return reading && readFollow.following() && readScroller() === chatlog
+}
+function clearReading() {
+  reading = false
+  readGroup = null
+  clearInterval(readTimer)
+  highlight(null)
+  readFollowButton.hidden = true
+}
+function updateReading(force = false) {
+  if (!reading || !readGroup) return
+  const group = readGroup,
+    span = { start: readSpans[group.first]?.start ?? 0, end: readSpans[group.last]?.end ?? 0 }
+  const position = estimatePosition(span, group.start, group.duration, performance.now(), group.boundary)
+  let index = group.first
+  while (index < group.last && position >= readSpans[index].end) index++
+  const range = textRange(reply, readSpans[index])
+  highlight(range)
+  if (range && readFollow.following()) scrollReading(readScroller(), range, force)
+}
+for (const scroller of [bubble, chatlog]) {
+  const pause = () => {
+    if (!reading || readScroller() !== scroller) return
+    readFollow.pause()
+    readFollowButton.hidden = false
+  }
+  for (const type of ['wheel', 'touchmove']) scroller.addEventListener(type, pause, { passive: true })
+  scroller.addEventListener('keydown', (event) => {
+    if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(event.key)) pause()
+  })
+  scroller.addEventListener(
+    'pointerdown',
+    (event) => {
+      const rect = scroller.getBoundingClientRect()
+      if (event.pointerType === 'mouse' && event.target === scroller && event.clientX >= rect.right - 16) pause()
+    },
+    { passive: true },
+  )
+}
+readFollowButton.addEventListener('click', () => {
+  readFollow.resume()
+  readFollowButton.hidden = true
+  updateReading(true)
+})
 function clearSpeechResume() {
+  clearReading()
   speechChunks = []
   speechNext = 0
   speechPaused = false
@@ -1268,13 +1333,27 @@ function playReply() {
   error.textContent = ''
   acting?.beginReply()
   show('speaking')
+  clearReading()
+  reading = true
+  readFollow.reset()
+  readSpans = mapChunks(speechChunks, reply.textContent ?? '')
+  readTimer = window.setInterval(updateReading, 120)
   const events = {
-    onSentence: (_index: number, sentence: string, duration = 0) => {
+    onSentence: (index: number, sentence: string, duration = 0) => {
+      let last = index,
+        joined = speechChunks[index] ?? ''
+      while (last + 1 < speechChunks.length && joined.length < sentence.length) joined += speechChunks[++last]
+      readGroup = { first: index, last, start: performance.now(), duration }
+      updateReading()
       startViseme(sentence, duration || spokenSeconds(sentence), kohaku === false)
       acting?.sentence(cueForSentence(sentence))
       if (acting) report.acting = acting.snapshot
     },
-    onBoundary: (_index: number, charIndex: number) => syncViseme(charIndex),
+    onBoundary: (_index: number, charIndex: number) => {
+      if (readGroup) readGroup.boundary = charIndex
+      updateReading()
+      syncViseme(charIndex)
+    },
     onChunkEnd: (index: number) => {
       speechNext = index + 1
     },
@@ -1285,6 +1364,7 @@ function playReply() {
       if (state === 'speaking') show('done')
     },
     onError: () => {
+      clearReading()
       if (state !== 'speaking') return
       voiceTrouble = true
       error.textContent = kohaku
@@ -1297,6 +1377,7 @@ function playReply() {
   if (kohaku) voicePlayer.speak(speechChunks, events, speechNext)
   else if (speaker) speaker.speak(speechChunks, events, speechNext)
   else {
+    clearReading()
     show('done')
     offerSpeechResume()
   }
@@ -1389,6 +1470,7 @@ mixBox.addEventListener('change', () => {
 })
 /** 読み上げを止める。pause は本人の「止める」/読み上げOFF で、続きが残るなら送信待ちの自動送信を止めて再開位置を守る（録音開始など新しい発言のための中断では止めない）。 */
 function hushNow(pause = false) {
+  clearReading()
   voicePlayer.cancel()
   speaker?.cancel()
   if (actingEnabled) interruptActing()

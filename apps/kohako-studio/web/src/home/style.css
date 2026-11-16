@@ -182,3 +182,5 @@ body[data-shape="portrait"][data-scene="show"] .chatlog{bottom:42%}
 body[data-shape="portrait"][data-scene="show"] .cards{top:auto;bottom:1%;max-height:40%}
 body[data-shape="portrait"][data-viewer="open"] .chatlog{bottom:46%}
 body[data-shape="portrait"] .trouble{top:29%}
+
+::highlight(kohako-reading) { background-color: #ffe49b; color: #392600; }
