@@ -1,4 +1,5 @@
 import { must } from '../must'
+import { createFollower } from './scroll'
 type Tool = {
   id: string
   kind: 'tool'
@@ -243,6 +244,8 @@ export function activityTime(s: Tool): string {
 let rootNode: HTMLElement | undefined,
   last = '',
   expanded = false
+const follower = createFollower()
+let onLayout: (() => void) | undefined
 const seen = new Map<string, { at: number; runningMs: number }>()
 // 取得済みの実行内容。1 秒ごとの作り直しでも取り直さないよう、描画の外で持つ（次の依頼の開始で消す）。
 export type Loaded = { state: 'loading' | 'ready' | 'error'; detail?: StepDetail; forState?: 'full' | 'preview' }
@@ -299,7 +302,12 @@ function fillPanel(panel: HTMLElement, id: string) {
 }
 const refill = (id: string) => {
   const panel = rootNode?.querySelector<HTMLElement>(`.activity-args[data-step="${id}"]`)
-  if (panel) fillPanel(panel, id)
+  if (panel) {
+    fillPanel(panel, id)
+    const list = rootNode?.querySelector<HTMLOListElement>('.activity-steps')
+    if (list) follower.pin(list)
+    onLayout?.()
+  }
 }
 /** 新しい取り寄せを始めてよいか。一覧を畳んでいる間は、待ち行列に残っていても始めない（同時は 4 件まで）。 */
 export const canStartLoad = (open: boolean, running: number, queued: number) => open && running < 4 && queued > 0
@@ -356,13 +364,17 @@ export function tickActivity() {
 export function renderActivity(
   root: HTMLElement,
   activity: Activity | null,
-  opts: { live: boolean; loadDetail?: (stepId: string) => Promise<unknown> },
+  opts: { live: boolean; loadDetail?: (stepId: string) => Promise<unknown>; onLayout?: () => void },
 ) {
   rootNode = root
   loader = opts.loadDetail
+  onLayout = opts.onLayout
   if (!activity) {
+    const changed = !root.hidden || root.childElementCount > 0
     root.hidden = true
     root.replaceChildren()
+    follower.reset()
+    if (changed) onLayout?.()
     last = ''
     expanded = false
     seen.clear()
@@ -378,66 +390,88 @@ export function renderActivity(
     if (step.kind === 'tool' && step.status === 'running' && step.runningMs !== undefined)
       seen.set(step.id, { at: receivedAt, runningMs: step.runningMs })
     else if (step.kind === 'tool') seen.delete(step.id)
-  const key = JSON.stringify([activity, opts.live])
+  const key = JSON.stringify([activity, opts.live, !!opts.loadDetail])
   if (key === last) {
     tickActivity()
     return
   }
   last = key
-  const oldList = root.querySelector<HTMLOListElement>('.activity-steps'),
-    follow = !!oldList && oldList.scrollTop + oldList.clientHeight >= oldList.scrollHeight - 4
-  // 作り直しても、開閉ボタンの焦点と一覧のスクロール位置は保つ（キーボード操作・読み返しを邪魔しない）。
-  const hadFocus = root.contains(document.activeElement) && document.activeElement?.classList.contains('activity-head'),
-    oldTop = oldList?.scrollTop ?? 0,
-    panelScroll = new Map<string, number[]>()
-  root.querySelectorAll<HTMLElement>('.activity-args').forEach((p) => {
-    panelScroll.set(
-      String(p.dataset.step),
-      [...p.querySelectorAll('pre')].map((x) => x.scrollTop),
-    )
-  })
+  const oldTop = root.querySelector<HTMLOListElement>('.activity-steps')?.scrollTop ?? 0
   root.hidden = false
   root.dataset.live = opts.live ? '1' : '0'
-  root.replaceChildren()
   const make = (tag: string, cls: string, text = '') => {
     const el = document.createElement(tag)
     el.className = cls
     el.textContent = text
     return el
   }
-  const head = document.createElement('button')
-  head.type = 'button'
-  head.className = 'activity-head'
-  head.setAttribute('aria-controls', 'activity-steps')
+  let head = root.querySelector<HTMLButtonElement>('.activity-head')
+  let list = root.querySelector<HTMLOListElement>('.activity-steps')
+  if (!head || !list) {
+    head = document.createElement('button')
+    head.type = 'button'
+    head.className = 'activity-head'
+    head.setAttribute('aria-controls', 'activity-steps')
+    const spin = make('span', 'activity-spin')
+    spin.setAttribute('aria-hidden', 'true')
+    head.append(spin, make('span', 'activity-title'), make('span', 'activity-target'), make('span', 'activity-count'))
+    list = document.createElement('ol')
+    list.id = 'activity-steps'
+    list.className = 'activity-steps'
+    root.append(head, list)
+    follower.attach(list)
+    const button = head,
+      steps = list
+    head.onclick = () => {
+      expanded = !expanded
+      button.setAttribute('aria-expanded', String(expanded))
+      steps.hidden = !expanded
+      ensureDetails(true)
+      // 開いた時は、前に上へ戻して読んでいたかどうかに関わらず最新の手順から見せる。
+      if (expanded) follower.reset()
+      follower.pin(steps)
+      onLayout?.()
+    }
+  }
   head.setAttribute('aria-expanded', String(expanded))
+  list.hidden = !expanded
   const title = activityHeadline(activity, { live: opts.live, nowMs: Date.now(), receivedAtMs: Date.now() })
   head.setAttribute('aria-label', `${title}、${activity.steps.length} 手順`)
-  const spin = make('span', 'activity-spin')
-  spin.setAttribute('aria-hidden', 'true')
-  head.append(spin, make('span', 'activity-title', title))
+  must(head.querySelector('.activity-title')).textContent = title
   const running = activity.steps.filter((s): s is Tool => s.kind === 'tool' && s.status === 'running').at(-1)
-  head.append(
-    make(
-      'span',
-      'activity-target',
-      opts.live && running ? `${running.tool}${running.detail ? `: ${running.detail}` : ''}` : '',
-    ),
-    make('span', 'activity-count', `${activity.steps.length} 手順`),
+  must(head.querySelector('.activity-target')).textContent =
+    opts.live && running ? `${running.tool}${running.detail ? `: ${running.detail}` : ''}` : ''
+  must(head.querySelector('.activity-count')).textContent = `${activity.steps.length} 手順`
+  const existing = new Map(
+    [...list.children].map((node) => [(node as HTMLElement).dataset.stepKey, node as HTMLElement]),
   )
-  const list = document.createElement('ol')
-  list.id = 'activity-steps'
-  list.className = 'activity-steps'
-  list.hidden = !expanded
-  head.onclick = () => {
-    expanded = !expanded
-    head.setAttribute('aria-expanded', String(expanded))
-    list.hidden = !expanded
-    ensureDetails(true)
+  const wanted: HTMLElement[] = []
+  if (activity.dropped) {
+    const signature = String(activity.dropped)
+    let row = existing.get('dropped')
+    if (!row || row.dataset.signature !== signature) {
+      const replacement = make('li', 'activity-dropped', `古い手順 ${activity.dropped} 件は省略しました`)
+      replacement.dataset.stepKey = 'dropped'
+      replacement.dataset.signature = signature
+      row?.replaceWith(replacement)
+      row = replacement
+    }
+    wanted.push(row)
   }
-  if (activity.dropped) list.append(make('li', 'activity-dropped', `古い手順 ${activity.dropped} 件は省略しました`))
   argStates.clear()
+  const restore: (() => void)[] = []
   for (const s of activity.steps) {
+    if (s.kind === 'tool' && s.argsState && opts.loadDetail) argStates.set(s.id, s.argsState)
+    const signature = JSON.stringify([s, !!opts.loadDetail])
+    const old = existing.get(s.id)
+    if (old?.dataset.signature === signature) {
+      wanted.push(old)
+      continue
+    }
+    const tops = old ? [...old.querySelectorAll('pre')].map((pre) => pre.scrollTop) : []
     const li = document.createElement('li')
+    li.dataset.stepKey = s.id
+    li.dataset.signature = signature
     li.dataset.kind = s.kind
     if (s.kind === 'note') li.textContent = s.text
     else {
@@ -474,18 +508,26 @@ export function renderActivity(
         ),
       )
     }
-    list.append(li)
+    old?.replaceWith(li)
+    wanted.push(li)
+    // 差し替えた行の中のスクロール位置は、一覧へ入れた後でないと戻せないので後でまとめて戻す。
+    if (tops.some(Boolean))
+      restore.push(() =>
+        li.querySelectorAll('pre').forEach((pre, i) => {
+          pre.scrollTop = tops[i] ?? 0
+        }),
+      )
   }
-  root.append(head, list)
-  list.scrollTop = follow ? list.scrollHeight : oldTop
-  if (hadFocus) head.focus({ preventScroll: true })
-  root.querySelectorAll<HTMLElement>('.activity-args').forEach((p) => {
-    const tops = panelScroll.get(String(p.dataset.step))
-    if (tops)
-      p.querySelectorAll('pre').forEach((x, i) => {
-        x.scrollTop = tops[i] ?? 0
-      })
-  })
+  const keep = new Set(wanted)
+  for (const child of [...list.children]) if (!keep.has(child as HTMLElement)) child.remove()
+  for (let i = 0; i < wanted.length; i++) {
+    const row = must(wanted[i])
+    if (list.children[i] !== row) list.insertBefore(row, list.children[i] ?? null)
+  }
+  for (const fn of restore) fn()
+  if (follower.following()) follower.pin(list)
+  else list.scrollTop = oldTop
+  onLayout?.()
   ensureDetails(false)
   tickActivity()
 }
