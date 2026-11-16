@@ -2295,7 +2295,11 @@ window.addEventListener(
   'pointerdown',
   (e) => {
     if (e.pointerType === 'pen') lookPointer = null
-    else if (e.pointerType === 'touch' && e.isPrimary) touchLook.down(e.pointerId, { x: e.clientX, y: e.clientY })
+    else if (e.pointerType === 'touch') {
+      // マウス併用端末では以前のマウス位置が残っていると、取り消し・離した後の待機終了時に中立でなくそこへ戻ってしまうため捨てる。
+      lookPointer = null
+      if (e.isPrimary) touchLook.down(e.pointerId, { x: e.clientX, y: e.clientY })
+    }
   },
   listen,
 )
