@@ -27,3 +27,19 @@
 - RedGreen: 整形崩れ / ShellCheck 違反を一時的に入れて `scripts/lint-shell.sh` が失敗することを確認し、戻して成功することを確認。
 - 対象固有テスト: `tests/codex-workspace/*-test.sh` を実行し既存挙動が変わらないことを確認。`bash -n` で全対象の構文確認。
 - 実 CI 通過 → 通常 merge → main での workflow 成功と所要時間を報告。
+
+## 追記 (2026-11-16, main 6d4fd04c7d へ rebase 後)
+
+- rebase 後の対象は 143 ファイル (`kohako-studio` の rig 78 本などが追加されていた)。shfmt の差分は 122 ファイル、ShellCheck の指摘は 426 件 (SC2086 297 / SC1010 60 ほか)。
+- 拡張子なしの shell shebang ファイル (`ansible/tests/fixtures/pre_check_ready/{fake-sudo,kubectl}`) には `.editorconfig` の glob が当たらない。このため `scripts/lint-shell.sh` で `shfmt -i 2 -ci` を明示している (値は `.editorconfig` と同じ)。
+- 除外: `docker/codex-workspace/task-board/harness-eval-tasks/`。評価課題の固定入力で、base には意図的な不具合がある (T02 はクォート漏れを直す課題)。また `harness_eval.bb` は配下の全ファイルの内容から課題の版を計算するため、ここを変更すると過去の評価結果と比較できなくなる。
+- 是正の方針:
+  - SC2086: 値が単一トークンかパスのものは ShellCheck の自動修正でクォートした。意図的に word splitting させている `LAB_RUN_ARGS` と `ARM_CFLAGS` は、理由付きの行単位 disable にした。
+  - SC1010: 引数として渡している `done` をクォートした。
+  - SC2100: `reason=nested-checkout` を引き算と誤読する誤検知なので、値をクォートした。
+  - SC2015: `A && ok || fail` の形を if/else に書き換えた。
+  - SC2251: `! grep -q` は set -e では失敗にならず、検査として働いていなかった。if で FAIL として exit するように直した。
+  - SC2329: `task-board-runner-test.sh` で同名関数が二重に定義され、先の定義が死にコードになっていた。後の定義だけを残した。
+  - SC2094: 同じファイルを読みながら追記していた箇所を、読んでから追記する形に変えた。
+  - SC2143: grep -q に変えると pipefail 下で SIGPIPE による偽の合格が起こりうるため、理由付きの disable にした。
+  - SC2016 / SC2012 / SC2088 / SC2319 / SC2043 は、意図を確認したうえで理由付きの行単位 disable にした。

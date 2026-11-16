@@ -4,14 +4,13 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 # Paths excluded from shell lint, with the reason for each:
-# - harness-eval-tasks/*/{base,solution}: fixed inputs and reference answers of the
-#   harness evaluation tasks. The base scripts deliberately contain the defects an
-#   agent must fix (e.g. T02 is an unquoted-variable task), and changing them would
-#   break comparisons with earlier evaluation results. The accept.sh scripts are
-#   linted.
+# - docker/codex-workspace/task-board/harness-eval-tasks: fixed inputs of the harness
+#   evaluation. The base scripts deliberately contain the defects an agent must
+#   fix (e.g. T02 is an unquoted-variable task), and harness_eval.bb derives the
+#   task version from the content of every file there, so any edit would break
+#   comparisons with earlier evaluation results.
 excludes=(
-  ':(exclude,glob)docker/codex-workspace/task-board/harness-eval-tasks/*/base/**'
-  ':(exclude,glob)docker/codex-workspace/task-board/harness-eval-tasks/*/solution/**'
+  ':(exclude)docker/codex-workspace/task-board/harness-eval-tasks'
 )
 
 # Select tracked shell files, optionally restricted by Git pathspec arguments.
