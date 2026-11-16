@@ -14,11 +14,12 @@ cleanup() {
   rc=$?; trap - EXIT INT TERM
   log "cleanup rc=$rc"
   [[ -n ${wd:-} ]] && kill "$wd" 2>/dev/null || true
+  [[ -n ${hb:-} ]] && kill "$hb" 2>/dev/null || true
   "$here/obs.sh" stop "$BOXP561_OBS_DIR" >> "$L" 2>&1 || true
   "$here/tunnel.sh" down $PORT >> "$L" 2>&1 || true
   if (( closed )); then
     "$here/tunnel.sh" up $PORT >> "$L" 2>&1 || true
-    "$here/ops.sh" restore "$tok" $PORT >> "$L" 2>&1 || log "RESTORE FAILED: 手動確認が必要"
+    "$here/ops.sh" restore "$tok" $PORT >> "$L" 2>&1 && { "$here/deadman.sh" disarm >> "$L" 2>&1 || true; } || log "RESTORE FAILED: 手動確認が必要 (dead-man は残す)"
     "$here/tunnel.sh" down $PORT >> "$L" 2>&1 || true
   fi
   "$here/guard.sh" verify "$S/guard.edn" >> "$L" 2>&1 || log "GUARD MISMATCH"
@@ -28,6 +29,9 @@ cleanup() {
 "$here/guard.sh" snapshot "$S/guard.edn" >> "$L" 2>&1
 trap cleanup EXIT INT TERM
 "$here/ops.sh" close "$tok" >> "$L" 2>&1; closed=1; deadline=$(( $(date +%s) + 90*60 ))
+# dead-man: workspace ごと止まって cleanup が走らなくても、node 側で最長 10 分後に gate を開け戻す（5 分ごとに延長、閉鎖上限を超えない）
+"$here/deadman.sh" arm "$tok" 600 >> "$L" 2>&1
+( while sleep 300; do s=$(( deadline + 300 - $(date +%s) )); (( s > 600 )) && s=600; (( s > 0 )) || break; "$here/deadman.sh" arm "$tok" $s >> "$L" 2>&1 || true; done ) & hb=$!
 "$here/ops.sh" drain >> "$L" 2>&1
 "$here/tunnel.sh" up $PORT >> "$L" 2>&1
 "$here/obs.sh" start "$BOXP561_OBS_DIR" >> "$L" 2>&1

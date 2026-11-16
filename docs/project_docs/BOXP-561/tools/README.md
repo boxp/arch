@@ -16,6 +16,8 @@
 
 ## 中断からの復旧
 
+**dead-man（2026-11-16 追加）**: qcn1 と q27a の 2 回、workspace の計画停止で SIGTERM から約 2 秒で pod ごと止まり、cleanup が走らなかった。そこで `session.sh` は close の直後に `deadman.sh arm TOKEN 600` を実行し、以後 5 分ごとに延長する。node 側（`/tmp/boxp561-deadman.sh`、setsid）は期限が来ると relay を止め、rtapi と同じ file queue に「uid・resourceVersion・state が閉鎖時のままなら `open:BOXP-561-TOKEN-deadman` にする」条件付き PATCH を置く。workspace が止まっても gate は最長 10 分で開く。正常に restore したら disarm する。`DEADMAN_SELFTEST=1 deadman.sh arm selftest 5` で、必ず失敗する rv で queue の経路を確かめられる（2026-11-16 08:13 に 422 で gate が変わらないことを確認）。
+
 workspace の計画停止などで session.sh が SIGKILL/SIGTERM を受けると、cleanup が途中で止まり gate が `closed:BOXP-561-*` のまま残ることがある（2026-11-16 の qcn1 で発生、約 63 分で復旧）。各 run の開始時に必ず `recover.sh [GUARD_EDN]` を実行する。gate が BOXP-561 の closed なら直接経路を張り直して `ops.sh restore` を行い、残った tunnel/relay を片付け、guard を verify する。tunnel.sh up は ssh -N を背景に残すので、パイプ（`| tail`）につながず必ずファイルへリダイレクトすること。
 
 PLAN の手順：

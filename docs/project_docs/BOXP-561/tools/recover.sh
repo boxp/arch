@@ -22,5 +22,7 @@ for b in $(git -C "$here" branch --list "eval561-t1-*" --format="%(refname:short
   [[ -n $wt ]] && git -C "$here" worktree remove --force "$wt"
   git -C "$here" branch -D "$b" >> "$L" 2>&1
 done
+# gate が閉じていなければ残った dead-man も止める（発火しても条件付き PATCH で 422 になるだけだが片付ける）
+[[ $(kubectl -n local-llm get cm llama-server-admission -o jsonpath="{.data.state}") == open:* ]] && { "$here/deadman.sh" disarm >> "$L" 2>&1 || true; }
 [[ -n ${1:-} ]] && "$here/guard.sh" verify "$1" 2>&1 | tail -1 | tee -a "$L"
 exit 0
