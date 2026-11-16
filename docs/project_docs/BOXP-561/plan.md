@@ -98,5 +98,7 @@ IQ3_S（557）は router 未登録のため、一段目では使わない。FN �
 - T1：QCN は 2/2 で 30 分以内に完了報告（1 本は runner の結果行を repo のファイルに書き出し、固定検証は不合格）。Q27・FN は修正内容は合格だが 30 分で完了報告に届かない。
 - T1 の結果処理と Done 遷移（`t1_finish.bb` を 4 本の記録に当てた）：QCN t1a は runner 結果 owner-acceptance・検証合格で票が Done に移った。QCN t1b は runner 結果 owner-acceptance だが検証不合格で Done に移さない（runner だけでは混入を止められず、受入側の確認が要る）。Q27・FN は exit 124 で runner 結果 blocked、Done に移さない。Task Board フローを Done まで通せたのは QCN の 1/2。本番 runner の tick を通した確認は未実施。
 - N1/N2 小説：QCN の pi agent だけが完走（合成の採点 2/5、実バース本文は Owner の読み比べ待ち）。Q27 の agent は 38〜60 分で本文に届かず、FN の agent は指示逸脱で成果 0。一括生成は 3 モデルとも 1/5。
-- 推奨：localllm-coder の既定は QCN のまま。Qwen3.8 系への切替は推奨しない。二段目（IQ3_S など）は Owner 判断。
+- 推奨：localllm-coder の既定は QCN のまま。二段目（IQ3_S など）は Owner 判断。
+- Owner の評価軸（速度は参考、成果の品質と任せられる仕事の広さを重視）で見直し：時間切れ・中断を「未評価」、成果を見た上での不良を「品質不良」に分けた。Q27 は T1 の途中成果が合格で指示逸脱も無く、品質は未評価（遅いだけでは不採用にしない。確かめるには上限を延ばした T1 が要る、Owner 判断）。FN は指示逸脱（外部 RSS 取得）と一括の崩れという品質面の理由で非推奨。QCN 維持の結論は速度を外しても変わらない。対応範囲は T1 1 種と短編小説しか見ていない。
+- 一括生成（n1s）は過去 3 本とも着想メモを渡していなかったため、`novel_singleshot.bb` が着想メモと小説草案も渡すよう修正した（再計測はしていない）。
 - gate の閉鎖は各区間 90 分以内。workspace の計画停止による中断 5 回は、次の run の `recover.sh` か dead-man で復帰した。本番 vault の保護対象は評価による変更 0。

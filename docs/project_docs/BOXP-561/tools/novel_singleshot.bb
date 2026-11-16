@@ -8,9 +8,11 @@
   (let [obs (System/getenv "BOXP561_OBS_DIR")]
     (when-not (and obs (under-tmp? obs) (fs/directory? obs) (not (fs/exists? (str obs "/ABORT")))) (throw (ex-info "observer missing or aborted" {})))
     (fs/create-dirs out)
-    (let [dirs (map #(io/file root %) ["設定" "ひとはこさんバース/世界観設定" "ひとはこさんバース/キャラ設定" "ひとはこさんバース/アイテム設定"])
-          files (sort-by str (mapcat #(if (.isDirectory %) (filter (fn [f] (and (.isFile f) (not (fs/sym-link? f)) (str/ends-with? (str f) ".md"))) (file-seq %)) []) dirs))
-          prompt (str (slurp (str root "/prompt.md")) "\n以下は設定資料です。\n" (str/join "\n" (map #(str "\n# " (fs/relativize root %) "\n" (slurp %)) files)) "\n出力は小説ファイルの内容だけにしてください。")
+    ;; agent と同じ開始資料を渡す: 設定に加えて着想メモ.md と既存の小説草案(AI執筆含む)も含める
+    (let [dirs (map #(io/file root %) ["着想メモ.md" "設定" "ひとはこさんバース/世界観設定" "ひとはこさんバース/キャラ設定" "ひとはこさんバース/アイテム設定" "小説草案"])
+          md? (fn [f] (and (.isFile f) (not (fs/sym-link? f)) (str/ends-with? (str f) ".md")))
+          files (distinct (mapcat #(cond (.isDirectory %) (sort-by str (filter md? (file-seq %))) (md? %) [%] :else []) dirs))
+          prompt (str (slurp (str root "/prompt.md")) "\n以下は作業ディレクトリ内の開始資料(着想メモ・設定資料・既存の小説草案)です。\n" (str/join "\n" (map #(str "\n# " (fs/relativize root %) "\n" (slurp %)) files)) "\n出力は小説ファイルの内容だけにしてください。")
           request (json/generate-string {:model model :messages [{:role "user" :content prompt}] :temperature 0.7 :max_tokens 8192})
           start (Instant/now) begin (System/nanoTime)
           child (p/process ["curl" "--fail" "--silent" "--show-error" "--max-time" "3600" "-H" "Content-Type: application/json" "--data-binary" "@-" (str "http://127.0.0.1:" n "/v1/chat/completions")] {:in request :out :string :err :string})]
