@@ -54,4 +54,4 @@ ARM32 向け GraalVM LLVM バックエンドは開発中のため、native-image
 
 Git 管理下の `.sh` / `.bash` ファイルと、拡張子がなく shell shebang を持つファイルを CI で検査します。ローカルでは `aqua i` の後に `scripts/lint-shell.sh` を実行します (引数に pathspec を渡すと対象を絞れます)。整形には `shfmt -i 2 -ci -w <file>` を使えます。設定は `.editorconfig` と `.shellcheckrc` にあり、ツールのバージョンは aqua 経由で Renovate が追跡します。
 
-GitHub Actions の `run:` は actionlint が ShellCheck で検査済み、Dockerfile の `RUN` は別ツールの対象、Ansible の shell タスクは ansible-lint の対象です。`.bb` と `.py` は別言語のため対象外です。`docker/codex-workspace/task-board/harness-eval-tasks/` は評価課題の固定入力 (意図的な不具合を含み、内容が課題の版になる) のため除外しています。
+GitHub Actions の `run:` は actionlint が ShellCheck で検査済み、Dockerfile の `RUN` は別ツールの対象、Ansible の shell タスクは ansible-lint の対象です。`.bb` と `.py` は別言語のため対象外です。`.regomark/` は sha256 で固定された同梱物のため、`docker/codex-workspace/task-board/harness-eval-tasks/` は評価課題の固定入力 (意図的な不具合を含み、内容が課題の版になる) のため除外しています。

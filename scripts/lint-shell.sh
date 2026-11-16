@@ -9,7 +9,10 @@ cd "$(git rev-parse --show-toplevel)"
 #   fix (e.g. T02 is an unquoted-variable task), and harness_eval.bb derives the
 #   task version from the content of every file there, so any edit would break
 #   comparisons with earlier evaluation results.
+# - .regomark: files vendored from the regomark project and pinned by
+#   .regomark/shared.sha256; the adr workflow fails if their content changes.
 excludes=(
+  ':(exclude).regomark'
   ':(exclude)docker/codex-workspace/task-board/harness-eval-tasks'
 )
 
