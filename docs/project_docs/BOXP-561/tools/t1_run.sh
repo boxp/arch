@@ -21,7 +21,7 @@ obs=${BOXP561_OBS_DIR:?BOXP561_OBS_DIR required}
 mkdir -p "$run/vault/Tickets" "$run/vault/Boards" "$run/root" "$run/out/coder-home/.pi/agent"
 run=$(realpath -e "$run")
 cp "$here/fixtures/EVAL561-T1.md" "$run/vault/Tickets/EVAL561-T1.md"
-printf '## In Progress\n\n- [ ] [[Tickets/EVAL561-T1|EVAL561-T1: eval]] #ticket status::in-progress priority::medium repo::boxp/arch assignee::localllm-coder\n' >"$run/vault/Boards/Task Board.md"
+printf '## In Progress\n\n- [ ] [[Tickets/EVAL561-T1|EVAL561-T1: eval]] #ticket status::in-progress priority::medium repo::boxp/arch assignee::localllm-coder\n\n## Done\n' >"$run/vault/Boards/Task Board.md"
 br="eval561-t1-$(basename "$(dirname "$run")")-$(basename "$run")"
 git -C "$ARCH" worktree prune
 git -C "$ARCH" worktree add -q -b "$br" "$run/arch" "$BASE"

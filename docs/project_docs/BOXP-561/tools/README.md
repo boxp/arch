@@ -27,7 +27,7 @@ PLAN の手順：
 | `n1` | `novel_prepare.bb synth` → `novel_run.sh`（pi agent） | 60 分 |
 | `n1s` | `novel_prepare.bb synth` → `novel_singleshot.bb`（一括の対照） | 60 分 |
 | `n2` | `novel_prepare.bb real` → `novel_run.sh`（実バース、local のみ） | 60 分 |
-| `t1*` | `t1_run.sh` → `t1_verify.sh` | 30 分 |
+| `t1*` | `t1_run.sh` → `t1_verify.sh` → `t1_finish.bb` | 30 分 |
 
 ## 各スクリプト
 
@@ -39,10 +39,11 @@ PLAN の手順：
 - `t1_prompt.bb`：scratch の vault と root を env で指定したうえで、本番の `task_board_runner.bb` を `load-file` して `prompt-for`（ai-ops は nil）を呼び、`run-localllm-coder!` と同じ末尾の文を付ける。runner の main は `babashka.file` で守られているので、load しても実行はされない。
 - `t1_run.sh MODEL NEW_RUNDIR PORT`：scratch vault に票 `fixtures/EVAL561-T1.md` を置き、固定の base `d95b7cdc`（2026-11-16 の origin/main）から worktree を作って pi を 1 回実行する。runner と同じく、base からの diff と untracked を patch にまとめる。
 - `t1_verify.sh PATCH`：検証の内容は試験の前に固定した。新しい worktree で次をすべて確かめる。patch が当たる、変更は script と test の 2 ファイルだけ、既存の `^check` 45 行が順序どおり残り 48 行になる、修正後の結果が 56/56、test だけを当てた旧 script では新しい 3 件が落ちる。
+- `t1_finish.bb RUNDIR`：`out/events.jsonl` と `meta.json` に本番 runner の `localllm-coder-events`・`result-marker`・`localllm-coder-result` を当てて runner の結果を出す。結果が `owner-acceptance` で `verify.json` が accepted の時だけ、scratch の票を `task-board.bb update --lane Done` で動かし、Board を読み戻して確かめる。`out/finish.json` の `completed` が完走の判定。GPU を使わないので、過去の記録にも後から当てられる。
 
 ## T1 の方式と理由
 
-`run-localllm-coder!` をそのまま呼ぶ方式は採らなかった。この関数は、本番 root の run 状態、workspace の準備、base の同期、プロセスの登録を一緒に行い、scratch の env だけでは副作用を切り離せると確かめられなかったからである。代わりに、prompt は runner の関数そのものから作り（runner のコードはコピーしない）、pi の引数、env、cwd、patch の取り方は runner と同じにした。runner との違いは、idle timeout の代わりに 30 分の固定上限を使うこと、Board/Notes を更新しないこと（scratch で、Done の判定は `t1_verify.sh` の accepted で行う）の 2 点。
+`run-localllm-coder!` をそのまま呼ぶ方式は採らなかった。この関数は、本番 root の run 状態、workspace の準備、base の同期、プロセスの登録を一緒に行い、scratch の env だけでは副作用を切り離せると確かめられなかったからである。代わりに、prompt は runner の関数そのものから作り（runner のコードはコピーしない）、pi の引数、env、cwd、patch の取り方は runner と同じにした。runner との違いは、idle timeout の代わりに 30 分の固定上限を使うこと、Notes を更新しないこと（Done への移動は `t1_finish.bb` が runner の結果処理関数と `t1_verify.sh` の accepted を見て scratch の Board に対して行う）の 2 点。
 
 票の文は BOXP-382 の Summary、Acceptance Criteria、Plan と同じにした。違うのは件数（現在の main は `^check` 45 行・実行 53 件。382 の当時は 52 件）と、過去の試行の経緯を外したことだけ。不具合が origin/main にまだあることは確認した（`nodes_for_playbook` の case が `.yml` しか見ていない）。
 

@@ -53,6 +53,7 @@ IQ3_S（557）は router 未登録のため、一段目では使わない。FN �
 - 経路：scratch vault（Board と票 1 枚だけ）で本番と同じ `task_board_runner.bb` を `assignee: localllm-coder`、`CODEX_TASK_BOARD_LOCALLLM_CODER_MODEL=<model>` で 1 tick 回す。pi の provider 設定は scratch の `models.json`（base URL を受付を通らない直接経路に向ける）。
 - 検証（固定、開始前に決める）：patch を origin/main の独立 worktree に当てて、追加 3 件が修正前に落ちて修正後に通る、既存 52 ケースが残る、全体 55/55 pass、変更は script と test の 2 ファイルだけ。満たした場合だけ scratch の票を Done へ動かす。
 - 本番 vault の票には書かせない（BOXP-383 batch8 で起きた混入を防ぐ）。
+- 実施時の変更：runner の tick は回さず、`t1_run.sh` が runner と同じ prompt・pi 引数・env・patch の取り方で pi を直接起動し、`t1_finish.bb` が記録に runner の結果処理関数（`localllm-coder-events` / `result-marker` / `localllm-coder-result`）をそのまま当てる。runner が `owner-acceptance` を出し、固定検証が accepted の時だけ、Owner 受入の代わりとして scratch の票を `task-board.bb update --lane Done` で動かし、Board を読み戻して Done にあることを確かめる。runner の tick そのもの（lock、run 状態、idle timeout、Notes 追記、PR gate）は試していない。
 
 ### 回数と上限
 
@@ -95,6 +96,7 @@ IQ3_S（557）は router 未登録のため、一段目では使わない。FN �
 段階 2〜5 を実施した。詳細は vault の `Projects/localllm-practical-eval/README.md`。
 
 - T1：QCN は 2/2 で 30 分以内に完了報告（1 本は runner の結果行を repo のファイルに書き出し、固定検証は不合格）。Q27・FN は修正内容は合格だが 30 分で完了報告に届かない。
+- T1 の結果処理と Done 遷移（`t1_finish.bb` を 4 本の記録に当てた）：QCN t1a は runner 結果 owner-acceptance・検証合格で票が Done に移った。QCN t1b は runner 結果 owner-acceptance だが検証不合格で Done に移さない（runner だけでは混入を止められず、受入側の確認が要る）。Q27・FN は exit 124 で runner 結果 blocked、Done に移さない。Task Board フローを Done まで通せたのは QCN の 1/2。本番 runner の tick を通した確認は未実施。
 - N1/N2 小説：QCN の pi agent だけが完走（合成の採点 2/5、実バース本文は Owner の読み比べ待ち）。Q27 の agent は 38〜60 分で本文に届かず、FN の agent は指示逸脱で成果 0。一括生成は 3 モデルとも 1/5。
 - 推奨：localllm-coder の既定は QCN のまま。Qwen3.8 系への切替は推奨しない。二段目（IQ3_S など）は Owner 判断。
 - gate の閉鎖は各区間 90 分以内。workspace の計画停止による中断 5 回は、次の run の `recover.sh` か dead-man で復帰した。本番 vault の保護対象は評価による変更 0。

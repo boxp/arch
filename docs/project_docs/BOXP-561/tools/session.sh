@@ -137,6 +137,8 @@ for st in "${steps[@]}"; do
       "$here/t1_run.sh" "$model" "$S/$st" $PORT >>"$L" 2>&1 || log "$st rc=$?"
       "$here/t1_verify.sh" "$S/$st/out/patch.diff" >"$S/$st/out/verify.json" 2>>"$L" || true
       log "$st verify $(cat "$S/$st/out/verify.json")"
+      # runner の結果処理を当て、受入へ回る結果かつ固定検証合格の時だけ scratch 票を Done へ動かす
+      bb "$here/t1_finish.bb" "$S/$st" >>"$L" 2>&1 || log "$st finish rc=$?"
       ;;
     *) log "unknown step $st" ;;
   esac
