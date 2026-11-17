@@ -13,6 +13,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb"
 HELPER="${ROOT_DIR}/docker/hermes-agent/skills/obsidian-task-board/bin/task-board.bb"
 export TASK_BOARD_DELEGATION_HELPER="${ROOT_DIR}/docker/codex-workspace/task-board/delegate.py"
+# BOXP-604: the existing delegation cases describe the required contract; the
+# optional trial mode has its own case and sets the mode explicitly.
+export CODEX_TASK_BOARD_DELEGATION_MODE=required
 
 root_guard_test() {
   local t bin before after cmd mode
@@ -5019,6 +5022,34 @@ CHECK
       assert_file_not_contains "${vault}/Tickets/${ticket}.md" '^status: done$'
     fi
   done
+}
+
+test_optional_delegation_mode_releases_claude_parents() {
+  # BOXP-604: optional mode drops the mandatory Codex delegation for Claude
+  # parents only. Done needs no delegation evidence; codex-sol stays gated.
+  local tmp vault state bin prompt_log summary ticket=BOXP-997
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/prompt"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/${ticket}|${ticket}: optional]] #ticket status::in-progress"
+  write_ticket "${vault}" "${ticket}" in-progress claude-opus
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_DELEGATION_MODE=optional CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' run_tick "${vault}" "${state}" env >/dev/null
+  assert_file_contains "${prompt_log}" 'Optional delegation \(BOXP-604 trial\)'
+  assert_file_contains "${prompt_log}" 'Codex delegation is optional for this run'
+  assert_file_not_contains "${prompt_log}" 'Delegation contract:'
+  assert_file_not_contains "${prompt_log}" 'If delegation is unavailable, report blocked'
+  assert_file_contains "${vault}/Tickets/${ticket}.md" '^status: done$'
+  summary="$(find "${state}/runs/${ticket}" -name summary.edn -print | head -n 1)"
+  assert_file_contains "${summary}" ':delegation-mode "optional"'
+  if find "${state}/runs/${ticket}" -name delegation.json | grep -q .; then
+    echo 'optional mode must not create delegation evidence' >&2
+    return 1
+  fi
 }
 
 test_recoverable_delegation_failure_continues() {
