@@ -4,6 +4,8 @@ export type Inline = {
   text: string
   url?: string
   path?: string
+  // 太字・取り消し線・斜体の中にリンクや票 ID があるときだけ持つ（中身は 1 段だけ解釈する）。
+  children?: Inline[]
 }
 export type Block = {
   type: 'paragraph' | 'heading' | 'list' | 'quote' | 'code' | 'rule'
@@ -80,7 +82,7 @@ const noteTitle = (path: string) => must(path.split('/').pop()).replace(/\.md$/i
 export function parseInline(src: string): Inline[] {
   const result: Inline[] = [],
     re =
-      /(!?)\[([^\]]*)\]\(([^\s)]+)\)|obsidian:\/\/open\/?\?[A-Za-z0-9\-._~%&=/+!$'()*,;:@]*[A-Za-z0-9\-_~%=+]|https:\/\/[A-Za-z0-9\-._~:/?#@!$&'*+,;=%]*[A-Za-z0-9\-_~/#=&%+]|`([^`]+)`|\*\*([^*]+)\*\*|~~([^~]+)~~|\*([^*\s][^*]*)\*|(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])/g
+      /(!?)\[([^\]]*)\]\(([^\s)]+)\)|obsidian:\/\/open\/?\?[A-Za-z0-9\-._~%&=/+!$'()*,;:@]*[A-Za-z0-9\-_~%=+]|https:\/\/[A-Za-z0-9\-._~:/?#@!$&'*+,;=%]*[A-Za-z0-9\-_~/#=&%+]|\/home\/boxp\/Documents\/obsidian-headless\/BOXP\/[^\s'"<>()（）「」『』、。，．［］[\]{}|\\;]+\.[mM][dD](?![A-Za-z0-9_])|(?<![A-Za-z0-9_/.-])Tickets\/BOXP-\d+\.md(?![A-Za-z0-9_])|(?<![A-Za-z0-9_/.-])BOXP-\d{1,6}(?![A-Za-z0-9_-])|`([^`]+)`|\*\*([^*]+)\*\*|~~([^~]+)~~|\*([^*\s][^*]*)\*|(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])/g
   let pos = 0
   for (let m = re.exec(src); m; m = re.exec(src)) {
     if (m.index > pos) result.push({ type: 'text', text: src.slice(pos, m.index) })
@@ -108,11 +110,35 @@ export function parseInline(src: string): Inline[] {
     } else if (m[0].startsWith('https://')) {
       const url = safeUrl(m[0])
       result.push(url ? { type: 'link', text: m[0], url } : { type: 'text', text: m[0] })
-    } else
+    } else if (m[4] !== undefined) {
+      const content = m[4].trim(),
+        inner = /^(?:\/home\/boxp\/Documents\/obsidian-headless\/BOXP\/|Tickets\/BOXP-|BOXP-)/.test(content)
+          ? parseInline(content)
+          : []
+      result.push(inner.length === 1 && inner[0].type === 'note' ? inner[0] : { type: 'code', text: m[4] })
+    } else if (m[0].startsWith('/home/boxp/Documents/obsidian-headless/BOXP/')) {
+      const path = m[0].slice('/home/boxp/Documents/obsidian-headless/BOXP/'.length),
+        note = obsidianNotePath(obsidianNoteUrl(path))
+      result.push(
+        note
+          ? { type: 'note', text: noteTitle(note), url: obsidianNoteUrl(note), path: note }
+          : { type: 'text', text: m[0] },
+      )
+    } else if (m[0].startsWith('Tickets/BOXP-') || m[0].startsWith('BOXP-')) {
+      const path = m[0].startsWith('Tickets/') ? m[0] : `Tickets/${m[0]}.md`
+      result.push({ type: 'note', text: noteTitle(path), url: obsidianNoteUrl(path), path })
+    } else {
+      const text = m[5] ?? m[6] ?? m[7] ?? m[8],
+        children = parseInline(text).map((c) =>
+          c.type === 'link' || c.type === 'note' || c.type === 'text' ? c : { type: 'text' as const, text: c.text },
+        )
       result.push({
-        type: m[4] ? 'code' : m[5] ? 'bold' : m[6] ? 'strike' : 'italic',
-        text: m[4] ?? m[5] ?? m[6] ?? m[7] ?? m[8],
+        type: m[5] ? 'bold' : m[6] ? 'strike' : 'italic',
+        ...(children.some((c) => c.type === 'link' || c.type === 'note')
+          ? { text: children.map((c) => c.text).join(''), children }
+          : { text }),
       })
+    }
     pos = re.lastIndex
   }
   if (pos < src.length) result.push({ type: 'text', text: src.slice(pos) })
@@ -244,6 +270,11 @@ export function renderMarkdown(src: string, doc: Document = document): DocumentF
         a.target = '_blank'
         a.rel = 'noopener noreferrer'
         a.referrerPolicy = 'no-referrer'
+      }
+      if (n.children) {
+        inline(node, n.children)
+        parent.append(node)
+        continue
       }
       const parts = n.text.split('\n')
       parts.forEach((part, index) => {
