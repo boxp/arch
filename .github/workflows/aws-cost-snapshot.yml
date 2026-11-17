@@ -1,0 +1,40 @@
+# BOXP-594: 1 日 1 回 Cost Explorer の集計値を取得し SSM (/lolice/aws-cost/*) に置く。
+# arch は公開リポジトリなので、このログに金額を出さない（スクリプトは件数・成否・エラーコード名だけを出す）。
+# 1 回の Cost Explorer リクエストは最大 6、20h 以内に成功済み・24h で 3 回試行済みなら呼ばずに終わる。
+name: AWS cost snapshot
+on:
+  schedule:
+    - cron: "0 23 * * *"
+  workflow_dispatch: {}
+permissions: {}
+concurrency:
+  group: aws-cost-snapshot
+  cancel-in-progress: false
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      BABASHKA_VERSION: 1.12.218
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Babashka
+        run: |
+          set -eux
+          tmp="$(mktemp -d)"
+          curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 -fsSL \
+            "https://github.com/babashka/babashka/releases/download/v${BABASHKA_VERSION}/babashka-${BABASHKA_VERSION}-linux-amd64-static.tar.gz" \
+            -o "${tmp}/bb.tar.gz"
+          tar -xzf "${tmp}/bb.tar.gz" -C "${tmp}"
+          sudo install -m 0755 "$(find "${tmp}" -type f -name bb | head -n 1)" /usr/local/bin/bb
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::839695154978:role/aws-cost-snapshot-gha-role
+          aws-region: ap-northeast-1
+      - name: Fetch snapshot
+        run: bb scripts/aws-cost-snapshot/snapshot.bb
