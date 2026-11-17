@@ -1568,3 +1568,8 @@ it('fetches arguments again when the run ends and keeps working when the transcr
   expect(await run(async () => Promise.reject(Error('down')))).toMatchObject({ source: 'preview' })
   expect(await run(undefined)).toMatchObject({ source: 'preview', fields: [{ key: 'preview', value: 'a.md' }] })
 })
+it('BOXP-581: asks the home conversation for BOXP-vault Obsidian note links only', () => {
+  expect(instructions).toContain('[ノート名](obsidian://open?vault=BOXP&file=エンコード済み相対パス)')
+  expect(instructions).toContain('作成・編集・公開したり')
+  expect(studioInstructions).not.toContain('obsidian://')
+})
