@@ -37,9 +37,14 @@
   (doseq [entry ["- 2020-01-01 [claude-opus] Owner：外部送信は禁止\n"
                  "- 2020-01-01 Owner: no new billing\n"
                  "- 2020-01-01 本人：本番操作しない\n"
-                 "- 2020-01-01 Ownerの承認範囲はrunner限定で他ticketへの変更は不可\n"]]
+                 "- 2020-01-01 Ownerの承認範囲はrunner限定で他ticketへの変更は不可\n"
+                 "- 2020-01-01 [claude-opus] Owner approved deployment to production\n"
+                 "- 2020-01-01 [claude-opus] Owner requested no external transmission\n"
+                 "- 2020-01-01 The owner said we must not add billing\n"
+                 "- 2020-01-01 Owner's decision: keep the runner-only scope\n"
+                 "- 2020-01-01 user denied the new permission\n"]]
     (is (re-find notes-protected-pattern entry) entry))
-  (doseq [entry ["- 2020-01-01 [claude-opus] CI pass, PR作成\n" "- 2020-01-01 実装はCodex委譲中\n"]]
+  (doseq [entry ["- 2020-01-01 [claude-opus] CI pass, PR作成\n" "- 2020-01-01 実装はCodex委譲中\n" "- 2020-01-01 run was interrupted after planned shutdown of owner 8d1dd655\n"]]
     (is (nil? (re-find notes-protected-pattern entry)) entry))
   (let [prefix "---\nid: BOXP-1\n---\n## Notes\n"
         constraint "- 2020-01-01 [claude-opus] Owner：外部送信は禁止\n"

@@ -2794,8 +2794,11 @@
     (try (Math/multiplyExact (long n) (long 1024)) (catch ArithmeticException _ nil))))
 
 ;; This is a keyword/source heuristic: a source name alone is not the only criterion.
+;; An entry is protected when the Owner (Owner/本人/オーナー/user) is followed, within the same line,
+;; by decision/approval/constraint vocabulary in Japanese or English (e.g. "Owner approved deployment",
+;; "Owner requested no external transmission", "Owner：外部送信は禁止").
 (def notes-protected-pattern
-  #"(?i)\[(?:hermes-agent|owner|boxp)\]|Owner ?(?:原文|回答|返答|返信|決定|選択|承認|指示|訂正|撤回|方針|追加|最新)|本人 ?(?:原文|回答|返答|返信|決定|選択|承認|指示|訂正|撤回|最新)|本人『|家経由|reply_id|Owner(?:が|は)[^。\n]{0,20}(?:選択|承認|決定|指示|却下|差戻|訂正|撤回)|(?:Owner|owner|本人|オーナー)[ \t]*[：:]|(?:Owner|本人|オーナー)[^\n]{0,40}(?:禁止|制約|条件|不可|必須|限定|除外|範囲|しない|させない|しないこと)|gate-budget-grant|停滞レビュー(?:依頼|結果)|stagnation-review")
+  #"(?i)\[(?:hermes-agent|owner|boxp)\]|Owner ?(?:原文|回答|返答|返信|決定|選択|承認|指示|訂正|撤回|方針|追加|最新)|本人 ?(?:原文|回答|返答|返信|決定|選択|承認|指示|訂正|撤回|最新)|本人『|家経由|reply_id|Owner(?:が|は)[^。\n]{0,20}(?:選択|承認|決定|指示|却下|差戻|訂正|撤回)|(?:Owner|owner|本人|オーナー)[ \t]*[：:]|(?:Owner|本人|オーナー)[^\n]{0,40}(?:禁止|制約|条件|不可|必須|限定|除外|範囲|しない|させない|しないこと)|(?:\b(?:Owner|owner|OWNER|user|User)\b|本人|オーナー)(?:'s)?[^\n]{0,60}?\b(?:approv\w*|decid\w*|decision\w*|chose|choose\w*|choice\w*|select\w*|request\w*|ask\w*|instruct\w*|reject\w*|declin\w*|correct\w*|withdr\w*|revok\w*|forb[ia]\w*|prohibit\w*|must|never|do not|don't|not allowed|disallow\w*|only|scope|constrain\w*|condition\w*|limit\w*|requir\w*|allow\w*|permit\w*|permission\w*|den(?:y|ied|ies)|confirm\w*|accept\w*|grant\w*|authori[sz]\w*)\b|gate-budget-grant|停滞レビュー(?:依頼|結果)|stagnation-review")
 
 (defn utf8-size [s] (alength (.getBytes ^String s "UTF-8")))
 (defn notes-kb [n] (quot (+ n 1023) 1024))
