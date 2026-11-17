@@ -46,7 +46,14 @@
                  "- 2020-01-01 [claude-opus] Ownerは外部送信を行わないよう求めた\n"
                  "- 2020-01-01 オーナーが本番反映を見送りたいと言った\n"
                  "- 2020-01-01 The owner prefers keeping the old route\n"
-                 "- 2020-01-01 本人は課金を増やさない方向\n"]]
+                 "- 2020-01-01 本人は課金を増やさない方向\n"
+                 "- 2020-01-01 [claude-opus] 利用者が外部送信を禁止した\n"
+                 "- 2020-01-01 ユーザーは本番反映を望まない\n"
+                 "- 2020-01-01 ユーザが課金追加を不可とした\n"
+                 "- 2020-01-01 依頼者の判断でrunner限定\n"
+                 "- 2020-01-01 依頼主は外部公開を見送った\n"
+                 "- 2020-01-01 発注者の条件: 本番変更なし\n"
+                 "- 2020-01-01 The requester asked to keep the scope\n"]]
     (is (re-find notes-protected-pattern entry) entry))
   (doseq [entry ["- 2020-01-01 [claude-opus] CI pass, PR作成\n" "- 2020-01-01 実装はCodex委譲中\n" "- 2020-01-01 run was interrupted after planned shutdown of owner 8d1dd655\n" "- 2020-01-01 run interrupted, workspace owner 8d1dd655-aec5-4094 stopped\n" "- 2020-01-01 userEmail config read\n"]]
     (is (nil? (re-find notes-protected-pattern entry)) entry))

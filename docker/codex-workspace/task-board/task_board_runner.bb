@@ -2794,13 +2794,13 @@
     (try (Math/multiplyExact (long n) (long 1024)) (catch ArithmeticException _ nil))))
 
 ;; Protection is decided by who the entry is about, not by an open vocabulary list.
-;; Any entry that mentions the Owner as an actor (Owner/owner/本人/オーナー/user, Owner sources,
+;; Any entry that mentions the Owner as an actor (Owner/owner/本人/オーナー/user/requester/利用者/ユーザー/依頼者/依頼主/発注者, Owner sources,
 ;; 家経由/reply_id deliveries) is kept regardless of wording, so phrasings such as
 ;; "Ownerは外部送信を行わないよう求めた" or "Owner requested no external transmission" cannot fall
 ;; through. Erring toward keeping is intended: it only costs prompt bytes. The runner's own
 ;; "owner <uuid>" (workspace owner id) is excluded because it is not the person.
 (def notes-protected-pattern
-  #"(?i)\[(?:hermes-agent|owner|boxp)\]|(?<![a-z])owner(?![ \t]+[0-9a-f]{8}(?:-|\s|$))|(?<![a-z])users?(?![a-z])|本人|オーナー|家経由|reply_id|gate-budget-grant|停滞レビュー(?:依頼|結果)|stagnation-review")
+  #"(?i)\[(?:hermes-agent|owner|boxp)\]|(?<![a-z])owner(?![ \t]+[0-9a-f]{8}(?:-|\s|$))|(?<![a-z])(?:users?|requesters?)(?![a-z])|本人|オーナー|利用者|ユーザー?|依頼者|依頼主|発注者|家経由|reply_id|gate-budget-grant|停滞レビュー(?:依頼|結果)|stagnation-review")
 
 (defn utf8-size [s] (alength (.getBytes ^String s "UTF-8")))
 (defn notes-kb [n] (quot (+ n 1023) 1024))
