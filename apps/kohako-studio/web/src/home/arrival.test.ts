@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { arrivalNote, arrivalPhase, LANDING_MS } from './arrival'
 const base = { rigLoading: false, visit: false, returnedAt: null, now: 10_000 }
@@ -17,6 +18,31 @@ describe('家へ戻る演出（BOXP-599 TD-01）', () => {
   it('段階ごとの短い案内', () => {
     expect(arrivalNote.arriving).toContain('戻っています')
     expect(arrivalNote.away).toContain('現場')
+    expect(arrivalNote.landing).toContain('戻りました')
     expect(arrivalNote.home).toBe('')
+  })
+})
+describe('帰還の演出の見た目（転送ゲート）', () => {
+  const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../../home.html', import.meta.url), 'utf8')
+  it('既存のドット絵だけを使い、画像を足さない', () => {
+    expect(html).toMatch(/id="gate-sprite"[^>]*src="\.\/kohako\/studio\/c48v6-idle-color\.png"/)
+    expect(html).toMatch(/class="gate" aria-hidden="true"/)
+    expect(css).not.toMatch(/\.gate[^{]*\{[^}]*url\(/)
+  })
+  it('ゲートは操作を受けず、小さい表示では出さない', () => {
+    expect(css).toContain('.gate{position:absolute;inset:0;pointer-events:none}')
+    expect(css).toContain('.character.mini .gate,.character.mini .arrival-note{display:none}')
+  })
+  it('「動きを減らす」と OS の設定では動かさず、現場中の姿は静かに隠す', () => {
+    expect(css).toMatch(/body\.reduce \.gate \*[^{]*\{animation:none!important\}/)
+    expect(css).toMatch(/@media \(prefers-reduced-motion:reduce\)\{\.gate \*[^{]*\{animation:none!important\}/)
+    expect(css).toContain('body.reduce .character:not(.mini)[data-arrival="away"] > :is(img,#rig){opacity:0}')
+  })
+  it('明滅させない（往復する不透明度の繰り返しを置かない）', () => {
+    for (const m of css.matchAll(/@keyframes (gate-[a-z-]+)\{([^@]*)\}/g)) {
+      const infinite = new RegExp(`${m[1]} [^;},]*infinite`).test(css)
+      if (infinite) expect(m[2]).not.toContain('opacity')
+    }
   })
 })

@@ -89,6 +89,7 @@ if ('serviceWorker' in navigator)
 const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
 const body = document.body,
   face = el<HTMLImageElement>('face'),
+  gateSprite = el<HTMLImageElement>('gate-sprite'),
   rigCanvas = el<HTMLCanvasElement>('rig'),
   character = el('character')
 const stateLabel = el('state'),
@@ -637,6 +638,7 @@ function show(next: State) {
   syncDictationNoteHook?.()
   stateLabel.textContent = netDown ? '通信が切れています' : presentation[next].label
   face.src = `./kohako/studio/c48v6-${presentation[next].face}-color.png`
+  gateSprite.src = face.src
   if (next !== 'speaking') {
     speakingSince = 0
     visemes = null
@@ -693,7 +695,7 @@ function shapeOf(): 'pc' | 'portrait' | 'landscape' {
   return h > w ? 'portrait' : w >= 900 && h >= 560 ? 'pc' : 'landscape'
 }
 let visitActive = false
-// BOXP-599 TD-01: 家へ戻る演出の状態。リグを読み込む間は「戻っている途中」、現場の実行中は「出ている」、終わった直後だけ短く着地する。
+// BOXP-599 TD-01: 帰還の演出（転送ゲート）の状態。リグを読み込む間は「戻る途中」、現場の実行中は「出ている」、終わった直後だけ短く姿を現す。
 let rigLoading = wantsRig(location.search),
   returnedAt: number | null = null
 function refreshArrival() {
