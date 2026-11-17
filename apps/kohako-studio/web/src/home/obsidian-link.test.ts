@@ -19,6 +19,17 @@ it('turns Markdown links and bare obsidian://open URLs into note links', () => {
     { type: 'text', text: '開く ' },
     { type: 'note', text: '調査 (案) メモ&1+2', url, path },
   ])
+  // 文末の句読点はリンクに含めない（存在しない `…md.` を開かない）
+  expect(parseInline('ノート: obsidian://open?vault=BOXP&file=Tickets%2FBOXP-581.md.')).toEqual([
+    { type: 'text', text: 'ノート: ' },
+    {
+      type: 'note',
+      text: 'BOXP-581',
+      url: 'obsidian://open?vault=BOXP&file=Tickets%2FBOXP-581.md',
+      path: 'Tickets/BOXP-581.md',
+    },
+    { type: 'text', text: '.' },
+  ])
   // file/vault の順序違いも同じ正規形にする
   expect(parseInline('[x](obsidian://open?file=Tickets%2FBOXP-581.md&vault=BOXP)')[0]).toEqual({
     type: 'note',

@@ -80,7 +80,7 @@ const noteTitle = (path: string) => must(path.split('/').pop()).replace(/\.md$/i
 export function parseInline(src: string): Inline[] {
   const result: Inline[] = [],
     re =
-      /(!?)\[([^\]]*)\]\(([^\s)]+)\)|obsidian:\/\/open\/?\?[A-Za-z0-9\-._~%&=]+|https:\/\/[A-Za-z0-9\-._~:/?#@!$&'*+,;=%]*[A-Za-z0-9\-_~/#=&%+]|`([^`]+)`|\*\*([^*]+)\*\*|~~([^~]+)~~|\*([^*\s][^*]*)\*|(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])/g
+      /(!?)\[([^\]]*)\]\(([^\s)]+)\)|obsidian:\/\/open\/?\?[A-Za-z0-9\-._~%&=]*[A-Za-z0-9\-_~%=]|https:\/\/[A-Za-z0-9\-._~:/?#@!$&'*+,;=%]*[A-Za-z0-9\-_~/#=&%+]|`([^`]+)`|\*\*([^*]+)\*\*|~~([^~]+)~~|\*([^*\s][^*]*)\*|(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])/g
   let pos = 0
   for (let m = re.exec(src); m; m = re.exec(src)) {
     if (m.index > pos) result.push({ type: 'text', text: src.slice(pos, m.index) })
