@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest'
+import { must } from '../must'
 import { obsidianNotePath, obsidianNoteUrl, parseInline, plainText, renderMarkdown } from './markdown'
 // BOXP-581: vault 内ノートを Obsidian アプリで開くリンク。
 const path = 'Projects/kohako-home/調査 (案) メモ&1+2.md',
@@ -130,6 +131,47 @@ it('links only complete note references in code spans', () => {
   }
   for (const input of ['docs/plan.md', 'BOXP-581-links', 'obsidian://open?vault=BOXP&file=a.md'])
     expect(parseInline(`\`${input}\``)).toEqual([{ type: 'code', text: input }])
+})
+
+it('links absolute vault paths containing spaces and parentheses', () => {
+  for (const path of ['Projects/調査 (案).md', 'Projects/調査（案）.md', 'Projects/a b/c (1).md']) {
+    const note = { type: 'note', text: must(path.split('/').pop()).slice(0, -3), path, url: obsidianNoteUrl(path) }
+    expect(parseInline(`/home/boxp/Documents/obsidian-headless/BOXP/${path}`)).toEqual([note])
+    expect(parseInline(`ノート /home/boxp/Documents/obsidian-headless/BOXP/${path} を見て`)).toEqual([
+      { type: 'text', text: 'ノート ' },
+      note,
+      { type: 'text', text: ' を見て' },
+    ])
+    expect(parseInline(`\`/home/boxp/Documents/obsidian-headless/BOXP/${path}\``)).toEqual([note])
+  }
+  // 2 つ並んだパスは別々のリンクになる
+  expect(
+    parseInline(
+      '/home/boxp/Documents/obsidian-headless/BOXP/Tickets/BOXP-1.md と /home/boxp/Documents/obsidian-headless/BOXP/Tickets/BOXP-2.md',
+    ).map((n) => n.path ?? n.text),
+  ).toEqual(['Tickets/BOXP-1.md', ' と ', 'Tickets/BOXP-2.md'])
+})
+
+it('links vault-relative note paths written as code or plain text (BOXP-592 notification entry)', () => {
+  const path = 'Projects/kohako-home/netnavi-origin-592-owner-entry.md',
+    note = { type: 'note', text: 'netnavi-origin-592-owner-entry', path, url: obsidianNoteUrl(path) }
+  expect(parseInline(`入口ノート: \`${path}\``)).toEqual([{ type: 'text', text: '入口ノート: ' }, note])
+  expect(parseInline(`入口ノート: ${path}。`)).toEqual([
+    { type: 'text', text: '入口ノート: ' },
+    note,
+    { type: 'text', text: '。' },
+  ])
+  for (const dir of ['Tickets', 'Boards', 'Incidents', 'Infrastructure'])
+    expect(parseInline(`\`${dir}/x.md\``)[0]).toMatchObject({ type: 'note', path: `${dir}/x.md` })
+  for (const input of [
+    'README.md',
+    'docs/project_docs/BOXP-581/plan.md',
+    'Projects/x.ts',
+    'Projects/../x.md',
+    'Projects/.obsidian/x.md',
+  ])
+    expect(parseInline(`\`${input}\``)).toEqual([{ type: 'code', text: input }])
+  expect(parseInline('apps/Projects/x.md').every((n) => n.type === 'text')).toBe(true)
 })
 
 it('does not link unrelated text, invalid paths or parts of links', () => {
