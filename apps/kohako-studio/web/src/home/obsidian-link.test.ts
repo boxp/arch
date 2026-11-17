@@ -246,3 +246,25 @@ it('links inside bold text as Task Board notifications write them', () => {
   expect(parseInline('**残り1件**')).toEqual([{ type: 'bold', text: '残り1件' }])
   expect(plainText(`**[PR #13440](${pr})** と **BOXP-571**`)).toBe('PR #13440 と BOXP-571')
 })
+
+it('accepts only supported external link schemes', () => {
+  for (const url of ['http://example.com/', 'https://example.com/', 'mailto:user@example.com'])
+    expect(parseInline(`[link](${url})`)).toEqual([{ type: 'link', text: 'link', url }])
+  for (const url of ['ftp://example.com/file', 'javascript:alert', 'data:text/plain,hello'])
+    expect(parseInline(`[link](${url})`)).toEqual([{ type: 'text', text: 'link' }])
+})
+
+it('requires the entire Obsidian URL and limits decoded path length', () => {
+  const valid = obsidianNoteUrl('a.md')
+  expect(obsidianNotePath(`prefix${valid}`)).toBeUndefined()
+  expect(obsidianNotePath(`${valid}#fragment`)).toBeUndefined()
+  expect(obsidianNotePath(obsidianNoteUrl('a'.repeat(1500)))).toBe('a'.repeat(1500))
+  expect(obsidianNotePath(obsidianNoteUrl('a'.repeat(1501)))).toBeUndefined()
+  expect(obsidianNotePath(obsidianNoteUrl('a/   /b.md'))).toBeUndefined()
+})
+
+it('requires complete allowed paths and ticket IDs in code spans', () => {
+  for (const input of ['other/Projects/x.md', 'xBOXP-123', 'Projects/x.md.bak'])
+    expect(parseInline(`\`${input}\``)).toEqual([{ type: 'code', text: input }])
+  expect(parseInline('`Projects/a.md.backup.md`')[0]).toMatchObject({ type: 'note', text: 'a.md.backup' })
+})

@@ -23,3 +23,11 @@ it('renders only vault images through the authenticated same-origin endpoint', (
     expect(parseInline(`![x](${raw})`).every((x) => x.type !== 'image')).toBe(true)
   }
 })
+
+it('requires an image extension at the end and bounds the decoded path', () => {
+  expect(vaultImageUrl('kohako-vault:image.png.exe')).toBeUndefined()
+  const path = `${'a'.repeat(1496)}.png`
+  expect(vaultImageUrl(`kohako-vault:${path}`)).toBe(`/kohako/api/v1/vault-image?path=${path}`)
+  expect(vaultImageUrl(`kohako-vault:${path}x`)).toBeUndefined()
+  expect(vaultImageUrl(`kohako-vault:${'a'.repeat(1497)}.png`)).toBeUndefined()
+})
