@@ -15,7 +15,8 @@
   - 対象は各 package の `mutator.config.json` の `include` で限定。BOXP-599 が触る bff app/hermes/conversation は対象外。
 - CI: `.github/workflows/kohako-studio-mutation.yml` を既存 build/verify とは独立した並列 job（bff/web の matrix）で
   report-only 導入。スコア閾値・`--fail-on-survived` の merge gate は置かない。main push で全件を走らせて
-  `.mutator/` キャッシュを保存し、PR はキャッシュを復元して `--since origin/<base>` の差分だけ実行する。
+  `.mutator/` キャッシュを保存し、PR はキャッシュを復元して `--since origin/<base> --include-test-changes`
+  （diff 内の変異と、変更テストが覆う変異）だけ実行する。
 - テスト改善: 生存変異を「意味ある見逃し / 等価変異 / 未到達 / 実行失敗」に分類し、意味ある見逃しは呼び出し側から
   観測できる振る舞いを assert するテストで潰す。等価変異だけを理由付きで `mutator.accepted.json` に記録する。
   スコア合わせのテスト・除外・本番コード変更はしない（実バグを見つけた場合は報告して別途判断）。

@@ -67,8 +67,9 @@ jobs:
         run: |
           set -o pipefail
           if [ "$EVENT_NAME" = pull_request ]; then
-            # PR: diff 内の変異だけを実行する。キャッシュ済みの関数は再利用される。
-            args=(--since "origin/$BASE_REF" --time-budget 600)
+            # PR: diff 内の変異と、変更されたテストが覆う変異だけを実行する（テストのみの PR でも
+            # 検出力の変化を確認するため --include-test-changes）。キャッシュ済みの関数は再利用される。
+            args=(--since "origin/$BASE_REF" --include-test-changes --time-budget 600)
           else
             # main/dispatch: 対象全体。未実行分は Pending として次回へ持ち越す。
             args=(--time-budget 1200)
