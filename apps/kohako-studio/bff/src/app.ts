@@ -31,10 +31,15 @@ export function notificationReplyText(
 
 export const instructions = BASE_INSTRUCTIONS + VIEW_INSTRUCTIONS + vaultImageInstructions + vaultNoteInstructions
 export const studioInstructions = BASE_INSTRUCTIONS + vaultImageInstructions
+// BOXP-599: ナビログ（夜 23:30 の cron が家の会話の要点を vault に書く。通知なし）の使い方。正本はファイル。
+// 本人の発言 turn だけに渡す。止める・再開は lolice の前処理が見る 停止中.md の有無だけで行い、cron job は触らせない。
+export const navilogInstructions =
+  ' ナビログ: 毎晩23:30に、家の会話の要点が vault の ナビログ/YYYY-MM/YYYY-MM-DD.md に数行残ります（通知なし、Telegram・眼鏡の会話は載りません）。正しいのはいつもファイルで、ご主人さまが直した・消した内容が正です。ご主人さまに過去の事（今朝の件・昨日の続きなど）を尋ねられたら、覚えでなく直近のナビログを読んで答えてください。尋ねられていない turn ではナビログを読みません。「ナビログを止めて」と言われたら vault に ナビログ/停止中.md を作り、「再開して」と言われたらそれを消して読み戻してください。「今日は記録なし」「これは残さないで」は夜のまとめが自動で従うので、了解と伝えるだけです（その話題をナビログに書かないでください）。「昨日のログの◯◯は違う」と言われたら、その日のファイルの該当行だけを直し、行末に（訂正）と付けます。ほかの行や消された行は戻しません。「いま書いて」と言われたら、cronjob の「Kohako ナビログ（夜のまとめ・通知なし）」を今すぐ一度実行します（時刻や設定は変えません）。ナビログから消しても、コハコ内部の会話記録（自動では消えません）や覚え書きには残りうることを、尋ねられたら正直に伝えてください。'
 // BOXP-501: 家の会話で起票した票が監督 runbook に未登録だと、Task Board webhook の prefilter と route prompt が
 // 完了・停止・本人判断待ちを silent にし、家にも Telegram にも届かない。Telegram 経由の依頼と同じ登録を Owner の発言 turn だけに求める。
 export const ownerTaskInstructions =
-  ' ご主人さまの依頼でこの会話から Task Board に起票・再依頼・担当への引き継ぎをした場合は、Telegram 経由の依頼と同じく /opt/data/kohako-task-supervision.md に既存の書式で report-only の監督登録（家経由の依頼と明記）を追加して読み戻し、返答で票 ID を伝えてください。登録が無いと、その票の完了・停止・本人判断待ちの通知が家にも Telegram にも届きません。起票や引き継ぎをしていない turn では登録しません。'
+  ' ご主人さまの依頼でこの会話から Task Board に起票・再依頼・担当への引き継ぎをした場合は、Telegram 経由の依頼と同じく /opt/data/kohako-task-supervision.md に既存の書式で report-only の監督登録（家経由の依頼と明記）を追加して読み戻し、返答で票 ID を伝えてください。登録が無いと、その票の完了・停止・本人判断待ちの通知が家にも Telegram にも届きません。起票や引き継ぎをしていない turn では登録しません。' +
+  navilogInstructions
 type Principal = 'owner' | 'verifier' | 'notifier'
 export function createApp(opts: {
   authenticate: (headers: IncomingMessage['headers']) => Promise<Principal | null>
