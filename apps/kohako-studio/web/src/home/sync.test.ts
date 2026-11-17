@@ -150,3 +150,32 @@ test('進行中の依頼を追えていない間は rev を覚えず、次回も
   // 前の依頼を追跡中に別端末が次の依頼を始めた: 前の依頼の完了後に次の依頼を追えるよう覚えない。
   expect(nextRev('r1', { requestId: 'next', kind: 'text' }, 'prev')).toBe('')
 })
+
+test('履歴の各フィールドは型と長さの上限を検証する', () => {
+  const base = { rev: 'r', sessionStartedAt: 1, items: [item('a')], active: null }
+  const validItem = {
+    ...item('a'),
+    text: 'x'.repeat(500),
+    error: 'x'.repeat(500),
+    attachments: Array(20).fill('x'.repeat(255)),
+    reply: { text: 'x'.repeat(30000), at: 2, views: [] },
+  }
+  expect(validateTranscript({ ...base, rev: 'r'.repeat(100), items: Array(50).fill(validItem) })).not.toBeNull()
+  for (const bad of [
+    { ...base, rev: 'r'.repeat(101) },
+    { ...base, sessionStartedAt: Infinity },
+    { ...base, items: [{ ...validItem, requestId: '' }] },
+    { ...base, items: [{ ...validItem, requestId: 'x'.repeat(65) }] },
+    { ...base, items: [{ ...validItem, at: NaN }] },
+    { ...base, items: [{ ...validItem, current: 1 }] },
+    { ...base, items: [{ ...validItem, error: 'x'.repeat(501) }] },
+    { ...base, items: [{ ...validItem, attachments: Array(21).fill('x') }] },
+    { ...base, items: [{ ...validItem, attachments: ['ok', 42] }] },
+    { ...base, items: [{ ...validItem, attachments: ['x'.repeat(256)] }] },
+    { ...base, items: [{ ...validItem, reply: { text: 'x'.repeat(30001), at: 2 } }] },
+    { ...base, items: [{ ...validItem, reply: { text: 'ok', at: Infinity } }] },
+    { ...base, items: [{ ...validItem, reply: { text: 'ok', at: 2, views: Array(51).fill({}) } }] },
+    { ...base, active: { requestId: '', kind: 'text' } },
+  ])
+    expect(validateTranscript(bad)).toBeNull()
+})
