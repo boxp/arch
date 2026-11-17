@@ -33,18 +33,33 @@
      ;; Matrix form keeps 14 days x 11 services well under the 4KB SSM standard limit (service names appear once).
      :daily (merge common {:days window-days :services daily-services
                            :values (mapv (fn [service] (mapv #(round4 (get-in daily-map [service %] 0.0)) window-days)) daily-services)})}))
+;; SSM has no multi-parameter transaction. Remember what was attempted and restore the previous values on failure,
+;; so a partial write never leaves daily/services/summary from different snapshots (previous snapshot is kept).
+(defn write-snapshot! [put! previous result]
+  (let [attempted (atom [])]
+    (try (doseq [k [:daily :services :summary]] (swap! attempted conj k) (put! (name k) (k result)))
+         (catch Exception _
+           (let [restored (mapv (fn [k] (try (put! (name k) (get previous k)) true (catch Exception _ false))) (reverse @attempted))]
+             (throw (ex-info "SnapshotWriteFailed" {:code (if (every? true? restored) "SnapshotWriteFailed" "SnapshotRollbackFailed")})))))))
+;; Any failure to read status must abort without writing status, otherwise the attempt history (24h/3 guard) would be erased.
+(defn read-status [get-value]
+  (let [v (try (json/parse-string (get-value "status") true) (catch Exception _ (throw (ex-info "StatusReadFailed" {:code "StatusReadFailed"}))))]
+    (cond (not (map? v)) (throw (ex-info "StatusReadFailed" {:code "StatusReadFailed"}))
+          (= "uninitialized" (:state v)) {}
+          :else v)))
 (defn main []
   (let [tmp (.toFile (if-let [d (System/getenv "RUNNER_TEMP")] (Files/createTempDirectory (.toPath (io/file d)) "aws-cost-" (make-array FileAttribute 0)) (Files/createTempDirectory "aws-cost-" (make-array FileAttribute 0))))
-        now (.getEpochSecond (Instant/now)) today (LocalDate/now ZoneOffset/UTC) requests (atom 0) status (atom {})]
+        now (.getEpochSecond (Instant/now)) today (LocalDate/now ZoneOffset/UTC) requests (atom 0) status (atom {}) status-loaded (atom false)]
     (try
       (letfn [(call [args] (let [out (io/file tmp "out") err (io/file tmp "err") p (process/process (into ["aws" "--no-cli-pager" "--output" "json"] args) {:out out :err err}) result @p]
                                   (when-not (zero? (:exit result)) (let [e (slurp err) code (or (second (re-find #"\(([A-Za-z]+)\)" e)) "AwsCliError")] (throw (ex-info "AWS error" {:code code}))))
                                   (json/parse-string (slurp out) true)))
-              (put! [name value] (when-not (fits? value) (throw (ex-info "SizeLimitExceeded" {:code "SizeLimitExceeded"}))) (let [f (io/file tmp "value.json")] (spit f (json/generate-string value)) (call ["ssm" "put-parameter" "--name" (str "/lolice/aws-cost/" name) "--type" "SecureString" "--overwrite" "--value" (str "file://" (.getAbsolutePath f))]))) ]
+              (put! [name value] (when-not (fits? value) (throw (ex-info "SizeLimitExceeded" {:code "SizeLimitExceeded"}))) (let [f (io/file tmp "value.json")] (spit f (json/generate-string value)) (call ["ssm" "put-parameter" "--name" (str "/lolice/aws-cost/" name) "--type" "SecureString" "--overwrite" "--value" (str "file://" (.getAbsolutePath f))])))
+              (get-value [name] (-> (call ["ssm" "get-parameter" "--name" (str "/lolice/aws-cost/" name) "--with-decryption"]) :Parameter :Value))]
         (let [identity (call ["sts" "get-caller-identity"]) account (:Account identity)
-              s (try (let [v (-> (call ["ssm" "get-parameter" "--name" "/lolice/aws-cost/status" "--with-decryption"]) :Parameter :Value (json/parse-string true))] (if (= "uninitialized" (:state v)) {} v)) (catch Exception e (if (= "ParameterNotFound" (:code (ex-data e))) (throw e) (if (ex-data e) (throw e) {}))))
+              s (read-status get-value)
               g (guard s now)]
-          (reset! status s)
+          (reset! status s) (reset! status-loaded true)
           (if (:skip g) (println "result=skipped")
             (do (swap! status assoc :schema schema :last_attempt_at now :last_result "pending" :attempts (conj (:attempts g) now) :requests_last 0)
                 (put! "status" @status)
@@ -54,10 +69,10 @@
                       forecast (try (swap! requests inc) (call ["ce" "get-cost-forecast" "--time-period" (str "Start=" today ",End=" (.plusMonths (.withDayOfMonth today 1) 1)) "--granularity" "MONTHLY" "--metric" "UNBLENDED_COST" "--prediction-interval-level" "80"]) (catch Exception _ nil))
                       result (transform today now (subs account (- (count account) 4)) pages forecast @requests)]
                   (doseq [k [:daily :services :summary]] (when-not (fits? (k result)) (throw (ex-info "SizeLimitExceeded" {:code "SizeLimitExceeded"}))))
-                  (doseq [k [:daily :services :summary]] (put! (name k) (k result)))
+                  (write-snapshot! put! (into {} (for [k [:daily :services :summary]] [k (json/parse-string (get-value (name k)) true)])) result)
                   (swap! status assoc :last_success_at now :last_result "ok" :error_code nil :requests_last @requests)
                   (put! "status" @status)
                   (println (str "result=ok pages=" (count pages) " requests=" @requests)))))))
-      (catch Exception e (let [code (sanitize (or (:code (ex-data e)) "UnknownError"))] (try (swap! status assoc :schema schema :last_attempt_at now :last_result "error" :error_code code :requests_last @requests) (let [f (io/file tmp "error.json")] (spit f (json/generate-string @status)) @(process/process ["aws" "ssm" "put-parameter" "--name" "/lolice/aws-cost/status" "--type" "SecureString" "--overwrite" "--value" (str "file://" (.getAbsolutePath f))] {:out (io/file tmp "error-out") :err (io/file tmp "error-err")})) (catch Exception _)) (binding [*out* *err*] (println (str "result=error code=" code))) (System/exit 1)))
+      (catch Exception e (let [code (sanitize (or (:code (ex-data e)) "UnknownError"))] (when @status-loaded (try (swap! status assoc :schema schema :last_attempt_at now :last_result "error" :error_code code :requests_last @requests) (let [f (io/file tmp "error.json")] (spit f (json/generate-string @status)) @(process/process ["aws" "ssm" "put-parameter" "--name" "/lolice/aws-cost/status" "--type" "SecureString" "--overwrite" "--value" (str "file://" (.getAbsolutePath f))] {:out (io/file tmp "error-out") :err (io/file tmp "error-err")})) (catch Exception _))) (binding [*out* *err*] (println (str "result=error code=" code))) (System/exit 1)))
       (finally (doseq [f (reverse (file-seq tmp))] (.delete f))))))
 (when (= *file* (System/getProperty "babashka.file")) (main))

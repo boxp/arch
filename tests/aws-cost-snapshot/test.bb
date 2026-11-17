@@ -35,4 +35,19 @@
     (is (= 14 (count (get-in x [:daily :days]))))
     (is (= 11 (count (get-in x [:daily :services]))))
     (is (every? fits? (vals x)))))
+(deftest write-rollback
+  (let [store (atom {"daily" :old-d "services" :old-s "summary" :old-m})
+        put! (fn [n v] (when (= v :new-s) (throw (ex-info "x" {:code "Throttling"}))) (swap! store assoc n v))
+        prev {:daily :old-d :services :old-s :summary :old-m}
+        e (try (write-snapshot! put! prev {:daily :new-d :services :new-s :summary :new-m}) nil (catch Exception e e))]
+    (is (= "SnapshotWriteFailed" (:code (ex-data e))))
+    (is (= {"daily" :old-d "services" :old-s "summary" :old-m} @store)))
+  (let [put! (fn [n v] (when (#{:new-s :old-d} v) (throw (ex-info "x" {}))))
+        e (try (write-snapshot! put! {:daily :old-d} {:daily :new-d :services :new-s :summary :new-m}) nil (catch Exception e e))]
+    (is (= "SnapshotRollbackFailed" (:code (ex-data e))))))
+(deftest status-read
+  (is (= {} (read-status (constantly "{\"state\":\"uninitialized\"}"))))
+  (is (= [1 2] (:attempts (read-status (constantly "{\"attempts\":[1,2]}")))))
+  (is (= "StatusReadFailed" (:code (ex-data (try (read-status (fn [_] (throw (ex-info "t" {:code "Throttling"})))) (catch Exception e e))))))
+  (is (= "StatusReadFailed" (:code (ex-data (try (read-status (constantly "not json")) (catch Exception e e)))))))
 (let [result (run-tests)] (when (pos? (+ (:fail result) (:error result))) (System/exit 1)))
