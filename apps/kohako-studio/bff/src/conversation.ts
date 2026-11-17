@@ -418,8 +418,11 @@ export function createConversation({
           input.kind === 'text'
             ? input.attachments?.map((x) => ({ id: x.meta.id, name: x.meta.displayName }))
             : undefined,
+        // 通知からの現場は返信ごとに session を固定する（runId 保存前の再送でも Hermes の冪等性で同じ run を replay させる）。
         sessionId: isVisit
-          ? `kohako-visit-${now().toString(36)}${randomBytes(6).toString('hex')}`
+          ? resume
+            ? `kohako-visit-r-${createHash('sha256').update(resume.idempotencyKey).digest('hex').slice(0, 24)}`
+            : `kohako-visit-${now().toString(36)}${randomBytes(6).toString('hex')}`
           : (resume?.sessionId ?? `${prefix}-${sessionStartedAt.toString(36)}`),
         resume: !!resume && !isVisit,
       }
@@ -691,16 +694,21 @@ export function createConversation({
           await Promise.race([loadFinalArgs(), new Promise<void>((r) => setTimeout(r, 3000).unref?.())])
         entry.activity?.finish(settled.status === 'done' && !entry.cancelRequested)
         if (visitTimer) clearTimeout(visitTimer)
-        const result = entry.visit?.reason
-          ? {
-              status: 'done' as const,
-              text: `見た時刻: ${new Date(now()).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false })}（日本時間）\n${entry.visit.reason === 'tool' ? '決まりの外の道具が動きかけたので戻しました。' : '時間（または回数）の上限に達したので戻りました。'}\n見た物: 不明\n分かった事: 不明\n分からなかった事: 途中で戻ったため、全体は見ていません\n次に要る事: なし`,
-            }
-          : touchApproval
-            ? { status: 'failed' as const, error: 'touch_approval_denied' }
-            : entry.cancelRequested && settled.status === 'failed'
-              ? { status: 'failed' as const, error: 'cancelled' }
-              : settled
+        // 現場を途中で止めた時は、上流 run の終了と停止を確かめられた場合だけ「戻りました」とする。
+        // 確かめられなければ結果未確定のまま返し、停止済みと誤認させない。
+        const result =
+          entry.visit?.reason && !runEnded
+            ? settled
+            : entry.visit?.reason
+              ? {
+                  status: 'done' as const,
+                  text: `見た時刻: ${new Date(now()).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false })}（日本時間）\n${entry.visit.reason === 'tool' ? '決まりの外の道具が動きかけたので戻しました。' : '時間（または回数）の上限に達したので戻りました。'}\n見た物: 不明\n分かった事: 不明\n分からなかった事: 途中で戻ったため、全体は見ていません\n次に要る事: なし`,
+                }
+              : touchApproval
+                ? { status: 'failed' as const, error: 'touch_approval_denied' }
+                : entry.cancelRequested && settled.status === 'failed'
+                  ? { status: 'failed' as const, error: 'cancelled' }
+                  : settled
         // run 終了の確認は Hermes の実結果で行う（unknown/internal_error は終了未確認）。
         entry.upstreamEnded =
           settled.status === 'done' || (settled.status === 'failed' && settled.error !== 'internal_error')

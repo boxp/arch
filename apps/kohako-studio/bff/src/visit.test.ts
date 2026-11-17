@@ -94,4 +94,56 @@ describe('現場の入口と表示', () => {
     await vi.waitFor(() => expect(stop).toHaveBeenCalled())
     await vi.waitFor(() => expect(conv.get('request-2')?.reply?.text).toContain('上限に達した'))
   })
+  it('停止や終了を確かめられない時は「戻りました」と出さない', async () => {
+    let emit: (event: Record<string, unknown>) => void = () => {}
+    let finish: (result: { status: 'unknown'; error: string }) => void = () => {}
+    const stop = vi.fn(async () => {
+      finish({ status: 'unknown', error: 'hermes_unreachable' })
+      return 'unknown' as const
+    })
+    const run = vi.fn((_id, _input, _session, _instructions, _approval, _retry, onRun) => {
+      onRun('run-3')
+      return new Promise<{ status: 'unknown'; error: string }>((resolve) => {
+        finish = resolve
+      })
+    })
+    const hermes = {
+      run,
+      stop,
+      events: async (_id: string, callback: typeof emit) => {
+        emit = callback
+      },
+      approve: vi.fn(),
+    } as unknown as ReturnType<typeof createHermes>
+    const conv = createConversation({ now: () => Date.now(), hermes, prefix: 'kohako-web', activityDrainMs: 1 })
+    conv.submit(
+      { kind: 'text', visit: true, text: '見てきて', requestId: 'request-3', expiresAt: Date.now() + 10000 },
+      '',
+    )
+    await vi.waitFor(() => expect(run).toHaveBeenCalled())
+    emit({ event: 'tool.started', tool: 'terminal' })
+    await vi.waitFor(() => expect(conv.get('request-3')?.status).toBe('unknown'))
+    expect(conv.get('request-3')?.reply).toBeUndefined()
+  })
+  it('通知からの現場は同じ返信なら同じ session と冪等キーで送る', async () => {
+    const run = vi.fn(() => new Promise(() => {}))
+    const hermes = { run, stop: vi.fn(), approve: vi.fn() } as unknown as ReturnType<typeof createHermes>
+    const sessions: unknown[] = []
+    for (const id of ['a', 'b']) {
+      run.mockClear()
+      const conv = createConversation({ now: () => Date.now(), hermes, prefix: 'kohako-web' })
+      conv.submit(
+        { kind: 'text', visit: true, text: '見てきて', requestId: 'reply-1', expiresAt: Date.now() + 10000 },
+        '',
+        undefined,
+        { sessionId: `kohako-web-reply-${id}`, idempotencyKey: 'kohako-reply-reply-1' },
+      )
+      await vi.waitFor(() => expect(run).toHaveBeenCalled())
+      const call = run.mock.calls[0] as unknown[]
+      expect(call[2]).toMatch(/^kohako-visit-r-/)
+      expect(call[7]).toBe('kohako-reply-reply-1')
+      sessions.push(call[2])
+    }
+    expect(sessions[0]).toBe(sessions[1])
+  })
 })
