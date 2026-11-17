@@ -45,7 +45,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "longhorn_backup" {
     }
 
     noncurrent_version_expiration {
-      # Retention days are an Owner decision (BOXP-598); 14 is the proposed value.
+      # Retention days: 14, chosen by the Owner (BOXP-598).
       noncurrent_days = 14
     }
 
