@@ -59,6 +59,7 @@ import { ActingDirector, cueForSentence, splitSentences, type ActingStage } from
 import { createActingStage } from '../live2d/gesture'
 import { createSentenceSpeaker, createSilentSentencer } from '../studio/acting-speech'
 import { SceneDirector, targetScene, messageShown, type Scene } from './scene'
+import { arrivalNote, arrivalPhase, LANDING_MS, type Arrival } from './arrival'
 import { cardsFromText, type Card } from './cards'
 import {
   acts,
@@ -656,6 +657,9 @@ function show(next: State) {
   send.disabled = !enabled || touchActive || !!recording || starting
   send.textContent = queueing() ? 'キューに追加' : '送信'
   stop.hidden = !busy || !requestId || !accepted
+  el<HTMLButtonElement>('visit').hidden = busy
+  el<HTMLButtonElement>('visit').disabled =
+    !enabled || !!unconfirmed || touchActive || !!recording || starting || queueing()
   record.hidden = !stt
   record.disabled =
     !enabled ||
@@ -688,6 +692,25 @@ function shapeOf(): 'pc' | 'portrait' | 'landscape' {
     h = window.innerHeight
   return h > w ? 'portrait' : w >= 900 && h >= 560 ? 'pc' : 'landscape'
 }
+let visitActive = false
+// BOXP-599 TD-01: 家へ戻る演出の状態。リグを読み込む間は「戻っている途中」、現場の実行中は「出ている」、終わった直後だけ短く着地する。
+let rigLoading = wantsRig(location.search),
+  returnedAt: number | null = null
+function refreshArrival() {
+  const input = { rigLoading, visit: visitActive && busy, returnedAt, now: Date.now() }
+  let phase: Arrival = arrivalPhase(input)
+  const before = character.dataset.arrival as Arrival | undefined
+  if ((before === 'arriving' || before === 'away') && phase === 'home') {
+    returnedAt = input.now
+    phase = arrivalPhase({ ...input, returnedAt })
+    setTimeout(refreshArrival, LANDING_MS + 20)
+  }
+  if (before === phase) return
+  character.dataset.arrival = phase
+  const note = el('arrival-note')
+  note.textContent = arrivalNote[phase]
+  note.hidden = !arrivalNote[phase]
+}
 function refreshScene(force = false) {
   const vv = window.visualViewport,
     vh = vv ? vv.height : window.innerHeight
@@ -708,9 +731,12 @@ function refreshScene(force = false) {
     idleMs: Date.now() - lastActivity,
     hasReply: !!lastReply,
     netDown,
+    visit: visitActive && busy,
   })
   const scene = director.decide(target, Date.now(), { holding: holding(), pinned: prefs.pinned, force })
   body.dataset.scene = scene
+  el('visit-place').hidden = scene !== 'visit'
+  refreshArrival()
   updateMessage()
   const upper =
     kbd || shape === 'portrait' || shape === 'landscape' || ((scene === 'show' || scene === 'work') && shape === 'pc')
@@ -1199,15 +1225,25 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
       return
     }
     const next = interpretRequest(result.data)
-    renderActivity(el('activity'), validateActivity(result.data.activity), {
-      live: next.state === 'thinking' || next.state === 'approval',
-      // 手順一覧を開いている間だけ、各手順の実行内容（実引数）を取り寄せて行の中に出す（BOXP-560）。
-      loadDetail: async (stepId) => (await call(`requests/${id}/activity/${stepId}`)).data,
-      onLayout: () => {
-        if (body.dataset.shape === 'portrait') chatFollower.pin(chatlog)
-        else if (el('activity').dataset.live === '1' && !el('activity-steps')?.hidden) bubbleFollower.pin(bubble)
-      },
-    })
+    visitActive = !!result.data.visit && (next.state === 'thinking' || next.state === 'approval')
+    if (result.data.visit) {
+      const activity = el('activity')
+      activity.hidden = false
+      const visit = result.data.visit as { steps?: unknown }
+      const steps = Array.isArray(visit.steps) ? visit.steps : []
+      activity.textContent =
+        steps.filter((step: unknown): step is string => typeof step === 'string').at(-1) || '現場を見ています'
+      refreshScene()
+    } else
+      renderActivity(el('activity'), validateActivity(result.data.activity), {
+        live: next.state === 'thinking' || next.state === 'approval',
+        // 手順一覧を開いている間だけ、各手順の実行内容（実引数）を取り寄せて行の中に出す（BOXP-560）。
+        loadDetail: async (stepId) => (await call(`requests/${id}/activity/${stepId}`)).data,
+        onLayout: () => {
+          if (body.dataset.shape === 'portrait') chatFollower.pin(chatlog)
+          else if (el('activity').dataset.live === '1' && !el('activity-steps')?.hidden) bubbleFollower.pin(bubble)
+        },
+      })
     if (next.state === 'approval' && next.approval) {
       if (approvalId !== next.approval.approvalId) {
         approvalId = next.approval.approvalId
@@ -1708,6 +1744,10 @@ form.addEventListener('drop', (e) => {
   e.preventDefault()
   if (e.dataTransfer?.files) void addFiles(e.dataTransfer.files)
 })
+el('visit').addEventListener('click', () => {
+  if (!busy && enabled && !unconfirmed && !touchActive && !recording && !starting && !queueing())
+    void sendText('見てきて', 'visit')
+})
 el<HTMLFormElement>('form').addEventListener('submit', (event) => {
   event.preventDefault()
   const text = message.value.trim() || (chips.length ? '添付ファイルを見てください' : '')
@@ -1766,7 +1806,7 @@ el<HTMLFormElement>('form').addEventListener('submit', (event) => {
  * 1 件の発言を送る。from: 'composer' は入力欄から、'pending' は受理未確認の控えの確認・再送、QueueItem は送信待ちの先頭。
  * 受理（202）されるまで履歴に「あなた」として出さない。受理されなかったと確定したら本文を元の場所（入力欄が空ならそこ、送信待ちなら先頭）へ戻す。
  */
-async function sendText(text: string, from: 'composer' | 'pending' | QueueItem): Promise<void> {
+async function sendText(text: string, from: 'composer' | 'pending' | 'visit' | QueueItem): Promise<void> {
   const giveBack = () => {
     if (typeof from === 'object') queue.putBack(from)
     else if (from === 'composer') {
@@ -2508,6 +2548,7 @@ async function startRig() {
     el('face-mode').textContent = '静止表情（?face=static）'
     return
   }
+  refreshArrival()
   try {
     const loaded = await loadRig(rigCanvas, rigModel, './kohako/live2d/sample/')
     rig = loaded.player
@@ -2528,6 +2569,8 @@ async function startRig() {
     if (actingEnabled) acting = new ActingDirector(calmStage(stage))
     face.hidden = true
     rigCanvas.hidden = false
+    rigLoading = false
+    refreshArrival()
     el('face-mode').textContent = `${rigModel.name}（独自 runtime・公式 Live2D ではありません）`
     Object.assign(report, {
       loaded: true,
@@ -2542,6 +2585,8 @@ async function startRig() {
     ;(report.errors as string[]).push(e instanceof Error ? e.message : String(e))
     el('face-mode').textContent =
       'リグを読み込めなかったため静止表情で表示しています（ふれあいは「ふれあい」ボタンから）'
+    rigLoading = false
+    refreshArrival()
   }
 }
 // 自動計測用（同一ページの状態を読むだけ）。

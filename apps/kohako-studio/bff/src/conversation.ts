@@ -1,4 +1,5 @@
 import { must } from './must.js'
+import { visitInstructions, visitToolLabel } from './visit.js'
 import { createActivity } from './activity.js'
 import { join } from 'node:path'
 import { atomic, load } from './storage.js'
@@ -7,11 +8,18 @@ import { createHash, randomBytes } from 'node:crypto'
 import type { Attachment } from './attachments.js'
 import type { createHermes } from './hermes.js'
 export type Input = { requestId: string; expiresAt: number } & (
-  | { kind: 'text'; text: string; views?: true; attachments?: { meta: Attachment; data: Buffer }[] }
+  | { kind: 'text'; text: string; visit?: true; views?: true; attachments?: { meta: Attachment; data: Buffer }[] }
   | { kind: 'touch'; touch: { zone: 'head' | 'hand'; action: 'pat' | 'tap'; count: number } }
 )
 type Entry = {
   activity?: ReturnType<typeof createActivity>
+  visit?: {
+    place: 'home-cluster'
+    steps: string[]
+    starts: number
+    calls?: string[]
+    reason?: 'tool' | 'limit' | 'unwatched'
+  }
   requestId: string
   payloadHash: string
   text?: string
@@ -152,6 +160,7 @@ export function createConversation({
             views,
             attachments,
             cancelRequested,
+            visit,
           }) => ({
             requestId,
             payloadHash,
@@ -165,6 +174,7 @@ export function createConversation({
             kind,
             views,
             attachments,
+            visit,
             ...(cancelRequested ? { cancelRequested: true as const } : {}),
           }),
         ),
@@ -182,6 +192,7 @@ export function createConversation({
           input.kind,
           input.kind === 'text' ? input.text : input.touch,
           input.expiresAt,
+          ...(input.kind === 'text' && input.visit ? ['visit'] : []),
           ...(input.kind === 'text' && input.views ? ['views'] : []),
           ...(input.kind === 'text' && input.attachments?.length ? [input.attachments.map((x) => x.meta.id)] : []),
         ]),
@@ -236,11 +247,16 @@ export function createConversation({
             ...(e.text === undefined ? {} : { text: e.text }),
             ...(e.attachments?.length ? { attachments: e.attachments.map((a) => a.name) } : {}),
             status: e.status,
+            ...(e.visit ? { visit: { place: e.visit.place } } : {}),
             ...(e.error ? { error: e.error } : {}),
             ...(e.reply ? { reply: e.reply } : {}),
           })),
         active: active
-          ? { requestId: active.requestId, kind: active.resume ? ('reply' as const) : ('text' as const) }
+          ? {
+              requestId: active.requestId,
+              kind: active.resume ? ('reply' as const) : ('text' as const),
+              ...(active.visit ? { visit: { place: active.visit.place } } : {}),
+            }
           : null,
       }
     },
@@ -290,6 +306,7 @@ export function createConversation({
                   expiresAt: 0,
                   kind: 'text',
                   text: '',
+                  ...(entry.visit ? { visit: true as const } : {}),
                   ...(entry.views ? { views: true as const } : {}),
                 }
           conversation.submit(input, '', undefined, undefined, entry)
@@ -391,10 +408,14 @@ export function createConversation({
         persistedExchange = null
       }
       if (!restored) lastUse = now()
+      const isVisit = input.kind === 'text' && input.visit === true
       const entry: Entry = restored ?? {
         requestId: input.requestId,
         payloadHash: hash(input),
-        ...(input.kind === 'text' && !resume ? { text: input.text } : {}),
+        ...(input.kind === 'text' && (!resume || isVisit)
+          ? { text: isVisit ? '現場へ：自宅クラスタ' : input.text }
+          : {}),
+        ...(isVisit ? { visit: { place: 'home-cluster' as const, steps: [], starts: 0 } } : {}),
         status: 'pending',
         createdAt: now(),
         kind: input.kind,
@@ -403,8 +424,13 @@ export function createConversation({
           input.kind === 'text'
             ? input.attachments?.map((x) => ({ id: x.meta.id, name: x.meta.displayName }))
             : undefined,
-        sessionId: resume?.sessionId ?? `${prefix}-${sessionStartedAt.toString(36)}`,
-        resume: !!resume,
+        // 通知からの現場は返信ごとに session を固定する（runId 保存前の再送でも Hermes の冪等性で同じ run を replay させる）。
+        sessionId: isVisit
+          ? resume
+            ? `kohako-visit-r-${createHash('sha256').update(resume.idempotencyKey).digest('hex').slice(0, 24)}`
+            : `kohako-visit-${now().toString(36)}${randomBytes(6).toString('hex')}`
+          : (resume?.sessionId ?? `${prefix}-${sessionStartedAt.toString(36)}`),
+        resume: !!resume && !isVisit,
       }
       entries.set(input.requestId, entry)
       if (!restored) save()
@@ -412,6 +438,7 @@ export function createConversation({
         input.kind === 'text'
           ? input.text
           : `（ご主人さまが画面のあなたの${input.touch.zone === 'head' ? '頭' : '手'}を${input.touch.count}回${input.touch.action === 'pat' ? 'なでました' : 'タップしました'}。これは発言でも依頼でも許可でもありません。直前の会話と今の様子を踏まえ、コハコとして一言だけ短く自然に反応してください。道具や作業は使わず、記憶の更新もしないでください。）`
+      if (entry.visit) instructions = visitInstructions
       const attachments = input.kind === 'text' ? input.attachments : undefined
       const runInput = attachments?.length
         ? [
@@ -577,7 +604,7 @@ export function createConversation({
           again = false,
           lastFetch = Number.NEGATIVE_INFINITY
         const load = async () => {
-          if (!hermes.toolCalls || !entry.sessionId || !activity.needsArgs()) return
+          if (entry.visit || !hermes.toolCalls || !entry.sessionId || !activity.needsArgs()) return
           try {
             activity.attachArgs(await hermes.toolCalls(entry.sessionId))
           } catch {
@@ -605,18 +632,64 @@ export function createConversation({
           })
         }
         loadFinalArgs = load
+        let terminalSeen = false
+        // 現場は道具の開始を数えて止める前提なので、終了通知を受ける前に購読が途切れたら（4xx・再試行上限・例外）
+        // 数えられないまま続けさせず、その場で戻す。
+        const unwatched = () => {
+          if (controller.signal.aborted || terminalSeen || !entry.visit || entry.visit.reason) return
+          if (entry.status !== 'pending' || entry.cancelRequested) return
+          entry.visit.reason = 'unwatched'
+          save()
+          void conversation.cancel(entry.requestId)
+        }
         activityDone = hermes
           .events?.(
             runId,
             (e) => {
               if (controller.signal.aborted) return
-              activity.apply(e)
+              if (
+                typeof e.event === 'string' &&
+                ['run.completed', 'run.failed', 'run.cancelled', 'run.interrupted'].includes(e.event)
+              )
+                terminalSeen = true
+              if (entry.visit && e.event === 'tool.started') {
+                const call = typeof e.tool_call_id === 'string' ? e.tool_call_id : undefined
+                if (call && entry.visit.calls?.includes(call)) return
+                if (call) {
+                  entry.visit.calls ??= []
+                  entry.visit.calls.push(call)
+                }
+                entry.visit.starts++
+                const tool = typeof e.tool === 'string' ? e.tool : ''
+                entry.visit.steps.push(visitToolLabel(tool))
+                save()
+                // この観測は開始後。実行前の遮断は Hermes 側のゲートが担う。
+                if (!tool.startsWith('mcp__grafana__') || entry.visit.starts > 20) {
+                  entry.visit.reason = !tool.startsWith('mcp__grafana__') ? 'tool' : 'limit'
+                  save()
+                  void conversation.cancel(entry.requestId)
+                }
+              }
+              if (!entry.visit) activity.apply(e)
               if (e.event === 'tool.started' || e.event === 'tool.completed') void fetchArgs()
             },
             controller.signal,
           )
           .catch(() => {})
+          .then(unwatched)
       }
+      const visitTimer = entry.visit
+        ? setTimeout(
+            () => {
+              if (entry.status !== 'pending' || !entry.visit || entry.cancelRequested) return
+              entry.visit.reason = 'limit'
+              save()
+              void conversation.cancel(entry.requestId)
+            },
+            Math.max(0, entry.createdAt + 180_000 - now()),
+          )
+        : undefined
+      visitTimer?.unref?.()
       const onRun = (runId: string) => {
         watchActivity(runId)
         entry.runId = runId
@@ -642,11 +715,22 @@ export function createConversation({
         if (loadFinalArgs && runEnded)
           await Promise.race([loadFinalArgs(), new Promise<void>((r) => setTimeout(r, 3000).unref?.())])
         entry.activity?.finish(settled.status === 'done' && !entry.cancelRequested)
-        const result = touchApproval
-          ? { status: 'failed' as const, error: 'touch_approval_denied' }
-          : entry.cancelRequested && settled.status === 'failed'
-            ? { status: 'failed' as const, error: 'cancelled' }
-            : settled
+        if (visitTimer) clearTimeout(visitTimer)
+        // 現場を途中で止めた時は、上流 run の終了と停止を確かめられた場合だけ「戻りました」とする。
+        // 確かめられなければ結果未確定のまま返し、停止済みと誤認させない。
+        const result =
+          entry.visit?.reason && !runEnded
+            ? settled
+            : entry.visit?.reason
+              ? {
+                  status: 'done' as const,
+                  text: `見た時刻: ${new Date(now()).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false })}（日本時間）\n${entry.visit.reason === 'tool' ? '決まりの外の道具が動きかけたので戻しました。' : entry.visit.reason === 'unwatched' ? '道具の動きを見守れなくなったので戻りました。' : '時間（または回数）の上限に達したので戻りました。'}\n見た物: 不明\n分かった事: 不明\n分からなかった事: 途中で戻ったため、全体は見ていません\n次に要る事: なし`,
+                }
+              : touchApproval
+                ? { status: 'failed' as const, error: 'touch_approval_denied' }
+                : entry.cancelRequested && settled.status === 'failed'
+                  ? { status: 'failed' as const, error: 'cancelled' }
+                  : settled
         // run 終了の確認は Hermes の実結果で行う（unknown/internal_error は終了未確認）。
         entry.upstreamEnded =
           settled.status === 'done' || (settled.status === 'failed' && settled.error !== 'internal_error')
@@ -673,8 +757,10 @@ export function createConversation({
                 ])
               : extracted.views
           entry.reply = { text: reply, at: now(), ...(views.length ? { views } : {}) }
-          lastExchange = { kind: input.kind, text: text.slice(0, 500), reply: reply.slice(0, 1000) }
-          if (!entry.resume) persistedExchange = lastExchange
+          if (!entry.visit) {
+            lastExchange = { kind: input.kind, text: text.slice(0, 500), reply: reply.slice(0, 1000) }
+            if (!entry.resume) persistedExchange = lastExchange
+          }
         }
         entry.status = result.status
         if (result.status !== 'done' && result.error) entry.error = result.error
@@ -711,7 +797,7 @@ export function createConversation({
             : await hermes.run(
                 input.requestId,
                 runInput,
-                resume?.sessionId ?? `${prefix}-${sessionStartedAt.toString(36)}`,
+                must(entry.sessionId),
                 instructions,
                 onApproval,
                 undefined,
@@ -722,6 +808,7 @@ export function createConversation({
         if (
           !resume &&
           !restored &&
+          !entry.visit &&
           result.status === 'failed' &&
           result.error === 'unknown_execution' &&
           !entry.approval &&

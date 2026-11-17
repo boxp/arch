@@ -62,6 +62,9 @@ export function formatReceived(value: string, now = Date.now()) {
     minutes = Math.max(0, Math.floor((now - date.getTime()) / 60000))
   return `${date.toLocaleString('ja-JP')}（${minutes < 60 ? `${minutes}分` : `${Math.floor(minutes / 60)}時間`}前）`
 }
+export function canVisitNotification(item: Pick<Item, 'source' | 'reply'>): boolean {
+  return item.source === 'alertmanager' && !item.reply
+}
 export function notificationParam(search: string) {
   const id = new URLSearchParams(search).get('notification')
   return id && /^[A-Za-z0-9._:-]{8,200}$/.test(id) ? id : null
@@ -323,6 +326,12 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
     notice = ''
     detail.append(status)
     const sendReply = (kind: 'choice' | 'text', value: string) => send(i, kind, value, status)
+    if (canVisitNotification(i))
+      detail.append(
+        button('見てきて', () => {
+          void sendReply('text', '見てきて')
+        }),
+      )
     if (i.reply && i.reply.status === 'submitted') {
       const r = i.reply
       line(detail, `返信済み。受付番号: ${r.requestId}`)
