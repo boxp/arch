@@ -33,7 +33,8 @@
     (doseq [entry (rest entries)] (is (str/includes? (:text result) entry)))
     (is (apply < (map #(.indexOf (:text result) %) (rest entries))))
     ))
-(deftest notes-owner-constraints
+;; Best-effort tier: entries that mention the Owner (by any of its names) are kept regardless of wording.
+(deftest notes-owner-mentions-best-effort
   (doseq [entry ["- 2020-01-01 [claude-opus] Owner：外部送信は禁止\n"
                  "- 2020-01-01 Owner: no new billing\n"
                  "- 2020-01-01 本人：本番操作しない\n"
@@ -66,6 +67,24 @@
     (is (:trimmed? result))
     (is (str/includes? (:text result) constraint))
     (is (not (str/includes? (:text result) "filler")))))
+(deftest notes-unattributed-constraint-is-omitted
+  ;; Known limitation, fixed here on purpose: an older free-form entry that records a constraint without
+  ;; naming the Owner is NOT protected. The prompt must then carry the omission line, the full path and
+  ;; the instruction to search the full ticket before merge/deploy/production/external transmission.
+  (let [prefix "---\nid: BOXP-1\n---\n## Notes\n"
+        constraint "- 2020-01-01 [claude-opus] 承認範囲はrunnerのみ。本番操作は禁止\n"
+        newest (map #(str "- 2020-01-0" % " newest\n") [3 4 5])
+        text (str prefix constraint (str "- 2020-01-02 filler " (apply str (repeat 2000 "x")) "\n") (apply str newest))
+        path "/tmp/full ticket.md"
+        result (trim-ticket-notes text 600 path)]
+    (is (nil? (re-find notes-protected-pattern constraint)))
+    (is (:trimmed? result))
+    (is (not (str/includes? (:text result) "本番操作は禁止")))
+    (is (str/includes? (:text result) "older Notes entries"))
+    (is (str/includes? (:text result) path))
+    (is (str/includes? (:text result) "omitted even when they record constraints"))
+    (is (str/includes? (:text result) "Before merge, deployment, production operations or external transmission, and when judging the approved scope, search the full ticket"))
+    (doseq [entry newest] (is (str/includes? (:text result) entry)))))
 (deftest finding-files
   (doseq [[location expected] [["src/a.bb:12" "src/a.bb"] ["./src/a.bb:12-20" "src/a.bb"] ["b/src/a.py:3:4 some text" "src/a.py"] ["src/a.py#L10" "src/a.py"] ["area text" "area"]]]
     (is (= expected (review-finding-file location)))))

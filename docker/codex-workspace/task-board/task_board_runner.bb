@@ -2793,12 +2793,19 @@
   (when-let [n (positive-env-long "CODEX_TASK_BOARD_PROMPT_NOTES_LIMIT_KB" "40")]
     (try (Math/multiplyExact (long n) (long 1024)) (catch ArithmeticException _ nil))))
 
-;; Protection is decided by who the entry is about, not by an open vocabulary list.
-;; Any entry that mentions the Owner as an actor (Owner/owner/本人/オーナー/user/requester/利用者/ユーザー/依頼者/依頼主/発注者, Owner sources,
-;; 家経由/reply_id deliveries) is kept regardless of wording, so phrasings such as
-;; "Ownerは外部送信を行わないよう求めた" or "Owner requested no external transmission" cannot fall
-;; through. Erring toward keeping is intended: it only costs prompt bytes. The runner's own
-;; "owner <uuid>" (workspace owner id) is excluded because it is not the person.
+;; What survives trimming, stated so that it can be checked:
+;; - always kept: every section other than Notes, the newest 3 Notes entries, and entries carrying an
+;;   Owner reply-path marker ([hermes-agent]/[owner]/[boxp] sources, 家経由, reply_id,
+;;   gate-budget-grant, 停滞レビュー依頼/結果).
+;; - kept on a best-effort basis: entries that mention the Owner as an actor
+;;   (Owner/owner/本人/オーナー/user/requester/利用者/ユーザー/依頼者/依頼主/発注者). Matching is by who
+;;   the entry is about, not by decision vocabulary; the runner's "owner <uuid>" workspace id is excluded.
+;; - not kept: any other older free-form entry. Such an entry is omitted even when it records a
+;;   constraint or a judgment (e.g. "承認範囲はrunnerのみ。本番操作は禁止" with no named actor).
+;;   This is a known limitation of the approved design (retry-loop-reduction 4章①, 5章), mitigated by the
+;;   omission header below, which tells the agent to search the full ticket before merge, deploy,
+;;   production operations, external transmission and scope judgments. See
+;;   docs/project_docs/BOXP-588/offline-replay.md for the measured residual risk.
 (def notes-protected-pattern
   #"(?i)\[(?:hermes-agent|owner|boxp)\]|(?<![a-z])owner(?![ \t]+[0-9a-f]{8}(?:-|\s|$))|(?<![a-z])(?:users?|requesters?)(?![a-z])|本人|オーナー|利用者|ユーザー?|依頼者|依頼主|発注者|家経由|reply_id|gate-budget-grant|停滞レビュー(?:依頼|結果)|stagnation-review")
 
@@ -2825,7 +2832,7 @@
                            omitted (remove #(contains? kept (first %)) groups)
                            n (reduce + 0 (map count omitted))
                            bytes (reduce + 0 (map #(utf8-size (entries %)) (mapcat identity omitted)))
-                           header (str "> [runner] Notes exceed the prompt budget (" (notes-kb limit-bytes) " KB): " n " older entries (" (notes-kb bytes) " KB) were omitted. Kept: frontmatter, Summary, Acceptance Criteria, Context, Plan, entries recording Owner decisions/approvals/constraints/corrections, and the newest entries. The ticket file is unchanged; read " full-path " when older context matters (stagnation judgment uses the full text).\n")
+                           header (str "> [runner] Notes exceed the prompt budget (" (notes-kb limit-bytes) " KB): " n " older entries (" (notes-kb bytes) " KB) were omitted. Always kept: sections other than Notes, the newest 3 entries, and entries with an Owner reply-path marker (Owner sources, 家経由, reply_id, gate-budget-grant, stagnation reviews). Kept when possible: entries that mention the Owner. Other older entries are omitted even when they record constraints, scope limits or agreements with other tickets. Before merge, deployment, production operations or external transmission, and when judging the approved scope, search the full ticket " full-path " (e.g. rg for the relevant terms; do not load it whole) to confirm no omitted constraint applies. The ticket file is unchanged and stagnation judgment uses the full text.\n")
                            text (str (subs ticket-text 0 body-start) header preamble
                                      (apply str (map (fn [group]
                                                        (if (contains? kept (first group))
