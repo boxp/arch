@@ -75,6 +75,19 @@ npx mutator --only <key> --reporter agent             # 個別の再確認（数
 - 実行失敗: なし（bff status の 4 変異が一度 timeout し、3 倍の予算での再実行で Survived と判定）。
 - 実バグ: 見つからなかった。
 
+## CI 実測（PR #15289, GitHub-hosted ubuntu-latest）
+
+| job | 実行変異 | mutator 実行 | job 全体 |
+|---|---|---|---|
+| mutation (bff) | 233（diff+変更テスト, 11 再利用） | 約41秒 | 1分10秒 |
+| mutation (web) | 491（181 再利用） | 約49秒 | 1分41秒 |
+| 参考: 既存 verify（docker build 内で typecheck/check/test/build） | - | - | 1分42秒 |
+
+- mutation job は verify と並列で走るため、PR の CI 全体の待ち時間はほぼ変わらない（最長 job は従来どおり verify）。
+- CI ランナーでは bff の 1 変異あたり約0.18秒で、ローカル 2 CPU（約1秒）より大幅に速い。
+- `--include-test-changes` 無しの初回 push では両 package とも「diff 内の変異 0 件」で実質何も検査しなかった
+  （codex review P2 の指摘で修正）。
+
 ## 開発反復 / CI 配置の判断
 
 - 開発反復: 変更なしの再実行は 1 秒未満。テストを変えると、そのテストが覆う変異は全て再実行される
