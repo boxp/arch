@@ -1936,6 +1936,68 @@
                                             (str pr-url))]
     (str (str/lower-case owner) "/" (str/lower-case repo) "#" (Long/parseLong number))))
 
+(defn positive-env-long [key default]
+  (try (let [n (Long/parseLong (str/trim (env key default)))] (when (pos? n) n))
+       (catch Exception _ nil)))
+
+(def same-file-review-mutex (Object.))
+(defn same-file-review-threshold []
+  (positive-env-long "CODEX_TASK_BOARD_SAME_FILE_REVIEW_STREAK_THRESHOLD" "3"))
+(defn same-file-review-path [] (fs/path (root) "same-file-review-streaks.edn"))
+(defn with-same-file-review-lock [f]
+  (locking same-file-review-mutex
+    (let [path (fs/path (root) "locks" "same-file-review-streaks.lock")]
+      (fs/create-dirs (fs/parent path))
+      (with-open [file (java.io.RandomAccessFile. (str path) "rw") channel (.getChannel file)]
+        (let [_lock (.lock channel)] (f))))))
+(defn read-same-file-review-streaks []
+  (read-edn-file (same-file-review-path) {:format-version 1 :streaks {}}))
+(defn write-same-file-review-streaks! [state]
+  (let [path (same-file-review-path) tmp (fs/path (fs/parent path) (str ".same-file-review-streaks." (random-uuid) ".tmp"))]
+    (write-edn-file! tmp state)
+    (fs/move tmp path {:replace-existing true :atomic-move true})))
+(defn record-same-file-review-streak! [ticket-id run-id gate-result]
+  (with-same-file-review-lock
+    (fn []
+      (let [state (read-same-file-review-streaks)
+            timestamp (now-str)
+            history (atom [])
+            cleared (reduce (fn [s pr]
+                              (if (get-in s [:streaks ticket-id pr])
+                                (do (swap! history conj {:event "reset" :ticket ticket-id :run run-id :pr pr :recorded-at timestamp})
+                                    (update-in s [:streaks ticket-id] dissoc pr)) s))
+                            state (distinct (keep canonical-pr-id (concat (:checked-pr-urls gate-result) (:merged-pr-urls gate-result)))))
+            pr (canonical-pr-id (:url gate-result))
+            blocking? (and (= :codex-review (:gate gate-result)) (= :findings (:failure-kind gate-result)) pr)
+            threshold (same-file-review-threshold)
+            files (when blocking?
+                    (into {} (map (fn [file]
+                                    (let [old (get-in cleared [:streaks ticket-id pr file])]
+                                      [file {:count (inc (or (:count old) 0)) :runs (vec (take-last 5 (conj (vec (:runs old)) run-id))) :updated-at timestamp}]))
+                                  (distinct (:blocking-files gate-result)))))
+            updated (if blocking? (assoc-in cleared [:streaks ticket-id pr] files) cleared)]
+        (when blocking?
+          (swap! history conj {:event "blocking" :ticket ticket-id :run run-id :pr pr
+                               :files (into {} (map (fn [[f v]] [f (:count v)]) files))
+                               :threshold threshold :triggered (vec (sort (keep (fn [[f v]] (when (and threshold (>= (:count v) threshold)) f)) files))) :recorded-at timestamp}))
+        (when (not= state updated) (write-same-file-review-streaks! updated))
+        (doseq [event @history]
+          (spit (str (fs/path (root) "same-file-review-history.jsonl")) (str (json/generate-string event) "\n") :append true))))))
+(defn same-file-review-escalation-prompt [ticket-id]
+  (when-let [threshold (same-file-review-threshold)]
+    ;; Read failures must never break prompt generation: no escalation then.
+    (let [streaks (try (get-in (read-same-file-review-streaks) [:streaks ticket-id])
+                       (catch Exception e
+                         (log! (str "same-file review streak read failed: " (.getMessage e)))
+                         nil))
+          hits (for [[pr files] streaks
+                     [file data] files :when (>= (:count data) threshold)] [pr file data])]
+      (when (seq hits)
+        (str "Same-file review escalation (BOXP-588): codex review reported P0/P1 findings on the same file of the same PR in consecutive review results:\n"
+             (apply str (for [[pr file data] (sort-by (juxt first second) hits)]
+                          (str "- " pr " " file ": " (:count data) " consecutive (runs: " (str/join ", " (:runs data)) ")\n")))
+             "This is an approximation (same PR + same file); the findings may be unrelated problems. Before fixing the latest finding: (1) compare the consecutive findings (blocking artifacts of those runs) and judge whether they share one root cause; (2) if they do, stop patching findings one at a time: revise the underlying design (for example replace an enumerated list with a fail-closed default) and fix the whole class together with tests for the class; (3) if they are unrelated, record that judgment and the reason in Notes and fix normally; (4) if the design change exceeds the approved scope, this instruction is not an approval: return TASK_BOARD_RESULT: blocked with TASK_BOARD_WAIT_REASON: owner-decision and the evidence, or request a stagnation review. Record your root-cause judgment in Notes. Retry limits, gate budget and the P0/P1 policy are unchanged.\n\n")))))
+
 (defn gate-failure-class [review-gate]
   ;; Keep CI, review and merge-state failures apart from results that could
   ;; not be determined.  Agent/infrastructure interruptions never reach a PR
@@ -2727,6 +2789,56 @@
        (stagnation-reviewer-prompt ticket-id original)
        (stagnation-requester-prompt ticket-id ticket-text reviews quota-status)))))
 
+(defn prompt-notes-limit-bytes []
+  (when-let [n (positive-env-long "CODEX_TASK_BOARD_PROMPT_NOTES_LIMIT_KB" "40")]
+    (try (Math/multiplyExact (long n) (long 1024)) (catch ArithmeticException _ nil))))
+
+;; This is a keyword/source heuristic: a source name alone is not the only criterion.
+(def notes-protected-pattern
+  #"(?i)\[(?:hermes-agent|owner|boxp)\]|Owner ?(?:原文|回答|返答|返信|決定|選択|承認|指示|訂正|撤回|方針|追加|最新)|本人 ?(?:原文|回答|返答|返信|決定|選択|承認|指示|訂正|撤回|最新)|本人『|家経由|reply_id|Owner(?:が|は)[^。\n]{0,20}(?:選択|承認|決定|指示|却下|差戻|訂正|撤回)|gate-budget-grant|停滞レビュー(?:依頼|結果)|stagnation-review")
+
+(defn utf8-size [s] (alength (.getBytes ^String s "UTF-8")))
+(defn notes-kb [n] (quot (+ n 1023) 1024))
+
+(defn trim-ticket-notes [ticket-text limit-bytes full-path]
+  (let [unchanged {:text ticket-text :trimmed? false :omitted-count 0 :omitted-bytes 0 :kept-protected 0}
+        heading (re-matcher #"(?m)^## Notes[ \t]*(?:\r?\n|$)" ticket-text)]
+    (if (or (nil? limit-bytes) (not (pos? limit-bytes)) (<= (utf8-size ticket-text) limit-bytes) (not (.find heading)))
+      unchanged
+      (let [start (.start heading) body-start (.end heading)
+            following (re-matcher #"(?m)^#{1,2} " ticket-text)
+            end (if (.find following body-start) (.start following) (count ticket-text))
+            body (subs ticket-text body-start end)
+            matcher (re-matcher #"(?m)^- \d{4}-\d{2}-\d{2}" body)
+            starts (loop [xs []] (if (.find matcher) (recur (conj xs (.start matcher))) xs))
+            preamble (subs body 0 (or (first starts) (count body)))
+            entries (mapv (fn [a b] (subs body a b)) starts (concat (rest starts) [(count body)]))
+            protected (set (keep-indexed #(when (re-find notes-protected-pattern %2) %1) entries))
+            mandatory (into protected (range (max 0 (- (count entries) 3)) (count entries)))
+            render (fn [kept]
+                     (let [groups (partition-by #(contains? kept %) (range (count entries)))
+                           omitted (remove #(contains? kept (first %)) groups)
+                           n (reduce + 0 (map count omitted))
+                           bytes (reduce + 0 (map #(utf8-size (entries %)) (mapcat identity omitted)))
+                           header (str "> [runner] Notes exceed the prompt budget (" (notes-kb limit-bytes) " KB): " n " older entries (" (notes-kb bytes) " KB) were omitted. Kept: frontmatter, Summary, Acceptance Criteria, Context, Plan, entries recording Owner decisions/approvals/constraints/corrections, and the newest entries. The ticket file is unchanged; read " full-path " when older context matters (stagnation judgment uses the full text).\n")
+                           text (str (subs ticket-text 0 body-start) header preamble
+                                     (apply str (map (fn [group]
+                                                       (if (contains? kept (first group))
+                                                         (apply str (map entries group))
+                                                         (str "- [runner] " (count group) " older Notes entries (" (notes-kb (reduce + (map #(utf8-size (entries %)) group))) " KB) omitted from this prompt; full text: " full-path "\n"))) groups))
+                                     (subs ticket-text end))]
+                       {:text text :trimmed? true :omitted-count n :omitted-bytes bytes :kept-protected (count protected)}))
+            kept (loop [kept mandatory candidates (reverse (remove mandatory (range (count entries))))]
+                   (if-let [i (first candidates)]
+                     (let [candidate (conj kept i)
+                           size (if (= (count candidate) (count entries)) (utf8-size ticket-text) (utf8-size (:text (render candidate))))]
+                       (if (<= size limit-bytes) (recur candidate (rest candidates)) kept))
+                     kept))]
+        (if (= (count kept) (count entries)) unchanged (render kept))))))
+
+(defn prompt-ticket-text [ticket-id ticket-text]
+  (:text (trim-ticket-notes ticket-text (prompt-notes-limit-bytes) (str (ticket-path ticket-id)))))
+
 (defn prompt-for
   ([action ticket-id lane workspace agent]
    (prompt-for action ticket-id lane workspace agent (fetch-ai-ops-alerts)))
@@ -2744,6 +2856,7 @@
                     (when (delegation-required? agent) (delegation-prompt))
                     "Previous run summaries:\n" (pr-str previous) "\n\n"
                     (or (pr-gate-retry-prompt ticket-id) "")
+                    (when (#{:implement :review-fix :blocked-retry} action) (same-file-review-escalation-prompt ticket-id))
                     (when (= "fable" agent) (fable-policy-prompt))
                     (when (contains? claude-roles agent) (claude-policy-prompt agent))
                     (when (contains? #{"codex-sol" "codex-full"} base-agent) (codex-sol-policy-prompt agent))
@@ -2759,7 +2872,7 @@
                              (when (= :v1 (:mode view)) (str "After doing a TD item run: bb " todo-module-path " done " ticket-id " TD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --evidence TEXT. An optional item you will not do: skip " ticket-id " TD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --reason TEXT. Required items cannot be skipped: return blocked for an Owner decision. A checked box alone does not complete an item. Lines without a TD id are your own steps; do not add TD lines for them. TODOs grant no permission.\n"))
                              (when (some #(= "held" (get-in % [:todo :gate])) previous) "The previous result was held: read back merges and external operations before proceeding; do not repeat them.\n"))))
                     (stagnation-prompt action ticket-id ticket-text)
-                    "Ticket contents:\n\n" ticket-text "\n\n")
+                    "Ticket contents:\n\n" (prompt-ticket-text ticket-id ticket-text) "\n\n")
         review-contract (str "The codex review gate blocks only on P0/P1 findings; P2/P3/nit feedback is non-blocking and is not a reason to loop.\n"
                              "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: continue.\n"
                              "If you return TASK_BOARD_RESULT: continue, include either a GitHub PR URL or exactly one line TASK_BOARD_REVIEW_PR: none when no repository changes were made.\n"
@@ -3207,6 +3320,14 @@
     (catch Exception e
       (binding [*out* *err*] (println "Failed to record codex review usage:" (.getMessage e))))))
 
+(defn review-finding-file [location]
+  (let [original (str/trim (str location))
+        path (-> original (str/split #"\s+" 2) first
+                 (str/replace #"^(?:\./|a/|b/)+" "")
+                 (str/replace #"#L.*$" "")
+                 (str/replace #":\d+(?:-\d+|:\d+)?$" ""))]
+    (if (str/blank? path) original path)))
+
 (defn run-codex-review! [run-dir pr-url]
   (let [diff (run-string! ["gh" "pr" "diff" pr-url] {})
         artifact-base (codex-review-artifact-base pr-url)
@@ -3258,6 +3379,7 @@
                       (spit (str path) (str "Blocking codex review findings (P0/P1):\n" (str/join "\n" lines) "\n"))
                       {:ok? false :gate :codex-review :failure-kind :findings :url pr-url :retryable? true
                        :fingerprint-key (str/join "\n" lines)
+                       :blocking-files (vec (distinct (map #(review-finding-file (:location %)) blocking)))
                        :blocking-findings {:count (count blocking) :path (str path)}
                        :low-priority-findings low-info
                        :message (str "codex review reported " (count blocking) " blocking finding(s) (P0/P1): " (str/join " " lines)
@@ -5147,6 +5269,7 @@
                     ;; A deferred localllm commit can still end in blocked.
                     outcome (intended-outcome action result exit)
                     _ (when gate-result (record-gate-pr-registrations! ticket-id run-id gate-result))
+                    _ (when gate-result (try (record-same-file-review-streak! ticket-id run-id gate-result) (catch Throwable e (log! (str "same-file review streak recording failed: " (.getMessage e))))))
                     review-gate (if gate-result
                                   (let [gate-result (assoc gate-result :diagnostic
                                                            (persist-pr-gate-diagnostic! ticket-id run-id gate-result))]
