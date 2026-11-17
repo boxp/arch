@@ -48,11 +48,14 @@
     (cond (not (map? v)) (throw (ex-info "StatusReadFailed" {:code "StatusReadFailed"}))
           (= "uninitialized" (:state v)) {}
           :else v)))
+;; Cost Explorer is billed per request and the AWS CLI retries throttling/5xx on its own (legacy mode: up to 5 attempts),
+;; which would bypass the request counter. ce calls run with a single attempt so `requests` equals real API calls (max 6).
+(defn cli-env [args] (when (= "ce" (first args)) {"AWS_MAX_ATTEMPTS" "1" "AWS_RETRY_MODE" "standard"}))
 (defn main []
   (let [tmp (.toFile (if-let [d (System/getenv "RUNNER_TEMP")] (Files/createTempDirectory (.toPath (io/file d)) "aws-cost-" (make-array FileAttribute 0)) (Files/createTempDirectory "aws-cost-" (make-array FileAttribute 0))))
         now (.getEpochSecond (Instant/now)) today (LocalDate/now ZoneOffset/UTC) requests (atom 0) status (atom {}) status-loaded (atom false)]
     (try
-      (letfn [(call [args] (let [out (io/file tmp "out") err (io/file tmp "err") p (process/process (into ["aws" "--no-cli-pager" "--output" "json"] args) {:out out :err err}) result @p]
+      (letfn [(call [args] (let [out (io/file tmp "out") err (io/file tmp "err") p (process/process (into ["aws" "--no-cli-pager" "--output" "json"] args) (cond-> {:out out :err err} (cli-env args) (assoc :extra-env (cli-env args)))) result @p]
                                   (when-not (zero? (:exit result)) (let [e (slurp err) code (or (second (re-find #"\(([A-Za-z]+)\)" e)) "AwsCliError")] (throw (ex-info "AWS error" {:code code}))))
                                   (json/parse-string (slurp out) true)))
               (put! [name value] (when-not (fits? value) (throw (ex-info "SizeLimitExceeded" {:code "SizeLimitExceeded"}))) (let [f (io/file tmp "value.json")] (spit f (json/generate-string value)) (call ["ssm" "put-parameter" "--name" (str "/lolice/aws-cost/" name) "--type" "SecureString" "--overwrite" "--value" (str "file://" (.getAbsolutePath f))])))

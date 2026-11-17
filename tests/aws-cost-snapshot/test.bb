@@ -56,4 +56,8 @@
   (is (= [1 2] (:attempts (read-status (constantly "{\"attempts\":[1,2]}")))))
   (is (= "StatusReadFailed" (:code (ex-data (try (read-status (fn [_] (throw (ex-info "t" {:code "Throttling"})))) (catch Exception e e))))))
   (is (= "StatusReadFailed" (:code (ex-data (try (read-status (constantly "not json")) (catch Exception e e)))))))
+(deftest ce-single-attempt
+  (is (= "1" (get (cli-env ["ce" "get-cost-and-usage"]) "AWS_MAX_ATTEMPTS")))
+  (is (= "1" (get (cli-env ["ce" "get-cost-forecast"]) "AWS_MAX_ATTEMPTS")))
+  (is (nil? (cli-env ["ssm" "put-parameter"]))))
 (let [result (run-tests)] (when (pos? (+ (:fail result) (:error result))) (System/exit 1)))

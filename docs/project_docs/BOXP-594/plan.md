@@ -29,7 +29,7 @@
 3. 試行を status に記録してから Cost Explorer を呼ぶ。
 4. `GetCostAndUsage`: 期間 = 前月 1 日〜今日（終端は排他）、DAILY、`UnblendedCost`、GroupBy `SERVICE` と `LINKED_ACCOUNT`。NextPageToken を最大 5 ページ。超えたら失敗（`PageLimitExceeded`）、何も上書きしない。
 5. `GetCostForecast`: 今日〜翌月 1 日、MONTHLY、`UNBLENDED_COST`、`PredictionIntervalLevel=80`。失敗（履歴不足の `DataUnavailableException` など）は致命扱いせず「予測なし」。
-6. 1 回の上限は合計 6 リクエスト。
+6. 1 回の上限は合計 6 リクエスト。 Cost Explorer 呼び出しは AWS CLI の自動リトライを無効化（`AWS_MAX_ATTEMPTS=1`）し、計上数＝実リクエスト数とする。
 7. 変換して `daily` → `services` → `summary` の順に PutParameter（`--overwrite`、SecureString）。各 4000 バイト超なら失敗。最後に status を ok に更新。
 8. 失敗時は status に `last_result=error` と AWS エラーコード名（英字のみに無害化）を記録して非 0 終了。
 
