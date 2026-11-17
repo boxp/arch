@@ -2333,12 +2333,37 @@
        distinct
        vec))
 
+;; BOXP-604: trial of removing the runner's mandatory Codex (terra) delegation for
+;; Claude parents, which already use lower-cost subagents on their own. `required`
+;; restores the previous contract (done needs verified delegation or an exemption);
+;; `optional` keeps the helper available but neither instructs nor gates it. Only
+;; the Claude parents below are affected: codex-sol/full/astra parents, the
+;; independent codex review, PR gates, budgets and retry limits are unchanged.
+(def delegation-modes #{"required" "optional"})
+(def default-delegation-mode "optional")
+(def optional-delegation-agents #{"fable" "claude-fable" "claude-opus"})
+
+(defn delegation-mode []
+  (let [v (some-> (System/getenv "CODEX_TASK_BOARD_DELEGATION_MODE") str/trim str/lower-case)]
+    (if (contains? delegation-modes v) v default-delegation-mode)))
+
+(defn delegation-optional-for? [agent]
+  (and (= "optional" (delegation-mode)) (contains? optional-delegation-agents agent)))
+
+(def optional-delegation-policy-line
+  (str "- Codex delegation is optional for this run (BOXP-604 trial): the runner neither requires nor checks it. "
+       "Use subagents or lower-cost models at your own discretion when they reduce the total cost of the task "
+       "(parent + children + review + retries) without lowering quality; do work yourself when delegation overhead would exceed the saving. "
+       "Retain final judgment and verify delegated results.\n"))
+
 (defn fable-policy-prompt []
   (str "Fable routing policy:\n"
        "- You are the Claude Code fable entry point for this Task Board run.\n"
        "- Minimize fable token and limit consumption. Keep your own work focused on short judgment, routing, review perspective, and concise direction.\n"
-       "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. If no explicit Codex model is supplied, use the default Codex route: gpt-6.1-terra (cost-efficient), unless CODEX_TASK_BOARD_MODEL overrides it. Reserve gpt-6.1-sol (via codex-sol/codex-full assignees) for high-complexity tasks. Reserve gpt-6-astra (via codex-astra assignee) for the most demanding tasks requiring the highest capability. Use the prepared workspace and repository worktrees from this prompt.\n"
-       "- If delegation is unavailable, report blocked. Do not fall back to another API key.\n"
+       (if (delegation-optional-for? "fable")
+         optional-delegation-policy-line
+         (str "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. If no explicit Codex model is supplied, use the default Codex route: gpt-6.1-terra (cost-efficient), unless CODEX_TASK_BOARD_MODEL overrides it. Reserve gpt-6.1-sol (via codex-sol/codex-full assignees) for high-complexity tasks. Reserve gpt-6-astra (via codex-astra assignee) for the most demanding tasks requiring the highest capability. Use the prepared workspace and repository worktrees from this prompt.\n"
+              "- If delegation is unavailable, report blocked. Do not fall back to another API key.\n"))
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: continue. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
        "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.claude/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source fable --note \"<milestone summary>\". For lengthy work, log a concise checkpoint before CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS elapses; an entirely idle run is stopped and retried.\n\n"))
@@ -2346,7 +2371,9 @@
 (defn claude-policy-prompt [agent]
   (str "Claude Code routing policy:\n"
        "- You are the " agent " entry point for this Task Board run. Complete the task using the explicitly selected Claude model.\n"
-       (when (contains? #{"claude-fable" "claude-opus"} agent)
+       (when (delegation-optional-for? agent)
+         optional-delegation-policy-line)
+       (when (and (contains? #{"claude-fable" "claude-opus"} agent) (not (delegation-optional-for? agent)))
          (str "- Delegate independent investigation, implementation, file editing, and test execution to Codex whenever practical. Use the default Codex route (gpt-6.1-terra, unless CODEX_TASK_BOARD_MODEL overrides it); reserve gpt-6.1-sol for high-complexity work and gpt-6-astra for the most demanding work. Retain final judgment and verify delegated results.\n"
               "- If delegation is unavailable, report blocked. Do not fall back to another API key.\n"))
        "- Preserve the Task Board runner contract: include a concise work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
@@ -2385,11 +2412,14 @@
          "append a note to this ticket's Notes by running:\n"
          "  bb " helper " append-note " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --source " agent " --note \"<milestone summary>\"\n")))
 
-(defn delegation-required? [agent]
+(defn delegation-route? [agent]
   (and (not= localllm-coder-assignee agent)
        (or (contains? #{"fable" "claude-fable" "claude-opus"} agent)
            (contains? #{"codex-sol" "codex-full" "codex-astra"}
                       (:base-assignee (parse-codex-assignee agent))))))
+
+(defn delegation-required? [agent]
+  (and (delegation-route? agent) (not (delegation-optional-for? agent))))
 
 (def delegation-helper
   (str (fs/path (fs/parent (fs/absolutize (System/getProperty "babashka.file"))) "delegate.py")))
@@ -2402,6 +2432,11 @@
        "If the entire task is exempt, record exactly one reason using `python3 " delegation-helper
        " exempt <reason>` where reason is small-task, shared-context, elevated-permissions, final-judgment, or full-reasoning. "
        "Exemptions are self-reported. A done result requires verified delegation or an explicit exemption.\n\n"))
+
+(defn optional-delegation-prompt []
+  (str "Optional delegation (BOXP-604 trial): this run has no mandatory Codex delegation and needs no exemption record. "
+       "If one lower-cost Codex child clearly helps, `python3 " delegation-helper " run` with the subtask on stdin is still available (one attempt per run, it stops itself after 30 minutes); verify its result. "
+       "Never substitute another API key or account.\n\n"))
 
 (def lane-contract
   ;; BOXP-395: there is no Review lane. PR code review and the runner's gates remain.
@@ -2741,7 +2776,8 @@
                     "Task Board assignee/agent: " agent "\n"
                     "Current lane: " lane "\n\n"
                     (workspace-prompt workspace) "\n"
-                    (when (delegation-required? agent) (delegation-prompt))
+                    (cond (delegation-required? agent) (delegation-prompt)
+                          (delegation-optional-for? agent) (optional-delegation-prompt))
                     "Previous run summaries:\n" (pr-str previous) "\n\n"
                     (or (pr-gate-retry-prompt ticket-id) "")
                     (when (= "fable" agent) (fable-policy-prompt))
@@ -3694,6 +3730,9 @@
                              :exit-code exit
                              :idle-timeout? idle-timeout?
                              :delegation-ok? delegation-ok?
+                             :delegation-mode (cond (delegation-required? agent) "required"
+                                                    (delegation-optional-for? agent) "optional"
+                                                    :else "none")
                              :result marker
                              :finished-at (now-str)}
                             (when-let [progress (progress-marker last-message)]
@@ -8359,6 +8398,21 @@
              [["coder supported" (supported-assignee? "localllm-coder") true]
               ["coder runtime" (assignee-runtime "localllm-coder") "localllm-coder"]
               ["coder delegation" (delegation-required? "localllm-coder") false]
+              ;; BOXP-604: optional mode releases only the Claude parents.
+              ["delegation default mode" default-delegation-mode "optional"]
+              ["delegation optional claude parents"
+               (with-redefs [delegation-mode (constantly "optional")]
+                 (mapv (juxt delegation-required? delegation-optional-for?) ["fable" "claude-fable" "claude-opus" "claude-sonnet" "codex-sol" "codex-astra" "codex"]))
+               [[false true] [false true] [false true] [false false] [true false] [true false] [false false]]]
+              ["delegation required restores contract"
+               (with-redefs [delegation-mode (constantly "required")]
+                 (mapv (juxt delegation-required? delegation-optional-for?) ["fable" "claude-fable" "claude-opus" "claude-sonnet"]))
+               [[true false] [true false] [true false] [false false]]]
+              ["delegation optional prompt drops mandatory wording"
+               (with-redefs [delegation-mode (constantly "optional")]
+                 (let [t (str (claude-policy-prompt "claude-opus") (fable-policy-prompt) (optional-delegation-prompt))]
+                   [(str/includes? t "report blocked") (str/includes? t "whenever practical") (str/includes? t "optional for this run")]))
+               [false false true]]
               ["coder args" (localllm-coder-args "llama.cpp" "m")
                ["setsid" "pi" "-p" "--mode" "json" "--provider" "llama.cpp" "--model" "m" "--no-session" "--no-extensions" "--no-skills" "--no-mcp" "--no-prompt-templates" "--thinking" "off"]]
               ["coder preflight match" (localllm-coder-match-model {:data [{:id "m" :status {:args ["--model" "/m"]} :meta {:size 42}}]} "m")
