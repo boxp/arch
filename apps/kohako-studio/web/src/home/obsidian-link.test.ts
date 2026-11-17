@@ -79,3 +79,20 @@ it('keeps unencoded slashes in bare obsidian://open URLs as part of the note pat
   for (const raw of ['obsidian://open?vault=BOXP&file=/etc/passwd', 'obsidian://open?vault=BOXP&file=../secret.md'])
     expect(parseInline(raw).every((n) => n.type === 'text')).toBe(true)
 })
+
+it('keeps unencoded "+" and sub-delimiters in bare obsidian://open URLs as part of the note path', () => {
+  for (const [raw, path] of [
+    ['obsidian://open?vault=BOXP&file=a+b.md', 'a+b.md'],
+    ['obsidian://open?vault=BOXP&file=Notes/c++', 'Notes/c++'],
+    ["obsidian://open?vault=BOXP&file=memo(1),x;y:z@w!$'*.md", "memo(1),x;y:z@w!$'*.md"],
+  ]) {
+    const nodes = parseInline(`見て ${raw} 。`)
+    expect(nodes[1]).toMatchObject({ type: 'note', path })
+    expect(nodes[2]).toEqual({ type: 'text', text: ' 。' })
+  }
+  expect(parseInline('(obsidian://open?vault=BOXP&file=a+b.md)')).toMatchObject([
+    { type: 'text', text: '(' },
+    { type: 'note', path: 'a+b.md' },
+    { type: 'text', text: ')' },
+  ])
+})
