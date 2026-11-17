@@ -152,9 +152,9 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
     if (kind === 'pdf') {
       try {
         const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
+        // pdfjs-dist 6 no longer compiles fonts with eval/new Function, so the former isEvalSupported:false option was removed.
         const task = pdfjs.getDocument({
           data: new Uint8Array(data),
-          isEvalSupported: false,
           disableFontFace: true,
           useSystemFonts: false,
           useWorkerFetch: false,
