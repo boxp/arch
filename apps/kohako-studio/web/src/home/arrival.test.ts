@@ -25,8 +25,9 @@ describe('家へ戻る演出（BOXP-599 TD-01）', () => {
 describe('帰還の演出の見た目（転送ゲート）', () => {
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
   const html = readFileSync(new URL('../../home.html', import.meta.url), 'utf8')
-  it('既存のドット絵だけを使い、画像を足さない', () => {
-    expect(html).toMatch(/id="gate-sprite"[^>]*src="\.\/kohako\/studio\/c48v6-idle-color\.png"/)
+  it('メダルは作画資料の顔（アイコンと同じ絵）を使い、ドット絵を使わない', () => {
+    expect(html).toMatch(/id="gate-sprite"[^>]*src="\.\/kohako\/icons\/icon-192-v2\.png"/)
+    expect(css).not.toMatch(/\.gate-sprite\{[^}]*pixelated/)
     expect(html).toMatch(/class="gate" aria-hidden="true"/)
     expect(css).not.toMatch(/\.gate[^{]*\{[^}]*url\(/)
   })

@@ -89,7 +89,6 @@ if ('serviceWorker' in navigator)
 const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
 const body = document.body,
   face = el<HTMLImageElement>('face'),
-  gateSprite = el<HTMLImageElement>('gate-sprite'),
   rigCanvas = el<HTMLCanvasElement>('rig'),
   character = el('character')
 const stateLabel = el('state'),
@@ -638,7 +637,6 @@ function show(next: State) {
   syncDictationNoteHook?.()
   stateLabel.textContent = netDown ? '通信が切れています' : presentation[next].label
   face.src = `./kohako/studio/c48v6-${presentation[next].face}-color.png`
-  gateSprite.src = face.src
   if (next !== 'speaking') {
     speakingSince = 0
     visemes = null
