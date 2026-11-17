@@ -2795,7 +2795,7 @@
 
 ;; This is a keyword/source heuristic: a source name alone is not the only criterion.
 (def notes-protected-pattern
-  #"(?i)\[(?:hermes-agent|owner|boxp)\]|Owner ?(?:原文|回答|返答|返信|決定|選択|承認|指示|訂正|撤回|方針|追加|最新)|本人 ?(?:原文|回答|返答|返信|決定|選択|承認|指示|訂正|撤回|最新)|本人『|家経由|reply_id|Owner(?:が|は)[^。\n]{0,20}(?:選択|承認|決定|指示|却下|差戻|訂正|撤回)|gate-budget-grant|停滞レビュー(?:依頼|結果)|stagnation-review")
+  #"(?i)\[(?:hermes-agent|owner|boxp)\]|Owner ?(?:原文|回答|返答|返信|決定|選択|承認|指示|訂正|撤回|方針|追加|最新)|本人 ?(?:原文|回答|返答|返信|決定|選択|承認|指示|訂正|撤回|最新)|本人『|家経由|reply_id|Owner(?:が|は)[^。\n]{0,20}(?:選択|承認|決定|指示|却下|差戻|訂正|撤回)|(?:Owner|owner|本人|オーナー)[ \t]*[：:]|(?:Owner|本人|オーナー)[^\n]{0,40}(?:禁止|制約|条件|不可|必須|限定|除外|範囲|しない|させない|しないこと)|gate-budget-grant|停滞レビュー(?:依頼|結果)|stagnation-review")
 
 (defn utf8-size [s] (alength (.getBytes ^String s "UTF-8")))
 (defn notes-kb [n] (quot (+ n 1023) 1024))

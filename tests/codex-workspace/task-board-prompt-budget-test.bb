@@ -33,6 +33,23 @@
     (doseq [entry (rest entries)] (is (str/includes? (:text result) entry)))
     (is (apply < (map #(.indexOf (:text result) %) (rest entries))))
     ))
+(deftest notes-owner-constraints
+  (doseq [entry ["- 2020-01-01 [claude-opus] Owner：外部送信は禁止\n"
+                 "- 2020-01-01 Owner: no new billing\n"
+                 "- 2020-01-01 本人：本番操作しない\n"
+                 "- 2020-01-01 Ownerの承認範囲はrunner限定で他ticketへの変更は不可\n"]]
+    (is (re-find notes-protected-pattern entry) entry))
+  (doseq [entry ["- 2020-01-01 [claude-opus] CI pass, PR作成\n" "- 2020-01-01 実装はCodex委譲中\n"]]
+    (is (nil? (re-find notes-protected-pattern entry)) entry))
+  (let [prefix "---\nid: BOXP-1\n---\n## Notes\n"
+        constraint "- 2020-01-01 [claude-opus] Owner：外部送信は禁止\n"
+        filler (str "- 2020-01-02 filler " (apply str (repeat 2000 "x")) "\n")
+        newest (map #(str "- 2020-01-0" % " newest\n") [3 4 5])
+        text (str prefix constraint filler (apply str newest))
+        result (trim-ticket-notes text 600 "/tmp/t.md")]
+    (is (:trimmed? result))
+    (is (str/includes? (:text result) constraint))
+    (is (not (str/includes? (:text result) "filler")))))
 (deftest finding-files
   (doseq [[location expected] [["src/a.bb:12" "src/a.bb"] ["./src/a.bb:12-20" "src/a.bb"] ["b/src/a.py:3:4 some text" "src/a.py"] ["src/a.py#L10" "src/a.py"] ["area text" "area"]]]
     (is (= expected (review-finding-file location)))))
