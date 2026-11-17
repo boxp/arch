@@ -59,6 +59,7 @@ import { ActingDirector, cueForSentence, splitSentences, type ActingStage } from
 import { createActingStage } from '../live2d/gesture'
 import { createSentenceSpeaker, createSilentSentencer } from '../studio/acting-speech'
 import { SceneDirector, targetScene, messageShown, type Scene } from './scene'
+import { arrivalNote, arrivalPhase, LANDING_MS, type Arrival } from './arrival'
 import { cardsFromText, type Card } from './cards'
 import {
   acts,
@@ -692,6 +693,24 @@ function shapeOf(): 'pc' | 'portrait' | 'landscape' {
   return h > w ? 'portrait' : w >= 900 && h >= 560 ? 'pc' : 'landscape'
 }
 let visitActive = false
+// BOXP-599 TD-01: 家へ戻る演出の状態。リグを読み込む間は「戻っている途中」、現場の実行中は「出ている」、終わった直後だけ短く着地する。
+let rigLoading = wantsRig(location.search),
+  returnedAt: number | null = null
+function refreshArrival() {
+  const input = { rigLoading, visit: visitActive && busy, returnedAt, now: Date.now() }
+  let phase: Arrival = arrivalPhase(input)
+  const before = character.dataset.arrival as Arrival | undefined
+  if ((before === 'arriving' || before === 'away') && phase === 'home') {
+    returnedAt = input.now
+    phase = arrivalPhase({ ...input, returnedAt })
+    setTimeout(refreshArrival, LANDING_MS + 20)
+  }
+  if (before === phase) return
+  character.dataset.arrival = phase
+  const note = el('arrival-note')
+  note.textContent = arrivalNote[phase]
+  note.hidden = !arrivalNote[phase]
+}
 function refreshScene(force = false) {
   const vv = window.visualViewport,
     vh = vv ? vv.height : window.innerHeight
@@ -717,6 +736,7 @@ function refreshScene(force = false) {
   const scene = director.decide(target, Date.now(), { holding: holding(), pinned: prefs.pinned, force })
   body.dataset.scene = scene
   el('visit-place').hidden = scene !== 'visit'
+  refreshArrival()
   updateMessage()
   const upper =
     kbd || shape === 'portrait' || shape === 'landscape' || ((scene === 'show' || scene === 'work') && shape === 'pc')
@@ -2528,6 +2548,7 @@ async function startRig() {
     el('face-mode').textContent = '静止表情（?face=static）'
     return
   }
+  refreshArrival()
   try {
     const loaded = await loadRig(rigCanvas, rigModel, './kohako/live2d/sample/')
     rig = loaded.player
@@ -2548,6 +2569,8 @@ async function startRig() {
     if (actingEnabled) acting = new ActingDirector(calmStage(stage))
     face.hidden = true
     rigCanvas.hidden = false
+    rigLoading = false
+    refreshArrival()
     el('face-mode').textContent = `${rigModel.name}（独自 runtime・公式 Live2D ではありません）`
     Object.assign(report, {
       loaded: true,
@@ -2562,6 +2585,8 @@ async function startRig() {
     ;(report.errors as string[]).push(e instanceof Error ? e.message : String(e))
     el('face-mode').textContent =
       'リグを読み込めなかったため静止表情で表示しています（ふれあいは「ふれあい」ボタンから）'
+    rigLoading = false
+    refreshArrival()
   }
 }
 // 自動計測用（同一ページの状態を読むだけ）。

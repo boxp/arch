@@ -694,7 +694,7 @@ export function createConversation({
         const result = entry.visit?.reason
           ? {
               status: 'done' as const,
-              text: `見た時刻: ${new Date(now()).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false })}（日本時間）\n${entry.visit.reason === 'tool' ? '決まりの外の道具が動きかけたので戻しました。' : '時間（または回数）の上限に達したので戻りました。'}\n見た物: 不明\n分かった事: 不明\n分からなかった事: 調査結果\n次に要る事: なし`,
+              text: `見た時刻: ${new Date(now()).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false })}（日本時間）\n${entry.visit.reason === 'tool' ? '決まりの外の道具が動きかけたので戻しました。' : '時間（または回数）の上限に達したので戻りました。'}\n見た物: 不明\n分かった事: 不明\n分からなかった事: 途中で戻ったため、全体は見ていません\n次に要る事: なし`,
             }
           : touchApproval
             ? { status: 'failed' as const, error: 'touch_approval_denied' }
