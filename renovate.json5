@@ -346,18 +346,28 @@
       dependencyDashboardApproval: true,
     },
     // ⏸ BOXP-590 一時抑止 (Renovate blocker watch で解除条件を日次監視):
-    // 以下 3 件は「阻害版だけ」を allowedVersions で外し、現行系列の patch / security は
-    // 生かす。理由・解除条件・監視 source の正本は docs/project_docs/BOXP-590/blockers.md。
+    // 以下の rule は「阻害版だけ」を allowedVersions で外し、現行系列の patch / security は
+    // 生かす (K8S-HOLD だけは Owner 判断で patch も止める)。理由・解除条件・監視 source の正本は docs/project_docs/BOXP-590/blockers.md。
     // 解除条件を満たしたら該当 rule を削除する PR を出し、Renovate の通常 PR / CI へ戻す。
     //
-    // [K8S-137] クラスタ本体の Kubernetes / CRI-O 1.37 は手動クラスタ upgrade
-    // (upgrade-k8s.yml) の承認境界。1.36.x patch は上の Dashboard 承認で従来どおり。
-    // 解除: Owner が 1.37 upgrade を承認し upgrade 票で着手したとき (1.36 EOL 接近は watch が通知)。
+    // [K8S-HOLD] クラスタ本体の Kubernetes / CRI-O は、現行版より新しい版をすべて抑止する
+    // (Owner 選択 B, 2026-11-17: 1.36.x patch も今回は見送り。arch#13440 を Close)。
+    // minor (1.37) は手動クラスタ upgrade (upgrade-k8s.yml) の承認境界、patch も main merge で
+    // apply-ansible が本番に反映され得るうえ kubernetes_package_version / crio_package_version
+    // が Renovate 管理外のため、Owner がクラスタ更新を承認するまで PR を作らない。
+    // 解除: Owner が patch / minor upgrade を承認し、その票で上限を上げる (または rule を削除する) とき。
+    // watch は main の版、1.36 の EOL・最新 patch を毎日読み、EOL 90 日前と main の版変化を通知する。
     {
       matchFileNames: ["ansible/playbooks/**"],
       matchManagers: ["custom.regex"],
-      matchPackageNames: ["kubernetes/kubernetes", "cri-o/cri-o"],
-      allowedVersions: "<1.37.0",
+      matchPackageNames: ["kubernetes/kubernetes"],
+      allowedVersions: "<=1.36.5",
+    },
+    {
+      matchFileNames: ["ansible/playbooks/**"],
+      matchManagers: ["custom.regex"],
+      matchPackageNames: ["cri-o/cri-o"],
+      allowedVersions: "<=1.36.6",
     },
     // [PY-315] ansible の Python 3.15: 現行 ansible 14.x (ansible-core 2.21) は
     // dataclasses._is_type 削除で import 時に落ちる (arch#13804 の lint/plan)。
