@@ -1,8 +1,9 @@
 import { must } from '../must'
 export type Inline = {
-  type: 'text' | 'code' | 'bold' | 'italic' | 'strike' | 'link' | 'image'
+  type: 'text' | 'code' | 'bold' | 'italic' | 'strike' | 'link' | 'image' | 'note'
   text: string
   url?: string
+  path?: string
 }
 export type Block = {
   type: 'paragraph' | 'heading' | 'list' | 'quote' | 'code' | 'rule'
@@ -17,6 +18,42 @@ const safeUrl = (url: string) => {
   try {
     const u = new URL(url)
     return ['http:', 'https:', 'mailto:'].includes(u.protocol) ? u.href : undefined
+  } catch {
+    return undefined
+  }
+}
+// BOXP-581: vault 内ノートを端末の Obsidian アプリで開くリンク。BOXP vault の open 操作だけを許し、
+// vault 相対パスを検査して正規化し直す（任意スキームや他 vault・他操作は従来どおりリンクにしない）。
+export const OBSIDIAN_VAULT = 'BOXP'
+const encodePathParam = (path: string) =>
+  encodeURIComponent(path).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+export function obsidianNoteUrl(path: string): string {
+  return `obsidian://open?vault=${OBSIDIAN_VAULT}&file=${encodePathParam(path)}`
+}
+export function obsidianNotePath(raw: string): string | undefined {
+  const m = /^obsidian:\/\/open\/?\?([^#]*)$/i.exec(raw)
+  if (!m) return undefined
+  try {
+    const params = new Map<string, string>()
+    for (const part of m[1].split('&')) {
+      const eq = part.indexOf('=')
+      if (eq < 1) return undefined
+      const key = part.slice(0, eq),
+        value = decodeURIComponent(part.slice(eq + 1))
+      if (!['vault', 'file'].includes(key) || params.has(key)) return undefined
+      params.set(key, value)
+    }
+    const path = params.get('file')
+    if (
+      params.get('vault') !== OBSIDIAN_VAULT ||
+      !path ||
+      path.length > 1500 ||
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: vault 相対パスにバックスラッシュと C0 制御文字を含むものを拒否する
+      /[\\\x00-\x1f\x7f]/.test(path) ||
+      path.split('/').some((p) => !p.trim() || p.startsWith('.'))
+    )
+      return undefined
+    return path
   } catch {
     return undefined
   }
@@ -39,23 +76,34 @@ export function vaultImageUrl(raw: string): string | undefined {
     return undefined
   }
 }
+const noteTitle = (path: string) => must(path.split('/').pop()).replace(/\.md$/i, '')
 export function parseInline(src: string): Inline[] {
   const result: Inline[] = [],
     re =
-      /(!?)\[([^\]]*)\]\(([^\s)]+)\)|https:\/\/[A-Za-z0-9\-._~:/?#@!$&'*+,;=%]*[A-Za-z0-9\-_~/#=&%+]|`([^`]+)`|\*\*([^*]+)\*\*|~~([^~]+)~~|\*([^*\s][^*]*)\*|(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])/g
+      /(!?)\[([^\]]*)\]\(([^\s)]+)\)|obsidian:\/\/open\/?\?[A-Za-z0-9\-._~%&=]+|https:\/\/[A-Za-z0-9\-._~:/?#@!$&'*+,;=%]*[A-Za-z0-9\-_~/#=&%+]|`([^`]+)`|\*\*([^*]+)\*\*|~~([^~]+)~~|\*([^*\s][^*]*)\*|(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])/g
   let pos = 0
   for (let m = re.exec(src); m; m = re.exec(src)) {
     if (m.index > pos) result.push({ type: 'text', text: src.slice(pos, m.index) })
     if (m[2] !== undefined) {
       const image = m[1] && vaultImageUrl(m[3]),
         label = m[1] ? `画像: ${m[2]}` : m[2],
+        note = !m[1] ? obsidianNotePath(m[3]) : undefined,
         url = safeUrl(m[3])
       result.push(
         image
           ? { type: 'image', text: m[2], url: image }
-          : url
-            ? { type: 'link', text: label, url }
-            : { type: 'text', text: label },
+          : note
+            ? { type: 'note', text: m[2] || noteTitle(note), url: obsidianNoteUrl(note), path: note }
+            : url
+              ? { type: 'link', text: label, url }
+              : { type: 'text', text: label },
+      )
+    } else if (m[0].startsWith('obsidian:')) {
+      const note = obsidianNotePath(m[0])
+      result.push(
+        note
+          ? { type: 'note', text: noteTitle(note), url: obsidianNoteUrl(note), path: note }
+          : { type: 'text', text: m[0] },
       )
     } else if (m[0].startsWith('https://')) {
       const url = safeUrl(m[0])
@@ -159,6 +207,22 @@ export function renderMarkdown(src: string, doc: Document = document): DocumentF
         )
         wrap.append(link)
         parent.append(wrap)
+        continue
+      }
+      if (n.type === 'note' && n.url) {
+        // 新規タブにすると端末によって空タブが残るため、同じタブのままアプリへ渡す（ページ遷移はしない）。
+        const a = doc.createElement('a'),
+          label = doc.createElement('span'),
+          badge = doc.createElement('span')
+        a.className = 'obsidian-note'
+        a.href = n.url
+        a.title = `Obsidianで開く: ${n.path}`
+        a.referrerPolicy = 'no-referrer'
+        label.textContent = n.text
+        badge.className = 'obsidian-note-badge'
+        badge.textContent = 'Obsidianで開く'
+        a.append(label, badge)
+        parent.append(a)
         continue
       }
       const tag =

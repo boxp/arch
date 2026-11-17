@@ -14,6 +14,9 @@ import { isRecord } from './untrusted.js'
 const BASE_INSTRUCTIONS = 'あなたの返答は Web UI の吹き出しに表示され、必要に応じて音声で読み上げられます。'
 export const vaultImageInstructions =
   ' vault内の画像を家の会話に表示するときは、実在確認したvault相対パスを encodeURIComponent 相当でURLエンコード（括弧も%28/%29へ変換）し、![短い説明](kohako-vault:エンコード済み相対パス) と返してください。絶対パスやMEDIA記法は表示できません。対応はPNG/JPEG/GIF/WebP各5MiBまで。SVG/PDF/動画/その他のファイルはインライン表示非対応です。画像を再生成したり、検証画像をvaultに保存したりしないでください。'
+// BOXP-581: 家の画面は obsidian://open?vault=BOXP&file=… だけを「Obsidianで開く」リンクにする（他 vault・他操作・任意スキームは文字のまま）。
+export const vaultNoteInstructions =
+  ' vault内のノートを示すときは、パスを文字で書くだけでなく、実在確認したvault相対パス（例: Tickets/BOXP-1.md）を encodeURIComponent 相当でURLエンコード（/ は%2F、空白は%20、括弧は%28/%29、&は%26）し、[ノート名](obsidian://open?vault=BOXP&file=エンコード済み相対パス) と返してください。ご主人さまの端末のObsidianアプリでそのノートを開くリンクになります。リンクのためにノートを作成・編集・公開したり、絶対パス・他のvault・new等の別操作を使ったりしないでください。'
 // 視覚パネルを持つ家の画面（views: true を送る）だけに kohako-view 形式を指示する。Studio は views を表示しないので本文だけで返させる。
 export function notificationReplyText(
   item: import('./notifications.js').Item,
@@ -26,7 +29,7 @@ export function notificationReplyText(
       : `[家の通知への返信] event=${item.eventId.replace(/\.(report|notice)$/, '')} ticket=${item.ticketId ?? '-'} source=${item.source} reply_id=${reply.requestId}\n${reply.kind === 'choice' ? '選択' : '返信'}: ${reply.value}`
 }
 
-export const instructions = BASE_INSTRUCTIONS + VIEW_INSTRUCTIONS + vaultImageInstructions
+export const instructions = BASE_INSTRUCTIONS + VIEW_INSTRUCTIONS + vaultImageInstructions + vaultNoteInstructions
 export const studioInstructions = BASE_INSTRUCTIONS + vaultImageInstructions
 // BOXP-501: 家の会話で起票した票が監督 runbook に未登録だと、Task Board webhook の prefilter と route prompt が
 // 完了・停止・本人判断待ちを silent にし、家にも Telegram にも届かない。Telegram 経由の依頼と同じ登録を Owner の発言 turn だけに求める。
