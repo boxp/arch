@@ -363,6 +363,8 @@
     // - 上流 minor 更新は config 自動移行 / s6 起動方式の変更を伴い得るので automerge
     //   しない。digest-only 更新 (同 tag の再 push) も image build の smoke test を見てから
     //   手動 merge する。更新手順・rollback は docs/project_docs/BOXP-313/plan.md。
+    // - 通知 channel (boxp-notify plugin) の回帰試験は boxp/lolice の tests/hermes-agent/notify-lab/
+    //   (README の「上流更新時の検証」)。候補 image で stage2 を流してから merge する (BOXP-582)。
     {
       matchDatasources: ["docker"],
       matchPackageNames: ["docker.io/nousresearch/hermes-agent"],
