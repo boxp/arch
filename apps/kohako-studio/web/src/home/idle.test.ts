@@ -222,3 +222,19 @@ it('settledHead は頭が正面近くの時だけ true', () => {
   expect(settledHead(4.1, 0)).toBe(false)
   expect(settledHead(0, -3.1)).toBe(false)
 })
+
+it('通常の戻りの途中で中断しても、その時点の強さから短く戻す', () => {
+  const d = new IdleDirector(seq(0))
+  d.force('tilt')
+  // seq(0): 保ち 1.8 秒 → 戻りは 2.7 秒から 1.1 秒。戻り始めて 0.3 秒の 3.0 秒で中断する。
+  const end = IN_SECONDS + idleActs.tilt.seconds[0],
+    cut = end + 0.3
+  const frames = run(d, 0, 6, (t) => ({ ...calm, calm: t < cut }))
+  const at = (t: number) => frames.find((x) => Math.abs(x.t - t) < 0.026)?.f as IdleFrame
+  expect(Math.abs(at(cut - 0.05).pose.headZ)).toBeGreaterThan(4)
+  expect(size(at(cut + CANCEL_SECONDS + 0.05))).toBeLessThan(0.01)
+  expect(at(cut + CANCEL_SECONDS + HOLD_MARGIN + 0.1).hold).toBe(false)
+  expect(cut + CANCEL_SECONDS).toBeLessThan(end + OUT_SECONDS)
+  for (let i = 1; i < frames.length; i++)
+    expect(Math.abs(frames[i].f.pose.headZ - frames[i - 1].f.pose.headZ)).toBeLessThan(1.5)
+})

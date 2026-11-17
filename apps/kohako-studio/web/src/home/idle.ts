@@ -147,8 +147,9 @@ export class IdleDirector {
     }
     if (!input.calm) {
       // 中断: いまの強さから短く戻す。予定は捨て、落ち着いてから数え直す。
-      if (run && now < run.end) {
-        const level = ease((now - run.start) / IN_SECONDS)
+      // 入り・保ちの途中だけでなく、通常の戻りの途中でも短い戻りへ切り替える（一度切り替えたら繰り返さない）。
+      if (run && run.out !== CANCEL_SECONDS && now < run.end + run.out) {
+        const level = ease((now - run.start) / IN_SECONDS) * (1 - ease((now - run.end) / run.out))
         run.scale *= level
         run.start = now - IN_SECONDS
         run.end = now
