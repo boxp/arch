@@ -44,7 +44,13 @@
     (is (= {"daily" :old-d "services" :old-s "summary" :old-m} @store)))
   (let [put! (fn [n v] (when (#{:new-s :old-d} v) (throw (ex-info "x" {}))))
         e (try (write-snapshot! put! {:daily :old-d} {:daily :new-d :services :new-s :summary :new-m}) nil (catch Exception e e))]
-    (is (= "SnapshotRollbackFailed" (:code (ex-data e))))))
+    (is (= "SnapshotRollbackFailed" (:code (ex-data e)))))
+  (let [store (atom {})
+        put! (fn [n v] (when (= v :ok-status) (throw (ex-info "x" {}))) (swap! store assoc n v))
+        e (try (write-snapshot! put! {:daily :old-d :services :old-s :summary :old-m :status :pending}
+                                {:daily :new-d :services :new-s :summary :new-m :status :ok-status}) nil (catch Exception e e))]
+    (is (= "SnapshotWriteFailed" (:code (ex-data e))))
+    (is (= {"daily" :old-d "services" :old-s "summary" :old-m "status" :pending} @store))))
 (deftest status-read
   (is (= {} (read-status (constantly "{\"state\":\"uninitialized\"}"))))
   (is (= [1 2] (:attempts (read-status (constantly "{\"attempts\":[1,2]}")))))

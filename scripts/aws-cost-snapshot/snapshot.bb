@@ -35,9 +35,10 @@
                            :values (mapv (fn [service] (mapv #(round4 (get-in daily-map [service %] 0.0)) window-days)) daily-services)})}))
 ;; SSM has no multi-parameter transaction. Remember what was attempted and restore the previous values on failure,
 ;; so a partial write never leaves daily/services/summary from different snapshots (previous snapshot is kept).
+;; The final ok status is part of the same unit: if it cannot be written, the snapshot is rolled back too.
 (defn write-snapshot! [put! previous result]
   (let [attempted (atom [])]
-    (try (doseq [k [:daily :services :summary]] (swap! attempted conj k) (put! (name k) (k result)))
+    (try (doseq [k (filter #(contains? result %) [:daily :services :summary :status])] (swap! attempted conj k) (put! (name k) (k result)))
          (catch Exception _
            (let [restored (mapv (fn [k] (try (put! (name k) (get previous k)) true (catch Exception _ false))) (reverse @attempted))]
              (throw (ex-info "SnapshotWriteFailed" {:code (if (every? true? restored) "SnapshotWriteFailed" "SnapshotRollbackFailed")})))))))
@@ -69,9 +70,8 @@
                       forecast (try (swap! requests inc) (call ["ce" "get-cost-forecast" "--time-period" (str "Start=" today ",End=" (.plusMonths (.withDayOfMonth today 1) 1)) "--granularity" "MONTHLY" "--metric" "UNBLENDED_COST" "--prediction-interval-level" "80"]) (catch Exception _ nil))
                       result (transform today now (subs account (- (count account) 4)) pages forecast @requests)]
                   (doseq [k [:daily :services :summary]] (when-not (fits? (k result)) (throw (ex-info "SizeLimitExceeded" {:code "SizeLimitExceeded"}))))
-                  (write-snapshot! put! (into {} (for [k [:daily :services :summary]] [k (json/parse-string (get-value (name k)) true)])) result)
-                  (swap! status assoc :last_success_at now :last_result "ok" :error_code nil :requests_last @requests)
-                  (put! "status" @status)
+                  (write-snapshot! put! (assoc (into {} (for [k [:daily :services :summary]] [k (json/parse-string (get-value (name k)) true)])) :status @status)
+                                   (assoc result :status (assoc @status :last_success_at now :last_result "ok" :error_code nil :requests_last @requests)))
                   (println (str "result=ok pages=" (count pages) " requests=" @requests)))))))
       (catch Exception e (let [code (sanitize (or (:code (ex-data e)) "UnknownError"))] (when @status-loaded (try (swap! status assoc :schema schema :last_attempt_at now :last_result "error" :error_code code :requests_last @requests) (let [f (io/file tmp "error.json")] (spit f (json/generate-string @status)) @(process/process ["aws" "ssm" "put-parameter" "--name" "/lolice/aws-cost/status" "--type" "SecureString" "--overwrite" "--value" (str "file://" (.getAbsolutePath f))] {:out (io/file tmp "error-out") :err (io/file tmp "error-err")})) (catch Exception _))) (binding [*out* *err*] (println (str "result=error code=" code))) (System/exit 1)))
       (finally (doseq [f (reverse (file-seq tmp))] (.delete f))))))
