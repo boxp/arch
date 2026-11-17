@@ -42,9 +42,13 @@
                  "- 2020-01-01 [claude-opus] Owner requested no external transmission\n"
                  "- 2020-01-01 The owner said we must not add billing\n"
                  "- 2020-01-01 Owner's decision: keep the runner-only scope\n"
-                 "- 2020-01-01 user denied the new permission\n"]]
+                 "- 2020-01-01 user denied the new permission\n"
+                 "- 2020-01-01 [claude-opus] Ownerは外部送信を行わないよう求めた\n"
+                 "- 2020-01-01 オーナーが本番反映を見送りたいと言った\n"
+                 "- 2020-01-01 The owner prefers keeping the old route\n"
+                 "- 2020-01-01 本人は課金を増やさない方向\n"]]
     (is (re-find notes-protected-pattern entry) entry))
-  (doseq [entry ["- 2020-01-01 [claude-opus] CI pass, PR作成\n" "- 2020-01-01 実装はCodex委譲中\n" "- 2020-01-01 run was interrupted after planned shutdown of owner 8d1dd655\n"]]
+  (doseq [entry ["- 2020-01-01 [claude-opus] CI pass, PR作成\n" "- 2020-01-01 実装はCodex委譲中\n" "- 2020-01-01 run was interrupted after planned shutdown of owner 8d1dd655\n" "- 2020-01-01 run interrupted, workspace owner 8d1dd655-aec5-4094 stopped\n" "- 2020-01-01 userEmail config read\n"]]
     (is (nil? (re-find notes-protected-pattern entry)) entry))
   (let [prefix "---\nid: BOXP-1\n---\n## Notes\n"
         constraint "- 2020-01-01 [claude-opus] Owner：外部送信は禁止\n"
