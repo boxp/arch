@@ -31,6 +31,9 @@ workflows:
     '.github/workflows/aqua-github-comment.yaml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'aquaproj/aqua-installer@611554c6f0137ba41c8dd15aca8bee82504ea461'
+    '.github/workflows/aws-cost-snapshot.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+        - 'aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c'
     '.github/workflows/build-arc-runner-image.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc'
@@ -184,6 +187,8 @@ workflows:
         - 'actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0'
         - 'astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2'
         - 'tj-actions/changed-files@48d8f15b2aaa3d255ca5af3eba4870f807ce6b3c'
+    '.github/workflows/test-aws-cost-snapshot.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
     '.github/workflows/test-codex-task-board-runner.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
     '.github/workflows/test-lolice-architecture.yml':
@@ -338,6 +343,11 @@ dependencies:
     'aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502':
         ref: 'v4.0.2'
         commit: 'sha1-e3dd6a429d7300a6a4c196c26e071d42e0343502'
+        owner_id: 57468012
+        repo_id: 220391287
+    'aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c':
+        ref: 'v6.2.3'
+        commit: 'sha1-e6de054238d6b7531b4efff3b6587d9aade6a06c'
         owner_id: 57468012
         repo_id: 220391287
     'docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc':
