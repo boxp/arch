@@ -10,6 +10,7 @@ export const defaults = {
   reducedMotion: false,
   bgMotion: true,
   chestSway: true,
+  idleActs: true,
 } as const
 export type Prefs = {
   voice: 'kohaku' | 'browser'
@@ -23,6 +24,7 @@ export type Prefs = {
   reducedMotion: boolean
   bgMotion: boolean
   chestSway: boolean
+  idleActs: boolean
 }
 /** 読み上げ音量（0〜100 の整数 %）。範囲外・数値以外は既定に戻す。 */
 export function parseVolume(raw: unknown): number {
@@ -46,6 +48,7 @@ export function parsePrefs(raw: string | null): Prefs {
       reducedMotion: typeof v.reducedMotion === 'boolean' ? v.reducedMotion : defaults.reducedMotion,
       bgMotion: typeof v.bgMotion === 'boolean' ? v.bgMotion : defaults.bgMotion,
       chestSway: typeof v.chestSway === 'boolean' ? v.chestSway : defaults.chestSway,
+      idleActs: typeof v.idleActs === 'boolean' ? v.idleActs : defaults.idleActs,
     }
   } catch {
     return { ...defaults }

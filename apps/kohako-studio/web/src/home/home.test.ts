@@ -184,7 +184,11 @@ describe('保存', () => {
       reducedMotion: false,
       bgMotion: true,
       chestSway: true,
+      idleActs: true,
     })
+    // BOXP-605: 待機中のしぐさは既定 ON。OFF だけを保存から読む。
+    expect(parsePrefs('{"idleActs":false}').idleActs).toBe(false)
+    expect(parsePrefs('{"idleActs":"no"}').idleActs).toBe(true)
     expect(parsePrefs('{"bgMotion":false}').bgMotion).toBe(false)
     expect(parsePrefs('{"voice":"browser"}').voice).toBe('browser')
     expect(parsePrefs('{"voice":"other"}').voice).toBe('kohaku')

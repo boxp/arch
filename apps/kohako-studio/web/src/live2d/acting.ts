@@ -17,7 +17,19 @@ export interface ActingStage {
   reset(): void
   setViseme?(v: { open: number; width: number } | null): void
   setPetEyes?(on: boolean): void
-  setPetHold?(on: boolean): void
+  /** gentle: 待機のしぐさで止める（再開時の戻りをゆっくりにする）。 */
+  setPetHold?(on: boolean, gentle?: boolean): void
+  /** BOXP-605: 待機のしぐさの頭・体・視線（待機クリップを止めている間だけ描画に出る）。 */
+  setIdlePose?(v: {
+    headX?: number
+    headY?: number
+    headZ?: number
+    bodyX?: number
+    bodyZ?: number
+    lean?: number
+    eyeX?: number
+    eyeY?: number
+  }): void
   setPetOffset?(v: { headX: number; headY: number; headZ: number }): void
   setChestMotion?(enabled: boolean): void
 }
