@@ -345,6 +345,36 @@
       matchPackageNames: ["kubernetes/kubernetes", "cri-o/cri-o"],
       dependencyDashboardApproval: true,
     },
+    // ⏸ BOXP-590 一時抑止 (Renovate blocker watch で解除条件を日次監視):
+    // 以下 3 件は「阻害版だけ」を allowedVersions で外し、現行系列の patch / security は
+    // 生かす。理由・解除条件・監視 source の正本は docs/project_docs/BOXP-590/blockers.md。
+    // 解除条件を満たしたら該当 rule を削除する PR を出し、Renovate の通常 PR / CI へ戻す。
+    //
+    // [K8S-137] クラスタ本体の Kubernetes / CRI-O 1.37 は手動クラスタ upgrade
+    // (upgrade-k8s.yml) の承認境界。1.36.x patch は上の Dashboard 承認で従来どおり。
+    // 解除: Owner が 1.37 upgrade を承認し upgrade 票で着手したとき (1.36 EOL 接近は watch が通知)。
+    {
+      matchFileNames: ["ansible/playbooks/**"],
+      matchManagers: ["custom.regex"],
+      matchPackageNames: ["kubernetes/kubernetes", "cri-o/cri-o"],
+      allowedVersions: "<1.37.0",
+    },
+    // [PY-315] ansible の Python 3.15: 現行 ansible 14.x (ansible-core 2.21) は
+    // dataclasses._is_type 削除で import 時に落ちる (arch#13804 の lint/plan)。
+    // 3.15 対応の ansible-core 2.22 を含む community ansible 15 が GA になるまで 3.14.x に留める。
+    {
+      matchFileNames: ["ansible/.python-version"],
+      matchPackageNames: ["python"],
+      allowedVersions: "/^3\\.14(\\.[0-9]+)?$/",
+    },
+    // [TS7-PORTFOLIO] apps/portfolio の `astro check` (@astrojs/check 0.9.12) は
+    // peerDependencies typescript "^5.0.0 || ^6.0.0" で TS7 を受けず lock 更新も失敗する
+    // (arch#13832)。TS 6.x までは通常どおり追従する。
+    {
+      matchFileNames: ["apps/portfolio/package.json"],
+      matchPackageNames: ["typescript"],
+      allowedVersions: "<7.0.0",
+    },
     // kube-vip (manual review)
     {
       matchManagers: ["custom.regex"],
