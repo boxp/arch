@@ -42,8 +42,9 @@ describe('現場の入口と表示', () => {
     const hermes = {
       run,
       stop,
-      events: async (_id: string, callback: typeof emit) => {
+      events: (_id: string, callback: typeof emit) => {
         emit = callback
+        return new Promise<void>(() => {})
       },
       approve: vi.fn(),
     } as unknown as ReturnType<typeof createHermes>
@@ -76,8 +77,9 @@ describe('現場の入口と表示', () => {
     const hermes = {
       run,
       stop,
-      events: async (_id: string, callback: typeof emit) => {
+      events: (_id: string, callback: typeof emit) => {
         emit = callback
+        return new Promise<void>(() => {})
       },
       approve: vi.fn(),
     } as unknown as ReturnType<typeof createHermes>
@@ -110,8 +112,9 @@ describe('現場の入口と表示', () => {
     const hermes = {
       run,
       stop,
-      events: async (_id: string, callback: typeof emit) => {
+      events: (_id: string, callback: typeof emit) => {
         emit = callback
+        return new Promise<void>(() => {})
       },
       approve: vi.fn(),
     } as unknown as ReturnType<typeof createHermes>
@@ -124,6 +127,62 @@ describe('現場の入口と表示', () => {
     emit({ event: 'tool.started', tool: 'terminal' })
     await vi.waitFor(() => expect(conv.get('request-3')?.status).toBe('unknown'))
     expect(conv.get('request-3')?.reply).toBeUndefined()
+  })
+  it.each([
+    ['4xx などで購読が終わった', async () => {}],
+    ['再試行上限などで購読が失敗した', async () => Promise.reject(Error('stream'))],
+  ])('終了通知の前に購読が途切れたら（%s）数えられないまま続けず戻す', async (_label, events) => {
+    let finish: (result: { status: 'failed'; error: string }) => void = () => {}
+    const stop = vi.fn(async () => {
+      finish({ status: 'failed', error: 'cancelled' })
+      return 'ok' as const
+    })
+    const run = vi.fn((_id, _input, _session, _instructions, _approval, _retry, onRun) => {
+      onRun('run-4')
+      return new Promise<{ status: 'failed'; error: string }>((resolve) => {
+        finish = resolve
+      })
+    })
+    const hermes = { run, stop, events, approve: vi.fn() } as unknown as ReturnType<typeof createHermes>
+    const conv = createConversation({ now: () => Date.now(), hermes, prefix: 'kohako-web', activityDrainMs: 1 })
+    conv.submit(
+      { kind: 'text', visit: true, text: '見てきて', requestId: 'request-4', expiresAt: Date.now() + 10000 },
+      '',
+    )
+    await vi.waitFor(() => expect(stop).toHaveBeenCalled())
+    await vi.waitFor(() => expect(conv.get('request-4')?.reply?.text).toContain('見守れなくなったので戻りました'))
+  })
+  it('終了通知を受けてから購読が終わった時は止めない', async () => {
+    let finish: (result: { status: 'done'; text: string }) => void = () => {}
+    const stop = vi.fn(async () => 'ok' as const)
+    const run = vi.fn((_id, _input, _session, _instructions, _approval, _retry, onRun) => {
+      onRun('run-5')
+      return new Promise<{ status: 'done'; text: string }>((resolve) => {
+        finish = resolve
+      })
+    })
+    const hermes = {
+      run,
+      stop,
+      events: async (_id: string, callback: (e: Record<string, unknown>) => void) => {
+        callback({ event: 'run.completed' })
+      },
+      approve: vi.fn(),
+    } as unknown as ReturnType<typeof createHermes>
+    const conv = createConversation({ now: () => Date.now(), hermes, prefix: 'kohako-web', activityDrainMs: 1 })
+    conv.submit(
+      { kind: 'text', visit: true, text: '見てきて', requestId: 'request-5', expiresAt: Date.now() + 10000 },
+      '',
+    )
+    await vi.waitFor(() => expect(run).toHaveBeenCalled())
+    await new Promise((r) => setTimeout(r, 20))
+    finish({
+      status: 'done',
+      text: '見た時刻: 00:00\n見た物: 警告\n分かった事: 平常\n分からなかった事: なし\n次に要る事: なし',
+    })
+    await vi.waitFor(() => expect(conv.get('request-5')?.status).toBe('done'))
+    expect(stop).not.toHaveBeenCalled()
+    expect(conv.get('request-5')?.reply?.text).not.toContain('戻りました')
   })
   it('通知からの現場は同じ返信なら同じ session と冪等キーで送る', async () => {
     const run = vi.fn(() => new Promise(() => {}))

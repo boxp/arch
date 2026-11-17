@@ -13,7 +13,13 @@ export type Input = { requestId: string; expiresAt: number } & (
 )
 type Entry = {
   activity?: ReturnType<typeof createActivity>
-  visit?: { place: 'home-cluster'; steps: string[]; starts: number; calls?: string[]; reason?: 'tool' | 'limit' }
+  visit?: {
+    place: 'home-cluster'
+    steps: string[]
+    starts: number
+    calls?: string[]
+    reason?: 'tool' | 'limit' | 'unwatched'
+  }
   requestId: string
   payloadHash: string
   text?: string
@@ -626,11 +632,26 @@ export function createConversation({
           })
         }
         loadFinalArgs = load
+        let terminalSeen = false
+        // 現場は道具の開始を数えて止める前提なので、終了通知を受ける前に購読が途切れたら（4xx・再試行上限・例外）
+        // 数えられないまま続けさせず、その場で戻す。
+        const unwatched = () => {
+          if (controller.signal.aborted || terminalSeen || !entry.visit || entry.visit.reason) return
+          if (entry.status !== 'pending' || entry.cancelRequested) return
+          entry.visit.reason = 'unwatched'
+          save()
+          void conversation.cancel(entry.requestId)
+        }
         activityDone = hermes
           .events?.(
             runId,
             (e) => {
               if (controller.signal.aborted) return
+              if (
+                typeof e.event === 'string' &&
+                ['run.completed', 'run.failed', 'run.cancelled', 'run.interrupted'].includes(e.event)
+              )
+                terminalSeen = true
               if (entry.visit && e.event === 'tool.started') {
                 const call = typeof e.tool_call_id === 'string' ? e.tool_call_id : undefined
                 if (call && entry.visit.calls?.includes(call)) return
@@ -655,6 +676,7 @@ export function createConversation({
             controller.signal,
           )
           .catch(() => {})
+          .then(unwatched)
       }
       const visitTimer = entry.visit
         ? setTimeout(
@@ -702,7 +724,7 @@ export function createConversation({
             : entry.visit?.reason
               ? {
                   status: 'done' as const,
-                  text: `見た時刻: ${new Date(now()).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false })}（日本時間）\n${entry.visit.reason === 'tool' ? '決まりの外の道具が動きかけたので戻しました。' : '時間（または回数）の上限に達したので戻りました。'}\n見た物: 不明\n分かった事: 不明\n分からなかった事: 途中で戻ったため、全体は見ていません\n次に要る事: なし`,
+                  text: `見た時刻: ${new Date(now()).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false })}（日本時間）\n${entry.visit.reason === 'tool' ? '決まりの外の道具が動きかけたので戻しました。' : entry.visit.reason === 'unwatched' ? '道具の動きを見守れなくなったので戻りました。' : '時間（または回数）の上限に達したので戻りました。'}\n見た物: 不明\n分かった事: 不明\n分からなかった事: 途中で戻ったため、全体は見ていません\n次に要る事: なし`,
                 }
               : touchApproval
                 ? { status: 'failed' as const, error: 'touch_approval_denied' }
