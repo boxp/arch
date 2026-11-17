@@ -4,6 +4,8 @@ export type Inline = {
   text: string
   url?: string
   path?: string
+  // 太字・取り消し線・斜体の中にリンクや票 ID があるときだけ持つ（中身は 1 段だけ解釈する）。
+  children?: Inline[]
 }
 export type Block = {
   type: 'paragraph' | 'heading' | 'list' | 'quote' | 'code' | 'rule'
@@ -77,10 +79,14 @@ export function vaultImageUrl(raw: string): string | undefined {
   }
 }
 const noteTitle = (path: string) => must(path.split('/').pop()).replace(/\.md$/i, '')
+// 文字で書かれた vault 絶対パス（空白・括弧を含んでもよい）と、vault 直下の主要フォルダから始まる相対パス
+// （コード表記を含む）もノートリンクにする。docs/ などリポジトリのパスと紛らわしいフォルダは対象外。
+const VAULT_ROOT = '/home/boxp/Documents/obsidian-headless/BOXP/'
+const VAULT_DIRS = /^(?:Tickets|Projects|Boards|Incidents|Infrastructure)\//
 export function parseInline(src: string): Inline[] {
   const result: Inline[] = [],
     re =
-      /(!?)\[([^\]]*)\]\(([^\s)]+)\)|obsidian:\/\/open\/?\?[A-Za-z0-9\-._~%&=/+!$'()*,;:@]*[A-Za-z0-9\-_~%=+]|https:\/\/[A-Za-z0-9\-._~:/?#@!$&'*+,;=%]*[A-Za-z0-9\-_~/#=&%+]|`([^`]+)`|\*\*([^*]+)\*\*|~~([^~]+)~~|\*([^*\s][^*]*)\*|(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])/g
+      /(!?)\[([^\]]*)\]\(([^\s)]+)\)|obsidian:\/\/open\/?\?[A-Za-z0-9\-._~%&=/+!$'()*,;:@]*[A-Za-z0-9\-_~%=+]|https:\/\/[A-Za-z0-9\-._~:/?#@!$&'*+,;=%]*[A-Za-z0-9\-_~/#=&%+]|\/home\/boxp\/Documents\/obsidian-headless\/BOXP\/[^\n`'"<>「」『』、。，［］[\]{}|\\;]+?\.[mM][dD](?![A-Za-z0-9_])|(?<![A-Za-z0-9_/.-])(?:Tickets|Projects|Boards|Incidents|Infrastructure)\/[^\s`'"<>()（）「」『』、。，．［］[\]{}|\\;]+\.md(?![A-Za-z0-9_])|(?<![A-Za-z0-9_/.-])BOXP-\d{1,6}(?![A-Za-z0-9_-])|`([^`]+)`|\*\*([^*]+)\*\*|~~([^~]+)~~|\*([^*\s][^*]*)\*|(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])/g
   let pos = 0
   for (let m = re.exec(src); m; m = re.exec(src)) {
     if (m.index > pos) result.push({ type: 'text', text: src.slice(pos, m.index) })
@@ -108,11 +114,49 @@ export function parseInline(src: string): Inline[] {
     } else if (m[0].startsWith('https://')) {
       const url = safeUrl(m[0])
       result.push(url ? { type: 'link', text: m[0], url } : { type: 'text', text: m[0] })
-    } else
+    } else if (m[4] !== undefined) {
+      const content = m[4].trim(),
+        rel = content.startsWith(VAULT_ROOT)
+          ? content.slice(VAULT_ROOT.length)
+          : VAULT_DIRS.test(content)
+            ? content
+            : /^BOXP-\d{1,6}$/.test(content)
+              ? `Tickets/${content}.md`
+              : undefined,
+        note = rel && /\.md$/i.test(rel) ? obsidianNotePath(obsidianNoteUrl(rel)) : undefined
+      result.push(
+        note
+          ? { type: 'note', text: noteTitle(note), url: obsidianNoteUrl(note), path: note }
+          : { type: 'code', text: m[4] },
+      )
+    } else if (m[0].startsWith(VAULT_ROOT)) {
+      const path = m[0].slice(VAULT_ROOT.length),
+        note = obsidianNotePath(obsidianNoteUrl(path))
+      result.push(
+        note
+          ? { type: 'note', text: noteTitle(note), url: obsidianNoteUrl(note), path: note }
+          : { type: 'text', text: m[0] },
+      )
+    } else if (m[0].startsWith('BOXP-') || VAULT_DIRS.test(m[0])) {
+      const path = m[0].startsWith('BOXP-') ? `Tickets/${m[0]}.md` : m[0],
+        note = obsidianNotePath(obsidianNoteUrl(path))
+      result.push(
+        note
+          ? { type: 'note', text: noteTitle(note), url: obsidianNoteUrl(note), path: note }
+          : { type: 'text', text: m[0] },
+      )
+    } else {
+      const text = m[5] ?? m[6] ?? m[7] ?? m[8],
+        children = parseInline(text).map((c) =>
+          c.type === 'link' || c.type === 'note' || c.type === 'text' ? c : { type: 'text' as const, text: c.text },
+        )
       result.push({
-        type: m[4] ? 'code' : m[5] ? 'bold' : m[6] ? 'strike' : 'italic',
-        text: m[4] ?? m[5] ?? m[6] ?? m[7] ?? m[8],
+        type: m[5] ? 'bold' : m[6] ? 'strike' : 'italic',
+        ...(children.some((c) => c.type === 'link' || c.type === 'note')
+          ? { text: children.map((c) => c.text).join(''), children }
+          : { text }),
       })
+    }
     pos = re.lastIndex
   }
   if (pos < src.length) result.push({ type: 'text', text: src.slice(pos) })
@@ -244,6 +288,11 @@ export function renderMarkdown(src: string, doc: Document = document): DocumentF
         a.target = '_blank'
         a.rel = 'noopener noreferrer'
         a.referrerPolicy = 'no-referrer'
+      }
+      if (n.children) {
+        inline(node, n.children)
+        parent.append(node)
+        continue
       }
       const parts = n.text.split('\n')
       parts.forEach((part, index) => {

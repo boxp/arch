@@ -16,7 +16,7 @@ export const vaultImageInstructions =
   ' vault内の画像を家の会話に表示するときは、実在確認したvault相対パスを encodeURIComponent 相当でURLエンコード（括弧も%28/%29へ変換）し、![短い説明](kohako-vault:エンコード済み相対パス) と返してください。絶対パスやMEDIA記法は表示できません。対応はPNG/JPEG/GIF/WebP各5MiBまで。SVG/PDF/動画/その他のファイルはインライン表示非対応です。画像を再生成したり、検証画像をvaultに保存したりしないでください。'
 // BOXP-581: 家の画面は obsidian://open?vault=BOXP&file=… だけを「Obsidianで開く」リンクにする（他 vault・他操作・任意スキームは文字のまま）。
 export const vaultNoteInstructions =
-  ' vault内のノートを示すときは、パスを文字で書くだけでなく、実在確認したvault相対パス（例: Tickets/BOXP-1.md）を encodeURIComponent 相当でURLエンコード（/ は%2F、空白は%20、括弧は%28/%29、&は%26）し、[ノート名](obsidian://open?vault=BOXP&file=エンコード済み相対パス) と返してください。ご主人さまの端末のObsidianアプリでそのノートを開くリンクになります。リンクのためにノートを作成・編集・公開したり、絶対パス・他のvault・new等の別操作を使ったりしないでください。'
+  ' vault内のノートを示すときは、パスを文字で書くだけでなく、実在確認したvault相対パスを encodeURIComponent 相当でURLエンコード（/ は%2F、空白は%20、括弧は%28/%29、&は%26）し、[ノート名](obsidian://open?vault=BOXP&file=エンコード済み相対パス) と返してください。ご主人さまの端末のObsidianアプリでそのノートを開くリンクになります。票（Tickets/BOXP-N.md）は本文に票ID（BOXP-N）を書くだけで画面が同じリンクにします。リンクのためにノートを作成・編集・公開したり、絶対パス・他のvault・new等の別操作を使ったりしないでください。'
 // 視覚パネルを持つ家の画面（views: true を送る）だけに kohako-view 形式を指示する。Studio は views を表示しないので本文だけで返させる。
 export function notificationReplyText(
   item: import('./notifications.js').Item,

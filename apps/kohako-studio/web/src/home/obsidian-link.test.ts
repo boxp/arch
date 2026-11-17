@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest'
-import { obsidianNotePath, obsidianNoteUrl, parseInline, plainText } from './markdown'
+import { must } from '../must'
+import { obsidianNotePath, obsidianNoteUrl, parseInline, plainText, renderMarkdown } from './markdown'
 // BOXP-581: vault 内ノートを Obsidian アプリで開くリンク。
 const path = 'Projects/kohako-home/調査 (案) メモ&1+2.md',
   url = obsidianNoteUrl(path)
@@ -95,4 +96,153 @@ it('keeps unencoded "+" and sub-delimiters in bare obsidian://open URLs as part 
     { type: 'note', path: 'a+b.md' },
     { type: 'text', text: ')' },
   ])
+})
+
+it('links plain ticket references and absolute vault paths', () => {
+  const ticket = (id: string) => ({
+    type: 'note',
+    text: id,
+    path: `Tickets/${id}.md`,
+    url: obsidianNoteUrl(`Tickets/${id}.md`),
+  })
+  expect(parseInline('【Task Board 通知】BOXP-590：archのRenovate滞留整理')).toEqual([
+    { type: 'text', text: '【Task Board 通知】' },
+    ticket('BOXP-590'),
+    { type: 'text', text: '：archのRenovate滞留整理' },
+  ])
+  expect(parseInline('BOXP-592（コハコの家）')).toEqual([ticket('BOXP-592'), { type: 'text', text: '（コハコの家）' }])
+  expect(parseInline('Tickets/BOXP-590.md')).toEqual([ticket('BOXP-590')])
+  const path = 'Projects/コハコ計画.md'
+  expect(parseInline(`/home/boxp/Documents/obsidian-headless/BOXP/${path}`)).toEqual([
+    { type: 'note', text: 'コハコ計画', path, url: obsidianNoteUrl(path) },
+  ])
+  expect(plainText('BOXP-590 です')).toBe('BOXP-590 です')
+})
+
+it('links only complete note references in code spans', () => {
+  for (const input of [
+    'BOXP-590',
+    'Tickets/BOXP-590.md',
+    '/home/boxp/Documents/obsidian-headless/BOXP/Tickets/BOXP-590.md',
+  ]) {
+    expect(parseInline(`\` ${input} \``)).toEqual([
+      { type: 'note', text: 'BOXP-590', path: 'Tickets/BOXP-590.md', url: obsidianNoteUrl('Tickets/BOXP-590.md') },
+    ])
+  }
+  for (const input of ['docs/plan.md', 'BOXP-581-links', 'obsidian://open?vault=BOXP&file=a.md'])
+    expect(parseInline(`\`${input}\``)).toEqual([{ type: 'code', text: input }])
+})
+
+it('links absolute vault paths containing spaces and parentheses', () => {
+  for (const path of ['Projects/調査 (案).md', 'Projects/調査（案）.md', 'Projects/a b/c (1).md']) {
+    const note = { type: 'note', text: must(path.split('/').pop()).slice(0, -3), path, url: obsidianNoteUrl(path) }
+    expect(parseInline(`/home/boxp/Documents/obsidian-headless/BOXP/${path}`)).toEqual([note])
+    expect(parseInline(`ノート /home/boxp/Documents/obsidian-headless/BOXP/${path} を見て`)).toEqual([
+      { type: 'text', text: 'ノート ' },
+      note,
+      { type: 'text', text: ' を見て' },
+    ])
+    expect(parseInline(`\`/home/boxp/Documents/obsidian-headless/BOXP/${path}\``)).toEqual([note])
+  }
+  // 2 つ並んだパスは別々のリンクになる
+  expect(
+    parseInline(
+      '/home/boxp/Documents/obsidian-headless/BOXP/Tickets/BOXP-1.md と /home/boxp/Documents/obsidian-headless/BOXP/Tickets/BOXP-2.md',
+    ).map((n) => n.path ?? n.text),
+  ).toEqual(['Tickets/BOXP-1.md', ' と ', 'Tickets/BOXP-2.md'])
+})
+
+it('links vault-relative note paths written as code or plain text (BOXP-592 notification entry)', () => {
+  const path = 'Projects/kohako-home/netnavi-origin-592-owner-entry.md',
+    note = { type: 'note', text: 'netnavi-origin-592-owner-entry', path, url: obsidianNoteUrl(path) }
+  expect(parseInline(`入口ノート: \`${path}\``)).toEqual([{ type: 'text', text: '入口ノート: ' }, note])
+  expect(parseInline(`入口ノート: ${path}。`)).toEqual([
+    { type: 'text', text: '入口ノート: ' },
+    note,
+    { type: 'text', text: '。' },
+  ])
+  for (const dir of ['Tickets', 'Boards', 'Incidents', 'Infrastructure'])
+    expect(parseInline(`\`${dir}/x.md\``)[0]).toMatchObject({ type: 'note', path: `${dir}/x.md` })
+  for (const input of [
+    'README.md',
+    'docs/project_docs/BOXP-581/plan.md',
+    'Projects/x.ts',
+    'Projects/../x.md',
+    'Projects/.obsidian/x.md',
+  ])
+    expect(parseInline(`\`${input}\``)).toEqual([{ type: 'code', text: input }])
+  expect(parseInline('apps/Projects/x.md').every((n) => n.type === 'text')).toBe(true)
+})
+
+it('does not link unrelated text, invalid paths or parts of links', () => {
+  for (const input of [
+    'codex-task-board/BOXP-581-2026',
+    'BOXP-581-links',
+    'xBOXP-1',
+    'BOXP-12a',
+    'boxp-1',
+    'PROJ-1',
+    'Tickets/BOXP-1.mdx',
+    '/home/boxp/Documents/obsidian-headless/BOXP/../secret.md',
+    '/home/boxp/Documents/obsidian-headless/BOXP/.obsidian/secret.md',
+  ])
+    expect(parseInline(input).every((node) => node.type === 'text')).toBe(true)
+  expect(parseInline('[BOXP-590](https://example.com/BOXP-590)')).toEqual([
+    { type: 'link', text: 'BOXP-590', url: 'https://example.com/BOXP-590' },
+  ])
+  expect(parseInline('https://example.com/BOXP-590')).toEqual([
+    { type: 'link', text: 'https://example.com/BOXP-590', url: 'https://example.com/BOXP-590' },
+  ])
+})
+
+it('renders ticket links without opening a new tab', () => {
+  type Element = {
+    tag: string
+    children: Element[]
+    className: string
+    href: string
+    textContent: string
+    append: (...children: Element[]) => void
+  }
+  const make = (tag: string): Element => ({
+    tag,
+    children: [],
+    className: '',
+    href: '',
+    textContent: '',
+    append(...children) {
+      this.children.push(...children)
+    },
+  })
+  const doc = { createDocumentFragment: () => make('fragment'), createElement: make } as unknown as Document
+  const fragment = renderMarkdown('BOXP-590', doc) as unknown as Element
+  const link = fragment.children[0].children[0]
+  expect(link).toMatchObject({
+    tag: 'a',
+    className: 'obsidian-note',
+    href: 'obsidian://open?vault=BOXP&file=Tickets%2FBOXP-590.md',
+  })
+  expect(link).not.toHaveProperty('target')
+  expect(link.children[1].textContent).toBe('Obsidianで開く')
+})
+
+it('links inside bold text as Task Board notifications write them', () => {
+  const pr = 'https://github.com/boxp/arch/pull/13440'
+  expect(parseInline(`残る **[PR #13440](${pr})** は停止`)).toEqual([
+    { type: 'text', text: '残る ' },
+    { type: 'bold', text: 'PR #13440', children: [{ type: 'link', text: 'PR #13440', url: pr }] },
+    { type: 'text', text: ' は停止' },
+  ])
+  expect(parseInline('**BOXP-571：CIの隔離apply試験導入**')).toEqual([
+    {
+      type: 'bold',
+      text: 'BOXP-571：CIの隔離apply試験導入',
+      children: [
+        { type: 'note', text: 'BOXP-571', path: 'Tickets/BOXP-571.md', url: obsidianNoteUrl('Tickets/BOXP-571.md') },
+        { type: 'text', text: '：CIの隔離apply試験導入' },
+      ],
+    },
+  ])
+  expect(parseInline('**残り1件**')).toEqual([{ type: 'bold', text: '残り1件' }])
+  expect(plainText(`**[PR #13440](${pr})** と **BOXP-571**`)).toBe('PR #13440 と BOXP-571')
 })
