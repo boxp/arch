@@ -64,3 +64,18 @@ it('rejects other vaults, actions, schemes and unsafe paths', () => {
   expect(parseInline('obsidian://new?vault=BOXP&file=a.md').every((n) => n.type === 'text')).toBe(true)
   expect(parseInline('![x](obsidian://open?vault=BOXP&file=a.png)').every((n) => n.type === 'text')).toBe(true)
 })
+
+it('keeps unencoded slashes in bare obsidian://open URLs as part of the note path', () => {
+  expect(parseInline('見て obsidian://open?vault=BOXP&file=Tickets/BOXP-581.md 。')).toEqual([
+    { type: 'text', text: '見て ' },
+    {
+      type: 'note',
+      text: 'BOXP-581',
+      url: 'obsidian://open?vault=BOXP&file=Tickets%2FBOXP-581.md',
+      path: 'Tickets/BOXP-581.md',
+    },
+    { type: 'text', text: ' 。' },
+  ])
+  for (const raw of ['obsidian://open?vault=BOXP&file=/etc/passwd', 'obsidian://open?vault=BOXP&file=../secret.md'])
+    expect(parseInline(raw).every((n) => n.type === 'text')).toBe(true)
+})
