@@ -994,7 +994,7 @@ function setStatusShown(shown: boolean) {
 function closeStatus() {
   setStatusShown(false)
 }
-statusOpen.addEventListener('click', () => setStatusShown(statusPanel.hidden))
+statusOpen.addEventListener('click', () => setStatusShown(Boolean(statusPanel.hidden)))
 el('status-close').addEventListener('click', () => {
   closeStatus()
   statusOpen.focus()
