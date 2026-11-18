@@ -262,6 +262,7 @@ kubectl -n hermes-agent exec deploy/hermes-agent -c hermes-agent -- /command/s6-
 - 登録: `bb bin/task_board_todos.bb conditions add ID --vault VAULT --kind 制約 --text 本文 --source 発信元 [--reply-id R | --event E] [--note-at "Notes の日時"]`
 - 取消: `bb bin/task_board_todos.bb conditions cancel ID CD-01 --vault VAULT --reason 理由 --source 発信元 [--reason-kind 取消|置換|履行済み] [--replaced-by CD-02] [--reply-id R]`
 - 一覧: `bb bin/task_board_todos.bb conditions list ID --vault VAULT`
+- 現状の受入れ: `bb bin/task_board_todos.bb conditions accept ID --vault VAULT --reason 理由 --source hermes-agent [--reply-id R | --event E]`
 
 Owner の返答を票へ記録するときは、今までどおり Summary の更新と Notes への追記を行ったうえで、返答のうち承認に当たる部分を `承認`（`--reply-id` 付き）、取次ぎの際に足した注意（「これは停止の承認ではない」など）を `制約` として登録する。迷うものは `要確認` にする。内容を変えるときは書き換えず、新しい項目を登録してから古い項目を `--reason-kind 置換 --replaced-by 新しい ID` で取り消す。行を手で消したり書き換えたりしない。
 
@@ -269,7 +270,15 @@ Owner の返答を票へ記録するときは、今までどおり Summary の�
 
 読めない行（形が違う、本文が空、ID の重複、ID が無い・数字でない、箇条書きでない文や code fence。Conditions 節には項目行とその子の行だけを書く。ID の無い行は `LINE-n` と表示される）や、Owner の返答（`reply_id` / `event`）が無い `承認` が票にある間は、担当の done は保留になり、merge・配備の命令は拒否される。担当は blocked を返してくるので、Owner の経路で直す: 読めない行は本文を保ったまま形を直し、返答のない `承認` は `conditions cancel` で取り消して、必要なら Owner の返答を付けて登録し直す。
 
-現時点では、項目を手で消す・書き換える・手書きで `取消` にする変更は検出されない（前の時点と比べる検査は、Notes の省略を有効にする前に別途入れる）。Owner の返答は今までどおり Notes にも残す。発信元は `--source` に書かれた名前で判定するので、命令の拒否は誤りを止めるもので、偽った発信元までは防がない。
+`conditions add` と `conditions cancel` は、書いた項目の hash を票の front matter `conditions_seal` に記録する。Conditions 節がこの記録と違う間（命令を通さずに項目が消された `CD-NN:removed-outside-commands`、書き換えられた・手書きで `取消` にされた・由来を変えられた `CD-NN:changed-outside-commands`、足された `CD-NN:added-outside-commands`）、担当の done は保留になり、merge・配備の命令は拒否される。担当は blocked を返してくるので、Owner の経路で次のどれかを行う。
+
+- 元に戻す: 項目を命令が書いたとおりの行に戻す（Notes の `Conditions add CD-NN…` / `Conditions cancel CD-NN…` の行に登録時の本文がある）。戻れば報告は消える。
+- 取り消す: 手書きの項目を `conditions cancel` で取り消す（Owner の経路からは、記録と違う行もそのまま取り消せる）。
+- 受け入れる: Owner に確かめたうえで `conditions accept` を実行する。Conditions 節は変えず、今の節を新しい記録にする。受け入れた違いは Notes に 1 行残る。読めない行の形を手で直した後もこれを実行する。
+
+`conditions accept` は Owner の経路（`--source` が `hermes-agent`・`owner`・`boxp`）で、`CODEX_TASK_BOARD_RUN_ID` の無い process からだけ動く。`conditions_seal` を手で編集しない。
+
+この検査が見つけるのは誤りと Conditions 節だけの手編集で、`conditions_seal` も一緒に書き換えた・消した変更は見つけない。`conditions_seal` がまだ無い票（この検査より前に登録した票）は、次に `add`・`cancel`・`accept` を実行した時点の節が最初の記録になり、それまでは検査されない。Owner の返答は今までどおり Notes にも残す。発信元は `--source` に書かれた名前で判定するので、命令の拒否は誤りを止めるもので、偽った発信元までは防がない。
 
 現時点では、Conditions を登録しても prompt から Notes が省かれることはない（票の本文は全文のまま渡る）。
 
