@@ -115,7 +115,7 @@ Owner の承認（2026-11-18、家経由 reply_id=189776ac-574d-4b29-9fee-581eab
 
 次の全部を満たす票の、次の範囲だけ。どれかが欠ければ票の本文は全文のまま渡る。語句は一切見ない。
 
-1. 票の ID が runner の一覧に入っている。一覧は環境変数 `CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS`（カンマか空白区切り）で、既定は `BOXP-241` の 1 票。空にすると全体で無効。票を足すのは、その票の移行（抽出 → 別担当の独立確認）と Owner の承認の後。
+1. 票の ID が runner の一覧に入っている。一覧は環境変数 `CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS`（カンマか空白区切り）で、既定は `BOXP-241` の 1 票。どの票の ID でもない値（`none`）にすると全体で無効（空の値でも無効だが、container の entrypoint は空でない値だけを runner に渡すので、配備の設定では `none` を使う。entrypoint の 2 つの引継ぎ一覧にこの変数を足した）。票を足すのは、その票の移行（抽出 → 別担当の独立確認）と Owner の承認の後。
 2. front matter に `conditions_through`（UTC の時刻）がある。
 3. front matter に `conditions_seal` があり、Conditions の報告（読めない行、返答のない【承認】、命令を通さない変更）が 0 件。
 4. Conditions の案内を受け取る担当（TODO 契約の対象。localllm は対象外）の implement / review-fix / blocked-retry の prompt。
@@ -148,7 +148,7 @@ Owner の承認（2026-11-18、家経由 reply_id=189776ac-574d-4b29-9fee-581eab
 
 ### 切戻し
 
-`CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS` を空にする、または revert。票の `conditions_through` は残っても、旧 runner は読まない。
+配備の設定で `CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS=none` にする、または revert。票の `conditions_through` は残っても、旧 runner は読まない。
 
 ## 変えないもの
 

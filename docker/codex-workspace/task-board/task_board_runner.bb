@@ -2852,8 +2852,9 @@
 (defn notes-omission-tickets
   "BOXP-588 stage 3: the tickets whose checkpointed Notes are left out of the prompt.
   The Owner approved it for BOXP-241 alone; another ticket is added only after its own
-  migration (extraction, independent check) and the Owner's approval. An empty value
-  turns the omission off everywhere."
+  migration (extraction, independent check) and the Owner's approval. A value that names
+  no ticket (`none`) turns the omission off everywhere; so does an empty value, but the
+  container entrypoint only hands non-empty values on to the runner, so use `none` there."
   []
   (set (remove str/blank? (str/split (or (System/getenv "CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS") "BOXP-241") #"[,\s]+"))))
 

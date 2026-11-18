@@ -1039,6 +1039,11 @@
         (is (= 4 (:exit r)))
         (is (str/includes? (:err r) "CD-01:changed-outside-commands"))
         (is (= before (text)))))))
+(deftest notes-omission-env-reaches-the-runner
+  ;; The entrypoint hands the runner only the variables it lists, in two places.
+  (let [entrypoint (slurp "docker/codex-workspace/entrypoint.sh")]
+    (is (str/includes? entrypoint "\n    CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS \\\n"))
+    (is (re-find #"--whitelist-environment=\S*,CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS," entrypoint))))
 (deftest notes-omission-prompt
   ;; The runner has no namespace of its own, so it is loaded in a process of its own.
   (let [script (str "(System/setProperty \"babashka.file\" \"/tmp/load-runner.bb\")"
@@ -1059,7 +1064,8 @@
     (testing "the list comes from the environment, and an empty list turns it off"
       (is (str/starts-with? (prompt ["CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS=BOXP-21, BOXP-22"] "BOXP-21" full) "Notes left out: 3"))
       (is (= (str "<<<" full) (prompt ["CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS=BOXP-21"] "BOXP-241" full)))
-      (is (= (str "<<<" full) (prompt ["CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS="] "BOXP-241" full))))
+      (is (= (str "<<<" full) (prompt ["CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS="] "BOXP-241" full)))
+      (is (= (str "<<<" full) (prompt ["CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS=none"] "BOXP-241" full))))
     (testing "a named ticket that is not migrated, or whose Conditions were edited by hand, is given in full with no notice"
       (is (= (str "<<<" notes-ticket) (prompt [] "BOXP-241" notes-ticket)))
       (let [edited (str/replace full "- CD-01【制約】外部送信は禁止" "- CD-01【制約】外部送信してよい")]
