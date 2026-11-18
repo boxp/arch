@@ -18,6 +18,8 @@ type Def = {
   eyes?: boolean
   /** 自分で視線を動かす（その間はカーソル追従を退かせる）。 */
   gaze?: boolean
+  /** 見た目の変化がほとんど無い（揺れが落ち着くだけ）。次のしぐさまでの間を短くし、変化の無い時間が長く続かないようにする。 */
+  quiet?: boolean
   /** 出やすさ。時間帯で変える。 */
   weight: number
   dayparts?: Partial<Record<Daypart, number>>
@@ -65,12 +67,20 @@ export const idleActs: Record<IdleAct, Def> = {
   // 横へ目をやる。
   aside: { seconds: [1.8, 3], pose: { headX: 5, eyeX: 0.55 }, mirror: true, gaze: true, weight: 0.9 },
   // じっと落ち着く（待機クリップを止めて小さな揺れだけにする）。
-  still: { seconds: [7, 12], pose: {}, mirror: false, weight: 1.1 },
+  still: { seconds: [4, 7], pose: {}, mirror: false, quiet: true, weight: 0.7 },
 }
 export const idleActNames = Object.keys(idleActs) as IdleAct[]
-/** 最初のしぐさまで・しぐさの間（秒）。控えめでは間を 1.5 倍にする。 */
-export const FIRST_GAP: readonly [number, number] = [9, 18],
-  GAP: readonly [number, number] = [12, 32],
+/**
+ * 最初のしぐさまで・しぐさの間（秒）。控えめでは間を 1.5 倍にする。
+ * 間は前のしぐさが戻り切ってから次が始まるまで。実際に始まるのは頭が正面近くへ来るのを待つぶん（0〜SETTLE_WAIT 秒）遅れる。
+ * 当初は 9〜18 / 12〜32 秒で、目立たない「じっと落ち着く」を挟むと目に見える変化の間が 1 分前後あき、
+ * マウスや指を動かすたびに最初の間から数え直していたので、Owner には「1 分おき」に見えた。変化が目に入る間隔へ詰める。
+ * QUIET_GAP は見た目の変化が無いしぐさ（quiet）の後、RESUME_GAP は操作・会話などで中断した後に落ち着いてからの最短の間。
+ */
+export const FIRST_GAP: readonly [number, number] = [5, 10],
+  GAP: readonly [number, number] = [7, 16],
+  QUIET_GAP: readonly [number, number] = [2, 5],
+  RESUME_GAP: readonly [number, number] = [3, 6],
   SUBTLE_GAP = 1.5,
   SUBTLE_SCALE = 0.6
 /** 入り・戻り・中断時の戻り（秒）と、戻り切ってからクリップを再開するまでの余裕。 */
@@ -115,12 +125,15 @@ export class IdleDirector {
   private nextAt: number | null = null
   private last: IdleAct | null = null
   private forced: IdleAct | null = null
+  /** 直前の step で出してよい状況だったか（中断から落ち着いた瞬間を知る）。 */
+  private wasCalm = true
   constructor(private rng: () => number = Math.random) {}
   /** 予定と出ているしぐさを捨てる（非表示になった時など）。 */
   reset() {
     this.running = null
     this.nextAt = null
     this.forced = null
+    this.wasCalm = true
   }
   /** 次の機会にこのしぐさを出す（検証用。出してよい条件は変えない）。 */
   force(act: IdleAct) {
@@ -142,11 +155,13 @@ export class IdleDirector {
     const gap = (range: readonly [number, number]) => between(range, this.rng()) * (input.subtle ? SUBTLE_GAP : 1)
     let run = this.running
     if (run && now >= run.end + run.out + HOLD_MARGIN) {
+      // 中断で終わった時も次の予定は持っておく（落ち着いた後、中断のたびに最初から数え直さない）。
+      // 検証用の指定が残っていれば、間をあけずに出す。
+      this.nextAt = this.forced ? 0 : now + gap(idleActs[run.act].quiet ? QUIET_GAP : GAP)
       this.running = run = null
-      this.nextAt = input.calm ? now + gap(GAP) : null
     }
     if (!input.calm) {
-      // 中断: いまの強さから短く戻す。予定は捨て、落ち着いてから数え直す。
+      // 中断: いまの強さから短く戻す。予定は残し、落ち着いた後に短い間（RESUME_GAP）だけは必ずあける。
       // 入り・保ちの途中だけでなく、通常の戻りの途中でも短い戻りへ切り替える（一度切り替えたら繰り返さない）。
       if (run && run.out !== CANCEL_SECONDS && now < run.end + run.out) {
         const level = ease((now - run.start) / IN_SECONDS) * (1 - ease((now - run.end) / run.out))
@@ -155,9 +170,14 @@ export class IdleDirector {
         run.end = now
         run.out = CANCEL_SECONDS
       }
-      if (!run) this.nextAt = null
       this.forced = null
-    } else if (!run) {
+      this.wasCalm = false
+    } else {
+      // 中断から落ち着いた: 残っている予定がすぐ・過去なら、短い間をあけてからにする（操作や会話の直後に飛び出さない）。
+      if (!this.wasCalm && this.nextAt !== null) this.nextAt = Math.max(this.nextAt, now + gap(RESUME_GAP))
+      this.wasCalm = true
+    }
+    if (input.calm && !run) {
       if (this.nextAt === null) this.nextAt = now + gap(FIRST_GAP)
       if (now >= this.nextAt && (now >= this.nextAt + SETTLE_WAIT || input.settled())) {
         const act = this.forced ?? this.pick(input.daypart),

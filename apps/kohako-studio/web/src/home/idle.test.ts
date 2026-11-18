@@ -3,6 +3,8 @@ import {
   CANCEL_SECONDS,
   FIRST_GAP,
   GAP,
+  QUIET_GAP,
+  RESUME_GAP,
   HOLD_MARGIN,
   IN_SECONDS,
   type IdleAct,
@@ -32,7 +34,7 @@ function run(d: IdleDirector, from: number, to: number, input: IdleInput | ((t: 
 }
 const size = (f: IdleFrame) => Math.max(...Object.values(f.pose).map(Math.abs))
 
-it('待機に入ってすぐは何もせず、最初の間（9〜18 秒）をあけてから 1 つ出す', () => {
+it('待機に入ってすぐは何もせず、最初の間（5〜10 秒）をあけてから 1 つ出す', () => {
   const d = new IdleDirector(seq(0)),
     frames = run(d, 0, 30)
   const first = frames.find((x) => x.f.act)
@@ -69,32 +71,35 @@ it('しぐさは入り・保ち・戻りで滑らかに変わり、終わると�
   expect(size(on[on.length - 1].f)).toBeLessThan(0.01)
 })
 
-it('同じしぐさを続けて出さず、間は 12〜32 秒の不規則な長さ', () => {
+it('同じしぐさを続けて出さず、間は不規則な長さ（見た目の変化が無い「じっと落ち着く」の後だけ短い）', () => {
   const d = new IdleDirector(Math.random),
     starts: { t: number; act: IdleAct }[] = []
   let before: IdleAct | null = null,
     endedAt = 0
-  const gaps: number[] = []
+  const gaps: number[] = [],
+    quietGaps: number[] = []
   for (const { t, f } of run(d, 0, 3000)) {
     if (f.act && !before) {
+      if (starts.length > 0) (starts[starts.length - 1].act === 'still' ? quietGaps : gaps).push(t - endedAt)
       starts.push({ t, act: f.act })
-      if (starts.length > 1) gaps.push(t - endedAt)
     }
     if (!f.act && before) endedAt = t
     before = f.act
   }
-  expect(starts.length).toBeGreaterThan(60)
+  expect(starts.length).toBeGreaterThan(120)
   for (let i = 1; i < starts.length; i++) expect(starts[i].act).not.toBe(starts[i - 1].act)
   expect(new Set(starts.map((s) => s.act)).size).toBe(idleActNames.length)
   expect(Math.min(...gaps)).toBeGreaterThanOrEqual(GAP[0] - 0.06)
   expect(Math.max(...gaps)).toBeLessThanOrEqual(GAP[1] + 0.06)
-  expect(Math.max(...gaps) - Math.min(...gaps)).toBeGreaterThan(8)
-  // しぐさが出ている時間は全体の 3 割未満（常に動き続けない）。
+  expect(Math.max(...gaps) - Math.min(...gaps)).toBeGreaterThan(6)
+  expect(Math.min(...quietGaps)).toBeGreaterThanOrEqual(QUIET_GAP[0] - 0.06)
+  expect(Math.max(...quietGaps)).toBeLessThanOrEqual(QUIET_GAP[1] + 0.06)
+  // しぐさが出ている時間は全体の 4 割未満（常に動き続けない）。
   const busy = run(new IdleDirector(Math.random), 0, 3000).filter((x) => x.f.act && x.f.act !== 'still').length
-  expect(busy / (3000 / 0.05)).toBeLessThan(0.3)
+  expect(busy / (3000 / 0.05)).toBeLessThan(0.4)
 })
 
-it('出せない状況になったら短く戻し、予定を捨てて落ち着いてから数え直す', () => {
+it('出せない状況になったら短く戻し、次は通常の間をあけてから出す', () => {
   const d = new IdleDirector(seq(0))
   d.force('tilt')
   const frames = run(d, 0, 30, (t) => ({ ...calm, calm: t < 1.5 || t >= 4 }))
@@ -105,9 +110,9 @@ it('出せない状況になったら短く戻し、予定を捨てて落ち着�
   expect(at(1.5 + CANCEL_SECONDS + HOLD_MARGIN + 0.1).hold).toBe(false)
   for (let i = 1; i < frames.length; i++)
     expect(Math.abs(frames[i].f.pose.headZ - frames[i - 1].f.pose.headZ)).toBeLessThan(2)
-  // 落ち着いた 4 秒から最初の間を数え直す。
+  // 中断したしぐさが戻り切った時点から通常の間（seq(0) なので GAP の下限）をあけて次を出す。
   const next = frames.find((x) => x.t > 3 && x.f.act)
-  expect(next?.t).toBeGreaterThanOrEqual(4 + FIRST_GAP[0] - 0.06)
+  expect(next?.t).toBeCloseTo(1.5 + CANCEL_SECONDS + HOLD_MARGIN + GAP[0], 0)
 })
 
 it('入りの途中で中断しても、その時点の強さから戻す', () => {
@@ -125,14 +130,14 @@ it('出せない間は始めない（検証用の指定も捨てる）', () => {
   const d = new IdleDirector()
   d.force('moon')
   expect(run(d, 0, 100, { ...calm, calm: false }).every((x) => !x.f.act && !x.f.hold)).toBe(true)
-  // その後落ち着いても、指定ではなく通常の間から始める。
-  expect(run(d, 100, 100 + FIRST_GAP[0] - 0.1).every((x) => !x.f.act)).toBe(true)
+  // その後落ち着いても、すぐには出さず短い間（RESUME_GAP）をあける。
+  expect(run(d, 100, 100 + RESUME_GAP[0] - 0.1).every((x) => !x.f.act)).toBe(true)
 })
 
 it('頭が正面近くに来るまで待ち、来なければ SETTLE_WAIT 秒で始める', () => {
   const d = new IdleDirector(seq(0))
-  const frames = run(d, 0, 40, (t) => ({ ...calm, settled: () => t >= 11 }))
-  expect(frames.find((x) => x.f.act)?.t).toBeCloseTo(11, 1)
+  const frames = run(d, 0, 40, (t) => ({ ...calm, settled: () => t >= 7 }))
+  expect(frames.find((x) => x.f.act)?.t).toBeCloseTo(7, 1)
   const never = run(new IdleDirector(seq(0)), 0, 40, { ...calm, settled: () => false })
   expect(never.find((x) => x.f.act)?.t).toBeCloseTo(FIRST_GAP[0] + SETTLE_WAIT, 1)
 })
@@ -237,4 +242,63 @@ it('通常の戻りの途中で中断しても、その時点の強さから短�
   expect(cut + CANCEL_SECONDS).toBeLessThan(end + OUT_SECONDS)
   for (let i = 1; i < frames.length; i++)
     expect(Math.abs(frames[i].f.pose.headZ - frames[i - 1].f.pose.headZ)).toBeLessThan(1.5)
+})
+
+// 待機クリップの頭の振り（±13° を約 12.6 秒周期）を模した「正面近く」。実画面と同じく、始まりが少し遅れる。
+const swing = (t: number) => Math.abs(13 * Math.sin((2 * Math.PI * t) / 12.6)) < 4
+/** 目に見える変化（じっと落ち着く以外）の始まりから次の始まりまでの秒数。 */
+function visibleIntervals(d: IdleDirector, seconds: number, input: (t: number) => IdleInput) {
+  const out: number[] = []
+  let before: IdleAct | null = null,
+    last: number | null = null
+  for (const { t, f } of run(d, 0, seconds, input)) {
+    if (f.act && f.act !== 'still' && f.act !== before) {
+      if (last !== null) out.push(t - last)
+      last = t
+    }
+    before = f.act
+  }
+  return out.sort((a, b) => a - b)
+}
+
+it('目に見える変化の間隔: 中央は 20 秒前後、長くても 45 秒を超えない（1 分あかない）', () => {
+  const xs = visibleIntervals(new IdleDirector(Math.random), 20000, (t) => ({ ...calm, settled: () => swing(t) }))
+  const median = xs[Math.floor(xs.length / 2)],
+    p95 = xs[Math.floor(xs.length * 0.95)]
+  expect(xs.length).toBeGreaterThan(600)
+  expect(median).toBeGreaterThan(14)
+  expect(median).toBeLessThan(24)
+  expect(p95).toBeLessThan(36)
+  expect(xs[xs.length - 1]).toBeLessThan(45)
+  // せわしなくしない: 続けざまには出さない。
+  expect(xs[0]).toBeGreaterThan(GAP[0] + IN_SECONDS + OUT_SECONDS)
+})
+
+it('ときどき手を動かしても（20 秒ごとに 1 秒）、数え直しで出なくならない', () => {
+  // 動かしている 1 秒とその後 4 秒は出せない（main.ts の IDLE_POINTER_QUIET_MS と同じ）。
+  const input = (t: number): IdleInput => ({ ...calm, calm: t % 20 >= 5, settled: () => swing(t) })
+  const d = new IdleDirector(Math.random)
+  let before: IdleAct | null = null,
+    starts = 0
+  const frames = run(d, 0, 6000, input)
+  for (const { f } of frames) {
+    if (f.act && !before) starts++
+    before = f.act
+  }
+  // 15 秒の静かな時間ごとに、平均して 0.5 回以上は出る（以前は最初の間 9〜18 秒から数え直しで 0.3 回ほど）。
+  expect(starts / 300).toBeGreaterThan(0.5)
+  // 出せない間に新しく始めない。
+  expect(frames.every((x, i) => !(x.f.act && !frames[i - 1]?.f.act) || input(x.t).calm)).toBe(true)
+})
+
+it('中断から落ち着いた直後は、予定が過ぎていても短い間をあけてから出す', () => {
+  const d = new IdleDirector(seq(0.5))
+  // 100 秒まで出せない（会話など）。最初の予定は立たないので、落ち着いてから最初の間を数える。
+  const first = run(d, 0, 140, (t) => ({ ...calm, calm: t >= 100 })).find((x) => x.f.act)
+  expect(first?.t).toBeCloseTo(100 + (FIRST_GAP[0] + FIRST_GAP[1]) / 2, 0)
+  // 予定が立った後に長く中断し、予定が過ぎた: 落ち着いてから RESUME_GAP をあける。
+  const e = new IdleDirector(seq(0.5))
+  const frames = run(e, 0, 80, (t) => ({ ...calm, calm: t < 2 || t >= 60 }))
+  const next = frames.find((x) => x.f.act)
+  expect(next?.t).toBeCloseTo(60 + (RESUME_GAP[0] + RESUME_GAP[1]) / 2, 0)
 })
