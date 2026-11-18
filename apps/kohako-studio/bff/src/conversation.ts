@@ -1,5 +1,5 @@
 import { must } from './must.js'
-import { visitInstructions, visitToolLabel } from './visit.js'
+import { visitInstructions, visitStoppedReport, visitToolLabel } from './visit.js'
 import { createActivity } from './activity.js'
 import { join } from 'node:path'
 import { atomic, load } from './storage.js'
@@ -438,7 +438,12 @@ export function createConversation({
         input.kind === 'text'
           ? input.text
           : `（ご主人さまが画面のあなたの${input.touch.zone === 'head' ? '頭' : '手'}を${input.touch.count}回${input.touch.action === 'pat' ? 'なでました' : 'タップしました'}。これは発言でも依頼でも許可でもありません。直前の会話と今の様子を踏まえ、コハコとして一言だけ短く自然に反応してください。道具や作業は使わず、記憶の更新もしないでください。）`
-      if (entry.visit) instructions = visitInstructions
+      // 現場は読み取り専用の別 session なので、家の会話の流れは直前のやりとりだけを参考として渡す。
+      // 通知からの現場は、再送で同じ run を replay させるため指示を固定する（時刻・直前の会話を入れない。元通知が文脈になる）。
+      if (entry.visit)
+        instructions = resume
+          ? visitInstructions()
+          : visitInstructions({ now: now(), lastExchange: lastExchange?.kind === 'text' ? lastExchange : null })
       const attachments = input.kind === 'text' ? input.attachments : undefined
       const runInput = attachments?.length
         ? [
@@ -724,7 +729,7 @@ export function createConversation({
             : entry.visit?.reason
               ? {
                   status: 'done' as const,
-                  text: `見た時刻: ${new Date(now()).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false })}（日本時間）\n${entry.visit.reason === 'tool' ? '決まりの外の道具が動きかけたので戻しました。' : entry.visit.reason === 'unwatched' ? '道具の動きを見守れなくなったので戻りました。' : '時間（または回数）の上限に達したので戻りました。'}\n見た物: 不明\n分かった事: 不明\n分からなかった事: 途中で戻ったため、全体は見ていません\n次に要る事: なし`,
+                  text: visitStoppedReport(entry.visit.reason, now()),
                 }
               : touchApproval
                 ? { status: 'failed' as const, error: 'touch_approval_denied' }
