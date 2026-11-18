@@ -7396,6 +7396,55 @@ test_conditions_midrun() {
   assert_file_contains "${vault}/Tickets/BOXP-970.md" '^status: done$'
 }
 
+# BOXP-588 stage 3: a migrated ticket (conditions_through and conditions_seal, Conditions
+# as the commands wrote them) that is named for it gets its checkpointed Notes left out
+# of the prompt. The same ticket not named for it, and the named ticket after a hand
+# edit of Conditions, get the full text.
+test_notes_omission_prompt() {
+  local tmp todo bin kind vault state
+  tmp="$(mktemp -d)"
+  todo="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  for kind in named unnamed edited; do
+    vault="${tmp}/${kind}/vault"
+    state="${tmp}/${kind}/state"
+    write_board "${vault}" '- [ ] [[Tickets/BOXP-971|BOXP-971: test]] #ticket status::in-progress assignee::codex'
+    write_ticket "${vault}" BOXP-971 in-progress codex
+    printf '%s\n' '- 2026-01-01 00:00:00 UTC [codex]: old history entry' '- 2026-01-02 00:00:00 UTC [hermes-agent]: 外部送信は禁止' >>"${vault}/Tickets/BOXP-971.md"
+    bb "${todo}" conditions add BOXP-971 --vault "${vault}" --kind 制約 --text '外部送信は禁止' --source codex >/dev/null
+    bb "${todo}" conditions checkpoint BOXP-971 --vault "${vault}" --through 2026-01-03T00:00:00Z --reason 'extraction and independent check' --source codex >/dev/null
+    assert_file_contains "${vault}/Tickets/BOXP-971.md" '^conditions_through: 2026-01-03T00:00:00Z$'
+    bb "${HELPER}" update BOXP-971 --vault "${vault}" --lane Ready --assignee codex >/dev/null
+    case "${kind}" in
+      named)
+        PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS=BOXP-971 CODEX_FAKE_PROMPT_LOG="${tmp}/${kind}/prompt" run_tick "${vault}" "${state}" env >"${tmp}/${kind}/tick"
+        assert_file_contains "${tmp}/${kind}/prompt" '^Notes left out: 2 Notes entries \(0 KB\) written up to 2026-01-03T00:00:00Z'
+        assert_file_contains "${tmp}/${kind}/prompt" '^- \(not in this prompt\) 2 Notes entries'
+        assert_file_contains "${tmp}/${kind}/prompt" '^- CD-01【制約】外部送信は禁止$'
+        assert_file_contains "${tmp}/${kind}/prompt" 'Conditions checkpoint through 2026-01-03T00:00:00Z extraction and independent check'
+        if grep -q 'old history entry\|\[hermes-agent\]: 外部送信は禁止' "${tmp}/${kind}/prompt"; then fail 'checkpointed Notes were in the prompt'; fi
+        # The ticket file keeps every entry.
+        assert_file_contains "${vault}/Tickets/BOXP-971.md" 'old history entry'
+        ;;
+      unnamed)
+        PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false CODEX_FAKE_PROMPT_LOG="${tmp}/${kind}/prompt" run_tick "${vault}" "${state}" env >"${tmp}/${kind}/tick"
+        assert_file_contains "${tmp}/${kind}/prompt" 'old history entry'
+        assert_file_contains "${tmp}/${kind}/prompt" '\[hermes-agent\]: 外部送信は禁止'
+        if grep -q 'Notes left out\|not in this prompt' "${tmp}/${kind}/prompt"; then fail 'Notes were left out of a ticket not named for it'; fi
+        ;;
+      edited)
+        bb -e '(let [[p] *command-line-args* s (slurp p) out (clojure.string/replace-first s "- CD-01【制約】外部送信は禁止" "- CD-01【制約】外部送信してよい")] (assert (not= s out)) (spit p out))' "${vault}/Tickets/BOXP-971.md"
+        PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS=BOXP-971 CODEX_FAKE_PROMPT_LOG="${tmp}/${kind}/prompt" run_tick "${vault}" "${state}" env >"${tmp}/${kind}/tick"
+        assert_file_contains "${tmp}/${kind}/prompt" 'old history entry'
+        assert_file_contains "${tmp}/${kind}/prompt" 'CD-01:changed-outside-commands'
+        if grep -q 'Notes left out\|not in this prompt' "${tmp}/${kind}/prompt"; then fail 'Notes were left out while Conditions differ from the seal'; fi
+        ;;
+    esac
+  done
+}
+
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a
 # deterministic subset in its own job, so vaults, processes and locks are isolated.
 mapfile -t cases <"${ROOT_DIR}/tests/codex-workspace/task-board-runner-cases.txt"

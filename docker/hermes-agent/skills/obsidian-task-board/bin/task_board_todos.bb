@@ -645,6 +645,97 @@
           (set-fm "conditions_seal" (condition-seal conditions))
           (append-section "Notes" (note-line (condition-origin o)
                                              (str "Conditions accept (" (if (sealed text) (str/join ", " problems) "first seal") ") " reason)))))))
+(defn parse-instant [s] (try (Instant/parse (str/trim (str s))) (catch Exception _ nil)))
+(defn checkpoint-problems
+  "Stage 3: why the Notes of this ticket are not left out of a prompt, or nil when they
+  may be. The Conditions section is then the only carrier of what the older Notes said,
+  so it has to be exactly what the commands wrote."
+  [text]
+  (let [conditions (parse-conditions text)
+        through (get (frontmatter text) "conditions_through")]
+    (cond (str/blank? through) "no conditions_through"
+          (nil? (parse-instant through)) "conditions_through is not an instant"
+          (nil? (sealed text)) "no conditions_seal"
+          :else (when-let [problems (seq (concat (condition-problems conditions) (seal-problems text conditions)))]
+                  (str/join ", " problems)))))
+(defn note-entry-latest
+  "The latest instant the Notes entry starting at this line can have been written at, or
+  nil when the line does not say. A line with seconds can be up to a second later than
+  it reads, and a line with only a date can be from any time of that day."
+  [line]
+  (or (when-let [[_ d t] (re-find #"^- (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) UTC\b" line)]
+        (some-> (parse-instant (str d "T" t "Z")) (.plusSeconds 1)))
+      (when-let [[_ ts] (re-find #"^- (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\s" line)]
+        (parse-instant ts))
+      (when-let [[_ d] (re-find #"^- (\d{4}-\d{2}-\d{2}):" line)]
+        (some-> (parse-instant (str d "T00:00:00Z")) (.plusSeconds 86400)))))
+(defn omit-checkpointed-notes
+  "Stage 3: the ticket text for a prompt. Only a ticket with `conditions_through`, a
+  `conditions_seal` and nothing to report in Conditions loses anything, and what it
+  loses is the leading run of Notes entries that were all written by `conditions_through`.
+  The run ends at the first entry that is later or whose line does not say when it was
+  written, and everything from there on stays, whatever its date. No wording is looked
+  at. The ticket file is not changed. Returns {:text, :omitted, :bytes, :through} or
+  {:text (unchanged), :omitted 0, :kept-because why}."
+  [text full-path]
+  (if-let [why (checkpoint-problems text)]
+    {:text text :omitted 0 :kept-because why}
+    (let [through (parse-instant (get (frontmatter text) "conditions_through"))
+          m (re-matcher #"(?m)^## Notes[ \t]*\r?\n" text)]
+      (if-not (.find m)
+        {:text text :omitted 0 :kept-because "no Notes section"}
+        (let [start (.end m)
+              m2 (doto (re-matcher #"(?m)^## " text) (.region start (count text)))
+              end (if (.find m2) (.start m2) (count text))
+              lines (str/split (subs text start end) #"(?<=\n)")
+              entry? #(str/starts-with? % "- ")
+              preamble (take-while (complement entry?) lines)
+              ;; an entry is its first line and the lines up to the next entry
+              entries (loop [xs (drop (count preamble) lines) out []]
+                        (if (seq xs)
+                          (let [[more rest-xs] (split-with (complement entry?) (rest xs))]
+                            (recur rest-xs (conj out (cons (first xs) more))))
+                          out))
+              old? (fn [entry] (when-let [t (note-entry-latest (first entry))] (not (.isAfter t through))))
+              omitted (take-while old? entries)
+              kept (drop (count omitted) entries)]
+          (if (empty? omitted)
+            {:text text :omitted 0 :kept-because "no entry up to conditions_through"}
+            (let [bytes (count (.getBytes (apply str (apply concat omitted)) "UTF-8"))]
+              {:omitted (count omitted) :bytes bytes :through (str through)
+               :text (str (subs text 0 start) (apply str preamble)
+                          "- (not in this prompt) " (count omitted) " Notes entries (" (quot (+ bytes 512) 1024)
+                          " KB) written up to conditions_through " through
+                          " are left out: what they said that still holds was checked into the Conditions section above."
+                          " They are history, not instructions; the file has them in full: " full-path "\n\n"
+                          (apply str (apply concat kept))
+                          (subs text end))})))))))
+(defn conditions-checkpoint
+  "Records that the Notes written up to --through were read and that what still holds in
+  them is in Conditions. Stage 3 leaves those entries out of prompts. The mark only moves
+  forward, and only on a ticket whose Conditions are as the commands wrote them."
+  [text o]
+  (let [source (:source o)
+        _ (when-not (re-matches #"\S+" source) (throw (ex-info "--source must be one word" {})))
+        reason (require-line (:reason o) "--reason")
+        through (or (parse-instant (:through o))
+                    (die "--through is a UTC instant such as 2026-11-18T05:42:37Z" 4))
+        current (parse-instant (get (frontmatter text) "conditions_through"))
+        conditions (parse-conditions text)]
+    (when (.isAfter through (Instant/now)) (die "--through is in the future" 4))
+    (when (and (not (str/blank? (get (frontmatter text) "conditions_through"))) (nil? current))
+      (die "conditions_through in the ticket is not an instant: return blocked for an Owner decision" 4))
+    (when (and current (.isBefore through current))
+      (die (str "conditions_through only moves forward (it is " current "). To give the full Notes again, ask the Owner path.") 4))
+    (when-not (sealed text)
+      (die "no conditions_seal: register the conditions through conditions add first" 4))
+    (when-let [problems (seq (concat (condition-problems conditions) (seal-problems text conditions)))]
+      (die (str "Conditions are not as the commands wrote them (" (str/join ", " problems) "): no checkpoint. Return blocked for an Owner decision.") 4))
+    (if (= through current)
+      text
+      (-> text
+          (set-fm "conditions_through" (str through))
+          (append-section "Notes" (note-line (condition-origin o) (str "Conditions checkpoint through " through " " reason)))))))
 (def tag-labels {:required "必須", :optional "任意", :cancelled "取消"})
 (defn completion-child? [line] (boolean (re-find #"^\s*[-*]\s*(証拠|見送り):" line)))
 (defn reopened-item
@@ -737,7 +828,7 @@
 (defn -main
   [& args]
   (let [o (opts (rest args))
-        ;; `conditions <add|cancel|accept|list> ID [CD-NN]`
+        ;; `conditions <add|cancel|accept|checkpoint|list> ID [CD-NN]`
         conditions? (= "conditions" (first args))
         cmd (if conditions? (str "conditions-" (first (:args o))) (first args))
         [id item-id] (if conditions? (rest (:args o)) (:args o))
@@ -903,6 +994,7 @@
                                        (require-value (:evidence o) "--evidence"))))
                       "conditions-add" (conditions-add text (assoc o :source (require-value (:source o) "--source")))
                       "conditions-accept" (conditions-accept text (assoc o :source (require-value (:source o) "--source")))
+                      "conditions-checkpoint" (conditions-checkpoint text (assoc o :source (require-value (:source o) "--source")))
                       "conditions-cancel" (conditions-cancel text
                                                              (assoc o :source (require-value (:source o) "--source"))
                                                              (require-value item-id "condition id"))

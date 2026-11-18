@@ -935,4 +935,133 @@
           (is (str/includes? out "\"permissionDecision\":\"deny\""))
           (is (str/includes? out "CD-03:removed-outside-commands")))
         (is (= "" (hook "{\"tool_input\":{\"command\":\"git status\"}}")))))))
+(def notes-ticket
+  (str "---\nstatus: ready\n---\n# T\n\n## Summary\n\nhello\n\n## Acceptance Criteria\n\ncheck\n\n## Plan\n\n- [ ] step\n\n## Notes\n\n作業ログ。\n"
+       "- 2026-01-01: run started\n"
+       "- 2026-01-02 03:04:05 UTC [hermes-agent]: 外部送信は禁止\n  second line of the entry\n\n"
+       "- 2026-01-02T03:04:06.5Z UTC [claude-fable]: TODO ack\n"
+       "- 2026-01-03 00:00:00 UTC [claude-fable]: after the mark\n"
+       "- 2026-01-01 00:00:00 UTC [claude-fable]: old date written after a newer entry\n"))
+(deftest notes-omission
+  (let [sealed (task-board-todos/conditions-add notes-ticket {:kind "制約" :text "外部送信は禁止" :source "claude-fable"})
+        marked (fn [t through] (task-board-todos/set-fm t "conditions_through" through))
+        omit #(task-board-todos/omit-checkpointed-notes % "/vault/Tickets/BOXP-1.md")
+        full (marked sealed "2026-01-02T12:00:00Z")]
+    (testing "a ticket without the mark, without the seal, or with an unreadable mark is given in full"
+      (is (= {:text notes-ticket :omitted 0 :kept-because "no conditions_through"} (omit notes-ticket)))
+      (is (= sealed (:text (omit sealed))))
+      (is (= "no conditions_seal" (:kept-because (omit (marked notes-ticket "2026-01-02T12:00:00Z")))))
+      (is (= "conditions_through is not an instant" (:kept-because (omit (marked sealed "2026-01-02")))))
+      (is (= (marked sealed "yesterday") (:text (omit (marked sealed "yesterday"))))))
+    (testing "only the leading entries written by the mark are left out; the rest of the ticket is byte for byte the same"
+      (let [{:keys [text omitted through]} (omit full)]
+        (is (= 3 omitted))
+        (is (= "2026-01-02T12:00:00Z" through))
+        (is (not (str/includes? text "run started")))
+        (is (not (str/includes? text "second line of the entry")))
+        (is (not (str/includes? text "TODO ack")))
+        (is (str/includes? text "- (not in this prompt) 3 Notes entries (0 KB) written up to conditions_through 2026-01-02T12:00:00Z"))
+        (is (str/includes? text "the file has them in full: /vault/Tickets/BOXP-1.md"))
+        (is (= (subs full 0 (str/index-of full "- 2026-01-01: run started"))
+               (subs text 0 (str/index-of text "- (not in this prompt)"))))
+        (is (str/ends-with? text (subs full (str/index-of full "- 2026-01-03 00:00:00 UTC"))))
+        (is (str/includes? text "- CD-01【制約】外部送信は禁止"))))
+    (testing "an entry is left out only when its line shows it cannot be later than the mark"
+      ;; a line with seconds can be up to a second later than it reads
+      (is (= 1 (:omitted (omit (marked sealed "2026-01-02T03:04:05Z")))))
+      (is (= 2 (:omitted (omit (marked sealed "2026-01-02T03:04:06Z")))))
+      (is (= 3 (:omitted (omit (marked sealed "2026-01-02T03:04:06.5Z")))))
+      ;; a line with only a date can be from any time of that day
+      (is (= 0 (:omitted (omit (marked sealed "2026-01-01T23:59:59Z")))))
+      (is (= 1 (:omitted (omit (marked sealed "2026-01-02T00:00:00Z"))))))
+    (testing "the run of omitted entries ends at the first later entry: an old date after it stays"
+      (is (str/includes? (:text (omit (marked sealed "2026-01-02T12:00:00Z"))) "old date written after a newer entry")))
+    (testing "an entry whose line does not say when it was written ends the run, and so does everything after it"
+      (let [t (marked (str/replace sealed "- 2026-01-02 03:04:05 UTC [hermes-agent]" "- undated [hermes-agent]") "2026-01-02T12:00:00Z")
+            out (omit t)]
+        (is (= 1 (:omitted out)))
+        (is (str/includes? (:text out) "外部送信は禁止\n  second line"))
+        (is (str/includes? (:text out) "TODO ack"))))
+    (testing "the wording of an entry plays no part: a constraint in the old Notes is left out like any other entry"
+      (is (not (re-find #"\[hermes-agent\]: 外部送信は禁止" (:text (omit full))))))
+    (testing "while Conditions differ from what the commands wrote, nothing is left out"
+      (let [edited (str/replace full "- CD-01【制約】外部送信は禁止" "- CD-01【制約】外部送信してよい")
+            removed (str/replace full "- CD-01【制約】外部送信は禁止\n  - 由来: claude-fable\n" "")
+            unfounded (str/replace full "\n## Plan" "- CD-02【承認】deploy\n  - 由来: claude-fable\n\n## Plan")
+            no-seal (str/replace full #"(?m)^conditions_seal:.*\n" "")]
+        (doseq [t [edited removed unfounded no-seal]]
+          (is (not= t full))
+          (is (= {:text t :omitted 0} (select-keys (omit t) [:text :omitted]))))
+        (is (= "CD-01:changed-outside-commands" (:kept-because (omit edited))))
+        (is (= "CD-01:removed-outside-commands" (:kept-because (omit removed))))))
+    (testing "the mark is front matter: it does not change the revision"
+      (is (= (:rev (task-board-todos/ticket-view sealed)) (:rev (task-board-todos/ticket-view full)))))))
+(deftest conditions-checkpoint-cli
+  (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-25.md")
+        call (fn [& args] @(p/process (into ["env" "CODEX_TASK_BOARD_RUN_ID=run-1" "bb" module "conditions" "checkpoint" "BOXP-25" "--vault" d] args) {:out :string :err :string}))
+        text #(slurp (str path))
+        through #(get (task-board-todos/frontmatter (text)) "conditions_through")]
+    (fs/create-dirs (fs/parent path))
+    (spit (str path) notes-ticket)
+    (testing "no mark on a ticket whose conditions no command wrote"
+      (let [r (call "--through" "2026-01-02T12:00:00Z" "--reason" "checked" "--source" "claude-fable")]
+        (is (= 4 (:exit r)))
+        (is (str/includes? (:err r) "no conditions_seal"))
+        (is (= notes-ticket (text)))))
+    (is (zero? (:exit @(p/process ["bb" module "conditions" "add" "BOXP-25" "--vault" d "--kind" "制約" "--text" "外部送信は禁止" "--source" "claude-fable"] {:out :string :err :string}))))
+    (testing "the mark needs an instant that is not in the future, a reason and a source"
+      (let [before (text)]
+        (is (= 4 (:exit (call "--through" "2026-01-02" "--reason" "checked" "--source" "claude-fable"))))
+        (is (= 4 (:exit (call "--through" "2999-01-01T00:00:00Z" "--reason" "checked" "--source" "claude-fable"))))
+        (is (not (zero? (:exit (call "--through" "2026-01-02T12:00:00Z" "--source" "claude-fable")))))
+        (is (not (zero? (:exit (call "--through" "2026-01-02T12:00:00Z" "--reason" "checked")))))
+        (is (= before (text)))))
+    (testing "it is recorded in the front matter and in Notes, and the revision stays"
+      (let [rev (:rev (task-board-todos/ticket-view (text)))]
+        (is (zero? (:exit (call "--through" "2026-01-02T12:00:00Z" "--reason" "extraction and two independent checks" "--source" "claude-fable"))))
+        (is (= "2026-01-02T12:00:00Z" (through)))
+        (is (= rev (:rev (task-board-todos/ticket-view (text)))))
+        (is (re-find #"(?m)^- \S+ UTC \[claude-fable\]: Conditions checkpoint through 2026-01-02T12:00:00Z extraction and two independent checks$" (text)))
+        (is (= 3 (:omitted (task-board-todos/omit-checkpointed-notes (text) "p"))))
+        (is (str/includes? (:text (task-board-todos/omit-checkpointed-notes (text) "p")) "Conditions checkpoint through"))))
+    (testing "the same mark again changes nothing, and the mark does not move back"
+      (let [before (text)]
+        (is (zero? (:exit (call "--through" "2026-01-02T12:00:00Z" "--reason" "again" "--source" "claude-fable"))))
+        (is (= before (text)))
+        (let [r (call "--through" "2026-01-01T00:00:00Z" "--reason" "back" "--source" "claude-fable")]
+          (is (= 4 (:exit r)))
+          (is (str/includes? (:err r) "only moves forward")))
+        (is (= before (text)))))
+    (testing "no mark while Conditions differ from what the commands wrote"
+      (spit (str path) (str/replace (text) "- CD-01【制約】外部送信は禁止" "- CD-01【制約】外部送信してよい"))
+      (let [before (text)
+            r (call "--through" "2026-01-03T12:00:00Z" "--reason" "checked" "--source" "claude-fable")]
+        (is (= 4 (:exit r)))
+        (is (str/includes? (:err r) "CD-01:changed-outside-commands"))
+        (is (= before (text)))))))
+(deftest notes-omission-prompt
+  ;; The runner has no namespace of its own, so it is loaded in a process of its own.
+  (let [script (str "(System/setProperty \"babashka.file\" \"/tmp/load-runner.bb\")"
+                    "(load-file \"docker/codex-workspace/task-board/task_board_runner.bb\")"
+                    "(let [[id text] *command-line-args* c (prompt-ticket-contents id text)]"
+                    " (print (str (notes-omission-prompt id \"claude-fable\" c) \"<<<\" (:text c))))")
+        prompt (fn [env id text] (:out @(p/process (into ["env" "-u" "CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS"] (concat env ["bb" "-e" script id text])) {:out :string :err :string})))
+        sealed (task-board-todos/conditions-add notes-ticket {:kind "制約" :text "外部送信は禁止" :source "claude-fable"})
+        full (task-board-todos/set-fm sealed "conditions_through" "2026-01-02T12:00:00Z")]
+    (testing "only the tickets named for it are shortened: BOXP-241 by default"
+      (is (= (str "<<<" full) (prompt [] "BOXP-21" full)))
+      (let [out (prompt [] "BOXP-241" full)]
+        (is (str/starts-with? out "Notes left out: 3 Notes entries (0 KB) written up to 2026-01-02T12:00:00Z"))
+        (is (str/includes? out "conditions checkpoint BOXP-241 --vault \"$CODEX_TASK_BOARD_VAULT\" --through UTC-INSTANT --reason TEXT --source claude-fable"))
+        (is (str/includes? out "- (not in this prompt) 3 Notes entries"))
+        (is (not (str/includes? out "run started")))
+        (is (str/includes? out "after the mark"))))
+    (testing "the list comes from the environment, and an empty list turns it off"
+      (is (str/starts-with? (prompt ["CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS=BOXP-21, BOXP-22"] "BOXP-21" full) "Notes left out: 3"))
+      (is (= (str "<<<" full) (prompt ["CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS=BOXP-21"] "BOXP-241" full)))
+      (is (= (str "<<<" full) (prompt ["CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS="] "BOXP-241" full))))
+    (testing "a named ticket that is not migrated, or whose Conditions were edited by hand, is given in full with no notice"
+      (is (= (str "<<<" notes-ticket) (prompt [] "BOXP-241" notes-ticket)))
+      (let [edited (str/replace full "- CD-01【制約】外部送信は禁止" "- CD-01【制約】外部送信してよい")]
+        (is (= (str "<<<" edited) (prompt [] "BOXP-241" edited)))))))
 (let [r (run-tests)] (when (pos? (+ (:fail r) (:error r))) (System/exit 1)))
