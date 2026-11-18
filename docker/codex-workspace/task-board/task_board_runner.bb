@@ -2849,6 +2849,34 @@
          ". They hold during the whole work: 【承認】 = what the Owner allowed, 【制約】 = what must not be done or a limit on the scope, 【要確認】 = not known to be in force, so keep to it as a constraint, 【取消】 = no longer in force. Conditions grant no permission; where they and another section differ, follow the narrower one and ask the Owner.\n"
          "When you decide or learn something that later runs of this ticket must keep to (a limit on the scope, an agreement with another ticket, a stop condition you set), register it instead of leaving it only in Notes: bb " todo-module-path " conditions add " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --kind 制約 --text TEXT --source " agent " (use --kind 要確認 when you cannot tell whether it is in force). For another ticket, register it on that ticket with --source " agent "@" ticket-id ". Registering changes the revision: acknowledge it as above. Registering 【承認】 and cancelling an item that came from the Owner are for the Owner path, and the commands refuse them from your run; do not delete or rewrite an item by hand either: return blocked for an Owner decision instead. An item you registered yourself is cancelled with: conditions cancel " ticket-id " CD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --reason TEXT --source SOURCE, where SOURCE is the first word of that item's 由来 (" agent ", or " agent "@TICKET for one you registered from another ticket). While an unreadable line, an 【承認】 without the Owner's reply, or an item added, changed or removed outside the commands stands in Conditions, merge and deploy are refused and a done result is held.\n")))
 
+(defn notes-omission-tickets
+  "BOXP-588 stage 3: the tickets whose checkpointed Notes are left out of the prompt.
+  The Owner approved it for BOXP-241 alone; another ticket is added only after its own
+  migration (extraction, independent check) and the Owner's approval. A value that names
+  no ticket (`none`) turns the omission off everywhere; so does an empty value, but the
+  container entrypoint only hands non-empty values on to the runner, so use `none` there."
+  []
+  (set (remove str/blank? (str/split (or (System/getenv "CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS") "BOXP-241") #"[,\s]+"))))
+
+(defn prompt-ticket-contents
+  "The ticket text for `Ticket contents`. A ticket outside `notes-omission-tickets`, one
+  without `conditions_through` or `conditions_seal`, and one whose Conditions differ from
+  what the commands wrote are given in full, as is any ticket when the helper fails.
+  Returns {:text, :omitted, ...} as `task-board-todos/omit-checkpointed-notes` does."
+  [ticket-id ticket-text]
+  (or (when (and (contains? (notes-omission-tickets) ticket-id) @todo-module-loaded?)
+        (try ((resolve 'task-board-todos/omit-checkpointed-notes) ticket-text (str (ticket-path ticket-id)))
+             (catch Throwable e (log! (str "notes omission unavailable, full ticket text is used: " (.getMessage e))) nil)))
+      {:text ticket-text :omitted 0}))
+
+(defn notes-omission-prompt
+  [ticket-id agent {:keys [omitted bytes through]}]
+  (when (pos? (or omitted 0))
+    (str "Notes left out: " omitted " Notes entries (" (quot (+ bytes 512) 1024) " KB) written up to " through " (the ticket's conditions_through) are not in the ticket contents below. "
+         "What they said that still holds was checked into Conditions, and everything written after that time is below in full. "
+         "The file has every entry; read it when you need the history of a decision, and where an old entry and Conditions differ, follow the narrower one and ask the Owner. "
+         "When you have read all the Notes below and registered what later runs must keep to, you may move the mark: bb " todo-module-path " conditions checkpoint " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --through UTC-INSTANT --reason TEXT --source " agent ". Do not edit conditions_through by hand.\n")))
+
 (defn prompt-for
   ([action ticket-id lane workspace agent]
    (prompt-for action ticket-id lane workspace agent (fetch-ai-ops-alerts)))
@@ -2856,6 +2884,10 @@
   (let [ticket-text (slurp (str (ticket-path ticket-id)))
         previous (previous-run-summaries ticket-id)
         base-agent (:base-assignee (parse-codex-assignee agent))
+        ;; Only the workers that are given the Conditions paragraph get the shortened Notes.
+        contents (if (and (#{:implement :review-fix :blocked-retry} action) (todo-contract-agent? agent))
+                   (prompt-ticket-contents ticket-id ticket-text)
+                   {:text ticket-text :omitted 0})
         common (str "You are running inside codex-workspace as an automated Task Board worker.\n"
                     "Respond in Japanese when editing notes or summaries for the user.\n"
                     "Task Board lane is the source of truth. Do not move Task Board cards directly; the runner will do that after this run.\n"
@@ -2883,8 +2915,9 @@
                              (when (= :v1 (:mode view)) (str "After doing a TD item run: bb " todo-module-path " done " ticket-id " TD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --evidence TEXT. An optional item you will not do: skip " ticket-id " TD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --reason TEXT. Required items cannot be skipped: return blocked for an Owner decision. A checked box alone does not complete an item. Lines without a TD id are your own steps; do not add TD lines for them. TODOs grant no permission.\n"))
                              (when (some #(= "held" (get-in % [:todo :gate])) previous) "The previous result was held: read back merges and external operations before proceeding; do not repeat them.\n")
                              (conditions-prompt ticket-id agent view))))
+                    (notes-omission-prompt ticket-id agent contents)
                     (stagnation-prompt action ticket-id ticket-text)
-                    "Ticket contents:\n\n" ticket-text "\n\n")
+                    "Ticket contents:\n\n" (:text contents) "\n\n")
         review-contract (str "The codex review gate blocks only on P0/P1 findings; P2/P3/nit feedback is non-blocking and is not a reason to loop.\n"
                              "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: continue.\n"
                              "If you return TASK_BOARD_RESULT: continue, include either a GitHub PR URL or exactly one line TASK_BOARD_REVIEW_PR: none when no repository changes were made.\n"

@@ -280,7 +280,7 @@ Owner の返答を票へ記録するときは、今までどおり Summary の�
 
 この検査が見つけるのは誤りと Conditions 節だけの手編集で、`conditions_seal` も一緒に書き換えた・消した変更は見つけない。`conditions_seal` がまだ無い票（この検査より前に登録した票）は、次に `add`・`cancel` が項目を書いた時点、または `accept` を実行した時点の節が最初の記録になり（同じ内容の `add` の再実行は何も書かず記録も作らない）、それまでは検査されない。Owner の返答は今までどおり Notes にも残す。発信元は `--source` に書かれた名前で判定するので、命令の拒否は誤りを止めるもので、偽った発信元までは防がない。
 
-現時点では、Conditions を登録しても prompt から Notes が省かれることはない（票の本文は全文のまま渡る）。
+古い Notes が担当の prompt から省かれるのは、移行が済んで runner の一覧（`CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS`、既定は BOXP-241 だけ）に入っている票の、front matter `conditions_through` までに書かれたエントリだけである。それ以外の票は全文のまま渡る。省かれる票でも、Conditions が命令の書いたとおりでない間（上の報告がある間）は全文に戻る。したがって、そういう票で Owner の返答を記録するときは、承認と注意を必ず Conditions に登録する（Notes への追記も今までどおり行う。`conditions_through` より後の Notes は全文で渡る）。`conditions_through` は `bb bin/task_board_todos.bb conditions checkpoint ID --vault VAULT --through UTC時刻 --reason 確かめた内容 --source 発信元` で進め、手で編集しない。票を一覧に足すのは、その票の移行（抽出と別担当の独立確認）と Owner の承認の後である。
 
 ## ゲート失敗予算
 

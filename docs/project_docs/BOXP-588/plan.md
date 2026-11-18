@@ -10,7 +10,7 @@
 | 1 | Conditions 項目（CD-NN）の解析、登録と取消の命令、版（rev）への組込み、prompt での案内、Hermes skill の書き方 | なし（何も省かない） | #15338（merge 済み） |
 | 1.5 | 命令が書いた項目の記録（`conditions_seal`）と今の Conditions 節を比べ、手での削除・書換え・取消を見つける検査（下の「段階 1.5」） | なし | 別 PR。段階 3 より前に入れる |
 | 2 | 植込み試験（言い回しを変えた既知の制約を実票の写しに混ぜ、抽出と独立確認が拾う数を数える）と、BOXP-360 での 1 票の移行試行 | なし | 別作業（コード変更なし） |
-| 3 | 結果が良ければ、棚卸し済みの時点（`conditions_through`）より前の Notes だけを prompt から省く。移行していない票は全文のまま | あり | 別 PR |
+| 3 | 棚卸し済みの時点（`conditions_through`）より前の Notes だけを prompt から省く。対象は一覧にある移行済みの票（既定は BOXP-241 の 1 票）。それ以外は全文のまま | あり | この PR（下の「段階 3」） |
 
 ③（同じファイルへの重大指摘が続いたら設計の見直しを促す）は独立した #15327。
 
@@ -107,6 +107,49 @@
 - `bb tests/codex-workspace/task-board-todos-test.bb` の `conditions-seal`（削除・書換え・手書きの取消・取消の解除・由来の変更・追加・ID の付け替え・節を空にする、の各報告。空白だけの違いは報告なし。v1 / legacy とも ack 後も done は保留で continue と blocked は通る。後の命令で違いが消えない。記録の無い票と記録ごと消した変更は報告なし＝範囲の限定を固定）と `conditions-seal-cli`（命令で登録・取消した票は報告なし。担当は違いのある項目を取り消せない。`accept` の拒否条件、節と版が不変、Notes の行、再実行は無変更。未記録の票の最初の記録。hook の merge 拒否）、`conditions-prompt`（該当 ID の表示）。
 - `tests/codex-workspace/task-board-runner-test.sh` の `test_conditions_midrun`: run の間に項目を手で消すと次の run の prompt に報告が出て done が保留、その次の run も保留、Owner の経路の `accept` の後は done。
 
+## 段階 3: 移行済みの票の古い Notes を prompt から省く（`conditions_through`）
+
+Owner の承認（2026-11-18、家経由 reply_id=189776ac-574d-4b29-9fee-581eab696e21、選択 1＋A）: 有効化の条件を「Notes にしか無く、欠落すると害が出る、Owner に関わる漏れが 0」に改め、BOXP-241 だけ省略を有効にする。一括移行と BOXP-360 での有効化は含まない。
+
+### 何が省かれるか
+
+次の全部を満たす票の、次の範囲だけ。どれかが欠ければ票の本文は全文のまま渡る。語句は一切見ない。
+
+1. 票の ID が runner の一覧に入っている。一覧は環境変数 `CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS`（カンマか空白区切り）で、既定は `BOXP-241` の 1 票。どの票の ID でもない値（`none`）にすると全体で無効（空の値でも無効だが、container の entrypoint は空でない値だけを runner に渡すので、配備の設定では `none` を使う。entrypoint の 2 つの引継ぎ一覧にこの変数を足した）。票を足すのは、その票の移行（抽出 → 別担当の独立確認）と Owner の承認の後。
+2. front matter に `conditions_through`（UTC の時刻）があり、Notes に `conditions checkpoint` がその時刻で書いた記録の行（`Conditions checkpoint through 時刻 …`）がある。手で書いた・手で進めた `conditions_through` には記録が無いので、何も省かれない（記録の行も一緒に手で書いた場合は見つけない。段階 1.5 と同じ範囲の限定）。
+3. front matter に `conditions_seal` があり、Conditions の報告（読めない行、返答のない【承認】、命令を通さない変更）が 0 件。
+4. Conditions の案内を受け取る担当（TODO 契約の対象。localllm は対象外）の implement / review-fix / blocked-retry の prompt。
+
+省くのは、Notes 節の先頭から続く「`conditions_through` までに書かれたと行から分かるエントリ」の並びだけ。
+
+- エントリは行頭が `- ` の行から次のそういう行の手前まで。先頭のエントリより前の行（節の説明文）は残す。
+- 時刻は行の形から読む: `- 2026-01-02 03:04:05 UTC …`（秒までなので最大 1 秒後として扱う）、`- 2026-01-02T03:04:05.123Z …`、`- 2026-01-02: …`（日付だけなので、その日の終わりとして扱う）。
+- 並びは、`conditions_through` より後かもしれないエントリ、または時刻が読めないエントリで終わる。**そこから後ろは、日付が古くても全部残す。**
+- 省いた場所に「N 件・K KB を省いた、全文の path」の 1 行を置き、prompt の案内にも同じ件数と `conditions checkpoint` の命令を出す。
+- 票のファイルは変えない。停滞判定など prompt 以外の読み取りは全文のまま。Notes 以外の節は 1 byte も変わらない。
+
+### 残らないもの（範囲の限定）
+
+**`conditions_through` 以前の Notes に書かれた制約は、Conditions に登録されていなければ prompt に入らない。** これを機械は補わない。受けるのは手順である: 移行は抽出と別担当の独立確認を経る（`migration-procedure.md`）。BOXP-241 では独立確認を 2 回行い、2 回目に見つかった漏れ 5 件（どれも軽い）を足してから線を引く。確認を重ねても境目の文の漏れが 0 になるとは言えない、という結果を Owner に示したうえでの承認である。省略の行と案内は全文の path を示し、古いエントリと Conditions が食い違うときは狭い方に従って Owner に聞くよう書く。
+
+### 線を引く命令
+
+`conditions checkpoint ID --through UTC時刻 --reason 何を確かめたか --source 発信元`
+
+- `conditions_seal` が無い票、Conditions に報告がある票、未来の時刻、今の値より前の時刻は拒否（rc=4）。同じ時刻の再実行は何も書かない。
+- front matter の `conditions_through` を書き、Notes に 1 行残す。版（rev）は変わらない。
+- 担当も実行できる（棚卸しは、その分の Notes を全文で読んだ run が行うため）。線を戻す命令は無い。全文に戻すには、一覧から票を外すか、Owner の経路で `conditions_through` を消す。
+- 未棚卸しの Notes が増えたときに棚卸しを促す仕組みは入れていない（BOXP-241 は待機中の票で Notes がほとんど増えない）。票を足すときに入れる。
+
+### 検証
+
+- `bb tests/codex-workspace/task-board-todos-test.bb` の `notes-omission`（線・記録が無い票と読めない線は全文／手で書いた線・checkpoint の後に手で進めた線は全文／省くのは先頭の並びだけで残りは byte 一致／秒・日付だけの行の境目／後ろにある古い日付は残る／時刻の読めないエントリで並びが終わる／古い Notes の制約も語句に関係なく省かれる＝範囲の限定を固定／Conditions に報告がある間は全文／版は不変）、`conditions-checkpoint-cli`（拒否の条件、記録、再実行、後戻りしない）、`notes-omission-prompt`（一覧に無い票は全文、既定は BOXP-241、環境変数で指定・空で無効、未移行と手編集は全文で案内なし）。
+- `tests/codex-workspace/task-board-runner-test.sh` の `test_notes_omission_prompt`: 実際に runner を回し、一覧にある移行済みの票は prompt から古い 2 件が消えて Conditions と線より後の Notes が入ること、一覧に無い同じ票と、Conditions を手で書き換えた票は全文が入ること。
+
+### 切戻し
+
+配備の設定で `CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS=none` にする、または revert。票の `conditions_through` は残っても、旧 runner は読まない。
+
 ## 変えないもの
 
 - 既存の票の内容（一括の書換えなし）、Notes の扱い、停滞判定の入力。
@@ -131,5 +174,5 @@ revert。登録済みの `## Conditions` 節は票に残るが、旧 helper で�
 ## 残ること
 
 - 段階 2 の植込み試験と BOXP-360 の移行試行（抽出 → 別担当の独立確認 → 【要確認】だけ Owner に提示）。止める条件: 独立確認の後も漏れが残る、または Owner 由来の条件の漏れが 1 件でも見つかる。
-- 段階 3 の省略（`conditions_through`）と棚卸しの命令。
+- 未棚卸しの Notes が増えたときに棚卸しを促す案内（票を足すときに入れる）。
 - dotfiles 側の task-board skill の説明文の同期（helper の写しは dotfiles には無い）。
