@@ -2771,7 +2771,7 @@
         in-force (remove #(#{:cancelled :invalid} (:kind %)) conditions)
         invalid (filter #(= :invalid (:kind %)) conditions)]
     (str "Conditions (the ticket's `## Conditions` section, CD-NN items): " (count in-force) " in force"
-         (when (seq invalid) (str ", " (count invalid) " unreadable (" (str/join ", " (distinct (map :id invalid))) "): treat each unreadable line as a constraint and fix its form by hand as 【要確認】, keeping its text"))
+         (when (seq invalid) (str ", " (count invalid) " unreadable (" (str/join ", " (distinct (map :id invalid))) "): treat each unreadable line as a constraint and do not edit, cancel or remove it during the run (that is refused like any other change outside the rules): return blocked so the Owner path repairs its form, keeping its text"))
          ". They hold during the whole work: 【承認】 = what the Owner allowed, 【制約】 = what must not be done or a limit on the scope, 【要確認】 = not known to be in force, so keep to it as a constraint, 【取消】 = no longer in force. Conditions grant no permission; where they and another section differ, follow the narrower one and ask the Owner.\n"
          "When you decide or learn something that later runs of this ticket must keep to (a limit on the scope, an agreement with another ticket, a stop condition you set), register it instead of leaving it only in Notes: bb " todo-module-path " conditions add " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --kind 制約 --text TEXT --source " agent " (use --kind 要確認 when you cannot tell whether it is in force). For another ticket, register it on that ticket with --source " agent "@" ticket-id ". Registering changes the revision: acknowledge it as above. You cannot register 【承認】 or cancel an item that came from the Owner, and no item is deleted or rewritten: return blocked for an Owner decision instead. An item you registered yourself is cancelled with: conditions cancel " ticket-id " CD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --reason TEXT --source " agent ". While Conditions stand changed outside these rules, merge and deploy are refused and the result of the run is held.\n")))
 
@@ -3597,7 +3597,7 @@
       ;; :conditions is what the run started from; the gate compares the end against it.
       (spit (str (fs/path dir "todo-start.edn"))
             (pr-str (assoc (select-keys view [:rev :mode])
-                           :conditions (mapv #(select-keys % [:id :kind :text :children]) (:conditions view)))))
+                           :conditions (mapv #(select-keys % [:id :kind :text :children :line]) (:conditions view)))))
       (refresh-todo-state! ticket-id))
     (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent ai-ops))
     (mark-run! ticket-id run :running (merge {:action action :agent agent :lane lane :started-at (now-str)} ai-ops-fields))

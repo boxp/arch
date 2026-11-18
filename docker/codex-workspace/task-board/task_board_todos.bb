@@ -154,6 +154,7 @@
         content #(select-keys % [:kind :text :children])
         same? (fn [a b] (= (content a) (content b)))
         owner? #(contains? owner-path-sources %)
+        unreadable-at-start (set (map :id (filter #(= :invalid (:kind %)) start)))
         cancelled-properly?
         (fn [s e]
           (let [by (condition-child e "取消者")]
@@ -169,7 +170,22 @@
     (vec (sort (distinct
                 (concat
                  (for [s start :when (not (contains? end-by (:id s)))] (str (:id s) ":removed"))
-                 (for [e end :when (and (= :invalid (:kind e)) (not (same? (start-by (:id e)) e)))]
+                 ;; An item that could not be read at the start (bad form, empty text, a
+                 ;; repeated id) has no kind or origin to check a change against, so it
+                 ;; stays exactly as it was: turning it into 【取消】 or anything else
+                 ;; during the run would lift a limit nobody could verify. Every line
+                 ;; with that id is compared, because by-id keeps only one of them.
+                 ;; The written line is compared as well where the start recorded it: two
+                 ;; lines sharing an id are unreadable whatever kind each one names.
+                 (for [id unreadable-at-start
+                       :let [before (filterv #(= id (:id %)) start)
+                             after (filterv #(= id (:id %)) end)
+                             written (fn [s e] (select-keys e (filter #(contains? s %) [:kind :text :children :line])))]
+                       :when (and (seq after)
+                                  (or (not= (count before) (count after))
+                                      (not= (map #(written % %) before) (map written before after))))]
+                   (str id ":unreadable-item-changed"))
+                 (for [e end :when (and (= :invalid (:kind e)) (not (contains? unreadable-at-start (:id e))))]
                    (str (:id e) ":invalid"))
                  (for [s start
                        :let [e (end-by (:id s))]
@@ -251,7 +267,10 @@
         ;; nil: the run started before Conditions were recorded, so there is nothing to compare.
         violations (when (some? start-conditions) (condition-violations start-conditions conditions))
         ids (if (= mode :legacy)
-              (if (and (not= rev start-rev) (not= rev ack-rev)) ["_BODY"] [])
+              ;; Acknowledging the revision does not make an unreadable condition usable:
+              ;; it blocks here as it does under the v1 contract, whenever it was written.
+              (vec (concat (when (and (not= rev start-rev) (not= rev ack-rev)) ["_BODY"])
+                           (distinct (keep #(when (= :invalid (:kind %)) (:id %)) conditions))))
               (vec (distinct (concat
                               ;; A new, changed or unreadable condition not acknowledged yet.
                               (keep #(when (or (= :invalid (:kind %)) (not (:received? %))) (:id %))
@@ -564,7 +583,7 @@
         reason (require-line (:reason o) "--reason")
         owner? (contains? owner-path-sources source)]
     (when (= :invalid (:kind item))
-      (die (str "unreadable condition line: " cd-id " cannot be cancelled as it is. Fix its form by hand, keeping its text, as 【要確認】") 4))
+      (die (str "unreadable condition line: " cd-id " cannot be cancelled as it is. Treat it as a constraint and leave the line as it is: its form is repaired through the Owner path, outside a Task Board run, keeping its text. Return blocked for an Owner decision.") 4))
     (when (= :cancelled (:kind item)) (die (str cd-id " is already cancelled") 4))
     (when (and (owner-derived? item) (or (not owner?) (in-worker-run?)))
       (die (str cd-id " came from the Owner: only the Owner path can cancel it, outside a Task Board run."

@@ -541,7 +541,14 @@
             changed (str/replace conditions-ticket "do not touch" "never touch")]
         (is (not (:hold? (decide conditions-ticket "done" start))))
         (is (:hold? (decide changed "done" start)))
-        (is (not (:hold? (decide (acked changed) "done" start))))))))
+        (is (not (:hold? (decide (acked changed) "done" start))))))
+    (testing "legacy: an unreadable line holds even after the new revision is acknowledged, whenever it was written"
+      (let [broken (str/replace conditions-ticket "- CD-03【要確認】" "- CD-09【変】x\n- CD-03【要確認】")
+            start (:rev (task-board-todos/ticket-view conditions-ticket))]
+        (is (= ["CD-09"] (:blocking-ids (decide (acked broken) "done" start))))
+        (is (:hold? (decide (acked broken) "blocked" start)))
+        (is (:hold? (decide broken "done" (:rev (task-board-todos/ticket-view broken)))))
+        (is (not (:hold? (decide (acked broken) "continue" start))))))))
 (deftest conditions-violations
   (let [items task-board-todos/parse-conditions
         start (items conditions-ticket)
@@ -589,6 +596,21 @@
       (let [broken (swap "- CD-03【要確認】" "- CD-03【変】")]
         (is (= ["CD-03:invalid"] (check broken)))
         (is (= [] (task-board-todos/condition-violations (items broken) (items broken))))))
+    (testing "a line that was unreadable at the start stays as it was: it cannot be cancelled, repaired or dropped during the run"
+      (let [broken (swap "- CD-03【要確認】inbox shape stays" "- CD-03【変】inbox shape stays")
+            from (fn [a b] (task-board-todos/condition-violations (items a) (items b)))
+            dup (swap "- CD-03【要確認】" "- CD-02【制約】second line\n- CD-03【要確認】")]
+        (is (= ["CD-03:unreadable-item-changed"]
+               (from broken (str/replace broken "- CD-03【変】inbox shape stays\n  - 由来: claude-fable\n"
+                                         "- CD-03【取消】inbox shape stays\n  - 由来: claude-fable\n  - 取消理由: 取消 x\n  - 取消者: claude-fable\n"))))
+        (is (= ["CD-03:unreadable-item-changed"] (from broken conditions-ticket)))
+        (is (= ["CD-03:unreadable-item-changed"] (from broken (str/replace broken "inbox shape stays" "inbox"))))
+        (is (= [] (from broken broken)))
+        (is (= ["CD-03:removed"] (from broken (str/replace broken "- CD-03【変】inbox shape stays\n  - 由来: claude-fable\n" ""))))
+        (testing "a repeated id: dropping or cancelling one of the lines is a change"
+          (is (= [] (from dup dup)))
+          (is (= ["CD-02:unreadable-item-changed"] (from dup conditions-ticket)))
+          (is (= ["CD-02:unreadable-item-changed"] (from dup (str/replace dup "- CD-02【制約】second line" "- CD-02【取消】second line")))))))
     (testing "the gate holds done and blocked on a violation in both modes, and skips runs that recorded no start"
       (let [deleted (swap "- CD-01【承認】design only\n  - 由来: hermes-agent reply_id=r1\n" "")
             decide (fn [text result start-conditions]
