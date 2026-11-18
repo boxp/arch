@@ -564,7 +564,8 @@
   (let [r (he {} "contract")]
     (is (zero? (:exit r)) (:err r))
     (is (str/includes? (:out r) "Task Board contract"))
-    (is (str/includes? (:out r) "Optional delegation (BOXP-604 trial)"))
+    (is (str/includes? (:out r) "Optional delegation: this run has no mandatory Codex delegation"))
+    (is (not (str/includes? (:out r) "BOXP-604 trial")))
     (testing "BOXP-604: required に戻すと必須の委譲契約を含む"
       (let [rq (he {"CODEX_TASK_BOARD_DELEGATION_MODE" "required"} "contract")]
         (is (str/includes? (:out rq) "Delegation contract"))))

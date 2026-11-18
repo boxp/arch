@@ -2403,8 +2403,10 @@
        distinct
        vec))
 
-;; BOXP-604: trial of removing the runner's mandatory Codex (terra) delegation for
-;; Claude parents, which already use lower-cost subagents on their own. `required`
+;; BOXP-604 / BOXP-611: the runner does not mandate Codex (terra) delegation for
+;; Claude parents, which already use lower-cost subagents on their own. `optional`
+;; was trialled in BOXP-604 and confirmed as the default by the Owner in BOXP-611
+;; (total saving not proven; keep watching the rollback signals). `required`
 ;; restores the previous contract (done needs verified delegation or an exemption);
 ;; `optional` keeps the helper available but neither instructs nor gates it. Only
 ;; the Claude parents below are affected: codex-sol/full/astra parents, the
@@ -2421,7 +2423,7 @@
   (and (= "optional" (delegation-mode)) (contains? optional-delegation-agents agent)))
 
 (def optional-delegation-policy-line
-  (str "- Codex delegation is optional for this run (BOXP-604 trial): the runner neither requires nor checks it. "
+  (str "- Codex delegation is optional for this run: the runner neither requires nor checks it. "
        "Use subagents or lower-cost models at your own discretion when they reduce the total cost of the task "
        "(parent + children + review + retries) without lowering quality; do work yourself when delegation overhead would exceed the saving. "
        "Retain final judgment and verify delegated results.\n"))
@@ -2504,7 +2506,7 @@
        "Exemptions are self-reported. A done result requires verified delegation or an explicit exemption.\n\n"))
 
 (defn optional-delegation-prompt []
-  (str "Optional delegation (BOXP-604 trial): this run has no mandatory Codex delegation and needs no exemption record. "
+  (str "Optional delegation: this run has no mandatory Codex delegation and needs no exemption record. "
        "If one lower-cost Codex child clearly helps, `python3 " delegation-helper " run` with the subtask on stdin is still available (one attempt per run, it stops itself after 30 minutes); verify its result. "
        "Never substitute another API key or account.\n\n"))
 
