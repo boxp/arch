@@ -763,6 +763,14 @@ export function petEyeStep(current: number, on: boolean, dt: number): number {
 // BOXP-525: なでの開始（待機クリップの停止）や終了（なでた反応）で頭の角度が 1 フレームで跳ぶ（実測 8〜9°）と、
 // 連続して見たときにガクガクする。なで中とその前後だけ、描画する頭の角度を時定数 0.15 秒・毎秒 45° までで追わせる。
 export const PET_SMOOTH_TAIL = 1.2
+// BOXP-605: 待機のしぐさから待機クリップへ戻るときは、再開した瞬間の「見せていた角度とクリップの角度の差」を
+// IDLE_SMOOTH_TAIL 秒かけて 0 へ溶かす（しぐさは繰り返し出るので、戻りを目立たせない）。遅れて追う方式（smoothAngle）は
+// 動き続けるクリップに追いつかず、尾の終わりで 4° 跳んだ（実測）ので使わない。
+export const IDLE_SMOOTH_TAIL = 2
+export const idleTailOffset = (offset: number, elapsed: number): number => {
+  const t = Math.max(0, Math.min(1, elapsed / IDLE_SMOOTH_TAIL))
+  return offset * (1 - t * t * (3 - 2 * t))
+}
 export function smoothAngle(shown: number, raw: number, dt: number): number {
   if (!(dt > 0)) return shown
   const step = (raw - shown) * (1 - Math.exp(-dt / 0.15)),
@@ -898,7 +906,12 @@ export function createActingStage(
     petClosed = 0,
     petHold = false,
     petHeld = false,
-    petTail = 0
+    petTail = 0,
+    holdGentle = false,
+    tailGentle = false,
+    tailElapsed = 0
+  const tailOffsets: Record<string, number> = {}
+  let idlePose: Partial<BodyPose> = {}
   const SMOOTH_KEYS = ['ParamAngleX', 'ParamAngleY', 'ParamAngleZ', 'ParamBodyAngleX', 'ParamBodyAngleZ'] as const
   const shownAngle: Record<string, number> = {}
   const shownEye: Record<string, number> = {}
@@ -1870,7 +1883,8 @@ export function createActingStage(
       const want =
         (sampled?.body[key] ?? 0) +
         (target.head[key] ?? 0) +
-        (key === 'headX' || key === 'headY' || key === 'headZ' ? petOffset[key] : 0)
+        (key === 'headX' || key === 'headY' || key === 'headZ' ? petOffset[key] : 0) +
+        (idlePose[key] ?? 0)
       headCurrent[key] = lerp(headCurrent[key], want, k)
       p.setParameter(PARAMS[key], headCurrent[key])
     }
@@ -1900,8 +1914,18 @@ export function createActingStage(
           p.setParameter(PARAMS[key], v)
         }
       }
+    // BOXP-605: 待機のしぐさで止めていたクリップを再開した直後は、長めの尾でゆっくり追う。なでが始まれば通常の追従へ戻す。
+    const tailStart = !petHold && petHeld && holdGentle
+    if (petHold) tailGentle = false
+    else if (tailStart) {
+      tailGentle = true
+      tailElapsed = 0
+    } else if (tailGentle) {
+      tailElapsed += dt
+      if (tailElapsed >= IDLE_SMOOTH_TAIL) tailGentle = false
+    }
     petHeld = petHold
-    petTail = petHold ? PET_SMOOTH_TAIL : Math.max(0, petTail - dt)
+    petTail = petHold ? PET_SMOOTH_TAIL : tailGentle ? 0 : Math.max(0, petTail - dt)
     baseUpdate(dt)
     const evaluated = typeof p.parameterValues === 'function' ? p.parameterValues() : []
     const overridden = new Set<string>()
@@ -1911,7 +1935,15 @@ export function createActingStage(
       for (const id of SMOOTH_KEYS) {
         const raw = values[p.parameters?.indexOf(id) ?? -1]
         if (typeof raw !== 'number' || !Number.isFinite(raw)) continue
-        if (petTail > 0 && typeof shownAngle[id] === 'number') {
+        if (tailGentle && typeof shownAngle[id] === 'number') {
+          if (tailStart) tailOffsets[id] = shownAngle[id] - raw
+          shownAngle[id] = raw + idleTailOffset(tailOffsets[id] ?? 0, tailElapsed)
+          if (Math.abs(shownAngle[id] - raw) > 1e-4) {
+            p.setParameter(id, shownAngle[id])
+            overridden.add(id)
+            restage = true
+          }
+        } else if (petTail > 0 && typeof shownAngle[id] === 'number') {
           shownAngle[id] = smoothAngle(shownAngle[id], raw, dt)
           if (Math.abs(shownAngle[id] - raw) > 1e-4) {
             p.setParameter(id, shownAngle[id])
@@ -2019,8 +2051,12 @@ export function createActingStage(
     setPetEyes(on) {
       petEyes = on
     },
-    setPetHold(on) {
+    setPetHold(on, gentle = false) {
       petHold = on
+      if (on) holdGentle = gentle
+    },
+    setIdlePose(v) {
+      idlePose = v
     },
     setChestMotion(on) {
       chestEnabled = on
@@ -2098,6 +2134,8 @@ export function createActingStage(
     report: () => ({
       supported: true,
       petEyes: petClosed,
+      idlePose: { ...idlePose },
+      idleTail: tailGentle ? tailElapsed : null,
       yaw: shownYaw,
       chest: {
         ...chestStatus,

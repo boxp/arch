@@ -30,3 +30,31 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "longhorn_backup" 
     }
   }
 }
+
+resource "aws_s3_bucket_lifecycle_configuration" "longhorn_backup" {
+  bucket = aws_s3_bucket.longhorn_backup.id
+
+  depends_on = [aws_s3_bucket_versioning.longhorn_backup]
+
+  rule {
+    id     = "expire-noncurrent-longhorn-backupstore"
+    status = "Enabled"
+
+    filter {
+      prefix = "backupstore/"
+    }
+
+    noncurrent_version_expiration {
+      # Retention days: 14, chosen by the Owner (BOXP-598).
+      noncurrent_days = 14
+    }
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+}

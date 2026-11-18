@@ -1,0 +1,4 @@
+{
+  "$schema": "./node_modules/@mizchi/mutator/schema/mutator.config.schema.json",
+  "include": ["src/notifications.ts", "src/status.ts"]
+}

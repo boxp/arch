@@ -1,0 +1,4 @@
+{
+  "$schema": "./node_modules/@mizchi/mutator/schema/mutator.config.schema.json",
+  "include": ["src/home/markdown.ts", "src/home/sync.ts"]
+}

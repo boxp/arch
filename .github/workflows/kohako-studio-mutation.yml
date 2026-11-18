@@ -1,0 +1,92 @@
+name: Kohako Studio Mutation Test
+
+# BOXP-600: kohako-studio の代表範囲（bff: 通知振分け/状態取得, web: URL検査/同期状態遷移）へ
+# @mizchi/mutator によるミューテーションテストを report-only で導入する。
+# - 対象ファイルは各 package の mutator.config.json の include で限定する（全 repo 一括適用はしない）。
+# - スコア閾値や --fail-on-survived による merge gate は置かない。生存変異は PR の warning annotation と
+#   job summary に出すだけで、job が失敗するのはテスト自体の失敗 (exit 4) や設定不備 (exit 1) のときに限る。
+# - main への push で全件を走らせて .mutator/ キャッシュを作り、PR はそのキャッシュを復元して
+#   diff (--since base) に入る変異だけを実行する。既存の build/verify workflow とは独立に並列で走る。
+# 再実行方法と実測値: docs/project_docs/BOXP-600/plan.md
+on:
+  pull_request:
+    paths:
+      - 'apps/kohako-studio/bff/**'
+      - 'apps/kohako-studio/web/**'
+      - '.github/workflows/kohako-studio-mutation.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/kohako-studio/bff/**'
+      - 'apps/kohako-studio/web/**'
+      - '.github/workflows/kohako-studio-mutation.yml'
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: kohako-studio-mutation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [bff, web]
+    defaults:
+      run:
+        working-directory: apps/kohako-studio/${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Restore mutator cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: apps/kohako-studio/${{ matrix.package }}/.mutator
+          key: kohako-mutator-${{ matrix.package }}-${{ github.sha }}
+          restore-keys: kohako-mutator-${{ matrix.package }}-
+
+      - name: Run mutation test (report-only)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -o pipefail
+          if [ "$EVENT_NAME" = pull_request ]; then
+            # PR: diff 内の変異と、変更されたテストが覆う変異だけを実行する（テストのみの PR でも
+            # 検出力の変化を確認するため --include-test-changes）。キャッシュ済みの関数は再利用される。
+            args=(--since "origin/$BASE_REF" --include-test-changes --time-budget 600)
+          else
+            # main/dispatch: 対象全体。未実行分は Pending として次回へ持ち越す。
+            args=(--time-budget 1200)
+          fi
+          start=$(date +%s)
+          npm run test:mutation -- "${args[@]}" 2>&1 | tee mutator.log
+          elapsed=$(($(date +%s) - start))
+          {
+            echo "### mutation (${{ matrix.package }}) ${elapsed}s"
+            echo '```'
+            grep -v '^\[[0-9]*/[0-9]*\]' mutator.log | head -80
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save mutator cache
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: apps/kohako-studio/${{ matrix.package }}/.mutator
+          key: kohako-mutator-${{ matrix.package }}-${{ github.sha }}

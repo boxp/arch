@@ -25,7 +25,8 @@ import { initInbox } from './inbox'
 import './style.css'
 import './room.css'
 import './menus.css'
-import { buildRoomV1, daypartOf, roomOptions } from './room'
+import { buildRoomV1, type Daypart, daypartOf, roomOptions } from './room'
+import { IdleDirector, type IdleAct, idleActNames, settledHead } from './idle'
 import {
   states,
   formatPercent,
@@ -59,6 +60,7 @@ import { ActingDirector, cueForSentence, splitSentences, type ActingStage } from
 import { createActingStage } from '../live2d/gesture'
 import { createSentenceSpeaker, createSilentSentencer } from '../studio/acting-speech'
 import { SceneDirector, targetScene, messageShown, type Scene } from './scene'
+import { arrivalNote, arrivalPhase, LANDING_MS, type Arrival } from './arrival'
 import { cardsFromText, type Card } from './cards'
 import {
   acts,
@@ -146,6 +148,7 @@ const prefBoxes: [keyof Prefs, HTMLInputElement][] = [
   ['reducedMotion', el('pref-reduce')],
   ['bgMotion', el('pref-bg')],
   ['chestSway', el('pref-chest')],
+  ['idleActs', el('pref-idle')],
 ]
 const voiceSelect = el<HTMLSelectElement>('pref-voice'),
   volumeInput = el<HTMLInputElement>('pref-volume'),
@@ -656,6 +659,9 @@ function show(next: State) {
   send.disabled = !enabled || touchActive || !!recording || starting
   send.textContent = queueing() ? 'キューに追加' : '送信'
   stop.hidden = !busy || !requestId || !accepted
+  el<HTMLButtonElement>('visit').hidden = busy
+  el<HTMLButtonElement>('visit').disabled =
+    !enabled || !!unconfirmed || touchActive || !!recording || starting || queueing()
   record.hidden = !stt
   record.disabled =
     !enabled ||
@@ -688,6 +694,25 @@ function shapeOf(): 'pc' | 'portrait' | 'landscape' {
     h = window.innerHeight
   return h > w ? 'portrait' : w >= 900 && h >= 560 ? 'pc' : 'landscape'
 }
+let visitActive = false
+// BOXP-599 TD-01: 帰還の演出（転送ゲート）の状態。リグを読み込む間は「戻る途中」、現場の実行中は「出ている」、終わった直後だけ短く姿を現す。
+let rigLoading = wantsRig(location.search),
+  returnedAt: number | null = null
+function refreshArrival() {
+  const input = { rigLoading, visit: visitActive && busy, returnedAt, now: Date.now() }
+  let phase: Arrival = arrivalPhase(input)
+  const before = character.dataset.arrival as Arrival | undefined
+  if ((before === 'arriving' || before === 'away') && phase === 'home') {
+    returnedAt = input.now
+    phase = arrivalPhase({ ...input, returnedAt })
+    setTimeout(refreshArrival, LANDING_MS + 20)
+  }
+  if (before === phase) return
+  character.dataset.arrival = phase
+  const note = el('arrival-note')
+  note.textContent = arrivalNote[phase]
+  note.hidden = !arrivalNote[phase]
+}
 function refreshScene(force = false) {
   const vv = window.visualViewport,
     vh = vv ? vv.height : window.innerHeight
@@ -708,9 +733,12 @@ function refreshScene(force = false) {
     idleMs: Date.now() - lastActivity,
     hasReply: !!lastReply,
     netDown,
+    visit: visitActive && busy,
   })
   const scene = director.decide(target, Date.now(), { holding: holding(), pinned: prefs.pinned, force })
   body.dataset.scene = scene
+  el('visit-place').hidden = scene !== 'visit'
+  refreshArrival()
   updateMessage()
   const upper =
     kbd || shape === 'portrait' || shape === 'landscape' || ((scene === 'show' || scene === 'work') && shape === 'pc')
@@ -1199,15 +1227,25 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
       return
     }
     const next = interpretRequest(result.data)
-    renderActivity(el('activity'), validateActivity(result.data.activity), {
-      live: next.state === 'thinking' || next.state === 'approval',
-      // 手順一覧を開いている間だけ、各手順の実行内容（実引数）を取り寄せて行の中に出す（BOXP-560）。
-      loadDetail: async (stepId) => (await call(`requests/${id}/activity/${stepId}`)).data,
-      onLayout: () => {
-        if (body.dataset.shape === 'portrait') chatFollower.pin(chatlog)
-        else if (el('activity').dataset.live === '1' && !el('activity-steps')?.hidden) bubbleFollower.pin(bubble)
-      },
-    })
+    visitActive = !!result.data.visit && (next.state === 'thinking' || next.state === 'approval')
+    if (result.data.visit) {
+      const activity = el('activity')
+      activity.hidden = false
+      const visit = result.data.visit as { steps?: unknown }
+      const steps = Array.isArray(visit.steps) ? visit.steps : []
+      activity.textContent =
+        steps.filter((step: unknown): step is string => typeof step === 'string').at(-1) || '現場を見ています'
+      refreshScene()
+    } else
+      renderActivity(el('activity'), validateActivity(result.data.activity), {
+        live: next.state === 'thinking' || next.state === 'approval',
+        // 手順一覧を開いている間だけ、各手順の実行内容（実引数）を取り寄せて行の中に出す（BOXP-560）。
+        loadDetail: async (stepId) => (await call(`requests/${id}/activity/${stepId}`)).data,
+        onLayout: () => {
+          if (body.dataset.shape === 'portrait') chatFollower.pin(chatlog)
+          else if (el('activity').dataset.live === '1' && !el('activity-steps')?.hidden) bubbleFollower.pin(bubble)
+        },
+      })
     if (next.state === 'approval' && next.approval) {
       if (approvalId !== next.approval.approvalId) {
         approvalId = next.approval.approvalId
@@ -1708,6 +1746,10 @@ form.addEventListener('drop', (e) => {
   e.preventDefault()
   if (e.dataTransfer?.files) void addFiles(e.dataTransfer.files)
 })
+el('visit').addEventListener('click', () => {
+  if (!busy && enabled && !unconfirmed && !touchActive && !recording && !starting && !queueing())
+    void sendText('見てきて', 'visit')
+})
 el<HTMLFormElement>('form').addEventListener('submit', (event) => {
   event.preventDefault()
   const text = message.value.trim() || (chips.length ? '添付ファイルを見てください' : '')
@@ -1766,7 +1808,7 @@ el<HTMLFormElement>('form').addEventListener('submit', (event) => {
  * 1 件の発言を送る。from: 'composer' は入力欄から、'pending' は受理未確認の控えの確認・再送、QueueItem は送信待ちの先頭。
  * 受理（202）されるまで履歴に「あなた」として出さない。受理されなかったと確定したら本文を元の場所（入力欄が空ならそこ、送信待ちなら先頭）へ戻す。
  */
-async function sendText(text: string, from: 'composer' | 'pending' | QueueItem): Promise<void> {
+async function sendText(text: string, from: 'composer' | 'pending' | 'visit' | QueueItem): Promise<void> {
   const giveBack = () => {
     if (typeof from === 'object') queue.putBack(from)
     else if (from === 'composer') {
@@ -2176,7 +2218,8 @@ function computeAreas() {
     BIG.includes(touchGesture)
   areas.hands = bigNow ? [] : handIdx.map((i) => toScreenRect(bboxOf(r.meshVertices(i)), layout, 10))
 }
-let touchGesture = 'none'
+let touchGesture = 'none',
+  reacting = false
 function touchBlocked(): string | null {
   if (!prefs.touch) return 'ふれあいは設定で OFF です。'
   if (state === 'approval') return '確認待ちの間はふれあいを止めています。'
@@ -2202,12 +2245,14 @@ function touchReact(zone: Zone, kind: 'tap' | 'pat', via: 'pointer' | 'menu') {
       if (!BIG.includes(String(acting?.snapshot.gesture))) stage.playGesture('nod')
     } else {
       clearTimeout(reactionTimer)
+      reacting = true
       stage.setEmotion(act.emotion)
       if (gesture !== 'none') stage.playGesture(gesture)
       touchGesture = gesture
       reactionTimer = window.setTimeout(
         () => {
           touchGesture = 'none'
+          reacting = false
           if (state !== 'speaking' && state !== 'approval' && state !== 'failed') {
             stage?.reset()
             if (rig) actingEnabled ? actingPose(rig, rigStateOf[state]) : applyPose(rig, rigModel, rigStateOf[state])
@@ -2365,6 +2410,7 @@ const touchLook = new TouchLook(),
 window.addEventListener(
   'pointermove',
   (e) => {
+    pointerMovedAt = performance.now()
     if (e.pointerType === 'mouse' || (e.pointerType === 'pen' && e.buttons === 0)) {
       lookPointer = { x: e.clientX, y: e.clientY }
       touchLook.clear()
@@ -2376,6 +2422,7 @@ window.addEventListener(
 window.addEventListener(
   'pointerdown',
   (e) => {
+    pointerMovedAt = performance.now()
     if (e.pointerType === 'pen') lookPointer = null
     else if (e.pointerType === 'touch') {
       // マウス併用端末では以前のマウス位置が残っていると、取り消し・離した後の待機終了時に中立でなくそこへ戻ってしまうため捨てる。
@@ -2415,6 +2462,8 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     lookPointer = null
     touchLook.clear()
+    // BOXP-605: 非表示の間は描画が止まる。戻った時に途中のしぐさや過ぎた予定を出さず、間を数え直す。
+    idleDirector.reset()
   }
 })
 window.addEventListener('resize', () => {
@@ -2423,6 +2472,35 @@ window.addEventListener('resize', () => {
 
 // ---- リグの読込と描画ループ ----
 let petEyesLatched = false
+// BOXP-605: 待機中のしぐさ。待機が続き、会話・ふれあい・演出・操作が無い間だけ、不規則な間をあけて小さなしぐさを挟む（決め方は idle.ts）。
+const idleDirector = new IdleDirector()
+let pointerMovedAt = -Infinity,
+  idleEmotion = false
+/** Owner が手を動かした直後は、しぐさを始めずカーソルや操作へ注意を向けたままにする（ms）。 */
+const IDLE_POINTER_QUIET_MS = 4000
+function idleCalm(now: number, petBusy: boolean): boolean {
+  return (
+    prefs.idleActs &&
+    !reduced() &&
+    !document.hidden &&
+    enabled &&
+    !busy &&
+    !netDown &&
+    rigStateOf[state] === 'idle' &&
+    character.dataset.arrival === 'home' &&
+    !character.classList.contains('mini') &&
+    !track &&
+    !petBusy &&
+    !reacting &&
+    !touchActive &&
+    touchGesture === 'none' &&
+    (!acting?.snapshot.gesture || acting.snapshot.gesture === 'none') &&
+    !recording &&
+    !holding() &&
+    !touchLook.at(now) &&
+    now - pointerMovedAt > IDLE_POINTER_QUIET_MS
+  )
+}
 function rigTick(now: number) {
   if (!rig) return
   const dt = petTick ? Math.min(0.1, (now - petTick) / 1000) : 0
@@ -2432,13 +2510,38 @@ function rigTick(now: number) {
     petOptions = { enabled: !touchBlocked(), reduced: reduced(), subtle: prefs.intensity === 'subtle' }
   const petEyes = !track?.outside && petEyesWanted(petTrack, petOptions, petEyesLatched)
   petEyesLatched = petEyes
-  stage?.setPetEyes?.(petEyes)
   report.petEyes = petEyes
   petOffset = petFollow(petOffset, petTrack, dt, petOptions)
+  const petHold = isPetting(petTrack, petOptions) || petShown(petOffset)
+  // BOXP-605: 待機中のしぐさ。stage が無い（リグ非対応）・出せない状況では何もせず、出ている途中なら短く戻す。
+  const player = rig,
+    idle = idleDirector.step(now / 1000, {
+      calm: !!stage?.setIdlePose && idleCalm(now, petHold),
+      settled: () => {
+        const head = player.parameterValues()
+        return settledHead(
+          head[player.parameters.indexOf('ParamAngleX')] ?? 0,
+          head[player.parameters.indexOf('ParamAngleZ')] ?? 0,
+        )
+      },
+      daypart: (body.dataset.daypart as Daypart | undefined) ?? 'day',
+      subtle: prefs.intensity === 'subtle',
+    })
+  stage?.setIdlePose?.(idle.pose)
+  if (idle.emotion && !idleEmotion) {
+    stage?.setEmotion(idle.emotion)
+    idleEmotion = true
+  } else if (!idle.emotion && idleEmotion) {
+    idleEmotion = false
+    // 会話やふれあいが表情を決めた後なら触らない（待機のまま終わった時だけ元の表情へ戻す）。
+    if (rigStateOf[state] === 'idle' && !reacting && touchGesture === 'none') stage?.setEmotion('neutral')
+  }
+  stage?.setPetEyes?.(petEyes || idle.eyes)
+  report.idle = { act: idle.act, hold: idle.hold, eyes: idle.eyes, emotion: idle.emotion }
   if (stage?.setPetOffset) {
-    const hold = isPetting(petTrack, petOptions) || petShown(petOffset)
+    const hold = petHold || idle.hold
     stage.setPetOffset(petOffset)
-    stage.setPetHold?.(hold)
+    stage.setPetHold?.(hold, !petHold)
     holdClipForPet(hold)
   }
   report.petFollow = { ...petOffset }
@@ -2451,7 +2554,8 @@ function rigTick(now: number) {
       isPetting(petTrack, petOptions) ||
       petShown(petOffset) ||
       touchGesture !== 'none' ||
-      (!!acting?.snapshot.gesture && acting.snapshot.gesture !== 'none')
+      (!!acting?.snapshot.gesture && acting.snapshot.gesture !== 'none') ||
+      idle.gaze
     const pointer = touchLook.at(performance.now()) ?? lookPointer,
       enabled = prefs.follow && !reduced(),
       active = !!pointer && enabled && !blocked
@@ -2508,6 +2612,7 @@ async function startRig() {
     el('face-mode').textContent = '静止表情（?face=static）'
     return
   }
+  refreshArrival()
   try {
     const loaded = await loadRig(rigCanvas, rigModel, './kohako/live2d/sample/')
     rig = loaded.player
@@ -2528,6 +2633,8 @@ async function startRig() {
     if (actingEnabled) acting = new ActingDirector(calmStage(stage))
     face.hidden = true
     rigCanvas.hidden = false
+    rigLoading = false
+    refreshArrival()
     el('face-mode').textContent = `${rigModel.name}（独自 runtime・公式 Live2D ではありません）`
     Object.assign(report, {
       loaded: true,
@@ -2542,6 +2649,8 @@ async function startRig() {
     ;(report.errors as string[]).push(e instanceof Error ? e.message : String(e))
     el('face-mode').textContent =
       'リグを読み込めなかったため静止表情で表示しています（ふれあいは「ふれあい」ボタンから）'
+    rigLoading = false
+    refreshArrival()
   }
 }
 // 自動計測用（同一ページの状態を読むだけ）。
@@ -2572,6 +2681,9 @@ Object.assign(window, {
     history,
     addHistory,
     setBubble,
+    // 検証用: 次の機会に指定のしぐさを出す（出してよい条件は通常どおり判定する）。
+    idleActs: idleActNames,
+    playIdle: (act: IdleAct) => idleDirector.force(act),
     syncNow: () => syncTranscript(),
     debug: () => ({
       pointerDown,

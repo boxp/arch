@@ -7,6 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "TZ=UTC vitest run",
+    "test:mutation": "TZ=UTC mutator",
     "lint": "biome lint --error-on-warnings .",
     "format:check": "biome format .",
     "check": "biome ci --error-on-warnings .",
@@ -14,6 +15,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.7",
+    "@mizchi/mutator": "0.3.0",
     "@types/node": "26.6.6",
     "@types/web-push": "3.6.4",
     "typescript": "7.0.2",
