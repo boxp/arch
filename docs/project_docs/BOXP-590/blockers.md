@@ -12,7 +12,6 @@ Renovate の通常の PR と CI に戻す。
 
 | ID | 対象 (manager / file / package) | 抑止範囲 | 止めずに続ける更新 | 阻害の根拠 | 解除条件 (watch の監視先) | 抑止時に閉じた PR |
 | --- | --- | --- | --- | --- | --- | --- |
-| PY-315 | pyenv / `ansible/.python-version` / `python` | 3.15 以上 | 3.14.x | ansible 14.x が依存する ansible-core 2.21 は、Python 3.15 で削除された `dataclasses._is_type` を import 時に参照するため落ちる（#13804 の lint と plan が失敗）。Python 3.15 に対応する ansible-core 2.22 は、community `ansible` 15 の rc にしか入っていない | PyPI `ansible` の最新安定版が ansible-core 2.22 以上を要求し、かつその ansible-core が Python 3.15 の classifier を持つこと | #13804 |
 | TS7-PORTFOLIO | npm / `apps/portfolio/package.json` / `typescript` | 7.0.0 以上 | 5.x と 6.x | `astro check` が使う `@astrojs/check` 0.9.12 の peerDependencies が `typescript: ^5.0.0 \|\| ^6.0.0` のため、Renovate が lock を更新できない（#13832 の build が `npm ci` で失敗） | npm `@astrojs/check@latest` の peerDependencies.typescript が 7 系を許可すること | #13832 |
 | K8S-HOLD（旧 K8S-137） | custom.regex / `ansible/playbooks/**` / `kubernetes/kubernetes`, `cri-o/cri-o` | 現行版より新しい版すべて（kubernetes `<=1.36.5`、cri-o `<=1.36.6` のみ許可）。2026-11-17 の Owner 選択 B で 1.36.x patch も今回は見送る | なし（クラスタ版は Owner 承認まで固定） | クラスタ本体の更新は、minor も patch も手動 upgrade（`upgrade-k8s.yml`）の承認境界。main への merge で apply-ansible が本番に反映され得るうえ、`kubernetes_package_version` / `crio_package_version` は Renovate の管理外なので test も失敗する | Owner が patch または minor の upgrade を承認すること（その票で上限を上げるか rule を削除する）。watch は main の版、1.36 の EOL（endoflife.date）、1.36 の最新 patch を毎日読み、EOL の 90 日前に 1 回だけ通知する。main の版が固定値から変わったら、rule の上限更新が必要だと通知する | #13440（1.37→1.36.6/1.36.8 patch。Owner 選択 B で Close） |
 
@@ -35,3 +34,9 @@ Renovate の通常の PR と CI に戻す。
 - 対応として、`allowedVersions` を main の現行版（kubernetes 1.36.5 / cri-o 1.36.6）以下に固定した。
   BOXP-459 TD-04 の Dashboard 承認 rule はそのまま残す。上限を上げたあとに PR を作るかどうかは、従来どおり Owner がチェックして決める。
 - 本番クラスタへの upgrade と Ansible の適用は行っていない。
+
+## 解除済み
+
+| ID | 解除日 | 解除の根拠 | 対応 |
+| --- | --- | --- | --- |
+| PY-315 | 2026-11-18 | PyPI `ansible` 15.0.0 が GA になり `ansible-core~=2.22.0` を要求する。ansible-core 2.22.0 は Python 3.15 の classifier を持つ | BOXP-609 で `[PY-315]` rule を削除し、同じ PR で `ansible/.python-version` を 3.15 に、`ansible/uv.lock` を ansible 15.0.0 / ansible-core 2.22.0 に更新した（#13804 の再開分） |
