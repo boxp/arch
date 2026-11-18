@@ -37,7 +37,9 @@ const item = (requestId: string, extra: Record<string, unknown> = {}) => ({
 })
 const ctx = (seen: Seen, trackingId = '', canFollow = true) => ({ seen, trackingId, canFollow })
 
-test('同じ履歴を 2 回流しても 2 回目は何も足さない', () => {
+// BOXP-613: 旧「この端末が既に出した発言・返答は足さない」は、planSync 自身が同じ markUser/markReply を使うため
+// 変異の検出が本テストに完全に包含されていた（kill-matrix）。送信側の印付けも同じ経路である旨をここへ統合した。
+test('同じ履歴を 2 回流しても、この端末が既に出した発言・返答も、2 回目は何も足さない', () => {
   const seen = new Seen(),
     items = [item('a'), item('b')]
   expect(planSync(items, null, ctx(seen)).map((x) => [x.op, 'id' in x ? x.id : ''])).toEqual([
@@ -47,13 +49,10 @@ test('同じ履歴を 2 回流しても 2 回目は何も足さない', () => {
     ['reply', 'b'],
   ])
   expect(planSync(items, null, ctx(seen))).toEqual([])
-})
-
-test('この端末が既に出した発言・返答は足さない', () => {
-  const seen = new Seen()
-  seen.markUser('a')
-  seen.markReply('a')
-  expect(planSync([item('a')], null, ctx(seen))).toEqual([])
+  const sent = new Seen()
+  sent.markUser('c')
+  sent.markReply('c')
+  expect(planSync([item('c')], null, ctx(sent))).toEqual([])
 })
 
 test('この端末が追っている依頼は発言だけ足し、返答・終了は照会側に任せる', () => {
@@ -178,4 +177,81 @@ test('履歴の各フィールドは型と長さの上限を検証する', () =>
     { ...base, active: { requestId: '', kind: 'text' } },
   ])
     expect(validateTranscript(bad)).toBeNull()
+})
+
+// BOXP-613: 変異テストで、検証を通った履歴の中身（任意フィールドの写し・許す状態・views 件数境界）と、
+// 印の上限・latest・stale の判定がどのテストにも観測されていなかった。
+test('検証を通った履歴は値をそのまま写し、無いフィールドは足さない', () => {
+  const full = {
+    requestId: 'a',
+    at: 1,
+    current: true,
+    status: 'failed',
+    text: '発言',
+    attachments: ['a.pdf'],
+    error: 'cancelled',
+    reply: { text: '返答', at: 2, views: Array(50).fill({}) },
+  }
+  const bare = { requestId: 'b', at: 3, current: false, status: 'pending' }
+  expect(
+    validateTranscript({
+      rev: 'r',
+      sessionStartedAt: 5,
+      items: [full, bare],
+      active: { requestId: 'b', kind: 'reply' },
+    }),
+  ).toStrictEqual({
+    rev: 'r',
+    sessionStartedAt: 5,
+    items: [{ ...full, reply: { text: '返答', at: 2, views: [] } }, bare],
+    active: { requestId: 'b', kind: 'reply' },
+  })
+  for (const status of ['pending', 'done', 'failed', 'unknown'])
+    expect(
+      validateTranscript({ rev: 'r', sessionStartedAt: 1, items: [{ ...bare, status }], active: null }),
+    ).not.toBeNull()
+  expect(
+    validateTranscript({ rev: 'r', sessionStartedAt: 1, items: [], active: { requestId: 'a', kind: 'text' } }),
+  ).toEqual({ rev: 'r', sessionStartedAt: 1, items: [], active: { requestId: 'a', kind: 'text' } })
+  // 51 件以上の履歴（各項目は正しくても）、開始時刻が無い、items が配列でない応答は捨てる。
+  expect(
+    validateTranscript({ rev: 'r', sessionStartedAt: 1, items: Array(50).fill(bare), active: null }),
+  ).not.toBeNull()
+  expect(validateTranscript({ rev: 'r', sessionStartedAt: 1, items: Array(51).fill(bare), active: null })).toBeNull()
+  expect(validateTranscript({ rev: 'r', items: [bare], active: null })).toBeNull()
+  expect(validateTranscript({ rev: 'r', sessionStartedAt: 1, items: { 0: bare, length: 1 }, active: null })).toBeNull()
+})
+
+test('印は直近 400 件まで覚え、溢れたら古いものから忘れる', () => {
+  const seen = new Seen()
+  for (let i = 0; i < 400; i++) expect(seen.markUser(String(i))).toBe(true)
+  expect(seen.markUser('0')).toBe(false)
+  expect(seen.markUser('400')).toBe(true)
+  // 最古の 1 件だけを忘れ、他は覚えたまま。
+  expect(seen.markUser('1')).toBe(false)
+  expect(seen.markUser('0')).toBe(true)
+})
+
+test('latest は最後の項目の返答だけに付き、終わった依頼の返答は出さない', () => {
+  const ops = planSync([item('a'), item('b'), item('c', { status: 'failed' })], null, ctx(new Seen()))
+  expect(ops.filter((x) => x.op === 'reply').map((x) => [x.id, 'latest' in x && x.latest])).toEqual([
+    ['a', false],
+    ['b', false],
+  ])
+  // views を持たない返答は空の views として出す。
+  expect(planSync([item('d', { reply: { text: '返答', at: 1 } })], null, ctx(new Seen())).at(-1)).toMatchObject({
+    op: 'reply',
+    views: [],
+    latest: true,
+  })
+  expect(ops.filter((x) => x.op === 'user').map((x) => 'text' in x && x.text)).toEqual(['発言:a', '発言:b', '発言:c'])
+})
+
+test('以前の会話の最後の依頼が替わるたびに stale を知らせ、現在の会話や進行中なら知らせない', () => {
+  const seen = new Seen()
+  expect(planSync([item('a', { current: false })], null, ctx(seen)).at(-1)).toEqual({ op: 'stale', id: 'a' })
+  expect(planSync([item('b', { current: false })], null, ctx(seen)).at(-1)).toEqual({ op: 'stale', id: 'b' })
+  expect(planSync([item('c')], null, ctx(seen)).map((x) => x.op)).not.toContain('stale')
+  const pending = item('d', { current: false, status: 'pending', reply: undefined })
+  expect(planSync([pending], null, ctx(seen)).map((x) => x.op)).not.toContain('stale')
 })
