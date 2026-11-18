@@ -534,155 +534,59 @@
       (is (not (:hold? (decide v1 "continue" "x"))))
       (is (not (:hold? (decide (acked v1) "done" "x"))))
       (is (= ["CD-02"] (:blocking-ids (decide (str/replace (acked v1) "do not touch" "never touch") "done" "x")))))
-    (testing "v1: an unreadable line holds even after an acknowledgement"
-      (is (= ["CD-09"] (:blocking-ids (decide (acked (str/replace v1 "- CD-03【要確認】" "- CD-09【変】x\n- CD-03【要確認】")) "done" "x")))))
+    (testing "v1: an unreadable line holds a done result even after an acknowledgement"
+      (is (= ["CD-09:invalid"] (:blocking-ids (decide (acked (str/replace v1 "- CD-03【要確認】" "- CD-09【変】x\n- CD-03【要確認】")) "done" "x")))))
     (testing "legacy: a change during the run holds until it is acknowledged"
       (let [start (:rev (task-board-todos/ticket-view conditions-ticket))
             changed (str/replace conditions-ticket "do not touch" "never touch")]
         (is (not (:hold? (decide conditions-ticket "done" start))))
         (is (:hold? (decide changed "done" start)))
         (is (not (:hold? (decide (acked changed) "done" start))))))
-    (testing "legacy: an unreadable line holds even after the new revision is acknowledged, whenever it was written"
+    (testing "legacy: an unreadable line holds a done result even after the new revision is acknowledged, whenever it was written; blocked hands it to the Owner"
       (let [broken (str/replace conditions-ticket "- CD-03【要確認】" "- CD-09【変】x\n- CD-03【要確認】")
             start (:rev (task-board-todos/ticket-view conditions-ticket))]
-        (is (= ["CD-09"] (:blocking-ids (decide (acked broken) "done" start))))
-        (is (:hold? (decide (acked broken) "blocked" start)))
+        (is (= ["CD-09:invalid"] (:blocking-ids (decide (acked broken) "done" start))))
+        (is (not (:hold? (decide (acked broken) "blocked" start))))
         (is (:hold? (decide broken "done" (:rev (task-board-todos/ticket-view broken)))))
         (is (not (:hold? (decide (acked broken) "continue" start))))))))
-(deftest conditions-violations
-  (let [items task-board-todos/parse-conditions
-        start (items conditions-ticket)
-        check (fn [text] (task-board-todos/condition-violations start (items text)))
+(deftest conditions-problems
+  ;; Judged from the ticket as it stands, with nothing to compare against.
+  (let [check (fn [text] (task-board-todos/condition-problems (task-board-todos/parse-conditions text)))
         swap (fn [a b] (str/replace conditions-ticket a b))
-        cancel (fn [id text origin by] (swap (str "- " id "【" (if (= id "CD-01") "承認" "制約") "】" text "\n  - 由来: " origin "\n")
-                                             (str "- " id "【取消】" text "\n  - 由来: " origin "\n  - 取消理由: 取消 x\n  - 取消者: " by "\n")))]
+        plus (fn [item] (swap "\n## Plan" (str item "\n## Plan")))]
     (is (= [] (check conditions-ticket)))
-    (testing "what the rules allow"
-      (is (= [] (check (swap "\n## Plan" "- CD-08【制約】new limit\n  - 由来: claude-fable\n\n## Plan"))))
-      (is (= [] (check (swap "\n## Plan" "- CD-08【承認】deploy\n  - 由来: hermes-agent reply_id=r2\n\n## Plan"))))
-      (is (= [] (check (swap "\n## Plan" "- CD-08【承認】deploy\n  - 由来: boxp event=e1\n\n## Plan"))))
-      (is (= [] (check (cancel "CD-02" "do not touch docker/hermes-agent" "claude-fable@BOXP-546" "claude-fable@BOXP-546"))))
-      (is (= [] (check (cancel "CD-02" "do not touch docker/hermes-agent" "claude-fable@BOXP-546" "hermes-agent reply_id=r2"))))
-      (is (= [] (check (cancel "CD-01" "design only" "hermes-agent reply_id=r1" "hermes-agent reply_id=r2")))))
-    (testing "an item is never deleted or rewritten"
-      (is (= ["CD-02:removed"] (check (swap "- CD-02【制約】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n" ""))))
-      (is (= ["CD-02:changed-without-cancel"] (check (swap "do not touch docker/hermes-agent" "do not touch docker"))))
-      (is (= ["CD-03:changed-without-cancel"] (check (swap "【要確認】inbox" "【制約】inbox"))))
-      (is (= ["CD-01:owner-item-changed"] (check (swap "design only" "design and deploy"))))
-      (is (= ["CD-01:owner-item-changed"] (check (swap "reply_id=r1\n- CD-02" "reply_id=r9\n- CD-02"))))
-      (is (= ["CD-04:owner-item-changed"] (check (swap "- CD-04【取消】once a day" "- CD-04【制約】once a day")))))
-    (testing "a cancellation keeps the text and the origin, and is made by the registrant or the Owner path"
-      (is (= ["CD-01:owner-item-changed"] (check (cancel "CD-01" "design only" "hermes-agent reply_id=r1" "claude-fable"))))
-      (is (= ["CD-02:changed-without-cancel"] (check (cancel "CD-02" "do not touch docker/hermes-agent" "claude-fable@BOXP-546" "claude-fable"))))
-      (is (= ["CD-02:changed-without-cancel"]
-             (check (swap "- CD-02【制約】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n"
-                          "- CD-02【取消】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n"))))
-      (is (= ["CD-02:changed-without-cancel"]
-             (check (swap "- CD-02【制約】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n"
-                          "- CD-02【取消】do not touch docker/hermes-agent\n  - 取消者: hermes-agent\n"))))
-      (testing "and carries its reason"
-        (is (= ["CD-02:changed-without-cancel"]
-               (check (swap "- CD-02【制約】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n"
-                            "- CD-02【取消】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n  - 取消者: hermes-agent reply_id=r2\n"))))
-        (is (= ["CD-02:changed-without-cancel"]
-               (check (swap "- CD-02【制約】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n"
-                            "- CD-02【取消】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n  - 取消理由:\n  - 取消者: hermes-agent reply_id=r2\n"))))))
-    (testing "an approval is registered by the Owner path with the reply it came from"
-      (is (= ["CD-08:approval-without-owner-reply"] (check (swap "\n## Plan" "- CD-08【承認】deploy\n  - 由来: claude-fable reply_id=r2\n\n## Plan"))))
-      (is (= ["CD-08:approval-without-owner-reply"] (check (swap "\n## Plan" "- CD-08【承認】deploy\n  - 由来: hermes-agent\n\n## Plan"))))
-      (is (= ["CD-08:approval-without-owner-reply"] (check (swap "\n## Plan" "- CD-08【承認】deploy\n\n## Plan"))))
-      (is (= ["CD-02:approval-without-owner-reply" "CD-02:changed-without-cancel"] (check (swap "- CD-02【制約】" "- CD-02【承認】"))))
-      (testing "also when it was already there at the start"
-        (let [bad (swap "\n## Plan" "- CD-08【承認】deploy\n  - 由来: claude-fable reply_id=r2\n\n## Plan")]
-          (is (= ["CD-08:approval-without-owner-reply"] (task-board-todos/condition-violations (items bad) (items bad)))))))
-    (testing "an unreadable line is reported once, when it appears"
-      (let [broken (swap "- CD-03【要確認】" "- CD-03【変】")]
-        (is (= ["CD-03:invalid"] (check broken)))
-        (is (= [] (task-board-todos/condition-violations (items broken) (items broken))))))
-    (testing "a line that was unreadable at the start stays as it was: it cannot be cancelled, repaired or dropped during the run"
-      (let [broken (swap "- CD-03【要確認】inbox shape stays" "- CD-03【変】inbox shape stays")
-            from (fn [a b] (task-board-todos/condition-violations (items a) (items b)))
-            dup (swap "- CD-03【要確認】" "- CD-02【制約】second line\n- CD-03【要確認】")]
-        (is (= ["CD-03:unreadable-item-changed"]
-               (from broken (str/replace broken "- CD-03【変】inbox shape stays\n  - 由来: claude-fable\n"
-                                         "- CD-03【取消】inbox shape stays\n  - 由来: claude-fable\n  - 取消理由: 取消 x\n  - 取消者: claude-fable\n"))))
-        (is (= ["CD-03:unreadable-item-changed"] (from broken conditions-ticket)))
-        (is (= ["CD-03:unreadable-item-changed"] (from broken (str/replace broken "inbox shape stays" "inbox"))))
-        (is (= [] (from broken broken)))
-        (is (= ["CD-03:removed"] (from broken (str/replace broken "- CD-03【変】inbox shape stays\n  - 由来: claude-fable\n" ""))))
-        (testing "a repeated id: dropping or cancelling one of the lines is a change"
-          (is (= [] (from dup dup)))
-          (is (= ["CD-02:unreadable-item-changed"] (from dup conditions-ticket)))
-          (is (= ["CD-02:unreadable-item-changed"] (from dup (str/replace dup "- CD-02【制約】second line" "- CD-02【取消】second line")))))))
-    (testing "the gate holds done and blocked on a violation in both modes, and skips runs that recorded no start"
-      (let [deleted (swap "- CD-01【承認】design only\n  - 由来: hermes-agent reply_id=r1\n" "")
-            decide (fn [text result start-conditions]
-                     (task-board-todos/gate-decision {:view (task-board-todos/ticket-view text)
-                                                      :start-rev (:rev (task-board-todos/ticket-view text))
-                                                      :start-conditions start-conditions :result result}))
-            stored (mapv #(select-keys % [:id :kind :text :children]) start)]
-        (is (= ["CD-01:removed"] (:blocking-ids (decide deleted "done" stored))))
-        (is (:hold? (decide deleted "blocked" stored)))
-        (is (not (:hold? (decide deleted "continue" stored))))
-        (is (not (:hold? (decide deleted "done" nil))))
-        (is (not (:hold? (decide conditions-ticket "done" stored))))
-        (is (some #{"CD-01:removed"} (:blocking-ids (decide (str/replace deleted "status: ready" "todo_contract: v1") "done" stored))))))))
-(deftest conditions-carried-over
-  ;; A run that deleted an item is held, but the next run must not take the ticket
-  ;; without the item as its start: the first run's start stays the baseline.
-  (let [items (fn [text] (mapv #(select-keys % [:id :kind :text :children :line]) (task-board-todos/parse-conditions text)))
-        swap (fn [a b] (str/replace conditions-ticket a b))
-        start (items conditions-ticket)
-        deleted (swap "- CD-01【承認】design only\n  - 由来: hermes-agent reply_id=r1\n" "")
-        carried (fn [m] (task-board-todos/carried-conditions (merge {:prev-start {:conditions start} :accepted nil} m)))
-        held {:violations ["CD-01:removed"]}]
-    (testing "the previous start is kept while the deletion stands, whatever the result of that run was"
-      (let [c (carried {:prev-end held :current (items deleted)})]
-        (is (= ["CD-01:removed"] (:violations c)))
-        (is (= start (:conditions c)))
-        (is (= ["CD-01:removed"] (task-board-todos/condition-violations (:conditions c) (items deleted))))))
-    (testing "a run that never recorded its end is compared anyway"
-      (is (= ["CD-01:removed"] (:violations (carried {:prev-end nil :current (items deleted)}))))
-      (is (nil? (carried {:prev-end nil :current start}))))
-    (testing "putting the item back releases it"
-      (is (nil? (carried {:prev-end held :current start}))))
-    (testing "a run that ended clean is not compared: the Owner path may repair a line between runs"
-      (let [broken (swap "- CD-03【要確認】" "- CD-03【変】")]
-        (is (nil? (task-board-todos/carried-conditions {:prev-start {:conditions (items broken)} :prev-end {:violations []}
-                                                        :accepted nil :current start})))))
-    (testing "items registered since are added to the carried baseline, so deleting one of them is seen too"
-      (let [added (str/replace deleted "\n## Plan" "- CD-08【制約】new limit\n  - 由来: claude-fable\n\n## Plan")
-            c (carried {:prev-end held :current (items added)})]
-        (is (= (conj (mapv :id start) "CD-08") (mapv :id (:conditions c))))
-        (is (= ["CD-01:removed" "CD-08:removed"] (task-board-todos/condition-violations (:conditions c) (items deleted))))))
-    (testing "only an acceptance made after the previous run ended starts a new baseline"
-      (is (nil? (carried {:prev-end held :accepted "2026-11-18T08:00:00Z" :current (items deleted)})))
-      (is (some? (carried {:prev-end (assoc held :accepted "2026-11-18T08:00:00Z") :accepted "2026-11-18T08:00:00Z" :current (items deleted)})))
-      (is (nil? (carried {:prev-end nil :prev-start {:conditions start :accepted "a"} :accepted "b" :current (items deleted)}))))
-    (testing "a run from before Conditions were recorded carries nothing"
-      (is (nil? (task-board-todos/carried-conditions {:prev-start {:rev "x"} :prev-end nil :accepted nil :current (items deleted)}))))))
-(deftest conditions-accept-cli
-  (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-21.md")
-        run-as (fn [worker? & args]
-                 (:exit @(p/process (into ["env" "-u" "CODEX_TASK_BOARD_RUN_ID"] (concat (when worker? ["CODEX_TASK_BOARD_RUN_ID=run-1"]) ["bb" module "conditions" "accept" "BOXP-21" "--vault" d] args))
-                                    {:out :string :err :string})))
-        text #(slurp (str path))
-        view #(task-board-todos/ticket-view (text))]
-    (fs/create-dirs (fs/parent path))
-    (spit (str path) conditions-ticket)
-    (let [before (text) rev (:rev (view))]
-      (testing "a worker, or a source outside the Owner path, cannot accept"
-        (is (= 4 (run-as true "--source" "hermes-agent" "--reason" "ok")))
-        (is (= 4 (run-as false "--source" "claude-fable" "--reason" "ok")))
-        (is (not (zero? (run-as false "--source" "hermes-agent"))))
-        (is (= before (text)))
-        (is (nil? (task-board-todos/conditions-accepted (text)))))
-      (testing "the Owner path accepts outside a run: the section and the revision stay, the time and a note are recorded"
-        (is (zero? (run-as false "--source" "hermes-agent" "--reason" "CD-03 repaired" "--reply-id" "r9")))
-        (is (re-matches #"\d{4}-\d\d-\d\dT.*Z" (task-board-todos/conditions-accepted (text))))
-        (is (= (task-board-todos/parse-conditions before) (task-board-todos/parse-conditions (text))))
-        (is (= rev (:rev (view))))
-        (is (re-find #"(?m)^- \S+ UTC \[hermes-agent\]: Conditions accept hermes-agent reply_id=r9 CD-03 repaired$" (text)))))))
+    (is (= [] (check sample)))
+    (testing "an approval names an Owner path source and the Owner's reply"
+      (is (= [] (check (plus "- CD-08【承認】deploy\n  - 由来: hermes-agent reply_id=r2\n"))))
+      (is (= [] (check (plus "- CD-08【承認】deploy\n  - 由来: boxp event=e1\n"))))
+      (is (= ["CD-08:approval-without-owner-reply"] (check (plus "- CD-08【承認】deploy\n  - 由来: claude-fable reply_id=r2\n"))))
+      (is (= ["CD-08:approval-without-owner-reply"] (check (plus "- CD-08【承認】deploy\n  - 由来: hermes-agent\n"))))
+      (is (= ["CD-08:approval-without-owner-reply"] (check (plus "- CD-08【承認】deploy\n"))))
+      (is (= ["CD-02:approval-without-owner-reply"] (check (swap "- CD-02【制約】" "- CD-02【承認】")))))
+    (testing "a constraint, an unconfirmed item and a cancelled approval need no reply"
+      (is (= [] (check (plus "- CD-08【制約】new limit\n  - 由来: claude-fable\n"))))
+      (is (= [] (check (swap "- CD-01【承認】design only" "- CD-01【取消】design only")))))
+    (testing "an unreadable line: bad form, empty text, every line of a repeated id"
+      (is (= ["CD-03:invalid"] (check (swap "- CD-03【要確認】" "- CD-03【変】"))))
+      (is (= ["CD-03:invalid"] (check (swap "- CD-03【要確認】inbox shape stays" "- CD-03【要確認】"))))
+      (is (= ["CD-02:invalid"] (check (swap "- CD-03【要確認】" "- CD-02【制約】second line\n- CD-03【要確認】")))))
+    (testing "the gate holds a done result on them in both modes, acknowledged or not; continue and blocked pass"
+      (let [bad (plus "- CD-08【承認】deploy\n  - 由来: claude-fable\n")
+            acked (fn [text] (let [view (task-board-todos/ticket-view text)]
+                               (-> text
+                                   (task-board-todos/set-fm "todo_ack_rev" (:rev view))
+                                   (task-board-todos/set-fm "todo_ack_items" (str/join "," (map (fn [[k v]] (str k ":" (subs v 0 8))) (:hashes view)))))))
+            decide (fn [text result] (task-board-todos/gate-decision {:view (task-board-todos/ticket-view text)
+                                                                      :start-rev (:rev (task-board-todos/ticket-view text))
+                                                                      :result result}))]
+        (doseq [text [(acked bad) (acked (str/replace bad "status: ready" "todo_contract: v1"))]]
+          (is (= ["CD-08:approval-without-owner-reply"] (:blocking-ids (decide text "done"))))
+          (is (:hold? (decide text "done")))
+          (is (not (:hold? (decide text "continue"))))
+          (is (not (:hold? (decide text "blocked")))))))
+    (testing "stage 1 compares with no earlier reading: a deleted or rewritten item is not a problem here"
+      (is (= [] (check (swap "- CD-01【承認】design only\n  - 由来: hermes-agent reply_id=r1\n" ""))))
+      (is (= [] (check (swap "do not touch docker/hermes-agent" "do not touch docker")))))))
 (deftest conditions-cli
   (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-21.md")
         ;; The suite itself may run inside a Task Board run: the worker case is set explicitly.
@@ -709,7 +613,7 @@
         (is (= before (text))))
       (is (zero? (worker "conditions" "add" "--kind" "要確認" "--text" "inbox shape stays" "--source" "codex@BOXP-9")))
       (is (= ["CD-01" "CD-02"] (mapv :id (items)))))
-    (testing "an approval needs the Owner path, the Owner's reply, and is not registered from inside a run"
+    (testing "an approval needs an Owner path source and the Owner's reply, and is refused from a process that has the run variable"
       (let [before (text)]
         (is (= 4 (outside "conditions" "add" "--kind" "承認" "--text" "deploy" "--source" "claude-fable" "--reply-id" "r1")))
         (is (= 4 (outside "conditions" "add" "--kind" "承認" "--text" "deploy" "--source" "hermes-agent")))
@@ -725,7 +629,7 @@
       (is (zero? (outside "conditions" "add" "--kind" "制約" "--text" "not a stop approval" "--source" "hermes-agent" "--event" "e1")))
       (is (= :approval (:kind (item "CD-03"))))
       (is (task-board-todos/owner-reply? (item "CD-03"))))
-    (testing "cancelling: the registrant or the Owner path; an Owner item only by the Owner path outside a run"
+    (testing "cancelling: the registrant or an Owner path source; an Owner item by an Owner path source from a process without the run variable"
       (let [before (text)]
         (is (= 4 (worker "conditions" "cancel" "CD-03" "--reason" "x" "--source" "claude-fable")))
         (is (= 4 (worker "conditions" "cancel" "CD-03" "--reason" "x" "--source" "hermes-agent")))
@@ -737,15 +641,15 @@
         (is (not (zero? (worker "conditions" "cancel" "CD-01" "--source" "claude-fable"))))
         (is (not (zero? (worker "conditions" "cancel" "CD-99" "--reason" "x" "--source" "claude-fable"))))
         (is (= before (text))))
-      (let [start (items)]
+      (do
         (is (zero? (worker "conditions" "cancel" "CD-01" "--reason" "superseded" "--reason-kind" "置換" "--replaced-by" "CD-04" "--source" "claude-fable")))
         (is (zero? (outside "conditions" "cancel" "CD-03" "--reason" "withdrawn" "--source" "hermes-agent" "--reply-id" "r2")))
         (is (zero? (outside "conditions" "cancel" "CD-02" "--reason" "confirmed not in force" "--reason-kind" "履行済み" "--source" "boxp")))
         (is (= [:cancelled :cancelled :cancelled :constraint] (mapv :kind (items))))
         (is (= ["  - 由来: claude-fable （Notes 2026-11-14 00:46:47）" "  - 取消理由: 置換（CD-04） superseded" "  - 取消者: claude-fable"] (:children (item "CD-01"))))
         (is (= "  - 取消者: hermes-agent reply_id=r2" (last (:children (item "CD-03")))))
-        (testing "what the commands write passes the check the runner applies"
-          (is (= [] (task-board-todos/condition-violations start (items)))))
+        (testing "what the commands write is readable and leaves nothing for the gate to hold on"
+          (is (= [] (task-board-todos/condition-problems (items)))))
         (is (= 4 (worker "conditions" "cancel" "CD-01" "--reason" "again" "--source" "claude-fable")))))
     (testing "list prints the section's items; registering changes the revision and needs no TODO contract"
       (let [out (:out (run-as false "conditions" "list" "BOXP-21" "--vault" d))]
@@ -757,6 +661,12 @@
         (is (not= rev (:rev (task-board-todos/ticket-view (text)))))
         (is (zero? (:exit (run-as true "ack" "BOXP-21" "--vault" d "--rev" (:rev (task-board-todos/ticket-view (text)))))))
         (is (every? :received? (:conditions (task-board-todos/ticket-view (text)))))))
+    (testing "an unreadable line is not cancelled by anyone through the command: the line stays as written"
+      (spit (str path) (str/replace (text) "- CD-04【制約】" "- CD-04【変】"))
+      (let [before (text)]
+        (is (= 4 (outside "conditions" "cancel" "CD-04" "--reason" "x" "--source" "hermes-agent")))
+        (is (= 4 (worker "conditions" "cancel" "CD-04" "--reason" "x" "--source" "claude-fable")))
+        (is (= before (text)))))
     (testing "a ticket with no working section still gets the section"
       (spit (str path) "---\nstatus: ready\n---\n# T\n\n## Summary\n\nhello\n")
       (is (zero? (worker "conditions" "add" "--kind" "制約" "--text" "x" "--source" "claude-fable")))
@@ -777,86 +687,72 @@
                   "--source claude-fable@BOXP-21"
                   "conditions cancel BOXP-21 CD-NN"
                   "Conditions grant no permission"
-                  "You cannot register 【承認】 or cancel an item that came from the Owner"]]
+                  "the commands refuse them from your run"
+                  "do not delete or rewrite an item by hand"
+                  "merge and deploy are refused and a done result is held"]]
       (is (str/includes? with-items part) part))))
 (deftest conditions-hook
-  ;; An acknowledgement must not open merge or deploy while Conditions stand changed outside the rules.
+  ;; An acknowledgement does not open merge or deploy while an unreadable line or an
+  ;; approval without the Owner's reply stands in Conditions.
   (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-22.md") dir (fs/path d "run")
         hook (fn [event input] (:out @(p/process ["bb" module "hook" "--vault" d "--ticket" "BOXP-22" "--run-dir" (str dir) "--event" event] {:in input :out :string :err :string})))
         merge "{\"tool_input\":{\"command\":\"gh pr merge 1 --squash\"}}"
         start-view (task-board-todos/ticket-view conditions-ticket)
         ack! (fn [] (let [rev (:rev (task-board-todos/ticket-view (slurp (str path))))]
-                      (is (zero? (:exit @(p/process ["bb" module "ack" "BOXP-22" "--vault" d "--rev" rev] {:out :string :err :string}))))))
-        deleted (str/replace conditions-ticket "- CD-01【承認】design only\n  - 由来: hermes-agent reply_id=r1\n" "")]
+                      (is (zero? (:exit @(p/process ["bb" module "ack" "BOXP-22" "--vault" d "--rev" rev] {:out :string :err :string}))))))]
     (fs/create-dirs (fs/parent path)) (fs/create-dirs dir)
     (spit (str path) conditions-ticket)
-    (spit (str (fs/path dir "todo-start.edn"))
-          (pr-str {:rev (:rev start-view) :mode :legacy :conditions (mapv #(select-keys % [:id :kind :text :children]) (:conditions start-view))}))
+    (spit (str (fs/path dir "todo-start.edn")) (pr-str {:rev (:rev start-view) :mode :legacy}))
     (is (= "" (hook "pre" merge)))
-    (testing "an Owner item deleted by hand refuses merge, also after the new revision is acknowledged"
-      (spit (str path) deleted)
-      (is (str/includes? (hook "pre" merge) "\"permissionDecision\":\"deny\""))
-      (ack!)
-      (let [out (hook "pre" merge)]
-        (is (str/includes? out "\"permissionDecision\":\"deny\""))
-        (is (str/includes? out "Conditions changed outside the rules during this run: CD-01:removed")))
-      (is (= "" (hook "pre" "{\"tool_input\":{\"command\":\"git status\"}}")))
-      (is (str/includes? (hook "stop" "{}") "\"decision\":\"block\"")))
-    (testing "putting the item back opens it again"
-      (spit (str path) (str/replace (slurp (str path)) "- CD-02【制約】" "- CD-01【承認】design only\n  - 由来: hermes-agent reply_id=r1\n- CD-02【制約】"))
-      (ack!)
-      (is (= "" (hook "pre" merge))))
-    (testing "a run that recorded no Conditions at its start is not compared"
-      (spit (str path) deleted)
-      (ack!)
-      (spit (str (fs/path dir "todo-start.edn")) (pr-str {:rev (:rev start-view) :mode :legacy}))
-      (is (= "" (hook "pre" merge))))))
-(deftest conditions-registered-during-the-run
-  ;; An item registered after the start is not in the start record. From its first
-  ;; sighting at a tool boundary it is held to the same rules as the others.
-  (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-23.md") dir (fs/path d "run")
-        hook (fn [event input] (:out @(p/process ["bb" module "hook" "--vault" d "--ticket" "BOXP-23" "--run-dir" (str dir) "--event" event] {:in input :out :string :err :string})))
-        merge "{\"tool_input\":{\"command\":\"gh pr merge 1 --squash\"}}"
-        start-view (task-board-todos/ticket-view conditions-ticket)
-        add! (fn [& args] (is (zero? (:exit @(p/process (into ["bb" module "conditions" "add" "BOXP-23" "--vault" d] args) {:out :string :err :string :extra-env {"CODEX_TASK_BOARD_RUN_ID" ""}})))))
-        ack! (fn [] (let [rev (:rev (task-board-todos/ticket-view (slurp (str path))))]
-                      (is (zero? (:exit @(p/process ["bb" module "ack" "BOXP-23" "--vault" d "--rev" rev] {:out :string :err :string}))))))
-        ids (fn [] (mapv :id (:conditions (task-board-todos/run-start (str dir)))))
-        edit! (fn [f] (spit (str path) (f (slurp (str path)))))]
-    (fs/create-dirs (fs/parent path)) (fs/create-dirs dir)
-    (spit (str path) (str/replace conditions-ticket "BOXP-22" "BOXP-23"))
-    (spit (str (fs/path dir "todo-start.edn"))
-          (pr-str {:rev (:rev start-view) :mode :legacy :conditions (mapv #(select-keys % [:id :kind :text :children :line]) (:conditions start-view))}))
-    (let [before (ids)]
-      (add! "--kind" "承認" "--text" "no external transmission" "--source" "hermes-agent" "--reply-id" "r9")
-      (hook "post" "{}")
-      (ack!)
-      (is (= (inc (count before)) (count (ids))) "the first sighting joins the baseline")
-      (hook "post" "{}")
-      (is (= (inc (count before)) (count (ids))) "and is recorded once")
-      (is (= "" (hook "pre" merge))))
-    (let [id (last (ids))]
-      (testing "rewriting an Owner item registered during the run refuses merge"
-        (edit! #(str/replace % "no external transmission" "external transmission allowed"))
+    (doseq [[label broken problem]
+            [["an approval without the Owner's reply"
+              (str/replace conditions-ticket "\n## Plan" "- CD-08【承認】deploy\n  - 由来: claude-fable\n\n## Plan")
+              "CD-08:approval-without-owner-reply"]
+             ["an unreadable line" (str/replace conditions-ticket "- CD-03【要確認】" "- CD-03【変】") "CD-03:invalid"]]]
+      (testing (str label " refuses merge, also after the new revision is acknowledged; other commands and stopping pass")
+        (spit (str path) broken)
+        (is (str/includes? (hook "pre" merge) "\"permissionDecision\":\"deny\""))
         (ack!)
         (let [out (hook "pre" merge)]
           (is (str/includes? out "\"permissionDecision\":\"deny\""))
-          (is (str/includes? out (str id ":owner-item-changed")))))
-      (testing "so does deleting it, and the gate holds a done result"
-        (edit! #(str/replace % (re-pattern (str "(?m)^- " id "【承認】.*\\n  - 由来: .*\\n")) ""))
-        (ack!)
-        (is (str/includes? (hook "pre" merge) (str id ":removed")))
-        (is (:hold? (task-board-todos/gate-decision {:view (task-board-todos/ticket-view (slurp (str path)))
-                                                     :start-rev (:rev start-view)
-                                                     :start-conditions (:conditions (task-board-todos/run-start (str dir)))
-                                                     :result "done"}))))
-      (testing "the start record alone would not have seen it"
-        (is (not (some #{id} (map :id (:conditions (edn/read-string (slurp (str (fs/path dir "todo-start.edn"))))))))))
-      (testing "a run that recorded no Conditions at its start records no sightings"
-        (let [dir2 (fs/path d "run2")]
-          (fs/create-dirs dir2)
-          (spit (str (fs/path dir2 "todo-start.edn")) (pr-str {:rev (:rev start-view) :mode :legacy}))
-          (task-board-todos/observe-conditions! (str dir2) (:conditions start-view))
-          (is (not (fs/exists? (fs/path dir2 "conditions-seen.edn"))))
-          (is (nil? (:conditions (task-board-todos/run-start (str dir2))))))))))
+          (is (str/includes? out (str "Conditions that cannot be used as they are written: " problem))))
+        (is (= "" (hook "pre" "{\"tool_input\":{\"command\":\"git status\"}}")))
+        (is (= "" (hook "stop" "{}")))))
+    (testing "once the line is as the rules ask, merge opens again"
+      (spit (str path) conditions-ticket)
+      (ack!)
+      (is (= "" (hook "pre" merge))))))
+(deftest conditions-owner-path-during-a-run
+  ;; The commands look at CODEX_TASK_BOARD_RUN_ID of the calling process, not at whether a
+  ;; run of the ticket is going on. The Owner path cancels an Owner item while a worker
+  ;; runs; the worker receives it as a change of the revision and is held until it
+  ;; acknowledges it.
+  (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-23.md") dir (fs/path d "run")
+        run-as (fn [worker? & args]
+                 @(p/process (into ["env" "-u" "CODEX_TASK_BOARD_RUN_ID"] (concat (when worker? ["CODEX_TASK_BOARD_RUN_ID=run-1"]) ["bb" module] args))
+                             {:in "{}" :out :string :err :string}))
+        view #(task-board-todos/ticket-view (slurp (str path)))
+        cancel ["conditions" "cancel" "BOXP-23" "CD-01" "--vault" d "--reason" "withdrawn" "--source" "hermes-agent" "--reply-id" "r5"]
+        hook (fn [event] (:out (run-as true "hook" "--vault" d "--ticket" "BOXP-23" "--run-dir" (str dir) "--event" event)))]
+    (fs/create-dirs (fs/parent path)) (fs/create-dirs dir)
+    (spit (str path) conditions-ticket)
+    (let [start (:rev (view))
+          decide (fn [result] (task-board-todos/gate-decision {:view (view) :start-rev start :result result}))]
+      (spit (str (fs/path dir "todo-start.edn")) (pr-str {:rev start :mode :legacy}))
+      (testing "a process with the run variable is refused, with the reason named"
+        (let [r (apply run-as true cancel)]
+          (is (= 4 (:exit r)))
+          (is (str/includes? (:err r) "not by a Task Board worker (CODEX_TASK_BOARD_RUN_ID is set)")))
+        (is (= start (:rev (view)))))
+      (testing "the Owner path, a process without it, cancels while the run goes on"
+        (is (zero? (:exit (apply run-as false cancel))))
+        (is (= :cancelled (:kind (first (:conditions (view))))))
+        (is (= "  - 取消者: hermes-agent reply_id=r5" (last (:children (first (:conditions (view))))))))
+      (testing "the worker is told at the next tool boundary and its result is held until it acknowledges"
+        (is (not= start (:rev (view))))
+        (is (str/includes? (hook "post") "CD-01【取消】design only"))
+        (is (:hold? (decide "done")))
+        (is (:hold? (decide "blocked")))
+        (is (zero? (:exit (run-as true "ack" "BOXP-23" "--vault" d "--rev" (:rev (view))))))
+        (is (not (:hold? (decide "done"))))))))
 (let [r (run-tests)] (when (pos? (+ (:fail r) (:error r))) (System/exit 1)))

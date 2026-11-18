@@ -7319,9 +7319,10 @@ test_recheck_reservation_resumes_interrupted_firing() {
   assert_file_contains "${state}/recheck-reservations.edn" ':state :consumed'
 }
 
-# BOXP-588: Conditions are ticket items. A change during a run that the rules do not
-# allow (a deleted item, an approval without the Owner's reply) holds a done/blocked
-# result and is recorded for a continue result. Nothing is omitted from the prompt.
+# BOXP-588: Conditions are ticket items. Stage 1 omits nothing from the prompt and does
+# not compare Conditions with an earlier reading. What it holds a done result on is
+# judged from the ticket as it stands: an approval without the Owner's reply (here), an
+# unreadable line, and a revision the worker has not acknowledged.
 test_conditions_midrun() {
   local tmp vault state bin pid todo
   tmp="$(mktemp -d)"
@@ -7336,7 +7337,7 @@ test_conditions_midrun() {
   env -u CODEX_TASK_BOARD_RUN_ID bb "${todo}" conditions add BOXP-970 --vault "${vault}" --kind 承認 --text 'design only' --source hermes-agent --reply-id r1 >/dev/null
   bb "${todo}" conditions add BOXP-970 --vault "${vault}" --kind 制約 --text 'do not touch docker/hermes-agent' --source codex >/dev/null
   bb "${HELPER}" update BOXP-970 --vault "${vault}" --lane Ready --assignee codex >/dev/null
-  # A done result while an Owner item was deleted by hand is held.
+  # A done result while an approval written by hand, without the Owner's reply, stands is held.
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false CODEX_FAKE_PROMPT_LOG="${tmp}/prompt" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" &
   pid=$!
   for _ in $(seq 1 100); do
@@ -7344,70 +7345,41 @@ test_conditions_midrun() {
     sleep 0.1
   done
   [[ -e "${tmp}/starts" ]] || fail 'agent did not start'
-  sed -i '/^- CD-01【承認】design only$/,/^  - 由来: hermes-agent reply_id=r1$/d' "${vault}/Tickets/BOXP-970.md"
+  bb -e '(let [[p] *command-line-args* s (slurp p)] (spit p (clojure.string/replace-first s "- CD-02【制約】" "- CD-03【承認】deploy to production\n  - 由来: codex\n- CD-02【制約】")))' "${vault}/Tickets/BOXP-970.md"
   wait "${pid}"
   assert_file_contains "${tmp}/prompt" 'CD-NN items\): 2 in force'
   assert_file_contains "${tmp}/prompt" 'conditions add BOXP-970 --vault'
   assert_file_contains "${tmp}/prompt" '^- CD-01【承認】design only$'
   assert_file_contains "${tmp}/prompt" '^- CD-02【制約】do not touch docker/hermes-agent$'
   assert_file_contains "${vault}/Tickets/BOXP-970.md" '^status: ready$'
-  assert_file_contains "${vault}/Tickets/BOXP-970.md" 'runの結果を保留.*CD-01:removed'
+  assert_file_contains "${vault}/Tickets/BOXP-970.md" 'runの結果を保留.*CD-03:approval-without-owner-reply'
   assert_run_summary_contains "${state}" BOXP-970 ':gate "held"'
-  # A continue result is not held, but an approval written without the Owner's reply is recorded.
+  # It still stands at the start of the next run, so that run is held as well: the check
+  # reads the ticket as it is and needs no record of an earlier state.
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false run_tick "${vault}" "${state}" env >"${tmp}/tick2"
+  [[ "$(grep -c 'runの結果を保留.*CD-03:approval-without-owner-reply' "${vault}/Tickets/BOXP-970.md")" == 2 ]] || fail 'the run after the unfounded approval was not held'
+  # The Owner path cancels it while the third run is going on. That is allowed (the
+  # commands refuse a process that has CODEX_TASK_BOARD_RUN_ID, not the time of a run);
+  # the worker did not acknowledge the new revision, so its done result is held for that.
   rm -f "${tmp}/starts"
-  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 CODEX_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: continue' run_tick "${vault}" "${state}" env >"${tmp}/tick2" &
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick3" &
   pid=$!
   for _ in $(seq 1 100); do
     [[ -e "${tmp}/starts" ]] && break
     sleep 0.1
   done
-  [[ -e "${tmp}/starts" ]] || fail 'agent did not start for the continue run'
-  bb -e '(let [[p] *command-line-args* s (slurp p)] (spit p (clojure.string/replace-first s "- CD-02【制約】" "- CD-03【承認】deploy to production\n  - 由来: codex\n- CD-02【制約】")))' "${vault}/Tickets/BOXP-970.md"
-  wait "${pid}"
-  assert_file_contains "${vault}/Tickets/BOXP-970.md" 'Conditions の変更を検出.*CD-03:approval-without-owner-reply'
-  assert_file_not_contains "${vault}/Tickets/BOXP-970.md" 'Conditions の変更を検出.*CD-02'
-  # The deleted item was not put back, so the run after the held one is still compared with
-  # the Conditions the first run started from: it does not take the ticket as it stands.
-  assert_file_contains "${vault}/Tickets/BOXP-970.md" 'Conditions の基準を引き継ぎ.*CD-01:removed'
-  # A third run that returns done without restoring the item is held again.
-  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false CODEX_FAKE_PROMPT_LOG="${tmp}/prompt3" run_tick "${vault}" "${state}" env >"${tmp}/tick3"
-  assert_file_contains "${tmp}/prompt3" 'Conditions still stand changed outside the rules since run .*CD-01:removed'
-  [[ "$(grep -c 'runの結果を保留.*CD-01:removed' "${vault}/Tickets/BOXP-970.md")" == 2 ]] || fail 'the run after a deletion was not held'
-  assert_file_contains "${vault}/Tickets/BOXP-970.md" '^status: ready$'
-  # Putting the deleted item back as it was, and cancelling the unfounded approval through
-  # the Owner path, releases it.
-  bb -e '(let [[p] *command-line-args* s (slurp p)] (spit p (clojure.string/replace-first s "- CD-03【承認】" "- CD-01【承認】design only\n  - 由来: hermes-agent reply_id=r1\n- CD-03【承認】")))' "${vault}/Tickets/BOXP-970.md"
+  [[ -e "${tmp}/starts" ]] || fail 'agent did not start for the third run'
   env -u CODEX_TASK_BOARD_RUN_ID bb "${todo}" conditions cancel BOXP-970 CD-03 --vault "${vault}" --reason 'no Owner reply' --source hermes-agent >/dev/null
-  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false CODEX_FAKE_PROMPT_LOG="${tmp}/prompt4" run_tick "${vault}" "${state}" env >"${tmp}/tick4"
-  assert_file_not_contains "${tmp}/prompt4" 'Conditions still stand changed'
-  [[ "$(grep -c 'Conditions の基準を引き継ぎ' "${vault}/Tickets/BOXP-970.md")" == 2 ]] || fail 'the baseline was carried after the items were restored'
-  [[ "$(grep -c 'runの結果を保留.*CD-01:removed' "${vault}/Tickets/BOXP-970.md")" == 2 ]] || fail 'a run was held after the items were restored'
-  # An item deleted after the worker ended, between the end record and the re-read that
-  # follows the Done move, holds this run. The end record has to say so as well: the next
-  # run keeps this run's baseline instead of starting from the ticket without the item.
-  vault="${tmp}/vault2"
-  state="${tmp}/state2"
-  write_board "${vault}" '- [ ] [[Tickets/BOXP-971|BOXP-971: test]] #ticket status::in-progress assignee::codex'
-  write_ticket "${vault}" BOXP-971 in-progress codex
-  env -u CODEX_TASK_BOARD_RUN_ID bb "${todo}" conditions add BOXP-971 --vault "${vault}" --kind 承認 --text 'design only' --source hermes-agent --reply-id r1 >/dev/null
-  bb "${HELPER}" update BOXP-971 --vault "${vault}" --lane Ready --assignee codex >/dev/null
-  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_TODO_RECHECK_DIR="${tmp}" run_tick "${vault}" "${state}" env >"${tmp}/tick5" &
-  pid=$!
-  for _ in $(seq 1 300); do
-    [[ -e "${tmp}/moved" ]] && break
-    sleep 0.1
-  done
-  [[ -e "${tmp}/moved" ]] || fail 'post-move rendezvous missing for the conditions run'
-  sed -i '/^- CD-01【承認】design only$/,/^  - 由来: hermes-agent reply_id=r1$/d' "${vault}/Tickets/BOXP-971.md"
-  touch "${tmp}/continue"
   wait "${pid}"
-  if [[ "${CODEX_TASK_BOARD_CONTINUATION_LIMIT:-8}" != 0 ]]; then
-    assert_file_contains "${vault}/Tickets/BOXP-971.md" '^status: ready$'
-    grep -rq 'CD-01:removed' "${state}"/runs/BOXP-971/*/todo-end.edn || fail 'the end record does not hold the deletion seen by the last re-read'
-    PATH="${bin}:$PATH" CODEX_FAKE_PROMPT_LOG="${tmp}/prompt6" run_tick "${vault}" "${state}" env >"${tmp}/tick6"
-    assert_file_contains "${tmp}/prompt6" 'Conditions still stand changed outside the rules since run .*CD-01:removed'
-    assert_file_contains "${vault}/Tickets/BOXP-971.md" 'runの結果を保留.*CD-01:removed'
-  fi
+  assert_file_contains "${vault}/Tickets/BOXP-970.md" '^- CD-03【取消】deploy to production$'
+  assert_file_contains "${vault}/Tickets/BOXP-970.md" '^status: ready$'
+  [[ "$(grep -c 'runの結果を保留' "${vault}/Tickets/BOXP-970.md")" == 3 ]] || fail 'a cancellation during the run was not held until acknowledged'
+  [[ "$(grep -c 'runの結果を保留.*CD-03:approval-without-owner-reply' "${vault}/Tickets/BOXP-970.md")" == 2 ]] || fail 'the cancelled approval was still reported'
+  # Nothing stands any more: the next run starts from the new revision and is done.
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false CODEX_FAKE_PROMPT_LOG="${tmp}/prompt4" run_tick "${vault}" "${state}" env >"${tmp}/tick4"
+  assert_file_contains "${tmp}/prompt4" '^- CD-03【取消】deploy to production$'
+  [[ "$(grep -c 'runの結果を保留' "${vault}/Tickets/BOXP-970.md")" == 3 ]] || fail 'a run was held after the approval was cancelled'
+  assert_file_contains "${vault}/Tickets/BOXP-970.md" '^status: done$'
 }
 
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a
