@@ -240,6 +240,13 @@ describe('現場の入口と表示', () => {
     expect(visitStoppedReport('limit', at)).toContain('時間か回数の上限に届いた')
     expect(visitStoppedReport('unwatched', at)).toContain('見守れなくなった')
     expect(visitStoppedReport('tool', at)).toContain('確かなものとしてお伝えできません')
+    // 範囲外の道具・見守れない間は、変更が無かったと言い切らない（開始通知の後に止めるため確かめられない）。
+    for (const r of ['tool', 'limit', 'unwatched'] as const)
+      expect(visitStoppedReport(r, at)).not.toContain('何も変えていません')
+    expect(visitStoppedReport('tool', at)).toContain('確かめられていません')
+    expect(visitStoppedReport('unwatched', at)).toContain('確かめられていません')
+    expect(visitStoppedReport('limit', at)).toContain('読み取りだけでした')
+    expect(visitStoppedReport('limit', at)).not.toContain('確かめられていません')
   })
   it('家からの現場には時刻と直前の会話を渡し、撫でた反応は渡さない', async () => {
     const run = vi.fn(async () => ({ status: 'done' as const, text: 'はい、ご主人さま。' }))
