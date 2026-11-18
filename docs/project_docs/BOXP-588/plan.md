@@ -52,9 +52,9 @@
 ### 版（rev）と保留
 
 - CD 項目を既存の TODO の版に含める。作業中に条件が足されたり取り消されたりすると、既存の仕組み（ツール境界の通知、ack、古い版の結果の保留）でそのまま担当に届く。新しい通知や予算は作らない。
-- **CD 項目が 1 件も無い票の版は、変更前と同じ値**（テストで固定）。配備しても既存の票の ack は無効にならない。
+- **Conditions 節が無い票と、節に空でない行が無い票の版は、変更前と同じ値**（テストで固定）。配備しても既存の票の ack は無効にならない。
 - 今の票だけを見て決まる検査を 2 つ入れる。どちらも、版を ack した後も、該当の行が票にある間は続く（v1 でも従来の票でも同じ）。
-  - 読めない行（形が違う、本文が空、同じ ID が 2 行以上）。
+  - 読めない行。Conditions 節の空でない行は、決まった形の項目行（`- CD-NN【種別】本文`）、項目行の下の字下げした行（子）、読めない行のどれかで、読み飛ばす行は無い。形が違う行、本文が空の行、同じ ID が 2 行以上ある行のほか、ID が無い・数字でない行（`- CD-XX【制約】…`）、箇条書きでない文、code fence の区切り、上に項目の無い字下げ行も読めない行になる。CD-NN の ID が無い行は節の中の位置で `LINE-n` と呼ぶ。code fence の中の項目行も隠れず、項目として扱う。
   - Owner の返答が無い【承認】（由来が Owner の経路でない、または `reply_id` / `event` が無い）。
   - この間、done の結果は保留になり、hook は merge・配備の命令を拒否する。blocked の結果は保留にしない（担当が Owner に渡す手段なので。直せるのは Owner の経路）。continue も保留にしない。
 - **命令が見ているのは「run の間かどうか」ではなく、呼び出した process に `CODEX_TASK_BOARD_RUN_ID` があるかどうか。** Owner の経路（Hermes）は担当の run が動いている間でも登録・取消ができ、それは版の変更として担当に届いて、ack まで done / blocked が保留になる（テストで固定）。
@@ -82,7 +82,7 @@
 
 ## 検証
 
-- `bb tests/codex-workspace/task-board-todos-test.bb`: 解析（節の外・fence 内・読めない行・重複）、版（項目なしは不変、項目の各部分で変わる）、保留（v1 / legacy、未受領）、今の票だけで決まる検査 2 つ（`conditions-problems`: done は保留、continue と blocked は通る。削除や書換えは検出しないことも固定）、命令（発信元、`CODEX_TASK_BOARD_RUN_ID` の有無、再実行、取消の形）、hook（`conditions-hook`: ack 後も merge 拒否）、run の間の Owner 経路の取消（`conditions-owner-path-during-a-run`: 担当の process は拒否、Owner の経路は成功、担当には版の変更として届き ack まで保留）、prompt の案内。
+- `bb tests/codex-workspace/task-board-todos-test.bb`: 解析（節の外・読めない行・重複、節の中に読み飛ばす行が無いこと: ID の不正な行・箇条書きでない文・fence・字下げ行）、版（項目なしは不変、項目の各部分で変わる）、保留（v1 / legacy、未受領）、今の票だけで決まる検査 2 つ（`conditions-problems`: done は保留、continue と blocked は通る。削除や書換えは検出しないことも固定）、命令（発信元、`CODEX_TASK_BOARD_RUN_ID` の有無、再実行、取消の形）、hook（`conditions-hook`: ack 後も merge 拒否）、run の間の Owner 経路の取消（`conditions-owner-path-during-a-run`: 担当の process は拒否、Owner の経路は成功、担当には版の変更として届き ack まで保留）、prompt の案内。
 - `tests/codex-workspace/task-board-runner-test.sh` の `test_conditions_midrun`: 実際に runner を回し、run 中に手で書かれた返答なしの【承認】で done が保留になること、次の run でも残っていれば保留が続くこと、run の間に Owner の経路が取り消すと未受領の版として保留になり、その次の run で done になること、prompt に Conditions 節と案内が全文で入ること。
 - 既存の runner テスト全 shard。
 

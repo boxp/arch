@@ -485,7 +485,6 @@
        "- CD-02【制約】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n"
        "- CD-03【要確認】inbox shape stays\n  - 由来: claude-fable\n"
        "- CD-04【取消】once a day\n  - 由来: hermes-agent reply_id=r0\n  - 取消理由: 置換（CD-01） replaced\n  - 取消者: hermes-agent reply_id=r1\n"
-       "```\n- CD-05【制約】inside a fence\n```\n"
        "\n## Plan\n\n- CD-06【制約】not in Conditions\n\n## Notes\n\n- CD-07【制約】not in Conditions\n"))
 (deftest conditions-parser
   (let [items (task-board-todos/parse-conditions conditions-ticket)]
@@ -498,12 +497,38 @@
     (is (= [:invalid :invalid :invalid :invalid :constraint]
            (mapv :kind (task-board-todos/parse-conditions
                         "## Conditions\n- CD-01【変】a\n- CD-02【制約】\n- CD-03【制約】b\n- CD-03【制約】c\n- CD-04【制約】d\n"))))
-    (is (= [:invalid] (mapv :kind (task-board-todos/parse-conditions "## Conditions\n- [ ] CD-01 free text\n"))))))
+    (is (= [:invalid] (mapv :kind (task-board-todos/parse-conditions "## Conditions\n- [ ] CD-01 free text\n")))))
+  (testing "nothing in the section is skipped: a line that is not an item in the exact form and not a child of one is unreadable, named after its place when it carries no CD-NN id"
+    (let [parse (fn [body] (mapv (juxt :id :kind) (task-board-todos/parse-conditions (str "## Conditions\n" body "\n## Plan\n"))))]
+      (is (= [["LINE-1" :invalid]] (parse "- CD-XX【制約】配備禁止\n")))
+      (is (= [["LINE-1" :invalid]] (parse "- 【制約】配備禁止\n")))
+      (is (= [["LINE-1" :invalid]] (parse "- 配備禁止\n")))
+      (is (= [["LINE-1" :invalid]] (parse "配備禁止\n")))
+      (is (= [["LINE-1" :invalid]] (parse "- cd-01【制約】配備禁止\n")))
+      (is (= [["LINE-1" :invalid]] (parse "1. CD-01【制約】配備禁止\n")))
+      (is (= [["LINE-1" :invalid]] (parse "  - CD-01【制約】indented with no item above\n")))
+      (is (= [["CD-01" :constraint] ["LINE-3" :invalid]] (parse "- CD-01【制約】a\n\n  - 由来: after a blank line\n")))
+      (testing "an item-like line indented under an item is not taken as its child"
+        (is (= [["CD-01" :constraint] ["LINE-2" :invalid]] (parse "- CD-01【制約】a\n  - CD-02【制約】b\n"))))
+      (testing "a code fence hides nothing: its delimiters are unreadable and an item inside it stands"
+        (is (= [["LINE-1" :invalid] ["CD-05" :constraint] ["LINE-3" :invalid]] (parse "```\n- CD-05【制約】inside a fence\n```\n"))))
+      (testing "blank lines and the children of an item are the only lines that are not items"
+        (is (= [["CD-01" :constraint] ["CD-02" :unconfirmed]] (parse "\n- CD-01【制約】a\n  - 由来: x\n  free text under it\n\n- CD-02【要確認】b\n")))))
+    (testing "an unreadable line without an id is a problem like any other, changes the revision, and does not break the next id"
+      (let [broken (str/replace conditions-ticket "- CD-03【要確認】" "- CD-XX【制約】配備禁止\n- CD-03【要確認】")
+            view (task-board-todos/ticket-view broken)]
+        (is (= ["LINE-6:invalid"] (task-board-todos/condition-problems (:conditions view))))
+        (is (not= (:rev view) (:rev (task-board-todos/ticket-view conditions-ticket))))
+        (is (true? (:hold? (task-board-todos/gate-decision {:view view, :start-rev (:rev view), :result "done"}))))
+        (is (false? (:hold? (task-board-todos/gate-decision {:view view, :start-rev (:rev view), :result "blocked"}))))
+        (is (str/includes? (task-board-todos/conditions-add broken {:kind "制約" :text "new" :source "claude-fable"}) "- CD-05【制約】new"))))))
 (deftest conditions-revision
   (testing "a ticket without condition items keeps the revision it had before Conditions existed"
     (is (= "2ac264fb5589" (:rev (task-board-todos/ticket-view sample))))
     (is (= "b8b96fd0ccf7" (:rev (task-board-todos/ticket-view (str/replace sample "todo_contract: v1" "status: ready")))))
-    (is (= "2ac264fb5589" (:rev (task-board-todos/ticket-view (str/replace sample "## Plan" "## Conditions\n\nnothing registered yet\n## Plan"))))))
+    (is (= "2ac264fb5589" (:rev (task-board-todos/ticket-view (str/replace sample "## Plan" "## Conditions\n\n## Plan"))))))
+  (testing "free text in the section is an unreadable line, so it changes the revision"
+    (is (not= "2ac264fb5589" (:rev (task-board-todos/ticket-view (str/replace sample "## Plan" "## Conditions\n\nnothing registered yet\n## Plan"))))))
   (let [rev #(:rev (task-board-todos/ticket-view %))
         base (rev conditions-ticket)]
     (testing "every part of an item counts: kind, text, origin and cancellation"
@@ -708,7 +733,8 @@
             [["an approval without the Owner's reply"
               (str/replace conditions-ticket "\n## Plan" "- CD-08【承認】deploy\n  - 由来: claude-fable\n\n## Plan")
               "CD-08:approval-without-owner-reply"]
-             ["an unreadable line" (str/replace conditions-ticket "- CD-03【要確認】" "- CD-03【変】") "CD-03:invalid"]]]
+             ["an unreadable line" (str/replace conditions-ticket "- CD-03【要確認】" "- CD-03【変】") "CD-03:invalid"]
+             ["a line with a bad id" (str/replace conditions-ticket "- CD-03【要確認】" "- CD-XX【制約】配備禁止\n- CD-03【要確認】") "LINE-6:invalid"]]]
       (testing (str label " refuses merge, also after the new revision is acknowledged; other commands and stopping pass")
         (spit (str path) broken)
         (is (str/includes? (hook "pre" merge) "\"permissionDecision\":\"deny\""))

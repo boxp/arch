@@ -92,38 +92,38 @@
   these as its --source."
   #{"hermes-agent" "owner" "boxp"})
 (defn parse-conditions
+  "Every non-blank line of the section is one of three things: an item line in the exact
+  form, an indented line under an item line of either kind (its child), or an unreadable line. Nothing in the
+  section is skipped: a line with a bad or missing id, a line that is not a list item, a
+  code fence and an indented line with no item above it are all unreadable. An unreadable
+  line that carries no CD-NN id is named LINE-n after its place in the section."
   [text]
   (let [lines (str/split-lines (section text "Conditions"))
-        items (loop [idx 0, fence nil, current nil, out []]
+        item-like #"^\s*[-*]\s+(?:\[[^]]*\]\s+)?CD-"
+        items (loop [idx 0, current nil, out []]
                 (if (= idx (count lines))
                   out
                   (let [line (nth lines idx)
-                        delimiter (re-find #"^\s*(```+|~~~+)" line)
-                        candidate (re-find #"^[-*]\s+(?:\[[^]]*\]\s+)?(CD-\d+)" line)]
-                    (cond delimiter
-                          (let [marker (second delimiter)
-                                closes? (and fence (= (first marker) (first fence))
-                                             (>= (count marker) (count fence)))]
-                            (recur (inc idx) (cond (nil? fence) marker closes? nil :else fence) nil out))
-                          fence (recur (inc idx) fence nil out)
-                          candidate
-                          (let [[_ id kind body] (re-matches #"^[-*]\s+(CD-\d+)【(承認|制約|要確認|取消)】(.*?)\s*" line)]
-                            (recur (inc idx) fence (count out)
-                                   (conj out {:id (or id (second candidate)),
-                                              ;; An unreadable line or an empty text is never a usable condition.
-                                              :kind (if (str/blank? body) :invalid (condition-kinds kind)),
-                                              :text (or body line),
-                                              :line line,
-                                              :line-index idx,
-                                              :children [],
-                                              :child-indices []})))
-                          (and current (re-find #"^\s+\S" line))
-                          (recur (inc idx) fence current
+                        [_ id kind body] (re-matches #"^[-*]\s+(CD-\d+)【(承認|制約|要確認|取消)】(.*?)\s*" line)
+                        child? (and current (re-find #"^\s+\S" line) (not (re-find item-like line)))]
+                    (cond (str/blank? line) (recur (inc idx) nil out)
+                          child?
+                          (recur (inc idx) current
                                  (-> out
                                      (update-in [current :children] conj line)
                                      (update-in [current :child-indices] conj idx)))
-                          (or (str/blank? line) (re-find #"^\S" line)) (recur (inc idx) fence nil out)
-                          :else (recur (inc idx) fence current out)))))
+                          :else
+                          (recur (inc idx) (count out)
+                                 (conj out {:id (or id
+                                                    (second (re-find #"^[-*]\s+(?:\[[^]]*\]\s+)?(CD-\d+)" line))
+                                                    (str "LINE-" (inc idx))),
+                                            ;; An unreadable line or an empty text is never a usable condition.
+                                            :kind (if (str/blank? body) :invalid (condition-kinds kind)),
+                                            :text (or body line),
+                                            :line line,
+                                            :line-index idx,
+                                            :children [],
+                                            :child-indices []}))))))
         counts (frequencies (map :id items))]
     (mapv #(if (> (counts (:id %)) 1) (assoc % :kind :invalid) %) items)))
 (defn condition-hash
@@ -182,7 +182,7 @@
         mode (if (= "v1" (get fm "todo_contract")) :v1 :legacy)
         items (if (= mode :v1) (parse-items text) [])
         conditions (parse-conditions text)
-        ;; A ticket without condition items keeps the revision it had before Conditions existed.
+        ;; A ticket with no non-blank line in Conditions keeps the revision it had before Conditions existed.
         hashes (into {"_BODY" (body-hash text mode)}
                      (concat (map (juxt :id item-hash) items) (map (juxt :id condition-hash) conditions)))
         ack (into {}
@@ -523,7 +523,7 @@
                    existing)]
     (if same
       text
-      (let [id (format "CD-%02d" (inc (reduce max 0 (map #(parse-long (subs (:id %) 3)) existing))))
+      (let [id (format "CD-%02d" (inc (reduce max 0 (keep #(some-> (re-matches #"CD-(\d+)" (:id %)) second parse-long) existing))))
             line (str "- " id "【" (condition-labels kind) "】" body)]
         (-> (ensure-conditions-section text)
             (append-section "Conditions" (str line "\n  - 由来: " (condition-origin o)))
