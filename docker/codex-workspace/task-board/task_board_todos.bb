@@ -577,7 +577,10 @@
                    existing)]
     (if same
       text
-      (let [id (format "CD-%02d" (inc (reduce max 0 (keep #(some-> (re-matches #"CD-(\d+)" (:id %)) second parse-long) existing))))
+      ;; A sealed id stays taken after its line is gone: a new item under that id would put its
+      ;; own hash over the record, and the removal would no longer be reported.
+      (let [id (format "CD-%02d" (inc (reduce max 0 (keep #(some-> (re-matches #"CD-(\d+)" %) second parse-long)
+                                                           (concat (map :id existing) (keys (sealed text)))))))
             line (str "- " id "【" (condition-labels kind) "】" body)]
         (->> (-> (ensure-conditions-section text)
                  (append-section "Conditions" (str line "\n  - 由来: " (condition-origin o)))

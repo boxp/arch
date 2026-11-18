@@ -81,6 +81,7 @@
 ### 仕組み
 
 - `conditions add` と `conditions cancel` は、自分が書いた項目について `ID:hash`（項目行と子の行の hash の先頭 12 桁）を front matter `conditions_seal` に記録する。命令が触らなかった項目の記録は変えない。
+- `conditions add` の新しい ID は、節にある ID と記録にある ID の両方より大きい番号にする。末尾の項目が手で消された後でも、その ID は再利用されず、削除の報告（`removed-outside-commands`）は残る。Owner の経路が `conditions accept` で記録を改めた後は、記録から消えた ID は再び使われうる。
 - 検査は今の票だけを読む。run の記録ディレクトリには何も置かず、run から run へ引き継ぐ基準も無い（#15338 から外した方式は、基準ファイルの持ち方に穴が続いたので使わない。branch `boxp-588-conditions-detection` のコードは使っていない）。
 - `conditions_seal` と Conditions 節が違うとき、項目ごとに次のどれかを報告する。
   - `CD-NN:removed-outside-commands`: 記録にある ID が節に無い（削除、ID の付け替え）。

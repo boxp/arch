@@ -845,6 +845,12 @@
         (is (= ["CD-02:changed-outside-commands"] (problems (add rewritten))))
         (is (= ["CD-02:changed-outside-commands"] (problems (cancel rewritten))))
         (is (= ["CD-01:removed-outside-commands"] (problems (add removed))))
+        (testing "the last item removed: its id is not given to the next item, so the removal still stands"
+          (let [last-removed (swap "- CD-05【制約】new limit\n  - 由来: claude-fable\n" "")
+                after (add last-removed)]
+            (is (= ["CD-05:removed-outside-commands"] (problems last-removed)))
+            (is (= ["CD-05:removed-outside-commands"] (problems after)))
+            (is (= "CD-06" (:id (last (task-board-todos/parse-conditions after)))))))
         (is (= ["CD-09:added-outside-commands"] (problems (add added))))
         (is (= :cancelled (:kind (nth (task-board-todos/parse-conditions (cancel rewritten)) 2))))))
     (testing "what the seal does not find: an edit that also takes the seal away or rewrites it"
