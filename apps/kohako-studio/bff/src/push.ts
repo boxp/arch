@@ -1,7 +1,7 @@
 import { must } from './must.js'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
-import webPush from 'web-push'
+import * as webPush from 'web-push'
 import type { Item } from './notifications.js'
 import { atomic, load } from './storage.js'
 import { isRecord } from './untrusted.js'
