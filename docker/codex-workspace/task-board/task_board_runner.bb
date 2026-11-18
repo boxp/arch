@@ -3315,11 +3315,14 @@
       (binding [*out* *err*] (println "Failed to record codex review usage:" (.getMessage e))))))
 
 (defn review-finding-file [location]
-  (let [original (str/trim (str location))
-        path (-> original (str/split #"\s+" 2) first
-                 (str/replace #"^(?:\./|a/|b/)+" "")
-                 (str/replace #"#L.*$" "")
-                 (str/replace #":\d+(?:-\d+|:\d+)?$" ""))]
+  ;; Paths may contain spaces ("Recurring Events/a.md:3"), so the path is never cut at
+  ;; whitespace: it ends at the first line marker (":12", ":12-20", ":3:4", "#L10") that
+  ;; is followed by whitespace or the end. Without a marker the whole location is the key,
+  ;; so different locations are never merged into one streak.
+  (let [original (str/replace (str/trim (str location)) #"\s+" " ")
+        path (-> (or (second (re-find #"^(.*?)(?::\d+(?:-\d+|:\d+)?|#L\d+\S*)(?=\s|$)" original)) original)
+                 str/trim
+                 (str/replace #"^(?:\./|a/|b/)+" ""))]
     (if (str/blank? path) original path)))
 
 (defn run-codex-review! [run-dir pr-url]

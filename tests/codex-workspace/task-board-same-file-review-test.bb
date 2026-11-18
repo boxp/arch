@@ -5,7 +5,9 @@
 (load-file "docker/codex-workspace/task-board/task_board_runner.bb")
 
 (deftest finding-files
-  (doseq [[location expected] [["src/a.bb:12" "src/a.bb"] ["./src/a.bb:12-20" "src/a.bb"] ["b/src/a.py:3:4 some text" "src/a.py"] ["src/a.py#L10" "src/a.py"] ["area text" "area"]]]
+  (doseq [[location expected] [["src/a.bb:12" "src/a.bb"] ["./src/a.bb:12-20" "src/a.bb"] ["b/src/a.py:3:4 some text" "src/a.py"] ["src/a.py#L10" "src/a.py"] ["src/a.py#L10-L12 note" "src/a.py"] ["area text" "area text"]
+                               ["docs/Recurring Events/a b.md:3" "docs/Recurring Events/a b.md"] ["docs/Recurring Events/c.md:7 note" "docs/Recurring Events/c.md"]
+                               ["docs/Recurring Events/a b.md" "docs/Recurring Events/a b.md"] ["docs/Recurring Events/c.md" "docs/Recurring Events/c.md"]]]
     (is (= expected (review-finding-file location)))))
 (deftest threshold-setting
   (with-redefs [env (fn [_ default] default)] (is (= 3 (same-file-review-threshold))))
