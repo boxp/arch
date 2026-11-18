@@ -14,7 +14,7 @@ RUNNER="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb"
 HELPER="${ROOT_DIR}/docker/hermes-agent/skills/obsidian-task-board/bin/task-board.bb"
 export TASK_BOARD_DELEGATION_HELPER="${ROOT_DIR}/docker/codex-workspace/task-board/delegate.py"
 # BOXP-604: the existing delegation cases describe the required contract; the
-# optional trial mode has its own case and sets the mode explicitly.
+# optional mode (the default since BOXP-611) has its own case and sets it explicitly.
 export CODEX_TASK_BOARD_DELEGATION_MODE=required
 
 root_guard_test() {
@@ -5039,8 +5039,9 @@ test_optional_delegation_mode_releases_claude_parents() {
   write_ticket "${vault}" "${ticket}" in-progress claude-opus
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_DELEGATION_MODE=optional CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
     CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' run_tick "${vault}" "${state}" env >/dev/null
-  assert_file_contains "${prompt_log}" 'Optional delegation \(BOXP-604 trial\)'
+  assert_file_contains "${prompt_log}" 'Optional delegation: this run has no mandatory Codex delegation'
   assert_file_contains "${prompt_log}" 'Codex delegation is optional for this run'
+  assert_file_not_contains "${prompt_log}" "BOXP-604 trial"
   assert_file_not_contains "${prompt_log}" 'Delegation contract:'
   assert_file_not_contains "${prompt_log}" 'If delegation is unavailable, report blocked'
   assert_file_contains "${vault}/Tickets/${ticket}.md" '^status: done$'
