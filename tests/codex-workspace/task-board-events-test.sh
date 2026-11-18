@@ -1203,7 +1203,6 @@ test_delivery_start_survives_retry_and_is_cleared_for_a_new_delivery() {
   [[ -f "${CASE_STATE}/outbox/done/mid.edn" ]] || fail "a receipt after the start must count"
 }
 
-
 # --- BOXP-614: night inbox ---
 test_night_inbox_posts_inbox_outside_the_allowlist() {
   new_case
