@@ -278,7 +278,7 @@ Owner の返答を票へ記録するときは、今までどおり Summary の�
 
 `conditions accept` は Owner の経路（`--source` が `hermes-agent`・`owner`・`boxp`）で、`CODEX_TASK_BOARD_RUN_ID` の無い process からだけ動く。`conditions_seal` を手で編集しない。
 
-この検査が見つけるのは誤りと Conditions 節だけの手編集で、`conditions_seal` も一緒に書き換えた・消した変更は見つけない。`conditions_seal` がまだ無い票（この検査より前に登録した票）は、次に `add`・`cancel`・`accept` を実行した時点の節が最初の記録になり、それまでは検査されない。Owner の返答は今までどおり Notes にも残す。発信元は `--source` に書かれた名前で判定するので、命令の拒否は誤りを止めるもので、偽った発信元までは防がない。
+この検査が見つけるのは誤りと Conditions 節だけの手編集で、`conditions_seal` も一緒に書き換えた・消した変更は見つけない。`conditions_seal` がまだ無い票（この検査より前に登録した票）は、次に `add`・`cancel` が項目を書いた時点、または `accept` を実行した時点の節が最初の記録になり（同じ内容の `add` の再実行は何も書かず記録も作らない）、それまでは検査されない。Owner の返答は今までどおり Notes にも残す。発信元は `--source` に書かれた名前で判定するので、命令の拒否は誤りを止めるもので、偽った発信元までは防がない。
 
 現時点では、Conditions を登録しても prompt から Notes が省かれることはない（票の本文は全文のまま渡る）。
 
