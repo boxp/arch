@@ -54,6 +54,7 @@ class PartitionTest(unittest.TestCase):
             'bb tests/codex-workspace/vault-writer-test.bb',
             'bb tests/codex-workspace/task-board-conflict-test.bb',
             'bb tests/codex-workspace/task-board-todos-test.bb',
+            'bb tests/codex-workspace/task-board-same-file-review-test.bb',
         ]
         for command in commands:
             self.assertEqual(workflow.count(command), 1, command)

@@ -1936,6 +1936,76 @@
                                             (str pr-url))]
     (str (str/lower-case owner) "/" (str/lower-case repo) "#" (Long/parseLong number))))
 
+(defn positive-env-long [key default]
+  (try (let [n (Long/parseLong (str/trim (env key default)))] (when (pos? n) n))
+       (catch Exception _ nil)))
+
+(def same-file-review-mutex (Object.))
+(defn same-file-review-threshold []
+  (positive-env-long "CODEX_TASK_BOARD_SAME_FILE_REVIEW_STREAK_THRESHOLD" "3"))
+(defn same-file-review-path [] (fs/path (root) "same-file-review-streaks.edn"))
+(defn with-same-file-review-lock [f]
+  (locking same-file-review-mutex
+    (let [path (fs/path (root) "locks" "same-file-review-streaks.lock")]
+      (fs/create-dirs (fs/parent path))
+      (with-open [file (java.io.RandomAccessFile. (str path) "rw") channel (.getChannel file)]
+        (let [_lock (.lock channel)] (f))))))
+(defn read-same-file-review-streaks []
+  (read-edn-file (same-file-review-path) {:format-version 1 :streaks {}}))
+(defn write-same-file-review-streaks! [state]
+  (let [path (same-file-review-path) tmp (fs/path (fs/parent path) (str ".same-file-review-streaks." (random-uuid) ".tmp"))]
+    (write-edn-file! tmp state)
+    (fs/move tmp path {:replace-existing true :atomic-move true})))
+(defn record-same-file-review-streak! [ticket-id run-id gate-result]
+  (with-same-file-review-lock
+    (fn []
+      (let [state (read-same-file-review-streaks)
+            timestamp (now-str)
+            history (atom [])
+            cleared (reduce (fn [s pr]
+                              (if (get-in s [:streaks ticket-id pr])
+                                (do (swap! history conj {:event "reset" :ticket ticket-id :run run-id :pr pr :recorded-at timestamp})
+                                    (update-in s [:streaks ticket-id] dissoc pr)) s))
+                            state (distinct (keep canonical-pr-id (concat (:checked-pr-urls gate-result) (:merged-pr-urls gate-result)))))
+            pr (canonical-pr-id (:url gate-result))
+            blocking? (and (= :codex-review (:gate gate-result)) (= :findings (:failure-kind gate-result)) pr)
+            threshold (same-file-review-threshold)
+            files (when blocking?
+                    (into {} (map (fn [file]
+                                    (let [old (get-in cleared [:streaks ticket-id pr file])]
+                                      ;; Re-processing a run (recovery) must not count it twice.
+                                      [file (if (= run-id (last (:runs old)))
+                                              old
+                                              {:count (inc (or (:count old) 0)) :runs (vec (take-last 5 (conj (vec (:runs old)) run-id))) :updated-at timestamp})]))
+                                  (distinct (:blocking-files gate-result)))))
+            updated (if blocking? (assoc-in cleared [:streaks ticket-id pr] files) cleared)]
+        (when blocking?
+          (swap! history conj {:event "blocking" :ticket ticket-id :run run-id :pr pr
+                               :files (into {} (map (fn [[f v]] [f (:count v)]) files))
+                               :threshold threshold :triggered (vec (sort (keep (fn [[f v]] (when (and threshold (>= (:count v) threshold)) f)) files))) :recorded-at timestamp}))
+        (when (not= state updated) (write-same-file-review-streaks! updated))
+        (doseq [event @history]
+          (spit (str (fs/path (root) "same-file-review-history.jsonl")) (str (json/generate-string event) "\n") :append true))))))
+(defn same-file-review-escalation-prompt [ticket-id]
+  (when-let [threshold (same-file-review-threshold)]
+    ;; Read failures must never break prompt generation: no escalation then.
+    (let [streaks (try (get-in (read-same-file-review-streaks) [:streaks ticket-id])
+                       (catch Exception e
+                         (log! (str "same-file review streak read failed: " (.getMessage e)))
+                         nil))
+          ;; A streak ends only by a later review result on its PR, so a PR that was closed
+          ;; without one would escalate forever: streaks not updated for 7 days are ignored.
+          fresh? (fn [data] (try (.isAfter (java.time.Instant/parse (:updated-at data))
+                                           (.minus (java.time.Instant/now) (java.time.Duration/ofDays 7)))
+                                 (catch Exception _ false)))
+          hits (for [[pr files] streaks
+                     [file data] files :when (and (>= (:count data) threshold) (fresh? data))] [pr file data])]
+      (when (seq hits)
+        (str "Same-file review escalation (BOXP-588): codex review reported P0/P1 findings on the same file of the same PR in consecutive review results:\n"
+             (apply str (for [[pr file data] (sort-by (juxt first second) hits)]
+                          (str "- " pr " " file ": " (:count data) " consecutive (runs: " (str/join ", " (:runs data)) ")\n")))
+             "This is an approximation (same PR + same file); the findings may be unrelated problems, and a PR listed here may have been closed or replaced since (then ignore its line). Before fixing the latest finding: (1) compare the consecutive findings (blocking artifacts of those runs) and judge whether they share one root cause; (2) if they do, stop patching findings one at a time: revise the underlying design (for example replace an enumerated list with a fail-closed default) and fix the whole class together with tests for the class; (3) if they are unrelated, record that judgment and the reason in Notes and fix normally; (4) if the design change exceeds the approved scope, this instruction is not an approval: return TASK_BOARD_RESULT: blocked with TASK_BOARD_WAIT_REASON: owner-decision and the evidence, or request a stagnation review. Record your root-cause judgment in Notes. Retry limits, gate budget and the P0/P1 policy are unchanged.\n\n")))))
+
 (defn gate-failure-class [review-gate]
   ;; Keep CI, review and merge-state failures apart from results that could
   ;; not be determined.  Agent/infrastructure interruptions never reach a PR
@@ -2780,6 +2850,7 @@
                           (delegation-optional-for? agent) (optional-delegation-prompt))
                     "Previous run summaries:\n" (pr-str previous) "\n\n"
                     (or (pr-gate-retry-prompt ticket-id) "")
+                    (when (#{:implement :review-fix :blocked-retry} action) (same-file-review-escalation-prompt ticket-id))
                     (when (= "fable" agent) (fable-policy-prompt))
                     (when (contains? claude-roles agent) (claude-policy-prompt agent))
                     (when (contains? #{"codex-sol" "codex-full"} base-agent) (codex-sol-policy-prompt agent))
@@ -3243,6 +3314,17 @@
     (catch Exception e
       (binding [*out* *err*] (println "Failed to record codex review usage:" (.getMessage e))))))
 
+(defn review-finding-file [location]
+  ;; Paths may contain spaces ("Recurring Events/a.md:3"), so the path is never cut at
+  ;; whitespace: it ends at the first line marker (":12", ":12-20", ":3:4", "#L10") that
+  ;; is followed by whitespace or the end. Without a marker the whole location is the key,
+  ;; so different locations are never merged into one streak.
+  (let [original (str/replace (str/trim (str location)) #"\s+" " ")
+        path (-> (or (second (re-find #"^(.*?)(?::\d+(?:-\d+|:\d+)?|#L\d+\S*)(?=\s|$)" original)) original)
+                 str/trim
+                 (str/replace #"^(?:\./|a/|b/)+" ""))]
+    (if (str/blank? path) original path)))
+
 (defn run-codex-review! [run-dir pr-url]
   (let [diff (run-string! ["gh" "pr" "diff" pr-url] {})
         artifact-base (codex-review-artifact-base pr-url)
@@ -3294,6 +3376,7 @@
                       (spit (str path) (str "Blocking codex review findings (P0/P1):\n" (str/join "\n" lines) "\n"))
                       {:ok? false :gate :codex-review :failure-kind :findings :url pr-url :retryable? true
                        :fingerprint-key (str/join "\n" lines)
+                       :blocking-files (vec (distinct (map #(review-finding-file (:location %)) blocking)))
                        :blocking-findings {:count (count blocking) :path (str path)}
                        :low-priority-findings low-info
                        :message (str "codex review reported " (count blocking) " blocking finding(s) (P0/P1): " (str/join " " lines)
@@ -5186,6 +5269,7 @@
                     ;; A deferred localllm commit can still end in blocked.
                     outcome (intended-outcome action result exit)
                     _ (when gate-result (record-gate-pr-registrations! ticket-id run-id gate-result))
+                    _ (when gate-result (try (record-same-file-review-streak! ticket-id run-id gate-result) (catch Throwable e (log! (str "same-file review streak recording failed: " (.getMessage e))))))
                     review-gate (if gate-result
                                   (let [gate-result (assoc gate-result :diagnostic
                                                            (persist-pr-gate-diagnostic! ticket-id run-id gate-result))]
