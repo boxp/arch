@@ -632,6 +632,8 @@
       (let [before (text)]
         (is (= 4 (outside "conditions" "add" "--kind" "承認" "--text" "deploy" "--source" "claude-fable" "--reply-id" "r1")))
         (is (= 4 (outside "conditions" "add" "--kind" "承認" "--text" "deploy" "--source" "hermes-agent")))
+        (is (= 4 (outside "conditions" "add" "--kind" "承認" "--text" "deploy" "--source" "hermes-agent" "--reply-id" "")))
+        (is (= 4 (outside "conditions" "add" "--kind" "承認" "--text" "deploy" "--source" "hermes-agent" "--event" " ")))
         (is (= 4 (worker "conditions" "add" "--kind" "承認" "--text" "deploy" "--source" "hermes-agent" "--reply-id" "r1")))
         (is (not (zero? (outside "conditions" "add" "--kind" "取消" "--text" "x" "--source" "hermes-agent"))))
         (is (not (zero? (outside "conditions" "add" "--kind" "制約" "--text" " " "--source" "hermes-agent"))))

@@ -504,10 +504,11 @@
 (defn condition-origin
   "The 由来/取消者 value: the source first, then where it came from."
   [o]
-  (str (:source o)
-       (when (:reply-id o) (str " reply_id=" (one-line (:reply-id o))))
-       (when (:event o) (str " event=" (one-line (:event o))))
-       (when (:note-at o) (str " （Notes " (one-line (:note-at o)) "）"))))
+  (let [value #(not-empty (one-line (get o %)))]
+    (str (:source o)
+         (when-let [v (value :reply-id)] (str " reply_id=" v))
+         (when-let [v (value :event)] (str " event=" v))
+         (when-let [v (value :note-at)] (str " （Notes " v "）")))))
 (defn ensure-conditions-section
   "Conditions sit between the completion criteria and the working sections."
   [text]
@@ -533,7 +534,7 @@
                         "); register a 【制約】 or 【要確認】, or ask the Owner") 4))
             (when (in-worker-run?)
               (die "【承認】 cannot be registered from inside a Task Board run; ask the Owner" 4))
-            (when-not (or (:reply-id o) (:event o))
+            (when-not (or (not-empty (one-line (:reply-id o))) (not-empty (one-line (:event o))))
               (die "【承認】 needs the Owner's reply it came from: --reply-id or --event" 4)))
         existing (parse-conditions text)
         same (some #(when (and (= kind (:kind %)) (= body (norm (:text %))) (= source (condition-source %))) %)
