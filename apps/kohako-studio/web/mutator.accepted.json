@@ -1,0 +1,78 @@
+{
+  "13hqfgjey0g": {
+    "reason": "BOXP-613 等価: 後段の data.rev 等の型検査で、object 以外の値（文字列・数値・真偽値）は必ず拒否される",
+    "where": "src/home/sync.ts:18:69 typeof x === 'object' -> true"
+  },
+  "13jdoocdkn4": {
+    "reason": "BOXP-613 等価: 1 行内の (.+) は改行を含まず行末まで貪欲に一致するため $ の有無で一致が変わらない",
+    "where": "src/home/markdown.ts:201:19 /^\\s*([-*+]|\\d+\\.)\\s+(.+)$/ -> /^\\s*([-*+]|\\d+\\.)\\s+(.+)/"
+  },
+  "13k5ho17rbk": {
+    "reason": "BOXP-613 等価: catch 内の return undefined を消しても関数は暗黙に undefined を返す",
+    "where": "src/home/markdown.ts:59:11 { return undefined } -> {}"
+  },
+  "1k01bvmqzmi": {
+    "reason": "BOXP-613 等価: 末尾を越えて i を進めても while (i < lines.length) で同じく終了する",
+    "where": "src/home/markdown.ts:180:11 i < lines.length -> true"
+  },
+  "1klhjzshenq": {
+    "reason": "BOXP-613 等価: url を持つインラインは link だけ（画像・ノートは前段で処理済み）なので n.type === 'link' を true にしても同じ",
+    "where": "src/home/markdown.ts:285:11 n.type === 'link' -> true"
+  },
+  "20722oiru0z": {
+    "reason": "BOXP-613 等価: lines[lines.length] は undefined で、正規表現は文字列 'undefined' に一致せず同じくループを抜ける",
+    "where": "src/home/markdown.ts:212:14 i < lines.length -> i <= lines.length"
+  },
+  "22gm6nxz6bp": {
+    "reason": "BOXP-613 等価: 区切り線は inline を持たず '' になり、続く filter(Boolean) で同じく除かれる",
+    "where": "src/home/markdown.ts:354:7 b.type === 'rule' -> false"
+  },
+  "2b9f38mjycb": {
+    "reason": "BOXP-613 等価: 太字等の子の text ノードを {type:'text', text} に作り直しても同じ値になる",
+    "where": "src/home/markdown.ts:151:53 c.type === 'text' -> false"
+  },
+  "2c7ajsxz0gc": {
+    "reason": "BOXP-613 等価: = の位置 1 は 1 文字のキーで、vault/file 以外として次の検査で必ず拒否される",
+    "where": "src/home/markdown.ts:42:11 eq < 1 -> eq <= 1"
+  },
+  "2cvhnuq9awd": {
+    "reason": "BOXP-613 等価: 対象行は /^\\s*>/ を満たすので最初の一致は常に行頭になり ^ の有無で置換結果が同じ",
+    "where": "src/home/markdown.ts:212:84 /^\\s*>\\s?/ -> /\\s*>\\s?/"
+  },
+  "2gmh3mkgss2": {
+    "reason": "BOXP-613 等価: lines[lines.length] は undefined で、正規表現は文字列 'undefined' に一致せず同じくループを抜ける",
+    "where": "src/home/markdown.ts:212:14 i < lines.length -> true"
+  },
+  "breyh7qu4v": {
+    "reason": "BOXP-613 等価: 開始行の判定だけに使い、項目本文は 201 行の正規表現で取り直す。\\s と \\s+ は (.+) が残りの空白を吸うため一致する行の集合が同じ",
+    "where": "src/home/markdown.ts:195:18 /^\\s*([-*+]|\\d+\\.)\\s+(.+)$/ -> /^\\s*([-*+]|\\d+\\.)\\s(.+)$/"
+  },
+  "c3zw9eukkm": {
+    "reason": "BOXP-613 等価: 末尾を越えて i を進めても while (i < lines.length) で同じく終了する",
+    "where": "src/home/markdown.ts:180:11 i < lines.length -> i <= lines.length"
+  },
+  "ggnh0j7aeh": {
+    "reason": "BOXP-613 等価: catch 内の return undefined を消しても関数は暗黙に undefined を返す",
+    "where": "src/home/markdown.ts:77:11 { return undefined } -> {}"
+  },
+  "ikoghy85id": {
+    "reason": "BOXP-613 等価: 1 行内の (.+) は改行を含まず行末まで貪欲に一致するため $ の有無で一致が変わらない",
+    "where": "src/home/markdown.ts:189:21 /^(#{1,6})\\s+(.+)$/ -> /^(#{1,6})\\s+(.+)/"
+  },
+  "ja4kac1i68": {
+    "reason": "BOXP-613 等価: 1 行内の (.+) は改行を含まず行末まで貪欲に一致するため $ の有無で一致が変わらない",
+    "where": "src/home/markdown.ts:195:18 /^\\s*([-*+]|\\d+\\.)\\s+(.+)$/ -> /^\\s*([-*+]|\\d+\\.)\\s+(.+)/"
+  },
+  "mtpfzjqn86": {
+    "reason": "BOXP-613 等価: lines[lines.length] は undefined で、正規表現は文字列 'undefined' に一致せず同じくループを抜ける",
+    "where": "src/home/markdown.ts:200:14 i < lines.length -> i <= lines.length"
+  },
+  "vnojtovgoe": {
+    "reason": "BOXP-613 等価: Number.isFinite は数値以外に false を返すため typeof 検査を外しても結果が同じ",
+    "where": "src/home/sync.ts:20:42 typeof x === 'number' -> true"
+  },
+  "yggf7pmkup": {
+    "reason": "BOXP-613 等価: 字下げの取得は行頭で必ず空一致以上するため ^ の有無で結果が同じ",
+    "where": "src/home/markdown.ts:204:27 /^\\s*/ -> /\\s*/"
+  }
+}

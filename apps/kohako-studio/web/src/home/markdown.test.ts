@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { obsidianNoteUrl, parseInline, parseMarkdown, plainText, renderMarkdown } from './markdown'
+import { obsidianNotePath, obsidianNoteUrl, parseInline, parseMarkdown, plainText, renderMarkdown } from './markdown'
 
 // BOXP-613: 変異テストで parseMarkdown / renderMarkdown のブロック解釈と DOM 出力が
 // どのテストにも観測されていなかった（行の継続・終了条件、見出し段数、入れ子リスト、外部リンク属性など）。
@@ -234,6 +234,12 @@ describe('インライン・読み上げ用の補助', () => {
     const bold = parseInline('**`c` [x](https://example.com/)**')[0]
     expect(bold).toMatchObject({ type: 'bold', text: 'c x' })
     expect((bold as { children: { type: string }[] }).children.map((c) => c.type)).toEqual(['text', 'text', 'link'])
+  })
+
+  it('obsidian URL の = を持たない引数は、名前が vault/file に見えても拒否する', () => {
+    expect(obsidianNotePath('obsidian://open?vault=BOXP&file=a.md')).toBe('a.md')
+    expect(obsidianNotePath('obsidian://open?vault=BOXP&fileX')).toBeUndefined()
+    expect(obsidianNotePath('obsidian://open?vault=BOXP&file=a.md&=x')).toBeUndefined()
   })
 
   it('ノートのパスの予約記号は大文字の 16 進でエスケープする', () => {
