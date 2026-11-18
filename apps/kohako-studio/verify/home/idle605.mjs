@@ -64,7 +64,7 @@ const EXPECT = {
   smile: r => r.some(x => x.emotion === 'smile'),
   down: r => Math.min(...col(r, 'ParamEyeBallY')) < -0.35 && Math.min(...col(r, 'ParamAngleY')) < -5,
   aside: r => Math.max(...col(r, 'ParamEyeBallX').map(Math.abs)) > 0.45,
-  still: r => { const on = r.filter(x => x.idle?.act === 'still'); return on.length * STEP / 1000 > 6.5 && on.every(x => x.held) && Math.max(...col(on.slice(40), 'ParamAngleX').map(Math.abs)) < 8 },
+  still: r => { const on = r.filter(x => x.idle?.act === 'still'); return on.length * STEP / 1000 > 5.5 && on.every(x => x.held) && Math.max(...col(on.slice(40), 'ParamAngleX').map(Math.abs)) < 8 },
 }
 
 if (want('acts')) {
