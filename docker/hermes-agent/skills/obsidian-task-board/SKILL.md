@@ -248,6 +248,31 @@ kubectl -n hermes-agent exec deploy/hermes-agent -c hermes-agent -- /command/s6-
 
 通知は即時ではなく、開始時、次のツール境界、終了判断時、または次の run で届く。Done や Blocked の票に追加した場合は `update --lane Ready` でカードを移動して再開する。
 
+## Conditions（作業中ずっと有効な条件）
+
+承認の範囲、してはいけないこと、他票との取決めなど「後の run にも守らせること」は、Notes に書くだけにせず、票の `## Conditions` 節に項目として登録する（BOXP-588）。Notes は経緯の記録で、条件の置き場所ではない。Summary は目的、Acceptance Criteria は完了の条件、実装すれば終わる要件は TODO（TD）に書く。
+
+| 種別 | 意味 | 登録できる発信元 |
+|---|---|---|
+| `承認` | Owner が許した範囲。Owner の返答（`--reply-id` か `--event`）に結び付くものだけ | `--source` が Owner の経路（`hermes-agent`・`owner`・`boxp`）のとき。runner が起動した担当の process（環境変数 `CODEX_TASK_BOARD_RUN_ID` がある）からは命令が拒否する |
+| `制約` | してはいけないこと、範囲の限定、他票との取決め、止める条件 | 誰でも |
+| `要確認` | 今も有効か判断できないもの。制約として扱われる | 誰でも |
+| `取消` | 無効になった項目。行は消えず、理由と取り消した発信元が残る | 登録した発信元か Owner の経路。Owner 由来の項目は Owner の経路から（担当の process からは命令が拒否する） |
+
+- 登録: `bb bin/task_board_todos.bb conditions add ID --vault VAULT --kind 制約 --text 本文 --source 発信元 [--reply-id R | --event E] [--note-at "Notes の日時"]`
+- 取消: `bb bin/task_board_todos.bb conditions cancel ID CD-01 --vault VAULT --reason 理由 --source 発信元 [--reason-kind 取消|置換|履行済み] [--replaced-by CD-02] [--reply-id R]`
+- 一覧: `bb bin/task_board_todos.bb conditions list ID --vault VAULT`
+
+Owner の返答を票へ記録するときは、今までどおり Summary の更新と Notes への追記を行ったうえで、返答のうち承認に当たる部分を `承認`（`--reply-id` 付き）、取次ぎの際に足した注意（「これは停止の承認ではない」など）を `制約` として登録する。迷うものは `要確認` にする。内容を変えるときは書き換えず、新しい項目を登録してから古い項目を `--reason-kind 置換 --replaced-by 新しい ID` で取り消す。行を手で消したり書き換えたりしない。
+
+項目は新しい権限を与えない。Conditions と他の節が食い違うときは狭い方に従う。登録や取消は TODO と同じ版（`status` の rev）を変えるので、作業中の担当には次のツール境界で届き、受領（`ack`）されるまで done / blocked の結果は保留になる。Hermes は担当の run が動いている間でも登録・取消してよい（命令が拒否するのは担当の process からの実行で、run の時間帯ではない）。
+
+読めない行（形が違う、本文が空、ID の重複、ID が無い・数字でない、箇条書きでない文や code fence。Conditions 節には項目行とその子の行だけを書く。ID の無い行は `LINE-n` と表示される）や、Owner の返答（`reply_id` / `event`）が無い `承認` が票にある間は、担当の done は保留になり、merge・配備の命令は拒否される。担当は blocked を返してくるので、Owner の経路で直す: 読めない行は本文を保ったまま形を直し、返答のない `承認` は `conditions cancel` で取り消して、必要なら Owner の返答を付けて登録し直す。
+
+現時点では、項目を手で消す・書き換える・手書きで `取消` にする変更は検出されない（前の時点と比べる検査は、Notes の省略を有効にする前に別途入れる）。Owner の返答は今までどおり Notes にも残す。発信元は `--source` に書かれた名前で判定するので、命令の拒否は誤りを止めるもので、偽った発信元までは防がない。
+
+現時点では、Conditions を登録しても prompt から Notes が省かれることはない（票の本文は全文のまま渡る）。
+
 ## ゲート失敗予算
 
 累積失敗による停止は ticket pool（実 PR 数×10、未登録時は10、および ticket grant）で判定する。PR の失敗回数・旧上限・旧 grant は監査用であり、PR 単独の上限到達では停止しない。`gate-budget-status BOXP-N` の PR `:legacy-limit-reached?` は旧上限到達、`:exhausted? false` は停止条件でないことを示す。再開時の追加枠は ticket に付与する。CI・レビュー gate、同一 PR の別 ticket 同時実行排他は維持する。

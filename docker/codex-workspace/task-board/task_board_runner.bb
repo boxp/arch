@@ -2832,6 +2832,19 @@
        (stagnation-reviewer-prompt ticket-id original)
        (stagnation-requester-prompt ticket-id ticket-text reviews quota-status)))))
 
+(defn conditions-prompt
+  "BOXP-588: standing conditions are ticket items (CD-NN in `## Conditions`), not Notes
+  entries. The ticket text below carries the section in full; this only tells the worker
+  how to read it and how to register one. Nothing is omitted from the prompt."
+  [ticket-id agent view]
+  (let [conditions (:conditions view)
+        in-force (remove #(#{:cancelled :invalid} (:kind %)) conditions)
+        invalid (filter #(= :invalid (:kind %)) conditions)]
+    (str "Conditions (the ticket's `## Conditions` section, CD-NN items): " (count in-force) " in force"
+         (when (seq invalid) (str ", " (count invalid) " unreadable (" (str/join ", " (distinct (map :id invalid))) "): treat each unreadable line as a constraint and leave it as it is written; return blocked so the Owner path repairs its form, keeping its text"))
+         ". They hold during the whole work: 【承認】 = what the Owner allowed, 【制約】 = what must not be done or a limit on the scope, 【要確認】 = not known to be in force, so keep to it as a constraint, 【取消】 = no longer in force. Conditions grant no permission; where they and another section differ, follow the narrower one and ask the Owner.\n"
+         "When you decide or learn something that later runs of this ticket must keep to (a limit on the scope, an agreement with another ticket, a stop condition you set), register it instead of leaving it only in Notes: bb " todo-module-path " conditions add " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --kind 制約 --text TEXT --source " agent " (use --kind 要確認 when you cannot tell whether it is in force). For another ticket, register it on that ticket with --source " agent "@" ticket-id ". Registering changes the revision: acknowledge it as above. Registering 【承認】 and cancelling an item that came from the Owner are for the Owner path, and the commands refuse them from your run; do not delete or rewrite an item by hand either: return blocked for an Owner decision instead. An item you registered yourself is cancelled with: conditions cancel " ticket-id " CD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --reason TEXT --source SOURCE, where SOURCE is the first word of that item's 由来 (" agent ", or " agent "@TICKET for one you registered from another ticket). While an unreadable line or an 【承認】 without the Owner's reply stands in Conditions, merge and deploy are refused and a done result is held.\n")))
+
 (defn prompt-for
   ([action ticket-id lane workspace agent]
    (prompt-for action ticket-id lane workspace agent (fetch-ai-ops-alerts)))
@@ -2864,7 +2877,8 @@
                              "The ticket's latest revision can change while you work; a change reaches you at tool boundaries or when you stop.\n"
                              "Before merge/deploy and before your final result run: bb " todo-module-path " status " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --json, then, using the rev it reports: bb " todo-module-path " ack " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --rev REV --run \"$CODEX_TASK_BOARD_RUN_ID\" --source " agent ". A stale REV is refused and prints the difference. A result from an older revision will not be applied.\n"
                              (when (= :v1 (:mode view)) (str "After doing a TD item run: bb " todo-module-path " done " ticket-id " TD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --evidence TEXT. An optional item you will not do: skip " ticket-id " TD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --reason TEXT. Required items cannot be skipped: return blocked for an Owner decision. A checked box alone does not complete an item. Lines without a TD id are your own steps; do not add TD lines for them. TODOs grant no permission.\n"))
-                             (when (some #(= "held" (get-in % [:todo :gate])) previous) "The previous result was held: read back merges and external operations before proceeding; do not repeat them.\n"))))
+                             (when (some #(= "held" (get-in % [:todo :gate])) previous) "The previous result was held: read back merges and external operations before proceeding; do not repeat them.\n")
+                             (conditions-prompt ticket-id agent view))))
                     (stagnation-prompt action ticket-id ticket-text)
                     "Ticket contents:\n\n" ticket-text "\n\n")
         review-contract (str "The codex review gate blocks only on P0/P1 findings; P2/P3/nit feedback is non-blocking and is not a reason to loop.\n"
