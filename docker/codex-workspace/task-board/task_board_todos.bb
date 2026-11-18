@@ -319,6 +319,38 @@
     {:hold? (boolean hold?),
      :reason (if hold? :unreceived-or-open :clear),
      :blocking-ids ids}))
+(defn run-start
+  "What a run is compared against: todo-start.edn, with the Conditions first seen
+  during the run (conditions-seen.edn) added. An item registered after the start is
+  not in the start record, so without this it could be rewritten or deleted in the same
+  run and nothing would notice. nil when the run recorded no start."
+  [dir]
+  (let [read (fn [name] (let [p (fs/path dir name)]
+                          (when (fs/exists? p) (try (edn/read-string (slurp (str p))) (catch Throwable _ nil)))))
+        start (read "todo-start.edn")]
+    (if (some? (:conditions start))
+      (let [known (set (map :id (:conditions start)))]
+        (update start :conditions #(vec (concat % (remove (fn [i] (known (:id i))) (read "conditions-seen.edn"))))))
+      start)))
+(declare with-local-lock atomic-write)
+(defn observe-conditions!
+  "Records the Conditions that are in the ticket now and in neither the start record nor
+  the earlier sightings, as they are written at this first sighting. The hooks call it
+  at every tool boundary and the runner when the run ends, so from then on such an item
+  is held to the same rules as one that was there at the start. Every line of a
+  repeated id is kept. An item added and taken away again between two sightings was
+  never seen and is not detected."
+  [dir conditions]
+  (let [seen (fs/path dir "conditions-seen.edn")]
+    (when (some? (:conditions (run-start dir)))
+      (with-local-lock seen
+        (fn []
+          (let [known (set (map :id (:conditions (run-start dir))))
+                fresh (->> conditions
+                           (remove #(known (:id %)))
+                           (mapv #(select-keys % [:id :kind :text :children :line])))]
+            (when (seq fresh)
+              (atomic-write seen (pr-str (vec (concat (when (fs/exists? seen) (edn/read-string (slurp (str seen)))) fresh)))))))))))
 (defn state-summary
   [view]
   (let [states (frequencies (map :state (:items view)))]
@@ -685,7 +717,9 @@
           view (ticket-view (slurp (str path)))
           dir (:run-dir o)
           delivery (fs/path dir "todo-delivery.edn")
-          start (edn/read-string (slurp (str (fs/path dir "todo-start.edn"))))
+          ;; The start record plus what was first seen since: see run-start.
+          start (or (run-start dir) (edn/read-string (slurp (str (fs/path dir "todo-start.edn")))))
+          _ (try (observe-conditions! dir (:conditions view)) (catch Throwable _ nil))
           rev (:rev view)
           ;; The start of the run is compared here too: an acknowledgement must not
           ;; open merge or deploy while Conditions stand changed outside the rules.

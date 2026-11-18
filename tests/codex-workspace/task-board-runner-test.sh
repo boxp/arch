@@ -7382,6 +7382,32 @@ test_conditions_midrun() {
   assert_file_not_contains "${tmp}/prompt4" 'Conditions still stand changed'
   [[ "$(grep -c 'Conditions の基準を引き継ぎ' "${vault}/Tickets/BOXP-970.md")" == 2 ]] || fail 'the baseline was carried after the items were restored'
   [[ "$(grep -c 'runの結果を保留.*CD-01:removed' "${vault}/Tickets/BOXP-970.md")" == 2 ]] || fail 'a run was held after the items were restored'
+  # An item deleted after the worker ended, between the end record and the re-read that
+  # follows the Done move, holds this run. The end record has to say so as well: the next
+  # run keeps this run's baseline instead of starting from the ticket without the item.
+  vault="${tmp}/vault2"
+  state="${tmp}/state2"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-971|BOXP-971: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-971 in-progress codex
+  env -u CODEX_TASK_BOARD_RUN_ID bb "${todo}" conditions add BOXP-971 --vault "${vault}" --kind 承認 --text 'design only' --source hermes-agent --reply-id r1 >/dev/null
+  bb "${HELPER}" update BOXP-971 --vault "${vault}" --lane Ready --assignee codex >/dev/null
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_TODO_RECHECK_DIR="${tmp}" run_tick "${vault}" "${state}" env >"${tmp}/tick5" &
+  pid=$!
+  for _ in $(seq 1 300); do
+    [[ -e "${tmp}/moved" ]] && break
+    sleep 0.1
+  done
+  [[ -e "${tmp}/moved" ]] || fail 'post-move rendezvous missing for the conditions run'
+  sed -i '/^- CD-01【承認】design only$/,/^  - 由来: hermes-agent reply_id=r1$/d' "${vault}/Tickets/BOXP-971.md"
+  touch "${tmp}/continue"
+  wait "${pid}"
+  if [[ "${CODEX_TASK_BOARD_CONTINUATION_LIMIT:-8}" != 0 ]]; then
+    assert_file_contains "${vault}/Tickets/BOXP-971.md" '^status: ready$'
+    grep -rq 'CD-01:removed' "${state}"/runs/BOXP-971/*/todo-end.edn || fail 'the end record does not hold the deletion seen by the last re-read'
+    PATH="${bin}:$PATH" CODEX_FAKE_PROMPT_LOG="${tmp}/prompt6" run_tick "${vault}" "${state}" env >"${tmp}/tick6"
+    assert_file_contains "${tmp}/prompt6" 'Conditions still stand changed outside the rules since run .*CD-01:removed'
+    assert_file_contains "${vault}/Tickets/BOXP-971.md" 'runの結果を保留.*CD-01:removed'
+  fi
 }
 
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a

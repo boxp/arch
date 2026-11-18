@@ -811,4 +811,52 @@
       (ack!)
       (spit (str (fs/path dir "todo-start.edn")) (pr-str {:rev (:rev start-view) :mode :legacy}))
       (is (= "" (hook "pre" merge))))))
+(deftest conditions-registered-during-the-run
+  ;; An item registered after the start is not in the start record. From its first
+  ;; sighting at a tool boundary it is held to the same rules as the others.
+  (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-23.md") dir (fs/path d "run")
+        hook (fn [event input] (:out @(p/process ["bb" module "hook" "--vault" d "--ticket" "BOXP-23" "--run-dir" (str dir) "--event" event] {:in input :out :string :err :string})))
+        merge "{\"tool_input\":{\"command\":\"gh pr merge 1 --squash\"}}"
+        start-view (task-board-todos/ticket-view conditions-ticket)
+        add! (fn [& args] (is (zero? (:exit @(p/process (into ["bb" module "conditions" "add" "BOXP-23" "--vault" d] args) {:out :string :err :string :extra-env {"CODEX_TASK_BOARD_RUN_ID" ""}})))))
+        ack! (fn [] (let [rev (:rev (task-board-todos/ticket-view (slurp (str path))))]
+                      (is (zero? (:exit @(p/process ["bb" module "ack" "BOXP-23" "--vault" d "--rev" rev] {:out :string :err :string}))))))
+        ids (fn [] (mapv :id (:conditions (task-board-todos/run-start (str dir)))))
+        edit! (fn [f] (spit (str path) (f (slurp (str path)))))]
+    (fs/create-dirs (fs/parent path)) (fs/create-dirs dir)
+    (spit (str path) (str/replace conditions-ticket "BOXP-22" "BOXP-23"))
+    (spit (str (fs/path dir "todo-start.edn"))
+          (pr-str {:rev (:rev start-view) :mode :legacy :conditions (mapv #(select-keys % [:id :kind :text :children :line]) (:conditions start-view))}))
+    (let [before (ids)]
+      (add! "--kind" "承認" "--text" "no external transmission" "--source" "hermes-agent" "--reply-id" "r9")
+      (hook "post" "{}")
+      (ack!)
+      (is (= (inc (count before)) (count (ids))) "the first sighting joins the baseline")
+      (hook "post" "{}")
+      (is (= (inc (count before)) (count (ids))) "and is recorded once")
+      (is (= "" (hook "pre" merge))))
+    (let [id (last (ids))]
+      (testing "rewriting an Owner item registered during the run refuses merge"
+        (edit! #(str/replace % "no external transmission" "external transmission allowed"))
+        (ack!)
+        (let [out (hook "pre" merge)]
+          (is (str/includes? out "\"permissionDecision\":\"deny\""))
+          (is (str/includes? out (str id ":owner-item-changed")))))
+      (testing "so does deleting it, and the gate holds a done result"
+        (edit! #(str/replace % (re-pattern (str "(?m)^- " id "【承認】.*\\n  - 由来: .*\\n")) ""))
+        (ack!)
+        (is (str/includes? (hook "pre" merge) (str id ":removed")))
+        (is (:hold? (task-board-todos/gate-decision {:view (task-board-todos/ticket-view (slurp (str path)))
+                                                     :start-rev (:rev start-view)
+                                                     :start-conditions (:conditions (task-board-todos/run-start (str dir)))
+                                                     :result "done"}))))
+      (testing "the start record alone would not have seen it"
+        (is (not (some #{id} (map :id (:conditions (edn/read-string (slurp (str (fs/path dir "todo-start.edn"))))))))))
+      (testing "a run that recorded no Conditions at its start records no sightings"
+        (let [dir2 (fs/path d "run2")]
+          (fs/create-dirs dir2)
+          (spit (str (fs/path dir2 "todo-start.edn")) (pr-str {:rev (:rev start-view) :mode :legacy}))
+          (task-board-todos/observe-conditions! (str dir2) (:conditions start-view))
+          (is (not (fs/exists? (fs/path dir2 "conditions-seen.edn"))))
+          (is (nil? (:conditions (task-board-todos/run-start (str dir2))))))))))
 (let [r (run-tests)] (when (pos? (+ (:fail r) (:error r))) (System/exit 1)))

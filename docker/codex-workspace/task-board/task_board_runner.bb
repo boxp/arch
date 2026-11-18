@@ -2766,6 +2766,33 @@
   "Set while the prompt of a run is built whose Conditions baseline was carried over."
   nil)
 
+(defn run-conditions-start
+  "todo-start.edn of a run with the Conditions first seen during it (run-start)."
+  [dir]
+  (or (try ((resolve 'task-board-todos/run-start) dir) (catch Throwable _ nil))
+      (read-edn-file (fs/path dir "todo-start.edn") nil)))
+
+(defn record-conditions-end!
+  "Writes todo-end.edn from `view`, a reading of the ticket made after the worker ended.
+  Called again with every later reading that judges the same run (the re-reads after a
+  Done or Blocked move): the record has to say what the last of them saw, or a change
+  made after an earlier record would hold this run and still be taken as the next
+  run's start. Violations found by an earlier reading are kept, so a later reading
+  cannot clear them inside the run that made them."
+  [ticket-id dir view]
+  (try
+    (when view
+      (when-let [start (run-conditions-start dir)]
+        (when (some? (:conditions start))
+          ((resolve 'task-board-todos/observe-conditions!) dir (:conditions view))
+          (let [path (fs/path dir "todo-end.edn")
+                before (:violations (read-edn-file path nil))
+                now ((resolve 'task-board-todos/condition-violations) (:conditions start) (:conditions view))]
+            (write-edn-file! path
+                             {:accepted ((resolve 'task-board-todos/conditions-accepted) (slurp (str (ticket-path ticket-id))))
+                              :violations (vec (distinct (concat before now)))})))))
+    (catch Throwable e (log! (str "conditions end record failed: " (.getMessage e))))))
+
 (defn conditions-start
   "What a run records as the Conditions it started from (BOXP-588). Normally the ticket
   as it is. When the previous run left them changed outside the rules and they still
@@ -2788,7 +2815,7 @@
                                       (str (fs/file-name %))))
                     reverse
                     (some (fn [d]
-                            (let [start (try (read-edn-file (fs/path d "todo-start.edn") nil) (catch Throwable _ nil))]
+                            (let [start (try ((resolve 'task-board-todos/run-start) d) (catch Throwable _ nil))]
                               (when (some? (:conditions start))
                                 {:run (str (fs/file-name d)), :start start,
                                  :end (try (read-edn-file (fs/path d "todo-end.edn") nil) (catch Throwable _ nil))}))))))
@@ -5298,17 +5325,10 @@
                   (clear-pr-gate-retries! ticket-id))
                 ;; How the run left Conditions, whatever its result: the next run keeps this
                 ;; run's baseline while :violations stand (see conditions-start).
-                (try
-                  (when-let [start (read-edn-file (fs/path dir "todo-start.edn") nil)]
-                    (when (some? (:conditions start))
-                      (when-let [view (todo-view ticket-id)]
-                        (write-edn-file! (fs/path dir "todo-end.edn")
-                                         {:accepted ((resolve 'task-board-todos/conditions-accepted) (slurp (str (ticket-path ticket-id))))
-                                          :violations (vec ((resolve 'task-board-todos/condition-violations) (:conditions start) (:conditions view)))}))))
-                  (catch Throwable e (log! (str "conditions end record failed: " (.getMessage e)))))
+                (record-conditions-end! ticket-id dir (todo-view ticket-id))
                 (if-let [revision (when-not @docs-applied? (superseded-revision ticket-id start-rev))]
                   (record-superseded! ticket-id run-id action assignee effective-lane result exit review-gate revision)
-                  (let [start-todo (read-edn-file (fs/path dir "todo-start.edn") nil)
+                  (let [start-todo (run-conditions-start dir)
                         view (when start-todo (todo-view ticket-id))
                         decision (when (and view (zero? (long (or exit 1))) (not idle-timeout?) (:ok? review-gate) (#{"done" "blocked"} result))
                                    ((resolve 'task-board-todos/gate-decision) {:view view :start-rev (:rev start-todo) :start-conditions (:conditions start-todo) :result result}))
@@ -5338,6 +5358,8 @@
                     ;; moving must not stay unreceived behind this Blocked result.
                     (let [_ (when decision (todo-recheck-rendezvous!))
                           latest (when (and decision (not held?)) (todo-view ticket-id))
+                          ;; The end record follows the last reading that judged this run.
+                          _ (record-conditions-end! ticket-id dir latest)
                           recheck (when latest ((resolve 'task-board-todos/gate-decision)
                                                 {:view latest :start-rev (:rev start-todo) :start-conditions (:conditions start-todo) :result "blocked"}))]
                       (if (:hold? recheck)
@@ -5399,6 +5421,7 @@
                     (let [[next-status review-gate]
                           (if (= "done" next-status)
                             (let [latest (when start-todo (todo-view ticket-id))
+                                  _ (record-conditions-end! ticket-id dir latest)
                                   recheck (when latest ((resolve 'task-board-todos/gate-decision)
                                                         {:view latest :start-rev (:rev start-todo) :start-conditions (:conditions start-todo) :result "done"}))]
                               (if (:hold? recheck)
