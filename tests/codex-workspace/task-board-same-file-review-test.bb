@@ -14,9 +14,13 @@
   (doseq [value ["0" "-1" "bad" "999999999999999999999"]]
     (with-redefs [env (fn [_ _] value)] (is (nil? (same-file-review-threshold))))))
 (deftest ticket-contents-are-not-trimmed
-  ;; This change adds an instruction only; the ticket text in the prompt stays the full text.
-  (let [src (slurp "docker/codex-workspace/task-board/task_board_runner.bb")]
-    (is (str/includes? src "\"Ticket contents:\\n\\n\" ticket-text \"\\n\\n\")"))))
+  ;; This change adds an instruction only. The ticket text in the prompt stays the full text
+  ;; unless the ticket is in the stage 3 omission list (BOXP-241 alone by default).
+  (let [src (slurp "docker/codex-workspace/task-board/task_board_runner.bb")
+        text (str "# BOXP-1\n\n## Notes\n\n" (str/join "\n" (repeat 50 "- 2026-01-01 00:00:00 UTC [a]: note")) "\n")]
+    (is (not (contains? (notes-omission-tickets) "BOXP-1")))
+    (is (= {:text text :omitted 0} (prompt-ticket-contents "BOXP-1" text)))
+    (is (str/includes? src "\"Ticket contents:\\n\\n\" (:text contents) \"\\n\\n\")"))))
 (deftest streaks
   (let [dir (fs/create-temp-dir) url "https://github.com/Boxp/Repo/pull/12" gate {:gate :codex-review :failure-kind :findings :url url :blocking-files ["src/a.bb"]}]
     (try
