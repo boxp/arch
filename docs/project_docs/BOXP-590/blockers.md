@@ -40,3 +40,22 @@ Renovate の通常の PR と CI に戻す。
 | ID | 解除日 | 解除の根拠 | 対応 |
 | --- | --- | --- | --- |
 | PY-315 | 2026-11-18 | PyPI `ansible` 15.0.0 が GA になり `ansible-core~=2.22.0` を要求する。ansible-core 2.22.0 は Python 3.15 の classifier を持つ | BOXP-609 で `[PY-315]` rule を削除し、同じ PR で `ansible/.python-version` を 3.15 に、`ansible/uv.lock` を ansible 15.0.0 / ansible-core 2.22.0 に更新した（#13804 の再開分） |
+
+## Kubernetes 1.37 の技術ブロッカー（BOXP-615）
+
+1.37 への更新（BOXP-191）は Owner の判断で保留している。これは Renovate の抑止 rule とは別の話だが、
+2026-11-18 から同じ watch で、1.37 を止めている上流の事情も毎日確かめるようにした（cron は増やしていない）。
+watch の resolved は「上流で条件がそろった」という意味だけを持つ。保留の解除、gate 無効化の受容、
+クラスタの upgrade は Owner が判断し、watch は票を作らない。
+
+| ID | 2026-11-18 時点 | watch が resolved とする条件 |
+| --- | --- | --- |
+| K8S137-NODELIFECYCLE | 未解消。kubernetes#141572 は open、修正 PR #141622 は未 merge。release-1.37 にも同等の修正はなく、最新 patch 1.37.2 にも入っていない | 正式な 1.37.x patch の CHANGELOG に修正が載ること |
+| K8S137-LONGHORN | 上流は解消。Longhorn v1.12.2 の正式版（2026-11-09）の docs で、tested 表に 1.37 が載った | 正式版の docs の tested 表に 1.37 があること |
+| K8S137-KIND | 未解消。kindest/node の 1.37 系 tag は v1.37.0 だけで、候補 1.37.2 の image はない | 候補 patch の kindest/node tag が出ること |
+| K8S137-CALICO | 上流は解消。Calico 3.33 は 1.35〜1.37 で test されている | 最新 GA の requirements に 1.37 があること |
+
+- 判定が変わらなくても、上流で何か変わったとき（PR の merge、新しい patch、GA、tag など）は 1 回だけ通知する。
+  何も変わらなければ通知しない。取得に失敗した回は、解消とも未解消とも扱わない。
+- lolice 側の依存の更新（Calico 3.30.2、Longhorn 1.9.1 からの順番の更新）と、gate 無効化で #141572 を避ける方法は、
+  実行するときの前提として扱う。watch では見ていない。
