@@ -7366,6 +7366,22 @@ test_conditions_midrun() {
   wait "${pid}"
   assert_file_contains "${vault}/Tickets/BOXP-970.md" 'Conditions の変更を検出.*CD-03:approval-without-owner-reply'
   assert_file_not_contains "${vault}/Tickets/BOXP-970.md" 'Conditions の変更を検出.*CD-02'
+  # The deleted item was not put back, so the run after the held one is still compared with
+  # the Conditions the first run started from: it does not take the ticket as it stands.
+  assert_file_contains "${vault}/Tickets/BOXP-970.md" 'Conditions の基準を引き継ぎ.*CD-01:removed'
+  # A third run that returns done without restoring the item is held again.
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false CODEX_FAKE_PROMPT_LOG="${tmp}/prompt3" run_tick "${vault}" "${state}" env >"${tmp}/tick3"
+  assert_file_contains "${tmp}/prompt3" 'Conditions still stand changed outside the rules since run .*CD-01:removed'
+  [[ "$(grep -c 'runの結果を保留.*CD-01:removed' "${vault}/Tickets/BOXP-970.md")" == 2 ]] || fail 'the run after a deletion was not held'
+  assert_file_contains "${vault}/Tickets/BOXP-970.md" '^status: ready$'
+  # Putting the deleted item back as it was, and cancelling the unfounded approval through
+  # the Owner path, releases it.
+  bb -e '(let [[p] *command-line-args* s (slurp p)] (spit p (clojure.string/replace-first s "- CD-03【承認】" "- CD-01【承認】design only\n  - 由来: hermes-agent reply_id=r1\n- CD-03【承認】")))' "${vault}/Tickets/BOXP-970.md"
+  env -u CODEX_TASK_BOARD_RUN_ID bb "${todo}" conditions cancel BOXP-970 CD-03 --vault "${vault}" --reason 'no Owner reply' --source hermes-agent >/dev/null
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false CODEX_FAKE_PROMPT_LOG="${tmp}/prompt4" run_tick "${vault}" "${state}" env >"${tmp}/tick4"
+  assert_file_not_contains "${tmp}/prompt4" 'Conditions still stand changed'
+  [[ "$(grep -c 'Conditions の基準を引き継ぎ' "${vault}/Tickets/BOXP-970.md")" == 2 ]] || fail 'the baseline was carried after the items were restored'
+  [[ "$(grep -c 'runの結果を保留.*CD-01:removed' "${vault}/Tickets/BOXP-970.md")" == 2 ]] || fail 'a run was held after the items were restored'
 }
 
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a

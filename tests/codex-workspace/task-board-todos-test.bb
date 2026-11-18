@@ -627,6 +627,62 @@
         (is (not (:hold? (decide deleted "done" nil))))
         (is (not (:hold? (decide conditions-ticket "done" stored))))
         (is (some #{"CD-01:removed"} (:blocking-ids (decide (str/replace deleted "status: ready" "todo_contract: v1") "done" stored))))))))
+(deftest conditions-carried-over
+  ;; A run that deleted an item is held, but the next run must not take the ticket
+  ;; without the item as its start: the first run's start stays the baseline.
+  (let [items (fn [text] (mapv #(select-keys % [:id :kind :text :children :line]) (task-board-todos/parse-conditions text)))
+        swap (fn [a b] (str/replace conditions-ticket a b))
+        start (items conditions-ticket)
+        deleted (swap "- CD-01【承認】design only\n  - 由来: hermes-agent reply_id=r1\n" "")
+        carried (fn [m] (task-board-todos/carried-conditions (merge {:prev-start {:conditions start} :accepted nil} m)))
+        held {:violations ["CD-01:removed"]}]
+    (testing "the previous start is kept while the deletion stands, whatever the result of that run was"
+      (let [c (carried {:prev-end held :current (items deleted)})]
+        (is (= ["CD-01:removed"] (:violations c)))
+        (is (= start (:conditions c)))
+        (is (= ["CD-01:removed"] (task-board-todos/condition-violations (:conditions c) (items deleted))))))
+    (testing "a run that never recorded its end is compared anyway"
+      (is (= ["CD-01:removed"] (:violations (carried {:prev-end nil :current (items deleted)}))))
+      (is (nil? (carried {:prev-end nil :current start}))))
+    (testing "putting the item back releases it"
+      (is (nil? (carried {:prev-end held :current start}))))
+    (testing "a run that ended clean is not compared: the Owner path may repair a line between runs"
+      (let [broken (swap "- CD-03【要確認】" "- CD-03【変】")]
+        (is (nil? (task-board-todos/carried-conditions {:prev-start {:conditions (items broken)} :prev-end {:violations []}
+                                                        :accepted nil :current start})))))
+    (testing "items registered since are added to the carried baseline, so deleting one of them is seen too"
+      (let [added (str/replace deleted "\n## Plan" "- CD-08【制約】new limit\n  - 由来: claude-fable\n\n## Plan")
+            c (carried {:prev-end held :current (items added)})]
+        (is (= (conj (mapv :id start) "CD-08") (mapv :id (:conditions c))))
+        (is (= ["CD-01:removed" "CD-08:removed"] (task-board-todos/condition-violations (:conditions c) (items deleted))))))
+    (testing "only an acceptance made after the previous run ended starts a new baseline"
+      (is (nil? (carried {:prev-end held :accepted "2026-11-18T08:00:00Z" :current (items deleted)})))
+      (is (some? (carried {:prev-end (assoc held :accepted "2026-11-18T08:00:00Z") :accepted "2026-11-18T08:00:00Z" :current (items deleted)})))
+      (is (nil? (carried {:prev-end nil :prev-start {:conditions start :accepted "a"} :accepted "b" :current (items deleted)}))))
+    (testing "a run from before Conditions were recorded carries nothing"
+      (is (nil? (task-board-todos/carried-conditions {:prev-start {:rev "x"} :prev-end nil :accepted nil :current (items deleted)}))))))
+(deftest conditions-accept-cli
+  (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-21.md")
+        run-as (fn [worker? & args]
+                 (:exit @(p/process (into ["env" "-u" "CODEX_TASK_BOARD_RUN_ID"] (concat (when worker? ["CODEX_TASK_BOARD_RUN_ID=run-1"]) ["bb" module "conditions" "accept" "BOXP-21" "--vault" d] args))
+                                    {:out :string :err :string})))
+        text #(slurp (str path))
+        view #(task-board-todos/ticket-view (text))]
+    (fs/create-dirs (fs/parent path))
+    (spit (str path) conditions-ticket)
+    (let [before (text) rev (:rev (view))]
+      (testing "a worker, or a source outside the Owner path, cannot accept"
+        (is (= 4 (run-as true "--source" "hermes-agent" "--reason" "ok")))
+        (is (= 4 (run-as false "--source" "claude-fable" "--reason" "ok")))
+        (is (not (zero? (run-as false "--source" "hermes-agent"))))
+        (is (= before (text)))
+        (is (nil? (task-board-todos/conditions-accepted (text)))))
+      (testing "the Owner path accepts outside a run: the section and the revision stay, the time and a note are recorded"
+        (is (zero? (run-as false "--source" "hermes-agent" "--reason" "CD-03 repaired" "--reply-id" "r9")))
+        (is (re-matches #"\d{4}-\d\d-\d\dT.*Z" (task-board-todos/conditions-accepted (text))))
+        (is (= (task-board-todos/parse-conditions before) (task-board-todos/parse-conditions (text))))
+        (is (= rev (:rev (view))))
+        (is (re-find #"(?m)^- \S+ UTC \[hermes-agent\]: Conditions accept hermes-agent reply_id=r9 CD-03 repaired$" (text)))))))
 (deftest conditions-cli
   (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-21.md")
         ;; The suite itself may run inside a Task Board run: the worker case is set explicitly.

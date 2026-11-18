@@ -262,10 +262,11 @@ kubectl -n hermes-agent exec deploy/hermes-agent -c hermes-agent -- /command/s6-
 - 登録: `bb bin/task_board_todos.bb conditions add ID --vault VAULT --kind 制約 --text 本文 --source 発信元 [--reply-id R | --event E] [--note-at "Notes の日時"]`
 - 取消: `bb bin/task_board_todos.bb conditions cancel ID CD-01 --vault VAULT --reason 理由 --source 発信元 [--reason-kind 取消|置換|履行済み] [--replaced-by CD-02] [--reply-id R]`
 - 一覧: `bb bin/task_board_todos.bb conditions list ID --vault VAULT`
+- 現状の受入れ: `bb bin/task_board_todos.bb conditions accept ID --vault VAULT --reason 理由 --source 発信元 [--reply-id R | --event E]`（Owner の経路だけ。下記）
 
 Owner の返答を票へ記録するときは、今までどおり Summary の更新と Notes への追記を行ったうえで、返答のうち承認に当たる部分を `承認`（`--reply-id` 付き）、取次ぎの際に足した注意（「これは停止の承認ではない」など）を `制約` として登録する。迷うものは `要確認` にする。内容を変えるときは書き換えず、新しい項目を登録してから古い項目を `--reason-kind 置換 --replaced-by 新しい ID` で取り消す。行を手で消したり書き換えたりしない。
 
-項目は新しい権限を与えない。Conditions と他の節が食い違うときは狭い方に従う。登録や取消は TODO と同じ版（`status` の rev）を変えるので、作業中の担当には次のツール境界で届き、受領（`ack`）されるまで done / blocked の結果は保留になる。担当の run の間に、規則外の変更（項目の削除や書換え、取消理由のない取消、Owner の返答のない `承認`）があった場合も結果は保留になり、元に戻るまで担当の merge・配備の命令は拒否される。発信元は票に書かれた名前で判定するので、これは誤りと手編集を見つける仕組みで、偽った発信元までは防がない。
+項目は新しい権限を与えない。Conditions と他の節が食い違うときは狭い方に従う。登録や取消は TODO と同じ版（`status` の rev）を変えるので、作業中の担当には次のツール境界で届き、受領（`ack`）されるまで done / blocked の結果は保留になる。担当の run の間に、規則外の変更（項目の削除や書換え、取消理由のない取消、Owner の返答のない `承認`）があった場合も結果は保留になり、元に戻るまで担当の merge・配備の命令は拒否される。規則外の変更が残ったまま run が終わると、次の run もその run の開始時の Conditions と比べられる（消された項目が戻らない限り、次の run でも保留と拒否が続く。Notes に「Conditions の基準を引き継ぎ」と記録される）。解き方は 2 つ: 項目を元どおりに戻す（Owner 由来の項目の取消は Owner の経路で `conditions cancel`）か、Owner が今の状態でよいと判断したときに、Owner の経路が `conditions accept` を実行する。`accept` は Conditions 節を変えず、次の run の比較の起点を今の状態に改めるだけで、その票の run が動いていないときに行う（run の間の accept は数えない。担当の run の中からは実行できない）。読めない行の形を直すのは、その行を変えた run が無ければ従来どおり run の外で直すだけでよい。発信元は票に書かれた名前で判定するので、これは誤りと手編集を見つける仕組みで、偽った発信元までは防がない。
 
 現時点では、Conditions を登録しても prompt から Notes が省かれることはない（票の本文は全文のまま渡る）。
 

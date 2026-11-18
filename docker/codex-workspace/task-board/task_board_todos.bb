@@ -198,6 +198,29 @@
                        :when (and (= :approval (:kind e))
                                   (not (and (owner? (condition-source e)) (owner-reply? e))))]
                    (str (:id e) ":approval-without-owner-reply"))))))))
+(defn conditions-accepted
+  "When the Owner path last accepted the Conditions as they stand (front matter)."
+  [text]
+  (get (frontmatter text) "conditions_accepted"))
+(defn carried-conditions
+  "What the next run compares against when the previous run left Conditions changed
+  outside the rules. Without this the next run would record the changed state as its
+  start, and a deleted item would pass the gate without being put back.
+  `prev-start` is the previous run's todo-start.edn and `prev-end` its todo-end.edn
+  (nil when that run did not reach its end: then the comparison is made anyway).
+  The previous start stays the baseline until the items are back as they were, or
+  until the Owner path accepts the present state between runs (`accepted` differs from
+  the value the previous run ended with). Items registered since are added, so they
+  are protected as well. nil means: start from the ticket as it is."
+  [{:keys [prev-start prev-end accepted current]}]
+  (let [base (:conditions prev-start)]
+    (when (and (some? base)
+               (= accepted (:accepted (or prev-end prev-start)))
+               (or (nil? prev-end) (seq (:violations prev-end))))
+      (when-let [violations (seq (condition-violations base current))]
+        (let [known (set (map :id base))]
+          {:violations (vec violations),
+           :conditions (vec (concat base (remove #(known (:id %)) current)))})))))
 (defn item-hash
   [item]
   (sha (str/join "|"
@@ -599,6 +622,20 @@
               "\n  - 取消理由: " why (when (= "置換" why) (str "（" (:replaced-by o) "）")) " " reason
               "\n  - 取消者: " (condition-origin o)))
         (append-section "Notes" (note-line source (str "Conditions cancel " cd-id " (" why ") " reason))))))
+(defn conditions-accept
+  "The Owner path takes the Conditions as they stand as the new baseline, after it
+  repaired or confirmed what a run had changed outside the rules. Nothing in the
+  section is touched; the next run starts its comparison from this state."
+  [text o]
+  (let [source (:source o)
+        reason (require-line (:reason o) "--reason")]
+    (when (or (not (contains? owner-path-sources source)) (in-worker-run?))
+      (die (str "Only the Owner path (" (str/join ", " (sort owner-path-sources))
+                ") accepts changed Conditions, outside a Task Board run. Put the items back as they were,"
+                " or return blocked for an Owner decision.") 4))
+    (-> text
+        (set-fm "conditions_accepted" (str (Instant/now)))
+        (append-section "Notes" (note-line source (str "Conditions accept " (condition-origin o) " " reason))))))
 (def tag-labels {:required "必須", :optional "任意", :cancelled "取消"})
 (defn completion-child? [line] (boolean (re-find #"^\s*[-*]\s*(証拠|見送り):" line)))
 (defn reopened-item
@@ -660,7 +697,7 @@
                      (str "\nConditions changed outside the rules during this run: " (str/join ", " violations)
                           ". Put those items back exactly as they were (no item is deleted or rewritten;"
                           " cancel with `conditions cancel`; 【承認】 comes only from the Owner path)."
-                          " Until then merge and deploy are refused and the result is held.")))
+                          " Until then merge and deploy are refused and the result is held, in this run and in the runs after it.")))
           event (:event o)]
       (with-local-lock delivery
         (fn []
@@ -691,7 +728,7 @@
 (defn -main
   [& args]
   (let [o (opts (rest args))
-        ;; `conditions <add|cancel|list> ID [CD-NN]`
+        ;; `conditions <add|cancel|accept|list> ID [CD-NN]`
         conditions? (= "conditions" (first args))
         cmd (if conditions? (str "conditions-" (first (:args o))) (first args))
         [id item-id] (if conditions? (rest (:args o)) (:args o))
@@ -856,6 +893,7 @@
                                        "\n  - 証拠: "
                                        (require-value (:evidence o) "--evidence"))))
                       "conditions-add" (conditions-add text (assoc o :source (require-value (:source o) "--source")))
+                      "conditions-accept" (conditions-accept text (assoc o :source (require-value (:source o) "--source")))
                       "conditions-cancel" (conditions-cancel text
                                                              (assoc o :source (require-value (:source o) "--source"))
                                                              (require-value item-id "condition id"))

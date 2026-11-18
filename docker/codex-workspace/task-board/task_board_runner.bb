@@ -2762,6 +2762,39 @@
        (stagnation-reviewer-prompt ticket-id original)
        (stagnation-requester-prompt ticket-id ticket-text reviews quota-status)))))
 
+(def ^:dynamic *conditions-carried*
+  "Set while the prompt of a run is built whose Conditions baseline was carried over."
+  nil)
+
+(defn conditions-start
+  "What a run records as the Conditions it started from (BOXP-588). Normally the ticket
+  as it is. When the previous run left them changed outside the rules and they still
+  stand changed, the previous run's start is kept instead: otherwise the next run would
+  take the changed state as its start and a deleted item would pass the gate without
+  being put back. The previous run is the latest one of this ticket that recorded its
+  Conditions; one that never wrote todo-end.edn (killed, interrupted) is compared anyway."
+  [ticket-id run-id view]
+  (let [current (mapv #(select-keys % [:id :kind :text :children :line]) (:conditions view))
+        accepted (try ((resolve 'task-board-todos/conditions-accepted) (slurp (str (ticket-path ticket-id))))
+                      (catch Throwable _ nil))
+        runs (fs/path (root) "runs" ticket-id)
+        prev (when (fs/exists? runs)
+               (->> (fs/list-dir runs)
+                    (filter #(neg? (compare (str (fs/file-name %)) (str run-id))))
+                    (sort-by #(str (fs/file-name %)))
+                    reverse
+                    (some (fn [d]
+                            (let [start (try (read-edn-file (fs/path d "todo-start.edn") nil) (catch Throwable _ nil))]
+                              (when (some? (:conditions start))
+                                {:run (str (fs/file-name d)), :start start,
+                                 :end (try (read-edn-file (fs/path d "todo-end.edn") nil) (catch Throwable _ nil))}))))))
+        carried (when prev
+                  (try ((resolve 'task-board-todos/carried-conditions)
+                        {:prev-start (:start prev), :prev-end (:end prev), :accepted accepted, :current current})
+                       (catch Throwable e (log! (str "conditions carry check failed: " (.getMessage e))) nil)))]
+    (cond-> {:conditions (or (:conditions carried) current), :accepted accepted}
+      carried (assoc :carried {:from (:run prev), :violations (:violations carried)}))))
+
 (defn conditions-prompt
   "BOXP-588: standing conditions are ticket items (CD-NN in `## Conditions`), not Notes
   entries. The ticket text below carries the section in full; this only tells the worker
@@ -2772,6 +2805,9 @@
         invalid (filter #(= :invalid (:kind %)) conditions)]
     (str "Conditions (the ticket's `## Conditions` section, CD-NN items): " (count in-force) " in force"
          (when (seq invalid) (str ", " (count invalid) " unreadable (" (str/join ", " (distinct (map :id invalid))) "): treat each unreadable line as a constraint and do not edit, cancel or remove it during the run (that is refused like any other change outside the rules): return blocked so the Owner path repairs its form, keeping its text"))
+         (when-let [c *conditions-carried*]
+           (str ". Conditions still stand changed outside the rules since run " (:from c) " (" (str/join ", " (:violations c))
+                "): this run is compared with the Conditions that run started from, so merge and deploy are refused and a done or blocked result is held until each of those items is back exactly as it was. If you cannot restore one from Notes or the run records, return blocked: only the Owner path can accept the present state (conditions accept, outside a run)"))
          ". They hold during the whole work: 【承認】 = what the Owner allowed, 【制約】 = what must not be done or a limit on the scope, 【要確認】 = not known to be in force, so keep to it as a constraint, 【取消】 = no longer in force. Conditions grant no permission; where they and another section differ, follow the narrower one and ask the Owner.\n"
          "When you decide or learn something that later runs of this ticket must keep to (a limit on the scope, an agreement with another ticket, a stop condition you set), register it instead of leaving it only in Notes: bb " todo-module-path " conditions add " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --kind 制約 --text TEXT --source " agent " (use --kind 要確認 when you cannot tell whether it is in force). For another ticket, register it on that ticket with --source " agent "@" ticket-id ". Registering changes the revision: acknowledge it as above. You cannot register 【承認】 or cancel an item that came from the Owner, and no item is deleted or rewritten: return blocked for an Owner decision instead. An item you registered yourself is cancelled with: conditions cancel " ticket-id " CD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --reason TEXT --source SOURCE, where SOURCE is the first word of that item's 由来 (" agent ", or " agent "@TICKET for one you registered from another ticket). While Conditions stand changed outside these rules, merge and deploy are refused and the result of the run is held.\n")))
 
@@ -3594,12 +3630,16 @@
                              (provider-quota-summary-fields (provider-quota-status agent)))]
     (fs/create-dirs dir)
     (when-let [view (and (#{:implement :review-fix :blocked-retry} action) (todo-contract-agent? agent) (todo-view ticket-id))]
-      ;; :conditions is what the run started from; the gate compares the end against it.
-      (spit (str (fs/path dir "todo-start.edn"))
-            (pr-str (assoc (select-keys view [:rev :mode])
-                           :conditions (mapv #(select-keys % [:id :kind :text :children :line]) (:conditions view)))))
+      ;; :conditions is what the run is compared against: the ticket at the start, or the
+      ;; previous run's start while its changes outside the rules still stand.
+      (let [start (conditions-start ticket-id run view)]
+        (spit (str (fs/path dir "todo-start.edn")) (pr-str (merge (select-keys view [:rev :mode]) start)))
+        (when-let [c (:carried start)]
+          (append-note! ticket-id (str "Conditions の基準を引き継ぎ: run " (:from c) " の間の規則外の変更（" (str/join ", " (:violations c)) "）が戻っていないため、この run もその run の開始時と比べる。項目を元どおりに戻すか、Owner 経路が run の外で conditions accept するまで、merge・配備は拒否され done / blocked は保留になる。"))))
       (refresh-todo-state! ticket-id))
-    (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent ai-ops))
+    (spit (str prompt-path)
+          (binding [*conditions-carried* (:carried (try (read-edn-file (fs/path dir "todo-start.edn") nil) (catch Throwable _ nil)))]
+            (prompt-for action ticket-id lane workspace agent ai-ops)))
     (mark-run! ticket-id run :running (merge {:action action :agent agent :lane lane :started-at (now-str)} ai-ops-fields))
     (let [todo-hooks? (and @todo-module-loaded? (#{:implement :review-fix :blocked-retry} action)
                            (not= "false" (env "CODEX_TASK_BOARD_TODO_HOOKS" "true")))
@@ -5252,6 +5292,16 @@
                               :finished-at (now-str)}))
                 (when (:ok? review-gate)
                   (clear-pr-gate-retries! ticket-id))
+                ;; How the run left Conditions, whatever its result: the next run keeps this
+                ;; run's baseline while :violations stand (see conditions-start).
+                (try
+                  (when-let [start (read-edn-file (fs/path dir "todo-start.edn") nil)]
+                    (when (some? (:conditions start))
+                      (when-let [view (todo-view ticket-id)]
+                        (write-edn-file! (fs/path dir "todo-end.edn")
+                                         {:accepted ((resolve 'task-board-todos/conditions-accepted) (slurp (str (ticket-path ticket-id))))
+                                          :violations (vec ((resolve 'task-board-todos/condition-violations) (:conditions start) (:conditions view)))}))))
+                  (catch Throwable e (log! (str "conditions end record failed: " (.getMessage e)))))
                 (if-let [revision (when-not @docs-applied? (superseded-revision ticket-id start-rev))]
                   (record-superseded! ticket-id run-id action assignee effective-lane result exit review-gate revision)
                   (let [start-todo (read-edn-file (fs/path dir "todo-start.edn") nil)

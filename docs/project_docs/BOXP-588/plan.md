@@ -46,6 +46,7 @@
 - `conditions add ID --kind 承認|制約|要確認 --text 本文 --source 発信元 [--reply-id R|--event E] [--note-at 日時]`
 - `conditions cancel ID CD-NN --reason 理由 --source 発信元 [--reason-kind 取消|置換|履行済み] [--replaced-by CD-MM]`
 - `conditions list ID [--json]`
+- `conditions accept ID --reason 理由 --source 発信元 [--reply-id R|--event E]`（Owner の経路だけ、run の外だけ。節は変えず、front matter の `conditions_accepted` に時刻を書く）
 - 登録と取消は Notes にも 1 行残す。同じ種別・本文・発信元の再実行は何もしない。
 
 ### 版（rev）と保留
@@ -53,6 +54,7 @@
 - CD 項目を既存の TODO の版に含める。作業中に条件が足されたり取り消されたりすると、既存の仕組み（ツール境界の通知、ack、古い版の結果の保留）でそのまま担当に届く。新しい通知や予算は作らない。
 - **CD 項目が 1 件も無い票の版は、変更前と同じ値**（テストで固定）。配備しても既存の票の ack は無効にならない。
 - run の開始時の Conditions を `todo-start.edn` に記録し、終了時と比べる。規則外の変更（項目の削除・書換え、決まった形でない取消（本文と由来を残し、取消理由と取消者を足す）、Owner の返答のない【承認】、読めない行の出現、開始時に読めなかった行の変更（取消への書換えや形の修正を含む。種別も由来も確かめられないので run の間はそのまま残し、Owner 経路で直す））があれば、done / blocked の結果を保留にする（既存の TODO 保留と同じ扱い）。continue の結果は保留にせず、Notes に検出を記録する。
+- **規則外の変更は run をまたいで残る。** 次の run は、この票で Conditions を記録した直前の run の `todo-start.edn` を読み、その run が規則外の変更を残して終わり（`todo-end.edn` の `:violations`。終了まで届かなかった run は記録が無いので、そのまま比べる）、今の票がまだその開始時と食い違っていれば、今の票ではなく直前の run の開始時を自分の起点として記録する（その後に登録された項目は足す）。これが無いと、項目を消した run が保留になっても、次の run が「消えた後」を起点にするので、戻さないまま merge・配備・done が通ってしまう。解けるのは、項目が元どおりに戻ったとき（比較で食い違いが無くなる）か、Owner の経路が run の外で `conditions accept` したとき（`conditions_accepted` が直前の run の終了時の値と変わっている）だけ。引き継いだ run では Notes と prompt にその旨と該当 ID を出す。
 - 読めない行が票に残っている間は、v1 でも従来の票（legacy）でも、新しい版を ack しても done / blocked は保留になり、merge・配備の命令は拒否される。
 - 同じ比較を作業中の hook（merge・配備の直前、終了時）でも行う。規則外の変更が残っている間は、新しい版を ack しても merge・配備の命令は拒否される。項目を元どおりに戻せば解ける。
 - 発信元は票に書かれた名前で判定する。誤りと手編集を見つける仕組みで、発信元を偽った書込みまでは防がない（担当は今も票の全体を書ける）。
@@ -75,6 +77,8 @@
 ## 検証
 
 - `bb tests/codex-workspace/task-board-todos-test.bb`: 解析（節の外・fence 内・読めない行・重複）、版（項目なしは不変、項目の各部分で変わる）、保留（v1 / legacy、未受領、規則外の変更）、命令（権限、run の中かどうか、再実行、取消の形）、prompt の案内。
+- `tests/codex-workspace/task-board-todos-test.bb` の `conditions-carried-over` / `conditions-accept-cli`: 消された項目が戻らない間は直前の run の開始時が起点のまま、戻せば解ける、きれいに終わった run の後の修復は比べない、accept は Owner の経路・run の外だけで版を変えない。
+- 同 `test_conditions_midrun` の後半: 項目を消して保留になった次の run（continue）、その次の run（done）でも CD-01:removed で保留が続き、項目を戻すと解ける。
 - `tests/codex-workspace/task-board-runner-test.sh` の `test_conditions_midrun`: 実際に runner を回し、run 中に Owner 由来の項目を手で消すと done が保留になること、continue では Notes に記録されること、prompt に Conditions 節と案内が全文で入ること。
 - 既存の runner テスト全 shard。
 
