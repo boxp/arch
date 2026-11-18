@@ -477,3 +477,161 @@ it('retains 500 notifications and evicts handled items before unread ones', asyn
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+// BOXP-613: kill-matrix で、以下の振る舞いを観測するテストが無かった（変異が生存）。
+describe('notifications の操作対象と境界 (BOXP-613)', () => {
+  const withStore = async (
+    fn: (dir: string, store: Awaited<ReturnType<typeof createNotifications>>) => Promise<void>,
+    now?: () => number,
+  ) => {
+    const dir = await mkdtemp(join(tmpdir(), 'inbox-613-'))
+    try {
+      await fn(dir, await createNotifications(dir, async () => ({}), now))
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  }
+  const second = { ...payload, eventId: 'event-234567', choices: undefined }
+  const reply = { replyId: 'reply-123456', kind: 'text', value: '了解' }
+
+  it('既読・案内済みは指定した通知だけに付き、未読数はそれを除いて数える', () =>
+    withStore(async (_dir, store) => {
+      await store.ingest(payload)
+      await store.ingest(second)
+      expect(store.list().unread).toBe(2)
+      expect(await store.mark(second.eventId, 'readAt')).toBe(true)
+      expect(await store.announce(second.eventId)).toBe(true)
+      expect(store.list().unread).toBe(1)
+      expect(store.list().items[0]).not.toHaveProperty('readAt')
+      expect(store.list().items[0]).not.toHaveProperty('announcedAt')
+      expect(await store.mark('event-unknown', 'handledAt')).toBe(false)
+      expect(store.status([payload.eventId, second.eventId])).toEqual({
+        [payload.eventId]: { exists: true, read: false, handled: false, replied: false },
+        [second.eventId]: { exists: true, read: true, handled: false, replied: false },
+      })
+    }))
+
+  it('返信・run id の記録は指定した通知と受付番号にだけ効く', () =>
+    withStore(async (dir, store) => {
+      await store.ingest(payload)
+      await store.ingest(second)
+      const r = await store.reply(second.eventId, reply, () => true)
+      expect(r.status).toBe('submitted')
+      await store.setRun(payload.eventId, r.requestId as string, 'run-x')
+      await store.setRun(second.eventId, 'other-request', 'run-y')
+      expect((await load<Item[]>(join(dir, 'notifications.json'), []))[1].reply).not.toHaveProperty('runId')
+      await store.setRun(second.eventId, r.requestId as string, 'run-z')
+      const saved = await load<Item[]>(join(dir, 'notifications.json'), [])
+      expect(saved[0]).not.toHaveProperty('reply')
+      expect(saved[1].reply).toMatchObject({ requestId: r.requestId, runId: 'run-z', value: '了解' })
+    }))
+
+  it('返信の種類・空白だけの本文・選択肢に無い値を拒否する', () =>
+    withStore(async (_dir, store) => {
+      await store.ingest(payload)
+      const submit = vi.fn(() => true)
+      for (const bad of [
+        { ...reply, kind: 'other' },
+        { ...reply, value: '  \n ' },
+        { ...reply, kind: 'choice', value: 'いいえ' },
+      ])
+        expect(await store.reply(payload.eventId, bad, submit)).toEqual({ error: 'invalid' })
+      expect(submit).not.toHaveBeenCalled()
+      expect((await store.reply(payload.eventId, { ...reply, value: '自由記述' }, submit)).status).toBe('submitted')
+    }))
+
+  it('送信が例外で失敗したら submit_failed にし、送信済みの返信は再開に失敗しても submitted のまま', () =>
+    withStore(async (dir, store) => {
+      await store.ingest(payload)
+      const failed = await store.reply(payload.eventId, reply, () => {
+        throw new Error('down')
+      })
+      expect(failed).toMatchObject({ status: 'submit_failed', resumed: false })
+      expect((await store.reply(payload.eventId, reply, () => true)).status).toBe('submitted')
+      const restart = await createNotifications(dir, async () => ({}))
+      expect(
+        await restart.reply(
+          payload.eventId,
+          reply,
+          () => false,
+          () => false,
+        ),
+      ).toMatchObject({
+        status: 'submitted',
+        resumed: false,
+      })
+    }))
+
+  it('再送の可否は claim から 23 時間ちょうどまでを再送可とする', async () => {
+    const t = Date.parse('2026-01-02T00:00:00Z')
+    for (const [age, expired] of [
+      [23 * 3600_000, false],
+      [23 * 3600_000 + 1, true],
+    ] as const) {
+      const dir = await mkdtemp(join(tmpdir(), 'inbox-613-'))
+      try {
+        const items: Item[] = [
+          {
+            ...payload,
+            receivedAt: payload.createdAt,
+            deliveries: 1,
+            reply: {
+              ...reply,
+              kind: 'text',
+              requestId: 'req-1',
+              claimedAt: new Date(t - age).toISOString(),
+              status: 'claimed',
+            },
+          },
+        ]
+        await atomic(join(dir, 'notifications.json'), items)
+        const store = await createNotifications(
+            dir,
+            async () => ({}),
+            () => t,
+          ),
+          submit = vi.fn(() => true)
+        const result = await store.reply(payload.eventId, reply, submit)
+        expect(result.expired ?? false).toBe(expired)
+        expect(submit).toHaveBeenCalledTimes(expired ? 0 : 1)
+      } finally {
+        await rm(dir, { recursive: true, force: true })
+      }
+    }
+  })
+
+  it('上限を超えたら、処理済みが無ければ既読の最古を、処理済みがあれば先頭でもそれを消す', async () => {
+    for (const [marks, evicted] of [
+      [{ 5: 'readAt' }, 'event-000005'],
+      [{ 0: 'handledAt', 5: 'readAt' }, 'event-000000'],
+    ] as const) {
+      const dir = await mkdtemp(join(tmpdir(), 'inbox-613-'))
+      try {
+        const items: Item[] = Array.from({ length: 500 }, (_, i) => ({
+          ...payload,
+          eventId: `event-${String(i).padStart(6, '0')}`,
+          receivedAt: payload.createdAt,
+          deliveries: 1,
+          ...(i in marks ? { [(marks as Record<number, string>)[i]]: payload.createdAt } : {}),
+        }))
+        await atomic(join(dir, 'notifications.json'), items)
+        const store = await createNotifications(dir, async () => ({}))
+        await store.ingest({ ...payload, eventId: 'event-new-123' })
+        const ids = store.list().items.map((i) => i.eventId)
+        expect(ids).toHaveLength(500)
+        expect(ids).not.toContain(evicted)
+        expect(ids.filter((id) => id !== evicted && /^event-0000\d\d$/.test(id))).toHaveLength(99)
+      } finally {
+        await rm(dir, { recursive: true, force: true })
+      }
+    }
+  })
+
+  it('チケット番号は複数桁を受け付け、桁の無いものは拒否する', () =>
+    withStore(async (_dir, store) => {
+      expect(await store.ingest({ ...payload, ticketId: 'BOXP-613' })).toMatchObject({ status: 'stored' })
+      expect(await store.ingest({ ...payload, eventId: 'event-345678', ticketId: 'BOXP-' })).toEqual({
+        status: 'invalid',
+      })
+    }))
+})

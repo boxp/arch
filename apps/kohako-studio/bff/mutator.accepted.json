@@ -1,0 +1,110 @@
+{
+  "1146sjln5bi": {
+    "reason": "BOXP-613 観測不能: 例外の文言は createStatus の catch(fallback) で捨てられ、応答にもログにも出ない",
+    "where": "src/status.ts:91:25 'invalid metrics' -> ''"
+  },
+  "17qlh1mpnnb": {
+    "reason": "BOXP-613 観測不能: 読み終えた（または中断した）応答本文の reader は他から読まれず、lock の解放の有無が結果に出ない",
+    "where": "src/status.ts:269:7 reader.releaseLock() -> ;"
+  },
+  "17r7q6xsck": {
+    "reason": "BOXP-613 等価: object 以外・null・配列を通しても、直後の schema 検査か属性参照の TypeError で同じく例外になり unavailable に落ちる",
+    "where": "src/status.ts:178:7 !data || typeof data !== 'object' -> (!data && typeof data !== 'object')"
+  },
+  "17wdisqm2yl": {
+    "reason": "BOXP-613 等価: object 以外・null・配列を通しても、直後の schema 検査か属性参照の TypeError で同じく例外になり unavailable に落ちる",
+    "where": "src/status.ts:178:7 !data || typeof data !== 'object' || Array.isArray(data) -> false"
+  },
+  "183tik9mbj3": {
+    "reason": "BOXP-613 観測不能: 例外の文言は createStatus の catch(fallback) で捨てられ、応答にもログにも出ない",
+    "where": "src/status.ts:192:17 'invalid board' -> ''"
+  },
+  "1obj5phz8g1": {
+    "reason": "BOXP-613 等価: 空行も # 行も続く !s.startsWith('ai_subscription_') で同じく読み飛ばされる",
+    "where": "src/status.ts:89:9 !s || s.startsWith('#') -> false"
+  },
+  "1sl748hdemm": {
+    "reason": "BOXP-613 等価: object 以外・null・配列を通しても、直後の schema 検査か属性参照の TypeError で同じく例外になり unavailable に落ちる",
+    "where": "src/status.ts:190:25 !i || typeof i !== 'object' -> false"
+  },
+  "1stqo45ntw0": {
+    "reason": "BOXP-613 観測不能: 例外の文言は createStatus の catch(fallback) で捨てられ、応答にもログにも出ない",
+    "where": "src/status.ts:107:27 'no subscription metrics' -> ''"
+  },
+  "1tyojnz5p62": {
+    "reason": "BOXP-613 等価: 窓の系列は provider/limit/name ラベルを持つ window_ 系列だけで、他の系列はこの 3 ラベルの全一致を満たさない",
+    "where": "src/status.ts:131:31 'ai_subscription_window_' -> ''"
+  },
+  "1x9yaa5vgvx": {
+    "reason": "BOXP-613 等価: 直前で s が ai_subscription_ で始まることを確かめているため ^ の有無で一致が変わらない",
+    "where": "src/status.ts:90:15 /^(ai_subscription_[a-zA-Z0-9_]+)(?:\\{([^}]*)\\})?\\s+([^\\s]+… -> /(ai_subscription_[a-zA-Z0-9_]+)(?:\\{([^}]*)\\})?\\s+([^\\s]+)…"
+  },
+  "1xebdnpgt92": {
+    "reason": "BOXP-613 等価: object 以外・null・配列を通しても、直後の schema 検査か属性参照の TypeError で同じく例外になり unavailable に落ちる",
+    "where": "src/status.ts:178:7 !data || typeof data !== 'object' || Array.isArray(data) -> ((!data || typeof data !== 'object') && Array.isArray(data))"
+  },
+  "1yigkb27vha": {
+    "reason": "BOXP-613 観測不能: 例外の文言は createStatus の catch(fallback) で捨てられ、応答にもログにも出ない",
+    "where": "src/status.ts:253:53 'fetch failed' -> ''"
+  },
+  "23tqujeeio8": {
+    "reason": "BOXP-613 等価: object 以外・null・配列を通しても、直後の schema 検査か属性参照の TypeError で同じく例外になり unavailable に落ちる",
+    "where": "src/status.ts:190:25 !i || typeof i !== 'object' || Array.isArray(i) -> ((!i || typeof i !== 'object') && Array.isArray(i))"
+  },
+  "25ef6xg2jm": {
+    "reason": "BOXP-613 観測不能: 例外の文言は createStatus の catch(fallback) で捨てられ、応答にもログにも出ない",
+    "where": "src/status.ts:264:23 'too large' -> ''"
+  },
+  "27hm0hnuc1o": {
+    "reason": "BOXP-613 等価: object 以外・null・配列を通しても、直後の schema 検査か属性参照の TypeError で同じく例外になり unavailable に落ちる",
+    "where": "src/status.ts:178:7 !data || typeof data !== 'object' -> false"
+  },
+  "28sklfan8g2": {
+    "reason": "BOXP-613 等価: 同じ run id を再代入して保存し直すだけで、保存内容も戻り値も変わらない",
+    "where": "src/notifications.ts:163:48 r.runId === runId -> false"
+  },
+  "2erkl9c128x": {
+    "reason": "BOXP-613 観測不能: 例外の文言は createStatus の catch(fallback) で捨てられ、応答にもログにも出ない",
+    "where": "src/status.ts:178:77 'invalid board' -> ''"
+  },
+  "68ukxo4smx": {
+    "reason": "BOXP-613 等価: sessionId: undefined のキーは JSON 保存で落ち、唯一の読み手 app.ts も ?? で既定値に置き換えるため観測できない",
+    "where": "src/notifications.ts:205:17 sessionId -> true"
+  },
+  "9arnvg4g8": {
+    "reason": "BOXP-613 等価: 系列が無ければ値・状態・観測時刻も無く、後段の分岐で同じく unobserved になる",
+    "where": "src/status.ts:146:13 !series.length -> false"
+  },
+  "9dj03arkdd": {
+    "reason": "BOXP-613 等価: object 以外・null・配列を通しても、直後の schema 検査か属性参照の TypeError で同じく例外になり unavailable に落ちる",
+    "where": "src/status.ts:190:31 typeof i !== 'object' -> false"
+  },
+  "arl35yx3ji": {
+    "reason": "BOXP-613 等価: object 以外・null・配列を通しても、直後の schema 検査か属性参照の TypeError で同じく例外になり unavailable に落ちる",
+    "where": "src/status.ts:190:25 !i || typeof i !== 'object' -> (!i && typeof i !== 'object')"
+  },
+  "hshe4uxh5a": {
+    "reason": "BOXP-613 等価: object 以外・null・配列を通しても、直後の schema 検査か属性参照の TypeError で同じく例外になり unavailable に落ちる",
+    "where": "src/status.ts:190:25 !i || typeof i !== 'object' || Array.isArray(i) -> false"
+  },
+  "krw8q7329m": {
+    "reason": "BOXP-613 観測不能: 例外の文言は createStatus の catch(fallback) で捨てられ、応答にもログにも出ない",
+    "where": "src/status.ts:116:54 'subscription metrics file missing' -> ''"
+  },
+  "nnmhn03s45": {
+    "reason": "BOXP-613 観測不能: 例外の文言は createStatus の catch(fallback) で捨てられ、応答にもログにも出ない",
+    "where": "src/status.ts:251:27 'disabled' -> ''"
+  },
+  "u09ldwhn45": {
+    "reason": "BOXP-613 観測不能: 読み終えた（または中断した）応答本文の reader は他から読まれず、lock の解放の有無が結果に出ない",
+    "where": "src/status.ts:268:15 { reader.releaseLock() } -> {}"
+  },
+  "vi5a0mwkb2": {
+    "reason": "BOXP-613 等価: object 以外・null・配列を通しても、直後の schema 検査か属性参照の TypeError で同じく例外になり unavailable に落ちる",
+    "where": "src/status.ts:178:16 typeof data !== 'object' -> false"
+  },
+  "wcll1lkf0c": {
+    "reason": "BOXP-613 等価: 空行も # 行も続く !s.startsWith('ai_subscription_') で同じく読み飛ばされる",
+    "where": "src/status.ts:89:9 !s || s.startsWith('#') -> (!s && s.startsWith('#'))"
+  }
+}
