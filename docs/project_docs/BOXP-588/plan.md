@@ -5,16 +5,16 @@
 
 ## 段階
 
-| 段階 | 内容 | 入力の削減 | この PR |
+| 段階 | 内容 | 入力の削減 | PR |
 |---|---|---|---|
-| 1 | Conditions 項目（CD-NN）の解析、登録と取消の命令、版（rev）への組込み、prompt での案内、Hermes skill の書き方 | なし（何も省かない） | ○ |
-| 1.5 | Conditions を前の時点と比べ、手での削除・書換え・取消を見つける検査（下の「この PR に入れないもの」） | なし | 別 PR。段階 3 より前に入れる |
+| 1 | Conditions 項目（CD-NN）の解析、登録と取消の命令、版（rev）への組込み、prompt での案内、Hermes skill の書き方 | なし（何も省かない） | #15338（merge 済み） |
+| 1.5 | 命令が書いた項目の記録（`conditions_seal`）と今の Conditions 節を比べ、手での削除・書換え・取消を見つける検査（下の「段階 1.5」） | なし | 別 PR。段階 3 より前に入れる |
 | 2 | 植込み試験（言い回しを変えた既知の制約を実票の写しに混ぜ、抽出と独立確認が拾う数を数える）と、BOXP-360 での 1 票の移行試行 | なし | 別作業（コード変更なし） |
 | 3 | 結果が良ければ、棚卸し済みの時点（`conditions_through`）より前の Notes だけを prompt から省く。移行していない票は全文のまま | あり | 別 PR |
 
 ③（同じファイルへの重大指摘が続いたら設計の見直しを促す）は独立した #15327。
 
-## この PR（段階 1）で入れるもの
+## 段階 1（#15338）で入れたもの
 
 ### 票の形
 
@@ -60,7 +60,7 @@
 - **命令が見ているのは「run の間かどうか」ではなく、呼び出した process に `CODEX_TASK_BOARD_RUN_ID` があるかどうか。** Owner の経路（Hermes）は担当の run が動いている間でも登録・取消ができ、それは版の変更として担当に届いて、ack まで done / blocked が保留になる（テストで固定）。
 - 発信元は `--source` に書かれた名前、担当かどうかは環境変数で判定する。どちらも担当が変えられるので、命令の拒否は誤りを止めるもので、担当が意図して偽る場合は止められない。
 
-### この PR に入れないもの（段階 1.5 の別 PR）
+### 段階 1 の PR に入れなかったもの（段階 1.5 の別 PR）
 
 - **段階 1 では、Conditions の項目を手で消す・書き換える・手書きで【取消】にする変更は検出しない。** 前の時点の Conditions と比べる検査（run の開始時の記録と終了時の比較、次の run への基準の引継ぎ、run の途中で初めて見た項目の記録、Owner による現状の受入れ命令）はこの PR から外した。停滞レビュー BOXP-610 の判断による。理由は 2 つ。(1) 基準のファイルも発信元の名前も環境変数も担当が書けるので、今の置き場所では閉じた保証にならない。(2) 段階 1 は何も省かず、Owner の返答は Notes にも残って毎回全文で渡るので、検出が無くても変更前より悪くならない（担当は今でも Summary や Notes を書き換えられる）。
 - この検査は、古い Notes を省いて Conditions だけが条件を運ぶようになる段階 3 より前に、別 PR で入れる。そこで先に決めること: 基準を担当が書けない場所に置けるか。置けないなら「誤りと手編集を見つける点検で、意図した偽りは対象外」と範囲を限って書く。外したコードは branch `boxp-588-conditions-detection` に残してある。
@@ -73,6 +73,39 @@
 ### Hermes
 
 - `docker/hermes-agent/skills/obsidian-task-board/SKILL.md` に、Owner の返答を記録するとき承認を【承認】、取次ぎで足した注意を【制約】として登録する手順を追加。helper の写しを同期。
+
+## 段階 1.5: 命令を通さない変更の検出（`conditions_seal`）
+
+**範囲を先に書く。これは誤りと、Conditions 節だけの手編集を見つける点検である。担当が意図して偽る場合（記録も一緒に書き換える・消す、発信元や環境変数を偽る）は対象外で、見つけない。** 記録は票と同じファイルの front matter にあり、担当は書ける。担当が書けない置き場所は今の実行環境に無い（runner も Hermes も担当と同じ利用者で動き、vault は共有）。停滞レビュー BOXP-610 が「先に決めること」とした点への答えがこれである。
+
+### 仕組み
+
+- `conditions add` と `conditions cancel` は、自分が書いた項目について `ID:hash`（項目行と子の行の hash の先頭 12 桁）を front matter `conditions_seal` に記録する。命令が触らなかった項目の記録は変えない。
+- `conditions add` の新しい ID は、節にある ID と記録にある ID の両方より大きい番号にする。末尾の項目が手で消された後でも、その ID は再利用されず、削除の報告（`removed-outside-commands`）は残る。Owner の経路が `conditions accept` で記録を改めた後は、記録から消えた ID は再び使われうる。
+- 検査は今の票だけを読む。run の記録ディレクトリには何も置かず、run から run へ引き継ぐ基準も無い（#15338 から外した方式は、基準ファイルの持ち方に穴が続いたので使わない。branch `boxp-588-conditions-detection` のコードは使っていない）。
+- `conditions_seal` と Conditions 節が違うとき、項目ごとに次のどれかを報告する。
+  - `CD-NN:removed-outside-commands`: 記録にある ID が節に無い（削除、ID の付け替え）。
+  - `CD-NN:changed-outside-commands`: 行または子の行が記録と違う（本文の書換え、手書きの【取消】、取り消した項目を有効に戻す、由来の変更、取消理由の追加）。行内の空白の数だけの違いは変更としない（版の hash と同じ扱い）。
+  - `CD-NN:added-outside-commands`（ID の無い行は `LINE-n`）: 命令が書いていない行がある。
+- 報告がある間の扱いは、段階 1 の 2 つの検査と同じ: done の結果は保留、hook は merge・配備の命令を拒否、continue と blocked は通す。ack しても消えない。次の run でも票がそのままなら同じ報告が出る。prompt の Conditions の案内に該当の ID と「厳しい方の読みに従い、節は触らず blocked を返す」を出す。
+- 解き方は 3 つ。(1) 項目を命令が書いたとおりに戻す。(2) Owner の経路が `conditions cancel` で取り消す（Owner の経路からは記録と違う行も取り消せる。担当の process と Owner の経路でない発信元からは拒否）。(3) Owner の経路が `conditions accept ID --reason 理由 --source 発信元` を実行する。節は変えず、今の節を新しい記録にし、受け入れた違いを Notes に 1 行残す。版は変わらない。`accept` は `--source` が Owner の経路で、`CODEX_TASK_BOARD_RUN_ID` が無い process からだけ動く。
+- 記録を直した後の命令は、直前からあった違いを消さない（`add` や別の項目の `cancel` を実行しても、手で書き換えられた項目の報告は残る）。
+
+### 見つけないもの
+
+- `conditions_seal` も一緒に書き換えた、または消した変更。
+- **`conditions_seal` がまだ無い票。** この PR より前に項目を登録した票（配備時点で BOXP-588 など）は検査されず、次に `add`・`cancel` が項目を書いた時点、または `accept` が実行された時点の節が最初の記録になる（同じ内容の `add` の再実行は何も書かないので記録も作らない）。それより前の手編集は分からない。
+- 発信元（`--source`）と環境変数の偽り（段階 1 と同じ）。
+- 配備の途中で古い helper が項目を登録した場合、記録のある票ではその項目が `added-outside-commands` と報告される（codex-workspace と hermes-agent の image が別々に入替わる間だけ起こりうる）。Owner の経路の `accept` で解く。
+
+### 段階 3 とのつながり
+
+段階 3（省略）の PR では、`conditions_seal` があり報告が 0 件の票だけ省略する（記録が無い・違いがある票は全文を渡す）。これは段階 3 の PR で実装し、テストで固定する。この PR では何も省かない。
+
+### 検証
+
+- `bb tests/codex-workspace/task-board-todos-test.bb` の `conditions-seal`（削除・書換え・手書きの取消・取消の解除・由来の変更・追加・ID の付け替え・節を空にする、の各報告。空白だけの違いは報告なし。v1 / legacy とも ack 後も done は保留で continue と blocked は通る。後の命令で違いが消えない。記録の無い票と記録ごと消した変更は報告なし＝範囲の限定を固定）と `conditions-seal-cli`（命令で登録・取消した票は報告なし。担当は違いのある項目を取り消せない。`accept` の拒否条件、節と版が不変、Notes の行、再実行は無変更。未記録の票の最初の記録。hook の merge 拒否）、`conditions-prompt`（該当 ID の表示）。
+- `tests/codex-workspace/task-board-runner-test.sh` の `test_conditions_midrun`: run の間に項目を手で消すと次の run の prompt に報告が出て done が保留、その次の run も保留、Owner の経路の `accept` の後は done。
 
 ## 変えないもの
 
@@ -98,6 +131,5 @@ revert。登録済みの `## Conditions` 節は票に残るが、旧 helper で�
 ## 残ること
 
 - 段階 2 の植込み試験と BOXP-360 の移行試行（抽出 → 別担当の独立確認 → 【要確認】だけ Owner に提示）。止める条件: 独立確認の後も漏れが残る、または Owner 由来の条件の漏れが 1 件でも見つかる。
-- 段階 1.5 の検査（上記）。
 - 段階 3 の省略（`conditions_through`）と棚卸しの命令。
 - dotfiles 側の task-board skill の説明文の同期（helper の写しは dotfiles には無い）。

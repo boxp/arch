@@ -609,7 +609,7 @@
           (is (:hold? (decide text "done")))
           (is (not (:hold? (decide text "continue"))))
           (is (not (:hold? (decide text "blocked")))))))
-    (testing "stage 1 compares with no earlier reading: a deleted or rewritten item is not a problem here"
+    (testing "this check compares with nothing: a deleted or rewritten item is found by the seal (conditions-seal), not here"
       (is (= [] (check (swap "- CD-01【承認】design only\n  - 由来: hermes-agent reply_id=r1\n" ""))))
       (is (= [] (check (swap "do not touch docker/hermes-agent" "do not touch docker")))))))
 (deftest conditions-cli
@@ -708,6 +708,12 @@
     (is (str/includes? with-items "CD-NN items): 3 in force."))
     (is (str/includes? without "CD-NN items): 0 in force."))
     (is (str/includes? (prompt (str/replace conditions-ticket "- CD-03【要確認】" "- CD-03【変】")) "2 in force, 1 unreadable (CD-03)"))
+    (testing "a line that differs from the seal is named, with what to do"
+      (let [sealed (task-board-todos/conditions-add conditions-ticket {:kind "制約" :text "new limit" :source "claude-fable"})
+            out (prompt (str/replace sealed "- CD-02【制約】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n" ""))]
+        (is (str/includes? (prompt sealed) "CD-NN items): 4 in force."))
+        (is (str/includes? out "3 in force, 1 not as the commands wrote them (CD-02:removed-outside-commands): keep to the stricter reading"))
+        (is (str/includes? out "return blocked so the Owner path puts it back or accepts it"))))
     (doseq [part ["conditions add BOXP-21 --vault \"$CODEX_TASK_BOARD_VAULT\" --kind 制約 --text TEXT --source claude-fable"
                   "--source claude-fable@BOXP-21"
                   "conditions cancel BOXP-21 CD-NN"
@@ -781,4 +787,152 @@
         (is (:hold? (decide "blocked")))
         (is (zero? (:exit (run-as true "ack" "BOXP-23" "--vault" d "--rev" (:rev (view))))))
         (is (not (:hold? (decide "done"))))))))
+(deftest conditions-seal
+  ;; Stage 1.5: `conditions_seal` holds a hash of each item as the commands wrote it. The
+  ;; check reads the ticket as it stands; nothing is kept elsewhere.
+  (let [view task-board-todos/ticket-view
+        problems (fn [text] (task-board-todos/seal-problems text (task-board-todos/parse-conditions text)))
+        ;; The first command on a ticket that was never sealed seals the section as it is.
+        sealed (task-board-todos/conditions-add conditions-ticket {:kind "制約" :text "new limit" :source "claude-fable"})
+        swap (fn [a b] (let [out (str/replace sealed a b)] (assert (not= out sealed) a) out))
+        section #(task-board-todos/section % "Conditions")]
+    (testing "a ticket no command has sealed is not checked; the first command seals every line of the section"
+      (is (nil? (task-board-todos/sealed conditions-ticket)))
+      (is (= [] (problems (str/replace conditions-ticket "- CD-02【制約】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n" ""))))
+      (is (= ["CD-01" "CD-02" "CD-03" "CD-04" "CD-05"] (sort (keys (task-board-todos/sealed sealed)))))
+      (is (= [] (problems sealed)))
+      (is (= [] (:condition-problems (view sealed)))))
+    (testing "the seal is front matter: it is not part of the revision"
+      (is (= (:rev (view sealed)) (:rev (view (task-board-todos/set-fm sealed "conditions_seal" "-")))))
+      (is (= "2ac264fb5589" (:rev (view (task-board-todos/set-fm sample "conditions_seal" "-"))))))
+    (testing "an item removed, rewritten, cancelled by hand or with a changed child differs from its seal"
+      (doseq [[label text want]
+              [["removed" (swap "- CD-02【制約】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n" "") ["CD-02:removed-outside-commands"]]
+               ["text rewritten" (swap "do not touch docker/hermes-agent" "do not touch docker") ["CD-02:changed-outside-commands"]]
+               ["kind turned into 取消" (swap "- CD-02【制約】" "- CD-02【取消】") ["CD-02:changed-outside-commands"]]
+               ["cancelled in the form the command writes"
+                (swap "  - 由来: claude-fable@BOXP-546\n" "  - 由来: claude-fable@BOXP-546\n  - 取消理由: 取消 x\n  - 取消者: hermes-agent reply_id=r9\n")
+                ["CD-02:changed-outside-commands"]]
+               ["origin changed" (swap "  - 由来: claude-fable@BOXP-546" "  - 由来: hermes-agent reply_id=r9") ["CD-02:changed-outside-commands"]]
+               ["a cancelled item put back in force" (swap "- CD-04【取消】once a day" "- CD-04【制約】once a day") ["CD-04:changed-outside-commands"]]
+               ["a line the commands did not write" (swap "\n## Plan" "- CD-09【制約】by hand\n  - 由来: claude-fable\n\n## Plan") ["CD-09:added-outside-commands"]]
+               ["an unreadable line" (swap "- CD-03【要確認】" "- note\n- CD-03【要確認】") ["LINE-6:added-outside-commands"]]
+               ["an id renumbered" (swap "- CD-03【要確認】" "- CD-13【要確認】") ["CD-03:removed-outside-commands" "CD-13:added-outside-commands"]]
+               ["the whole section emptied" (str/replace sealed (section sealed) "\n") (mapv #(str "CD-0" % ":removed-outside-commands") (range 1 6))]]]
+        (is (= want (problems text)) label)
+        (is (every? (set (:condition-problems (view text))) want) label))
+      (testing "white space inside a line is not a change"
+        (is (= [] (problems (swap "- CD-02【制約】do not touch docker/hermes-agent" "- CD-02【制約】do not  touch docker/hermes-agent  "))))))
+    (testing "a done result is held on it in both modes, acknowledged or not; continue and blocked pass"
+      (let [bad (swap "do not touch docker/hermes-agent" "do not touch docker")
+            acked (fn [text] (let [v (view text)]
+                               (-> text
+                                   (task-board-todos/set-fm "todo_ack_rev" (:rev v))
+                                   (task-board-todos/set-fm "todo_ack_items" (str/join "," (map (fn [[k h]] (str k ":" (subs h 0 8))) (:hashes v)))))))
+            decide (fn [text result] (task-board-todos/gate-decision {:view (view text) :start-rev (:rev (view text)) :result result}))]
+        (doseq [text [(acked bad) (acked (str/replace bad "status: ready" "todo_contract: v1"))]]
+          (is (= ["CD-02:changed-outside-commands"] (:blocking-ids (decide text "done"))))
+          (is (:hold? (decide text "done")))
+          (is (not (:hold? (decide text "continue"))))
+          (is (not (:hold? (decide text "blocked")))))
+        (is (not (:hold? (decide (acked sealed) "done"))))))
+    (testing "a later command seals what it wrote and nothing else: the difference still stands"
+      (let [rewritten (swap "do not touch docker/hermes-agent" "do not touch docker")
+            removed (swap "- CD-01【承認】design only\n  - 由来: hermes-agent reply_id=r1\n" "")
+            added (swap "\n## Plan" "- CD-09【制約】by hand\n  - 由来: claude-fable\n\n## Plan")
+            add #(task-board-todos/conditions-add % {:kind "制約" :text "another" :source "claude-fable"})
+            cancel #(task-board-todos/conditions-cancel % {:reason "done" :source "claude-fable"} "CD-03")]
+        (is (= ["CD-02:changed-outside-commands"] (problems (add rewritten))))
+        (is (= ["CD-02:changed-outside-commands"] (problems (cancel rewritten))))
+        (is (= ["CD-01:removed-outside-commands"] (problems (add removed))))
+        (testing "the last item removed: its id is not given to the next item, so the removal still stands"
+          (let [last-removed (swap "- CD-05【制約】new limit\n  - 由来: claude-fable\n" "")
+                after (add last-removed)]
+            (is (= ["CD-05:removed-outside-commands"] (problems last-removed)))
+            (is (= ["CD-05:removed-outside-commands"] (problems after)))
+            (is (= "CD-06" (:id (last (task-board-todos/parse-conditions after)))))))
+        (is (= ["CD-09:added-outside-commands"] (problems (add added))))
+        (is (= :cancelled (:kind (nth (task-board-todos/parse-conditions (cancel rewritten)) 2))))))
+    (testing "what the seal does not find: an edit that also takes the seal away or rewrites it"
+      (let [text (-> (swap "- CD-02【制約】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n" "")
+                     (str/replace #"(?m)^conditions_seal:.*\n" ""))]
+        (is (nil? (task-board-todos/sealed text)))
+        (is (= [] (problems text)))))))
+(deftest conditions-seal-cli
+  (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-24.md")
+        run-as (fn [worker? & args]
+                 @(p/process (into ["env" "-u" "CODEX_TASK_BOARD_RUN_ID"] (concat (when worker? ["CODEX_TASK_BOARD_RUN_ID=run-1"]) ["bb" module] args))
+                             {:out :string :err :string}))
+        call (fn [worker? & args] (apply run-as worker? (concat [(first args) (second args) "BOXP-24" "--vault" d] (drop 2 args))))
+        text #(slurp (str path))
+        problems #(:condition-problems (task-board-todos/ticket-view (text)))
+        edit! (fn [a b] (let [out (str/replace (text) a b)] (assert (not= out (text)) a) (spit (str path) out)))]
+    (fs/create-dirs (fs/parent path))
+    (spit (str path) "---\nstatus: ready\n---\n# T\n\n## Summary\n\nhello\n\n## Acceptance Criteria\n\ncheck\n\n## Plan\n\n- [ ] step\n\n## Notes\n\n- 2026-01-01: n\n")
+    (testing "registering and cancelling through the commands leaves nothing to report"
+      (is (zero? (:exit (call true "conditions" "add" "--kind" "制約" "--text" "do not deploy" "--source" "claude-fable"))))
+      (is (zero? (:exit (call false "conditions" "add" "--kind" "承認" "--text" "design only" "--source" "hermes-agent" "--reply-id" "r1"))))
+      (is (zero? (:exit (call true "conditions" "add" "--kind" "要確認" "--text" "inbox shape" "--source" "claude-fable"))))
+      (is (zero? (:exit (call true "conditions" "cancel" "CD-03" "--reason" "checked" "--source" "claude-fable"))))
+      (is (= ["CD-01" "CD-02" "CD-03"] (sort (keys (task-board-todos/sealed (text))))))
+      (is (= [] (problems))))
+    (testing "an item rewritten by hand is reported and a worker does not cancel it through the command"
+      (edit! "do not deploy" "deploy freely")
+      (is (= ["CD-01:changed-outside-commands"] (problems)))
+      (let [before (text)
+            r (call true "conditions" "cancel" "CD-01" "--reason" "x" "--source" "claude-fable")]
+        (is (= 4 (:exit r)))
+        (is (str/includes? (:err r) "CD-01:changed-outside-commands"))
+        (is (= 4 (:exit (call true "conditions" "cancel" "CD-01" "--reason" "x" "--source" "hermes-agent"))))
+        (is (= 4 (:exit (call false "conditions" "cancel" "CD-01" "--reason" "x" "--source" "claude-fable"))))
+        (is (= before (text)))))
+    (testing "the Owner path cancels a line as it stands, and that is then what the commands wrote"
+      (edit! "\n## Plan" "- CD-04【承認】deploy to production\n  - 由来: claude-fable\n\n## Plan")
+      (is (= ["CD-04:approval-without-owner-reply" "CD-01:changed-outside-commands" "CD-04:added-outside-commands"] (problems)))
+      (is (zero? (:exit (call false "conditions" "cancel" "CD-04" "--reason" "no Owner reply" "--source" "hermes-agent"))))
+      (is (= ["CD-01:changed-outside-commands"] (problems))))
+    (testing "accept is for an Owner path source in a process without the run variable, with a reason"
+      (let [before (text)]
+        (is (= 4 (:exit (call true "conditions" "accept" "--reason" "ok" "--source" "hermes-agent"))))
+        (is (= 4 (:exit (call true "conditions" "accept" "--reason" "ok" "--source" "claude-fable"))))
+        (is (= 4 (:exit (call false "conditions" "accept" "--reason" "ok" "--source" "claude-fable"))))
+        (is (not (zero? (:exit (call false "conditions" "accept" "--source" "hermes-agent")))))
+        (is (not (zero? (:exit (call false "conditions" "accept" "--reason" "ok")))))
+        (is (= before (text)))
+        (is (= ["CD-01:changed-outside-commands"] (problems)))))
+    (testing "putting the item back as it was clears the report without accept"
+      (edit! "deploy freely" "do not deploy")
+      (is (= [] (problems))))
+    (testing "accept takes the section as it stands: the section and the revision do not change, Notes say what was accepted"
+      (edit! "- CD-02【承認】design only\n  - 由来: hermes-agent reply_id=r1\n" "")
+      (edit! "do not deploy" "do not deploy on Friday")
+      (is (= ["CD-01:changed-outside-commands" "CD-02:removed-outside-commands"] (problems)))
+      (let [section (task-board-todos/section (text) "Conditions")
+            rev (:rev (task-board-todos/ticket-view (text)))]
+        (is (zero? (:exit (call false "conditions" "accept" "--reason" "Owner confirmed" "--source" "hermes-agent" "--reply-id" "r7"))))
+        (is (= section (task-board-todos/section (text) "Conditions")))
+        (is (= rev (:rev (task-board-todos/ticket-view (text)))))
+        (is (= [] (problems)))
+        (is (re-find #"(?m)^- \S+ UTC \[hermes-agent reply_id=r7\]: Conditions accept \(CD-01:changed-outside-commands, CD-02:removed-outside-commands\) Owner confirmed$" (text)))
+        (let [before (text)]
+          (is (zero? (:exit (call false "conditions" "accept" "--reason" "again" "--source" "hermes-agent"))))
+          (is (= before (text))))))
+    (testing "accept on a ticket that was never sealed writes its first seal"
+      (spit (str path) conditions-ticket)
+      (is (zero? (:exit (call false "conditions" "accept" "--reason" "start" "--source" "boxp"))))
+      (is (= 4 (count (task-board-todos/sealed (text)))))
+      (is (str/includes? (text) "Conditions accept (first seal) start")))
+    (testing "the hook refuses merge while a difference stands, also after the revision is acknowledged"
+      (let [dir (fs/path d "run")
+            hook (fn [input] (:out @(p/process ["bb" module "hook" "--vault" d "--ticket" "BOXP-24" "--run-dir" (str dir) "--event" "pre"] {:in input :out :string :err :string})))
+            merge "{\"tool_input\":{\"command\":\"gh pr merge 1 --squash\"}}"]
+        (fs/create-dirs dir)
+        (spit (str (fs/path dir "todo-start.edn")) (pr-str {:rev (:rev (task-board-todos/ticket-view (text))) :mode :legacy}))
+        (is (= "" (hook merge)))
+        (edit! "- CD-03【要確認】inbox shape stays\n  - 由来: claude-fable\n" "")
+        (is (zero? (:exit (run-as true "ack" "BOXP-24" "--vault" d "--rev" (:rev (task-board-todos/ticket-view (text)))))))
+        (let [out (hook merge)]
+          (is (str/includes? out "\"permissionDecision\":\"deny\""))
+          (is (str/includes? out "CD-03:removed-outside-commands")))
+        (is (= "" (hook "{\"tool_input\":{\"command\":\"git status\"}}")))))))
 (let [r (run-tests)] (when (pos? (+ (:fail r) (:error r))) (System/exit 1)))

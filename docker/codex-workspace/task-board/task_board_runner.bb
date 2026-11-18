@@ -2835,15 +2835,19 @@
 (defn conditions-prompt
   "BOXP-588: standing conditions are ticket items (CD-NN in `## Conditions`), not Notes
   entries. The ticket text below carries the section in full; this only tells the worker
-  how to read it and how to register one. Nothing is omitted from the prompt."
+  how to read it and how to register one. Nothing is omitted from the prompt.
+  The helper compares the section with the seal its commands write (`:condition-problems`)."
   [ticket-id agent view]
   (let [conditions (:conditions view)
         in-force (remove #(#{:cancelled :invalid} (:kind %)) conditions)
-        invalid (filter #(= :invalid (:kind %)) conditions)]
+        invalid (filter #(= :invalid (:kind %)) conditions)
+        ;; Stage 1.5: lines that differ from what the commands last wrote (conditions_seal).
+        unsealed (filter #(re-find #":(?:added|changed|removed)-outside-commands$" %) (:condition-problems view))]
     (str "Conditions (the ticket's `## Conditions` section, CD-NN items): " (count in-force) " in force"
          (when (seq invalid) (str ", " (count invalid) " unreadable (" (str/join ", " (distinct (map :id invalid))) "): treat each unreadable line as a constraint and leave it as it is written; return blocked so the Owner path repairs its form, keeping its text"))
+         (when (seq unsealed) (str ", " (count unsealed) " not as the commands wrote them (" (str/join ", " unsealed) "): keep to the stricter reading of each (an item that was removed or cancelled this way still holds; the ticket's Notes record what the commands registered), leave the section as it is and return blocked so the Owner path puts it back or accepts it"))
          ". They hold during the whole work: 【承認】 = what the Owner allowed, 【制約】 = what must not be done or a limit on the scope, 【要確認】 = not known to be in force, so keep to it as a constraint, 【取消】 = no longer in force. Conditions grant no permission; where they and another section differ, follow the narrower one and ask the Owner.\n"
-         "When you decide or learn something that later runs of this ticket must keep to (a limit on the scope, an agreement with another ticket, a stop condition you set), register it instead of leaving it only in Notes: bb " todo-module-path " conditions add " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --kind 制約 --text TEXT --source " agent " (use --kind 要確認 when you cannot tell whether it is in force). For another ticket, register it on that ticket with --source " agent "@" ticket-id ". Registering changes the revision: acknowledge it as above. Registering 【承認】 and cancelling an item that came from the Owner are for the Owner path, and the commands refuse them from your run; do not delete or rewrite an item by hand either: return blocked for an Owner decision instead. An item you registered yourself is cancelled with: conditions cancel " ticket-id " CD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --reason TEXT --source SOURCE, where SOURCE is the first word of that item's 由来 (" agent ", or " agent "@TICKET for one you registered from another ticket). While an unreadable line or an 【承認】 without the Owner's reply stands in Conditions, merge and deploy are refused and a done result is held.\n")))
+         "When you decide or learn something that later runs of this ticket must keep to (a limit on the scope, an agreement with another ticket, a stop condition you set), register it instead of leaving it only in Notes: bb " todo-module-path " conditions add " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --kind 制約 --text TEXT --source " agent " (use --kind 要確認 when you cannot tell whether it is in force). For another ticket, register it on that ticket with --source " agent "@" ticket-id ". Registering changes the revision: acknowledge it as above. Registering 【承認】 and cancelling an item that came from the Owner are for the Owner path, and the commands refuse them from your run; do not delete or rewrite an item by hand either: return blocked for an Owner decision instead. An item you registered yourself is cancelled with: conditions cancel " ticket-id " CD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --reason TEXT --source SOURCE, where SOURCE is the first word of that item's 由来 (" agent ", or " agent "@TICKET for one you registered from another ticket). While an unreadable line, an 【承認】 without the Owner's reply, or an item added, changed or removed outside the commands stands in Conditions, merge and deploy are refused and a done result is held.\n")))
 
 (defn prompt-for
   ([action ticket-id lane workspace agent]

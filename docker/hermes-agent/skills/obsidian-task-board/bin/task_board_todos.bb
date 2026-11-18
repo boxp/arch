@@ -148,8 +148,8 @@
   empty text, a repeated id), and an 【承認】 whose origin is not an Owner path source
   with the Owner's reply (reply_id or event). The source is the one written in the
   ticket, so this finds mistakes and hand edits, not a forged source.
-  Stage 1 does not compare Conditions with an earlier reading: an item deleted,
-  rewritten or turned into 【取消】 by hand is not found here (see plan.md)."
+  An item deleted, rewritten or turned into 【取消】 by hand is not found here: that
+  is `seal-problems`."
   [conditions]
   (vec (sort (distinct
               (concat
@@ -158,6 +158,59 @@
                      :when (and (= :approval (:kind c))
                                 (not (and (contains? owner-path-sources (condition-source c)) (owner-reply? c))))]
                  (str (:id c) ":approval-without-owner-reply")))))))
+(declare set-fm)
+(defn condition-seal
+  "The value of the front matter key `conditions_seal`: one `ID:hash` per line of the
+  section as the commands left it."
+  [conditions]
+  (if (seq conditions)
+    (str/join "," (map #(str (:id %) ":" (subs (condition-hash %) 0 12)) conditions))
+    "-"))
+(defn sealed
+  "ID -> hash from `conditions_seal`, or nil for a ticket no command has sealed yet."
+  [text]
+  (when-let [v (get (frontmatter text) "conditions_seal")]
+    (into {} (keep #(let [[k h] (str/split % #":" 2)] (when (and k h) [k h])) (str/split v #",")))))
+(defn seal-problems
+  "Stage 1.5: where Conditions differ from what the commands last wrote. `conditions add`
+  and `conditions cancel` record a hash of the item they wrote in `conditions_seal`; an
+  item whose line or children differ from its hash (a rewrite, a hand-written 【取消】,
+  a changed 由来), a sealed id that is no longer in the section, and a line the commands
+  did not write are reported. It is judged from the ticket as it stands: nothing is kept
+  in the run directory and nothing is carried from one run to the next.
+  The seal is a front matter line of the same file. This finds mistakes and hand edits of
+  the section; it does not find an edit that also rewrites or deletes the seal, and a
+  ticket with no `conditions_seal` key is not checked at all (see plan.md)."
+  [text conditions]
+  (if-let [seal (sealed text)]
+    (let [by-id (group-by :id conditions)]
+      (vec (sort (concat
+                  (for [[id h] seal
+                        :let [found (by-id id)]
+                        :when (not (and (= 1 (count found)) (= h (subs (condition-hash (first found)) 0 12))))]
+                    (str id (if found ":changed-outside-commands" ":removed-outside-commands")))
+                  (for [id (keys by-id) :when (not (contains? seal id))]
+                    (str id ":added-outside-commands"))))))
+    []))
+(defn seal-own-change
+  "`new-text` with the seal brought up to date for what a command just wrote, and for
+  nothing else: an item the command did not touch keeps the entry it had, so a difference
+  that stood before the command still stands after it. A ticket that was never sealed
+  gets its first seal from the section as it is now."
+  [text new-text]
+  (let [hashes (fn [t] (into {} (map (juxt :id #(subs (condition-hash %) 0 12)) (parse-conditions t))))
+        before (hashes text)
+        after (parse-conditions new-text)]
+    (set-fm new-text "conditions_seal"
+            (if-let [seal (sealed text)]
+              (let [written (into {} (for [c after
+                                           :let [h (subs (condition-hash c) 0 12)]
+                                           :when (not= h (before (:id c)))]
+                                       [(:id c) h]))
+                    order (distinct (concat (map :id after) (keys seal)))]
+                (or (not-empty (str/join "," (keep #(when-let [h (or (written %) (seal %))] (str % ":" h)) order)))
+                    "-"))
+              (condition-seal after)))))
 (defn item-hash
   [item]
   (sha (str/join "|"
@@ -217,6 +270,7 @@
     {:mode mode,
      :items items,
      :conditions (mapv #(assoc % :hash (get hashes (:id %)) :received? (same? (:id %))) conditions),
+     :condition-problems (vec (concat (condition-problems conditions) (seal-problems text conditions))),
      :hashes hashes,
      :rev (revision hashes),
      :ack ack,
@@ -224,7 +278,7 @@
      :diff {:added added, :changed changed, :removed removed}}))
 (defn gate-decision
   [{:keys [view start-rev result]}]
-  (let [{:keys [mode items rev ack-rev diff ack conditions]} view
+  (let [{:keys [mode items rev ack-rev diff ack conditions condition-problems]} view
         ids (if (= mode :legacy)
               (if (and (not= rev start-rev) (not= rev ack-rev)) ["_BODY"] [])
               (vec (distinct (concat
@@ -249,7 +303,7 @@
         ;; in both modes for as long as they stand in the ticket, whenever they were
         ;; written. A blocked result is not held by them: it is how the worker hands them
         ;; to the Owner, who is the one that can repair them.
-        ids (vec (concat ids (when (not= result "blocked") (condition-problems conditions))))
+        ids (vec (concat ids (when (not= result "blocked") condition-problems)))
         hold? (and (#{"done" "blocked"} result) (seq ids))]
     {:hold? (boolean hold?),
      :reason (if hold? :unreceived-or-open :clear),
@@ -523,11 +577,15 @@
                    existing)]
     (if same
       text
-      (let [id (format "CD-%02d" (inc (reduce max 0 (keep #(some-> (re-matches #"CD-(\d+)" (:id %)) second parse-long) existing))))
+      ;; A sealed id stays taken after its line is gone: a new item under that id would put its
+      ;; own hash over the record, and the removal would no longer be reported.
+      (let [id (format "CD-%02d" (inc (reduce max 0 (keep #(some-> (re-matches #"CD-(\d+)" %) second parse-long)
+                                                           (concat (map :id existing) (keys (sealed text)))))))
             line (str "- " id "【" (condition-labels kind) "】" body)]
-        (-> (ensure-conditions-section text)
-            (append-section "Conditions" (str line "\n  - 由来: " (condition-origin o)))
-            (append-section "Notes" (note-line source (str "Conditions add " id "【" (condition-labels kind) "】" body))))))))
+        (->> (-> (ensure-conditions-section text)
+                 (append-section "Conditions" (str line "\n  - 由来: " (condition-origin o)))
+                 (append-section "Notes" (note-line source (str "Conditions add " id "【" (condition-labels kind) "】" body))))
+             (seal-own-change text))))))
 (defn conditions-cancel
   "New text with the item turned into 【取消】. The line, its text and its origin stay."
   [text o cd-id]
@@ -548,6 +606,12 @@
     (when (= :invalid (:kind item))
       (die (str "unreadable condition line: " cd-id " cannot be cancelled as it is. Treat it as a constraint and leave the line as it is: its form is repaired through the Owner path, keeping its text. Return blocked for an Owner decision.") 4))
     (when (= :cancelled (:kind item)) (die (str cd-id " is already cancelled") 4))
+    ;; The Owner path may cancel a line as it stands (that is how it withdraws an 【承認】
+    ;; written by hand); for anyone else the command would seal a hand edit as its own.
+    (when-not (and owner? (not (in-worker-run?)))
+      (when-let [problem (some #(when (str/starts-with? % (str cd-id ":")) %) (seal-problems text (parse-conditions text)))]
+        (die (str problem ": " cd-id " does not match what the commands last wrote, so a worker does not cancel it through the command."
+                  " Leave it as it is and return blocked for an Owner decision: the Owner path puts it back, cancels it or accepts it (conditions accept).") 4)))
     (when (and (owner-derived? item) (or (not owner?) (in-worker-run?)))
       (die (str cd-id " came from the Owner: it is cancelled by the Owner path (" (str/join ", " (sort owner-path-sources))
                 "), not by a Task Board worker (CODEX_TASK_BOARD_RUN_ID is set)."
@@ -555,13 +619,32 @@
     (when (and (not owner?) (not= source (condition-source item)))
       (die (str cd-id " was registered by " (condition-source item)
                 ": only that source or the Owner path can cancel it") 4))
-    (-> (replace-section-item
+    (->> (-> (replace-section-item
          text "Conditions" item
          (str "- " cd-id "【取消】" (:text item)
               (when (seq (:children item)) (str "\n" (str/join "\n" (:children item))))
               "\n  - 取消理由: " why (when (= "置換" why) (str "（" (:replaced-by o) "）")) " " reason
               "\n  - 取消者: " (condition-origin o)))
-        (append-section "Notes" (note-line source (str "Conditions cancel " cd-id " (" why ") " reason))))))
+        (append-section "Notes" (note-line source (str "Conditions cancel " cd-id " (" why ") " reason))))
+         (seal-own-change text))))
+(defn conditions-accept
+  "The Owner path takes the section as it stands: the seal is written anew from every
+  line, and the section itself is not touched. The differences it closes go to Notes."
+  [text o]
+  (let [source (:source o)
+        reason (require-line (:reason o) "--reason")
+        conditions (parse-conditions text)
+        problems (seal-problems text conditions)]
+    (when-not (contains? owner-path-sources source)
+      (die (str "conditions accept is for the Owner path (" (str/join ", " (sort owner-path-sources)) "). Return blocked for an Owner decision.") 4))
+    (when (in-worker-run?)
+      (die "conditions accept is not run by a Task Board worker (CODEX_TASK_BOARD_RUN_ID is set). Return blocked for an Owner decision." 4))
+    (if (and (sealed text) (empty? problems))
+      text
+      (-> text
+          (set-fm "conditions_seal" (condition-seal conditions))
+          (append-section "Notes" (note-line (condition-origin o)
+                                             (str "Conditions accept (" (if (sealed text) (str/join ", " problems) "first seal") ") " reason)))))))
 (def tag-labels {:required "必須", :optional "任意", :cancelled "取消"})
 (defn completion-child? [line] (boolean (re-find #"^\s*[-*]\s*(証拠|見送り):" line)))
 (defn reopened-item
@@ -615,12 +698,14 @@
           rev (:rev view)
           gate (gate-decision {:view view, :start-rev (:rev start), :result "blocked"})
           ;; An acknowledgement does not open merge or deploy while one of these stands.
-          problems (condition-problems (:conditions view))
+          problems (:condition-problems view)
           msg (str (diff-text view) "\n" (worker-commands (:ticket o) (:vault o) rev)
                    (when (seq problems)
                      (str "\nConditions that cannot be used as they are written: " (str/join ", " problems)
                           ". Leave those lines as they are and return blocked for an Owner decision: the Owner path"
-                          " repairs an unreadable line keeping its text, and registers an 【承認】 with the Owner's reply."
+                          " repairs an unreadable line keeping its text, registers an 【承認】 with the Owner's reply, and"
+                          " for an item added, changed or removed outside the commands either puts it back or accepts the"
+                          " section as it stands (conditions accept)."
                           " While one of them stands, merge and deploy are refused and a done result is held.")))
           event (:event o)]
       (with-local-lock delivery
@@ -652,7 +737,7 @@
 (defn -main
   [& args]
   (let [o (opts (rest args))
-        ;; `conditions <add|cancel|list> ID [CD-NN]`
+        ;; `conditions <add|cancel|accept|list> ID [CD-NN]`
         conditions? (= "conditions" (first args))
         cmd (if conditions? (str "conditions-" (first (:args o))) (first args))
         [id item-id] (if conditions? (rest (:args o)) (:args o))
@@ -817,6 +902,7 @@
                                        "\n  - 証拠: "
                                        (require-value (:evidence o) "--evidence"))))
                       "conditions-add" (conditions-add text (assoc o :source (require-value (:source o) "--source")))
+                      "conditions-accept" (conditions-accept text (assoc o :source (require-value (:source o) "--source")))
                       "conditions-cancel" (conditions-cancel text
                                                              (assoc o :source (require-value (:source o) "--source"))
                                                              (require-value item-id "condition id"))

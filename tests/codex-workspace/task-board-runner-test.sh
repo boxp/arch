@@ -7375,10 +7375,24 @@ test_conditions_midrun() {
   assert_file_contains "${vault}/Tickets/BOXP-970.md" '^status: ready$'
   [[ "$(grep -c 'runの結果を保留' "${vault}/Tickets/BOXP-970.md")" == 3 ]] || fail 'a cancellation during the run was not held until acknowledged'
   [[ "$(grep -c 'runの結果を保留.*CD-03:approval-without-owner-reply' "${vault}/Tickets/BOXP-970.md")" == 2 ]] || fail 'the cancelled approval was still reported'
-  # Nothing stands any more: the next run starts from the new revision and is done.
+  # BOXP-588 stage 1.5: an item deleted by hand between runs differs from the seal the
+  # commands wrote. The next run is told in its prompt and its done result is held; the
+  # check reads the ticket as it stands, so it holds in every later run as well.
+  bb -e '(let [[p] *command-line-args* s (slurp p) out (clojure.string/replace-first s "- CD-02【制約】do not touch docker/hermes-agent\n  - 由来: codex\n" "")] (assert (not= s out)) (spit p out))' "${vault}/Tickets/BOXP-970.md"
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false CODEX_FAKE_PROMPT_LOG="${tmp}/prompt4" run_tick "${vault}" "${state}" env >"${tmp}/tick4"
   assert_file_contains "${tmp}/prompt4" '^- CD-03【取消】deploy to production$'
-  [[ "$(grep -c 'runの結果を保留' "${vault}/Tickets/BOXP-970.md")" == 3 ]] || fail 'a run was held after the approval was cancelled'
+  assert_file_contains "${tmp}/prompt4" '1 not as the commands wrote them \(CD-02:removed-outside-commands\)'
+  assert_file_contains "${vault}/Tickets/BOXP-970.md" '^status: ready$'
+  [[ "$(grep -c 'runの結果を保留.*CD-02:removed-outside-commands' "${vault}/Tickets/BOXP-970.md")" == 1 ]] || fail 'the run after an item was deleted by hand was not held'
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false run_tick "${vault}" "${state}" env >"${tmp}/tick5"
+  # The runner does not repeat an identical Notes line on the same day, so the second
+  # held run is read from its own summary and from the card staying in Ready.
+  assert_run_summary_contains "${state}" BOXP-970 ':gate "held"'
+  assert_file_contains "${vault}/Tickets/BOXP-970.md" '^status: ready$'
+  # The Owner path accepts the section as it stands; nothing stands any more and the next run is done.
+  env -u CODEX_TASK_BOARD_RUN_ID bb "${todo}" conditions accept BOXP-970 --vault "${vault}" --reason 'Owner confirmed' --source hermes-agent >/dev/null
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false run_tick "${vault}" "${state}" env >"${tmp}/tick6"
+  assert_run_summary_contains "${state}" BOXP-970 ':gate "clear"'
   assert_file_contains "${vault}/Tickets/BOXP-970.md" '^status: done$'
 }
 
