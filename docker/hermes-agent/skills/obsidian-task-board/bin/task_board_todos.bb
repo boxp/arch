@@ -161,6 +161,8 @@
                  (not= :cancelled (:kind s))
                  (= (norm (:text s)) (norm (:text e)))
                  (= (map norm (:children s)) (take (count (:children s)) (map norm (:children e))))
+                 ;; A cancellation without its reason is not one.
+                 (some #(re-find #"^\s*[-*]\s*取消理由:\s*\S" %) (drop (count (:children s)) (:children e)))
                  (if (owner-derived? s)
                    (owner? by)
                    (or (owner? by) (and (some? by) (= by (condition-source s))))))))]
@@ -561,7 +563,7 @@
         reason (require-line (:reason o) "--reason")
         owner? (contains? owner-path-sources source)]
     (when (= :invalid (:kind item))
-      (die (str "unreadable condition line; repair it by hand as an Owner-path edit: " cd-id) 4))
+      (die (str "unreadable condition line: " cd-id " cannot be cancelled as it is. Fix its form by hand, keeping its text, as 【要確認】") 4))
     (when (= :cancelled (:kind item)) (die (str cd-id " is already cancelled") 4))
     (when (and (owner-derived? item) (or (not owner?) (in-worker-run?)))
       (die (str cd-id " came from the Owner: only the Owner path can cancel it, outside a Task Board run."
@@ -627,8 +629,17 @@
           delivery (fs/path dir "todo-delivery.edn")
           start (edn/read-string (slurp (str (fs/path dir "todo-start.edn"))))
           rev (:rev view)
-          gate (gate-decision {:view view, :start-rev (:rev start), :result "blocked"})
-          msg (str (diff-text view) "\n" (worker-commands (:ticket o) (:vault o) rev))
+          ;; The start of the run is compared here too: an acknowledgement must not
+          ;; open merge or deploy while Conditions stand changed outside the rules.
+          gate (gate-decision {:view view, :start-rev (:rev start), :start-conditions (:conditions start),
+                               :result "blocked"})
+          violations (filter #(re-find #"^CD-\d+:" %) (:blocking-ids gate))
+          msg (str (diff-text view) "\n" (worker-commands (:ticket o) (:vault o) rev)
+                   (when (seq violations)
+                     (str "\nConditions changed outside the rules during this run: " (str/join ", " violations)
+                          ". Put those items back exactly as they were (no item is deleted or rewritten;"
+                          " cancel with `conditions cancel`; 【承認】 comes only from the Owner path)."
+                          " Until then merge and deploy are refused and the result is held.")))
           event (:event o)]
       (with-local-lock delivery
         (fn []

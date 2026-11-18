@@ -572,7 +572,14 @@
                           "- CD-02【取消】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n"))))
       (is (= ["CD-02:changed-without-cancel"]
              (check (swap "- CD-02【制約】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n"
-                          "- CD-02【取消】do not touch docker/hermes-agent\n  - 取消者: hermes-agent\n")))))
+                          "- CD-02【取消】do not touch docker/hermes-agent\n  - 取消者: hermes-agent\n"))))
+      (testing "and carries its reason"
+        (is (= ["CD-02:changed-without-cancel"]
+               (check (swap "- CD-02【制約】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n"
+                            "- CD-02【取消】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n  - 取消者: hermes-agent reply_id=r2\n"))))
+        (is (= ["CD-02:changed-without-cancel"]
+               (check (swap "- CD-02【制約】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n"
+                            "- CD-02【取消】do not touch docker/hermes-agent\n  - 由来: claude-fable@BOXP-546\n  - 取消理由:\n  - 取消者: hermes-agent reply_id=r2\n"))))))
     (testing "an approval is registered by the Owner path with the reply it came from"
       (is (= ["CD-08:approval-without-owner-reply"] (check (swap "\n## Plan" "- CD-08【承認】deploy\n  - 由来: claude-fable reply_id=r2\n\n## Plan"))))
       (is (= ["CD-08:approval-without-owner-reply"] (check (swap "\n## Plan" "- CD-08【承認】deploy\n  - 由来: hermes-agent\n\n## Plan"))))
@@ -689,4 +696,36 @@
                   "Conditions grant no permission"
                   "You cannot register 【承認】 or cancel an item that came from the Owner"]]
       (is (str/includes? with-items part) part))))
+(deftest conditions-hook
+  ;; An acknowledgement must not open merge or deploy while Conditions stand changed outside the rules.
+  (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-22.md") dir (fs/path d "run")
+        hook (fn [event input] (:out @(p/process ["bb" module "hook" "--vault" d "--ticket" "BOXP-22" "--run-dir" (str dir) "--event" event] {:in input :out :string :err :string})))
+        merge "{\"tool_input\":{\"command\":\"gh pr merge 1 --squash\"}}"
+        start-view (task-board-todos/ticket-view conditions-ticket)
+        ack! (fn [] (let [rev (:rev (task-board-todos/ticket-view (slurp (str path))))]
+                      (is (zero? (:exit @(p/process ["bb" module "ack" "BOXP-22" "--vault" d "--rev" rev] {:out :string :err :string}))))))
+        deleted (str/replace conditions-ticket "- CD-01【承認】design only\n  - 由来: hermes-agent reply_id=r1\n" "")]
+    (fs/create-dirs (fs/parent path)) (fs/create-dirs dir)
+    (spit (str path) conditions-ticket)
+    (spit (str (fs/path dir "todo-start.edn"))
+          (pr-str {:rev (:rev start-view) :mode :legacy :conditions (mapv #(select-keys % [:id :kind :text :children]) (:conditions start-view))}))
+    (is (= "" (hook "pre" merge)))
+    (testing "an Owner item deleted by hand refuses merge, also after the new revision is acknowledged"
+      (spit (str path) deleted)
+      (is (str/includes? (hook "pre" merge) "\"permissionDecision\":\"deny\""))
+      (ack!)
+      (let [out (hook "pre" merge)]
+        (is (str/includes? out "\"permissionDecision\":\"deny\""))
+        (is (str/includes? out "Conditions changed outside the rules during this run: CD-01:removed")))
+      (is (= "" (hook "pre" "{\"tool_input\":{\"command\":\"git status\"}}")))
+      (is (str/includes? (hook "stop" "{}") "\"decision\":\"block\"")))
+    (testing "putting the item back opens it again"
+      (spit (str path) (str/replace (slurp (str path)) "- CD-02【制約】" "- CD-01【承認】design only\n  - 由来: hermes-agent reply_id=r1\n- CD-02【制約】"))
+      (ack!)
+      (is (= "" (hook "pre" merge))))
+    (testing "a run that recorded no Conditions at its start is not compared"
+      (spit (str path) deleted)
+      (ack!)
+      (spit (str (fs/path dir "todo-start.edn")) (pr-str {:rev (:rev start-view) :mode :legacy}))
+      (is (= "" (hook "pre" merge))))))
 (let [r (run-tests)] (when (pos? (+ (:fail r) (:error r))) (System/exit 1)))
