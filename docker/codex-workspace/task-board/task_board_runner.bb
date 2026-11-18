@@ -2780,8 +2780,12 @@
         runs (fs/path (root) "runs" ticket-id)
         prev (when (fs/exists? runs)
                (->> (fs/list-dir runs)
-                    (filter #(neg? (compare (str (fs/file-name %)) (str run-id))))
-                    (sort-by #(str (fs/file-name %)))
+                    (remove #(= (str (fs/file-name %)) (str run-id)))
+                    (filter #(fs/exists? (fs/path % "todo-start.edn")))
+                    ;; By the time each run recorded its start, not by the id: the id
+                    ;; ends in a random part, so two runs of one second would not sort.
+                    (sort-by #(vector (fs/file-time->millis (fs/last-modified-time (fs/path % "todo-start.edn")))
+                                      (str (fs/file-name %))))
                     reverse
                     (some (fn [d]
                             (let [start (try (read-edn-file (fs/path d "todo-start.edn") nil) (catch Throwable _ nil))]
