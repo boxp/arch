@@ -1203,12 +1203,55 @@ test_delivery_start_survives_retry_and_is_cleared_for_a_new_delivery() {
   [[ -f "${CASE_STATE}/outbox/done/mid.edn" ]] || fail "a receipt after the start must count"
 }
 
+
+# --- BOXP-614: night inbox ---
+test_night_inbox_posts_inbox_outside_the_allowlist() {
+  new_case
+  start_receiver "${CASE_TMP}" "${CASE_PORT}"
+  write_ticket "${CASE_VAULT}" BOXP-902 blocked
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress blocked blocked >/dev/null
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-902 r2 in-progress blocked blocked >/dev/null
+  echo '{:enabled true :only-tickets #{"BOXP-901"}}' >"${CASE_STATE}/outbox/night-processing.edn"
+  night_tick CODEX_TASK_BOARD_EVENT_NIGHT_INBOX=true
+  # The 409 allowlist keeps its night coordination (defer); every other ticket goes to the inbox mode.
+  assert_file_contains "${CASE_TMP}/receiver.log" 'BOXP-901-r1-blocked'
+  assert_file_contains "${CASE_TMP}/receiver.log" 'BOXP-902-r2-blocked'
+  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-blocked.edn" ':notify-mode "defer"'
+  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-902-r2-blocked.edn" ':notify-mode "inbox"'
+  stop_receiver
+  # Without the flag nothing outside the allowlist is sent at night (legacy hold).
+  new_case
+  start_receiver "${CASE_TMP}" "${CASE_PORT}"
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress blocked blocked >/dev/null
+  night_tick CODEX_TASK_BOARD_EVENT_NIGHT_INBOX=false
+  [[ ! -s "${CASE_TMP}/receiver.log" ]] || fail "night inbox off must keep the legacy hold"
+  # A digest is never sent at night, even with the inbox mode on.
+  printf '{:event-id "BOXP-901-digest-20261104T180000Z-abc" :ticket-id "BOXP-901" :event-type "task-board.morning-digest" :created-at "2026-11-04T18:00:00Z" :status :pending :attempts 0 :redeliveries 0 :digest-items []}' >"${CASE_STATE}/outbox/pending/BOXP-901-digest-20261104T180000Z-abc.edn"
+  night_tick CODEX_TASK_BOARD_EVENT_NIGHT_INBOX=true
+  assert_file_not_contains "${CASE_TMP}/receiver.log" 'BOXP-901-digest-'
+  stop_receiver
+}
+
+test_night_inbox_hold_returns_to_digest() {
+  new_case
+  local at="2026-11-04T18:00:00Z"
+  seed_event "${CASE_STATE}" i1 BOXP-901 :accepted "${at}" ":accepted-at \"${at}\" :notify-mode \"inbox\""
+  note_marker "${CASE_VAULT}" BOXP-901 i1 deferred
+  write_receipt "${CASE_VAULT}" i1 quiet-held "2026-11-04T18:01:00Z"
+  night_tick
+  assert_file_contains "${CASE_STATE}/outbox/pending/i1.edn" ':status :notify-pending'
+  [[ "$(digest_count)" -eq 0 ]] || fail "no digest may be built during quiet hours"
+  day_tick
+  [[ "$(digest_count)" -eq 1 ]] || fail "an unread night item must reach the morning digest"
+}
 test_signed_delivery_is_accepted
 test_wrong_secret_is_rejected_and_retried_with_backoff
 test_duplicate_event_id_is_reported_as_duplicate
 test_receiver_down_keeps_event_until_recovery
 test_server_error_moves_to_failed_after_max_attempts
 test_quiet_hours_defer_and_flush_in_order
+test_night_inbox_posts_inbox_outside_the_allowlist
+test_night_inbox_hold_returns_to_digest
 test_quiet_hours_gate_uses_jst_window
 test_manual_board_edit_is_detected_once
 test_runner_event_and_board_diff_collapse
