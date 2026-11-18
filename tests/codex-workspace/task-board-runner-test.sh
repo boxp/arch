@@ -7319,6 +7319,55 @@ test_recheck_reservation_resumes_interrupted_firing() {
   assert_file_contains "${state}/recheck-reservations.edn" ':state :consumed'
 }
 
+# BOXP-588: Conditions are ticket items. A change during a run that the rules do not
+# allow (a deleted item, an approval without the Owner's reply) holds a done/blocked
+# result and is recorded for a continue result. Nothing is omitted from the prompt.
+test_conditions_midrun() {
+  local tmp vault state bin pid todo
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  todo="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-970|BOXP-970: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-970 in-progress codex
+  env -u CODEX_TASK_BOARD_RUN_ID bb "${todo}" conditions add BOXP-970 --vault "${vault}" --kind 承認 --text 'design only' --source hermes-agent --reply-id r1 >/dev/null
+  bb "${todo}" conditions add BOXP-970 --vault "${vault}" --kind 制約 --text 'do not touch docker/hermes-agent' --source codex >/dev/null
+  bb "${HELPER}" update BOXP-970 --vault "${vault}" --lane Ready --assignee codex >/dev/null
+  # A done result while an Owner item was deleted by hand is held.
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false CODEX_FAKE_PROMPT_LOG="${tmp}/prompt" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" &
+  pid=$!
+  for _ in $(seq 1 100); do
+    [[ -e "${tmp}/starts" ]] && break
+    sleep 0.1
+  done
+  [[ -e "${tmp}/starts" ]] || fail 'agent did not start'
+  sed -i '/^- CD-01【承認】design only$/,/^  - 由来: hermes-agent reply_id=r1$/d' "${vault}/Tickets/BOXP-970.md"
+  wait "${pid}"
+  assert_file_contains "${tmp}/prompt" 'CD-NN items\): 2 in force'
+  assert_file_contains "${tmp}/prompt" 'conditions add BOXP-970 --vault'
+  assert_file_contains "${tmp}/prompt" '^- CD-01【承認】design only$'
+  assert_file_contains "${tmp}/prompt" '^- CD-02【制約】do not touch docker/hermes-agent$'
+  assert_file_contains "${vault}/Tickets/BOXP-970.md" '^status: ready$'
+  assert_file_contains "${vault}/Tickets/BOXP-970.md" 'runの結果を保留.*CD-01:removed'
+  assert_run_summary_contains "${state}" BOXP-970 ':gate "held"'
+  # A continue result is not held, but an approval written without the Owner's reply is recorded.
+  rm -f "${tmp}/starts"
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 CODEX_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: continue' run_tick "${vault}" "${state}" env >"${tmp}/tick2" &
+  pid=$!
+  for _ in $(seq 1 100); do
+    [[ -e "${tmp}/starts" ]] && break
+    sleep 0.1
+  done
+  [[ -e "${tmp}/starts" ]] || fail 'agent did not start for the continue run'
+  bb -e '(let [[p] *command-line-args* s (slurp p)] (spit p (clojure.string/replace-first s "- CD-02【制約】" "- CD-03【承認】deploy to production\n  - 由来: codex\n- CD-02【制約】")))' "${vault}/Tickets/BOXP-970.md"
+  wait "${pid}"
+  assert_file_contains "${vault}/Tickets/BOXP-970.md" 'Conditions の変更を検出.*CD-03:approval-without-owner-reply'
+  assert_file_not_contains "${vault}/Tickets/BOXP-970.md" 'Conditions の変更を検出.*CD-02'
+}
+
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a
 # deterministic subset in its own job, so vaults, processes and locks are isolated.
 mapfile -t cases <"${ROOT_DIR}/tests/codex-workspace/task-board-runner-cases.txt"

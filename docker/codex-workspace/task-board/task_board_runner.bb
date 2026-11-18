@@ -2762,6 +2762,19 @@
        (stagnation-reviewer-prompt ticket-id original)
        (stagnation-requester-prompt ticket-id ticket-text reviews quota-status)))))
 
+(defn conditions-prompt
+  "BOXP-588: standing conditions are ticket items (CD-NN in `## Conditions`), not Notes
+  entries. The ticket text below carries the section in full; this only tells the worker
+  how to read it and how to register one. Nothing is omitted from the prompt."
+  [ticket-id agent view]
+  (let [conditions (:conditions view)
+        in-force (remove #(#{:cancelled :invalid} (:kind %)) conditions)
+        invalid (filter #(= :invalid (:kind %)) conditions)]
+    (str "Conditions (the ticket's `## Conditions` section, CD-NN items): " (count in-force) " in force"
+         (when (seq invalid) (str ", " (count invalid) " unreadable (" (str/join ", " (distinct (map :id invalid))) "): treat each unreadable line as a constraint and report it"))
+         ". They hold during the whole work: 【承認】 = what the Owner allowed, 【制約】 = what must not be done or a limit on the scope, 【要確認】 = not known to be in force, so keep to it as a constraint, 【取消】 = no longer in force. Conditions grant no permission; where they and another section differ, follow the narrower one and ask the Owner.\n"
+         "When you decide or learn something that later runs of this ticket must keep to (a limit on the scope, an agreement with another ticket, a stop condition you set), register it instead of leaving it only in Notes: bb " todo-module-path " conditions add " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --kind 制約 --text TEXT --source " agent " (use --kind 要確認 when you cannot tell whether it is in force). For another ticket, register it on that ticket with --source " agent "@" ticket-id ". Registering changes the revision: acknowledge it as above. You cannot register 【承認】 or cancel an item that came from the Owner, and no item is deleted or rewritten: return blocked for an Owner decision instead. An item you registered yourself is cancelled with: conditions cancel " ticket-id " CD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --reason TEXT --source " agent ". A change to Conditions outside these rules holds the result of the run.\n")))
+
 (defn prompt-for
   ([action ticket-id lane workspace agent]
    (prompt-for action ticket-id lane workspace agent (fetch-ai-ops-alerts)))
@@ -2793,7 +2806,8 @@
                              "The ticket's latest revision can change while you work; a change reaches you at tool boundaries or when you stop.\n"
                              "Before merge/deploy and before your final result run: bb " todo-module-path " status " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --json, then, using the rev it reports: bb " todo-module-path " ack " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --rev REV --run \"$CODEX_TASK_BOARD_RUN_ID\" --source " agent ". A stale REV is refused and prints the difference. A result from an older revision will not be applied.\n"
                              (when (= :v1 (:mode view)) (str "After doing a TD item run: bb " todo-module-path " done " ticket-id " TD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --evidence TEXT. An optional item you will not do: skip " ticket-id " TD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --reason TEXT. Required items cannot be skipped: return blocked for an Owner decision. A checked box alone does not complete an item. Lines without a TD id are your own steps; do not add TD lines for them. TODOs grant no permission.\n"))
-                             (when (some #(= "held" (get-in % [:todo :gate])) previous) "The previous result was held: read back merges and external operations before proceeding; do not repeat them.\n"))))
+                             (when (some #(= "held" (get-in % [:todo :gate])) previous) "The previous result was held: read back merges and external operations before proceeding; do not repeat them.\n")
+                             (conditions-prompt ticket-id agent view))))
                     (stagnation-prompt action ticket-id ticket-text)
                     "Ticket contents:\n\n" ticket-text "\n\n")
         review-contract (str "The codex review gate blocks only on P0/P1 findings; P2/P3/nit feedback is non-blocking and is not a reason to loop.\n"
@@ -3580,7 +3594,10 @@
                              (provider-quota-summary-fields (provider-quota-status agent)))]
     (fs/create-dirs dir)
     (when-let [view (and (#{:implement :review-fix :blocked-retry} action) (todo-contract-agent? agent) (todo-view ticket-id))]
-      (spit (str (fs/path dir "todo-start.edn")) (pr-str (select-keys view [:rev :mode])))
+      ;; :conditions is what the run started from; the gate compares the end against it.
+      (spit (str (fs/path dir "todo-start.edn"))
+            (pr-str (assoc (select-keys view [:rev :mode])
+                           :conditions (mapv #(select-keys % [:id :kind :text :children]) (:conditions view)))))
       (refresh-todo-state! ticket-id))
     (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent ai-ops))
     (mark-run! ticket-id run :running (merge {:action action :agent agent :lane lane :started-at (now-str)} ai-ops-fields))
@@ -5240,7 +5257,14 @@
                   (let [start-todo (read-edn-file (fs/path dir "todo-start.edn") nil)
                         view (when start-todo (todo-view ticket-id))
                         decision (when (and view (zero? (long (or exit 1))) (not idle-timeout?) (:ok? review-gate) (#{"done" "blocked"} result))
-                                   ((resolve 'task-board-todos/gate-decision) {:view view :start-rev (:rev start-todo) :result result}))
+                                   ((resolve 'task-board-todos/gate-decision) {:view view :start-rev (:rev start-todo) :start-conditions (:conditions start-todo) :result result}))
+                        ;; A result that is not held (continue, or a failed run) still leaves a record
+                        ;; for the next run and the Owner.
+                        condition-violations (when (and view (not decision) (some? (:conditions start-todo)))
+                                               (try (seq ((resolve 'task-board-todos/condition-violations) (:conditions start-todo) (:conditions view)))
+                                                    (catch Throwable e (log! (str "conditions check failed: " (.getMessage e))) nil)))
+                        _ (when condition-violations
+                            (append-note! ticket-id (str "Conditions の変更を検出（run " run-id " の間に規則外の変更）: " (str/join ", " condition-violations) "。次の run は該当項目を確かめ、根拠を示せないものは【要確認】として扱い Owner に確認する。")))
                         held? (:hold? decision)
                         review-gate (if held? (let [g (consume-continuation! ticket-id run-id review-gate)]
                                                 (cond-> g (:continuation-exhausted? g) (assoc :todo-gate-exhausted? true))) review-gate)
@@ -5261,7 +5285,7 @@
                     (let [_ (when decision (todo-recheck-rendezvous!))
                           latest (when (and decision (not held?)) (todo-view ticket-id))
                           recheck (when latest ((resolve 'task-board-todos/gate-decision)
-                                                {:view latest :start-rev (:rev start-todo) :result "blocked"}))]
+                                                {:view latest :start-rev (:rev start-todo) :start-conditions (:conditions start-todo) :result "blocked"}))]
                       (if (:hold? recheck)
                         (let [gate (consume-continuation! ticket-id run-id review-gate)
                               exhausted? (:continuation-exhausted? gate)
@@ -5322,7 +5346,7 @@
                           (if (= "done" next-status)
                             (let [latest (when start-todo (todo-view ticket-id))
                                   recheck (when latest ((resolve 'task-board-todos/gate-decision)
-                                                        {:view latest :start-rev (:rev start-todo) :result "done"}))]
+                                                        {:view latest :start-rev (:rev start-todo) :start-conditions (:conditions start-todo) :result "done"}))]
                               (if (:hold? recheck)
                                 (let [gate (consume-continuation! ticket-id run-id review-gate)
                                       exhausted? (:continuation-exhausted? gate)

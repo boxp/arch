@@ -81,6 +81,104 @@
                           :else (recur (inc idx) fence current out)))))
         counts (frequencies (map :id items))]
     (mapv #(if (> (counts (:id %)) 1) (assoc % :tag :invalid) %) items)))
+;; Conditions (BOXP-588): what has to hold during the whole work, kept as ticket items in
+;; `## Conditions` instead of inside the Notes history. A line is `- CD-NN【kind】text` with
+;; indented children (由来 = who registered it and where it came from).
+(def condition-kinds {"承認" :approval, "制約" :constraint, "要確認" :unconfirmed, "取消" :cancelled})
+(def condition-labels (into {} (map (fn [[k v]] [v k]) condition-kinds)))
+(def owner-path-sources
+  "Sources that relay or are the Owner. Only these may register an approval or cancel an
+  item that came from the Owner."
+  #{"hermes-agent" "owner" "boxp"})
+(defn parse-conditions
+  [text]
+  (let [lines (str/split-lines (section text "Conditions"))
+        items (loop [idx 0, fence nil, current nil, out []]
+                (if (= idx (count lines))
+                  out
+                  (let [line (nth lines idx)
+                        delimiter (re-find #"^\s*(```+|~~~+)" line)
+                        candidate (re-find #"^[-*]\s+(?:\[[^]]*\]\s+)?(CD-\d+)" line)]
+                    (cond delimiter
+                          (let [marker (second delimiter)
+                                closes? (and fence (= (first marker) (first fence))
+                                             (>= (count marker) (count fence)))]
+                            (recur (inc idx) (cond (nil? fence) marker closes? nil :else fence) nil out))
+                          fence (recur (inc idx) fence nil out)
+                          candidate
+                          (let [[_ id kind body] (re-matches #"^[-*]\s+(CD-\d+)【(承認|制約|要確認|取消)】(.*?)\s*" line)]
+                            (recur (inc idx) fence (count out)
+                                   (conj out {:id (or id (second candidate)),
+                                              ;; An unreadable line or an empty text is never a usable condition.
+                                              :kind (if (str/blank? body) :invalid (condition-kinds kind)),
+                                              :text (or body line),
+                                              :line line,
+                                              :line-index idx,
+                                              :children [],
+                                              :child-indices []})))
+                          (and current (re-find #"^\s+\S" line))
+                          (recur (inc idx) fence current
+                                 (-> out
+                                     (update-in [current :children] conj line)
+                                     (update-in [current :child-indices] conj idx)))
+                          (or (str/blank? line) (re-find #"^\S" line)) (recur (inc idx) fence nil out)
+                          :else (recur (inc idx) fence current out)))))
+        counts (frequencies (map :id items))]
+    (mapv #(if (> (counts (:id %)) 1) (assoc % :kind :invalid) %) items)))
+(defn condition-hash
+  "Every child counts: the origin and the cancellation are part of what the item says."
+  [item]
+  (sha (str/join "|" [(:id item) (name (:kind item)) (norm (:text item))
+                      (str/join " " (map norm (:children item)))])))
+(defn condition-child
+  [item label]
+  (some #(second (re-find (re-pattern (str "^\\s*[-*]\\s*" label ":\\s*(\\S+)")) %)) (:children item)))
+(defn condition-source [item] (condition-child item "由来"))
+(defn owner-derived?
+  [item]
+  (or (= :approval (:kind item)) (contains? owner-path-sources (condition-source item))))
+(defn owner-reply?
+  "An approval has to point at the Owner's reply it came from."
+  [item]
+  (boolean (some #(re-find #"^\s*[-*]\s*由来:.*\b(?:reply_id|event)=\S" %) (:children item))))
+(defn condition-violations
+  "What changed in Conditions between two readings that only the Owner path may do, or that
+  nobody may do. Items are never deleted or rewritten: they are cancelled, keeping the text
+  and the origin, by whoever registered them or by the Owner path. An approval is always
+  registered by the Owner path with the reply it came from. The source is the one written
+  in the ticket, so this catches mistakes and hand edits, not a forged source."
+  [start end]
+  (let [by-id (fn [items] (into {} (map (juxt :id identity) items)))
+        start-by (by-id start)
+        end-by (by-id end)
+        content #(select-keys % [:kind :text :children])
+        same? (fn [a b] (= (content a) (content b)))
+        owner? #(contains? owner-path-sources %)
+        cancelled-properly?
+        (fn [s e]
+          (let [by (condition-child e "取消者")]
+            (and (= :cancelled (:kind e))
+                 (not= :cancelled (:kind s))
+                 (= (norm (:text s)) (norm (:text e)))
+                 (= (map norm (:children s)) (take (count (:children s)) (map norm (:children e))))
+                 (if (owner-derived? s)
+                   (owner? by)
+                   (or (owner? by) (and (some? by) (= by (condition-source s))))))))]
+    (vec (sort (distinct
+                (concat
+                 (for [s start :when (not (contains? end-by (:id s)))] (str (:id s) ":removed"))
+                 (for [e end :when (and (= :invalid (:kind e)) (not (same? (start-by (:id e)) e)))]
+                   (str (:id e) ":invalid"))
+                 (for [s start
+                       :let [e (end-by (:id s))]
+                       :when (and e (not= :invalid (:kind e)) (not= :invalid (:kind s))
+                                  (not (same? s e)) (not (cancelled-properly? s e)))]
+                   (str (:id s) (if (owner-derived? s) ":owner-item-changed" ":changed-without-cancel")))
+                 (for [e end
+                       :let [s (start-by (:id e))]
+                       :when (and (= :approval (:kind e)) (not (and s (same? s e)))
+                                  (not (and (owner? (condition-source e)) (owner-reply? e))))]
+                   (str (:id e) ":approval-without-owner-reply"))))))))
 (defn item-hash
   [item]
   (sha (str/join "|"
@@ -104,7 +202,10 @@
   (let [fm (frontmatter text)
         mode (if (= "v1" (get fm "todo_contract")) :v1 :legacy)
         items (if (= mode :v1) (parse-items text) [])
-        hashes (into {"_BODY" (body-hash text mode)} (map (juxt :id item-hash) items))
+        conditions (parse-conditions text)
+        ;; A ticket without condition items keeps the revision it had before Conditions existed.
+        hashes (into {"_BODY" (body-hash text mode)}
+                     (concat (map (juxt :id item-hash) items) (map (juxt :id condition-hash) conditions)))
         ack (into {}
                   (keep #(let [[k v] (str/split % #":" 2)] (when (and k v) [k v]))
                         (str/split (get fm "todo_ack_items" "") #",")))
@@ -136,17 +237,23 @@
         removed (vec (sort (remove #(contains? hashes %) (keys ack))))]
     {:mode mode,
      :items items,
+     :conditions (mapv #(assoc % :hash (get hashes (:id %)) :received? (same? (:id %))) conditions),
      :hashes hashes,
      :rev (revision hashes),
      :ack ack,
      :ack-rev (get fm "todo_ack_rev"),
      :diff {:added added, :changed changed, :removed removed}}))
 (defn gate-decision
-  [{:keys [view start-rev result]}]
-  (let [{:keys [mode items rev ack-rev diff ack]} view
+  [{:keys [view start-rev result start-conditions]}]
+  (let [{:keys [mode items rev ack-rev diff ack conditions]} view
+        ;; nil: the run started before Conditions were recorded, so there is nothing to compare.
+        violations (when (some? start-conditions) (condition-violations start-conditions conditions))
         ids (if (= mode :legacy)
               (if (and (not= rev start-rev) (not= rev ack-rev)) ["_BODY"] [])
               (vec (distinct (concat
+                              ;; A new, changed or unreadable condition not acknowledged yet.
+                              (keep #(when (or (= :invalid (:kind %)) (not (:received? %))) (:id %))
+                                    conditions)
                               (when (not= (get ack "_BODY")
                                           (subs (get-in view [:hashes "_BODY"]) 0 8))
                                 ["_BODY"])
@@ -162,6 +269,7 @@
                                                        (not= :verified (:state i)))))
                                         (:id i)))
                                     items)))))
+        ids (vec (concat ids violations))
         hold? (and (#{"done" "blocked"} result) (seq ids))]
     {:hold? (boolean hold?),
      :reason (if hold? :unreceived-or-open :clear),
@@ -184,7 +292,7 @@
                                                                (get-in view
                                                                        [:diff :changed])))
                                                   [(:id %)])
-                                           (:items view)))))]
+                                           (concat (:items view) (:conditions view))))))]
     (if (> (count s) 1950)
       (str (subs s 0 1950) "\n... truncated; read the ticket for the rest.")
       s)))
@@ -362,9 +470,13 @@
                          pattern
                          (fn [[_ h body]] (str h (str/trimr body) "\n" line "\n\n")))
       (str (str/trimr text) "\n\n## " name "\n\n" line "\n"))))
-(defn replace-item
-  [text item replacement]
-  (let [plan (section text "Plan")
+(defn die [s code] (binding [*out* *err*] (println s)) (System/exit code))
+(defn require-value
+  [v label]
+  (or (not-empty v) (throw (ex-info (str "missing " label) {}))))
+(defn replace-section-item
+  [text section-name item replacement]
+  (let [plan (section text section-name)
         lines (vec (str/split plan #"\n" -1))
         indices (set (cons (:line-index item) (:child-indices item)))
         new-plan (str/join "\n"
@@ -374,9 +486,96 @@
                                                  :else line))
                                          lines))]
     (str/replace-first text
-                       (re-pattern (str "(?ms)(^## Plan[^\n]*\n)"
+                       (re-pattern (str "(?ms)(^## " (java.util.regex.Pattern/quote section-name) "[^\n]*\n)"
                                         (java.util.regex.Pattern/quote plan)))
                        (fn [[_ header]] (str header new-plan)))))
+(defn replace-item [text item replacement] (replace-section-item text "Plan" item replacement))
+(defn in-worker-run?
+  "The runner sets this for the agent it starts; Hermes and a person at a shell have none."
+  []
+  (not (str/blank? (System/getenv "CODEX_TASK_BOARD_RUN_ID"))))
+(defn one-line [s] (norm s))
+(defn require-line
+  "A value that still says something once it is on one line."
+  [v label]
+  (or (not-empty (one-line v)) (throw (ex-info (str "missing " label) {}))))
+(defn condition-origin
+  "The 由来/取消者 value: the source first, then where it came from."
+  [o]
+  (str (:source o)
+       (when (:reply-id o) (str " reply_id=" (one-line (:reply-id o))))
+       (when (:event o) (str " event=" (one-line (:event o))))
+       (when (:note-at o) (str " （Notes " (one-line (:note-at o)) "）"))))
+(defn ensure-conditions-section
+  "Conditions sit between the completion criteria and the working sections."
+  [text]
+  (if (re-find #"(?m)^## Conditions[ \t]*$" text)
+    text
+    (let [m (re-matcher #"(?m)^## (?:Context|Plan|Notes)[ \t]*$" text)]
+      (if (.find m)
+        (str (subs text 0 (.start m)) "## Conditions\n\n" (subs text (.start m)))
+        (str (str/trimr text) "\n\n## Conditions\n\n")))))
+(defn note-line [source s] (str "- " (Instant/now) " UTC [" source "]: " s))
+(defn conditions-add
+  "New text with the condition registered, or the same text for a retry of the same item."
+  [text o]
+  (let [kind (or (condition-kinds (:kind o))
+                 (throw (ex-info "choose --kind 承認, 制約 or 要確認" {})))
+        _ (when (= :cancelled kind) (throw (ex-info "use conditions cancel to cancel an item" {})))
+        body (require-line (:text o) "--text")
+        source (:source o)
+        _ (when-not (re-matches #"\S+" source) (throw (ex-info "--source must be one word" {})))
+        _ (when (= :approval kind)
+            (when-not (contains? owner-path-sources source)
+              (die (str "【承認】 is registered only by the Owner path (" (str/join ", " (sort owner-path-sources))
+                        "); register a 【制約】 or 【要確認】, or ask the Owner") 4))
+            (when (in-worker-run?)
+              (die "【承認】 cannot be registered from inside a Task Board run; ask the Owner" 4))
+            (when-not (or (:reply-id o) (:event o))
+              (die "【承認】 needs the Owner's reply it came from: --reply-id or --event" 4)))
+        existing (parse-conditions text)
+        same (some #(when (and (= kind (:kind %)) (= body (norm (:text %))) (= source (condition-source %))) %)
+                   existing)]
+    (if same
+      text
+      (let [id (format "CD-%02d" (inc (reduce max 0 (map #(parse-long (subs (:id %) 3)) existing))))
+            line (str "- " id "【" (condition-labels kind) "】" body)]
+        (-> (ensure-conditions-section text)
+            (append-section "Conditions" (str line "\n  - 由来: " (condition-origin o)))
+            (append-section "Notes" (note-line source (str "Conditions add " id "【" (condition-labels kind) "】" body))))))))
+(defn conditions-cancel
+  "New text with the item turned into 【取消】. The line, its text and its origin stay."
+  [text o cd-id]
+  (let [item (or (some #(when (= cd-id (:id %)) %) (parse-conditions text))
+                 (throw (ex-info "missing condition" {})))
+        source (:source o)
+        _ (when-not (re-matches #"\S+" source) (throw (ex-info "--source must be one word" {})))
+        why (or (:reason-kind o) "取消")
+        _ (when-not (#{"取消" "置換" "履行済み"} why)
+            (throw (ex-info "--reason-kind is 取消, 置換 or 履行済み" {})))
+        _ (when (and (= "置換" why)
+                     (not (some #(and (= (:replaced-by o) (:id %)) (not= cd-id (:id %))
+                                      (not (#{:cancelled :invalid} (:kind %))))
+                                (parse-conditions text))))
+            (die "置換 needs --replaced-by with the id of the item in force that replaces this one" 4))
+        reason (require-line (:reason o) "--reason")
+        owner? (contains? owner-path-sources source)]
+    (when (= :invalid (:kind item))
+      (die (str "unreadable condition line; repair it by hand as an Owner-path edit: " cd-id) 4))
+    (when (= :cancelled (:kind item)) (die (str cd-id " is already cancelled") 4))
+    (when (and (owner-derived? item) (or (not owner?) (in-worker-run?)))
+      (die (str cd-id " came from the Owner: only the Owner path can cancel it, outside a Task Board run."
+                " Return blocked for an Owner decision.") 4))
+    (when (and (not owner?) (not= source (condition-source item)))
+      (die (str cd-id " was registered by " (condition-source item)
+                ": only that source or the Owner path can cancel it") 4))
+    (-> (replace-section-item
+         text "Conditions" item
+         (str "- " cd-id "【取消】" (:text item)
+              (when (seq (:children item)) (str "\n" (str/join "\n" (:children item))))
+              "\n  - 取消理由: " why (when (= "置換" why) (str "（" (:replaced-by o) "）")) " " reason
+              "\n  - 取消者: " (condition-origin o)))
+        (append-section "Notes" (note-line source (str "Conditions cancel " cd-id " (" why ") " reason))))))
 (def tag-labels {:required "必須", :optional "任意", :cancelled "取消"})
 (defn completion-child? [line] (boolean (re-find #"^\s*[-*]\s*(証拠|見送り):" line)))
 (defn reopened-item
@@ -408,10 +607,6 @@
           (recur (if flag (rest xs) (nnext xs)) (assoc m k (if flag true (second xs)))))
         (recur (rest xs) (update m :args conj x)))
       m)))
-(defn die [s code] (binding [*out* *err*] (println s)) (System/exit code))
-(defn require-value
-  [v label]
-  (or (not-empty v) (throw (ex-info (str "missing " label) {}))))
 (def module-path *file*)
 (defn worker-commands
   "A TODO can arrive after the prompt, on a ticket that was legacy at start, so the
@@ -463,18 +658,23 @@
     (catch Throwable _ nil)))
 (defn -main
   [& args]
-  (let [cmd (first args)
-        o (opts (rest args))
-        [id item-id] (:args o)
+  (let [o (opts (rest args))
+        ;; `conditions <add|cancel|list> ID [CD-NN]`
+        conditions? (= "conditions" (first args))
+        cmd (if conditions? (str "conditions-" (first (:args o))) (first args))
+        [id item-id] (if conditions? (rest (:args o)) (:args o))
         vault (if (= cmd "hook") (:vault o) (require-value (:vault o) "--vault"))
         path (when vault (fs/path vault "Tickets" (str id ".md")))]
     (if (= cmd "hook")
       (hook o)
-      (if (= cmd "status")
+      (if (#{"status" "conditions-list"} cmd)
         (let [v (ticket-view (slurp (str path)))]
-          (println (if (:json o)
-                     (json/generate-string v)
-                     (str (state-summary v) "\n" (diff-text v)))))
+          (println (cond (= cmd "conditions-list")
+                         (if (:json o)
+                           (json/generate-string (:conditions v))
+                           (str/join "\n" (mapcat #(cons (:line %) (:children %)) (:conditions v))))
+                         (:json o) (json/generate-string v)
+                         :else (str (state-summary v) "\n" (diff-text v)))))
         (do
           (when (let [result (try (shell/sh "id" "-u") (catch Throwable _ nil))
                       uid (some-> result
@@ -623,6 +823,10 @@
                                          (str "\n" (str/join "\n" children)))
                                        "\n  - 証拠: "
                                        (require-value (:evidence o) "--evidence"))))
+                      "conditions-add" (conditions-add text (assoc o :source (require-value (:source o) "--source")))
+                      "conditions-cancel" (conditions-cancel text
+                                                             (assoc o :source (require-value (:source o) "--source"))
+                                                             (require-value item-id "condition id"))
                       "skip"
                       (do (when (not= :optional (:tag item))
                             (die "required TODO: return blocked for an Owner decision"
