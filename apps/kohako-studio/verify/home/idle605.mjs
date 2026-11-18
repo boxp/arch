@@ -71,8 +71,8 @@ if (want('acts')) {
   const { context, page, errors } = await open(PC)
   const acts = await page.evaluate(() => window.__kohakoHome.idleActs)
   // 待機クリップだけの動き（比較の基準）。入ってすぐは何も出ない。
-  const base = await sample(page, 120)
-  check(base.every(x => !x.idle?.act && !x.held), '待機に入って 6 秒以内にしぐさが出た')
+  const base = await sample(page, 40)
+  check(base.every(x => !x.idle?.act && !x.held), '待機に入って 4.5 秒以内にしぐさが出た')
   const baseRate = Math.max(maxStep(col(base, 'ParamAngleX')), maxStep(col(base, 'ParamAngleZ')))
   await shot(page, 'pc-0-idle'); await faceShot(page, 'face-0-idle')
   result.acts = { baseline: { maxStepDeg: r1(baseRate), yaw: [r1(Math.min(...col(base, 'ParamAngleX'))), r1(Math.max(...col(base, 'ParamAngleX')))] } }
@@ -90,8 +90,8 @@ if (want('acts')) {
       if (!peakShot && i === 36) { await faceShot(page, `face-${act}`); await shot(page, `pc-${act}`); peakShot = true }
       if (!x.idle?.act) break
     }
-    // 終わった後 3 秒（クリップへの戻り）も跳ばないことを見る。
-    const tail = await sample(page, 60); rows.push(...tail)
+    // 終わった後 3 秒（クリップへの戻り）も跳ばないことを見る。「じっと落ち着く」の後は次のしぐさが 2 秒から来るので 1.8 秒まで。
+    const tail = await sample(page, act === 'still' ? 36 : 60); rows.push(...tail)
     const seconds = rows.filter(x => x.idle?.act === act).length * STEP / 1000
     const step = { x: maxStep(col(rows, 'ParamAngleX')), y: maxStep(col(rows, 'ParamAngleY')), z: maxStep(col(rows, 'ParamAngleZ')) }
     const yawMax = Math.max(...rows.map(x => Math.abs(x.yaw)))
@@ -105,7 +105,7 @@ if (want('acts')) {
     result.acts[act] = { started, seconds: r1(seconds), maxStepDeg: { x: r1(step.x), y: r1(step.y), z: r1(step.z) }, yawMax: r1(yawMax),
       range: Object.fromEntries(IDS.map(id => [id.replace('Param', ''), [r1(Math.min(...col(rows, id))), r1(Math.max(...col(rows, id)))]])) }
     // 次のしぐさまで少し待機クリップを流す。
-    await sample(page, 40)
+    if (act !== 'still') await sample(page, 40)
   }
   check(errors.length === 0, `acts: ページのエラー ${errors.join(' / ')}`)
   await context.close()
@@ -115,25 +115,35 @@ if (want('natural')) {
   // 何も指定せず 6 分流す。出たしぐさの並び・間・出ている割合を見る。
   const { context, page, errors } = await open(PC)
   const seen = []; let before = null, endedAt = null, onFrames = 0, total = 0, t = 0
-  const gaps = []
+  const gaps = [], quietGaps = [], visible = []; let lastVisible = null
   for (let i = 0; i < 72; i++) {
     const rows = await sample(page, 100)
     for (const x of rows) {
       t += STEP / 1000; total++
       const a = x.idle?.act ?? null
       if (a && a !== 'still') onFrames++
-      if (a && !before) { seen.push({ at: r1(t), act: a }); if (endedAt !== null) gaps.push(r1(t - endedAt)) }
+      if (a && !before) {
+        if (endedAt !== null) (seen.at(-1).act === 'still' ? quietGaps : gaps).push(r1(t - endedAt))
+        seen.push({ at: r1(t), act: a })
+        // 目に見える変化（じっと落ち着く以外）の始まりから次の始まりまで。
+        if (a !== 'still') { if (lastVisible !== null) visible.push(r1(t - lastVisible)); lastVisible = t }
+      }
       if (!a && before) endedAt = t
       before = a
     }
   }
-  result.natural = { seconds: r1(t), acts: seen, gaps, movingShare: r1((onFrames / total) * 100) / 100 }
-  check(seen.length >= 6, `natural: 6 分でしぐさが ${seen.length} 回しか出ない`)
-  check(seen[0]?.at >= 6, `natural: 最初のしぐさが早い（${seen[0]?.at} 秒）`)
+  const sorted = [...visible].sort((a, b) => a - b), median = sorted[Math.floor(sorted.length / 2)]
+  result.natural = { seconds: r1(t), acts: seen, gaps, quietGaps, visibleStartGaps: visible, visibleMedian: median, visibleMax: sorted.at(-1), movingShare: r1((onFrames / total) * 100) / 100 }
+  check(seen.length >= 12, `natural: 6 分でしぐさが ${seen.length} 回しか出ない`)
+  check(seen[0]?.at >= 3, `natural: 最初のしぐさが早い（${seen[0]?.at} 秒）`)
+  check(seen[0]?.at <= 16, `natural: 最初のしぐさが遅い（${seen[0]?.at} 秒）`)
+  // Owner の指摘（1 分は長い）: 目に見える変化の間が 50 秒を超えず、中央は 26 秒以下。
+  check(median <= 26, `natural: 目に見える変化の間隔の中央が長い（${median} 秒）`)
+  check(sorted.at(-1) <= 50, `natural: 目に見える変化が ${sorted.at(-1)} 秒あいた`)
   check(seen.every((s, i) => i === 0 || s.act !== seen[i - 1].act), 'natural: 同じしぐさが続いた')
   check(new Set(seen.map(s => s.act)).size >= 4, `natural: 種類が少ない（${[...new Set(seen.map(s => s.act))].join(',')}）`)
-  check(gaps.every(g => g >= 11.5), `natural: 間が短い（${Math.min(...gaps)} 秒）`)
-  check(onFrames / total < 0.3, `natural: 動いている割合が多い（${r1((onFrames / total) * 100)}%）`)
+  check(gaps.every(g => g >= 6.5) && quietGaps.every(g => g >= 1.5), `natural: 間が短い（${Math.min(...gaps, ...quietGaps)} 秒）`)
+  check(onFrames / total < 0.4, `natural: 動いている割合が多い（${r1((onFrames / total) * 100)}%）`)
   check(errors.length === 0, `natural: ページのエラー ${errors.join(' / ')}`)
   await context.close()
 }
@@ -213,7 +223,7 @@ if (want('interrupt')) {
     await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')) })
     await page.clock.runFor(60000)
     await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); document.dispatchEvent(new Event('visibilitychange')) })
-    const back = await sample(page, 100)
+    const back = await sample(page, 90)
     check(back.slice(20).every(x => !x.idle?.act && !x.held), 'interrupt hidden: 戻った直後にしぐさが出た・クリップが止まったまま')
     result.interrupt.hidden = { actsAfterReturn: back.filter(x => x.idle?.act).length }
     await context.close()
