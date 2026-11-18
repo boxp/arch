@@ -369,14 +369,6 @@
       matchPackageNames: ["cri-o/cri-o"],
       allowedVersions: "<=1.36.6",
     },
-    // [PY-315] ansible の Python 3.15: 現行 ansible 14.x (ansible-core 2.21) は
-    // dataclasses._is_type 削除で import 時に落ちる (arch#13804 の lint/plan)。
-    // 3.15 対応の ansible-core 2.22 を含む community ansible 15 が GA になるまで 3.14.x に留める。
-    {
-      matchFileNames: ["ansible/.python-version"],
-      matchPackageNames: ["python"],
-      allowedVersions: "/^3\\.14(\\.[0-9]+)?$/",
-    },
     // [TS7-PORTFOLIO] apps/portfolio の `astro check` (@astrojs/check 0.9.12) は
     // peerDependencies typescript "^5.0.0 || ^6.0.0" で TS7 を受けず lock 更新も失敗する
     // (arch#13832)。TS 6.x までは通常どおり追従する。
