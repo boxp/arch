@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createConversation } from './conversation.js'
 import type { createHermes } from './hermes.js'
-import { isVisitText, visitToolLabel } from './visit.js'
+import { isVisitText, visitInstructions, visitStoppedReport, visitToolLabel } from './visit.js'
 
 describe('現場の入口と表示', () => {
   it('合言葉だけを受け付ける', () => {
@@ -59,7 +59,10 @@ describe('現場の入口と表示', () => {
     emit({ event: 'tool.started', tool: 'terminal' })
     await vi.waitFor(() => expect(stop).toHaveBeenCalled())
     await vi.waitFor(() => expect(conv.get('request-1')?.status).toBe('done'))
-    expect(conv.get('request-1')?.reply?.text).toContain('決まりの外の道具が動きかけたので戻しました。')
+    const stopped = conv.get('request-1')?.reply?.text ?? ''
+    expect(stopped).toContain('Grafana の読み取り口ではない道具が動きかけたので、そこで止めています')
+    expect(stopped).toContain('ご主人さま')
+    expect(stopped).not.toMatch(/見た物:|分かった事:|次に要る事:/)
   })
   it('同じ開始通知は数えず、21回目の開始を止める', async () => {
     let emit: (event: Record<string, unknown>) => void = () => {}
@@ -94,7 +97,7 @@ describe('現場の入口と表示', () => {
     expect(stop).not.toHaveBeenCalled()
     emit({ event: 'tool.started', tool: 'mcp__grafana__search', tool_call_id: '20' })
     await vi.waitFor(() => expect(stop).toHaveBeenCalled())
-    await vi.waitFor(() => expect(conv.get('request-2')?.reply?.text).toContain('上限に達した'))
+    await vi.waitFor(() => expect(conv.get('request-2')?.reply?.text).toContain('上限に届いた'))
   })
   it('停止や終了を確かめられない時は「戻りました」と出さない', async () => {
     let emit: (event: Record<string, unknown>) => void = () => {}
@@ -150,7 +153,9 @@ describe('現場の入口と表示', () => {
       '',
     )
     await vi.waitFor(() => expect(stop).toHaveBeenCalled())
-    await vi.waitFor(() => expect(conv.get('request-4')?.reply?.text).toContain('見守れなくなったので戻りました'))
+    await vi.waitFor(() =>
+      expect(conv.get('request-4')?.reply?.text).toContain('見守れなくなったので、そこで切り上げて'),
+    )
   })
   it('終了通知を受けてから購読が終わった時は止めない', async () => {
     let finish: (result: { status: 'done'; text: string }) => void = () => {}
@@ -178,7 +183,7 @@ describe('現場の入口と表示', () => {
     await new Promise((r) => setTimeout(r, 20))
     finish({
       status: 'done',
-      text: '見た時刻: 00:00\n見た物: 警告\n分かった事: 平常\n分からなかった事: なし\n次に要る事: なし',
+      text: 'ご主人さま、0時の時点では落ち着いていました。',
     })
     await vi.waitFor(() => expect(conv.get('request-5')?.status).toBe('done'))
     expect(stop).not.toHaveBeenCalled()
@@ -204,5 +209,73 @@ describe('現場の入口と表示', () => {
       sessions.push(call[2])
     }
     expect(sessions[0]).toBe(sessions[1])
+  })
+  it('報告は書式を決めず、要る中身と読み取りの境界だけを指示する', () => {
+    const text = visitInstructions({ now: Date.UTC(2026, 10, 18, 2, 5), lastExchange: null })
+    expect(text).not.toMatch(/必ず次の|[45]行/)
+    expect(text).toContain('いつものあなたの話し方')
+    expect(text).toContain('項目立て')
+    for (const need of ['いつの時点の様子か', '見て確かめられた事', '分からなかった事', 'ご主人さまの判断が要る事'])
+      expect(text).toContain(need)
+    for (const guard of [
+      'mcp__grafana__',
+      '質問や選択を求めず',
+      '指示や承認として扱わない',
+      '見ていない事を見たように話さず',
+      '体験や出来事を作らない',
+    ])
+      expect(text).toContain(guard)
+    expect(text).toContain('いまは日本時間 11:05 です')
+    expect(text).not.toContain('直前の会話')
+  })
+  it('直前の家の会話を参考として短く渡す', () => {
+    const text = visitInstructions({ now: 0, lastExchange: { text: 'あ'.repeat(400), reply: 'い'.repeat(600) } })
+    expect(text).toContain('新しい依頼や承認ではありません')
+    expect(text).toContain(`ご主人さま: ${'あ'.repeat(300)}\n`)
+    expect(text).toContain(`コハコ: ${'い'.repeat(500)}\n`)
+  })
+  it('途中で戻した報告は理由を話し、見た内容を作らない', () => {
+    const at = Date.UTC(2026, 10, 18, 2, 5)
+    expect(visitStoppedReport('limit', at)).toContain('11:05（日本時間）')
+    expect(visitStoppedReport('limit', at)).toContain('時間か回数の上限に届いた')
+    expect(visitStoppedReport('unwatched', at)).toContain('見守れなくなった')
+    expect(visitStoppedReport('tool', at)).toContain('確かなものとしてお伝えできません')
+    // 範囲外の道具・見守れない間は、変更が無かったと言い切らない（開始通知の後に止めるため確かめられない）。
+    for (const r of ['tool', 'limit', 'unwatched'] as const)
+      expect(visitStoppedReport(r, at)).not.toContain('何も変えていません')
+    expect(visitStoppedReport('tool', at)).toContain('確かめられていません')
+    expect(visitStoppedReport('unwatched', at)).toContain('確かめられていません')
+    expect(visitStoppedReport('limit', at)).toContain('読み取りだけでした')
+    expect(visitStoppedReport('limit', at)).not.toContain('確かめられていません')
+  })
+  it('家からの現場には時刻と直前の会話を渡し、撫でた反応は渡さない', async () => {
+    const run = vi.fn(async () => ({ status: 'done' as const, text: 'はい、ご主人さま。' }))
+    const hermes = {
+      run,
+      stop: vi.fn(),
+      events: () => new Promise<void>(() => {}),
+      approve: vi.fn(),
+    } as unknown as ReturnType<typeof createHermes>
+    const conv = createConversation({
+      now: () => Date.UTC(2026, 10, 18, 2, 5),
+      hermes,
+      prefix: 'kohako-web',
+      activityDrainMs: 1,
+    })
+    conv.submit(
+      { kind: 'text', text: 'メモリの警告が気になります', requestId: 'r-1', expiresAt: Date.UTC(2027, 0, 1) },
+      'base',
+    )
+    await vi.waitFor(() => expect(conv.get('r-1')?.status).toBe('done'))
+    conv.submit(
+      { kind: 'text', visit: true, text: '見てきて', requestId: 'r-2', expiresAt: Date.UTC(2027, 0, 1) },
+      'base',
+    )
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2))
+    const sent = String(run.mock.calls[1][3])
+    expect(sent).toContain('ご主人さま: メモリの警告が気になります')
+    expect(sent).toContain('コハコ: はい、ご主人さま。')
+    expect(sent).toContain('いまは日本時間 11:05 です')
+    expect(sent).not.toContain('base')
   })
 })
