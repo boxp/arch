@@ -591,7 +591,10 @@
       (is (= ["CD-08:approval-without-owner-reply"] (check (swap "\n## Plan" "- CD-08【承認】deploy\n  - 由来: claude-fable reply_id=r2\n\n## Plan"))))
       (is (= ["CD-08:approval-without-owner-reply"] (check (swap "\n## Plan" "- CD-08【承認】deploy\n  - 由来: hermes-agent\n\n## Plan"))))
       (is (= ["CD-08:approval-without-owner-reply"] (check (swap "\n## Plan" "- CD-08【承認】deploy\n\n## Plan"))))
-      (is (= ["CD-02:approval-without-owner-reply" "CD-02:changed-without-cancel"] (check (swap "- CD-02【制約】" "- CD-02【承認】")))))
+      (is (= ["CD-02:approval-without-owner-reply" "CD-02:changed-without-cancel"] (check (swap "- CD-02【制約】" "- CD-02【承認】"))))
+      (testing "also when it was already there at the start"
+        (let [bad (swap "\n## Plan" "- CD-08【承認】deploy\n  - 由来: claude-fable reply_id=r2\n\n## Plan")]
+          (is (= ["CD-08:approval-without-owner-reply"] (task-board-todos/condition-violations (items bad) (items bad)))))))
     (testing "an unreadable line is reported once, when it appears"
       (let [broken (swap "- CD-03【要確認】" "- CD-03【変】")]
         (is (= ["CD-03:invalid"] (check broken)))

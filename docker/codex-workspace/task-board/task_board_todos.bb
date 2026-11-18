@@ -192,9 +192,10 @@
                        :when (and e (not= :invalid (:kind e)) (not= :invalid (:kind s))
                                   (not (same? s e)) (not (cancelled-properly? s e)))]
                    (str (:id s) (if (owner-derived? s) ":owner-item-changed" ":changed-without-cancel")))
+                 ;; Checked whether or not it changed: an approval written by hand between
+                 ;; runs is no more usable than one written during this run.
                  (for [e end
-                       :let [s (start-by (:id e))]
-                       :when (and (= :approval (:kind e)) (not (and s (same? s e)))
+                       :when (and (= :approval (:kind e))
                                   (not (and (owner? (condition-source e)) (owner-reply? e))))]
                    (str (:id e) ":approval-without-owner-reply"))))))))
 (defn item-hash
