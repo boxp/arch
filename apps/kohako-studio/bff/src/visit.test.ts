@@ -153,7 +153,9 @@ describe('現場の入口と表示', () => {
       '',
     )
     await vi.waitFor(() => expect(stop).toHaveBeenCalled())
-    await vi.waitFor(() => expect(conv.get('request-4')?.reply?.text).toContain('見守れなくなったので、そこで切り上げて'))
+    await vi.waitFor(() =>
+      expect(conv.get('request-4')?.reply?.text).toContain('見守れなくなったので、そこで切り上げて'),
+    )
   })
   it('終了通知を受けてから購読が終わった時は止めない', async () => {
     let finish: (result: { status: 'done'; text: string }) => void = () => {}
