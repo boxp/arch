@@ -564,7 +564,10 @@
   (let [r (he {} "contract")]
     (is (zero? (:exit r)) (:err r))
     (is (str/includes? (:out r) "Task Board contract"))
-    (is (str/includes? (:out r) "Delegation contract"))
+    (is (str/includes? (:out r) "Optional delegation (BOXP-604 trial)"))
+    (testing "BOXP-604: required に戻すと必須の委譲契約を含む"
+      (let [rq (he {"CODEX_TASK_BOARD_DELEGATION_MODE" "required"} "contract")]
+        (is (str/includes? (:out rq) "Delegation contract"))))
     (testing "通常の runner と同じ AI Ops 判断支援節を、実取得せず固定の入力で含む"
       (is (str/includes? (:out r) "AI Ops decision support"))
       (is (str/includes? (:out r) "no AiOps alerts are firing or pending."))

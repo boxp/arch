@@ -931,6 +931,24 @@ it('smoothAngle はなで前後の頭の角度の跳びを毎フレーム小さ�
   expect(smoothAngle(5, 9, 0)).toBe(5)
 })
 
+// BOXP-605: 待機のしぐさから待機クリップへ戻るとき、再開時の角度の差を滑らかに 0 へ溶かす（動くクリップに遅れず、終わりで跳ばない）。
+it('idleTailOffset は再開時の差を IDLE_SMOOTH_TAIL 秒で 0 へ滑らかに溶かす', async () => {
+  const { idleTailOffset, IDLE_SMOOTH_TAIL } = await import('./gesture')
+  expect(idleTailOffset(13, 0)).toBe(13)
+  expect(idleTailOffset(13, IDLE_SMOOTH_TAIL)).toBe(0)
+  expect(idleTailOffset(13, IDLE_SMOOTH_TAIL + 5)).toBe(0)
+  expect(idleTailOffset(-13, IDLE_SMOOTH_TAIL / 2)).toBeCloseTo(-6.5, 6)
+  // 待機クリップの頭の最大（13°）の差でも、1/60 秒で 0.2° を超えて動かない。
+  let before = 13,
+    maxStep = 0
+  for (let i = 1; i <= IDLE_SMOOTH_TAIL * 60; i++) {
+    const v = idleTailOffset(13, i / 60)
+    expect(v).toBeLessThanOrEqual(before)
+    maxStep = Math.max(maxStep, before - v)
+    before = v
+  }
+  expect(maxStep).toBeLessThan(0.2)
+})
 it('BOXP-525: なでで閉じていく間はまばたきの戻りで目が開き直さない', async () => {
   const { petEyeHold } = await import('./gesture')
   expect(petEyeHold(0.78, 0.1, true)).toBe(0.1)

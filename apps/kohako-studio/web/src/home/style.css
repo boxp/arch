@@ -186,3 +186,50 @@ body[data-shape="portrait"] .trouble{top:29%}
 ::highlight(kohako-reading) { background-color: #ffe49b; color: #392600; }
 /* BOXP-581: vault notes open in the device's Obsidian app (same tab, no page navigation). */
 .obsidian-note{text-decoration:none;display:inline-flex;flex-wrap:wrap;align-items:baseline;gap:.35em;overflow-wrap:anywhere}.obsidian-note-badge{display:inline-block;padding:.05em .5em;border:1px solid currentColor;border-radius:999px;font-size:.8em;line-height:1.5;white-space:nowrap}.obsidian-note>span:first-child{text-decoration:underline}
+/* BOXP-599 TD-01: 帰還の演出（転送ゲート）。出ている間・戻る途中のコハコは小さなドット絵（通信中の姿）で床のゲートの上に浮かび、
+   戻った瞬間にドット絵がゲートへ降り、走査線が下から上へ走って本来の姿が現れる。段階は実際の処理状態（arrival.ts）だけで決まり、入力は待たせない。
+   絵は既存のドット絵と動く姿だけ。動かすのは translate / scale / rotate / mask-position / opacity で、明滅はしない。「動きを減らす」では静止して切り替えるだけにする。 */
+.character{--gate-w:min(64cqw,52cqh);--gate-y:1.5%;--gate-s:144px;--gate-s:clamp(72px,round(down,40cqh,72px),144px);--wipe-a:11%;--wipe-b:84%;--gate-cyan:86,214,232}
+.character[data-frame="upper"]{--wipe-a:42%}
+.character > img{position:relative}
+.character > img,.character > #rig{z-index:1}
+.gate{position:absolute;inset:0;pointer-events:none}
+.character.mini .gate,.character.mini .arrival-note{display:none}
+.gate-ring,.gate-beam,.gate-scan,.character .gate-sprite{position:absolute;left:50%;translate:-50% 0;opacity:0}
+.gate-ring{z-index:0;bottom:var(--gate-y);width:var(--gate-w);height:var(--gate-w);transform-origin:50% 100%;scale:1 .24;border-radius:50%;border:2px solid rgba(184,138,46,.8);background:radial-gradient(closest-side,rgba(var(--gate-cyan),0) 40%,rgba(var(--gate-cyan),.22) 92%,rgba(255,255,255,.5) 100%);box-shadow:0 0 28px rgba(var(--gate-cyan),.55),inset 0 0 0 5px rgba(255,255,255,.4);transition:opacity .5s ease}
+.gate-ring::before,.gate-ring::after{content:"";position:absolute;border-radius:50%}
+.gate-ring::before{inset:3%;background:conic-gradient(rgba(var(--gate-cyan),0) 0 62%,rgba(var(--gate-cyan),.95) 96%,#fff 100%);-webkit-mask:radial-gradient(closest-side,transparent 80%,#000 82%);mask:radial-gradient(closest-side,transparent 80%,#000 82%);animation:gate-spin 2.4s linear infinite}
+.gate-ring::after{inset:0;border:4px solid #fff;opacity:0}
+.gate-beam{z-index:0;bottom:calc(var(--gate-y) + var(--gate-w) * .12);width:calc(var(--gate-w) * .78);height:80cqh;overflow:hidden;background:linear-gradient(90deg,rgba(var(--gate-cyan),0),rgba(var(--gate-cyan),.16) 50%,rgba(var(--gate-cyan),0));-webkit-mask:linear-gradient(to top,#000,rgba(0,0,0,.55) 40%,transparent);mask:linear-gradient(to top,#000,rgba(0,0,0,.55) 40%,transparent);transition:opacity .6s ease}
+.gate-beam::before,.gate-beam::after{content:"";position:absolute;left:0;right:0;top:0;height:calc(100% + 300px)}
+.gate-beam::before{background:radial-gradient(1.6px 26px at 8px 40px,#fff 12%,rgba(56,182,201,.95) 45%,transparent) 0 0/68px 240px,radial-gradient(1.6px 34px at 30px 150px,#fff 12%,rgba(56,182,201,.95) 45%,transparent) 0 0/68px 240px,radial-gradient(1.4px 20px at 52px 90px,#fff 12%,rgba(56,182,201,.95) 45%,transparent) 0 0/68px 120px;animation:gate-rise-a 2.1s linear infinite}
+.gate-beam::after{background:radial-gradient(1.6px 30px at 14px 60px,#fff 12%,rgba(184,138,46,.9) 45%,transparent) 0 0/92px 300px,radial-gradient(1.4px 22px at 46px 220px,#fff 12%,rgba(56,182,201,.95) 45%,transparent) 0 0/92px 300px,radial-gradient(1.6px 28px at 75px 120px,#fff 12%,rgba(56,182,201,.95) 45%,transparent) 0 0/92px 150px;animation:gate-rise-b 1.5s linear infinite}
+.character .gate-sprite{z-index:1;bottom:calc(var(--gate-y) + var(--gate-w) * .3);width:var(--gate-s);height:var(--gate-s);object-fit:cover;border-radius:50%;box-shadow:0 0 0 2px #fff,0 0 0 3.5px rgba(184,138,46,.85),0 0 26px 4px rgba(var(--gate-cyan),.6);transition:opacity .3s ease}
+.gate-scan{z-index:2;bottom:0;width:calc(var(--gate-w) * 1.3);height:2px;background:linear-gradient(90deg,rgba(var(--gate-cyan),0),rgba(var(--gate-cyan),.95) 22%,#fff 50%,rgba(var(--gate-cyan),.95) 78%,rgba(var(--gate-cyan),0));box-shadow:0 0 14px 3px rgba(var(--gate-cyan),.55)}
+.character:not(.mini):is([data-arrival="arriving"],[data-arrival="away"],[data-arrival="landing"]) .gate-ring{opacity:1}
+.character:not(.mini):is([data-arrival="arriving"],[data-arrival="away"]) .gate-beam{opacity:1}
+.character:not(.mini):is([data-arrival="arriving"],[data-arrival="away"]) .gate-sprite{opacity:1;animation:gate-in .5s cubic-bezier(.2,.8,.2,1) both,gate-float 3.2s ease-in-out .5s infinite alternate}
+.character:not(.mini)[data-arrival="arriving"] > img{opacity:0}
+.character:not(.mini)[data-arrival="away"] > :is(img,#rig){pointer-events:none;animation:gate-leave .5s cubic-bezier(.5,0,.8,.4) both}
+.character:not(.mini):is([data-arrival="away"],[data-arrival="landing"]) > :is(img,#rig){-webkit-mask:linear-gradient(to top,#000 50%,transparent 53%) 0 var(--wipe-b)/100% 250% no-repeat;mask:linear-gradient(to top,#000 50%,transparent 53%) 0 var(--wipe-b)/100% 250% no-repeat}
+.character:not(.mini)[data-arrival="landing"] > :is(img,#rig){animation:gate-arrive .64s .3s cubic-bezier(.3,.6,.3,1) both}
+.character:not(.mini)[data-arrival="landing"] .gate-sprite{animation:gate-drop .34s cubic-bezier(.6,0,.9,.5) both}
+.character:not(.mini)[data-arrival="landing"] .gate-scan{animation:gate-scan .64s .3s cubic-bezier(.3,.6,.3,1) both}
+.character:not(.mini)[data-arrival="landing"] .gate-ring::after{animation:gate-pulse .7s .26s ease-out both}
+.arrival-note{position:absolute;z-index:3;left:50%;bottom:calc(var(--gate-y) + var(--gate-w) * .3 + var(--gate-s) + 1.1em);translate:-50% 0;margin:0;display:flex;align-items:center;gap:.7em;font-size:.7rem;font-weight:600;letter-spacing:.32em;text-indent:.32em;color:#255f73;white-space:nowrap;pointer-events:none;text-shadow:0 0 2px #fff,0 0 6px #fff,0 0 10px #fff}
+.arrival-note::before,.arrival-note::after{content:"";width:1.6em;height:1px;background:currentColor;opacity:.6}
+.arrival-note[hidden]{display:none}
+.character[data-arrival="landing"] .arrival-note{width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+@keyframes gate-spin{to{rotate:1turn}}
+@keyframes gate-rise-a{to{translate:0 -240px}}
+@keyframes gate-rise-b{to{translate:0 -300px}}
+@keyframes gate-in{from{translate:-50% 60%;scale:.3;opacity:0}to{translate:-50% 0;scale:1;opacity:1}}
+@keyframes gate-float{from{translate:-50% 0}to{translate:-50% -5%}}
+@keyframes gate-drop{from{translate:-50% 0;scale:1;opacity:1}to{translate:-50% 70%;scale:.15;opacity:0}}
+@keyframes gate-arrive{from{-webkit-mask-position:0 var(--wipe-a);mask-position:0 var(--wipe-a);filter:brightness(1.7) saturate(.5)}to{-webkit-mask-position:0 var(--wipe-b);mask-position:0 var(--wipe-b);filter:brightness(1) saturate(1)}}
+@keyframes gate-leave{from{-webkit-mask-position:0 var(--wipe-b);mask-position:0 var(--wipe-b);filter:brightness(1) saturate(1)}to{-webkit-mask-position:0 var(--wipe-a);mask-position:0 var(--wipe-a);filter:brightness(1.7) saturate(.5)}}
+@keyframes gate-scan{from{translate:-50% 5cqh;opacity:1}85%{opacity:1}to{translate:-50% -106cqh;opacity:0}}
+@keyframes gate-pulse{from{scale:1;opacity:.9}to{scale:1.8;opacity:0}}
+body.reduce .gate *,body.reduce .gate-ring::before,body.reduce .gate-ring::after,body.reduce .gate-beam::before,body.reduce .gate-beam::after,body.reduce .character[data-arrival] > :is(img,#rig){animation:none!important}
+body.reduce .character:not(.mini)[data-arrival="away"] > :is(img,#rig){opacity:0}
+@media (prefers-reduced-motion:reduce){.gate *,.gate-ring::before,.gate-ring::after,.gate-beam::before,.gate-beam::after,.character[data-arrival] > :is(img,#rig){animation:none!important}.character:not(.mini)[data-arrival="away"] > :is(img,#rig){opacity:0}}

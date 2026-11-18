@@ -1202,6 +1202,8 @@ it('asks Hermes to register home-requested tickets only on owner text turns', as
       },
     } as unknown as ReturnType<typeof createHermes>
   expect(ownerTaskInstructions).toContain('/opt/data/kohako-task-supervision.md')
+  expect(ownerTaskInstructions).toContain('ナビログ/停止中.md')
+  expect(ownerTaskInstructions).toContain('自動では消えません')
   for (const principal of ['owner', 'verifier'] as const) {
     const server = createServer(createApp({ authenticate: async () => principal, hermes }))
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))

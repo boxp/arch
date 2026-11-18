@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sourceLabel, formatReceived, notificationParam, replyText, stateLabel } from './inbox'
+import { sourceLabel, formatReceived, notificationParam, replyText, stateLabel, canVisitNotification } from './inbox'
 describe('受信箱の表示', () => {
   it('定期通知の送信元を表示する', () => {
     expect(sourceLabel('hermes-cron')).toBe('定期通知')
@@ -11,6 +11,16 @@ describe('受信箱の表示', () => {
     expect(stateLabel({ readAt: 'x' })).toBe('既読')
     expect(stateLabel({ handledAt: 'x' })).toBe('処理済み')
     expect(formatReceived('2026-01-01T00:00:00Z', Date.parse('2026-01-01T00:05:00Z'))).toContain('5分前')
+  })
+  it('警告通知だけに現場への入口を表示する', () => {
+    expect(canVisitNotification({ source: 'alertmanager' })).toBe(true)
+    expect(canVisitNotification({ source: 'hermes-cron' })).toBe(false)
+    expect(
+      canVisitNotification({
+        source: 'alertmanager',
+        reply: { replyId: 'a', requestId: 'b', kind: 'text', value: '見てきて', status: 'submitted' },
+      }),
+    ).toBe(false)
   })
   it('通知 ID を検証する', () => {
     expect(notificationParam('?notification=event-123456')).toBe('event-123456')

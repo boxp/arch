@@ -227,7 +227,8 @@
          "Ticket: {{TASK}}\n"
          "Task Board assignee/agent: " agent "\n"
          "Current lane: In Progress\n\n"
-         (dp)
+         ;; BOXP-604: mirror the runner, which omits the mandatory contract for Claude parents in optional mode.
+         (if ((resolve 'delegation-optional-for?) agent) ((resolve 'optional-delegation-prompt)) (dp))
          "Previous run summaries:\n[]\n\n"
          (cp agent)
          (ai contract-ai-ops-state)

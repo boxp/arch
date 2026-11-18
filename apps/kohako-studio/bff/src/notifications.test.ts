@@ -354,3 +354,126 @@ it('伏字と本文の短縮、空本文と minimal を扱う', async () => {
     summarizePush({ ...item, body: 'token abc-def-ghi-jkl-mno-pqr-stu 次', title: 'BOXP-1: abc.def.ghi.jkl.mno.pqr' }),
   ).toEqual({ title: 'BOXP-1: (省略)', body: 'token (省略) 次' })
 })
+
+it('validates notification fields and their boundaries before storing', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'inbox-validation-'))
+  try {
+    const store = await createNotifications(dir, async () => ({}))
+    for (const fields of [
+      { extra: 'unexpected' },
+      { eventId: '!event-123456' },
+      { eventId: 'event-123456!' },
+      { source: '!task-board-report' },
+      { source: 'task-board-report!' },
+      { ticketId: '!BOXP-123' },
+      { ticketId: 'BOXP-123!' },
+      { ticketId: 123 },
+      { runId: '' },
+      { runId: 'x'.repeat(121) },
+      { runId: 1 },
+      { choices: Array(7).fill('yes') },
+      { choices: ['yes', ''] },
+      { choices: ['yes', 1] },
+      { choices: ['yes', 'x'.repeat(41)] },
+      { createdAt: 'x2026-01-01T00:00:00Z' },
+      { title: '' },
+      { title: 'x'.repeat(201) },
+      { body: 'x'.repeat(4001) },
+    ])
+      expect(await store.ingest({ ...payload, ...fields })).toEqual({ status: 'invalid' })
+    expect(
+      await store.ingest({
+        ...payload,
+        title: 'x'.repeat(200),
+        body: 'x'.repeat(4000),
+        runId: 'x'.repeat(120),
+        choices: Array(6).fill('x'.repeat(40)),
+      }),
+    ).toMatchObject({ status: 'stored' })
+    expect(store.list().items).toHaveLength(1)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+it('expires announcement leases exactly at 30 seconds and persists push errors', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'inbox-lease-'))
+  try {
+    let now = Date.parse('2026-01-01T00:00:00Z')
+    const store = await createNotifications(
+      dir,
+      async () => {
+        throw new Error('push failed')
+      },
+      () => now,
+    )
+    expect(await store.ingest(payload)).toMatchObject({ status: 'stored', push: { pushSkipped: 'error' } })
+    expect(await store.claimAnnounce(payload.eventId)).toBe(true)
+    now += 29_999
+    expect(await store.claimAnnounce(payload.eventId)).toBe(false)
+    now++
+    expect(await store.claimAnnounce(payload.eventId)).toBe(true)
+    expect((await createNotifications(dir, async () => ({}))).list().items[0].pushSkipped).toBe('error')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+it('rejects invalid replies and persists the session supplied on retry', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'inbox-reply-'))
+  try {
+    const store = await createNotifications(dir, async () => ({}))
+    const reply = { replyId: 'reply-123456', kind: 'choice', value: 'はい' }
+    expect(await store.reply('missing-123', reply, () => true)).toEqual({ error: 'not_found' })
+    await store.ingest(payload)
+    for (const fields of [
+      { extra: true },
+      { replyId: '!reply-123456' },
+      { replyId: 'reply-123456!' },
+      { kind: 'other' },
+      { value: ' ' },
+      { value: 'no' },
+    ])
+      expect(await store.reply(payload.eventId, { ...reply, ...fields }, () => true)).toEqual({ error: 'invalid' })
+    expect((await store.reply(payload.eventId, reply, () => false)).status).toBe('submit_failed')
+    expect(
+      (
+        await store.reply(
+          payload.eventId,
+          reply,
+          () => true,
+          () => false,
+          'session-123',
+        )
+      ).status,
+    ).toBe('submitted')
+    expect((await createNotifications(dir, async () => ({}))).list().items[0].reply?.sessionId).toBe('session-123')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+it('retains 500 notifications and evicts handled items before unread ones', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'inbox-retention-'))
+  try {
+    const items: Item[] = Array.from({ length: 500 }, (_, i) => ({
+      ...payload,
+      eventId: `event-${String(i).padStart(6, '0')}`,
+      receivedAt: payload.createdAt,
+      deliveries: 1,
+      ...(i === 3 ? { handledAt: payload.createdAt } : {}),
+    }))
+    await atomic(join(dir, 'notifications.json'), items)
+    const store = await createNotifications(dir, async () => ({}))
+    expect(store.list().items).toHaveLength(500)
+    await store.ingest({ ...payload, eventId: 'event-new-123' })
+    const ids = store.list().items.map((i) => i.eventId)
+    expect(ids).toHaveLength(500)
+    expect(ids).toContain('event-000000')
+    expect(ids).not.toContain('event-000003')
+    expect(ids).toContain('event-new-123')
+    expect((await createNotifications(dir, async () => ({}))).list().items.map((i) => i.eventId)).toEqual(ids)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

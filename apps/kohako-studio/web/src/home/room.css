@@ -95,3 +95,5 @@ body[data-bg="v1"] .p1{top:12%;left:72%;transform:rotate(25deg)}body[data-bg="v1
 @keyframes v1-petal-drift{0%{translate:0 0;rotate:0deg}50%{translate:-18px 22px;rotate:18deg}100%{translate:12px 44px;rotate:-10deg}}
 @keyframes v1-circuit-flow{to{stroke-dashoffset:-320}}
 @keyframes v1-node-glow{from{opacity:.45}to{opacity:.7}}
+
+body[data-scene="visit"] .room-wall{background:linear-gradient(135deg,#b8dce4,#c9c9ed)}

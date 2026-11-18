@@ -10,6 +10,9 @@ const base: SceneInput = { state: 'idle', thinkingMs: 0, cardsOpen: false, idleM
 describe('場面', () => {
   it('状態から場面を選ぶ', () => {
     expect(targetScene(base)).toBe('relax')
+    expect(targetScene({ ...base, state: 'thinking', visit: true })).toBe('visit')
+    expect(targetScene({ ...base, state: 'approval', visit: true })).toBe('confirm')
+    expect(targetScene({ ...base, netDown: true, visit: true })).toBe('offline')
     expect(targetScene({ ...base, state: 'thinking', thinkingMs: 3000 })).toBe('talk')
     expect(targetScene({ ...base, state: 'thinking', thinkingMs: 8001 })).toBe('work')
     expect(targetScene({ ...base, state: 'approval', cardsOpen: true })).toBe('confirm')
@@ -181,7 +184,11 @@ describe('保存', () => {
       reducedMotion: false,
       bgMotion: true,
       chestSway: true,
+      idleActs: true,
     })
+    // BOXP-605: 待機中のしぐさは既定 ON。OFF だけを保存から読む。
+    expect(parsePrefs('{"idleActs":false}').idleActs).toBe(false)
+    expect(parsePrefs('{"idleActs":"no"}').idleActs).toBe(true)
     expect(parsePrefs('{"bgMotion":false}').bgMotion).toBe(false)
     expect(parsePrefs('{"voice":"browser"}').voice).toBe('browser')
     expect(parsePrefs('{"voice":"other"}').voice).toBe('kohaku')
