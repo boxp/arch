@@ -646,6 +646,12 @@
           (append-section "Notes" (note-line (condition-origin o)
                                              (str "Conditions accept (" (if (sealed text) (str/join ", " problems) "first seal") ") " reason)))))))
 (defn parse-instant [s] (try (Instant/parse (str/trim (str s))) (catch Exception _ nil)))
+(defn checkpoint-recorded?
+  "Whether Notes has the line `conditions checkpoint` writes for this instant."
+  [text through]
+  (boolean (some #(when-let [[_ t] (re-matches #"- \S+ UTC \[[^\]]+\]: Conditions checkpoint through (\S+) .*" %)]
+                    (= through (parse-instant t)))
+                 (str/split-lines (section text "Notes")))))
 (defn checkpoint-problems
   "Stage 3: why the Notes of this ticket are not left out of a prompt, or nil when they
   may be. The Conditions section is then the only carrier of what the older Notes said,
@@ -656,6 +662,9 @@
     (cond (str/blank? through) "no conditions_through"
           (nil? (parse-instant through)) "conditions_through is not an instant"
           (nil? (sealed text)) "no conditions_seal"
+          ;; The mark counts only with the Notes line `conditions checkpoint` wrote for this
+          ;; very instant: a value put into the front matter by hand leaves nothing out.
+          (not (checkpoint-recorded? text (parse-instant through))) "conditions_through has no checkpoint record in Notes"
           :else (when-let [problems (seq (concat (condition-problems conditions) (seal-problems text conditions)))]
                   (str/join ", " problems)))))
 (defn note-entry-latest
@@ -731,7 +740,7 @@
       (die "no conditions_seal: register the conditions through conditions add first" 4))
     (when-let [problems (seq (concat (condition-problems conditions) (seal-problems text conditions)))]
       (die (str "Conditions are not as the commands wrote them (" (str/join ", " problems) "): no checkpoint. Return blocked for an Owner decision.") 4))
-    (if (= through current)
+    (if (and (= through current) (checkpoint-recorded? text through))
       text
       (-> text
           (set-fm "conditions_through" (str through))

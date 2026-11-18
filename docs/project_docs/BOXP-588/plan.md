@@ -116,7 +116,7 @@ Owner の承認（2026-11-18、家経由 reply_id=189776ac-574d-4b29-9fee-581eab
 次の全部を満たす票の、次の範囲だけ。どれかが欠ければ票の本文は全文のまま渡る。語句は一切見ない。
 
 1. 票の ID が runner の一覧に入っている。一覧は環境変数 `CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS`（カンマか空白区切り）で、既定は `BOXP-241` の 1 票。どの票の ID でもない値（`none`）にすると全体で無効（空の値でも無効だが、container の entrypoint は空でない値だけを runner に渡すので、配備の設定では `none` を使う。entrypoint の 2 つの引継ぎ一覧にこの変数を足した）。票を足すのは、その票の移行（抽出 → 別担当の独立確認）と Owner の承認の後。
-2. front matter に `conditions_through`（UTC の時刻）がある。
+2. front matter に `conditions_through`（UTC の時刻）があり、Notes に `conditions checkpoint` がその時刻で書いた記録の行（`Conditions checkpoint through 時刻 …`）がある。手で書いた・手で進めた `conditions_through` には記録が無いので、何も省かれない（記録の行も一緒に手で書いた場合は見つけない。段階 1.5 と同じ範囲の限定）。
 3. front matter に `conditions_seal` があり、Conditions の報告（読めない行、返答のない【承認】、命令を通さない変更）が 0 件。
 4. Conditions の案内を受け取る担当（TODO 契約の対象。localllm は対象外）の implement / review-fix / blocked-retry の prompt。
 
@@ -143,7 +143,7 @@ Owner の承認（2026-11-18、家経由 reply_id=189776ac-574d-4b29-9fee-581eab
 
 ### 検証
 
-- `bb tests/codex-workspace/task-board-todos-test.bb` の `notes-omission`（線・記録が無い票と読めない線は全文／省くのは先頭の並びだけで残りは byte 一致／秒・日付だけの行の境目／後ろにある古い日付は残る／時刻の読めないエントリで並びが終わる／古い Notes の制約も語句に関係なく省かれる＝範囲の限定を固定／Conditions に報告がある間は全文／版は不変）、`conditions-checkpoint-cli`（拒否の条件、記録、再実行、後戻りしない）、`notes-omission-prompt`（一覧に無い票は全文、既定は BOXP-241、環境変数で指定・空で無効、未移行と手編集は全文で案内なし）。
+- `bb tests/codex-workspace/task-board-todos-test.bb` の `notes-omission`（線・記録が無い票と読めない線は全文／手で書いた線・checkpoint の後に手で進めた線は全文／省くのは先頭の並びだけで残りは byte 一致／秒・日付だけの行の境目／後ろにある古い日付は残る／時刻の読めないエントリで並びが終わる／古い Notes の制約も語句に関係なく省かれる＝範囲の限定を固定／Conditions に報告がある間は全文／版は不変）、`conditions-checkpoint-cli`（拒否の条件、記録、再実行、後戻りしない）、`notes-omission-prompt`（一覧に無い票は全文、既定は BOXP-241、環境変数で指定・空で無効、未移行と手編集は全文で案内なし）。
 - `tests/codex-workspace/task-board-runner-test.sh` の `test_notes_omission_prompt`: 実際に runner を回し、一覧にある移行済みの票は prompt から古い 2 件が消えて Conditions と線より後の Notes が入ること、一覧に無い同じ票と、Conditions を手で書き換えた票は全文が入ること。
 
 ### 切戻し

@@ -944,13 +944,18 @@
        "- 2026-01-01 00:00:00 UTC [claude-fable]: old date written after a newer entry\n"))
 (deftest notes-omission
   (let [sealed (task-board-todos/conditions-add notes-ticket {:kind "制約" :text "外部送信は禁止" :source "claude-fable"})
-        marked (fn [t through] (task-board-todos/set-fm t "conditions_through" through))
+        by-hand (fn [t through] (task-board-todos/set-fm t "conditions_through" through))
+        ;; what `conditions checkpoint` leaves: the mark and its Notes line
+        marked (fn [t through] (task-board-todos/append-section (by-hand t through) "Notes" (str "- 2026-02-01T00:00:00Z UTC [claude-fable]: Conditions checkpoint through " through " checked")))
         omit #(task-board-todos/omit-checkpointed-notes % "/vault/Tickets/BOXP-1.md")
         full (marked sealed "2026-01-02T12:00:00Z")]
     (testing "a ticket without the mark, without the seal, or with an unreadable mark is given in full"
       (is (= {:text notes-ticket :omitted 0 :kept-because "no conditions_through"} (omit notes-ticket)))
       (is (= sealed (:text (omit sealed))))
       (is (= "no conditions_seal" (:kept-because (omit (marked notes-ticket "2026-01-02T12:00:00Z")))))
+      (testing "a mark written by hand, or moved by hand after a checkpoint, has no record of its own"
+        (is (= {:omitted 0 :kept-because "conditions_through has no checkpoint record in Notes"} (dissoc (omit (by-hand sealed "2026-01-02T12:00:00Z")) :text)))
+        (is (= {:omitted 0 :kept-because "conditions_through has no checkpoint record in Notes"} (dissoc (omit (by-hand full "2026-01-03T12:00:00Z")) :text))))
       (is (= "conditions_through is not an instant" (:kept-because (omit (marked sealed "2026-01-02")))))
       (is (= (marked sealed "yesterday") (:text (omit (marked sealed "yesterday"))))))
     (testing "only the leading entries written by the mark are left out; the rest of the ticket is byte for byte the same"
@@ -965,6 +970,7 @@
         (is (= (subs full 0 (str/index-of full "- 2026-01-01: run started"))
                (subs text 0 (str/index-of text "- (not in this prompt)"))))
         (is (str/ends-with? text (subs full (str/index-of full "- 2026-01-03 00:00:00 UTC"))))
+        (is (str/includes? text "Conditions checkpoint through 2026-01-02T12:00:00Z checked"))
         (is (str/includes? text "- CD-01【制約】外部送信は禁止"))))
     (testing "an entry is left out only when its line shows it cannot be later than the mark"
       ;; a line with seconds can be up to a second later than it reads
@@ -1052,7 +1058,7 @@
                     " (print (str (notes-omission-prompt id \"claude-fable\" c) \"<<<\" (:text c))))")
         prompt (fn [env id text] (:out @(p/process (into ["env" "-u" "CODEX_TASK_BOARD_NOTES_OMISSION_TICKETS"] (concat env ["bb" "-e" script id text])) {:out :string :err :string})))
         sealed (task-board-todos/conditions-add notes-ticket {:kind "制約" :text "外部送信は禁止" :source "claude-fable"})
-        full (task-board-todos/set-fm sealed "conditions_through" "2026-01-02T12:00:00Z")]
+        full (task-board-todos/append-section (task-board-todos/set-fm sealed "conditions_through" "2026-01-02T12:00:00Z") "Notes" "- 2026-02-01T00:00:00Z UTC [claude-fable]: Conditions checkpoint through 2026-01-02T12:00:00Z checked")]
     (testing "only the tickets named for it are shortened: BOXP-241 by default"
       (is (= (str "<<<" full) (prompt [] "BOXP-21" full)))
       (let [out (prompt [] "BOXP-241" full)]
