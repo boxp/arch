@@ -1,0 +1,23 @@
+---
+# BOXP-618: render the kubeadm --patches JSON patch and run the feature gate
+# validation of roles/kubernetes_upgrade on localhost only. No kubeadm, APT,
+# sudo or cluster access is used.
+- name: Kube-controller-manager feature gate patch fixture
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../../../roles/kubernetes_upgrade/defaults/main.yml
+  tasks:
+    - name: Validate feature gates
+      ansible.builtin.include_tasks: ../../../roles/kubernetes_upgrade/tasks/validate_controller_manager_feature_gates.yml
+
+    - name: Write rendered patch and kubeadm argument
+      ansible.builtin.copy:
+        dest: "{{ fixture_out }}"
+        mode: '0600'
+        content: >-
+          {{ {'patch': (lookup('ansible.builtin.template',
+                 '../../../roles/kubernetes_upgrade/templates/kube-controller-manager+json.json.j2') | from_json
+                 if kubernetes_upgrade_controller_manager_feature_gates | length > 0 else None),
+              'arg': kubernetes_upgrade_kubeadm_patches_arg | trim} | to_json }}

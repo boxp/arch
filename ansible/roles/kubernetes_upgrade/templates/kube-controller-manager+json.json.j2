@@ -1,0 +1,9 @@
+{# kubeadm --patches target "kube-controller-manager", patch type "json" (RFC 6902).
+   Append one element to the existing command list instead of a strategic merge,
+   which would replace the whole command array. Repeated --feature-gates flags
+   are merged by component-base, so an existing flag from kubeadm-config is kept. #}
+{%- set pairs = [] -%}
+{%- for name, enabled in kubernetes_upgrade_controller_manager_feature_gates | dictsort -%}
+{%- set _ = pairs.append(name ~ '=' ~ (enabled | bool | ternary('true', 'false'))) -%}
+{%- endfor -%}
+{{ [{'op': 'add', 'path': '/spec/containers/0/command/-', 'value': '--feature-gates=' ~ (pairs | join(','))}] | to_nice_json }}

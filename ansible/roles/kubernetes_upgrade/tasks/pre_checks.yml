@@ -12,6 +12,10 @@
       wildcard package resolution is not permitted.
   tags: [pre_checks]
 
+- name: Validate kube-controller-manager feature gates for the target minor
+  ansible.builtin.include_tasks: validate_controller_manager_feature_gates.yml
+  tags: [pre_checks, upgrade]
+
 - name: Verify exact target packages before drain or host APT changes
   ansible.builtin.include_tasks: apt_preflight.yml
   tags: [pre_checks]
