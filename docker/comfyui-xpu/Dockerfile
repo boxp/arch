@@ -1,4 +1,4 @@
-FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 
 ARG COMFYUI_REPO=https://github.com/comfyanonymous/ComfyUI.git
 # renovate: datasource=github-releases depName=comfyanonymous/ComfyUI
