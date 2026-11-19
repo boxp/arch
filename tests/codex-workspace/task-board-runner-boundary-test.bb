@@ -212,11 +212,14 @@
 ;; Ticket locks
 
 (deftest lock-staleness-and-identity
-  (with-redefs [env (fn [k d] (if (= k "CODEX_TASK_BOARD_LOCK_STALE_SECONDS") "100" d))]
-    (is (not (stale-lock? {:heartbeat-at (str (.minusSeconds (now) 100))})) "exactly at the limit is still live")
-    (is (stale-lock? {:heartbeat-at (str (.minusSeconds (now) 102))}))
-    (is (not (stale-lock? {:heartbeat-at (str (.minusSeconds (now) 5))})))
-    (is (stale-lock? {:heartbeat-at "not a time"}) "an unreadable heartbeat is stale"))
+  (let [t0 (java.time.Instant/parse "2026-01-01T00:00:00Z")]
+   (with-redefs [env (fn [k d] (if (= k "CODEX_TASK_BOARD_LOCK_STALE_SECONDS") "100" d))
+                 now (constantly t0)]
+    ;; now is pinned so the exact-limit case cannot drift across a second boundary.
+    (is (not (stale-lock? {:heartbeat-at (str (.minusSeconds t0 100))})) "exactly at the limit is still live")
+    (is (stale-lock? {:heartbeat-at (str (.minusSeconds t0 101))}))
+    (is (not (stale-lock? {:heartbeat-at (str (.minusSeconds t0 5))})))
+    (is (stale-lock? {:heartbeat-at "not a time"}) "an unreadable heartbeat is stale")))
   (let [lock {:ticket "BOXP-1" :run-id "r" :owner-id "o" :owner-instance-id "i" :heartbeat-at "x"}]
     (is (same-ticket-lock? lock (assoc lock :heartbeat-at "y")) "the heartbeat may move")
     (doseq [k [:ticket :run-id :owner-id :owner-instance-id]]

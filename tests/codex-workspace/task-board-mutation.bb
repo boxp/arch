@@ -218,6 +218,14 @@
     (run! deref workers)
     (mapv @out (range (count items)))))
 
+(defn coverage-key
+  "What the cached coverage depends on: the target source, the instrumented functions,
+  the case list and the e2e script. A change to any of them invalidates the cache."
+  [src fns]
+  (str (hash [src (mapv str fns)
+              (slurp (str root "/tests/codex-workspace/task-board-runner-cases.txt"))
+              (slurp (str root "/tests/codex-workspace/task-board-runner-test.sh"))])))
+
 (defn coverage!
   "Which runner test cases reach which target function, and how long each case takes."
   [config group out jobs]
@@ -236,7 +244,7 @@
                                      hit (if (fs/exists? cov) (set (str/split-lines (slurp cov))) #{})]
                                  (println (str "  " c " " (name (:status r)) " " (quot (:ms r) 1000) "s hits=" (count hit)))
                                  {:case c :status (:status r) :ms (:ms r) :hits hit})))]
-      {:file file :src-sha (str (hash src)) :cases results})))
+      {:file file :cov-key (coverage-key src (:fns group)) :cases results})))
 
 (defn baseline!
   "The unmutated tests have to pass in the sandbox; a failing one cannot judge a mutant."
@@ -299,7 +307,7 @@
         cov (when (:runner-cases group)
               (let [cov-file (str out "/coverage-" (:name group) ".edn")
                     cached (when (fs/exists? cov-file) (edn/read-string (slurp cov-file)))]
-                (if (and cached (= (:src-sha cached) (str (hash src))))
+                (if (and cached (= (:cov-key cached) (coverage-key src (:fns group))))
                   cached
                   (let [c (coverage! config group out jobs)] (spit cov-file (pr-str c)) c))))
         sandboxes (vec (for [w (range jobs)] (make-sandbox! config (fs/path out "sandbox" (str "mut-" w)))))
