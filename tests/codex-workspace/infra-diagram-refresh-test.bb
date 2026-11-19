@@ -444,8 +444,9 @@
       (collect facts) (compare) (is (= "changed" (:status (read-json out))))
       (spit (str lol "/argoproj/b.yaml") "bad: [\n") (is (zero? (:exit (collect facts))) "invalid YAML is recorded, not a collector crash") (compare) (is (= "anomaly" (:status (read-json out)))))
     (let [f (str d "/page.html") check #(run {} "bb" (str refresh-dir "/publish.bb") "check-html" f "lineage")]
-      (spit f "kohako.exe ゲーム参加者 openai-codex") (is (zero? (:exit (check))))
-      (spit f "kohako.exe ゲーム参加者 openai-codex ooedo") (is (not (zero? (:exit (check)))))
+      (spit f "kohako.exe ゲーム参加者 openai-codex Kohako の家 kohako-home.b0xp.io") (is (zero? (:exit (check))))
+      (spit f "kohako.exe ゲーム参加者 openai-codex kohako-home.b0xp.io") (is (not (zero? (:exit (check)))) "家の要素を消した図は配備しない")
+      (spit f "kohako.exe ゲーム参加者 openai-codex Kohako の家 kohako-home.b0xp.io ooedo") (is (not (zero? (:exit (check)))))
       (spit f "kohako.exe ゲーム参加者") (is (not (zero? (:exit (check))))))))
 (deftest connection-only-changes
   (let [d (str (fs/create-temp-dir)) arch (str d "/arch") lol (str d "/lol") r (str d "/rules.edn")
@@ -481,6 +482,39 @@
       (let [c (compared)]
         (is (= "changed" (:status c)))
         (is (= ["lolice:ingress-backend:n/web:a.b0xp.io:/->web:http"] (:added c)))))))
+(deftest connections-inside-existing-resources
+  ;; BOXP-617: 既存の NetworkPolicy への許可先の追加や、env の接続先 URL の追加は資源の増減を伴わないので、通信先を事実にして検出する
+  (let [d (str (fs/create-temp-dir)) arch (str d "/arch") lol (str d "/lol") r (str d "/rules.edn")
+        facts (str d "/facts.json") base (str d "/base.json") out (str d "/out.json") tool (str refresh-dir "/iac_facts.bb")
+        np (str lol "/argoproj/np.yaml") dep (str lol "/argoproj/dep.yaml")
+        calico (fn [extra] (str "apiVersion: projectcalico.org/v3\nkind: NetworkPolicy\nmetadata:\n  name: bff\n  namespace: studio\nspec:\n  selector: app == 'studio'\n  egress:\n    - action: Allow\n      protocol: TCP\n      destination:\n        selector: app == 'hermes'\n        namespaceSelector: kubernetes.io/metadata.name == 'hermes'\n        ports: [8642]\n" extra))
+        k8s "apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: allow\n  namespace: board\nspec:\n  podSelector: {}\n  ingress:\n    - from:\n        - namespaceSelector:\n            matchLabels:\n              kubernetes.io/metadata.name: studio\n      ports:\n        - port: 8090\n"
+        deploy (fn [env] (str "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: bff\n  namespace: studio\nspec:\n  template:\n    spec:\n      containers:\n        - name: bff\n          image: example/bff:v1\n          env:\n" env))
+        collect! (fn [path] (is (zero? (:exit (run {} "bb" tool "collect" "--arch" arch "--lolice" lol "--rules" r "--out" path)))))
+        compared (fn [] (collect! facts) (run {} "bb" tool "compare" "--facts" facts "--baseline" base "--rules" r "--out" out) (read-json out))]
+    (doseq [x [arch lol]] (fs/create-dirs x) (run {} "git" "init" "-q" x))
+    (fs/create-dirs (str lol "/argoproj"))
+    (spit r "{:exclude-fact-patterns [] :max-removed-ratio 1 :min-iac-facts 0}")
+    (spit np (str (calico "") "---\n" k8s))
+    (spit dep (deploy "            - name: HERMES_URL\n              value: http://hermes-api.hermes.svc.cluster.local:8642\n"))
+    (run {} "git" "-C" lol "add" ".")
+    (collect! base)
+    (let [fs* (set (:facts (read-json base)))]
+      (is (fs* "lolice:netpol:studio/bff:egress:ns:kubernetes.io/metadata.name=='hermes';sel:app=='hermes':8642"))
+      (is (fs* "lolice:netpol:board/allow:ingress:ns:kubernetes.io/metadata.name=studio:8090"))
+      (is (fs* "lolice:svc-ref:Deployment/studio/bff->hermes-api.hermes:8642")))
+    (testing "同じ入力は無差分" (is (= "no-change" (:status (compared)))))
+    (testing "既存の policy に許可先を足すと差分になる"
+      (spit np (str (calico "    - action: Allow\n      protocol: TCP\n      destination:\n        selector: app == 'board'\n        ports: [8090, 9464]\n") "---\n" k8s))
+      (let [c (compared)]
+        (is (= "changed" (:status c)))
+        (is (= ["lolice:netpol:studio/bff:egress:sel:app=='board':8090,9464"] (:added c)))))
+    (testing "env に接続先 URL を足すと差分になる。値の変更でない image tag は差分にしない"
+      (spit np (str (calico "") "---\n" k8s))
+      (spit dep (str/replace (deploy "            - name: HERMES_URL\n              value: http://hermes-api.hermes.svc.cluster.local:8642\n            - name: STT_URL\n              value: http://stt.voice.svc:8080\n") "v1" "v2"))
+      (let [c (compared)]
+        (is (= "changed" (:status c)))
+        (is (= ["lolice:svc-ref:Deployment/studio/bff->stt.voice:8080"] (:added c)))))))
 (deftest command-runner
   (let [s (sandbox) d (:d s) cron (str d "/cron") selector (str repo "/docker/codex-workspace/cron/select-codex-cron-job.bb") script (str repo "/docker/codex-workspace/cron/run-codex-cron.sh") env (merge (:env s) {"CODEX_CRON_ROOT" cron "CODEX_CRON_SELECTOR" selector "CODEX_CRON_RUN_ID" "test"})]
     (fs/create-dirs cron)

@@ -17,5 +17,6 @@
                         "BEGIN [A-Z ]*PRIVATE"
                         "gh[pousr]_[A-Za-z0-9]{20,}"]
  ;; 両図に必ず残す表記
- :required-html-patterns {"lineage" ["kohako\\.exe" "ゲーム参加者" "openai-codex"]
-                          "architecture" ["kohako\\.exe" "ゲーム参加者" "lolice-lineage\\.b0xp\\.io"]}}
+ ;; 家と Studio (BOXP-617) は G2 と別の入口・責務なので、要素と hostname を消さない
+ :required-html-patterns {"lineage" ["kohako\\.exe" "ゲーム参加者" "openai-codex" "Kohako の家" "kohako-home\\.b0xp\\.io"]
+                          "architecture" ["kohako\\.exe" "ゲーム参加者" "lolice-lineage\\.b0xp\\.io" "Kohako の家"]}}
