@@ -28,6 +28,23 @@ upgrade_uncordon_retries: 18
 upgrade_uncordon_delay: 10           # seconds
 kubeadm_upgrade_etcd: false          # skip kubeadm's etcd static pod phase unless explicitly enabled
 kubernetes_worker_drain_delegate: "{{ groups['control_plane'][1] | default(groups['control_plane'][0]) }}"
+# kube-controller-manager feature gates injected only through `kubeadm upgrade
+# apply/node --patches`, i.e. only at the moment this control plane's static pod
+# manifests are regenerated for the target version. Empty (default) = no-op and
+# the kubeadm commands run exactly as before.
+# BOXP-618: Kubernetes 1.37.0-1.37.2 need NodeControllerLeaseCircuitBreaker=false
+# to avoid kubernetes#141572, but KCM 1.36 rejects that unknown gate and exits,
+# so the flag must never be written into a 1.36 manifest or kubeadm-config.
+# Example: {NodeControllerLeaseCircuitBreaker: false}
+kubernetes_upgrade_controller_manager_feature_gates: {}
+# Target minors the gates above are known to be accepted by. Upgrading to any
+# other minor with gates set fails in pre_checks so they are re-evaluated
+# (a gate that becomes GA/locked or removed would stop KCM on the new minor).
+kubernetes_upgrade_controller_manager_feature_gates_minors: ["1.37"]
+kubernetes_upgrade_kubeadm_patches_dir: /etc/kubernetes/kubeadm-upgrade-patches
+kubernetes_upgrade_kubeadm_patches_arg: >-
+  {{ ("--patches=" ~ kubernetes_upgrade_kubeadm_patches_dir)
+     if (kubernetes_upgrade_controller_manager_feature_gates | length > 0) else "" }}
 
 # Pre-check readiness retry: first attempt plus this many retries, with the
 # delay between them (12 x 15s = at least 3 minutes of waiting). Bounded so one

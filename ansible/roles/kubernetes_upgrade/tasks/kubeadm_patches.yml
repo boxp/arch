@@ -1,0 +1,41 @@
+---
+# BOXP-618: render kubeadm --patches for kube-controller-manager feature gates.
+# The patch is consumed only by `kubeadm upgrade apply/node` on this control
+# plane, so a not-yet-upgraded control plane (whose KCM may reject the gate)
+# never receives the flag. With no gates configured the directory content is
+# removed and the kubeadm commands do not get --patches at all.
+# Re-validate here: the workflow runs pre_checks and upgrade as separate
+# ansible-playbook invocations (--tags pre_checks / --tags upgrade).
+- name: Validate kube-controller-manager feature gates before rendering patches
+  ansible.builtin.include_tasks: validate_controller_manager_feature_gates.yml
+  tags: [upgrade]
+
+- name: Create kubeadm upgrade patches directory
+  ansible.builtin.file:
+    path: "{{ kubernetes_upgrade_kubeadm_patches_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  become: true
+  when: kubernetes_upgrade_controller_manager_feature_gates | length > 0
+  tags: [upgrade]
+
+- name: Render kube-controller-manager feature gate patch
+  ansible.builtin.template:
+    src: kube-controller-manager+json.json.j2
+    dest: "{{ kubernetes_upgrade_kubeadm_patches_dir }}/kube-controller-manager+json.json"
+    owner: root
+    group: root
+    mode: '0600'
+  become: true
+  when: kubernetes_upgrade_controller_manager_feature_gates | length > 0
+  tags: [upgrade]
+
+- name: Remove stale kube-controller-manager feature gate patch
+  ansible.builtin.file:
+    path: "{{ kubernetes_upgrade_kubeadm_patches_dir }}/kube-controller-manager+json.json"
+    state: absent
+  become: true
+  when: kubernetes_upgrade_controller_manager_feature_gates | length == 0
+  tags: [upgrade]

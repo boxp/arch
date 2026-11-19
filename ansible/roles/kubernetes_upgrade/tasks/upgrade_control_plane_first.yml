@@ -41,10 +41,15 @@
   when: not ansible_check_mode
   tags: [upgrade]
 
+- name: Render kubeadm patches for control plane components
+  ansible.builtin.include_tasks: kubeadm_patches.yml
+  tags: [upgrade]
+
 - name: Run kubeadm upgrade apply
   ansible.builtin.command: >-
     kubeadm upgrade apply v{{ kubernetes_upgrade_version }} --yes
     --etcd-upgrade={{ kubeadm_upgrade_etcd | bool | ternary('true', 'false') }}
+    {{ kubernetes_upgrade_kubeadm_patches_arg }}
   become: true
   register: upgrade_result
   changed_when: upgrade_result.rc == 0

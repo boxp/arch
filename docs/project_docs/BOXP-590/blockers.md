@@ -59,3 +59,5 @@ watch の resolved は「上流で条件がそろった」という意味だけ�
   何も変わらなければ通知しない。取得に失敗した回は、解消とも未解消とも扱わない。
 - lolice 側の依存の更新（Calico 3.30.2、Longhorn 1.9.1 からの順番の更新）と、gate 無効化で #141572 を避ける方法は、
   実行するときの前提として扱う。watch では見ていない。
+- gate 無効化（`NodeControllerLeaseCircuitBreaker=false`）で #141572 を避ける方法の再評価と、kind での隔離検証の結果は
+  `docs/project_docs/BOXP-618/validation.md` にまとめた（BOXP-618）。watch の解除条件はそのまま変えない。

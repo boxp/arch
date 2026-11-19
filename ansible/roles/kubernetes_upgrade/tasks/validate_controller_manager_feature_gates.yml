@@ -1,0 +1,18 @@
+---
+# BOXP-618: kube-controller-manager feature gates are injected only through
+# kubeadm --patches (see kubeadm_patches.yml). Fail before drain or APT changes
+# when the map is malformed or the target minor has not been evaluated.
+- name: Validate kube-controller-manager feature gates for the target minor
+  ansible.builtin.assert:
+    that:
+      - kubernetes_upgrade_controller_manager_feature_gates is mapping
+      - kubernetes_upgrade_version.split('.')[:2] | join('.') in kubernetes_upgrade_controller_manager_feature_gates_minors
+      - kubernetes_upgrade_controller_manager_feature_gates.keys() | reject('match', '^[A-Z][A-Za-z0-9]+$') | list | length == 0
+      - kubernetes_upgrade_controller_manager_feature_gates.values() | reject('boolean') | list | length == 0
+    fail_msg: >-
+      kube-controller-manager feature gates must be a map of GateName: true/false and
+      are only allowed for target minors
+      {{ kubernetes_upgrade_controller_manager_feature_gates_minors }}; re-evaluate them
+      before reusing them for another minor (BOXP-618).
+  when: kubernetes_upgrade_controller_manager_feature_gates | length > 0
+  tags: [pre_checks, upgrade]
