@@ -534,7 +534,8 @@
           exit 0
         fi
         maps="$(dmsetup ls --target multipath)"
-        if [ "$maps" != "No devices found" ]; then
+        # Older dmsetup prints nothing (not "No devices found") when other dm devices exist.
+        if [ -n "$maps" ] && [ "$maps" != "No devices found" ]; then
           echo "existing multipath maps present; refusing to reconfigure: $maps" >&2
           exit 1
         fi
