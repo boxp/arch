@@ -1,0 +1,40 @@
+;; BOXP-616: the safety boundaries of the Task Board runner that mutation testing covers.
+;; Each group names one source file, the functions mutated in it, and the tests that
+;; judge every mutant. With :runner-cases, the cases of task-board-runner-test.sh that
+;; reach a function (found by an instrumented coverage run) are added to its tests.
+;; Why these functions: docs/project_docs/BOXP-616/plan.md.
+{:copy ["docker/codex-workspace" "docker/hermes-agent" "tests/codex-workspace" "tests/qwen-eval"]
+ :groups
+ [{:name "runner-gates"
+   :file "docker/codex-workspace/task-board/task_board_runner.bb"
+   ;; What the agent's last message asks for, and whether the PR gates let it through.
+   :fns [result-marker wait-reason-marker recheck-at-marker no-repo-review-marker? review-ready? github-pr-urls
+         codex-review-findings classify-codex-review
+         check-completed? check-successful? check-failed? ci-state merge-state merged-pr?
+         intended-outcome final-status consume-continuation!
+         ;; Ticket locks: who may run a ticket and when a lock is taken over.
+         stale-lock? same-ticket-lock?
+         ;; PR gate failure budget.
+         gate-failure-class gate-budget-status gate-budget-scope-prs]
+   :tests [["bb" "tests/codex-workspace/task-board-runner-boundary-test.bb"]
+           ["bb" "tests/codex-workspace/task-board-same-file-review-test.bb"]]
+   :runner-cases true
+   ;; Mutants that cannot change behaviour. Each one was read, not just left surviving.
+   :equivalent
+   [{:fn codex-review-findings :desc "regex -> #\"(?i)^CODEX_REVIEW_FINDING:(.*)\""
+     :reason "`.*` already runs to the end of the line (the text is split into lines first), so `$` adds nothing."}
+    {:fn codex-review-findings :desc "< -> >"
+     :reason "With fewer than 3 parts the description is blank, which marks the finding malformed anyway."}
+    {:fn codex-review-findings :desc "3 -> 0"
+     :reason "Same as above: the part count check is implied by the blank-description check."}
+    {:fn classify-codex-review :desc "regex -> #\"(?i)CODEX_REVIEW_RESULT:\\s*(clean|issues)\\s*$\""
+     :reason "Used with re-matches, which matches the whole line, so `^` adds nothing."}
+    {:fn classify-codex-review :desc "regex -> #\"(?i)^CODEX_REVIEW_RESULT:\\s*(clean|issues)\\s*\""
+     :reason "Used with re-matches, which matches the whole line, so `$` adds nothing."}
+    {:fn intended-outcome :desc "drop set element \"continue\""
+     :reason "Without it `continue` falls to the :else branch, which also returns \"continue\"."}]}
+  {:name "todos-gate"
+   :file "docker/codex-workspace/task-board/task_board_todos.bb"
+   ;; Whether a result is held for unreceived ticket changes and unusable Conditions.
+   :fns [gate-decision condition-problems owner-derived? owner-reply? seal-problems checkpoint-problems checkpoint-recorded?]
+   :tests [["bb" "tests/codex-workspace/task-board-todos-test.bb"]]}]}
