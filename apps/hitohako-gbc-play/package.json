@@ -1,0 +1,7 @@
+{
+  "name": "hitohako-gbc-play",
+  "private": true,
+  "devDependencies": {
+    "wrangler": "4.162.0"
+  }
+}

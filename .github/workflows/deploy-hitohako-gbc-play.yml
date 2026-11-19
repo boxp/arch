@@ -1,0 +1,88 @@
+name: Deploy Hitohako GBC Play
+
+# BOXP-629: ひとはこGBC の試遊ページ（本人限定、https://hitohako-gbc.b0xp.io/）を Cloudflare Pages へ配備する。
+# 配布物（ページ + エミュレーター + ROM）はこのリポジトリに置かない。非公開リポジトリ boxp/hitohako-gbc の CI が
+# 確認の通った物だけを非公開リポジトリ boxp/hitohako-gbc-play へ送り、この job が読取り専用の deploy key で
+# そこだけを読む（ソース・原画・台本のあるリポジトリは読めない）。
+# 30 分ごとに新しい配布物を見に行き、配信中の物と同じなら何もしない。すぐ出したい時は workflow_dispatch。
+# 配備の前後に、全部の入口が Cloudflare Access の内側にあることを確かめ、外なら配備しない。
+# このリポジトリの Actions のログは公開なので、配布物の中身や commit message は出さない。
+on:
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 配信中の物と同じ配布物でも配備し直す
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-hitohako-gbc-play
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'boxp/arch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: apps/hitohako-gbc-play
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Fetch the site bundle
+        id: bundle
+        env:
+          HITOHAKO_GBC_PLAY_DEPLOY_KEY: ${{ secrets.HITOHAKO_GBC_PLAY_DEPLOY_KEY }}
+        run: scripts/fetch-bundle.sh "$RUNNER_TEMP/site"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.bundle.outputs.ready == 'true'
+        with:
+          node-version: '22'
+
+      - name: Install wrangler
+        if: steps.bundle.outputs.ready == 'true'
+        run: npm ci
+
+      - name: Deploy behind Access and read back
+        id: deploy
+        if: steps.bundle.outputs.ready == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: 'false'
+          REV: ${{ steps.bundle.outputs.rev }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          args=("$RUNNER_TEMP/site" "$REV")
+          if [ "$FORCE" = true ]; then args+=(--force); fi
+          scripts/deploy.sh "${args[@]}"
+
+      - name: Remove the bundle from the runner
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/site" .wrangler "$HOME/.config/.wrangler"
+
+      - name: Summary
+        if: steps.bundle.outputs.ready == 'true'
+        env:
+          REV: ${{ steps.bundle.outputs.rev }}
+          ROM_SHA256: ${{ steps.bundle.outputs.rom_sha256 }}
+          DEPLOYED: ${{ steps.deploy.outputs.deployed }}
+        run: |
+          {
+            echo "## hitohako-gbc play"
+            echo "- bundle: \`$REV\`"
+            echo "- ROM sha256: \`$ROM_SHA256\`"
+            echo "- deployed in this run: \`$DEPLOYED\`"
+          } >>"$GITHUB_STEP_SUMMARY"
