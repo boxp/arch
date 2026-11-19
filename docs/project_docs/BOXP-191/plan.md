@@ -45,3 +45,27 @@ GitHub Actions concurrencyは複数のmutation workflowが同時にrunningにな
 fixtureに合わせた`X.Y.Z-N.N`である。OBS全ディストリビューションの任意revision形式への
 対応は主張しない。将来候補が異なる形式になった場合はworkflow/roleの両gateを同時に
 変更して検証する。未知形式を推測で通す代わりに、現時点では入力gateで停止する。
+
+## 2026-11-19: gate 無効化の本番設定（Owner 方針受容後）
+
+Owner は BOXP-618 の再評価を受け、1.37 実施時に kube-controller-manager の
+`NodeControllerLeaseCircuitBreaker=false`（kubernetes#141572 回避）を一時的に使う方針を受容した。
+arch#15353 で用意した既定オフの投入経路を、本番 inventory で次のとおり有効化する。
+
+- `inventories/production/hosts.yml` の `control_plane` vars に
+  `kubernetes_upgrade_controller_manager_feature_gates` を宣言する。値は
+  更新先 `kubernetes_upgrade_version` の minor が `1.37` のときだけ
+  `{NodeControllerLeaseCircuitBreaker: false}`、それ以外（1.36 patch、1.38、未指定）は `{}`。
+- 1.36 の KCM は未知 gate で即終了するため、1.36 manifest へは書かない。gate は
+  `kubeadm upgrade apply/node --patches` で各 CP の manifest が 1.37 に作り直される時だけ付く。
+- worker は `control_plane` group に属さないため常に `{}`（role 既定）。
+- 通常 Apply（control-plane.yml 等）はこの変数を参照しない。
+- 対象版: 1.37.0〜1.37.2（#141622 未 merge、release-1.37 に同等修正なし）。
+- 撤去条件: #141622 相当の修正入り 1.37.x へ上げるとき `{}` に戻して kubeadm upgrade で
+  manifest を作り直す。1.38 を更新先にすると自動で `{}` になり、再利用前に再評価する。
+- 本番 Kubernetes/CRI-O 1.37 dispatch はこの変更に含めない。
+
+検証: `tests/test_kcm_feature_gate_patches.py` に production inventory を解決する 3 件を追加
+（CP 3 台 × 1.37.0/1.37.2/1.37.10 で gate=false、1.36.5/1.36.9/1.38.0/未指定で `{}`、
+worker は `{}`、解決値が role の検証を通り `--feature-gates=NodeControllerLeaseCircuitBreaker=false`
+1 要素の JSON patch になる）。
