@@ -115,6 +115,27 @@
     (testing "a well-formed finding with a clean marker is judged on the finding"
       (is (= {:verdict :blocking :reason nil} (verdict "CODEX_REVIEW_RESULT: clean\nCODEX_REVIEW_FINDING: P1 | a | x"))))))
 
+(deftest invalid-review-outputs-name-only-a-fixed-reason
+  ;; BOXP-621: these inputs were six end-to-end cases that differed only in the review
+  ;; text. The gate turns every :invalid verdict into the same blocked result whose
+  ;; message names the reason keyword (never the review text), so the e2e cases
+  ;; test_review_with_codex_review_issue_is_blocked / _unknown_severity_output_stops
+  ;; keep the wiring and these assertions keep each input.
+  (let [reasons #{:empty-output :missing-result-marker :conflicting-result-marker :missing-severity
+                  :unknown-severity :malformed-finding :unstructured-findings}]
+    (doseq [[text reason] [["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | wording\n- unformatted real defect" :unstructured-findings]
+                           ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | real defect\n- unformatted second defect" :unstructured-findings]
+                           ["CODEX_REVIEW_RESULT: clean\n- unformatted real defect" :unstructured-findings]
+                           ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | wording\nCODEX_REVIEW_FINDING: | x | real defect" :missing-severity]
+                           ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2" :malformed-finding]
+                           ["CODEX_REVIEW_RESULT: clean\nCODEX_REVIEW_RESULT: issues" :conflicting-result-marker]
+                           ["CODEX_REVIEW_RESULT: issues\n- missing regression test" :missing-severity]
+                           ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P9 | x | y" :unknown-severity]
+                           ["no marker" :missing-result-marker]]]
+      (let [r (classify-codex-review text)]
+        (is (= {:verdict :invalid :reason reason} (select-keys r [:verdict :reason])) text)
+        (is (contains? reasons (:reason r)) text)))))
+
 ;; ---------------------------------------------------------------------------
 ;; CI checks and merge state
 

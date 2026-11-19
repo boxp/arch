@@ -1177,6 +1177,28 @@ EOF
   [[ ! -e "${state}/locks/BOXP-201.edn" ]] || fail "expected stale lock to be released"
 }
 
+# BOXP-621: no case reached close-corrupt-lock!. A lock file that cannot be read
+# must not wedge the ticket forever, and clearing it is written to the ticket.
+test_corrupt_lock_is_cleared_and_noted() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}" "${state}/locks"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-202|BOXP-202: corrupt]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-202 in-progress codex
+  printf '{:ticket "BOXP-202" :run-id\n' >"${state}/locks/BOXP-202.edn"
+
+  PATH="${bin}:$PATH" run_tick "${vault}" "${state}" env >"${tmp}/tick.out"
+
+  assert_file_contains "${vault}/Tickets/BOXP-202.md" 'Codex lock file was corrupt and was cleared so the runner can recover.'
+  assert_file_contains "${vault}/Tickets/BOXP-202.md" 'started from In Progress with action implement'
+  [[ ! -e "${state}/locks/BOXP-202.edn" ]] || fail "expected the corrupt lock to be cleared"
+  rm -rf "${tmp}"
+}
+
 test_planned_shutdown_lock_recovers_immediately() {
   local tmp vault state bin old_run lock_snapshot replacement_run started elapsed heartbeat
   tmp="$(mktemp -d)"
@@ -2220,6 +2242,8 @@ test_review_with_codex_review_issue_is_blocked() {
   assert_no_review_budget
 }
 
+# BOXP-621: P0 takes the same blocking path (retry, one budget failure); that P0 is
+# blocking like P1 is pinned in task-board-runner-boundary-test.bb.
 test_review_p1_finding_retries_and_consumes_budget() {
   local tmp vault state bin artifact
   review_severity_setup
@@ -2231,15 +2255,6 @@ test_review_p1_finding_retries_and_consumes_budget() {
   artifact="$(find "${state}/runs/BOXP-405" -name codex-review-boxp__example-123-blocking.md -print -quit)"
   assert_file_contains "${artifact}" 'nil deref on empty input'
   assert_file_contains "${state}/gate-failure-budget.edn" 'BOXP-405'
-  [[ "$(grep -o ':class "review-findings"' "${state}/gate-failure-budget.edn" | wc -l)" == 1 ]] || fail "expected one budget failure"
-}
-
-test_review_p0_finding_blocks() {
-  local tmp vault state bin
-  review_severity_setup
-  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P0 | x | credential leak' review_severity_tick
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: in-progress$'
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'Retrying with Codex instruction 1/2'
   [[ "$(grep -o ':class "review-findings"' "${state}/gate-failure-budget.edn" | wc -l)" == 1 ]] || fail "expected one budget failure"
 }
 
@@ -2269,6 +2284,10 @@ test_review_mixed_findings_retry_targets_only_blocking() {
   assert_file_not_contains "${tmp}/prompt" 'optional wording'
 }
 
+# BOXP-621: every invalid review output takes the same path (blocked, reason name only,
+# no budget). These two cases keep that wiring; the other inputs (unstructured lines
+# next to P1/P2/clean, a finding without severity or location, two result markers) are
+# pinned per input in task-board-runner-boundary-test.bb.
 test_review_unknown_severity_output_stops() {
   local tmp vault state bin message
   for message in $'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P9 | x | y' 'no marker'; do
@@ -2278,64 +2297,6 @@ test_review_unknown_severity_output_stops() {
     assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-invalid-output'
     assert_no_review_budget
   done
-}
-
-test_review_p2_with_unstructured_lines_stops() {
-  local tmp vault state bin
-  review_severity_setup
-  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | wording\n- unformatted real defect' review_severity_tick
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: blocked$'
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-invalid-output'
-  assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'unformatted real defect'
-  assert_no_review_budget
-}
-
-test_review_p1_with_unstructured_lines_stops() {
-  local tmp vault state bin
-  review_severity_setup
-  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | real defect\n- unformatted second defect' review_severity_tick
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: blocked$'
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-invalid-output'
-  assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'unformatted second defect'
-  assert_no_review_budget
-}
-
-test_review_clean_with_unstructured_lines_stops() {
-  local tmp vault state bin
-  review_severity_setup
-  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: clean\n- unformatted real defect' review_severity_tick
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: blocked$'
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-invalid-output'
-  assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'unformatted real defect'
-  assert_no_review_budget
-}
-
-test_review_finding_without_severity_stops() {
-  local tmp vault state bin
-  review_severity_setup
-  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | wording\nCODEX_REVIEW_FINDING: | x | real defect' review_severity_tick
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: blocked$'
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-invalid-output'
-  assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'real defect'
-  assert_no_review_budget
-}
-
-test_review_malformed_finding_stops() {
-  local tmp vault state bin
-  review_severity_setup
-  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2' review_severity_tick
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: blocked$'
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-invalid-output'
-  assert_no_review_budget
-}
-
-test_review_conflicting_result_marker_stops() {
-  local tmp vault state bin
-  review_severity_setup
-  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: clean\nCODEX_REVIEW_RESULT: issues' review_severity_tick
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: blocked$'
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-invalid-output'
-  assert_no_review_budget
 }
 
 test_review_same_p1_retry_count_survives_p2_changes() {
@@ -7251,6 +7212,40 @@ test_outside_copy_reclaim() {
   done
 }
 
+# BOXP-621: no case reached run-localllm-coder! (only its helpers had tests). The
+# route starts a local model with a bash tool, so every precondition fails closed:
+# without a repo worktree pi is never started and the card is blocked with the
+# category, and the evidence is kept in the run directory.
+test_localllm_coder_without_worktree_never_starts_pi() {
+  local tmp vault state bin run
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  cat >"${bin}/pi" <<FAKE
+#!/bin/sh
+echo started >>"${tmp}/pi-started"
+FAKE
+  chmod +x "${bin}/pi"
+  printf '%s\n' '{"providers":{"llama.cpp":{"baseUrl":"file:///nonexistent","models":[{"id":"qwen3-coder-next"}]}}}' >"${tmp}/models.json"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-995|BOXP-995: coder]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-995 in-progress localllm-coder
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_LOCALLLM_CODER_PI_MODELS="${tmp}/models.json" run_tick "${vault}" "${state}" env >"${tmp}/tick.out"
+  [[ ! -e "${tmp}/pi-started" ]] || fail 'pi started without a repo worktree'
+  run="$(find "${state}/runs/BOXP-995" -name localllm-coder.edn -print -quit)"
+  [[ -n "${run}" ]] || fail 'no localllm-coder evidence'
+  assert_file_contains "${run}" ':router-readback \{:ok\? false, :category "no-repo-worktree"\}'
+  assert_file_contains "${run}" ':result "blocked"'
+  assert_file_contains "$(dirname "${run}")/prompt.md" 'You are a local model'
+  # The precondition's category stays in the evidence; the card's blocker is the
+  # generic process failure (exit 1), which still never offers a patch.
+  assert_file_contains "$(dirname "${run}")/summary.edn" ':blocker-category "agent-process-error"'
+  assert_file_contains "${vault}/Tickets/BOXP-995.md" '^status: blocked$'
+  rm -rf "${tmp}"
+}
+
 test_recheck_reservation_fires_and_retries() {
   local tmp vault state bin
   tmp="$(mktemp -d)"
@@ -7271,6 +7266,84 @@ test_recheck_reservation_fires_and_retries() {
   assert_file_contains "${vault}/Tickets/BOXP-991.md" '期限到来.*blocked-retry'
   assert_file_contains "${vault}/Tickets/BOXP-991.md" 'started from Blocked with action blocked-retry'
   assert_file_contains "${state}/recheck-reservations.edn" ':state :consumed'
+}
+
+# BOXP-621: the Owner's manual recheck commands had no test (no case reached
+# recheck-reserve!/recheck-cancel!/recheck-audit). A reservation hands a Blocked
+# card back to an agent, so only a Blocked card assigned to boxp whose ticket and
+# card revisions agree may get one, and never two at once.
+test_recheck_manual_reserve_cancel_audit() {
+  local tmp vault state bin out
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  sed -i "/^if grep -q .*Delegation contract:/,/^fi$/d" "${bin}/codex"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-994|BOXP-994: manual recheck]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-994 in-progress codex
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'TASK_BOARD_RESULT: blocked\nTASK_BOARD_WAIT_REASON: owner-decision' run_tick "${vault}" "${state}" env >"${tmp}/first"
+  assert_file_contains "${vault}/Tickets/BOXP-994.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-994.md" '^assignee: boxp$'
+  recheck() { CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" "$@"; }
+  # Waiting without a reservation: the audit lists it with the agent's wait reason.
+  recheck recheck-audit >"${tmp}/audit" || fail 'recheck-audit failed'
+  assert_file_contains "${tmp}/audit" ':ticket "BOXP-994"'
+  assert_file_contains "${tmp}/audit" ':wait-reason "owner-decision"'
+  # Refused: a bad instant, an unsupported assignee, an extra argument.
+  for args in "--at not-a-time --assignee codex --by boxp" "--at 2030-01-01T00:00:00Z --assignee nobody --by boxp" "--at 2030-01-01T00:00:00Z --assignee codex --by boxp --x y"; do
+    # shellcheck disable=SC2086
+    if recheck recheck-reserve BOXP-994 ${args} >"${tmp}/out" 2>&1; then fail "recheck-reserve accepted: ${args}"; fi
+  done
+  [[ ! -e "${state}/recheck-reservations.edn" ]] || assert_file_not_contains "${state}/recheck-reservations.edn" 'BOXP-994'
+  # Refused: the card revision no longer matches the ticket.
+  cp "${vault}/Boards/Task Board.md" "${tmp}/board"
+  sed -i 's/rev::[^ ]*/rev::other/' "${vault}/Boards/Task Board.md"
+  if recheck recheck-reserve BOXP-994 --at 2030-01-01T00:00:00Z --assignee codex --by boxp >"${tmp}/out" 2>&1; then fail 'reserved with a mismatched revision'; fi
+  assert_file_contains "${tmp}/out" 'matching revision'
+  cp "${tmp}/board" "${vault}/Boards/Task Board.md"
+  # Accepted once; a second reservation is refused while the first is pending.
+  recheck recheck-reserve BOXP-994 --at 2030-01-01T00:00:00Z --assignee codex --by boxp >"${tmp}/reserved" || fail 'recheck-reserve failed'
+  assert_file_contains "${state}/recheck-reservations.edn" ':kind :manual'
+  assert_file_contains "${state}/recheck-reservations.edn" ':state :pending'
+  assert_file_contains "${vault}/Tickets/BOXP-994.md" '^recheck_state: pending$'
+  assert_file_contains "${vault}/Tickets/BOXP-994.md" '^recheck_assignee: codex$'
+  # A manual reservation starts a new chain.
+  assert_file_contains "${vault}/Tickets/BOXP-994.md" '連続=1/'
+  if recheck recheck-reserve BOXP-994 --at 2030-02-01T00:00:00Z --assignee codex --by boxp >"${tmp}/out" 2>&1; then fail 'second reservation accepted'; fi
+  assert_file_contains "${tmp}/out" 'pending reservation exists'
+  recheck recheck-audit >"${tmp}/audit" || fail 'recheck-audit failed'
+  assert_file_not_contains "${tmp}/audit" 'BOXP-994'
+  # A pending reservation does not fire before it is due.
+  PATH="${bin}:$PATH" run_tick "${vault}" "${state}" env >"${tmp}/second"
+  assert_file_contains "${vault}/Tickets/BOXP-994.md" '^status: blocked$'
+  # Cancel once; there is nothing left to cancel afterwards.
+  recheck recheck-cancel BOXP-994 --by boxp >"${tmp}/cancel" || fail 'recheck-cancel failed'
+  assert_file_contains "${state}/recheck-reservations.edn" ':state :cancelled'
+  assert_file_contains "${vault}/Tickets/BOXP-994.md" '^recheck_state: cancelled$'
+  assert_file_contains "${vault}/Tickets/BOXP-994.md" '再確認予約 rc-.* を boxp が取消'
+  if recheck recheck-cancel BOXP-994 --by boxp >"${tmp}/out" 2>&1; then fail 'cancelled twice'; fi
+  assert_file_contains "${tmp}/out" 'no pending reservation'
+  # A reservation that is firing counts as existing: no second one, not in the audit.
+  bb -e '(require (quote clojure.edn)) (let [p (first *command-line-args*) db (clojure.edn/read-string (slurp p))] (spit p (pr-str (assoc-in db ["BOXP-994" :state] :firing))))' "${state}/recheck-reservations.edn"
+  if recheck recheck-reserve BOXP-994 --at 2030-01-01T00:00:00Z --assignee codex --by boxp >"${tmp}/out" 2>&1; then fail 'reserved while firing'; fi
+  assert_file_contains "${tmp}/out" 'pending reservation exists'
+  recheck recheck-audit >"${tmp}/audit" || fail 'recheck-audit failed'
+  assert_file_not_contains "${tmp}/audit" 'BOXP-994'
+  bb -e '(require (quote clojure.edn)) (let [p (first *command-line-args*) db (clojure.edn/read-string (slurp p))] (spit p (pr-str (assoc-in db ["BOXP-994" :state] :cancelled))))' "${state}/recheck-reservations.edn"
+  recheck recheck-audit >"${tmp}/audit" || fail 'recheck-audit failed'
+  assert_file_contains "${tmp}/audit" ':ticket "BOXP-994"'
+  # Only a block the agent reported itself is a time wait: a later block for
+  # another reason takes the ticket out of the audit.
+  printf -- '- 2026-01-02: Blocked transition recorded: ticket=BOXP-994; run=r2; category=agent-process-error; reason=x\n' >>"${vault}/Tickets/BOXP-994.md"
+  recheck recheck-audit >"${tmp}/audit" || fail 'recheck-audit failed'
+  assert_file_not_contains "${tmp}/audit" 'BOXP-994'
+  # Not assigned to boxp: refused.
+  sed -i 's/assignee::boxp/assignee::codex/' "${vault}/Boards/Task Board.md"
+  sed -i 's/^assignee: boxp$/assignee: codex/' "${vault}/Tickets/BOXP-994.md"
+  if recheck recheck-reserve BOXP-994 --at 2030-01-01T00:00:00Z --assignee codex --by boxp >"${tmp}/out" 2>&1; then fail 'reserved a card not assigned to boxp'; fi
+  rm -rf "${tmp}"
 }
 
 test_recheck_reservation_owner_change_supersedes() {

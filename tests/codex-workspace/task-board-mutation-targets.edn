@@ -3,7 +3,18 @@
 ;; judge every mutant. With :runner-cases, the cases of task-board-runner-test.sh that
 ;; reach a function (found by an instrumented coverage run) are added to its tests.
 ;; Why these functions: docs/project_docs/BOXP-616/plan.md.
-{:copy ["docker/codex-workspace" "docker/hermes-agent" "tests/codex-workspace" "tests/qwen-eval"]
+{:copy ["docker/codex-workspace" "docker/hermes-agent" "tests/codex-workspace" "tests/qwen-eval" "tests/harness-eval"]
+ ;; BOXP-621: --fn-coverage instruments every function of this file and runs these
+ ;; direct tests (every suite that loads or runs the runner) and all runner cases.
+ :fn-coverage
+ {:file "docker/codex-workspace/task-board/task_board_runner.bb"
+  :tests [["bb" "tests/codex-workspace/task-board-runner-boundary-test.bb"]
+          ["bb" "tests/codex-workspace/task-board-same-file-review-test.bb"]
+          ["bb" "tests/codex-workspace/task-board-todos-test.bb"]
+          ["bb" "tests/codex-workspace/vault-writer-test.bb"]
+          ["bb" "tests/harness-eval/test_harness_eval.bb"]
+          ["bash" "tests/codex-workspace/ai-subscription-usage-test.sh"]
+          ["bash" "tests/codex-workspace/localllm-docs-test.sh"]]}
  :groups
  [{:name "runner-gates"
    :file "docker/codex-workspace/task-board/task_board_runner.bb"
