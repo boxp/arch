@@ -104,6 +104,9 @@ workflows:
     '.github/workflows/claude.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'anthropics/claude-code-action@b6e5a9f27ac3c7d2c2b1542b8670917750e0433f'
+    '.github/workflows/deploy-hitohako-gbc-play.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+        - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
     '.github/workflows/deploy-hitohako.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'

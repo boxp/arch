@@ -12,3 +12,8 @@ output "production_custom_domain" {
   description = "The production custom domain for the hitohako site."
   value       = local.production_domain
 }
+
+output "gbc_play_custom_domain" {
+  description = "The owner-only custom domain for the hitohako GBC play page."
+  value       = local.gbc_play_domain
+}
