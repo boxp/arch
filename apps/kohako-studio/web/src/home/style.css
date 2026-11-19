@@ -28,6 +28,13 @@ button:focus-visible,a:focus-visible,textarea:focus-visible,input:focus-visible{
 .character.mini{--rig-bleed:0px;--rig-bleed-upper:0px}
 #rig[data-bleed]{left:calc(-1 * var(--rig-bleed));width:calc(100% + 2 * var(--rig-bleed))}
 #rig[hidden],.character img[hidden]{display:none}
+/* BOXP-626: リグ表示中は箱を CSS で伸び縮みさせない（WebGL canvas が毎フレーム作り直され、枠の切替と食い違って一瞬大きく/小さく描かれていた）。
+   配置替えは morph.ts が直前の絵の写しを溶かしながら新しい絵を浮かび上がらせる。 */
+.character:has(> #rig:not([hidden])){transition:none}
+.morph-ghost{position:absolute;z-index:2;pointer-events:none;animation:morph-out var(--morph-ms,.24s) ease-in both}
+.character.morph-in > #rig{animation:morph-in var(--morph-ms,.24s) ease-out both}
+@keyframes morph-out{to{opacity:0}}
+@keyframes morph-in{from{opacity:0}}
 .character{container-type:size}
 /* 上半身: キャンバスをモデルの縦横比で高さの 185% にし、上端をそろえる（頭・手の判定は canvas の実位置から計算するので追従する） */
 .character[data-frame="upper"] #rig{height:185cqh;width:calc(185cqh * 1143 / 2048 + 2 * var(--rig-bleed-upper));max-width:none;left:50%;transform:translateX(-50%)}

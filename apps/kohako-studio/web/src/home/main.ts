@@ -82,6 +82,7 @@ import { parsePrefs, parseVolume, type Prefs } from './prefs'
 import { blendLook, followWeightFor, lookTarget, smoothLook, TouchLook, type Look } from './lookfollow'
 import { parseResume, parseUnconfirmed, pollVerdict, type Inflight } from './resume'
 import { addErrorText, holdLabel, MessageQueue, QUEUE_MAX_ITEMS, type HoldReason, type QueueItem } from './queue'
+import { createCharacterMorph, layoutKey } from './morph'
 
 // BOXP-510 TD-03: 家を開いた時点で SW を登録し、PWA としてインストール可能にする（Push と同じ SW・scope）。
 if ('serviceWorker' in navigator)
@@ -505,7 +506,6 @@ function closeViewer(focus = true) {
   if (viewer.hidden) return
   viewer.hidden = true
   viewerBody.replaceChildren()
-  delete body.dataset.viewer
   if (focus && viewerOpener?.isConnected) viewerOpener.focus()
   refreshScene(true)
 }
@@ -516,7 +516,6 @@ document.addEventListener('keydown', (e) => {
 function openViewer(view: View, opener: HTMLElement, focus = true) {
   viewerOpener = opener
   viewer.hidden = false
-  body.dataset.viewer = 'open'
   viewerBody.replaceChildren()
   el('viewer-title').textContent = view.title ?? '利用枠'
   refreshScene(true)
@@ -695,6 +694,16 @@ function shapeOf(): 'pc' | 'portrait' | 'landscape' {
   return h > w ? 'portrait' : w >= 900 && h >= 560 ? 'pc' : 'landscape'
 }
 let visitActive = false
+let lastLayout = ''
+const morph = createCharacterMorph({
+  character,
+  canvas: rigCanvas,
+  draw: () => rig?.draw(),
+  frameChanged: () => window.dispatchEvent(new Event('kohako-frame-change')),
+  // リグを描いている間だけ。動きを減らす設定・OS の reduced-motion・転送ゲートの出入りの間は即時に切り替える。
+  enabled: () =>
+    !!rig && !rigCanvas.hidden && !reduced() && !document.hidden && (character.dataset.arrival ?? 'home') === 'home',
+})
 // BOXP-599 TD-01: 帰還の演出（転送ゲート）の状態。リグを読み込む間は「戻る途中」、現場の実行中は「出ている」、終わった直後だけ短く姿を現す。
 let rigLoading = wantsRig(location.search),
   returnedAt: number | null = null
@@ -716,16 +725,8 @@ function refreshArrival() {
 function refreshScene(force = false) {
   const vv = window.visualViewport,
     vh = vv ? vv.height : window.innerHeight
-  document.documentElement.style.setProperty('--vh', `${Math.round(vh)}px`)
   const shape = shapeOf(),
     kbd = shape !== 'pc' && document.activeElement === message && !!vv && vv.height < window.innerHeight * 0.8
-  body.dataset.shape = shape
-  body.dataset.kbd = kbd ? '1' : '0'
-  message.placeholder = shape === 'portrait' ? '話しかける' : fullPlaceholder
-  if (shape === 'portrait' && bubble.parentElement !== chatlog) {
-    chatlog.append(bubble)
-    chatlog.scrollTop = chatlog.scrollHeight
-  } else if (shape !== 'portrait' && bubble.parentElement !== character.parentElement) character.after(bubble)
   const target = targetScene({
     state,
     thinkingMs: state === 'thinking' ? Date.now() - thinkingSince : 0,
@@ -736,14 +737,40 @@ function refreshScene(force = false) {
     visit: visitActive && busy,
   })
   const scene = director.decide(target, Date.now(), { holding: holding(), pinned: prefs.pinned, force })
-  body.dataset.scene = scene
-  el('visit-place').hidden = scene !== 'visit'
-  refreshArrival()
-  updateMessage()
   const upper =
     kbd || shape === 'portrait' || shape === 'landscape' || ((scene === 'show' || scene === 'work') && shape === 'pc')
-  if ((character.dataset.frame === 'upper') !== upper) character.dataset.frame = upper ? 'upper' : 'full'
-  character.classList.toggle('mini', kbd && shape !== 'portrait')
+  const apply = () => {
+    document.documentElement.style.setProperty('--vh', `${Math.round(vh)}px`)
+    body.dataset.shape = shape
+    body.dataset.kbd = kbd ? '1' : '0'
+    message.placeholder = shape === 'portrait' ? '話しかける' : fullPlaceholder
+    if (shape === 'portrait' && bubble.parentElement !== chatlog) {
+      chatlog.append(bubble)
+      chatlog.scrollTop = chatlog.scrollHeight
+    } else if (shape !== 'portrait' && bubble.parentElement !== character.parentElement) character.after(bubble)
+    if (viewer.hidden) delete body.dataset.viewer
+    else body.dataset.viewer = 'open'
+    body.dataset.scene = scene
+    el('visit-place').hidden = scene !== 'visit'
+    refreshArrival()
+    updateMessage()
+    if ((character.dataset.frame === 'upper') !== upper) character.dataset.frame = upper ? 'upper' : 'full'
+    character.classList.toggle('mini', kbd && shape !== 'portrait')
+  }
+  // BOXP-626: コハコの配置が変わる時だけ写しで移す（毎回の呼び出しで描き直さない）。
+  const layout = layoutKey({
+    scene,
+    shape,
+    kbd,
+    upper,
+    mini: kbd && shape !== 'portrait',
+    viewer: !viewer.hidden,
+    vh: Math.round(vh),
+  })
+  if (layout !== lastLayout) {
+    lastLayout = layout
+    morph.around(apply)
+  } else apply()
   if (scene === 'work' || busy) elapsedLabel.textContent = `${Math.floor((Date.now() - started) / 1000)}秒`
   elapsedLabel.hidden = !busy
   if (scene === 'work' && !reply.dataset.reply && !reply.textContent?.startsWith('少し時間'))
@@ -2668,6 +2695,10 @@ Object.assign(window, {
     },
     get scene() {
       return sceneNow()
+    },
+    // BOXP-626: 配置替えを写しで移した回数・進行中の写し。
+    get morph() {
+      return { count: morph.count, active: morph.active }
     },
     hitAreas: () => {
       computeAreas()
