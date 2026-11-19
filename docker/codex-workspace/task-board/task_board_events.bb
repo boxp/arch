@@ -331,6 +331,21 @@
     (reset! night-config-warning warning)
     (if valid? config {:enabled false :only-tickets nil})))
 
+;; BOXP-614: night inbox. During quiet hours an event outside the night-processing
+;; allowlist is still sent, as notify_mode=inbox: Hermes writes the report without any
+;; continuation operation, the gate stores it in the home inbox without Telegram, push or
+;; reminder, and the event joins the morning digest unless the Owner already read it at home.
+;; Off unless CODEX_TASK_BOARD_EVENT_NIGHT_INBOX is true; unsetting it restores the legacy hold.
+(defn night-inbox? [] (contains? #{"1" "true" "on"} (str/lower-case (str/trim (env "CODEX_TASK_BOARD_EVENT_NIGHT_INBOX" "")))))
+
+(defn night-mode
+  "nil = hold until the quiet window ends; otherwise the notify_mode sent at night."
+  [config event]
+  (cond
+    (and (:enabled config) (or (nil? (:only-tickets config)) (contains? (:only-tickets config) (:ticket-id event)))) "defer"
+    (night-inbox?) "inbox"
+    :else nil))
+
 ;; ---------------------------------------------------------------------------
 ;; Signed delivery
 ;; ---------------------------------------------------------------------------
@@ -435,12 +450,10 @@
       :else
       (reduce (fn [acc event]
                 (if (or (not (due? event))
-                        (and quiet? (or (digest? event) (not (and (:enabled config)
-                                              (or (nil? (:only-tickets config))
-                                                  (contains? (:only-tickets config) (:ticket-id event))))))))
+                        (and quiet? (or (digest? event) (nil? (night-mode config event)))))
                   (do (when (and quiet? (due? event)) (log! "pending event deferred by quiet hours"))
                       (update acc :deferred inc))
-                  (let [mode (if quiet? "defer" "normal")
+                  (let [mode (if quiet? (night-mode config event) "normal")
                         ;; The start of this delivery, kept across retries and saved before the
                         ;; POST: Hermes can finish and write its receipt before we see the response,
                         ;; and a lost response or a crash here ends in a retry of the same delivery.
@@ -652,6 +665,31 @@
       (write-event! (pending-dir) (dissoc claimed ::path))
       claimed)))
 
+(declare home-url read-home-state home-status)
+
+(defn home-acknowledged?
+  "BOXP-614: the item's report reached the home inbox (at night, without Telegram) and the
+  Owner already read, handled or replied to it there. The morning digest must not repeat it.
+  Unknown status (home unreachable, item missing) keeps the item in the digest."
+  [item]
+  (let [home-id (str (:event-id item) ".report")
+        state (read-home-state home-id)]
+    (boolean
+     (and (not (str/blank? (home-url)))
+          (= :sent (:status state)) (contains? #{"stored" "duplicate"} (:home-status state))
+          (when-let [status (home-status home-id)]
+            (and (true? (get status "exists")) (some true? (map status ["read" "handled" "replied"]))))))))
+
+(defn drop-acknowledged!
+  "Finish the waiting items the Owner already saw at home; returns the rest."
+  [items]
+  (remove (fn [item]
+            (when (home-acknowledged? item)
+              (move-event! (assoc item :status :handled :handled-at (now-str) :home-acknowledged true) (done-dir))
+              (log! (str "home inbox already acknowledged " (:event-id item) ", left out of the digest"))
+              true))
+          items))
+
 (defn build-digest! []
   (if (quiet-now?) 0
       (let [events (vec (all-events))
@@ -664,6 +702,8 @@
         ;; A morning's items are claimed on the same tick, so they stay one digest. A later
         ;; item waits for the next one: waiting for all could starve held reports.
         (let [items (->> (remove #(or (:digest-id %) (get claimed (:event-id %))) pending)
+                         (drop-acknowledged!)
+                         (vec)
                          (mapv claim-for-digest!)
                          (filter #(>= (seconds-since (:digest-claimed-at %)) (digest-claim-grace-seconds))))]
           (if (empty? items) 0

@@ -115,3 +115,33 @@
     (reset! ready-home nil)
     (flush-home!)
     (check "home URL 未設定でも flush-home! が即座に ready=false へ更新" (false? (:reminder_ready (read-ready))))))
+
+;; BOXP-614: 夜間に家へ保存済みで既読/対応/返信済みの項目は朝の digest で再通知しない。
+(let [moved (atom [])
+      states (atom {})
+      statuses (atom {})
+      home (atom "http://example.invalid/ingest")
+      items [{:event-id "BOXP-1-a" :ticket-id "BOXP-1"} {:event-id "BOXP-2-b" :ticket-id "BOXP-2"}
+             {:event-id "BOXP-3-c" :ticket-id "BOXP-3"} {:event-id "BOXP-4-d" :ticket-id "BOXP-4"}
+             {:event-id "BOXP-5-e" :ticket-id "BOXP-5"}]
+      stored {:status :sent :home-status "stored"}]
+  (reset! states {"BOXP-1-a.report" stored "BOXP-2-b.report" stored "BOXP-3-c.report" {:status :retry}
+                  "BOXP-4-d.report" stored "BOXP-5-e.report" stored})
+  (reset! statuses {"BOXP-1-a.report" {"exists" true "read" true "handled" false "replied" false}
+                    "BOXP-2-b.report" {"exists" true "read" false "handled" false "replied" false}
+                    "BOXP-3-c.report" {"exists" true "read" true "handled" true "replied" true}
+                    "BOXP-4-d.report" {"exists" false "read" true "handled" false "replied" false}
+                    "BOXP-5-e.report" nil})
+  (with-redefs [home-url (fn [] @home)
+                read-home-state (fn [id] (get @states id))
+                home-status (fn [id] (get @statuses id))
+                move-event! (fn [item _] (swap! moved conj (:event-id item)))
+                log! (fn [_] nil)]
+    (let [rest (vec (drop-acknowledged! items))]
+      (check "既読の夜間保存項目は digest から外して done" (= ["BOXP-1-a"] @moved))
+      (check "未読・未保存・家から消えた・状態不明は digest に残す"
+             (= ["BOXP-2-b" "BOXP-3-c" "BOXP-4-d" "BOXP-5-e"] (mapv :event-id rest))))
+    (reset! moved [])
+    (reset! home nil)
+    (check "home URL が無ければ状態確認せず全件 digest" (= 5 (count (vec (drop-acknowledged! items)))))
+    (check "home URL が無ければ done へ移さない" (empty? @moved))))
