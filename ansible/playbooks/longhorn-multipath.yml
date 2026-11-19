@@ -27,7 +27,9 @@
     - name: Refuse to reconfigure while any multipath map exists
       ansible.builtin.assert:
         that:
-          - longhorn_multipath_maps.stdout | trim == 'No devices found'
+          # Older dmsetup (Ubuntu 22.04) prints nothing instead of
+          # "No devices found" when other (e.g. LVM) dm devices exist.
+          - longhorn_multipath_maps.stdout | trim in ['', 'No devices found']
         fail_msg: Existing multipath maps require a separate impact review. Do not flush maps.
 
     - name: Check the daemon is already active without starting it
@@ -119,7 +121,7 @@
           changed_when: false
           failed_when: >-
             longhorn_multipath_maps_final.rc != 0 or
-            longhorn_multipath_maps_final.stdout | trim != 'No devices found'
+            longhorn_multipath_maps_final.stdout | trim not in ['', 'No devices found']
 
         - name: Reconfigure the active daemon without stopping services or flushing maps
           ansible.builtin.command: multipathd reconfigure
