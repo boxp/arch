@@ -3805,6 +3805,13 @@
           (re-find #"(?i)authenticat|sign.?in|log.?in" error) :auth
           :else :error)))
 
+;; BOXP-204: what a run says about the login. A quota or other error says nothing.
+(defn antigravity-auth-outcome [result]
+  (case (antigravity-failure-kind result)
+    nil :success
+    :auth :auth
+    nil))
+
 (defn antigravity-last-message
   "The agent's final response, plus a runner note when the run did not succeed.
   A quota or login failure is never retried on another route or billing."
@@ -3970,10 +3977,10 @@
           ;; BOXP-204: only the outcome kind and time; a login failure fires the re-login alert
           ;; and the next successful run resolves it.
           _ (when (and (antigravity-assignee? agent) antigravity-result)
-              (try (let [kind (antigravity-failure-kind antigravity-result)]
-                     (when (and (#{nil :auth} kind) @agent-auth-module-loaded?)
+              (try (when-let [outcome (antigravity-auth-outcome antigravity-result)]
+                     (when @agent-auth-module-loaded?
                        ((resolve 'agent-auth-expiry/record-run-outcome!) (root) "antigravity"
-                        (if (= :auth kind) :auth :success) (quot (System/currentTimeMillis) 1000))))
+                        outcome (quot (System/currentTimeMillis) 1000))))
                    (catch Exception _ (log! "agent auth outcome record failed"))))
           model-info (cond-> model-info
                        (antigravity-assignee? agent)
@@ -8720,6 +8727,8 @@
                 ["antigravity missing result" (antigravity-stream-result (str tmp ".missing")) nil]
                 ["antigravity failure kinds" (mapv antigravity-failure-kind [{:status "SUCCESS"} {:status "ERROR" :error "RESOURCE_EXHAUSTED: quota"} {:status "ERROR" :error "authentication failed or timed out"} {:status "ERROR" :error "boom"}])
                  [nil :quota :auth :error]]
+                ["antigravity auth outcomes" (mapv antigravity-auth-outcome [{:status "SUCCESS"} {:status "ERROR" :error "RESOURCE_EXHAUSTED: quota"} {:status "ERROR" :error "authentication failed or timed out"} {:status "ERROR" :error "boom"}])
+                 [:success nil :auth nil]]
                 ["antigravity quota message has no marker" (let [m (antigravity-last-message {:status "ERROR" :error "429 quota" :response ""})]
                                                              [(result-marker m) (boolean (str/includes? m "does not fall back"))]) [nil true]]
                 ["antigravity no result message" (boolean (str/includes? (antigravity-last-message nil) "no result event")) true]])
