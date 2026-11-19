@@ -19,12 +19,21 @@
 
 (def host-re #"\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:b0xp\.io|boxp\.tk)\b")
 
+(def svc-ref-re
+  "クラスタ内 Service の DNS 名。Tunnel の転送先や BFF の接続先 URL など、既存の資源への接続の追加はこの形で現れる。"
+  #"\b([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)\.([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)\.svc(?:\.cluster\.local)?(?::(\d+))?\b")
+
+(defn svc-refs [text]
+  (distinct (for [[_ svc ns port] (re-seq svc-ref-re text)]
+              (str svc "." ns (when port (str ":" port))))))
+
 (defn tf-facts [dir]
   (mapcat
    (fn [path]
      (let [text (slurp (str (fs/path dir path)))
            where (str (fs/parent path))]
        (concat
+        (for [r (svc-refs text)] (str "arch:svc-ref:" where "->" r))
         (for [[_ kind a b] (re-seq #"(?m)^(resource|module)\s+\"([^\"]+)\"(?:\s+\"([^\"]+)\")?" text)]
           (if (= kind "module")
             (str "arch:tf:module:" where "/" a)
@@ -77,6 +86,70 @@
                    p (get-in r [:http :paths])]
                (fact (or (:host r) "*") (or (:path p) "/") (:backend p)))))))
 
+(defn- compact [s] (str/replace (str s) #"\s+" ""))
+
+(defn- k8s-labels
+  "LabelSelector を matchLabels と matchExpressions の両方で表す。空の selector は nil (= 全部)。"
+  [sel]
+  (some->> (concat
+            (for [[k v] (sort-by key (:matchLabels sel))] (str (subs (str k) 1) "=" v))
+            (sort (for [{:keys [key operator values]} (:matchExpressions sel)]
+                    (case (str operator)
+                      "Exists" key
+                      "DoesNotExist" (str "!" key)
+                      (str key " " (str/lower-case (str operator)) " (" (str/join "," (sort (map str values))) ")")))))
+           seq (str/join ",")))
+
+(defn- k8s-peer [p]
+  (str/join ";" (remove nil? [(when (contains? p :namespaceSelector) (str "ns:" (or (k8s-labels (:namespaceSelector p)) "*")))
+                              (when (contains? p :podSelector) (str "pod:" (or (k8s-labels (:podSelector p)) "*")))
+                              (when-let [c (get-in p [:ipBlock :cidr])] (str "net:" c))
+                              (when-let [x (seq (get-in p [:ipBlock :except]))] (str "except:" (str/join "," x)))])))
+
+(defn- netpol-target
+  "policy を適用する Pod。対象を変えると全ての通信が変わるので、事実ごとに含める。"
+  [doc]
+  (let [spec (:spec doc)]
+    (if (str/starts-with? (str (:apiVersion doc)) "projectcalico.org")
+      (let [t (str/join ";" (remove nil? [(when (:namespaceSelector spec) (str "ns:" (compact (:namespaceSelector spec))))
+                                           (when (:selector spec) (str "sel:" (compact (:selector spec))))
+                                           (when (:serviceAccountSelector spec) (str "sa:" (compact (:serviceAccountSelector spec))))]))]
+        (if (str/blank? t) "*" t))
+      (or (k8s-labels (:podSelector spec)) "*"))))
+
+(defn- calico-peer [e]
+  (str/join ";" (remove nil? [(when (:namespaceSelector e) (str "ns:" (compact (:namespaceSelector e))))
+                              (when (:selector e) (str "sel:" (compact (:selector e))))
+                              (when (:serviceAccountSelector e) (str "sa:" (compact (:serviceAccountSelector e))))
+                              (when (seq (:nets e)) (str "net:" (str/join "," (:nets e))))
+                              (when (seq (:notNets e)) (str "notnet:" (str/join "," (:notNets e))))
+                              (when (:domains e) (str "dns:" (str/join "," (:domains e))))])))
+
+(defn- ports [ps] (if (seq ps) (str/join "," (map #(if (map? %) (or (:port %) "-") %) ps)) "*"))
+
+(defn netpol-facts
+  "NetworkPolicy の通信相手と port。既存の policy に許可先を足しただけの接続の追加も差分になる。"
+  [id doc]
+  (let [target (netpol-target doc)
+        fact (fn [dir peer ps action]
+               (str "lolice:netpol:" id "[" target "]:" dir ":"
+                    (when (and action (not= "Allow" action)) (str (str/lower-case action) "!"))
+                    (if (str/blank? peer) "*" peer) ":" ps))
+        spec (:spec doc)]
+    (if (str/starts-with? (str (:apiVersion doc)) "projectcalico.org")
+      (concat
+       (for [r (:ingress spec)] (fact "ingress" (calico-peer (:source r)) (ports (get-in r [:destination :ports])) (:action r)))
+       (for [r (:egress spec)] (fact "egress" (calico-peer (:destination r)) (ports (get-in r [:destination :ports])) (:action r))))
+      (concat
+       (for [r (:ingress spec) p (or (seq (:from r)) [{}])] (fact "ingress" (k8s-peer p) (ports (:ports r)) nil))
+       (for [r (:egress spec) p (or (seq (:to r)) [{}])] (fact "egress" (k8s-peer p) (ports (:ports r)) nil))))))
+
+(defn- strings [x]
+  (cond (string? x) [x]
+        (map? x) (mapcat strings (vals x))
+        (coll? x) (mapcat strings x)
+        :else []))
+
 (defn manifest-facts [doc]
   (let [kind (:kind doc)
         ns* (or (get-in doc [:metadata :namespace]) "-")
@@ -95,6 +168,11 @@
           (for [[k v] (get-in doc [:spec :selector])]
             ;; app.kubernetes.io/name のような key は name だと接頭辞が落ちるので、keyword の全体を使う
             (str "lolice:svc-selector:" id ":" (subs (str k) 1) "=" v))))
+       ;; 接続先の URL（env、ConfigMap の設定ファイルなど）。値そのものではなく、どの Service へつなぐかだけを残す
+       (for [r (distinct (mapcat svc-refs (strings (dissoc doc :metadata :status))))]
+         (str "lolice:svc-ref:" kind "/" id "->" r))
+       (when (#{"NetworkPolicy" "GlobalNetworkPolicy"} kind)
+         (netpol-facts id doc))
        (when (= "Ingress" kind)
          (concat
           (for [r (get-in doc [:spec :rules]) :when (:host r)] (str "arch:host:" (:host r)))
