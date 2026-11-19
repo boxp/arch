@@ -69,4 +69,8 @@ resource "cloudflare_zero_trust_access_application" "gbc_play_pages_dev" {
   session_duration = "24h"
   type             = "self_hosted"
   policies         = [{ id = cloudflare_zero_trust_access_policy.gbc_play_owner.id }]
+
+  # Pages project がまだ無いうちに作ると "domain does not belong to zone" で失敗する（#15359 の apply）。
+  # project.name を参照していないので、順番を明示する。
+  depends_on = [cloudflare_pages_project.gbc_play]
 }
