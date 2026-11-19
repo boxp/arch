@@ -11,6 +11,10 @@
 ;;   bb tests/codex-workspace/task-board-mutation.bb [--group NAME] [--fn NAME] [--jobs N] [--max-cases N] [--out DIR]
 ;;     --max-cases N: run at most the N fastest runner cases that reach a function (default: all)
 ;;     --direct-only: skip the runner cases (a quick loop while writing tests; survivors are candidates only)
+;;     --config FILE: another targets file (e.g. to judge mutants with a chosen set of runner cases only)
+;;     --allow-coverage-failures: report runner cases that fail in the coverage run instead of stopping
+;;   bb tests/codex-workspace/task-board-mutation.bb --fn-coverage [--jobs N] [--out DIR]
+;;     every function of the runner, and whether any test reaches it (BOXP-621)
 ;;   bb tests/codex-workspace/task-board-mutation.bb --self-test
 (ns task-board-mutation
   (:require [babashka.fs :as fs]
@@ -139,25 +143,46 @@
         [_ replacement] (nth (vec (node-mutations target)) variant)]
     (z/root-string (z/replace target replacement))))
 
-;; Coverage: one line at the top of every target body, written only when the
-;; variable is set. It shows which runner test cases reach which function.
-(defn instrument [text fnames]
-  (reduce
-   (fn [text fname]
-     (let [d (find-defn (parse-file text) fname)
-           probe (parser/parse-string
-                  (str "(clojure.core/when-let [tbm-p (System/getenv \"TB_MUTATION_COVERAGE\")]"
-                       " (clojure.core/spit tbm-p \"" fname "\\n\" :append true))"))
-           arg-vectors (fn [loc]
-                         (let [kids (take-while some? (iterate z/right (z/down loc)))]
-                           (if-let [v (first (filter #(= :vector (z/tag %)) kids))]
-                             [v]
-                             (keep #(when (and (= :list (z/tag %)) (= :vector (some-> % z/down z/tag))) (z/down %)) kids))))]
-       (if-let [v (first (arg-vectors d))]
-         ;; Insert into the first arity only when there are several: enough to see reachability.
-         (z/root-string (z/insert-right v probe))
-         text)))
-   text fnames))
+;; Coverage: one probe at the top of every target body. It writes the function name
+;; once per process (a system property remembers it), and only when the variable is
+;; set, so instrumenting every function of the runner keeps the e2e cases fast.
+(defn probe-node [fname]
+  (parser/parse-string
+   (str "(clojure.core/when-let [tbm-p (System/getenv \"TB_MUTATION_COVERAGE\")]"
+        " (clojure.core/when-not (System/getProperty \"tbm." fname "\")"
+        " (System/setProperty \"tbm." fname "\" \"1\")"
+        " (clojure.core/spit tbm-p \"" fname "\\n\" :append true)))")))
+
+(defn top-level [loc]
+  (if (= :forms (some-> loc z/up z/tag)) loc (recur (z/up loc))))
+
+(defn all-defns
+  "Names of every top-level defn/defn- in the file, in order."
+  [text]
+  (->> (iterate z/right (parse-file text)) (take-while some?) (keep defn-name) distinct vec))
+
+(defn instrument
+  "One pass over the top-level forms; a probe goes into every arity of each wanted
+  function (BOXP-621: with the first arity only, a convenience arity such as
+  `([] (f nil))` hid every caller of the real one)."
+  [text fnames]
+  (let [wanted (set (map symbol fnames))
+        add-probes (fn [loc fname]
+                     (let [kids (vec (take-while some? (iterate z/right (z/down loc))))]
+                       (if (some #(= :vector (z/tag %)) kids)
+                         (let [v (first (filter #(= :vector (z/tag %)) kids))]
+                           (top-level (z/insert-right v (probe-node fname))))
+                         ;; Several arities: walk them left to right, re-finding each by index.
+                         (let [arity-idx (keep-indexed (fn [i k] (when (and (= :list (z/tag k)) (= :vector (some-> k z/down z/tag))) i)) kids)]
+                           (reduce (fn [loc i]
+                                     (let [arity (nth (iterate z/right (z/down loc)) i)]
+                                       (top-level (z/insert-right (z/down arity) (probe-node fname)))))
+                                   loc arity-idx)))))]
+    (loop [loc (parse-file text) seen #{}]
+      (let [fname (defn-name loc)
+            loc (if (and fname (wanted fname) (not (seen fname))) (add-probes loc fname) loc)
+            seen (cond-> seen fname (conj fname))]
+        (if-let [nxt (z/right loc)] (recur nxt seen) (z/root-string loc))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Running tests in an isolated copy
@@ -226,6 +251,38 @@
               (slurp (str root "/tests/codex-workspace/task-board-runner-cases.txt"))
               (slurp (str root "/tests/codex-workspace/task-board-runner-test.sh"))])))
 
+(defn measure!
+  "Run every command once in an instrumented sandbox and record the functions it reaches.
+  A command that fails or times out is run once more on its own; one that still does not
+  pass is returned with that status, never dropped (BOXP-621: a silently missing case
+  made reached functions look unreached or untested)."
+  [sandboxes items]
+  (let [run-one (fn [sandbox {:keys [id cmd]} attempt]
+                  (let [cov (str sandbox "/.tmp/cov-" (str/replace id #"[^A-Za-z0-9_.-]" "_") "-" attempt)
+                        {c :cmd env :env} (resolve-cmd cmd)
+                        _ (fs/delete-if-exists cov)
+                        r (run-cmd sandbox c (assoc env "TB_MUTATION_COVERAGE" cov) (* 20 60 1000))
+                        hit (if (fs/exists? cov) (set (remove str/blank? (str/split-lines (slurp cov)))) #{})]
+                    (println (str "  " id " " (name (:status r)) " " (quot (:ms r) 1000) "s hits=" (count hit)
+                                  (when (pos? attempt) " (retry)")))
+                    {:case id :cmd cmd :status (:status r) :ms (:ms r) :hits hit :attempts (inc attempt)
+                     :tail (vec (take-last 6 (str/split-lines (or (:out r) ""))))}))
+        first-pass (pmap-jobs (count sandboxes) items (fn [w item] (run-one (sandboxes w) item 0)))]
+    (mapv (fn [item r] (if (= :pass (:status r)) r (run-one (sandboxes 0) item 1)))
+          items first-pass)))
+
+(defn coverage-failures [results] (vec (remove #(= :pass (:status %)) results)))
+
+(defn check-coverage!
+  "Coverage that misses a case cannot say which tests reach a function. Stop unless the
+  caller accepted it, in which case the failures are kept and reported."
+  [results allow?]
+  (when-let [bad (seq (coverage-failures results))]
+    (doseq [b bad] (println (str "COVERAGE " (name (:status b)) ": " (:case b) "\n    " (str/join "\n    " (:tail b)))))
+    (when-not allow?
+      (throw (ex-info (str "coverage run: " (count bad) " test(s) did not pass; fix them or pass --allow-coverage-failures")
+                      {:failed (mapv :case bad)})))))
+
 (defn coverage!
   "Which runner test cases reach which target function, and how long each case takes."
   [config group out jobs]
@@ -236,15 +293,8 @@
         sandboxes (vec (for [w (range jobs)] (make-sandbox! config (fs/path out "sandbox" (str "cov-" w)))))]
     (doseq [s sandboxes] (spit (str s "/" file) instrumented))
     (println (str "coverage: " (count cases) " runner cases, " jobs " job(s)"))
-    (let [results (pmap-jobs jobs cases
-                             (fn [w c]
-                               (let [cov (str (sandboxes w) "/.tmp/cov-" c)
-                                     {:keys [cmd env]} (resolve-cmd (case-cmd c))
-                                     r (run-cmd (sandboxes w) cmd (assoc env "TB_MUTATION_COVERAGE" cov) (* 20 60 1000))
-                                     hit (if (fs/exists? cov) (set (str/split-lines (slurp cov))) #{})]
-                                 (println (str "  " c " " (name (:status r)) " " (quot (:ms r) 1000) "s hits=" (count hit)))
-                                 {:case c :status (:status r) :ms (:ms r) :hits hit})))]
-      {:file file :cov-key (coverage-key src (:fns group)) :cases results})))
+    {:file file :cov-key (coverage-key src (:fns group))
+     :cases (measure! sandboxes (mapv (fn [c] {:id c :cmd (case-cmd c)}) cases))}))
 
 (defn baseline!
   "The unmutated tests have to pass in the sandbox; a failing one cannot judge a mutant."
@@ -298,7 +348,7 @@
                             (str "- " (:fn m) ":" (:line m) " `" (:desc m) "`: " (:reason m) "\n")))))
          "\n")))
 
-(defn run-group! [config group {:keys [out jobs fn-filter max-cases]}]
+(defn run-group! [config group {:keys [out jobs fn-filter max-cases allow-coverage-failures]}]
   (let [file (:file group)
         src (slurp (str root "/" file))
         fns (cond->> (:fns group) fn-filter (filter #(= (str %) fn-filter)))
@@ -310,6 +360,8 @@
                 (if (and cached (= (:cov-key cached) (coverage-key src (:fns group))))
                   cached
                   (let [c (coverage! config group out jobs)] (spit cov-file (pr-str c)) c))))
+        _ (when cov (check-coverage! (:cases cov) allow-coverage-failures))
+        passing-hits (set (mapcat :hits (filter #(= :pass (:status %)) (:cases cov))))
         sandboxes (vec (for [w (range jobs)] (make-sandbox! config (fs/path out "sandbox" (str "mut-" w)))))
         base (baseline! (sandboxes 0) (:tests group))
         _ (when-let [bad (seq (remove #(= :pass (:status %)) base))]
@@ -333,7 +385,7 @@
                              (fn [w m]
                                (let [r (run-mutant! (sandboxes w) file src m (plans (:fn m)))
                                      r (if (and (= :survived (:status r))
-                                                (not (some #(= (:fn m) %) (mapcat :hits (:cases cov))))
+                                                (not (contains? passing-hits (:fn m)))
                                                 (:runner-cases group))
                                          (assoc r :status :uncovered) r)
                                      accepted (first (filter #(and (= (:fn m) (str (:fn %))) (= (:desc m) (:desc %))) (:equivalent group)))
@@ -343,9 +395,57 @@
                                                (when (:by r) (str " by " (pr-str (:by r))))))
                                  r)))
           elapsed (- (System/currentTimeMillis) started)
-          cov-note (if cov (str " (runner cases with coverage: " (count (filter #(seq (:hits %)) (:cases cov))) ")") "")]
+          cov-failed (when cov (coverage-failures (:cases cov)))
+          cov-note (str (if cov (str " (runner cases with coverage: " (count (filter #(seq (:hits %)) (:cases cov))) ")") "")
+                        (when (seq cov-failed)
+                          (str "\n- WARNING: " (count cov-failed) " runner case(s) failed in the coverage run and judge no mutant: "
+                               (str/join ", " (map #(str "`" (:case %) "` " (name (:status %))) cov-failed))
+                               " (survived/uncovered may be overstated)")))]
       (spit (str out "/result-" (:name group) ".edn") (pr-str {:group (:name group) :results results :baseline base}))
       (summary-md group results cov-note elapsed))))
+
+;; ---------------------------------------------------------------------------
+;; Whole-file function coverage (BOXP-621): which functions of the runner no test
+;; reaches at all. This is the coverage of the whole runner, unlike the mutation
+;; score, which only speaks for the functions in a group.
+
+(defn fn-coverage! [config {:keys [out jobs allow-coverage-failures]}]
+  (let [{:keys [file tests]} (:fn-coverage config)
+        src (slurp (str root "/" file))
+        fns (all-defns src)
+        lines (into {} (for [loc (take-while some? (iterate z/right (parse-file src)))
+                             :let [f (defn-name loc)] :when f]
+                         [(str f) (first (z/position loc))]))
+        instrumented (instrument src fns)
+        sandboxes (vec (for [w (range jobs)] (make-sandbox! config (fs/path out "sandbox" (str "fncov-" w)))))
+        _ (doseq [s sandboxes] (spit (str s "/" file) instrumented))
+        items (vec (concat (for [t tests] {:id (str/join " " t) :cmd t :kind :direct})
+                           (for [c (runner-cases)] {:id c :cmd (case-cmd c) :kind :case})))
+        _ (println (str "function coverage of " file ": " (count fns) " functions, " (count items) " test command(s), " jobs " job(s)"))
+        started (System/currentTimeMillis)
+        results (mapv #(assoc %2 :kind (:kind %1)) items (measure! sandboxes items))
+        _ (check-coverage! results allow-coverage-failures)
+        ok (filter #(= :pass (:status %)) results)
+        reach (fn [kind] (frequencies (mapcat :hits (filter #(= kind (:kind %)) ok))))
+        by-case (reach :case)
+        by-direct (reach :direct)
+        unreached (vec (remove #(or (by-case (str %)) (by-direct (str %))) fns))
+        failed (coverage-failures results)
+        pct (fn [k] (/ (Math/round (* 1000.0 (/ k (max 1 (count fns))))) 10.0))
+        reached-n (- (count fns) (count unreached))
+        md (str "## function coverage: `" file "`\n\n"
+                "- functions: " (count fns) ", reached by some test: " reached-n " (" (pct reached-n) "%)"
+                ", by e2e cases: " (count by-case) ", by direct tests: " (count by-direct)
+                ", reached only by direct tests: " (count (remove #(by-case (key %)) by-direct)) "\n"
+                "- test commands: " (count results) " (" (count failed) " failed: "
+                (if (seq failed) (str/join ", " (map #(str "`" (:case %) "` " (name (:status %))) failed)) "none") ")\n"
+                "- elapsed: " (quot (- (System/currentTimeMillis) started) 1000) "s\n\n"
+                "### Unreached functions (" (count unreached) ")\n\n"
+                (str/join (for [f unreached] (str "- `" f "` line " (lines (str f)) "\n"))))]
+    (spit (str out "/fn-coverage.edn")
+          (pr-str {:file file :fns (mapv str fns) :lines lines :unreached (mapv str unreached)
+                   :results (mapv #(select-keys % [:case :kind :status :ms :hits :attempts]) results)}))
+    md))
 
 ;; ---------------------------------------------------------------------------
 ;; Self test: the operators and the copy never touch the checkout.
@@ -365,14 +465,37 @@
         (assert (str/includes? out "(defn g [] (inc 0))") "a mutant keeps the rest of the file")
         (load-string (str "(ns tbm-self-" (gensym) ")" (str/replace out "(ns x)" "")))))
     (let [inst (instrument src ['f 'g])]
-      (assert (str/includes? inst "TB_MUTATION_COVERAGE"))
-      (assert (= 2 (count (re-seq #"TB_MUTATION_COVERAGE" inst)))))
+      (assert (= 2 (count (re-seq #"TB_MUTATION_COVERAGE" inst))))
+      (assert (= ['f 'g 'h] (all-defns src)))
+      (assert (= 3 (count (re-seq #"TB_MUTATION_COVERAGE" (instrument src (all-defns src))))))
+      ;; The probe writes each function once per process, only while the variable is set.
+      (let [cov (str (fs/create-temp-file {:prefix "tbm-cov"}))]
+        (fs/delete cov)
+        (load-string (str "(ns tbm-self-cov)" (str/replace inst "(ns x)" "")
+                          "(f 1 1) (f 2 3) (g) (g)"))
+        (assert (not (fs/exists? cov)) "no probe output without TB_MUTATION_COVERAGE")
+        (let [script (str (fs/create-temp-file {:prefix "tbm-cov" :suffix ".bb"}))]
+          (spit script (str inst "(f 1 1) (f 2 3) (g) (g)\n"))
+          (p/shell {:env (assoc (clean-env) "TB_MUTATION_COVERAGE" cov)} "bb" script)
+          (assert (= ["f" "g"] (str/split-lines (slurp cov))) "each reached function once, h not reached")
+          (fs/delete-if-exists script)
+          (fs/delete-if-exists cov))))
+    ;; A test that fails in the coverage run is reported, not dropped.
+    (let [results [{:case "a" :status :pass} {:case "b" :status :timeout} {:case "c" :status :fail}]]
+      (assert (= ["b" "c"] (mapv :case (coverage-failures results))))
+      (assert (try (check-coverage! results false) false (catch clojure.lang.ExceptionInfo e (= ["b" "c"] (:failed (ex-data e))))))
+      (assert (nil? (check-coverage! results true)))
+      (assert (nil? (check-coverage! [{:case "a" :status :pass}] false))))
+    (let [multi "(defn m \"doc\"\n  ([] (m 1))\n  ([a] (inc a)))\n(m)\n"
+          inst (instrument multi ['m])]
+      (assert (= 2 (count (re-seq #"TB_MUTATION_COVERAGE" inst))) "every arity gets a probe")
+      (assert (= 2 (load-string (str "(ns tbm-self-multi)" inst))) "an instrumented multi-arity function still works"))
     (assert (= #{"inc -> dec" "0 -> 1" "0 -> -1"} (set (map :desc (mutants-for src 'g)))))
     (assert (str/includes? (apply-mutant src (first (filter #(= "(not x) -> x" (:desc %)) (mutants-for src 'h)))) "(defn h [a] (= a 1))"))
     (println (str "self-test ok: " (count ms) " mutants of f"))))
 
 (defn -main [& args]
-  (let [config (edn/read-string (slurp (str root "/tests/codex-workspace/task-board-mutation-targets.edn")))
+  (let [config (edn/read-string (slurp (or (arg args "--config") (str root "/tests/codex-workspace/task-board-mutation-targets.edn"))))
         group-filter (arg args "--group")
         groups (cond->> (:groups config)
                  group-filter (filter #(= group-filter (:name %)))
@@ -381,6 +504,15 @@
         jobs (parse-long (or (arg args "--jobs") "1"))]
     (cond
       (some #{"--self-test"} args) (self-test)
+      (some #{"--fn-coverage"} args)
+      (let [out (do (fs/create-dirs out) out)]
+        (when (str/starts-with? out (str root "/"))
+          (throw (ex-info "--out must be outside the checkout" {:out out})))
+        (let [md (fn-coverage! config {:out out :jobs jobs
+                                       :allow-coverage-failures (boolean (some #{"--allow-coverage-failures"} args))})]
+          (spit (str out "/fn-coverage.md") md)
+          (println md)
+          (println (str "report: " out "/fn-coverage.md"))))
       (some #{"--list"} args)
       (doseq [g groups]
         (let [src (slurp (str root "/" (:file g)))]
@@ -396,6 +528,7 @@
         (when (str/starts-with? out (str root "/"))
           (throw (ex-info "--out must be outside the checkout" {:out out})))
         (let [md (str/join (for [g groups] (run-group! config g {:out out :jobs jobs :fn-filter (arg args "--fn")
+                                                                           :allow-coverage-failures (boolean (some #{"--allow-coverage-failures"} args))
                                                                            :max-cases (some-> (arg args "--max-cases") parse-long)})))]
           (spit (str out "/summary.md") md)
           (println md)
