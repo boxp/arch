@@ -363,6 +363,23 @@ it('体を揺らすしぐさは 0 から始まって左右へ振れ、両腕は�
   expect(Math.sign(first(run(other, 0, 9)))).toBe(-Math.sign(first(frames)))
 })
 
+it('体を揺らす途中で中断しても、体と腕の角度は跳ばずに短く戻る（揺れの位相は続ける）', () => {
+  // 揺れの山・谷・0 付近のどこで中断しても同じ。
+  for (const cut of [0.6, 0.8, 1.6, 2.4, 3.3, 4.8]) {
+    const d = new IdleDirector(seq(0.9))
+    d.force('sway')
+    const frames = run(d, 0, cut + 2, (t) => ({ ...calm, calm: t < cut })),
+      z = frames.map((x) => x.f.pose.bodyZ),
+      up = frames.map((x) => x.f.arms?.right.up ?? 0)
+    for (let i = 1; i < z.length; i++) {
+      expect(Math.abs(z[i] - z[i - 1])).toBeLessThan(1.2)
+      expect(Math.abs(up[i] - up[i - 1])).toBeLessThan(0.03)
+    }
+    const after = frames.filter((x) => x.t >= cut + CANCEL_SECONDS)
+    expect(Math.max(...after.map((x) => Math.abs(x.f.pose.bodyZ)))).toBeLessThan(1e-6)
+  }
+})
+
 it('身振りを借りるしぐさは、保っている間だけ身振りを出し、長さは身振りのクリップを覆う', () => {
   const d = new IdleDirector(seq(0))
   d.force('wave')

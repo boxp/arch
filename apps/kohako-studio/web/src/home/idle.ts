@@ -196,7 +196,8 @@ const NONE: IdleFrame = {
   gesture: null,
 }
 const ARM_KEYS = ['up', 'fo', 'ha'] as const
-type Running = { act: IdleAct; side: 1 | -1; start: number; end: number; out: number; scale: number }
+/** t0 は揺れの位相の起点。中断で start を書き換えても動かさない（位相が跳ぶと体の角度が跳ぶ）。 */
+type Running = { act: IdleAct; side: 1 | -1; t0: number; start: number; end: number; out: number; scale: number }
 
 /** 時刻は秒（単調増加）。rng は [0, 1)。 */
 export class IdleDirector {
@@ -266,6 +267,7 @@ export class IdleDirector {
         this.running = run = {
           act,
           side: def.mirror && this.rng() < 0.5 ? -1 : 1,
+          t0: now,
           start: now,
           end: now + IN_SECONDS + between(def.seconds, this.rng()),
           out: OUT_SECONDS,
@@ -279,8 +281,8 @@ export class IdleDirector {
       pose = { ...ZERO }
     for (const key of Object.keys(def.pose) as (keyof BodyPose)[])
       pose[key] = (def.pose[key] ?? 0) * level * (MIRRORED.includes(key) ? run.side : 1)
-    // 揺れは始まりを 0 にして、入り・戻りの強さをそのまま掛ける（始めと終わりで跳ばない）。
-    const swing = def.sway ? Math.sin((2 * Math.PI * (now - run.start)) / def.sway.period) * level * run.side : 0
+    // 揺れは始まりを 0 にして、入り・戻りの強さをそのまま掛ける（始めと終わりで跳ばない）。位相は中断しても続ける。
+    const swing = def.sway ? Math.sin((2 * Math.PI * (now - run.t0)) / def.sway.period) * level * run.side : 0
     if (def.sway)
       for (const key of Object.keys(def.sway.pose) as (keyof BodyPose)[]) pose[key] += (def.sway.pose[key] ?? 0) * swing
     // 腕。左右のあるしぐさは腕ごと入れ替える（角度は鏡映の書き方なので値はそのまま）。揺れは両腕を画面の同じ向きへ振る。
