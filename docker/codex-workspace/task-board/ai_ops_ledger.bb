@@ -39,9 +39,9 @@
   {:schema_version #{schema-version}
    :source #{"task-board-runner"}
    :event_type #{"run.started" "run.finished" "run.interrupted" "lane.changed" "correction"}
-   :runtime #{"codex-cli" "claude-cli" "localllm" "localllm-coder" "unknown"}
+   :runtime #{"codex-cli" "claude-cli" "localllm" "localllm-coder" "antigravity-cli" "unknown"}
    :agent #{"codex" "codex-terra" "codex-sol" "codex-full" "codex-mini" "codex-astra"
-            "claude-fable" "claude-opus" "claude-sonnet" "fable" "localllm" "localllm-coder"}
+            "claude-fable" "claude-opus" "claude-sonnet" "fable" "localllm" "localllm-coder" "antigravity"}
    :action #{"implement" "groom" "review-fix" "blocked-retry" "docs-edit" "docs-groom"}
    :status #{"succeeded" "retrying" "blocked" "interrupted" "failed" "running" "superseded"}
    :result #{"review" "continue" "owner-acceptance" "blocked" "done" "ready"}
@@ -692,8 +692,8 @@
   {:snapshot #{"current"} :schema_version #{"ai-ops-event/v0"} :classifier_version #{"correction-rules/v0"}
    :event_type #{"request.received" "run.started" "run.finished" "run.interrupted" "task.accepted" "task.reopened" "task.state" "task.cancelled" "run.unreadable" "lane.changed" "notify.run-finished" "correction" "owner.rescue" "approval.requested" "approval.resolved" "effect.applied" "coverage.connected"}
    :source #{"hermes-observer"}
-   :runtime #{"codex-cli" "claude-cli" "localllm" "localllm-coder" "hermes" "unknown"}
-   :agent #{"codex" "codex-terra" "codex-sol" "codex-sol-xhigh" "codex-full" "codex-mini" "codex-astra" "claude-opus" "claude-fable" "claude-sonnet" "fable" "localllm" "localllm-coder"}
+   :runtime #{"codex-cli" "claude-cli" "localllm" "localllm-coder" "antigravity-cli" "hermes" "unknown"}
+   :agent #{"codex" "codex-terra" "codex-sol" "codex-sol-xhigh" "codex-full" "codex-mini" "codex-astra" "claude-opus" "claude-fable" "claude-sonnet" "fable" "localllm" "localllm-coder" "antigravity"}
    :action #{"implement" "groom" "review-fix" "blocked-retry" "docs-edit" "docs-groom"}
    :status #{"done" "closed" "succeeded" "retrying" "accepted" "blocked" "interrupted" "review" "ready" "backlog" "failed" "in-progress" "running" "duplicate" "hold" "cancelled" "superseded"}
    :result #{"review" "continue" "owner-acceptance" "blocked" "done" "ready"}

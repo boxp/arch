@@ -188,6 +188,7 @@
     (cond (str/starts-with? a "codex") "codex-cli"
           (= "localllm" a) "localllm"
           (= "localllm-coder" a) "localllm-coder"
+          (= "antigravity" a) "antigravity-cli"
           (str/blank? a) "unknown"
           :else "claude-cli")))
 
@@ -389,10 +390,22 @@
   [agent]
   (and (not (localllm-assignee? agent)) (not= localllm-coder-assignee agent)))
 
+;; BOXP-630: Google Antigravity CLI (`agy`) as a Task Board worker. The runner
+;; starts the official binary directly in headless mode (`agy -p`, the direct
+;; scripting / CI use the Antigravity FAQ names) with the Owner's own login,
+;; which the CLI keeps in its own storage. The runner never reads, copies or
+;; forwards those credentials, no other coding agent drives `agy`, and the run
+;; can neither switch to API-key / ADC billing nor spend AI credits.
+(def antigravity-assignee "antigravity")
+
+(defn antigravity-assignee? [assignee]
+  (= antigravity-assignee assignee))
+
 (defn supported-assignee? [assignee]
   (or (claude-assignee? assignee)
       (localllm-assignee? assignee)
       (= localllm-coder-assignee assignee)
+      (antigravity-assignee? assignee)
       (some? (parse-codex-assignee assignee))))
 
 (defn root []
@@ -2451,6 +2464,14 @@
        "- Preserve the Task Board runner contract: include a concise work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: continue. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n\n"))
 
+(defn antigravity-policy-prompt [agent]
+  (str "Antigravity CLI routing policy:\n"
+       "- You are the " agent " entry point for this Task Board run: the Owner's runner script started the official Antigravity CLI directly in headless mode.\n"
+       "- Do the work yourself. Do not start other coding agent CLIs (claude, codex, cursor-agent, pi, agy) or the delegation helper from this run.\n"
+       "- Do not read, copy, print or forward Antigravity or Google credentials, and do not switch to an API key, Application Default Credentials or AI credits. If the quota runs out, stop and report blocked.\n"
+       "- Preserve the Task Board runner contract: include a concise work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
+       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: continue. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n\n"))
+
 (defn codex-sol-policy-prompt [agent]
   (str "High-cost model routing policy:\n"
        "- You are the " agent " high-cost entry point for this Task Board run.\n"
@@ -2904,6 +2925,7 @@
                     (when (#{:implement :review-fix :blocked-retry} action) (same-file-review-escalation-prompt ticket-id))
                     (when (= "fable" agent) (fable-policy-prompt))
                     (when (contains? claude-roles agent) (claude-policy-prompt agent))
+                    (when (antigravity-assignee? agent) (antigravity-policy-prompt agent))
                     (when (contains? #{"codex-sol" "codex-full"} base-agent) (codex-sol-policy-prompt agent))
                     (when (= "codex-astra" base-agent) (codex-astra-policy-prompt agent))
                     (ai-ops-decision-prompt ai-ops)
@@ -3702,6 +3724,87 @@
               "claude stream pump still draining; no final result received, using the summary so far"))))
   @summary)
 
+;; BOXP-630: Antigravity CLI run plumbing. Kept as small pure helpers so the
+;; self tests can check the command line, the environment and the result
+;; parsing without a login.
+(def antigravity-stripped-env-keys
+  "Environment that could switch `agy` from the Owner's subscription login to
+  API-key, ADC, gateway or pay-as-you-go access. The run never passes them on,
+  so it cannot start new billing even when the workspace has such a key."
+  ["GEMINI_API_KEY" "GOOGLE_API_KEY" "GOOGLE_GENAI_USE_VERTEXAI" "GOOGLE_APPLICATION_CREDENTIALS"
+   "AGY_ADC_AUTH" "AGY_ACCOUNT" "AGY_LLM_GATEWAY_URL" "AGY_LLM_GATEWAY_MODELS" "AGY_BUSINESS_PAYGO_TIER"])
+
+(def antigravity-session-settings
+  ;; Session-only settings (`--settings`, never saved): never spend AI credits
+  ;; after the plan's quota runs out; wait for the quota to refresh instead.
+  {"useG1Credits" false})
+
+(defn antigravity-model []
+  (let [m (System/getenv "CODEX_TASK_BOARD_ANTIGRAVITY_MODEL")]
+    (when-not (str/blank? m) (str/trim m))))
+
+(defn antigravity-prompt-arg
+  "The prompt file can be far larger than one command-line argument allows, so
+  the CLI gets a short instruction that points at it."
+  [prompt-path]
+  (str "Your complete Task Board run instructions are in the file " prompt-path ". "
+       "Read that whole file first with your file tools and follow it exactly: it is your task, not reference material. "
+       "Your final response must end as that file specifies, with exactly one TASK_BOARD_RESULT marker line."))
+
+(defn antigravity-args [prompt-path run-dir workspace]
+  (let [bypass? (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
+        model (antigravity-model)]
+    (cond-> [(env "CODEX_TASK_BOARD_ANTIGRAVITY_BIN" "agy")
+             "--print" (antigravity-prompt-arg prompt-path)
+             "--output-format" "stream-json"
+             "--settings" (json/generate-string antigravity-session-settings)
+             "--disable-slash-commands"]
+      true (into (mapcat (fn [dir] ["--add-dir" (str dir)])
+                         (distinct (concat [(vault) (str run-dir)] (workspace-add-dirs workspace)))))
+      model (into ["--model" model])
+      bypass? (conj "--dangerously-skip-permissions"))))
+
+(defn antigravity-env [source-env extra-env]
+  (merge (apply dissoc (into {} source-env) antigravity-stripped-env-keys) extra-env))
+
+(defn antigravity-stream-result
+  "The terminal `result` event of an `agy --output-format stream-json` run
+  ({\"event\":\"result\",\"result\":{status, response, error, ...}}), or nil."
+  [path]
+  (when (fs/exists? path)
+    (with-open [reader (io/reader (str path))]
+      (reduce (fn [acc line]
+                (let [v (when (str/starts-with? (str/triml line) "{")
+                          (try (json/parse-string line true) (catch Exception _ nil)))]
+                  (if (and (map? v) (= "result" (or (:event v) (:type v))) (map? (:result v)))
+                    (:result v)
+                    acc)))
+              nil (line-seq reader)))))
+
+(def antigravity-quota-pattern
+  #"(?i)RESOURCE_EXHAUSTED|quota|\b429\b|exhausted your capacity|rate.?limit")
+
+(defn antigravity-failure-kind [result]
+  (let [error (str (:error result))]
+    (cond (= "SUCCESS" (:status result)) nil
+          (re-find antigravity-quota-pattern error) :quota
+          (re-find #"(?i)authenticat|sign.?in|log.?in" error) :auth
+          :else :error)))
+
+(defn antigravity-last-message
+  "The agent's final response, plus a runner note when the run did not succeed.
+  A quota or login failure is never retried on another route or billing."
+  [result]
+  (let [response (str (:response result))
+        kind (if result (antigravity-failure-kind result) :no-result)
+        note (case kind
+               nil nil
+               :quota (str "Antigravity CLI quota exhausted (" (:error result) "). The runner does not fall back to API billing, AI credits or another worker; resume after the plan quota refreshes.")
+               :auth "Antigravity CLI is not logged in. The Owner has to sign in once with an interactive `agy` session (official login) in codex-workspace; the runner never handles the credentials."
+               :no-result "Antigravity CLI produced no result event."
+               (str "Antigravity CLI run ended with status " (:status result) ": " (:error result)))]
+    (str response (when note (str (when-not (str/blank? response) "\n\n") "[task-board runner] " note "\n")))))
+
 (defn run-agent! [ticket-id action lane agent lock]
   (let [run (:run-id lock)
         dir (run-dir ticket-id run)
@@ -3741,8 +3844,15 @@
           ;; leave hook trust decisions to the operator.
           codex-hooks? (and todo-hooks? (not (claude-assignee? agent)) (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true")))
           toml-hook (fn [event matcher] (str "[{matcher=" (pr-str matcher) ",hooks=[{type=\"command\",command=" (pr-str (hook-command event)) "}]}]"))
-          model-info (when (and (claude-assignee? agent) (not= agent "fable")) (resolve-claude-model agent))
-          agent-args (if (claude-assignee? agent)
+          model-info (cond (and (claude-assignee? agent) (not= agent "fable")) (resolve-claude-model agent)
+                           (antigravity-assignee? agent) (if-let [m (antigravity-model)]
+                                                           {:model m :model-source :env}
+                                                           {:model "agy-default" :model-source :cli-default}))
+          agent-args (cond
+                       (antigravity-assignee? agent)
+                       (antigravity-args prompt-path dir workspace)
+
+                       (claude-assignee? agent)
                        (cond-> [(env "CODEX_TASK_BOARD_CLAUDE_BIN" "claude") "--print" "--output-format" "stream-json" "--verbose"]
                    (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
                    (conj "--dangerously-skip-permissions")
@@ -3756,6 +3866,7 @@
                    true
                    (into (claude-model-args agent model-info)))
 
+                       :else
                        (cond-> ["codex" "exec" "--json" "--cd" (:workspace-dir workspace)
                           "--skip-git-repo-check"
                           "--output-last-message" (str last-message-path)]
@@ -3790,7 +3901,14 @@
                                                           "TASK_BOARD_DELEGATION_ADD_DIRS" (json/generate-string
                                                                                            (vec (cons (vault) (workspace-add-dirs workspace))))}}
                                        (claude-assignee? agent)
-                                       (assoc :dir (:workspace-dir workspace))))
+                                       (assoc :dir (:workspace-dir workspace))
+
+                                       ;; No stdin: a logged-out CLI asks for an authorization code
+                                       ;; there, and the prompt must never be read as one.
+                                       (antigravity-assignee? agent)
+                                       (-> (assoc :dir (:workspace-dir workspace) :in "")
+                                           (as-> o (assoc o :env (antigravity-env (System/getenv) (:extra-env o))))
+                                           (dissoc :extra-env))))
           ;; The pump creates events.jsonl on the first line; touch it up front so
           ;; the file exists (as it did with direct file output) even if the
           ;; agent exits without writing anything.
@@ -3829,6 +3947,18 @@
                   (try (io/copy (io/file (str stdout-path)) (io/file (str last-message-path)))
                        (catch Exception copy-error
                          (log! (str "claude message fallback failed: " (.getMessage copy-error))))))))
+          antigravity-result (when (antigravity-assignee? agent)
+                               (try (antigravity-stream-result stdout-path)
+                                    (catch Exception e (log! (str "antigravity result read failed: " (.getMessage e))) nil)))
+          _ (when (antigravity-assignee? agent)
+              (try (spit (str last-message-path) (antigravity-last-message antigravity-result))
+                   (catch Exception e (log! (str "antigravity message write failed: " (.getMessage e))))))
+          model-info (cond-> model-info
+                       (antigravity-assignee? agent)
+                       (assoc :antigravity (cond-> {:status (some-> antigravity-result :status str)
+                                                    :failure (some-> (if antigravity-result (antigravity-failure-kind antigravity-result) :no-result) name)}
+                                             (:finished_reason antigravity-result) (assoc :finished-reason (str (:finished_reason antigravity-result)))
+                                             (map? (:usage antigravity-result)) (assoc :usage (select-keys (:usage antigravity-result) [:input_tokens :output_tokens :thinking_tokens :cache_read_tokens :total_tokens])))))
           last-message (when (fs/exists? last-message-path)
                          (slurp (str last-message-path)))
           marker (result-marker last-message)
@@ -8532,6 +8662,45 @@
              (for [[status expected] {"backlog" nil "ready" :implement "in-progress" :implement
                                       "review" :review-fix "blocked" :blocked-retry "done" nil}]
                [(str "coder route " status) (candidate-action {:status status} "localllm-coder") expected])
+             ;; BOXP-630: Antigravity CLI worker.
+             (for [[status expected] {"backlog" :groom "ready" :implement "in-progress" :implement
+                                      "review" :review-fix "blocked" :blocked-retry "done" nil}]
+               [(str "antigravity route " status) (candidate-action {:status status} "antigravity") expected])
+             (let [ws {:workspace-dir "/ws/repo" :repos []}
+                   args (with-redefs [vault (constantly "/vault") workspace-add-dirs (constantly ["/ws"]) antigravity-model (constantly nil)]
+                          (antigravity-args "/runs/r/prompt.md" "/runs/r" ws))
+                   pinned (with-redefs [vault (constantly "/vault") workspace-add-dirs (constantly []) antigravity-model (constantly "gemini-4-argon")]
+                            (antigravity-args "/runs/r/prompt.md" "/runs/r" ws))
+                   after (fn [xs flag] (second (drop-while #(not= flag %) xs)))
+                   tmp (fs/create-temp-file)
+                   _ (spit (str tmp) (str "{\"event\":\"init\",\"cwd\":\"/ws\"}\n"
+                                          "not json\n"
+                                          "{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\",\"response\":\"done\\nTASK_BOARD_RESULT: done\",\"usage\":{\"total_tokens\":3}}}\n"))
+                   parsed (antigravity-stream-result tmp)]
+               [["antigravity supported" (supported-assignee? "antigravity") true]
+                ["antigravity not claude" (claude-assignee? "antigravity") false]
+                ["antigravity runtime" (assignee-runtime "antigravity") "antigravity-cli"]
+                ["antigravity no delegation" ((juxt delegation-required? delegation-optional-for?) "antigravity") [false false]]
+                ["antigravity todo contract" (todo-contract-agent? "antigravity") true]
+                ["antigravity binary" (first args) "agy"]
+                ["antigravity headless prompt points at file" (boolean (str/includes? (after args "--print") "/runs/r/prompt.md")) true]
+                ["antigravity stream output" (after args "--output-format") "stream-json"]
+                ["antigravity never uses AI credits" (json/parse-string (after args "--settings")) {"useG1Credits" false}]
+                ["antigravity add dirs" (->> args (partition 2 1) (filter #(= "--add-dir" (first %))) (mapv second)) ["/vault" "/runs/r" "/ws"]]
+                ["antigravity default model" (some #{"--model"} args) nil]
+                ["antigravity pinned model" (after pinned "--model") "gemini-4-argon"]
+                ["antigravity bypass" (some #{"--dangerously-skip-permissions"} args) "--dangerously-skip-permissions"]
+                ["antigravity env drops api billing"
+                 (antigravity-env {"PATH" "/bin" "GEMINI_API_KEY" "k" "GOOGLE_API_KEY" "k" "AGY_ADC_AUTH" "true" "GOOGLE_APPLICATION_CREDENTIALS" "/c"} {"CODEX_TASK_BOARD_RUN_ID" "r"})
+                 {"PATH" "/bin" "CODEX_TASK_BOARD_RUN_ID" "r"}]
+                ["antigravity result event" (select-keys parsed [:status :response]) {:status "SUCCESS" :response "done\nTASK_BOARD_RESULT: done"}]
+                ["antigravity success message" (antigravity-last-message parsed) "done\nTASK_BOARD_RESULT: done"]
+                ["antigravity missing result" (antigravity-stream-result (str tmp ".missing")) nil]
+                ["antigravity failure kinds" (mapv antigravity-failure-kind [{:status "SUCCESS"} {:status "ERROR" :error "RESOURCE_EXHAUSTED: quota"} {:status "ERROR" :error "authentication failed or timed out"} {:status "ERROR" :error "boom"}])
+                 [nil :quota :auth :error]]
+                ["antigravity quota message has no marker" (let [m (antigravity-last-message {:status "ERROR" :error "429 quota" :response ""})]
+                                                             [(result-marker m) (boolean (str/includes? m "does not fall back"))]) [nil true]]
+                ["antigravity no result message" (boolean (str/includes? (antigravity-last-message nil) "no result event")) true]])
              [["coder supported" (supported-assignee? "localllm-coder") true]
               ["coder runtime" (assignee-runtime "localllm-coder") "localllm-coder"]
               ["coder delegation" (delegation-required? "localllm-coder") false]

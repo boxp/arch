@@ -47,6 +47,9 @@ jobs:
           platforms: linux/amd64
       - name: Smoke test even-terminal startup
         run: tests/codex-workspace/even-terminal-smoke-test.sh codex-workspace:smoke-test
+      # BOXP-630: the pinned Antigravity CLI is installed and runs (no login involved).
+      - name: Smoke test agy binary
+        run: docker run --rm --entrypoint /usr/local/bin/agy codex-workspace:smoke-test --version
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: docker/codex-workspace

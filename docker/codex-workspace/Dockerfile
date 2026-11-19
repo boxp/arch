@@ -14,6 +14,12 @@ ARG BABASHKA_VERSION=1.13.229
 ARG LAZYGIT_VERSION=0.66.3
 ARG YAZI_VERSION=26.9.1
 ARG CURSOR_AGENT_VERSION=2026.06.12-19-59-36-f6aba9a
+# BOXP-630: Google Antigravity CLI (agy). Pinned to the release manifest
+# (https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json)
+# and verified with its sha512. Update all three values together.
+ARG ANTIGRAVITY_CLI_VERSION=1.5.12
+ARG ANTIGRAVITY_CLI_BUILD=5281398513336320
+ARG ANTIGRAVITY_CLI_SHA512=26de25fccb3fbf0b093e090ce14a14ac1df1ec3e90ef4ea6106887d3a81b0cc9edb0dadea7b9101d07f9606eba159062a6fb7b78e91b73f7520684a24db73428
 ARG KUBECTL_VERSION=1.37.2
 ARG KUSTOMIZE_VERSION=5.8.3
 ARG NODE_MAJOR=26
@@ -134,6 +140,21 @@ RUN set -eux; \
     tar --strip-components=1 -xzf "$tmp/cursor-agent.tar.gz" -C /opt/cursor-agent; \
     ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent; \
     ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/agent; \
+    rm -rf "$tmp"
+
+# BOXP-630: the official binary only. Login stays with the Owner (interactive
+# `agy` once in the workspace); nothing here configures credentials.
+RUN set -eux; \
+    tmp="$(mktemp -d)"; \
+    curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 600 -fsSL \
+      "https://storage.googleapis.com/antigravity-public/antigravity-cli/${ANTIGRAVITY_CLI_VERSION}-${ANTIGRAVITY_CLI_BUILD}/linux-x64/cli_linux_x64.tar.gz" \
+      -o "$tmp/agy.tar.gz"; \
+    echo "${ANTIGRAVITY_CLI_SHA512}  $tmp/agy.tar.gz" | sha512sum -c -; \
+    rm -rf /opt/antigravity-cli; \
+    mkdir -p /opt/antigravity-cli; \
+    tar -xzf "$tmp/agy.tar.gz" -C /opt/antigravity-cli antigravity; \
+    chmod 0755 /opt/antigravity-cli/antigravity; \
+    ln -sf /opt/antigravity-cli/antigravity /usr/local/bin/agy; \
     rm -rf "$tmp"
 
 RUN locale-gen en_US.UTF-8 \

@@ -34,8 +34,8 @@
   {:snapshot #{"current"} :schema_version #{"ai-ops-event/v0"} :classifier_version #{"correction-rules/v0"}
    :event_type #{"request.received" "run.started" "run.finished" "run.interrupted" "task.accepted" "task.reopened" "task.state" "task.cancelled" "run.unreadable" "lane.changed" "notify.run-finished" "correction" "owner.rescue" "approval.requested" "approval.resolved" "effect.applied" "coverage.connected"}
    :source #{"task-board-runner" "hermes-observer" "ticket-frontmatter" "derived" "outbox:task-board-runner" "outbox:board-diff" "synthetic:calibration" "synthetic:feedback" "synthetic:hermes" "synthetic:task-board"}
-   :runtime #{"codex-cli" "claude-cli" "localllm" "localllm-coder" "hermes" "unknown"}
-   :agent #{"codex" "codex-terra" "codex-sol" "codex-sol-xhigh" "codex-full" "codex-mini" "codex-astra" "claude-opus" "claude-fable" "claude-sonnet" "fable" "localllm" "localllm-coder"}
+   :runtime #{"codex-cli" "claude-cli" "localllm" "localllm-coder" "antigravity-cli" "hermes" "unknown"}
+   :agent #{"codex" "codex-terra" "codex-sol" "codex-sol-xhigh" "codex-full" "codex-mini" "codex-astra" "claude-opus" "claude-fable" "claude-sonnet" "fable" "localllm" "localllm-coder" "antigravity"}
    :action #{"implement" "groom" "review-fix" "blocked-retry" "docs-edit" "docs-groom"}
    :status #{"done" "closed" "succeeded" "retrying" "accepted" "blocked" "interrupted" "review" "ready" "backlog" "failed" "in-progress" "running" "duplicate" "hold" "cancelled" "superseded"}
    :result #{"review" "continue" "owner-acceptance" "blocked" "done" "ready"}
@@ -241,6 +241,7 @@
               :runtime (let [a (or agent "")]
                          (cond (str/starts-with? a "codex") "codex-cli"
                                (= a "localllm-coder") "localllm-coder"
+                               (= a "antigravity") "antigravity-cli"
                                (str/starts-with? a "localllm") "localllm"
                                (str/blank? a) "unknown"
                                :else "claude-cli"))
