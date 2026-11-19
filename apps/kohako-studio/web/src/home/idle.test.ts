@@ -302,3 +302,114 @@ it('中断から落ち着いた直後は、予定が過ぎていても短い間�
   const next = frames.find((x) => x.f.act)
   expect(next?.t).toBeCloseTo(60 + (RESUME_GAP[0] + RESUME_GAP[1]) / 2, 0)
 })
+
+// ---- 腕と体のしぐさ（Owner 要望: 顔だけでなくジェスチャーも）----
+const armSize = (f: IdleFrame) =>
+  Math.max(0, ...[f.arms?.right, f.arms?.left].flatMap((a) => [a?.up ?? 0, a?.fo ?? 0, a?.ha ?? 0]).map(Math.abs))
+
+it('腕や体を使うしぐさが 3 割前後あり、顔だけのしぐさも残る', () => {
+  const body = idleActNames.filter((a) => idleActs[a].arms || idleActs[a].sway || idleActs[a].gesture),
+    total = idleActNames.reduce((s, a) => s + idleActs[a].weight, 0),
+    share = body.reduce((s, a) => s + idleActs[a].weight, 0) / total
+  expect(body.sort()).toEqual(['mouth', 'stretch', 'sway', 'tidy', 'wave'])
+  expect(share).toBeGreaterThan(0.25)
+  expect(share).toBeLessThan(0.45)
+})
+
+it('腕のしぐさは 0 から滑らかに入り、保って、0 へ戻る（終われば腕は null）', () => {
+  const d = new IdleDirector(seq(0))
+  d.force('stretch')
+  const frames = run(d, 0, 8),
+    on = frames.filter((x) => x.f.act === 'stretch')
+  expect(frames[0].f.arms).toBeNull()
+  expect(Math.max(...on.map((x) => armSize(x.f)))).toBeCloseTo(0.25, 5)
+  expect(on.find((x) => armSize(x.f) > 0.2499)?.f.arms).toEqual({
+    right: { up: expect.closeTo(-0.17, 2), fo: 0, ha: expect.closeTo(-0.25, 2) },
+    left: { up: expect.closeTo(-0.17, 2), fo: 0, ha: expect.closeTo(-0.25, 2) },
+  })
+  // 50ms で動く量は小さい（跳ばない）。
+  for (let i = 1; i < frames.length; i++)
+    expect(Math.abs(armSize(frames[i].f) - armSize(frames[i - 1].f))).toBeLessThan(0.03)
+  expect(frames.at(-1)?.f.arms).toBeNull()
+  expect(frames.at(-1)?.f.act).toBeNull()
+})
+
+it('肘の曲げは腕の絵が切り替わらない範囲に留める', () => {
+  for (const a of idleActNames)
+    for (const arm of [idleActs[a].arms?.right, idleActs[a].arms?.left]) {
+      expect(Math.abs(arm?.fo ?? 0)).toBeLessThan(0.3)
+      expect(Math.abs(arm?.up ?? 0)).toBeLessThanOrEqual(0.2)
+    }
+})
+
+it('体を揺らすしぐさは 0 から始まって左右へ振れ、両腕は画面の同じ向きへ振れる。向きは毎回選ぶ', () => {
+  const d = new IdleDirector(seq(0.9))
+  d.force('sway')
+  const frames = run(d, 0, 9),
+    z = frames.map((x) => x.f.pose.bodyZ)
+  expect(Math.abs(z[1])).toBeLessThan(0.2)
+  expect(Math.max(...z)).toBeGreaterThan(4.5)
+  expect(Math.min(...z)).toBeLessThan(-4.5)
+  for (let i = 1; i < z.length; i++) expect(Math.abs(z[i] - z[i - 1])).toBeLessThan(0.8)
+  // 右腕と左腕の up は逆符号（鏡映の書き方）＝画面では同じ向き。頭は体と逆へ少し残す。
+  const peak = frames.find((x) => x.f.pose.bodyZ > 4.5)
+  expect(peak?.f.arms?.right.up).toBeLessThan(-0.08)
+  expect(peak?.f.arms?.left.up).toBeCloseTo(-(peak?.f.arms?.right.up ?? 0), 6)
+  expect(peak?.f.pose.headZ).toBeLessThan(0)
+  expect(frames.at(-1)?.f.arms).toBeNull()
+  const other = new IdleDirector(seq(0.1))
+  other.force('sway')
+  const first = (fs: ReturnType<typeof run>) => fs.find((x) => Math.abs(x.f.pose.bodyZ) > 2)?.f.pose.bodyZ ?? 0
+  expect(Math.sign(first(run(other, 0, 9)))).toBe(-Math.sign(first(frames)))
+})
+
+it('身振りを借りるしぐさは、保っている間だけ身振りを出し、長さは身振りのクリップを覆う', () => {
+  const d = new IdleDirector(seq(0))
+  d.force('wave')
+  const frames = run(d, 0, 6),
+    on = frames.filter((x) => x.f.gesture === 'greet')
+  expect(frames[0].f.gesture).toBe('greet')
+  // 挨拶のクリップは 2.6 秒。
+  expect(on.length * 0.05).toBeGreaterThan(2.6)
+  expect(on.length * 0.05).toBeLessThan(3.2)
+  expect(frames.some((x) => x.f.emotion === 'smile')).toBe(true)
+  expect(frames.at(-1)?.f.gesture).toBeNull()
+  const m = new IdleDirector(seq(0))
+  m.force('mouth')
+  const mouth = run(m, 0, 7).filter((x) => x.f.gesture === 'shyHand')
+  expect(mouth.length * 0.05).toBeGreaterThan(3.9)
+  expect(mouth.length * 0.05).toBeLessThan(4.5)
+})
+
+it('中断されたら身振りと腕をすぐ手放す', () => {
+  const d = new IdleDirector(seq(0))
+  d.force('wave')
+  const frames = run(d, 0, 3, (t) => ({ ...calm, calm: t < 1 }))
+  expect(frames.filter((x) => x.t < 1).every((x) => x.f.gesture === 'greet')).toBe(true)
+  expect(frames.filter((x) => x.t >= 1).every((x) => x.f.gesture === null)).toBe(true)
+  const s = new IdleDirector(seq(0))
+  s.force('stretch')
+  const arms = run(s, 0, 3, (t) => ({ ...calm, calm: t < 1.5 }))
+  expect(armSize(arms.find((x) => x.t >= 1.45)?.f as IdleFrame)).toBeGreaterThan(0.2)
+  expect(arms.filter((x) => x.t > 1.5 + CANCEL_SECONDS + 0.05).every((x) => x.f.arms === null)).toBe(true)
+})
+
+it('控えめでは身振りを借りるしぐさを選ばず、腕の大きさは 6 割', () => {
+  const d = new IdleDirector(Math.random),
+    seen = new Set<IdleAct>()
+  for (let i = 0; i < 3000; i++) {
+    const a = d.pick('day', true)
+    seen.add(a)
+    d.force(a)
+    d.step(i * 1000, calm)
+    d.reset()
+  }
+  expect(seen.has('wave') || seen.has('mouth')).toBe(false)
+  expect(seen.has('stretch') && seen.has('tidy') && seen.has('sway')).toBe(true)
+  const s = new IdleDirector(seq(0))
+  s.force('stretch')
+  expect(Math.max(...run(s, 0, 3, { ...calm, subtle: true }).map((x) => armSize(x.f)))).toBeCloseTo(
+    0.25 * SUBTLE_SCALE,
+    5,
+  )
+})

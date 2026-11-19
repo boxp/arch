@@ -1,12 +1,27 @@
 // BOXP-605: 待機中のしぐさ。待機クリップ 1 本（頭を左右へ振り続ける）だけでは同じ動きの繰り返しに見えるため、
 // 待機が続いて Owner の操作も無い間だけ、不規則な間をあけて小さなしぐさを 1 つずつ挟む（月を見上げる・小首をかしげる・目を閉じてひと息 など）。
 // 新しい絵は使わず、既存の頭・体の角度、視線、表情、閉眼だけで作る。ここは「いつ・どれを・どの強さで」を決める純粋な係で、描画は gesture.ts の stage が行う。
+// 顔と頭だけでなく、腕と体のしぐさも混ぜる（Owner 要望）。腕は肩・肘・手首を小さく回すだけのもの（arms / sway）と、
+// 会話で使っている身振りのクリップをそのまま借りるもの（gesture: 小さく手を振る・口元に手を添える）がある。どちらも新しい絵は使わない。
 // しぐさの間は待機クリップを止める（クリップ再生中は頭の角度を足しても描画に出ない。止めている間は揺れも小さく落ち着く）。
-import type { Emotion } from '../live2d/acting'
-import type { BodyPose } from '../live2d/gesture'
+import type { Emotion, Gesture } from '../live2d/acting'
+import type { BodyPose, IdleArm } from '../live2d/gesture'
 import type { Daypart } from './room'
 
-export type IdleAct = 'moon' | 'tilt' | 'rest' | 'smile' | 'down' | 'aside' | 'still'
+export type IdleAct =
+  | 'moon'
+  | 'tilt'
+  | 'rest'
+  | 'smile'
+  | 'down'
+  | 'aside'
+  | 'still'
+  | 'wave'
+  | 'mouth'
+  | 'stretch'
+  | 'tidy'
+  | 'sway'
+type Arms = { right?: IdleArm; left?: IdleArm }
 type Def = {
   /** 保つ長さ（秒）の範囲。入り・戻りは別。 */
   seconds: readonly [number, number]
@@ -20,6 +35,12 @@ type Def = {
   gaze?: boolean
   /** 見た目の変化がほとんど無い（揺れが落ち着くだけ）。次のしぐさまでの間を短くし、変化の無い時間が長く続かないようにする。 */
   quiet?: boolean
+  /** 腕（ラジアン。right は画面の右側の腕。角度は右腕の向きで書き、左腕は鏡映される: up 負=外へ開く、fo 正=肘から先を体へ寄せる）。 */
+  arms?: Arms
+  /** ゆっくり左右へ揺れる。pose と swing（両腕を同じ向きへ振る角度）に sin を掛けて足す。period は 1 往復の秒。 */
+  sway?: { period: number; pose: Partial<BodyPose>; swing: number }
+  /** 身振りのクリップを借りる（腕の絵の差し替えを含む）。seconds はクリップが終わるまでの長さにする。大きさは変えられないので「控えめ」では出さない。 */
+  gesture?: Exclude<Gesture, 'none'>
   /** 出やすさ。時間帯で変える。 */
   weight: number
   dayparts?: Partial<Record<Daypart, number>>
@@ -68,6 +89,50 @@ export const idleActs: Record<IdleAct, Def> = {
   aside: { seconds: [1.8, 3], pose: { headX: 5, eyeX: 0.55 }, mirror: true, gaze: true, weight: 0.9 },
   // じっと落ち着く（待機クリップを止めて小さな揺れだけにする）。
   still: { seconds: [4, 7], pose: {}, mirror: false, quiet: true, weight: 0.7 },
+  // 小さく手を振る（挨拶の身振り 2.6 秒）。
+  wave: {
+    seconds: [1.9, 1.9],
+    pose: {},
+    mirror: false,
+    emotion: 'smile',
+    gesture: 'greet',
+    weight: 0.6,
+    dayparts: { morning: 1.3 },
+  },
+  // 口元に手を添えて、目を細めて笑う（照れの身振り 3.9 秒。夜はあくびをかみ殺すようにも見える）。
+  mouth: {
+    seconds: [3.2, 3.2],
+    pose: { headZ: 2, headY: -2 },
+    mirror: false,
+    emotion: 'smileClosed',
+    gesture: 'shyHand',
+    weight: 0.5,
+    dayparts: { night: 1.4 },
+  },
+  // 両腕を少し外へ開いて、軽く伸びをする。
+  stretch: {
+    seconds: [2.2, 3.4],
+    pose: { headY: 6, lean: -3 },
+    arms: { right: { up: -0.17, ha: -0.25 }, left: { up: -0.17, ha: -0.25 } },
+    mirror: false,
+    weight: 0.8,
+  },
+  // 両手を体の脇へ寄せて、姿勢を正す。肘の曲げは腕の絵が切り替わらない範囲（0.3 未満）に留める。
+  tidy: {
+    seconds: [2.6, 4],
+    pose: { headY: -2, lean: 1 },
+    arms: { right: { up: 0.04, fo: 0.28 }, left: { up: 0.04, fo: 0.28 } },
+    mirror: false,
+    weight: 0.8,
+  },
+  // 体を左右へゆっくり揺らす。腕は体の傾きと同じ側へ振る（逆向きにすると体の傾きと打ち消し合って、手がほとんど動いて見えない）。
+  sway: {
+    seconds: [4.6, 6.2],
+    pose: {},
+    sway: { period: 3.2, pose: { bodyZ: 6, bodyX: 3, headZ: -2.5 }, swing: -0.12 },
+    mirror: true,
+    weight: 0.8,
+  },
 }
 export const idleActNames = Object.keys(idleActs) as IdleAct[]
 /**
@@ -115,8 +180,22 @@ export type IdleFrame = {
   hold: boolean
   /** カーソル追従を退かせる。 */
   gaze: boolean
+  /** 腕の角度（動かさない間は null）。 */
+  arms: { right: IdleArm; left: IdleArm } | null
+  /** 再生しておく身振りのクリップ（null になったら、まだ続いていれば止める）。 */
+  gesture: Exclude<Gesture, 'none'> | null
 }
-const NONE: IdleFrame = { act: null, pose: ZERO, eyes: false, emotion: null, hold: false, gaze: false }
+const NONE: IdleFrame = {
+  act: null,
+  pose: ZERO,
+  eyes: false,
+  emotion: null,
+  hold: false,
+  gaze: false,
+  arms: null,
+  gesture: null,
+}
+const ARM_KEYS = ['up', 'fo', 'ha'] as const
 type Running = { act: IdleAct; side: 1 | -1; start: number; end: number; out: number; scale: number }
 
 /** 時刻は秒（単調増加）。rng は [0, 1)。 */
@@ -140,9 +219,9 @@ export class IdleDirector {
     this.forced = act
     this.nextAt = 0
   }
-  /** 直前と同じものは選ばない。重みは時間帯で変える。 */
-  pick(daypart: Daypart): IdleAct {
-    const pool = idleActNames.filter((a) => a !== this.last),
+  /** 直前と同じものは選ばない。重みは時間帯で変える。控えめでは身振りのクリップを借りるしぐさを出さない。 */
+  pick(daypart: Daypart, subtle = false): IdleAct {
+    const pool = idleActNames.filter((a) => a !== this.last && !(subtle && idleActs[a].gesture)),
       weights = pool.map((a) => idleActs[a].weight * (idleActs[a].dayparts?.[daypart] ?? 1))
     let r = this.rng() * weights.reduce((s, w) => s + w, 0)
     for (let i = 0; i < pool.length; i++) {
@@ -180,7 +259,7 @@ export class IdleDirector {
     if (input.calm && !run) {
       if (this.nextAt === null) this.nextAt = now + gap(FIRST_GAP)
       if (now >= this.nextAt && (now >= this.nextAt + SETTLE_WAIT || input.settled())) {
-        const act = this.forced ?? this.pick(input.daypart),
+        const act = this.forced ?? this.pick(input.daypart, input.subtle),
           def = idleActs[act]
         this.forced = null
         this.last = act
@@ -200,6 +279,25 @@ export class IdleDirector {
       pose = { ...ZERO }
     for (const key of Object.keys(def.pose) as (keyof BodyPose)[])
       pose[key] = (def.pose[key] ?? 0) * level * (MIRRORED.includes(key) ? run.side : 1)
+    // 揺れは始まりを 0 にして、入り・戻りの強さをそのまま掛ける（始めと終わりで跳ばない）。
+    const swing = def.sway ? Math.sin((2 * Math.PI * (now - run.start)) / def.sway.period) * level * run.side : 0
+    if (def.sway)
+      for (const key of Object.keys(def.sway.pose) as (keyof BodyPose)[]) pose[key] += (def.sway.pose[key] ?? 0) * swing
+    // 腕。左右のあるしぐさは腕ごと入れ替える（角度は鏡映の書き方なので値はそのまま）。揺れは両腕を画面の同じ向きへ振る。
+    let arms: IdleFrame['arms'] = null
+    if (def.arms || def.sway) {
+      const from = run.side === 1 ? def.arms : { right: def.arms?.left, left: def.arms?.right },
+        arm = (a: IdleArm | undefined, s: number): IdleArm => ({
+          up: (a?.up ?? 0) * level + s,
+          fo: (a?.fo ?? 0) * level,
+          ha: (a?.ha ?? 0) * level,
+        })
+      arms = {
+        right: arm(from?.right, (def.sway?.swing ?? 0) * swing),
+        left: arm(from?.left, -(def.sway?.swing ?? 0) * swing),
+      }
+      if (![arms.right, arms.left].some((a) => ARM_KEYS.some((k) => Math.abs(a[k] ?? 0) > 1e-4))) arms = null
+    }
     // 目と表情は頭が動き出してから変え、頭が戻り始める時に戻す。
     const inner = now >= run.start + IN_SECONDS * 0.45 && now < run.end
     return {
@@ -209,6 +307,9 @@ export class IdleDirector {
       emotion: def.emotion && inner ? def.emotion : null,
       hold: true,
       gaze: !!def.gaze && now < run.end + run.out,
+      arms,
+      // 中断で短く戻している間は出さない（main がクリップを止める）。
+      gesture: def.gesture && now < run.end && run.out !== CANCEL_SECONDS ? def.gesture : null,
     }
   }
 }

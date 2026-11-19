@@ -13,7 +13,8 @@ export const gestures: readonly Gesture[] = ['none', 'nod', 'tilt', 'joy', 'gree
 export type Cue = { emotion: Emotion; gesture: Gesture }
 export interface ActingStage {
   setEmotion(e: Emotion): void
-  playGesture(g: Gesture): void
+  /** tag: 呼び出し元の印。同じ印の cancelGesture でだけ途中で止められる（BOXP-605 待機のしぐさ）。 */
+  playGesture(g: Gesture, tag?: string): void
   reset(): void
   setViseme?(v: { open: number; width: number } | null): void
   setPetEyes?(on: boolean): void
@@ -30,6 +31,15 @@ export interface ActingStage {
     eyeX?: number
     eyeY?: number
   }): void
+  /** BOXP-605: 待機のしぐさの腕（ラジアン。身振りのクリップが無い間だけ描画に出る）。 */
+  setIdleArms?(
+    v: {
+      right?: { up?: number; fo?: number; ha?: number }
+      left?: { up?: number; fo?: number; ha?: number }
+    } | null,
+  ): void
+  /** BOXP-605: tag つきで始めた身振りがまだ続いていれば、腕を待機へ戻す（表情は変えない）。他の呼び出し元の身振りには触れない。 */
+  cancelGesture?(tag: string): void
   setPetOffset?(v: { headX: number; headY: number; headZ: number }): void
   setChestMotion?(enabled: boolean): void
 }

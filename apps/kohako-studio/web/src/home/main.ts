@@ -2247,11 +2247,14 @@ function computeAreas() {
   areas.head = head && Number.isFinite(head[0]) ? toScreenRect(head, layout, 6) : null
   const bigNow =
     BIG.includes(String((acting?.snapshot as { gesture?: string } | undefined)?.gesture ?? 'none')) ||
-    BIG.includes(touchGesture)
+    BIG.includes(touchGesture) ||
+    BIG.includes(String(idleGesture))
   areas.hands = bigNow ? [] : handIdx.map((i) => toScreenRect(bboxOf(r.meshVertices(i)), layout, 10))
 }
 let touchGesture = 'none',
-  reacting = false
+  reacting = false,
+  // BOXP-605: 待機のしぐさが再生中の身振り（腕の絵を差し替えている間は、手のふれあい範囲を出さない）。
+  idleGesture: string | null = null
 function touchBlocked(): string | null {
   if (!prefs.touch) return 'ふれあいは設定で OFF です。'
   if (state === 'approval') return '確認待ちの間はふれあいを止めています。'
@@ -2508,6 +2511,8 @@ let petEyesLatched = false
 const idleDirector = new IdleDirector()
 let pointerMovedAt = -Infinity,
   idleEmotion = false
+/** 待機のしぐさが始めた身振りの印。会話・ふれあいの身振りはこの印を持たないので、止める時に巻き込まない。 */
+const IDLE_GESTURE_TAG = 'idle'
 /** Owner が手を動かした直後は、しぐさを始めずカーソルや操作へ注意を向けたままにする（ms）。 */
 const IDLE_POINTER_QUIET_MS = 4000
 function idleCalm(now: number, petBusy: boolean): boolean {
@@ -2560,6 +2565,13 @@ function rigTick(now: number) {
       subtle: prefs.intensity === 'subtle',
     })
   stage?.setIdlePose?.(idle.pose)
+  stage?.setIdleArms?.(idle.arms)
+  // 身振りを借りるしぐさ: 始まりに 1 回だけ再生し、中断されたら（まだ続いていれば）腕を待機へ戻す。
+  if (idle.gesture !== idleGesture) {
+    if (idle.gesture) stage?.playGesture(idle.gesture, IDLE_GESTURE_TAG)
+    else stage?.cancelGesture?.(IDLE_GESTURE_TAG)
+    idleGesture = idle.gesture
+  }
   if (idle.emotion && !idleEmotion) {
     stage?.setEmotion(idle.emotion)
     idleEmotion = true
@@ -2569,7 +2581,14 @@ function rigTick(now: number) {
     if (rigStateOf[state] === 'idle' && !reacting && touchGesture === 'none') stage?.setEmotion('neutral')
   }
   stage?.setPetEyes?.(petEyes || idle.eyes)
-  report.idle = { act: idle.act, hold: idle.hold, eyes: idle.eyes, emotion: idle.emotion }
+  report.idle = {
+    act: idle.act,
+    hold: idle.hold,
+    eyes: idle.eyes,
+    emotion: idle.emotion,
+    gesture: idle.gesture,
+    arms: idle.arms,
+  }
   if (stage?.setPetOffset) {
     const hold = petHold || idle.hold
     stage.setPetOffset(petOffset)

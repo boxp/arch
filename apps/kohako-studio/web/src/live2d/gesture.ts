@@ -724,6 +724,18 @@ export function shyArmPoint(px: Vec, m: { angle: number; drop: number }): Vec {
   const H = SHY_ARM
   return add(add(H.at, [0, m.drop]), scaleV(rot(sub(px, H.shoulderPx), m.angle), H.scale))
 }
+/** 待機のしぐさの腕の角度（ラジアン。右腕の向きで書き、左腕は鏡映される）。肩・肘・手首を小さく回すだけで、絵の差し替えはしない。 */
+export type IdleArm = { up?: number; fo?: number; ha?: number }
+const IDLE_ARM_MIN = 1e-4
+/** 動きが無ければ null（腕の変形そのものを通さない）。 */
+export function idleArmPoses(v: { right?: IdleArm; left?: IdleArm } | null): { right: ArmPose; left: ArmPose } | null {
+  const arm = (a?: IdleArm): ArmPose => ({ ...REST, up: a?.up ?? 0, fo: a?.fo ?? 0, ha: a?.ha ?? 0 })
+  const right = arm(v?.right),
+    left = arm(v?.left)
+  return [right, left].some((a) => Math.abs(a.up) + Math.abs(a.fo) + Math.abs(a.ha) > IDLE_ARM_MIN)
+    ? { right, left }
+    : null
+}
 const posed = (a: ArmPose) =>
   Math.abs(a.fo) > SEPARATE_AT || (!!a.elbowTo && (a.elbowW ?? 0) > SEPARATE_AT) || (a.artW ?? 0) > 0.001
 const partURL = (file: string) => new URL(`kohako/live2d/acting/${file}`, location.href).href
@@ -912,6 +924,9 @@ export function createActingStage(
     tailElapsed = 0
   const tailOffsets: Record<string, number> = {}
   let idlePose: Partial<BodyPose> = {}
+  // BOXP-605: 待機のしぐさの腕（身振りのクリップが無い間だけ出す）。null は待機の腕そのまま（描画は従来と画素一致）。
+  let idleArms: { right: ArmPose; left: ArmPose } | null = null,
+    clipTag: string | null = null
   const SMOOTH_KEYS = ['ParamAngleX', 'ParamAngleY', 'ParamAngleZ', 'ParamBodyAngleX', 'ParamBodyAngleZ'] as const
   const shownAngle: Record<string, number> = {}
   const shownEye: Record<string, number> = {}
@@ -1858,7 +1873,10 @@ export function createActingStage(
     const raw = clip ? sample(clip, clipTime) : null
     const hold = clip && SWITCHED[clipName as Exclude<Gesture, 'none'>]
     const sampled = raw && hold ? { ...raw, right: hold } : raw
-    const goal = frozen ?? sampled ?? (fadeFrom ? { right: REST, left: REST, body: NO_BODY } : null)
+    const goal =
+      frozen ??
+      sampled ??
+      (idleArms && !sw ? { ...idleArms, body: NO_BODY } : fadeFrom ? { right: REST, left: REST, body: NO_BODY } : null)
     let shown = goal
     if (goal && fadeFrom) {
       fadeTime += dt
@@ -2058,6 +2076,19 @@ export function createActingStage(
     setIdlePose(v) {
       idlePose = v
     },
+    setIdleArms(v) {
+      idleArms = idleArmPoses(v)
+    },
+    cancelGesture(tag) {
+      if (clipTag !== tag) return
+      clipTag = null
+      if (switched || sw) switchOut()
+      else if (clip) {
+        startFade()
+        clip = null
+        clipName = 'none'
+      }
+    },
     setChestMotion(on) {
       chestEnabled = on
     },
@@ -2066,8 +2097,9 @@ export function createActingStage(
       target = faces[next]
       player.expression(target.expression && player.expressions.includes(target.expression) ? target.expression : null)
     },
-    playGesture(next) {
+    playGesture(next, tag) {
       if (next === 'none') return
+      clipTag = tag ?? null
       if (SWITCHED[next] || switched || sw) {
         const start = () => {
           if (SWITCHED[next]) switchIn(next)
@@ -2135,6 +2167,7 @@ export function createActingStage(
       supported: true,
       petEyes: petClosed,
       idlePose: { ...idlePose },
+      idleArms: idleArms && { right: { ...idleArms.right }, left: { ...idleArms.left } },
       idleTail: tailGentle ? tailElapsed : null,
       yaw: shownYaw,
       chest: {
