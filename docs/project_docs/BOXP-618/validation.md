@@ -44,7 +44,21 @@
 
 ### 3.2 kubeadm `--patches` で CP ごとに付ける経路（`verify-kind-kubeadm-patches.sh`、kind v1.36.4 CP 2 台 → 1.37.0）
 
-（結果は 3.2 の追記を参照）
+kind node からも host からも registry.k8s.io の転送先へ届かなかったので、1.37.0 の control plane image は
+使い捨ての kind v1.37.0 cluster の containerd から export して 1.36 node へ import した。kind node は kernel config を持たないため
+`kubeadm upgrade` の preflight は無視した（kind 固有。arch の role では使わない）。
+
+| 段階 | CP1 の KCM | CP2 の KCM |
+| --- | --- | --- |
+| 更新前 | v1.36.4、gate なし、ready、再起動 0 | v1.36.4、gate なし、ready、再起動 0 |
+| CP1 だけ `kubeadm upgrade apply v1.37.0 --patches`（混在） | v1.37.0、`--feature-gates=NodeControllerLeaseCircuitBreaker=false`、ready、再起動 0 | **v1.36.4 のまま gate なし**、ready、再起動 0 |
+| CP2 も `kubeadm upgrade node --patches` | v1.37.0、gate=false | v1.37.0、gate=false、ready、再起動 0 |
+| CP1 の metric | `kubernetes_feature_enabled{name="NodeControllerLeaseCircuitBreaker"} 0` | |
+
+- kubeadm-config の `controllerManager.extraArgs` に gate は入らない（kind 既定の `enable-hostpath-provisioner` だけ）。
+- `--patches` を付けずに CP2 で `kubeadm upgrade node` をやり直すと、CP2 の manifest から gate が消えた（持続性の穴。4 章の「持続性」）。
+- 初回の実行では CP1 で同じ混在状態を確認したあと、CP2 が kind 固有の preflight で止まった。preflight を無視して最初から再実行した結果が上の表。
+- ログ（テキスト）: `/home/boxp/verification-artifacts/BOXP-618/kind-20261119/`（off.out / on.out / patches.out / patches-run1.out）
 
 ## 4. 残条件の整理（BOXP-191 向け）
 
