@@ -27,6 +27,7 @@ import {
   placeBentFore,
   browPin,
   type ArmPose,
+  idleArmPoses,
   clips,
   createActingStage,
   crossfadeArms,
@@ -1033,4 +1034,18 @@ it('BOXP-525: capYaw は小さな向きを変えず、大きな左右の向き�
     expect(next - last).toBeLessThanOrEqual(0.5 + 1e-9)
     last = next
   }
+})
+
+describe('待機のしぐさの腕（BOXP-605）', () => {
+  it('動きが無ければ null（腕の変形を通さず、描画は待機のまま）', () => {
+    expect(idleArmPoses(null)).toBeNull()
+    expect(idleArmPoses({})).toBeNull()
+    expect(idleArmPoses({ right: { up: 0, fo: 0, ha: 0 }, left: {} })).toBeNull()
+    expect(idleArmPoses({ right: { up: 0.00002 } })).toBeNull()
+  })
+  it('角度だけを入れ、長さ・絵の差し替え・肘の位置指定は持たない', () => {
+    const p = idleArmPoses({ right: { up: -0.17, ha: -0.25 }, left: { fo: 0.28 } })
+    expect(p?.right).toEqual({ up: -0.17, upS: 1, fo: 0, foS: 1, ha: -0.25, haS: 1 })
+    expect(p?.left).toEqual({ up: 0, upS: 1, fo: 0.28, foS: 1, ha: 0, haS: 1 })
+  })
 })

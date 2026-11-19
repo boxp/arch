@@ -3,6 +3,8 @@
 // 確かめること: 待機に入ってすぐは何も出ない、各しぐさが実際に描画へ出て終わると待機クリップへ戻る、頭の角度が跳ばない、
 // 時間経過で不規則に違うしぐさが出る（同じものが続かない・出ずっぱりにならない）、設定 OFF・動きを減らす（アプリ設定・OS）では出ない、
 // ふれあい・会話・非表示で退く、顔の向きの上限（±15°）を超えない。
+// 腕と体のしぐさ（手を振る・口元に手を添える・伸び・手を寄せる・体を揺らす）は、描画に使われる手の位置（ふれあい範囲と同じ頂点）と
+// 身振りの状態で確かめ、終わると腕が待機へ戻ること、途中の操作で会話・ふれあいの身振りを巻き込まずに退くことを見る。
 // 実行: Playwright 1.56.1 で `node idle605.mjs <build の dist> <出力先>`（BFF は完全にモック、token 不要）。失敗があれば終了コード 1。
 // `PW_WS=ws://host:port/` で起動済みの Playwright サーバーへ接続できる。`ONLY=acts,natural,guards,interrupt,mobile` で絞れる。
 import { chromium, devices } from 'playwright'
@@ -38,7 +40,7 @@ const sample = (page, n) => page.evaluate(async ([n, ids]) => { const h = window
   const out = []
   for (let i = 0; i < n; i++) {
     await page.clock.runFor(STEP)
-    out.push(await page.evaluate(ids => { const h = window.__kohakoHome, p = h.player, v = p.parameterValues(), s = h.stage.report(); return { v: ids.map(id => v[p.parameters.indexOf(id)]), idle: h.report.idle, held: !!h.report.petHeld, emotion: s.emotion, yaw: s.yaw, closed: s.petEyes } }, IDS))
+    out.push(await page.evaluate(ids => { const h = window.__kohakoHome, p = h.player, v = p.parameterValues(), s = h.stage.report(); return { v: ids.map(id => v[p.parameters.indexOf(id)]), idle: h.report.idle, held: !!h.report.petHeld, emotion: s.emotion, yaw: s.yaw, closed: s.petEyes, gesture: s.gesture, armBlend: s.armBlend, sw: !!s.armSwitch, greet: !!s.greetSet, shy: !!s.shySet, hands: h.hitAreas().hands.map(a => a && [a.x + a.w / 2, a.y + a.h / 2]) } }, IDS))
   }
   return out
 })
@@ -54,6 +56,10 @@ const faceShot = (page, name) => page.evaluate(async () => {
   const b = new Uint8Array(await (await o.convertToBlob({ type: 'image/png' })).arrayBuffer()); let s = ''; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000)); return btoa(s)
 }).then(b => fs.writeFileSync(path.join(OUT, name + '.png'), Buffer.from(b, 'base64')))
 
+// 両手の中心の間隔（px）と、両手の平均の横位置。腕の絵を差し替えている間（手の範囲なし）は null。
+const span = x => x.hands?.length === 2 && x.hands[0] && x.hands[1] ? Math.abs(x.hands[0][0] - x.hands[1][0]) : null
+const handsX = x => x.hands?.length === 2 && x.hands[0] && x.hands[1] ? (x.hands[0][0] + x.hands[1][0]) / 2 : null
+const nums = xs => xs.filter(v => v !== null)
 const PC = { viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 }
 // 各しぐさで動くはずの値（符号つきの最小変化。左右のあるものは絶対値）。待機クリップ停止中の揺れ（頭 X ±6.7°）と区別するため、
 // 揺れの小さい値（頭 Z・視線・目）か、しぐさ中の平均と直前の差で見る。
@@ -64,6 +70,12 @@ const EXPECT = {
   smile: r => r.some(x => x.emotion === 'smile'),
   down: r => Math.min(...col(r, 'ParamEyeBallY')) < -0.35 && Math.min(...col(r, 'ParamAngleY')) < -5,
   aside: r => Math.max(...col(r, 'ParamEyeBallX').map(Math.abs)) > 0.45,
+  // 腕・体: 始まる前（最初の 3 行）からの手の動きで見る。1280x800 でキャラの高さは約 600px。
+  wave: r => r.some(x => x.gesture === 'greet' && x.greet && x.armBlend === 1) && r.some(x => x.emotion === 'smile'),
+  mouth: r => r.some(x => x.gesture === 'shyHand' && x.shy && x.armBlend === 1) && r.some(x => x.emotion === 'smileClosed'),
+  stretch: r => Math.max(...nums(r.map(span))) - span(r[0]) > 12 && Math.max(...col(r, 'ParamAngleY')) > 3,
+  tidy: r => span(r[0]) - Math.min(...nums(r.map(span))) > 12,
+  sway: r => { const xs = nums(r.map(handsX)); return Math.max(...xs) - handsX(r[0]) > 5 && handsX(r[0]) - Math.min(...xs) > 5 && Math.max(...col(r, 'ParamBodyAngleZ')) - Math.min(...col(r, 'ParamBodyAngleZ')) > 7 },
   still: r => { const on = r.filter(x => x.idle?.act === 'still'); return on.length * STEP / 1000 > 5.5 && on.every(x => x.held) && Math.max(...col(on.slice(40), 'ParamAngleX').map(Math.abs)) < 8 },
 }
 
@@ -77,13 +89,14 @@ if (want('acts')) {
   await shot(page, 'pc-0-idle'); await faceShot(page, 'face-0-idle')
   result.acts = { baseline: { maxStepDeg: r1(baseRate), yaw: [r1(Math.min(...col(base, 'ParamAngleX'))), r1(Math.max(...col(base, 'ParamAngleX')))] } }
   for (const act of acts) {
+    const [rest] = await sample(page, 1)
     await page.evaluate(a => window.__kohakoHome.playIdle(a), act)
     // 始まるまで（頭が正面近くに来るのを待つ。最長 5 秒）。
     let pre = []
     for (let i = 0; i < 140; i++) { const [x] = await sample(page, 1); if (x.idle?.act) { pre.push(x); break } pre.push(x) }
     const started = pre.at(-1).idle?.act === act
     check(started, `${act}: 始まらない（${pre.at(-1).idle?.act}）`)
-    const rows = [...pre.slice(-3)]
+    const rows = [rest, ...pre.slice(-3)]
     let peakShot = false
     for (let i = 0; i < 400; i++) {
       const [x] = await sample(page, 1); rows.push(x)
@@ -100,9 +113,15 @@ if (want('acts')) {
     check(tail.at(-1).emotion === 'neutral', `${act}: 表情が戻らない（${tail.at(-1).emotion}）`)
     check(Math.min(...col(tail.slice(20), 'ParamEyeLOpen')) >= 0 && Math.max(...col(tail, 'ParamEyeLOpen')) > 0.95, `${act}: 目が開かない`)
     // 50ms で 2.5° を超える跳びが無い（待機クリップ自体の最大は baseline）。
+    // 腕は待機へ戻る（身振りなし・変形なし・手の間隔が始まる前と同じ）。手は 50ms で 12px を超えて跳ばない（絵を差し替える身振りの間は対象外）。
+    const end = tail.at(-1), handStep = Math.max(0, ...rows.slice(1).map((x, i) => [x, rows[i]].every(y => span(y) !== null && y.gesture === 'none' && !y.sw && !y.greet && !y.shy) ? Math.max(Math.abs(span(x) - span(rows[i])), Math.abs(handsX(x) - handsX(rows[i]))) : 0))
+    check(end.gesture === 'none' && end.armBlend === 0 && !end.sw && !end.idle?.arms, `${act}: 腕が待機へ戻らない（${end.gesture} ${end.armBlend}）`)
+    check(span(end) !== null && Math.abs(span(end) - span(rows[0])) < 6, `${act}: 手の位置が戻らない（${r1(span(end) ?? -1)} / ${r1(span(rows[0]) ?? -1)}）`)
+    check(handStep < 12, `${act}: 手が跳ぶ（50ms で ${r1(handStep)}px）`)
     check(Math.max(step.x, step.y, step.z) < 2.5, `${act}: 頭の角度が跳ぶ（50ms で ${r1(Math.max(step.x, step.y, step.z))}°）`)
     check(yawMax <= 15.01, `${act}: 顔の向きが上限を超えた（${r1(yawMax)}°）`)
-    result.acts[act] = { started, seconds: r1(seconds), maxStepDeg: { x: r1(step.x), y: r1(step.y), z: r1(step.z) }, yawMax: r1(yawMax),
+    result.acts[act] = { started, seconds: r1(seconds), maxStepDeg: { x: r1(step.x), y: r1(step.y), z: r1(step.z) }, yawMax: r1(yawMax), handStepPx: r1(handStep),
+      hands: { spanBefore: r1(span(rows[0]) ?? -1), spanRange: [r1(Math.min(...nums(rows.map(span)))), r1(Math.max(...nums(rows.map(span))))], xRange: [r1(Math.min(...nums(rows.map(handsX))) - handsX(rows[0])), r1(Math.max(...nums(rows.map(handsX))) - handsX(rows[0]))] }, gestures: [...new Set(rows.map(x => x.gesture))],
       range: Object.fromEntries(IDS.map(id => [id.replace('Param', ''), [r1(Math.min(...col(rows, id))), r1(Math.max(...col(rows, id)))]])) }
     // 次のしぐさまで少し待機クリップを流す。
     if (act !== 'still') await sample(page, 40)
@@ -141,6 +160,10 @@ if (want('natural')) {
   check(median <= 26, `natural: 目に見える変化の間隔の中央が長い（${median} 秒）`)
   check(sorted.at(-1) <= 50, `natural: 目に見える変化が ${sorted.at(-1)} 秒あいた`)
   check(seen.every((s, i) => i === 0 || s.act !== seen[i - 1].act), 'natural: 同じしぐさが続いた')
+  // Owner 要望（顔だけでなくジェスチャーも）: 腕・体を使うしぐさが 6 分に 3 回以上・2 種以上まじる。
+  const BODY = ['wave', 'mouth', 'stretch', 'tidy', 'sway'], bodySeen = seen.filter(s => BODY.includes(s.act))
+  result.natural.bodyActs = { count: bodySeen.length, kinds: [...new Set(bodySeen.map(s => s.act))] }
+  check(bodySeen.length >= 3 && result.natural.bodyActs.kinds.length >= 2, `natural: 腕・体のしぐさが少ない（${bodySeen.map(s => s.act).join(',')}）`)
   check(new Set(seen.map(s => s.act)).size >= 4, `natural: 種類が少ない（${[...new Set(seen.map(s => s.act))].join(',')}）`)
   check(gaps.every(g => g >= 6.5) && quietGaps.every(g => g >= 1.5), `natural: 間が短い（${Math.min(...gaps, ...quietGaps)} 秒）`)
   check(onFrames / total < 0.4, `natural: 動いている割合が多い（${r1((onFrames / total) * 100)}%）`)
@@ -215,6 +238,37 @@ if (want('interrupt')) {
     result.interrupt.mouse = { goneMs: goneAt * STEP, follow: r1(follow.current.x) }
     await context.close()
   }
+  // 手を振っている途中でマウスを動かすと、腕も 1 秒以内に待機へ戻る。伸びの途中でも同じ。
+  for (const act of ['wave', 'stretch']) {
+    const { context, page, errors } = await open(PC)
+    await page.evaluate(a => window.__kohakoHome.playIdle(a), act)
+    for (let i = 0; i < 140; i++) { const [x] = await sample(page, 1); if (x.idle?.act) break }
+    const mid = await sample(page, 30)
+    await page.mouse.move(1100, 200); await page.mouse.move(1150, 220)
+    const after = await sample(page, 40)
+    const armsGone = after.findIndex(x => x.gesture === 'none' && x.armBlend === 0 && !x.sw)
+    check(act === 'wave' ? mid.at(-1).greet : !!mid.at(-1).idle?.arms, `interrupt ${act}: 腕が出ていない`)
+    check(armsGone >= 0 && armsGone * STEP <= 1000, `interrupt ${act}: 腕が 1 秒以内に戻らない（${armsGone * STEP}ms）`)
+    check(errors.length === 0, `interrupt ${act}: ページのエラー ${errors.join(' / ')}`)
+    result.interrupt[`arms-${act}`] = { goneMs: armsGone * STEP }
+    await context.close()
+  }
+  // 手を振っている途中でなでると、ふれあいの身振り・表情が出て、待機の側がそれを止めない。
+  {
+    const { context, page, errors } = await open(PC)
+    await page.evaluate(() => window.__kohakoHome.playIdle('wave'))
+    for (let i = 0; i < 140; i++) { const [x] = await sample(page, 1); if (x.idle?.act) break }
+    await sample(page, 30)
+    await page.evaluate(() => document.querySelector('#touch-pat').click())
+    const after = await sample(page, 80)
+    const touch = await page.evaluate(() => window.__kohakoHome.report.touches.at(-1))
+    check(after.findIndex(x => !x.idle?.act) * STEP <= 1000, 'interrupt wave-touch: しぐさが退かない')
+    check(after[10].emotion !== 'neutral', 'interrupt wave-touch: ふれあいの表情が消えた')
+    check(touch.gesture === 'none' || after.slice(10, 30).some(x => x.gesture === touch.gesture), `interrupt wave-touch: ふれあいの身振り（${touch.gesture}）が止められた`)
+    check(errors.length === 0, `interrupt wave-touch: ページのエラー ${errors.join(' / ')}`)
+    result.interrupt['wave-touch'] = { touchGesture: touch.gesture, gestures: [...new Set(after.map(x => x.gesture))], emotion: after[10].emotion }
+    await context.close()
+  }
   // 非表示になったら捨て、戻ってもまとめて出さない。
   {
     const { context, page } = await open(PC)
@@ -234,7 +288,7 @@ if (want('mobile')) {
   // スマホ（縦）でも出て、終わると戻る。
   const { context, page, errors } = await open({ ...devices['Pixel 7'] })
   result.mobile = {}
-  for (const act of ['moon', 'rest']) {
+  for (const act of ['moon', 'rest', 'wave', 'stretch']) {
     await page.evaluate(a => window.__kohakoHome.playIdle(a), act)
     const rows = []; for (let i = 0; i < 140; i++) { const [x] = await sample(page, 1); rows.push(x); if (x.idle?.act) break }
     for (let i = 0; i < 400; i++) { const [x] = await sample(page, 1); rows.push(x); if (i === 36) { await shot(page, `pixel7-${act}`) } if (!x.idle?.act) break }
