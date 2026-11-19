@@ -42,7 +42,8 @@ button:focus-visible,a:focus-visible,textarea:focus-visible,input:focus-visible{
 .clock-face{position:absolute;z-index:1;right:6%;top:12%;text-align:right;transition:opacity .3s}
 .date{margin:0;font-size:clamp(1rem,2.4vw,1.5rem);color:var(--muted)}.clock{margin:0;font-size:clamp(3.5rem,12vw,9rem);font-weight:300;letter-spacing:.04em;font-variant-numeric:tabular-nums;color:var(--purple);line-height:1.05}
 .greeting{margin:12px 0 0;display:inline-block;background:var(--card);padding:10px 16px;border-radius:16px;box-shadow:0 2px 10px rgba(60,40,90,.12);font-size:1.05rem}
-.bubble{position:absolute;z-index:3;left:40%;top:8%;width:min(52%,620px);max-height:70%;overflow:auto;overscroll-behavior:contain;background:var(--card);color:var(--ink);border-radius:22px;padding:16px 20px;box-shadow:0 4px 18px rgba(60,40,90,.16);font-size:1.08rem;line-height:1.75;white-space:pre-wrap;word-break:break-word;transition:left .3s ease,top .3s ease,width .3s ease,opacity .3s}
+.bubble{position:absolute;z-index:3;left:40%;top:8%;width:min(52%,620px);max-height:70%;overflow:auto;overscroll-behavior:contain;background:var(--card);color:var(--ink);border-radius:22px;padding:16px 20px;box-shadow:0 4px 18px rgba(60,40,90,.16);font-size:1.08rem;line-height:1.75;white-space:pre-wrap;word-break:break-word;transition:left .3s ease,top .3s ease,opacity .3s}
+/* BOXP-626: 吹き出しの幅は遷移させない（0.3 秒の間、本文が毎フレーム折り返し直されて文字が揺れていた）。位置だけ滑らせる。 */
 .bubble::before{content:"";position:absolute;left:-12px;top:28px;border:8px solid transparent;border-right:12px solid var(--card)}
 .bubble.touch{border:2px solid var(--sakura)}.tag{display:inline-block;font-size:.72rem;background:var(--sakura);color:#5a2a40;border-radius:8px;padding:0 6px;margin-bottom:4px}
 .cards{position:absolute;z-index:4;right:2%;top:3%;max-height:94%;width:46%;overflow:auto;overscroll-behavior:contain;display:flex;flex-direction:column;gap:10px;background:rgba(255,255,255,.6);border-radius:20px;padding:12px}

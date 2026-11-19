@@ -181,9 +181,33 @@ describe('BOXP-626 コハコの配置替え', () => {
     vi.useRealTimers()
   })
 
+  it('画面の大きさ自体が変わった時は写しを使わず即時に切り替え、枠の替わりだけ知らせる', () => {
+    const f = fakes(rect(43, 60, 864, 780))
+    let frames = 0,
+      draws = 0
+    const m = createCharacterMorph({
+      character: f.character as unknown as HTMLElement,
+      canvas: f.canvas as unknown as HTMLCanvasElement,
+      draw: () => draws++,
+      enabled: () => true,
+      frameChanged: () => frames++,
+    })
+    m.around(
+      () => {
+        f.character.dataset.frame = 'upper'
+        f.move(rect(-200, 0, 1740, 1443))
+      },
+      { instant: true },
+    )
+    expect([draws, frames, f.created.length, m.count, m.active]).toEqual([0, 1, 0, 0, 0])
+  })
+
   it('リグ表示中は箱を CSS で伸び縮みさせず、写しと新しい絵の溶け合いは動きを減らす設定で止まる', () => {
     const css = readFileSync('src/home/style.css', 'utf8')
     expect(css).toContain('.character:has(> #rig:not([hidden])){transition:none}')
+    // 吹き出しは位置だけ滑らせ、幅は遷移させない（本文の折り返しが毎フレーム変わって揺れないように）。
+    const bubble = /\.bubble\{position:absolute;[^}]*transition:([^;}]*)/.exec(css)?.[1]
+    expect(bubble).toBe('left .3s ease,top .3s ease,opacity .3s')
     expect(css).toMatch(/\.morph-ghost\{[^}]*pointer-events:none[^}]*animation:morph-out/)
     expect(css).toMatch(/\.character\.morph-in > #rig\{animation:morph-in/)
     // 既存の一括停止（body.reduce / OS の reduced-motion）が写しにも新しい絵にも効く。

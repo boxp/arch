@@ -694,7 +694,8 @@ function shapeOf(): 'pc' | 'portrait' | 'landscape' {
   return h > w ? 'portrait' : w >= 900 && h >= 560 ? 'pc' : 'landscape'
 }
 let visitActive = false
-let lastLayout = ''
+let lastLayout = '',
+  lastViewport = ''
 const morph = createCharacterMorph({
   character,
   canvas: rigCanvas,
@@ -767,9 +768,13 @@ function refreshScene(force = false) {
     viewer: !viewer.hidden,
     vh: Math.round(vh),
   })
+  // 画面の大きさ自体が変わった時（リサイズ・回転・キーボード）は写しを使わず即時に切り替える。
+  const viewport = `${window.innerWidth}x${window.innerHeight}|${Math.round(vh)}`,
+    resized = !!lastViewport && viewport !== lastViewport
+  lastViewport = viewport
   if (layout !== lastLayout) {
     lastLayout = layout
-    morph.around(apply)
+    morph.around(apply, { instant: resized })
   } else apply()
   if (scene === 'work' || busy) elapsedLabel.textContent = `${Math.floor((Date.now() - started) / 1000)}秒`
   elapsedLabel.hidden = !busy

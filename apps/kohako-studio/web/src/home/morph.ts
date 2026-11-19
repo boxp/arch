@@ -37,8 +37,12 @@ export type MorphDeps = {
 }
 
 export type CharacterMorph = {
-  /** [change] で配置を変える。変化が大きければ直前の絵を写しで溶かし、新しい絵を浮かび上がらせる。 */
-  around(change: () => void): void
+  /**
+   * [change] で配置を変える。変化が大きければ直前の絵を写しで溶かし、新しい絵を浮かび上がらせる。
+   * [instant] は画面の大きさ自体が変わった時（ウィンドウのリサイズ・回転・キーボード）。写しの位置は前の画面の座標で意味を持たないため、
+   * 写しを使わず即時に切り替える。
+   */
+  around(change: () => void, opts?: { instant?: boolean }): void
   /** 進行中の写しの数（検証用）。 */
   readonly active: number
   /** 写しで移した回数（検証用）。 */
@@ -83,13 +87,14 @@ export function createCharacterMorph(deps: MorphDeps): CharacterMorph {
     get count() {
       return count
     },
-    around(change) {
-      if (!deps.enabled()) {
+    around(change, opts) {
+      const frameBefore = deps.character.dataset.frame
+      if (!deps.enabled() || opts?.instant) {
         finish()
         change()
+        if (deps.character.dataset.frame !== frameBefore) deps.frameChanged?.()
         return
       }
-      const frameBefore = deps.character.dataset.frame
       // 移っている途中にまた替わった時（キーボードの出入りで高さが何度も変わる等）は、浮かび上がりを最初からやり直すと
       // 点滅になるため、写しはそのまま溶かし続け、配置だけを替える。
       if (ghost) {
