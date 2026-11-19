@@ -9,7 +9,7 @@
 
 1. 非公開リポジトリ `boxp/hitohako-gbc`（ソース・原画・台本）の CI が、main で確認の通った配布物（ページ + エミュレーター + ROM + 権利表記 + `version.json`）を、配布物だけを置く非公開リポジトリ `boxp/hitohako-gbc-play` へ送る。
 2. `.github/workflows/deploy-hitohako-gbc-play.yml` が 30 分ごと（または `workflow_dispatch`）に、読取り専用の deploy key（Secrets `HITOHAKO_GBC_PLAY_DEPLOY_KEY`）で `boxp/hitohako-gbc-play` を取り出す。この鍵で読めるのは配布物のリポジトリだけ。
-3. `scripts/fetch-bundle.sh` が、決めた一覧にないファイルがあれば止め、`version.json` と ROM の sha256 が合うことを確かめる。
+3. `scripts/fetch-bundle.sh` が、決めた一覧にないファイルがあれば止め、一覧のファイルが 1 つでも欠けているか空なら止め（欠けた配布物で動いているページを上書きしない）、`version.json` と ROM の sha256 が合うことを確かめる。
 4. `scripts/deploy.sh` が、配備の前に全部の入口が Access の内側にあること（未ログインでは 302 でログインへ転送）を確かめ、配信中の物と違う時だけ `wrangler pages deploy` し、配備のあとにも同じ確認と、Cloudflare API での版の読み戻しをする。 初回だけは入口がまだ無い（Access の転送ではなく 404 などが返る）ので、中身の無い仮のページを先に置いて入口を作り、Access の内側にあることを確かめてから本物を配備する。
 
 すぐ配備したい時:

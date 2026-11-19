@@ -10,7 +10,8 @@ out=${1:?usage: fetch-bundle.sh OUT_DIR}
 repo=${PLAY_SITE_REPO:-git@github.com:boxp/hitohako-gbc-play.git}
 output=${GITHUB_OUTPUT:-/dev/stdout}
 
-# 配布物に入ってよいファイル。これ以外があれば配備しない（ソースや原画が紛れ込んだ時に止める）。
+# 配布物のファイルの一覧。これ以外があれば配備しない（ソースや原画が紛れ込んだ時に止める）。
+# 1 つでも欠けていても配備しない（欠けた配布物で、動いているページを壊さない）。
 allowed='
 NOTICE.txt
 _headers
@@ -57,12 +58,30 @@ if [ -n "$(find "$out" -type l)" ]; then
   echo "the bundle has a symlink; refusing to deploy" >&2
   exit 1
 fi
-for f in index.html version.json rom/hitohako_gbc.gbc NOTICE.txt _headers; do
-  [ -f "$out/$f" ] || {
-    echo "the bundle lacks $f" >&2
+# 一覧の物は全部そろっていて、空でないこと。ページは 1 つでも欠けると起動しないので、
+# 欠けた配布物で配信中の正常なページを上書きしない。
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  [ -f "$out/$f" ] && [ -s "$out/$f" ] || {
+    echo "the bundle lacks $f (or it is empty)" >&2
+    exit 1
+  }
+done <<<"$allowed"
+# ページが読む物が、ページから実際に参照されていること（名前だけ合って中身が別物、を減らす）。
+for ref in play.css save.js play.js; do
+  grep -qF "$ref" "$out/index.html" || {
+    echo "the bundle's index.html does not refer to $ref" >&2
     exit 1
   }
 done
+[ "$(head -c 4 "$out/vendor/binjgb/binjgb.wasm" | od -An -tx1 | tr -d ' \n')" = "0061736d" ] || {
+  echo "the bundle's emulator is not a wasm module" >&2
+  exit 1
+}
+jq -e 'type == "object"' "$out/version.json" >/dev/null || {
+  echo "the bundle's version.json is not a JSON object" >&2
+  exit 1
+}
 grep -q 'X-Robots-Tag: noindex' "$out/_headers" || {
   echo "the bundle's _headers lacks noindex" >&2
   exit 1
