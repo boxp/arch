@@ -88,14 +88,34 @@
 
 (defn- compact [s] (str/replace (str s) #"\s+" ""))
 
-(defn- k8s-labels [sel]
-  (some->> (:matchLabels sel) (sort-by key) (map (fn [[k v]] (str (subs (str k) 1) "=" v))) seq (str/join ",")))
+(defn- k8s-labels
+  "LabelSelector を matchLabels と matchExpressions の両方で表す。空の selector は nil (= 全部)。"
+  [sel]
+  (some->> (concat
+            (for [[k v] (sort-by key (:matchLabels sel))] (str (subs (str k) 1) "=" v))
+            (sort (for [{:keys [key operator values]} (:matchExpressions sel)]
+                    (case (str operator)
+                      "Exists" key
+                      "DoesNotExist" (str "!" key)
+                      (str key " " (str/lower-case (str operator)) " (" (str/join "," (sort (map str values))) ")")))))
+           seq (str/join ",")))
 
 (defn- k8s-peer [p]
-  (str/join ";" (remove nil? [(when-let [s (k8s-labels (:namespaceSelector p))] (str "ns:" s))
-                              (when (contains? p :namespaceSelector) (when-not (k8s-labels (:namespaceSelector p)) "ns:*"))
-                              (when-let [s (k8s-labels (:podSelector p))] (str "pod:" s))
-                              (when-let [c (get-in p [:ipBlock :cidr])] (str "net:" c))])))
+  (str/join ";" (remove nil? [(when (contains? p :namespaceSelector) (str "ns:" (or (k8s-labels (:namespaceSelector p)) "*")))
+                              (when (contains? p :podSelector) (str "pod:" (or (k8s-labels (:podSelector p)) "*")))
+                              (when-let [c (get-in p [:ipBlock :cidr])] (str "net:" c))
+                              (when-let [x (seq (get-in p [:ipBlock :except]))] (str "except:" (str/join "," x)))])))
+
+(defn- netpol-target
+  "policy を適用する Pod。対象を変えると全ての通信が変わるので、事実ごとに含める。"
+  [doc]
+  (let [spec (:spec doc)]
+    (if (str/starts-with? (str (:apiVersion doc)) "projectcalico.org")
+      (let [t (str/join ";" (remove nil? [(when (:namespaceSelector spec) (str "ns:" (compact (:namespaceSelector spec))))
+                                           (when (:selector spec) (str "sel:" (compact (:selector spec))))
+                                           (when (:serviceAccountSelector spec) (str "sa:" (compact (:serviceAccountSelector spec))))]))]
+        (if (str/blank? t) "*" t))
+      (or (k8s-labels (:podSelector spec)) "*"))))
 
 (defn- calico-peer [e]
   (str/join ";" (remove nil? [(when (:namespaceSelector e) (str "ns:" (compact (:namespaceSelector e))))
@@ -110,8 +130,9 @@
 (defn netpol-facts
   "NetworkPolicy の通信相手と port。既存の policy に許可先を足しただけの接続の追加も差分になる。"
   [id doc]
-  (let [fact (fn [dir peer ps action]
-               (str "lolice:netpol:" id ":" dir ":"
+  (let [target (netpol-target doc)
+        fact (fn [dir peer ps action]
+               (str "lolice:netpol:" id "[" target "]:" dir ":"
                     (when (and action (not= "Allow" action)) (str (str/lower-case action) "!"))
                     (if (str/blank? peer) "*" peer) ":" ps))
         spec (:spec doc)]

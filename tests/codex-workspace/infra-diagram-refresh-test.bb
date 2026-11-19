@@ -500,15 +500,33 @@
     (run {} "git" "-C" lol "add" ".")
     (collect! base)
     (let [fs* (set (:facts (read-json base)))]
-      (is (fs* "lolice:netpol:studio/bff:egress:ns:kubernetes.io/metadata.name=='hermes';sel:app=='hermes':8642"))
-      (is (fs* "lolice:netpol:board/allow:ingress:ns:kubernetes.io/metadata.name=studio:8090"))
+      (is (fs* "lolice:netpol:studio/bff[sel:app=='studio']:egress:ns:kubernetes.io/metadata.name=='hermes';sel:app=='hermes':8642"))
+      (is (fs* "lolice:netpol:board/allow[*]:ingress:ns:kubernetes.io/metadata.name=studio:8090"))
       (is (fs* "lolice:svc-ref:Deployment/studio/bff->hermes-api.hermes:8642")))
     (testing "同じ入力は無差分" (is (= "no-change" (:status (compared)))))
     (testing "既存の policy に許可先を足すと差分になる"
       (spit np (str (calico "    - action: Allow\n      protocol: TCP\n      destination:\n        selector: app == 'board'\n        ports: [8090, 9464]\n") "---\n" k8s))
       (let [c (compared)]
         (is (= "changed" (:status c)))
-        (is (= ["lolice:netpol:studio/bff:egress:sel:app=='board':8090,9464"] (:added c)))))
+        (is (= ["lolice:netpol:studio/bff[sel:app=='studio']:egress:sel:app=='board':8090,9464"] (:added c)))))
+    (testing "policy の対象 Pod を変えると差分になる"
+      (spit np (str (str/replace (calico "") "selector: app == 'studio'" "selector: app == 'other'") "---\n" k8s))
+      (let [c (compared)]
+        (is (= "changed" (:status c)))
+        (is (= ["lolice:netpol:studio/bff[sel:app=='other']:egress:ns:kubernetes.io/metadata.name=='hermes';sel:app=='hermes':8642"] (:added c)))
+        (is (= ["lolice:netpol:studio/bff[sel:app=='studio']:egress:ns:kubernetes.io/metadata.name=='hermes';sel:app=='hermes':8642"] (:removed c)))))
+    (testing "matchExpressions の selector の追加や変更も差分になる"
+      (let [expr (fn [op] (str/replace k8s "            matchLabels:\n              kubernetes.io/metadata.name: studio\n"
+                                       (str "            matchExpressions:\n              - key: team\n                operator: " op "\n                values: [b, a]\n")))]
+        (spit np (str (calico "") "---\n" (expr "In")))
+        (collect! base)
+        (is ((set (:facts (read-json base))) "lolice:netpol:board/allow[*]:ingress:ns:team in (a,b):8090"))
+        (spit np (str (calico "") "---\n" (expr "NotIn")))
+        (let [c (compared)]
+          (is (= "changed" (:status c)))
+          (is (= ["lolice:netpol:board/allow[*]:ingress:ns:team notin (a,b):8090"] (:added c))))
+        (spit np (str (calico "") "---\n" k8s))
+        (collect! base)))
     (testing "env に接続先 URL を足すと差分になる。値の変更でない image tag は差分にしない"
       (spit np (str (calico "") "---\n" k8s))
       (spit dep (str/replace (deploy "            - name: HERMES_URL\n              value: http://hermes-api.hermes.svc.cluster.local:8642\n            - name: STT_URL\n              value: http://stt.voice.svc:8080\n") "v1" "v2"))

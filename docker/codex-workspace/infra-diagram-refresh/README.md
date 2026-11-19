@@ -15,7 +15,7 @@ lineage 図、全体図、portfolio のサムネイルを実構成に追従さ�
 
 `iac_facts.bb` は公開 IaC から、資源の有無 (Terraform resource、manifest の kind/name、hostname、image、Service の port と selector、Ingress の backend、Argo CD の source) に加え、接続の事実を集めます (BOXP-617)。
 
-- `lolice:netpol:<ns>/<name>:<ingress|egress>:<相手>:<port>`: NetworkPolicy (Kubernetes と Calico) の通信相手。既存の policy に許可先を足しただけの接続の追加も差分になります。
+- `lolice:netpol:<ns>/<name>[<対象 Pod>]:<ingress|egress>:<相手>:<port>`: NetworkPolicy (Kubernetes と Calico) の通信相手。既存の policy に許可先を足しただけの接続の追加も、policy の対象 Pod の変更も差分になります。selector は matchLabels と matchExpressions の両方を表します。
 - `lolice:svc-ref:<kind>/<ns>/<name>-><svc>.<ns>[:port]`、`arch:svc-ref:<dir>-><svc>.<ns>[:port]`: env や ConfigMap、Tunnel の転送先に書かれたクラスタ内 Service の DNS 名。値の全文は事実にしません。
 
 以前は接続の追加が資源の増減を伴わないと差分にならず、家の状態表示 (BOXP-504) の codex-workspace への接続などが図へ届きませんでした。

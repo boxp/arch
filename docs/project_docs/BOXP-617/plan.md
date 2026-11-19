@@ -16,3 +16,9 @@
 - lolice の BOXP-504 の前後で比べると、旧ロジックは no-change、新ロジックは changed (+2 netpol) になる。
 - `publish.bb build` は、lineage 80/80、全体図 83/83 の検査を通る。
 - 配備後に両図の公開 URL の hash が build と一致することを確かめ、定期 workflow の結果を確認する。
+
+## レビュー指摘への対応
+
+- NetworkPolicy の事実に policy の対象 Pod (`[<対象>]`) を含め、対象の変更も差分にする。
+- Kubernetes の LabelSelector は matchLabels に加えて matchExpressions も表し、式だけの selector を「全部」と同じ事実にしない。
+- 基準の監査済み netpol 事実 24 件は同じ通信を新しい形式へ置き換えただけで、未監査の事実は加えない (現行 lolice で added 165 / removed 0 のまま)。
