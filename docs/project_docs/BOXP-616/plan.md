@@ -70,6 +70,19 @@ bb tests/codex-workspace/task-board-mutation.bb --group todos-gate --jobs 2   # 
 
 カバレッジ計測（e2e 179 ケースを計装付きで 1 回）: 2 並列で約 20 分、全ケース成功、129 ケースが対象関数に到達。
 
+#### 変更前の値は下限（全ケースでの再計測）
+
+`--max-cases 10` の変更前計測は、e2e を全部使えば殺せる変異も生存に数える。2 関数を全ケースで測り直した:
+
+| 関数 | 到達 e2e ケース | 10 ケース上限 | 全ケース | 全ケースの所要 |
+|---|---|---|---|---|
+| `merge-state` | 53 | 3/12 | 5/12 | 25 分 52 秒 |
+| `result-marker` | 124 | 2/6 | 3/6 | 27 分 51 秒 |
+
+全ケースでも `result-marker` の `^` 削除・`$` 削除・`(?i)` 削除は生存し、`merge-state` の 7 件も生存した。
+主要な見逃しは e2e を増やしても埋まらず、直接テストが必要だったことは変わらない。全 103 生存変異を全ケースで
+測り直すのはローカルで数時間かかるため行っていない。
+
 #### 変更前に生存していた意味ある見逃し（新設テストで検出するようにしたもの）
 
 本番コードに実バグは無かった。どれも「その規則を壊しても既存テストが気付かない」状態だった。
@@ -81,8 +94,10 @@ bb tests/codex-workspace/task-board-mutation.bb --group todos-gate --jobs 2   # 
 - **codex review の判定**（`classify-codex-review` 24、`codex-review-findings` 11）: 不正出力の理由の優先順位
   （空 → marker 無し → marker 重複 → severity 無し → 不明 severity → 形式不備 → 契約外の文）、P0/P1 だけが
   blocking で P2/P3/nit は pass-low、空行は契約外の文に数えないこと、文中に引用された FINDING 行は所見に数えないこと。
-- **merge state**（9）: draft・DIRTY・UNKNOWN/BEHIND の各分岐を消しても、`HAS_HOOKS`/`BLOCKED`/`UNSTABLE` を
-  pass 集合から落としても、状態欠落時の文言を変えても検出されなかった。
+- **merge state**（10 ケース上限で 9、全 53 ケースでも 7）: UNKNOWN/BEHIND を pending にする分岐と集合要素、
+  `HAS_HOOKS`/`BLOCKED`/`UNSTABLE` を pass 集合から落とす変異、状態欠落時の文言は全ケースでも検出されなかった。
+  draft・DIRTY の分岐削除は 10 ケース上限では生存したが、全ケースなら e2e（`test_review_with_draft_pr_is_retried`、
+  `test_review_with_conflict_is_blocked`）が検出する。
 - **次 lane の決定**（`intended-outcome` 7、`final-status` 3）: agent プロセスが非 0 終了なら done を返しても
   blocked、groom/docs-groom の扱い、gate 不合格かつ再試行不可なら blocked、owner-acceptance は blocked。
 - **自動継続上限**（`consume-continuation!` 4）: 上限ちょうどは許し超過で止める境界、超過時に
