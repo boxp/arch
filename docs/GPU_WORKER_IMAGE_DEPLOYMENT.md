@@ -85,8 +85,8 @@ The image is based on the current Ubuntu 24.04 Noble amd64 cloud image, then cus
 
 - `boxp` user with GitHub SSH keys
 - SSH enabled with password login disabled
-- Kubernetes `kubelet`, `kubeadm`, `kubectl` pinned to `1.36.1-1.1`
-- CRI-O pinned to package version `1.36.1-1.1`
+- Kubernetes `kubelet`, `kubeadm`, `kubectl` pinned to `1.37.2-1.1`
+- CRI-O pinned to package version `1.37.4-1.1`
 - Intel graphics PPA `ppa:kobuk-team/intel-graphics`
 - Intel OpenCL / Level Zero runtime packages: `intel-opencl-icd`, `libze-intel-gpu1`, `libze1`, `intel-gsc`, `intel-ocloc`, `libze-dev`
 - Host smoke-test tools: `clinfo`, `intel-gpu-tools`, `vainfo`

@@ -69,3 +69,11 @@ arch#15353 で用意した既定オフの投入経路を、本番 inventory で�
 （CP 3 台 × 1.37.0/1.37.2/1.37.10 で gate=false、1.36.5/1.36.9/1.38.0/未指定で `{}`、
 worker は `{}`、解決値が role の検証を通り `--feature-gates=NodeControllerLeaseCircuitBreaker=false`
 1 要素の JSON patch になる）。
+
+## 全台完了後の baseline 追従（2026-11-19）
+
+7 台すべてが Kubernetes 1.37.2（package 1.37.2-1.1）/ CRI-O 1.37.4（1.37.4-1.1）になったので、
+通常 Apply の baseline（`inventories/production/hosts.yml`、`playbooks/control-plane.yml`、
+`playbooks/node-shanghai-{1,2,3}.yml`、`playbooks/worker-image.yml`）を live に合わせる。
+KCM の `NodeControllerLeaseCircuitBreaker=false` は upgrade 時の `kubeadm --patches` でだけ入るので、
+この追従では manifest を変えない。gate は 1.37.3 以降（#141622 の backport 収録版）か 1.38 へ上げる前に外す。
