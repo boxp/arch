@@ -58,6 +58,24 @@
   (is (= "unsupported" (:state (a/codex-metadata (put "nolog.json" {:auth_mode "chatgpt"})))))
   (is (not (leak? (a/claude-metadata (put "broken2.json" (str "[" sentinel)))))))
 
+(deftest missing-deadline-fields-are-not-ok
+  (testing "再ログイン期限が欠落・解析不能なら ok にせず incomplete（観測不能の通知対象）"
+    (doseq [v [nil "not-a-time" -5]]
+      (let [m (a/claude-metadata (put "claude-nodl.json" {:claudeAiOauth (cond-> {:refreshToken sentinel :expiresAt (* 1000 now)}
+                                                                              (some? v) (assoc :refreshTokenExpiresAt v))}))]
+        (is (= "incomplete" (:state m)) (pr-str v))
+        (is (nil? (:relogin-deadline m)))
+        (is (not (leak? m))))))
+  (testing "Codex の last_refresh が欠落・解析不能なら incomplete"
+    (doseq [v [nil "yesterday" 12]]
+      (let [m (a/codex-metadata (put "codex-norefresh.json" (cond-> {:auth_mode "chatgpt" :tokens {:refresh_token sentinel}}
+                                                                 (some? v) (assoc :last_refresh v))))]
+        (is (= "incomplete" (:state m)) (pr-str v))
+        (is (not (leak? m))))))
+  (let [text (a/prom-text [(a/codex-metadata (put "codex-norefresh.json" {:auth_mode "chatgpt" :tokens {:refresh_token sentinel}}))] now)]
+    (is (str/includes? text "ai_agent_auth_metadata_state{provider=\"codex\",state=\"incomplete\"} 1"))
+    (is (str/includes? text "ai_agent_auth_metadata_state{provider=\"codex\",state=\"ok\"} 0"))))
+
 (deftest outcomes-and-exposition
   (let [root (str (fs/path tmp "root"))]
     (a/record-run-outcome! root "antigravity" :auth (- now 100))

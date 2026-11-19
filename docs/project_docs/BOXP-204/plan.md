@@ -16,7 +16,7 @@
 
 ## 実装
 
-- arch `docker/codex-workspace/task-board/agent_auth_expiry.bb`: 認証ファイルを process 内で読み、許可した数値と enum だけを `ai-ops/agent-auth.prom` に書く。例外メッセージは捨て、固定 enum（missing/unreadable/unsupported/policy_disallowed/not_read）にする。`status` で人向けの確認（再ログイン後の回復確認）。
+- arch `docker/codex-workspace/task-board/agent_auth_expiry.bb`: 認証ファイルを process 内で読み、許可した数値と enum だけを `ai-ops/agent-auth.prom` に書く。例外メッセージは捨て、固定 enum（missing/unreadable/unsupported/policy_disallowed/not_read）にする。ログインはあるが期限判断に使う項目（Claude の refreshTokenExpiresAt、Codex の last_refresh）が欠落・解析不能なら `incomplete` とし、`ok` にしない（期限前通知が働かないため観測不能として通知する）。`status` で人向けの確認（再ログイン後の回復確認）。
 - runner: 既存の 60 秒ごとの metrics 書き出しで呼ぶ（`CODEX_TASK_BOARD_AGENT_AUTH_METRICS=false` で停止）。antigravity run の結果がログイン失敗か成功かを時刻だけ記録。
 - lolice: ai-ops-metrics が新ファイルを配信、PrometheusRule `agent-auth-expiry-rules.yaml`、Alertmanager の `component="agent-auth"` route（Hermes = 家と Telegram、1 日 1 回まで再送、解除も送る）。
 

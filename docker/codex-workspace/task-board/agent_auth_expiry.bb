@@ -76,11 +76,15 @@
             access (epoch-seconds (get oauth "expiresAt"))
             relogin (epoch-seconds (get oauth "refreshTokenExpiresAt"))
             refresh? (present-string? (get oauth "refreshToken"))]
-        (if (and (map? oauth) refresh?)
-          (cond-> {:provider "claude" :state "ok" :method "subscription-login"}
-            access (assoc :access-expiry access)
-            relogin (assoc :relogin-deadline relogin :relogin-kind "refresh_token"))
-          {:provider "claude" :state "unsupported"})))))
+        (cond
+          (not (and (map? oauth) refresh?)) {:provider "claude" :state "unsupported"}
+          ;; The login exists but its re-login deadline is missing or unparsable: the
+          ;; pre-expiry alerts cannot work, so this must not read as ok.
+          (nil? relogin) (cond-> {:provider "claude" :state "incomplete" :method "subscription-login"}
+                           access (assoc :access-expiry access))
+          :else (cond-> {:provider "claude" :state "ok" :method "subscription-login"
+                         :relogin-deadline relogin :relogin-kind "refresh_token"}
+                  access (assoc :access-expiry access)))))))
 
 (defn codex-metadata
   "Codex CLI ChatGPT login ($CODEX_HOME/auth.json). The refresh token lifetime is
@@ -97,9 +101,11 @@
           ;; An API key in the file is not the subscription login this environment allows.
           (or (present-string? (get doc "OPENAI_API_KEY")) (= "apikey" mode))
           {:provider "codex" :state "policy_disallowed"}
+          (and (= "chatgpt" mode) refresh? last-refresh)
+          {:provider "codex" :state "ok" :method "subscription-login" :last-refresh last-refresh}
+          ;; Without last_refresh the refresh-stall alert cannot work: not ok.
           (and (= "chatgpt" mode) refresh?)
-          (cond-> {:provider "codex" :state "ok" :method "subscription-login"}
-            last-refresh (assoc :last-refresh last-refresh))
+          {:provider "codex" :state "incomplete" :method "subscription-login"}
           :else {:provider "codex" :state "unsupported"})))))
 
 ;; ---- run outcomes (Antigravity: the credentials are never read) ----
@@ -146,7 +152,7 @@
 
 ;; ---- exposition ----
 
-(def states ["ok" "missing" "unreadable" "unsupported" "policy_disallowed" "not_read"])
+(def states ["ok" "incomplete" "missing" "unreadable" "unsupported" "policy_disallowed" "not_read"])
 
 (defn- line [metric labels value]
   (str metric "{" (str/join "," (map (fn [[k v]] (str (name k) "=\"" v "\"")) labels)) "} " value "\n"))
