@@ -111,7 +111,39 @@ jobs:
           time bb tests/codex-workspace/task-board-conflict-test.bb
           time bb tests/codex-workspace/task-board-todos-test.bb
           time bb tests/codex-workspace/task-board-same-file-review-test.bb
+          time bb tests/codex-workspace/task-board-runner-boundary-test.bb
+          time bb tests/codex-workspace/task-board-mutation.bb --self-test
           time bb docker/codex-workspace/task-board/test/langfuse_exporter_test.bb
+
+  # BOXP-616: report-only mutation run over the runner's safety boundaries with the
+  # direct tests. Surviving mutants are listed in the job summary; they do not fail
+  # the job and the job is not part of the required result below.
+  mutation:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BABASHKA_VERSION: 1.12.218
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Babashka
+        run: |
+          set -eux
+          tmp="$(mktemp -d)"
+          curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 -fsSL \
+            "https://github.com/babashka/babashka/releases/download/v${BABASHKA_VERSION}/babashka-${BABASHKA_VERSION}-linux-amd64-static.tar.gz" \
+            -o "${tmp}/bb.tar.gz"
+          tar -xzf "${tmp}/bb.tar.gz" -C "${tmp}"
+          sudo install -m 0755 "$(find "${tmp}" -type f -name bb | head -n 1)" /usr/local/bin/bb
+      - name: Mutation report (runner safety boundaries, direct tests)
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/task-board-mutation"
+          time bb tests/codex-workspace/task-board-mutation.bb --group runner-gates --direct-only --jobs 4 --out "${out}"
+          cat "${out}/summary.md" >>"${GITHUB_STEP_SUMMARY}"
 
   test:
     timeout-minutes: 2
