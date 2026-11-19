@@ -181,6 +181,15 @@
               (catch Exception e
                 (log! (str "provider quota module unavailable: " (.getMessage e))) false))))
 
+;; BOXP-204: non-secret auth expiry metadata of the agent CLIs (ai-ops/agent-auth.prom).
+(def agent-auth-module-path
+  (str (fs/path (fs/parent (fs/canonicalize *file*)) "agent_auth_expiry.bb")))
+
+(def agent-auth-module-loaded?
+  (delay (try (load-file agent-auth-module-path) true
+              (catch Exception e
+                (log! (str "agent auth module unavailable: " (.getMessage e))) false))))
+
 (declare root)
 
 (defn assignee-runtime [assignee]
@@ -299,7 +308,12 @@
         (when (and (not= "false" (env "CODEX_TASK_BOARD_SUBSCRIPTION_METRICS" "true"))
                    @subscription-module-loaded?)
           ((resolve 'ai-subscription-usage/write-metrics!) (root)))
-        (catch Exception e (log! (str "subscription metrics write failed: " (.getMessage e)))))))))
+        (catch Exception e (log! (str "subscription metrics write failed: " (.getMessage e)))))
+      (try
+        (when (and (not= "false" (env "CODEX_TASK_BOARD_AGENT_AUTH_METRICS" "true"))
+                   @agent-auth-module-loaded?)
+          ((resolve 'agent-auth-expiry/write-metrics!) (root)))
+        (catch Exception _ (log! "agent auth metrics write failed")))))))
 
 ;; BOXP-201 I3: opt-in lock shared with the helper and vault_writer.bb so that
 ;; Board/ticket read-modify-write cycles serialize across processes. Unset in
@@ -3953,6 +3967,14 @@
           _ (when (antigravity-assignee? agent)
               (try (spit (str last-message-path) (antigravity-last-message antigravity-result))
                    (catch Exception e (log! (str "antigravity message write failed: " (.getMessage e))))))
+          ;; BOXP-204: only the outcome kind and time; a login failure fires the re-login alert
+          ;; and the next successful run resolves it.
+          _ (when (and (antigravity-assignee? agent) antigravity-result)
+              (try (let [kind (antigravity-failure-kind antigravity-result)]
+                     (when (and (#{nil :auth} kind) @agent-auth-module-loaded?)
+                       ((resolve 'agent-auth-expiry/record-run-outcome!) (root) "antigravity"
+                        (if (= :auth kind) :auth :success) (quot (System/currentTimeMillis) 1000))))
+                   (catch Exception _ (log! "agent auth outcome record failed"))))
           model-info (cond-> model-info
                        (antigravity-assignee? agent)
                        (assoc :antigravity (cond-> {:status (some-> antigravity-result :status str)

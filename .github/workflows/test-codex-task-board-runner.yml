@@ -18,6 +18,7 @@ on:
       - .github/workflows/schedule-infra-diagram-refresh.yml
       - docker/hermes-agent/skills/obsidian-task-board/**
       - tests/codex-workspace/**
+      - tests/ai-observability/test_agent_auth_expiry.bb
       - tests/harness-eval/**
       - docs/project_docs/BOXP-360/tools/**
       - .github/workflows/test-codex-task-board-runner.yml
@@ -39,6 +40,7 @@ on:
       - .github/workflows/schedule-infra-diagram-refresh.yml
       - docker/hermes-agent/skills/obsidian-task-board/**
       - tests/codex-workspace/**
+      - tests/ai-observability/test_agent_auth_expiry.bb
       - tests/harness-eval/**
       - docs/project_docs/BOXP-360/tools/**
       - .github/workflows/test-codex-task-board-runner.yml
@@ -97,6 +99,7 @@ jobs:
           time bb tests/ai-observability/test_slo_snapshot.bb
           time bb tests/ai-observability/test_outcome.bb
           time bb tests/ai-observability/test_provider_quota.bb
+          time bb tests/ai-observability/test_agent_auth_expiry.bb
           time bb tests/harness-eval/test_harness_eval.bb
           time docs/project_docs/BOXP-360/tools/test.sh
           time tests/codex-workspace/localllm-source-check-test.sh
