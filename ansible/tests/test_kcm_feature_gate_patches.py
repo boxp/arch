@@ -82,5 +82,51 @@ class KcmFeatureGatePatchesTest(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
 
 
+INVENTORY = ANSIBLE_DIR / 'inventories/production/hosts.yml'
+
+
+class ProductionInventoryKcmFeatureGatesTest(unittest.TestCase):
+    """BOXP-191: production enables NodeControllerLeaseCircuitBreaker=false only
+    when the upgrade target is 1.37, so 1.36 patch upgrades stay untouched."""
+
+    def resolve(self, host, version):
+        env = {**os.environ, 'ANSIBLE_LOCALHOST_WARNING': 'false',
+               'ANSIBLE_DEPRECATION_WARNINGS': 'false', 'ANSIBLE_NOCOLOR': 'true'}
+        msg = ('{{ (kubernetes_upgrade_controller_manager_feature_gates | default({})) | to_json }}')
+        proc = subprocess.run(
+            ['ansible', host, '-i', str(INVENTORY), '-m', 'ansible.builtin.debug',
+             '-a', json.dumps({'msg': msg}),
+             '-e', json.dumps({'kubernetes_upgrade_version': version})],
+            cwd=ANSIBLE_DIR, env=env, capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        # ad-hoc default output: "<host> | SUCCESS => {...}"
+        head, sep, body = proc.stdout.partition('=>')
+        self.assertTrue(sep and head.strip().startswith(host + ' | SUCCESS'), proc.stdout)
+        return json.loads(json.loads(body)['msg'])
+
+    def test_control_planes_disable_gate_only_for_137(self):
+        for host in ('shanghai-1', 'shanghai-2', 'shanghai-3'):
+            for version in ('1.37.0', '1.37.2', '1.37.10'):
+                self.assertEqual(self.resolve(host, version),
+                                 {'NodeControllerLeaseCircuitBreaker': False}, (host, version))
+            for version in ('1.36.5', '1.36.9', '1.38.0', ''):
+                self.assertEqual(self.resolve(host, version), {}, (host, version))
+
+    def test_workers_never_get_gate(self):
+        for host in ('golyat-1', 'golyat-4'):
+            self.assertEqual(self.resolve(host, '1.37.2'), {})
+
+    def test_resolved_137_value_passes_role_validation_and_renders_patch(self):
+        gates = self.resolve('shanghai-1', '1.37.2')
+        proc, result = KcmFeatureGatePatchesTest.run_fixture(self, '1.37.2', gates)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(result['patch'][0]['value'],
+                         '--feature-gates=NodeControllerLeaseCircuitBreaker=false')
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='kcm-inv-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+
 if __name__ == '__main__':
     unittest.main()
