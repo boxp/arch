@@ -15,6 +15,7 @@ on:
       - docker/codex-workspace/recurring-events/**
       - docker/codex-workspace/infra-diagram-refresh/**
       - docker/codex-workspace/site-refresh/**
+      - docker/codex-workspace/auth-gateway/**
       - .github/workflows/schedule-infra-diagram-refresh.yml
       - docker/hermes-agent/skills/obsidian-task-board/**
       - tests/codex-workspace/**
@@ -37,6 +38,7 @@ on:
       - docker/codex-workspace/recurring-events/**
       - docker/codex-workspace/infra-diagram-refresh/**
       - docker/codex-workspace/site-refresh/**
+      - docker/codex-workspace/auth-gateway/**
       - .github/workflows/schedule-infra-diagram-refresh.yml
       - docker/hermes-agent/skills/obsidian-task-board/**
       - tests/codex-workspace/**
@@ -111,6 +113,7 @@ jobs:
           time bb tests/codex-workspace/autonomy-policy-test.bb
           time bb tests/codex-workspace/autonomy-control-test.bb
           time bb tests/codex-workspace/vault-writer-test.bb
+          time bb tests/codex-workspace/auth-gateway-test.bb
           time bb tests/codex-workspace/task-board-conflict-test.bb
           time bb tests/codex-workspace/task-board-todos-test.bb
           time bb tests/codex-workspace/task-board-same-file-review-test.bb

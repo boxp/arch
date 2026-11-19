@@ -20,6 +20,12 @@ ARG CURSOR_AGENT_VERSION=2026.06.12-19-59-36-f6aba9a
 ARG ANTIGRAVITY_CLI_VERSION=1.5.12
 ARG ANTIGRAVITY_CLI_BUILD=5281398513336320
 ARG ANTIGRAVITY_CLI_SHA512=26de25fccb3fbf0b093e090ce14a14ac1df1ec3e90ef4ea6106887d3a81b0cc9edb0dadea7b9101d07f9606eba159062a6fb7b78e91b73f7520684a24db73428
+# BOXP-634: xterm.js for the auth gateway page, served from the image (no CDN).
+# sha512 = the npm registry dist.integrity of each tarball (hex). Update together.
+ARG XTERM_VERSION=5.5.0
+ARG XTERM_SHA512=86a24761a41be4ea6d36e9e7c809e41f233c6828d9d4c1080d342ed6221b6d30ffc68a6cf75341e72ab564afdd0b62436d55ad176df352d97d244d8dab04fcec
+ARG XTERM_ADDON_FIT_VERSION=0.10.0
+ARG XTERM_ADDON_FIT_SHA512=5056240e6e0751a85fda59c4c87be2a39d5334688b2baea6a8fd89a004f2ee14597976863110ebd34262485ee6eb7bd1e562804c5eb4e721208092acc3426931
 ARG KUBECTL_VERSION=1.37.2
 ARG KUSTOMIZE_VERSION=5.8.3
 ARG NODE_MAJOR=26
@@ -199,6 +205,26 @@ COPY model-updates/ /opt/codex-workspace/model-updates/
 COPY infra-diagram-refresh/ /opt/codex-workspace/infra-diagram-refresh/
 COPY site-refresh/ /opt/codex-workspace/site-refresh/
 COPY skills/ /opt/codex-workspace/skills/
+# BOXP-634: Owner-only login page for the AI CLIs (codex-auth.b0xp.io).
+COPY auth-gateway/ /opt/codex-workspace/auth-gateway/
+RUN set -eux; \
+    tmp="$(mktemp -d)"; \
+    vendor=/opt/codex-workspace/auth-gateway/static/vendor; \
+    curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 -fsSL \
+      "https://registry.npmjs.org/@xterm/xterm/-/xterm-${XTERM_VERSION}.tgz" -o "$tmp/xterm.tgz"; \
+    curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 -fsSL \
+      "https://registry.npmjs.org/@xterm/addon-fit/-/addon-fit-${XTERM_ADDON_FIT_VERSION}.tgz" -o "$tmp/fit.tgz"; \
+    echo "${XTERM_SHA512}  $tmp/xterm.tgz" | sha512sum -c -; \
+    echo "${XTERM_ADDON_FIT_SHA512}  $tmp/fit.tgz" | sha512sum -c -; \
+    mkdir -p "$vendor"; \
+    tar -xzf "$tmp/xterm.tgz" -C "$tmp" package/lib/xterm.js package/css/xterm.css; \
+    install -m 0644 "$tmp/package/lib/xterm.js" "$vendor/xterm.js"; \
+    install -m 0644 "$tmp/package/css/xterm.css" "$vendor/xterm.css"; \
+    rm -rf "$tmp/package"; \
+    tar -xzf "$tmp/fit.tgz" -C "$tmp" package/lib/addon-fit.js; \
+    install -m 0644 "$tmp/package/lib/addon-fit.js" "$vendor/addon-fit.js"; \
+    chmod 0755 /opt/codex-workspace/auth-gateway/auth_gateway.bb; \
+    rm -rf "$tmp"
 RUN chmod 0755 /usr/local/bin/codex-workspace-entrypoint \
     && chmod 0755 /opt/codex-workspace/dotfiles-sync.sh \
     && find /opt/codex-workspace/cron -type f -name "*.sh" -exec chmod 0755 {} + \

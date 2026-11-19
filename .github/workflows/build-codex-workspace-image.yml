@@ -8,6 +8,7 @@ on:
     paths:
       - 'docker/codex-workspace/**'
       - 'tests/codex-workspace/even-terminal-smoke-test.sh'
+      - 'tests/codex-workspace/auth-gateway-smoke-test.sh'
       - '.github/workflows/build-codex-workspace-image.yml'
   workflow_dispatch: {}
 
@@ -47,6 +48,9 @@ jobs:
           platforms: linux/amd64
       - name: Smoke test even-terminal startup
         run: tests/codex-workspace/even-terminal-smoke-test.sh codex-workspace:smoke-test
+      # BOXP-634: auth gateway starts, serves vendored xterm.js and fails closed.
+      - name: Smoke test auth gateway
+        run: tests/codex-workspace/auth-gateway-smoke-test.sh codex-workspace:smoke-test
       # BOXP-630: the pinned Antigravity CLI is installed and runs (no login involved).
       - name: Smoke test agy binary
         run: docker run --rm --entrypoint /usr/local/bin/agy codex-workspace:smoke-test --version
