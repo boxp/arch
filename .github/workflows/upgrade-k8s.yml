@@ -59,9 +59,9 @@ env:
   CLUSTER_VIP: "192.168.10.99"
   CONTROL_PLANE_NODES: "shanghai-1 shanghai-2 shanghai-3"
   READYZ_WATCH_DIR: /tmp/readyz-watch
-  # BOXP-191: retry SSH connection failures (exit 255) seen through Cloudflare Access.
-  # Every task the role runs on a target is safe to re-run with the same inputs.
-  ANSIBLE_SSH_RETRIES: "3"
+  # BOXP-191: do not set ANSIBLE_SSH_RETRIES. Without a pty the remote command keeps
+  # running after the SSH session dies, so a retry would start a second apt/kubeadm
+  # on the node while the first one is still running.
 
 jobs:
   pre-check:
