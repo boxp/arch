@@ -6638,6 +6638,38 @@
             :else (do (.write line b) (recur line acc (inc n)))))))
     (catch Exception _ nil)))
 
+(defn salvage-github-boundaries
+  "Extra bundle boundaries for tips whose history the local default branch
+  does not cut. In a shallow shared clone the default branch's history stops
+  at the shallow boundary, while an old run branch still has its full local
+  history, so `tip --not default-sha` counts every ancestor down to the root.
+  For each such tip the first-parent ancestors are probed at exponentially
+  growing distances (0, 1, 3, 7, ...) and the first one GitHub confirms is on
+  its default branch becomes a boundary: a fresh clone has it and all its
+  ancestors, so bundling down to it at most doubles the commits carried.
+  `on-default` is called with a sha and returns :yes/:no/:unknown; the search
+  for a tip stops on :unknown. Returns the boundary shas (possibly empty)."
+  [git tips excludes limit on-default]
+  (reduce
+   (fn [found tip]
+     (let [not-args (concat ["--not"] excludes found)
+           counted (apply git "rev-list" "--count" tip not-args)
+           n (when (zero? (:exit counted)) (parse-long (str/trim (:out counted))))]
+       (if (or (nil? n) (<= n limit))
+         found
+         (let [listed (apply git "rev-list" "--first-parent" (str "--max-count=" (inc limit)) tip not-args)
+               chain (when (zero? (:exit listed)) (vec (remove str/blank? (str/split-lines (:out listed)))))
+               probes (distinct (take-while #(< % (count chain)) (map #(dec (bit-shift-left 1 %)) (range 0 31))))]
+           (loop [[i & more] probes]
+             (if (nil? i)
+               found
+               (case (on-default (nth chain i))
+                 :yes (conj found (nth chain i))
+                 :no (recur more)
+                 found)))))))
+   []
+   tips))
+
 (defn salvage-checkout!
   "Archives one checkout into `dir` and proves the archive restores it.
   Returns {:hold reason} or {:checkout {...} :bytes n}. Nothing outside the
@@ -6720,9 +6752,17 @@
                            default-ref (when default (str "refs/remotes/origin/" default))
                            default-local (when default-ref (git "rev-parse" "--verify" "--quiet" (str default-ref "^{commit}")))
                            default-sha (when (and default-local (zero? (:exit default-local))) (str/trim (:out default-local)))
-                           commits (when default-sha (apply git "rev-list" "--count" (concat tips ["--not" default-sha])))
+                           ;; A shallow shared clone cuts the default branch's
+                           ;; history, so old run branches get extra boundaries
+                           ;; GitHub confirms are on its default branch.
+                           boundaries (when default-sha
+                                        (salvage-github-boundaries git tips [default-sha] max-unpushed-commits-per-checkout
+                                                                   #(github-on-default-branch gh-cache repo default %)))
+                           excludes (when default-sha (into [default-sha] boundaries))
+                           on-boundary? (fn [sha] (some #(zero? (:exit (git "merge-base" "--is-ancestor" sha %))) excludes))
+                           commits (when default-sha (apply git "rev-list" "--count" (concat tips ["--not"] excludes)))
                            objects (when (and commits (zero? (:exit commits)))
-                                     (apply git "rev-list" "--objects" (concat tips ["--not" default-sha])))
+                                     (apply git "rev-list" "--objects" (concat tips ["--not"] excludes)))
                            commit-count (when (and objects (zero? (:exit objects))) (parse-long (str/trim (:out commits))))
                            bundle (str (file "commits.bundle"))]
                        (cond
@@ -6739,7 +6779,7 @@
                                (or
                                 (when-not (every? (fn [[r sha]] (zero? (:exit (vgit {} "update-ref" r sha)))) keep-refs)
                                   {:hold "salvage-bundle-failed"})
-                                (let [created (vgit {} "bundle" "create" "-q" bundle "--all" "--not" default-sha)
+                                (let [created (apply vgit {} "bundle" "create" "-q" bundle "--all" "--not" excludes)
                                       verified (when (zero? (:exit created)) (vgit {} "bundle" "verify" "-q" bundle))
                                       heads (when (and verified (zero? (:exit verified))) (vgit {} "bundle" "list-heads" bundle))
                                       listed (set (keep #(let [[sha nm] (str/split % #"\s+" 2)] (when nm [nm sha]))
@@ -6750,10 +6790,9 @@
                                   ;; keeps their names.
                                   (cond
                                     (not (and prereqs
-                                              (every? #(zero? (:exit (git "merge-base" "--is-ancestor" % default-sha)))
-                                                      (distinct (map second (remove listed keep-refs))))))
+                                              (every? on-boundary? (distinct (map second (remove listed keep-refs))))))
                                     {:hold "salvage-verify-failed bundle"}
-                                    (not-every? #(zero? (:exit (git "merge-base" "--is-ancestor" % default-sha))) prereqs)
+                                    (not-every? on-boundary? prereqs)
                                     {:hold "salvage-verify-failed bundle-prerequisite"})))))))
                      ;; 2. Index and worktree changes as binary patches; untracked
                      ;; files (not ignored ones, as before) as a tar archive.

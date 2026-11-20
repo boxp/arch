@@ -61,3 +61,16 @@ S1（BOXP-494: 継続 run の引継ぎと計測）は 7 日観察まで完了済
   よって一律 hold を外し、manifest に `:shallow` を記録する。
 - 試験: BOXP-709(shallow worktree の local commit → 退避・既定ブランチ clone から復元一致)、
   BOXP-710(depth 1 で取得した境界越え tip → `salvage-verify-failed bundle` で保護)。
+
+## S4c: 後から shallow になった共有 clone の古い run も退避対象にする (2026-11-20)
+
+- S4b 配備後・退避有効化後の実 prune(11:02Z): salvaged 40 run / 削除 43 run、空き 64.95→65.39GB(11:59Z 65.90GB)。
+  残る退避不可 75 run の最大理由は `too-many-unpushed-commits` 42 run / 1.33GB(全て共有 `boxp/arch`)。
+- 原因: 共有 clone は run 開始時は完全履歴で、後に `fetch --depth 1` で shallow 化した。origin/main の履歴は境界で切れる一方、
+  古い run branch は根まで完全履歴を持つため `tip --not origin/main` が全祖先(例 BOXP-122: 12919 commit)を数える。
+- 対応: 上限を超える tip ごとに first-parent 祖先を 0,1,3,7,... の位置で GitHub compare に問い、既定ブランチ上と確認できた最初の
+  commit を追加境界にする(bundle commit 数は実未push数の高々約2倍)。prerequisite と bundle 外 ref は「既定ブランチ commit か
+  追加境界のいずれかの祖先」であることをローカルで確認(shallow graph の祖先関係は実 graph でも真)。確認できなければ従来どおり hold。
+- 本番 BOXP-122 run で読み取り確認: 位置15の commit が main 上(compare=ahead)、境界以降は 34 commit で上限内。
+- 試験: BOXP-711(完全履歴で開始→後で depth 1 fetch で shallow 化、205 commit 先行に見える run)が旧版で保護・新版で退避→
+  既定ブランチ clone へ bundle 適用・復元一致。
