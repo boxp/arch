@@ -452,3 +452,121 @@ t.w.main(getter=lambda _: next(responses))
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def multi_html(cells, train="特急サンライズ出雲"):
+    """Ordinary Izumo search with several equipment columns: {room: alt}."""
+    labels = {r: (w.ROOMS[r][1], w.ROOMS[r][2]) for r in cells}
+    head = "".join(f'<th data-search-id="{r}"><img alt="{a}"><img alt="{b}"></th>' for r, (a, b) in labels.items())
+    body = "".join(f'<td data-search-id="{r}"><img alt="{alt}"></td>' for r, alt in cells.items())
+    h = html(train=train)
+    start = h.index('<table class="seat-facility">') + len('<table class="seat-facility">')
+    return h[:start] + head + body + h[h.index("</table><p", start):]
+
+
+def general_query():
+    from urllib.parse import parse_qs, urlsplit, urlunsplit
+    u = urlsplit(URL)
+    params = {k: v[0] for k, v in parse_qs(u.query, encoding="shift_jis").items()}
+    params["inputSpecificBriefTrainKana1"] = "ｻｲｽﾓ 000"
+    return {"url": urlunsplit((u.scheme, u.netloc, u.path, urlencode(params, encoding="shift_jis"), "")),
+            "train": "特急サンライズ出雲", "rooms": ["4110042", "4120042", "2110002", "2120002"]}
+
+
+def party_cfg():
+    c = cfg()
+    c["legs"]["往路"]["queries"] = [general_query(), QUERY, twin_query()]
+    return c
+
+
+FULL_GENERAL = {"4110042": "残席なし", "4120042": "残席なし", "2110002": "残席なし", "2120002": "残席なし"}
+
+
+def party_getter(general=None, solo="残席なし", twin="残席なし"):
+    def get(url):
+        if url == general_query()["url"]:
+            return multi_html(dict(FULL_GENERAL, **(general or {})))
+        if url == QUERY["url"]:
+            return html(solo)
+        return twin_html(twin)
+    return get
+
+
+class PartySizeTest(unittest.TestCase):
+    def setUp(self):
+        self.c = party_cfg()
+        w.validate(self.c)
+
+    def full_state(self):
+        state = {}
+        self.assertEqual(w.run(self.c, state, NOW, party_getter())[0], [])
+        return state
+
+    def test_one_room_is_notified_but_two_is_unknown(self):
+        state = self.full_state()
+        messages = w.run(self.c, state, NOW, party_getter(solo="空席あり"))[0]
+        self.assertEqual(len(messages), 1)
+        self.assertTrue(messages[0].startswith("【空席】2030-01-02 A→B ソロ（禁煙個室）\n"))
+        self.assertIn("1名分の空きを確認。2名分は不明です", messages[0])
+        self.assertNotIn("2名で乗れる候補あり", messages[0])
+        # Continuing availability stays silent; a second room upgrades to a two-person candidate.
+        self.assertEqual(w.run(self.c, state, NOW, party_getter(solo="空席あり"))[0], [])
+        messages = w.run(self.c, state, NOW, party_getter({"2110002": "空席残りわずか"}, solo="空席あり"))[0]
+        self.assertEqual(len(messages), 1)
+        self.assertTrue(messages[0].startswith("【空席】2030-01-02 A→B シングルデラックス（禁煙個室）\n"))
+        self.assertIn("2名で乗れる候補あり（異なる設備に空きがあり、1名用個室を2室分確認できます）", messages[0])
+        self.assertIn("今回空きを確認した設備: シングルデラックス（禁煙個室）、ソロ（禁煙個室）", messages[0])
+
+    def test_twin_is_two_person_candidate(self):
+        state = self.full_state()
+        messages = w.run(self.c, state, NOW, party_getter(twin="空席あり"))[0]
+        self.assertEqual(len(messages), 1)
+        self.assertIn("2名で乗れる候補あり（サンライズツインは1室を2名で利用できる設備です）", messages[0])
+        self.assertIn("1名でも2名分の料金券が必要です", messages[0])
+        self.assertEqual(messages[0].count("【空席】"), 1)
+
+    def test_single_twin_alone_is_conditional(self):
+        state = self.full_state()
+        messages = w.run(self.c, state, NOW, party_getter({"4110042": "空席あり"}))[0]
+        self.assertIn("2名は条件付き候補", messages[0])
+        self.assertIn("未確認", messages[0])
+        self.assertNotIn("2名で乗れる候補あり", messages[0])
+
+    def test_two_ids_in_one_query_count_as_two_rooms(self):
+        state = self.full_state()
+        messages = w.run(self.c, state, NOW, party_getter({"4110042": "空席残りわずか", "4120042": "空席あり"}))[0]
+        self.assertEqual(len(messages), 1)
+        self.assertIn("2名で乗れる候補あり", messages[0])
+
+    def test_unknown_is_not_claimed_as_available(self):
+        state = self.full_state()
+        # Twin search congested: one solo room is still notified, two persons stay unknown.
+        getter = party_getter(solo="空席あり")
+        messages = w.run(self.c, state, NOW,
+                         lambda url: "混雑 20100946" if url == twin_query()["url"] else getter(url))[0]
+        self.assertEqual(len(messages), 1)
+        self.assertIn("2名分は不明", messages[0])
+        self.assertIn("今回確認できなかった設備: サンライズツイン（禁煙個室）、サンライズツイン（喫煙個室）", messages[0])
+        self.assertEqual(state["rooms"]["往路:4110062"], "full")
+
+    def test_new_leg_first_availability_after_unknown_is_notified(self):
+        state = {"rooms": {}, "errors": {}, "notifications": []}
+        # First ticks of a newly added leg are unknown: nothing is recorded or sent.
+        self.assertEqual(w.run(self.c, state, NOW, lambda _: "混雑 20100946")[0], [])
+        self.assertEqual(state["rooms"], {})
+        messages = w.run(self.c, state, NOW, party_getter(twin="空席あり"))[0]
+        self.assertEqual(len(messages), 1)
+        self.assertIn("サンライズツイン", messages[0])
+        self.assertEqual(w.run(self.c, state, NOW, party_getter(twin="空席あり"))[0], [])
+        # The first observation of a new leg that is already available is notified as well.
+        state = {}
+        self.assertEqual(len(w.run(self.c, state, NOW, party_getter(solo="空席あり"))[0]), 1)
+
+    def test_other_legs_history_untouched(self):
+        state = self.full_state()
+        state["rooms"]["旧:4110040"] = "available"
+        state["notifications"] = [{"at": "old", "text": "old", "delivery": "unconfirmed"}]
+        w.run(self.c, state, NOW, party_getter(solo="空席あり"))
+        self.assertEqual(state["rooms"]["旧:4110040"], "available")
+        self.assertEqual(state["notifications"][0]["text"], "old")
+        self.assertEqual(len(state["notifications"]), 2)
