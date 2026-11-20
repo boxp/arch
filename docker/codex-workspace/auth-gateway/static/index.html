@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>AI CLI 本人ログイン</title>
+<link rel="stylesheet" href="/static/xterm.css">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+  <h1>AI CLI 本人ログイン</h1>
+  <p class="note">codex-workspace の公式 CLI に、ご本人がログインするためのページです。認可コードやURLはこの画面の中だけで扱い、保存・記録しません。</p>
+</header>
+
+<section id="choose">
+  <h2>1. ログインする CLI を選ぶ</h2>
+  <div class="providers">
+    <button data-provider="antigravity">Antigravity (agy)</button>
+    <button data-provider="claude">Claude Code</button>
+    <button data-provider="codex">Codex</button>
+  </div>
+  <details class="howto">
+    <summary>手順</summary>
+    <ul>
+      <li><b>Antigravity</b>: 「1. Google OAuth」で Enter → 下の「リンク」を開いて本人の Google アカウントでログイン → 表示された認可コードを「貼り付け欄」から送信して Enter。ログイン後 <code>/config</code> で「Use AI Credits」が off であることを確認し、「セッション終了」。</li>
+      <li><b>Claude Code</b>: 「リンク」を開いてサブスクリプションのアカウントでログイン → 表示されたコードを貼り付け欄から送信して Enter。完了すると自動で終了します。</li>
+      <li><b>Codex</b>: 「リンク」を開き、画面に出たワンタイムコードを入力（ChatGPT 側でデバイスコード認証の許可が必要な場合があります）。完了すると自動で終了します。</li>
+    </ul>
+  </details>
+</section>
+
+<section id="session" hidden>
+  <h2>2. 公式ログイン画面 <span id="session-label"></span></h2>
+  <div id="term"></div>
+  <div id="links" hidden>
+    <p>リンク（タップで別タブ。ログイン後この画面に戻ってください）:</p>
+    <ul id="link-list"></ul>
+  </div>
+  <div class="keys">
+    <button data-key="enter">Enter</button>
+    <button data-key="up">↑</button>
+    <button data-key="down">↓</button>
+    <button data-key="esc">Esc</button>
+    <button data-key="ctrlc">Ctrl+C</button>
+  </div>
+  <div class="paste">
+    <input id="paste-input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="貼り付け欄（認可コード・/config など）">
+    <button id="paste-send">送信</button>
+    <button id="paste-send-enter">送信+Enter</button>
+  </div>
+  <p id="session-msg" class="msg"></p>
+  <button id="stop" class="danger">セッション終了</button>
+</section>
+
+<section id="status-box">
+  <h2>3. ログイン状態の確認（ログイン操作とは別）</h2>
+  <button id="status">状態を確認</button>
+  <table id="status-table" hidden>
+    <thead><tr><th>CLI</th><th>保存状態</th><th>補足</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <p class="note">ここで分かるのは保存された認証の非秘密メタデータだけです。「ok」でも実際の利用成功を意味しません（次の実行で確認されます）。Antigravity は資格情報を読まない契約のため、直近の実行結果だけを表示します。</p>
+</section>
+<script src="/static/xterm.js"></script>
+<script src="/static/addon-fit.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

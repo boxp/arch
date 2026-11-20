@@ -23,6 +23,19 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "k8s_tunnel" {
         service  = "http://codex-task-board-dashboard.codex-workspace.svc.cluster.local:8080"
       },
       {
+        # BOXP-634 (codex_auth.tf): cloudflared rejects requests without a valid
+        # Access JWT for this application before they reach the gateway.
+        hostname = local.codex_auth_hostname
+        service  = "http://codex-auth-gateway.codex-workspace.svc.cluster.local:8095"
+        origin_request = {
+          access = {
+            required  = true
+            team_name = local.zero_trust_team_name
+            aud_tag   = [cloudflare_zero_trust_access_application.codex_auth.aud]
+          }
+        }
+      },
+      {
         service = "http_status:404"
       },
     ]
