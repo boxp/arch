@@ -73,5 +73,6 @@ resource "cloudflare_dns_record" "codex_auth" {
 # Non-secret: the AUD is visible in Access login redirects. The lolice manifest
 # passes it to the gateway (CODEX_AUTH_GATEWAY_AUD).
 output "codex_auth_access_aud" {
-  value = cloudflare_zero_trust_access_application.codex_auth.aud
+  description = "AUD tag of the codex-auth.b0xp.io Access application (set as CODEX_AUTH_GATEWAY_AUD in lolice)."
+  value       = cloudflare_zero_trust_access_application.codex_auth.aud
 }
