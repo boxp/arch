@@ -63,17 +63,18 @@ export function formatTasks(tasks: Tasks): string {
   return `進行中 ${t.total}件${t.complete ? '' : '以上（全件は不明）'}${detail ? `（${detail}）` : ''}${t.conflicts.length ? '・整合不明あり' : ''}`
 }
 export function summaryLine(status: Status): string {
-  const percent = (id: string) => {
-    const p = status.quota.pools.find((x) => x.id === id)
-    const ws =
-      p?.windows.filter(
-        (w) => w.usedPercent !== null && !['unavailable', 'unobserved', 'not_provided'].includes(w.state),
-      ) ?? []
+  // 共有範囲の異なる複数の群（Antigravity の Gemini / Claude+GPT / Argon など）は、どれか一つでも上限に近ければ
+  // それが見えるよう、該当する全プールの窓から最も使用率の高いものを選ぶ（加算はしない）。
+  const percent = (match: (id: string) => boolean) => {
+    const ws = status.quota.pools
+      .filter((p) => match(p.id))
+      .flatMap((p) => p.windows)
+      .filter((w) => w.usedPercent !== null && !['unavailable', 'unobserved', 'not_provided'].includes(w.state))
     if (!ws.length) return '不明'
     const top = ws.reduce((a, b) => ((b.usedPercent as number) > (a.usedPercent as number) ? b : a))
     return `${formatPercent(top.usedPercent)}${['stale', 'expired'].includes(top.state) ? '（古い）' : top.state === 'freshness_unknown' ? '（時刻不明）' : ''}`
   }
-  return `Claude ${percent('claude_shared')}・Codex ${percent('codex_shared')}・${status.tasks.state === 'ok' ? `進行中 ${status.tasks.inProgress.total}件${status.tasks.inProgress.complete ? '' : '以上'}` : '進行中 不明'}`
+  return `Claude ${percent((id) => id === 'claude_shared')}・Codex ${percent((id) => id === 'codex_shared')}・Antigravity ${percent((id) => id.startsWith('antigravity_'))}・${status.tasks.state === 'ok' ? `進行中 ${status.tasks.inProgress.total}件${status.tasks.inProgress.complete ? '' : '以上'}` : '進行中 不明'}`
 }
 /** BFF は上流の取得失敗も HTTP 200 の unavailable で返すため、どちらかが取れていなければ再取得を間引く対象にする。 */
 export function upstreamUnavailable(status: Status): boolean {

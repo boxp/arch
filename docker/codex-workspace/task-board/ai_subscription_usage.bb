@@ -3,6 +3,7 @@
 (ns ai-subscription-usage
   (:require [babashka.fs :as fs]
             [cheshire.core :as json]
+            [babashka.process :as p]
             [clojure.java.io :as io]
             [clojure.string :as str]))
 
@@ -231,11 +232,171 @@
              {:state "ok" :data v} {:state "parse_error"}))
          (catch Exception _ {:state "parse_error"}))))
 
+;; BOXP-637: Antigravity CLI (`agy`) subscription quota.
+;; The official CLI answers `agy -p /usage --output-format json` without starting
+;; an agent turn or spending quota (agy changelog: read-only slash commands in
+;; print mode). The runner starts that official binary directly, the same way it
+;; starts `agy` for a run (BOXP-630 CD-03): it never reads the CLI's login files,
+;; strips API-key/ADC/gateway variables and never enables AI credits. Only the
+;; bucket id, window, remaining fraction and reset time are kept; the free-text
+;; descriptions (model lists, sentences) are dropped.
+;;
+;; Models inside one group share that group's 5h and weekly limits, so each
+;; bucket is one constraint and the models are never counted twice.
+
+(def antigravity-stripped-env-keys
+  ["GEMINI_API_KEY" "GOOGLE_API_KEY" "GOOGLE_GENAI_USE_VERTEXAI" "GOOGLE_APPLICATION_CREDENTIALS"
+   "AGY_ADC_AUTH" "AGY_ACCOUNT" "AGY_LLM_GATEWAY_URL" "AGY_LLM_GATEWAY_MODELS" "AGY_BUSINESS_PAYGO_TIER"])
+
+(def antigravity-known-limits
+  "Bucket ids (normalized) the CLI reported on 2026-11-20 and their display
+  names. A known bucket missing from a successful answer is exported as
+  window_present 0; an unknown bucket is exported under its own id."
+  {"gemini_5h" "gemini_5h"
+   "gemini_weekly" "gemini_7d"
+   "3p_5h" "claude_gpt_5h"
+   "3p_weekly" "claude_gpt_7d"
+   "gemini_argon_wtu_weekly" "argon_7d"})
+
+(def antigravity-states
+  #{"ok" "no_snapshot" "parse_error" "not_installed" "timeout" "auth_required"
+    "unsupported_auth" "command_failed" "invalid_output"})
+
+(def max-antigravity-buckets 20)
+
+(defn antigravity-limit-id [id]
+  (when (string? id)
+    (enum-value (-> id str/lower-case (str/replace #"[^a-z0-9]+" "_") (str/replace #"^_+|_+$" "")) nil)))
+
+(defn- iso-epoch-s [s]
+  (try (when (string? s) (.getEpochSecond (java.time.Instant/parse s))) (catch Exception _ nil)))
+
+(defn clean-antigravity-usage
+  "The buckets of an `agy -p /usage --output-format json` answer, or nil when the
+  answer is not a successful /usage payload. Keeps only enums, numbers and times."
+  [payload]
+  (let [groups (get-in payload [:command :data :groups])]
+    (when (and (map? payload) (= "SUCCESS" (:status payload)) (= "usage" (get-in payload [:command :name]))
+               (sequential? groups))
+      (->> groups
+           (filter map?)
+           (mapcat (fn [g] (filter map? (:buckets g))))
+           (keep (fn [b]
+                   (when-let [limit (antigravity-limit-id (:id b))]
+                     (let [r (:remaining_fraction b)
+                           window (case (:window b) "weekly" "7d" "5h" "5h" "unknown")]
+                       [limit (cond-> {:window window}
+                                (and (number? r) (<= 0 r 1)) (assoc :remaining r)
+                                (iso-epoch-s (:reset_time b)) (assoc :resetsAt (iso-epoch-s (:reset_time b))))]))))
+           (take max-antigravity-buckets)
+           (into (sorted-map))))))
+
+(defn antigravity-snapshot-path [root] (fs/path root "ai-ops/subscription/antigravity.json"))
+
+(defn antigravity-snapshot [root]
+  (let [path (antigravity-snapshot-path root)]
+    (if-not (fs/exists? path) {:state "no_snapshot"}
+      (try (let [v (json/parse-string (slurp (str path)) true)]
+             (if (and (map? v) (contains? antigravity-states (:last_state v)))
+               {:state "ok" :data v} {:state "parse_error"}))
+           (catch Exception _ {:state "parse_error"})))))
+
+(defn antigravity-classify
+  "State and buckets for one CLI call result {:exit :out} (or {:timeout true}
+  / {:missing true})."
+  [{:keys [exit out timeout missing]}]
+  (cond missing {:state "not_installed"}
+        timeout {:state "timeout"}
+        :else
+        (let [payload (try (json/parse-string (str out) true) (catch Exception _ nil))
+              buckets (when (and (= 0 exit) (map? payload)) (clean-antigravity-usage payload))
+              error (str (:error payload) " " (when-not (map? payload) out))]
+          (cond (seq buckets) {:state "ok" :buckets buckets}
+                (= 2 exit) {:state "unsupported_auth"}
+                (re-find #"(?i)authenticat|sign.?in|log.?in|unauthori[sz]ed" error) {:state "auth_required"}
+                (and (= 0 exit) (map? payload) (= "SUCCESS" (:status payload))) {:state "invalid_output"}
+                (and (= 0 exit) (not (map? payload))) {:state "invalid_output"}
+                :else {:state "command_failed"}))))
+
+(defn merge-antigravity-snapshot
+  "A failed call keeps the last good buckets with their own observation time, so
+  they go stale instead of disappearing; last_state tells why nothing newer came."
+  [prior result attempt-s]
+  (if (= "ok" (:state result))
+    {:last_attempt_at attempt-s :last_state "ok" :observed_at attempt-s :buckets (:buckets result)}
+    (cond-> {:last_attempt_at attempt-s :last_state (:state result)}
+      (number? (:observed_at prior)) (assoc :observed_at (:observed_at prior))
+      (map? (:buckets prior)) (assoc :buckets (:buckets prior)))))
+
+(defn antigravity-bin [] (let [b (System/getenv "CODEX_TASK_BOARD_ANTIGRAVITY_BIN")] (if (str/blank? b) "agy" b)))
+
+(defn call-antigravity-usage
+  "Start the official CLI once for /usage. Never passes billing-switching
+  variables; never enables AI credits; stdin is empty."
+  [bin timeout-ms]
+  (if-not (fs/which bin) {:missing true}
+    (let [proc (p/process [bin "-p" "/usage" "--output-format" "json" "--settings" "{\"useG1Credits\":false}"]
+                          {:in "" :out :string :err :string
+                           :dir (System/getProperty "java.io.tmpdir")
+                           :env (apply dissoc (into {} (System/getenv)) antigravity-stripped-env-keys)})
+          done (deref proc timeout-ms ::timeout)]
+      (if (= ::timeout done)
+        (do (p/destroy-tree proc) {:timeout true})
+        {:exit (:exit done) :out (:out done)}))))
+
+(def antigravity-refresh-running (atom false))
+
+(defn antigravity-interval-s []
+  (or (some-> (System/getenv "CODEX_TASK_BOARD_ANTIGRAVITY_USAGE_INTERVAL_SECONDS") parse-long (max 300)) 600))
+
+(defn claim-antigravity-refresh!
+  "Under the snapshot file lock, record an attempt time when the last one is at
+  least interval-s old. Returns the prior snapshot data (or {}) when claimed, so
+  several runner processes start at most one call per interval."
+  [root now-s interval-s]
+  (let [path (antigravity-snapshot-path root)]
+    (with-snapshot-file-lock path
+      (fn []
+        (let [existing (antigravity-snapshot root)
+              prior (if (= "ok" (:state existing)) (:data existing) {})]
+          (when (or (not (number? (:last_attempt_at prior))) (>= (- now-s (:last_attempt_at prior)) interval-s)
+                    (> (:last_attempt_at prior) now-s))
+            (atomic-write! path (json/generate-string (assoc (merge {:last_state "no_snapshot"} prior) :last_attempt_at now-s)))
+            prior))))))
+
+(defn refresh-antigravity!
+  "One refresh when due. Returns the written snapshot data, or nil when not due."
+  ([root] (refresh-antigravity! root (quot (System/currentTimeMillis) 1000)
+                                (fn [] (call-antigravity-usage (antigravity-bin) 90000))))
+  ([root now-s call]
+   (when-let [prior (claim-antigravity-refresh! root now-s (antigravity-interval-s))]
+     (let [result (try (antigravity-classify (call)) (catch Exception _ {:state "command_failed"}))
+           path (antigravity-snapshot-path root)]
+       (with-snapshot-file-lock path
+         (fn []
+           (let [merged (merge-antigravity-snapshot prior result now-s)]
+             (atomic-write! path (json/generate-string merged))
+             merged)))))))
+
+(defn maybe-refresh-antigravity!
+  "Called from the runner's metrics tick. Opt-in with
+  CODEX_TASK_BOARD_ANTIGRAVITY_USAGE=true. sync? waits (one-shot tick); otherwise
+  the CLI call runs in the background and at most one runs per process."
+  [root sync?]
+  (when (= "true" (System/getenv "CODEX_TASK_BOARD_ANTIGRAVITY_USAGE"))
+    (if sync?
+      (refresh-antigravity! root)
+      (when (compare-and-set! antigravity-refresh-running false true)
+        (future (try (refresh-antigravity! root)
+                     (catch Exception _ nil)
+                     (finally (reset! antigravity-refresh-running false))))))))
+
 (defn window-name [provider limit]
-  (if (= provider "claude")
-    (get {"five_hour" "shared_5h" "seven_day" "shared_7d"
-          "seven_day_overage_included" "fable_7d" "seven_day_opus" "opus_7d"
-          "seven_day_sonnet" "sonnet_7d"} limit limit)
+  (case provider
+    "claude" (get {"five_hour" "shared_5h" "seven_day" "shared_7d"
+                   "seven_day_overage_included" "fable_7d" "seven_day_opus" "opus_7d"
+                   "seven_day_sonnet" "sonnet_7d"} limit limit)
+    "antigravity" (get antigravity-known-limits limit limit)
     limit))
 
 (defn prom-text [root codex-home now-s]
@@ -302,6 +463,32 @@
         (emit "ai_subscription_spend_control_reached" labels (bool-num (:spend_control_reached limits)))
         (when (some? (:rate_limit_reached_type limits)) (emit "ai_subscription_limit_reached" (conj labels [:type (enum-value (:rate_limit_reached_type limits) "other")]) 1))
         (when (some? (:plan_type limits)) (emit "ai_subscription_plan_info" (conj labels [:plan (enum-value (:plan_type limits) "other")]) 1))))
+    ;; BOXP-637: Antigravity. source_up is 1 only when the latest CLI call
+    ;; succeeded; source_state names why not (not_installed, auth_required,
+    ;; timeout, ...). The last good buckets stay with their own observation
+    ;; time so they go stale rather than read as 0% or unlimited.
+    (let [agy (antigravity-snapshot root)
+          data (:data agy)
+          state (if (= "ok" (:state agy)) (:last_state data) (:state agy))
+          labels [[:provider "antigravity"]]]
+      (emit "ai_subscription_source_up" labels (if (= "ok" state) 1 0))
+      (emit "ai_subscription_source_state" (conj labels [:state state]) 1)
+      (when (number? (:observed_at data)) (emit "ai_subscription_observed_timestamp_seconds" labels (:observed_at data)))
+      (when (number? (:last_attempt_at data)) (emit "ai_subscription_attempt_timestamp_seconds" labels (:last_attempt_at data)))
+      (when-let [buckets (when (map? (:buckets data)) (:buckets data))]
+        (doseq [limit (sort (distinct (concat (keys antigravity-known-limits) (map name (keys buckets)))))
+                :when (enum-value limit nil)]
+          (emit "ai_subscription_window_present" [[:provider "antigravity"] [:limit limit] [:name (window-name "antigravity" limit)]]
+                (if (contains? buckets (keyword limit)) 1 0)))
+        (doseq [[k v] buckets :let [limit (name k)] :when (and (map? v) (enum-value limit nil))]
+          (let [window (get #{"5h" "7d"} (:window v) "unknown")
+                r (:remaining v)
+                remaining (when (and (number? r) (<= 0 r 1)) r)]
+            (window! "antigravity" limit window (when remaining (* 100 (- 1 remaining)))
+                     (when (number? (:resetsAt v)) (:resetsAt v)) ({"5h" 18000 "7d" 604800} window)
+                     ;; The CLI reports no status; nothing left is the only case it implies.
+                     (when (and remaining (zero? remaining)) "rejected")
+                     (:observed_at data))))))
     (let [metrics (distinct (map #(first (str/split % #"[ {]")) @lines))]
       (str (str/join "\n" (mapcat (fn [m] (concat [(str "# HELP " m " AI subscription " (subs m 16) ".") (str "# TYPE " m " gauge")] (filter #(str/starts-with? % (str m (if (str/includes? % "{") "{" " "))) @lines))) metrics)) "\n"))))
 
