@@ -6827,7 +6827,8 @@
    "tar -xf <dir>/untracked.tar"])
 
 (defn salvage-run!
-  "Archives every held checkout of the run. Returns {:hold reason},
+  "Archives every checkout of the run, held or clean: a clean run-owned
+  clone can still hold refs a fresh clone lacks, so none is skipped. Returns {:hold reason},
   {:dry-run bytes} or {:salvaged dir :bytes n :checkouts updated}."
   [{:keys [dry-run?] :as ctx} mode ticket-id run-id run-path run-real checkouts]
   (let [scratch-root (fs/path (salvage-dir) ".tmp")
@@ -6838,8 +6839,7 @@
       ;; (notes or outputs next to the checkouts) keeps the run.
       (or (some->> (stale-process-hold run-real) (hash-map :hold))
           (some->> (outside-checkout-hold run-path (map :path checkouts)) (hash-map :hold))
-          (let [held (filterv :hold checkouts)
-                results (loop [[c & more] held i 0 used 0 acc []]
+          (let [results (loop [[c & more] checkouts i 0 used 0 acc []]
                           (if-not c
                             acc
                             (let [dir (fs/path work "archive" (str i))

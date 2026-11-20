@@ -50,3 +50,4 @@ S1（BOXP-494: 継続 run の引継ぎと計測）は 7 日観察まで完了済
 - ref: run 内に ref を持つ repo（run 所有 clone、run 内 common dir の worktree）は **全 ref（名前空間を問わない）・HEAD・全 reflog** を `refs/salvage/<refname>` / `refs/salvage/HEAD` / `refs/salvage/reflog/<sha>` に写し、ローカルの GitHub 既定ブランチ commit との差分を丸ごと bundle 化。tip の分類はしない。外部 repo の worktree は HEAD・HEAD reflog・per-worktree ref のみ（共有 ref は残る）。
 - 復元可能性: その既定ブランチ commit が GitHub 既定ブランチ上にあることを 1 回確認し、bundle ヘッダの prerequisite すべてがその祖先であることをローカルで確認。bundle に載らない ref（既定ブランチが到達済み）は祖先確認のうえ `refs.txt` に名前と sha を保存。shallow repo は保護。
 - 範囲: 退避するのは checkout 内の追跡差分と untracked のみなので、run 内の checkout 外のファイル（`outside-checkout`）や再生成可能でない ignored ファイル（`ignored-unknown` 等）が一つでもあれば run を保護。
+- 対象 checkout: hold のある checkout だけでなく run 内の **全 checkout** を退避対象にする（clean な run 所有 clone も削除済みブランチの ref 等を唯一保持し得るため、checkout の選別も列挙しない）。どれか一つでも退避・検証できなければ run を保護。

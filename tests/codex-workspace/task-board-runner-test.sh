@@ -7609,7 +7609,7 @@ test_notes_omission_prompt() {
 
 test_prune_salvage_reclaim() {
   local tmp vault state bin source known out old ws co big gh restore head
-  local default_shas feature feature_head pushed owned side tagged gone note junk
+  local default_shas feature feature_head pushed owned side tagged gone note junk held708 clean708 gone708
   tmp="$(mktemp -d)"
   vault="${tmp}/vault"
   state="${tmp}/state"
@@ -7723,6 +7723,25 @@ test_prune_salvage_reclaim() {
   printf 'secret\n' >"${junk}/secret.env"
   git -C "${junk}" config core.excludesFile "${junk}/.git-info-exclude"
 
+  # BOXP-708: one held clone and one clean run-owned clone whose only copy of
+  # a deleted branch is a remote-tracking ref. The clean clone is archived too.
+  write_prune_ticket "${vault}" BOXP-708 "done" 2020-01-01
+  held708="${ws}/BOXP-708/${old}/ghq/github.com/boxp/example"
+  clean708="${ws}/BOXP-708/${old}/ghq/github.com/boxp/other"
+  mkdir -p "$(dirname "${held708}")"
+  git clone -q "${source}" "${held708}"
+  git -C "${held708}" remote set-url origin https://github.com/boxp/example.git
+  printf 'edit\n' >>"${held708}/tracked.txt"
+  git clone -q "${source}" "${clean708}"
+  git -C "${clean708}" remote set-url origin https://github.com/boxp/example.git
+  git -C "${clean708}" checkout -q -b gone-708
+  gone708="$(prune_commit "${clean708}" gone-708)"
+  printf '%s\n' "${gone708}" >>"${known}"
+  git -C "${clean708}" update-ref refs/remotes/origin/gone-708 "${gone708}"
+  git -C "${clean708}" checkout -q main
+  git -C "${clean708}" branch -q -D gone-708
+  git -C "${clean708}" reflog expire --expire=all --all
+
   run() {
     PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" GH_FAKE_DEFAULT_SHAS="${default_shas}" CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" \
       CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo" CODEX_TASK_BOARD_SALVAGE_MAX_BYTES=100000 \
@@ -7821,6 +7840,18 @@ test_prune_salvage_reclaim() {
   [[ -f "${ws}/BOXP-706/${old}/notes.md" ]] || fail "note next to the checkout must remain"
   assert_file_contains "${out}" "^salvage: held ${ws}/BOXP-707/${old} reason=ignored-unknown path=secret.env checkout=ghq/github.com/boxp/example$"
   [[ -f "${junk}/secret.env" ]] || fail "unknown ignored file must remain"
+
+  # BOXP-708 keeps the clean clone's remote-tracking ref of a deleted branch.
+  assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-708/${old}$"
+  archive="$(find "${state}/salvage/BOXP-708/${old}" -mindepth 1 -maxdepth 1 -type d)"
+  restore="${tmp}/restore-708"
+  git clone -q "${gh}" "${restore}"
+  local bundle708
+  for bundle708 in "${archive}"/*/commits.bundle; do
+    [[ -f "${bundle708}" ]] && git -C "${restore}" fetch -q "${bundle708}" 'refs/salvage/*:refs/salvage/*'
+  done
+  git -C "${restore}" cat-file -e "${gone708}^{commit}" 2>/dev/null ||
+    fail "clean clone's deleted-branch commit must be archived"
 }
 
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a
