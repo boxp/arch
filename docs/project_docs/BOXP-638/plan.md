@@ -90,4 +90,5 @@ S1（BOXP-494: 継続 run の引継ぎと計測）は 7 日観察まで完了済
 - 閾値の根拠（2026-11-20 実測）: run 1 つの実割当は p50 17MB・p90 0.55GB・p99 0.97GB・最大 2.25GB（workspace-size-cache 121 run）。soft = hard 8GiB + 最大級 run 3〜4 本分。relief 起動は checkout なしで runs/ のログ程度（runs 全体で 0.70GB）のため 4GiB を下限とする。新規 checkout 自体の追加量は p99 3.4MB と小さく、増加は run 中の生成物が主。
 - rollback（再起動のみ・ロジック差し戻し不要）: `SOFT_MIN_FREE_BYTES` を MIN 以下にすると soft 段なし、`RELIEF_MIN_FREE_BYTES` を MIN 以上にすると relief 起動なし（従来の全停止）。
 - 印は Owner / coordinator が票 frontmatter に付ける。印があっても checkout は作らず、空き 4GiB 未満・inode 不足では起動しない。
+- localllm-coder 担当票は repo worktree が無いと起動前検査（no-repo-worktree）で失敗するため、hard 段の checkout なし起動の対象外とし通常票と同様に待たせる（codex review P1）。soft 段では従来どおり checkout ありで起動できる。
 - 次段 S3b: bytes 予算（票ごと・workspaces 全体）の観測と超過票だけの新規 checkout 停止。数値は 1 週間の実測から決める。

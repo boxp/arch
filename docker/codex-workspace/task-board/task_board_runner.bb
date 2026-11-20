@@ -8308,6 +8308,13 @@
   (contains? #{"true" "yes" "on"}
              (some-> (:capacity_relief (ticket-frontmatter-or-nil ticket-id)) str/trim str/lower-case)))
 
+;; codex review P1: localllm-coder (pi) cannot work without a repository
+;; worktree (localllm-coder-workspace-check fails with no-repo-worktree), so
+;; such a ticket is not started without a checkout; it waits like other tickets.
+(defn capacity-relief-startable-without-checkout? [ticket-id]
+  (and (capacity-relief-ticket? ticket-id)
+       (not= "localllm-coder" (assignee-runtime (:assignee (ticket-frontmatter-or-nil ticket-id))))))
+
 (defn ticket-has-run-workspace? [ticket-id]
   (let [dir (fs/path (root) "workspaces" ticket-id)]
     (boolean (and (fs/directory? dir) (seq (fs/list-dir dir))))))
@@ -8316,7 +8323,7 @@
   "Splits new candidates by the disk guard stage into {:start [...] :relief #{ids} :waiting n}."
   [new-candidates {:keys [low? soft? relief-ok?]}]
   (cond
-    low? (let [relief (if relief-ok? (filterv #(capacity-relief-ticket? (:ticket-id %)) new-candidates) [])]
+    low? (let [relief (if relief-ok? (filterv #(capacity-relief-startable-without-checkout? (:ticket-id %)) new-candidates) [])]
            {:start relief :relief (set (map :ticket-id relief)) :waiting (- (count new-candidates) (count relief))})
     soft? (let [start (filterv #(or (ticket-has-run-workspace? (:ticket-id %)) (capacity-relief-ticket? (:ticket-id %))) new-candidates)]
             {:start start :relief #{} :waiting (- (count new-candidates) (count start))})
@@ -9095,19 +9102,24 @@
       (check "guard hard below relief" (stage (* 3 gib) 50) {:low? true :soft? false :relief-ok? false})
       (check "guard hard inode no relief" (stage (* 20 gib) 1) {:low? true :soft? false :relief-ok? false})
       (check "guard unmeasured allows" (stage nil nil) {:low? false :soft? false :relief-ok? false})
-      (with-redefs [ticket-frontmatter-or-nil (fn [id] (case id "R" {:capacity_relief " True "} "N" {:capacity_relief "false"} nil))
+      (with-redefs [ticket-frontmatter-or-nil (fn [id] (case id "R" {:capacity_relief " True "} "N" {:capacity_relief "false"}
+                                                          "L" {:capacity_relief "true" :assignee "localllm-coder"} nil))
                     ticket-has-run-workspace? (fn [id] (= id "C"))]
         (let [cards [{:ticket-id "R"} {:ticket-id "N"} {:ticket-id "C"} {:ticket-id "X"}]
               ids (fn [r] (update r :start #(mapv :ticket-id %)))]
           (check "admit ok" (ids (disk-guard-admit cards {})) {:start ["R" "N" "C" "X"] :relief #{} :waiting 0})
           (check "admit soft continuing+relief" (ids (disk-guard-admit cards {:soft? true})) {:start ["R" "C"] :relief #{} :waiting 2})
           (check "admit hard relief only" (ids (disk-guard-admit cards {:low? true :relief-ok? true})) {:start ["R"] :relief #{"R"} :waiting 3})
-          (check "admit hard below relief" (ids (disk-guard-admit cards {:low? true :relief-ok? false})) {:start [] :relief #{} :waiting 4})))
+          (check "admit hard below relief" (ids (disk-guard-admit cards {:low? true :relief-ok? false})) {:start [] :relief #{} :waiting 4})
+          (check "admit hard coder relief waits" (ids (disk-guard-admit [{:ticket-id "L"} {:ticket-id "R"}] {:low? true :relief-ok? true}))
+                 {:start ["R"] :relief #{"R"} :waiting 1})
+          (check "admit soft coder relief starts with checkout" (ids (disk-guard-admit [{:ticket-id "L"}] {:soft? true}))
+                 {:start ["L"] :relief #{} :waiting 0})))
       (let [seen (atom []) pruned (atom false)]
         (with-redefs [candidate-cards (fn [] [{:ticket-id "TEST-RELIEF" :lane "Ready"} {:ticket-id "TEST-NORMAL" :lane "Ready"}])
                       recover-locks! (fn [] nil) draining? (fn [] false) sync-all! (fn [] nil)
                       disk-guard (fn [] {:low? true :relief-ok? true :free-bytes (* 6 gib) :free-inode-percent 50})
-                      capacity-relief-ticket? (fn [id] (= id "TEST-RELIEF"))
+                      capacity-relief-startable-without-checkout? (fn [id] (= id "TEST-RELIEF"))
                       maybe-start-workspace-prune! (fn [& _] (reset! pruned true))
                       process-card! (fn [card] (swap! seen conj [(:ticket-id card) *capacity-relief-no-checkout?*]) true)]
           (tick!)
