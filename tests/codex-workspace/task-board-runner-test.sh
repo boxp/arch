@@ -7610,6 +7610,7 @@ test_notes_omission_prompt() {
 test_prune_salvage_reclaim() {
   local tmp vault state bin source known out old ws co big gh restore head
   local default_shas feature feature_head pushed owned side tagged gone note junk held708 clean708 gone708
+  local deep cut_base cut_tip shallow_src shallow709 head709 cut710
   tmp="$(mktemp -d)"
   vault="${tmp}/vault"
   state="${tmp}/state"
@@ -7742,6 +7743,37 @@ test_prune_salvage_reclaim() {
   git -C "${clean708}" branch -q -D gone-708
   git -C "${clean708}" reflog expire --expire=all --all
 
+  # BOXP-709/710: worktrees of a shallow shared clone, as the shared checkouts
+  # are. BOXP-709 has a local commit on the default branch -> archived and
+  # restorable from GitHub. BOXP-710 sits on a depth-1 fetched tip whose
+  # history is cut by the shallow boundary -> the bundle cannot be built, held.
+  deep="${tmp}/deep"
+  git init -q -b main "${deep}"
+  prune_git -C "${deep}" commit -q --allow-empty -m d1
+  cut_base="$(git -C "${deep}" rev-parse HEAD)"
+  prune_git -C "${deep}" commit -q --allow-empty -m d2
+  prune_git -C "${deep}" commit -q --allow-empty -m d3
+  git -C "${deep}" rev-list main >>"${known}"
+  git -C "${deep}" rev-list main >>"${default_shas}"
+  git -C "${deep}" checkout -q -b cut-710 "${cut_base}"
+  cut_tip="$(prune_commit "${deep}" cut-710-tip)"
+  git -C "${deep}" checkout -q main
+  shallow_src="${tmp}/shallow-src"
+  git clone -q --depth 1 -b main "file://${deep}" "${shallow_src}"
+  git -C "${shallow_src}" fetch -q --depth 1 origin cut-710:refs/remotes/origin/cut-710
+  git -C "${shallow_src}" remote set-url origin https://github.com/boxp/example.git
+  [[ "$(git -C "${shallow_src}" rev-parse --is-shallow-repository)" == true ]] || fail "fixture: shared clone must be shallow"
+  write_prune_ticket "${vault}" BOXP-709 "done" 2020-01-01
+  shallow709="$(add_prune_run "${state}" "${shallow_src}" BOXP-709 "${old}")"
+  prune_commit "${shallow709}" shallow-local >/dev/null
+  printf 'edit\n' >"${shallow709}/edit.txt"
+  head709="$(git -C "${shallow709}" rev-parse HEAD)"
+  write_prune_ticket "${vault}" BOXP-710 "done" 2020-01-01
+  cut710="${ws}/BOXP-710/${old}/ghq/github.com/boxp/example"
+  mkdir -p "$(dirname "${cut710}")"
+  git -C "${shallow_src}" worktree add -q -b "codex-task-board/BOXP-710-${old}" "${cut710}" "${cut_tip}"
+  printf 'edit\n' >"${cut710}/edit.txt"
+
   run() {
     PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" GH_FAKE_DEFAULT_SHAS="${default_shas}" CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" \
       CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo" CODEX_TASK_BOARD_SALVAGE_MAX_BYTES=100000 \
@@ -7852,6 +7884,20 @@ test_prune_salvage_reclaim() {
   done
   git -C "${restore}" cat-file -e "${gone708}^{commit}" 2>/dev/null ||
     fail "clean clone's deleted-branch commit must be archived"
+
+  # BOXP-709 restores from a full clone of the default branch; BOXP-710 stays.
+  assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-709/${old}$"
+  archive="$(find "${state}/salvage/BOXP-709/${old}" -mindepth 1 -maxdepth 1 -type d)"
+  assert_file_contains "${archive}/manifest.edn" ":shallow true"
+  restore="${tmp}/restore-709"
+  git clone -q --single-branch -b main "${deep}" "${restore}"
+  git -C "${restore}" fetch -q "${archive}/0/commits.bundle" 'refs/salvage/*:refs/salvage/*' ||
+    fail "shallow bundle must apply to a default-branch clone"
+  git -C "${restore}" checkout -q --detach "${head709}"
+  tar -C "${restore}" -xf "${archive}/0/untracked.tar"
+  [[ -f "${restore}/shallow-local" && "$(cat "${restore}/edit.txt")" == edit ]] || fail "shallow checkout not restored"
+  assert_file_contains "${out}" "^salvage: held ${ws}/BOXP-710/${old} reason=salvage-verify-failed bundle checkout=ghq/github.com/boxp/example$"
+  [[ -f "${cut710}/edit.txt" ]] || fail "run cut by the shallow boundary must remain"
 }
 
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a
