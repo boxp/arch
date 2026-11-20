@@ -938,6 +938,8 @@ function renderStatus() {
   }
   const host = el('status-widget')
   host.replaceChildren()
+  // 取得失敗中は前回値を表示しているため、横長配置でも「古い情報」の見出しを必ず出す（BOXP-504 TD-02）。
+  host.classList.toggle('is-stale', statusFailed && !!statusValue)
   if (!statusValue) {
     host.textContent = statusFailed ? '利用枠・進行中 取得できません' : '利用枠・進行中を確認中'
     return

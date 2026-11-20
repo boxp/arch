@@ -22,13 +22,15 @@ const out = {}, failures = []
 const check = (cond, msg) => { if (!cond) failures.push(msg) }
 const overlap = (a, c) => a && c && a.x < c.x + c.width - .5 && c.x < a.x + a.width - .5 && a.y < c.y + c.height - .5 && c.y < a.y + a.height - .5
 const LONG = 'おかえりなさい、ご主人さま。今日は利用枠に余裕があるので、続きの作業も進められそうです。気になることがあれば、なんでも話しかけてくださいね。'
-async function scenario(name, viewport, set, scene, { large = false, longBubble = false } = {}) {
-  const status = data[set]
+async function scenario(name, viewport, set, scene, { large = false, longBubble = false, stale = false } = {}) {
+  const status = data[set]; let failing = false
   const ctx = await b.newContext({ viewport, isMobile: viewport.width < 600 || viewport.height < 600, hasTouch: viewport.width < 600 || viewport.height < 600 }), page = await ctx.newPage()
-  await ctx.route('**/kohako/api/v1/**', async r => { const p = new URL(r.request().url()).pathname.replace('/kohako/api/v1/', ''), j = (s, o) => r.fulfill({ status: s, contentType: 'application/json', body: JSON.stringify(o) }); if (p === 'me') return j(200, { authenticated: true }); if (p === 'conversation') return j(200, { enabled: true, stt: null }); if (p === 'status') return j(200, status); return j(404, {}) })
+  await ctx.route('**/kohako/api/v1/**', async r => { const p = new URL(r.request().url()).pathname.replace('/kohako/api/v1/', ''), j = (s, o) => r.fulfill({ status: s, contentType: 'application/json', body: JSON.stringify(o) }); if (p === 'me') return j(200, { authenticated: true }); if (p === 'conversation') return j(200, { enabled: true, stt: null }); if (p === 'status') return failing ? j(503, { error: 'unavailable' }) : j(200, status); return j(404, {}) })
   await page.goto('http://localhost:8769/kohako/home.html')
   await page.waitForFunction(() => document.getElementById('connection').textContent.startsWith('接続中'))
   await page.waitForFunction(() => !document.getElementById('status-widget').textContent.includes('確認中'))
+  // stale: 一度取れた後に取得失敗させ、前回値表示中に「古い情報」が見えることを確かめる（codex-review P1）。
+  if (stale) { failing = true; await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange'))); await page.waitForFunction(() => document.getElementById('status-widget').classList.contains('is-stale')) }
   if (large) await page.addStyleTag({ content: 'html{font-size:125%}' })
   await page.evaluate(([scene, text]) => { document.body.dataset.scene = scene; new MutationObserver(() => { if (document.body.dataset.scene !== scene) document.body.dataset.scene = scene }).observe(document.body, { attributes: true, attributeFilter: ['data-scene'] }); if (text) document.getElementById('reply').textContent = text; if (scene === 'show') { const c = document.getElementById('cards'), l = document.getElementById('card-list'); c.hidden = false; for (let i = 0; i < 3; i++) { const d = document.createElement('div'); d.className = 'card'; d.textContent = `検証用カード ${i + 1}`; l.append(d) } } }, [scene, longBubble ? LONG.repeat(scene === 'show' ? 3 : 1) : ''])
   await page.waitForTimeout(500)
@@ -39,6 +41,7 @@ async function scenario(name, viewport, set, scene, { large = false, longBubble 
     return { boxes: Object.fromEntries(ids.map(id => [id, rect(document.getElementById(id))])), stage: rect(document.querySelector('.stage')), labels }
   })
   const w = m.boxes['status-widget']
+  if (stale) { const tag = await page.evaluate(() => { const e = document.querySelector('#status-widget .status-tag'); if (!e) return null; const r = e.getBoundingClientRect(), s = getComputedStyle(e); return s.display !== 'none' && s.visibility !== 'hidden' && r.width && r.height ? e.textContent : null }); if (viewport.height <= viewport.width) check(tag === '古い情報', `${name}: stale tag not visible (${tag})`) }
   if (viewport.height > viewport.width) { // スマホ縦は BOXP-544 で時計とともに非表示（変更なし）。
     check(!w, `${name}: portrait widget visible`)
     await page.screenshot({ path: `${outDir}/${name}.png` }); out[name] = m; await ctx.close(); return
@@ -67,4 +70,5 @@ for (const set of ['few', 'live', 'max']) for (const v of ['pc', 'land', 'landse
 for (const v of ['pc', 'pcsmall', 'land', 'landse', 'landmax']) for (const scene of ['relax', 'talk', 'show']) await scenario(`large-max-${v}-${scene}`, views[v], 'max', scene, { large: true })
 for (const v of ['pc', 'land', 'landse']) await scenario(`long-live-${v}-talk`, views[v], 'live', 'talk', { longBubble: true, large: v === 'land' })
 for (const v of ['pc', 'pcsmall', 'land', 'landse', 'landmax']) for (const large of [false, true]) await scenario(`long-max-${v}-show${large ? '-large' : ''}`, views[v], 'max', 'show', { longBubble: true, large })
+for (const v of ['pc', 'pcsmall', 'land', 'landse', 'landmax']) for (const scene of ['relax', 'talk', 'show']) await scenario(`stale-max-${v}-${scene}`, views[v], 'max', scene, { stale: true, large: v === 'landse' })
 await b.close(); srv.close(); fs.writeFileSync(`${outDir}/result.json`, JSON.stringify({ out, failures }, null, 1)); console.log(JSON.stringify({ count: Object.keys(out).length, failures }, null, 1)); process.exit(failures.length ? 1 : 0)
