@@ -7125,6 +7125,11 @@ test_capacity_attribution() {
       (assert (zero? (get-in e [:areas "two" :fresh-bytes])))
       (assert (= (get-in e [:areas "one" :bytes]) (get-in e [:areas "one" :fresh-bytes])))
       (assert (pos? (get-in e [:workspaces :by-kind "node_modules"])))
+      (assert (= {:bytes (bytes ".codex-task-board/workspaces/T-1/r/x/node_modules/a") :fresh-bytes (bytes ".codex-task-board/workspaces/T-1/r/x/node_modules/a") :runs 1}
+                 (get-in e [:workspace-tickets "T-1"])))
+      (assert (= 1 (get-in e [:workspace-ticket-stats :count])))
+      (assert (= (get-in e [:workspaces :bytes]) (get-in e [:workspace-ticket-stats :total-bytes]) (get-in e [:workspace-ticket-stats :max-bytes])))
+      (assert (not (contains? e :tickets)))
       (assert (nil? (:days-to-guard e))))'
   before="$(grep -c ':event :capacity-attribution' "$metrics")"
   CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 run_prune "$vault" "$state" --dry-run >"$tmp/out"
