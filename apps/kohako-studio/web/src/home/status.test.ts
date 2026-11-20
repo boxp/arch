@@ -1,6 +1,7 @@
-import { expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
   formatPercent,
+  miniLabelOf,
   formatPool,
   formatTasks,
   gaugeOf,
@@ -170,4 +171,23 @@ it('shows the highest Antigravity group in the summary instead of only the Gemin
   } as Status)
   expect(s).toContain('Antigravity 100%')
   expect(s).not.toContain('Antigravity 20%')
+})
+
+describe('miniLabelOf (BOXP-504 TD-02)', () => {
+  const pool = (id: string, label: string) => ({ id, label, windows: [] })
+  it('Antigravity 群は見出しにまとめ、帯には群名だけを出す', () => {
+    expect(miniLabelOf(pool('antigravity_gemini', 'Antigravity Gemini群'))).toEqual({
+      group: 'Antigravity',
+      name: 'Gemini群',
+    })
+    expect(miniLabelOf(pool('antigravity_claude_gpt', 'Antigravity Claude/GPT群'))).toEqual({
+      group: 'Antigravity',
+      name: 'Claude/GPT群',
+    })
+    expect(miniLabelOf(pool('antigravity_argon', 'Antigravity Argon'))).toEqual({ group: 'Antigravity', name: 'Argon' })
+  })
+  it('Fable 専用枠とその他の枠', () => {
+    expect(miniLabelOf(pool('claude_fable', 'Fable専用上限'))).toEqual({ group: '', name: 'Fable専用' })
+    expect(miniLabelOf(pool('other', '別の枠'))).toEqual({ group: '', name: '別の枠' })
+  })
 })

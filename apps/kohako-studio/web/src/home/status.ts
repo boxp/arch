@@ -132,3 +132,10 @@ export function taskBadgeOf(tasks?: Tasks) {
     agents: t.byAgent,
   }
 }
+/** ウィジェットの小さな帯に出す短い名前と、まとめて見出しを付ける群（BOXP-504 TD-02）。詳細では元の label を使う。 */
+export function miniLabelOf(pool: Pool): { group: string; name: string } {
+  if (pool.id === 'claude_fable') return { group: '', name: 'Fable専用' }
+  if (pool.id.startsWith('antigravity_'))
+    return { group: 'Antigravity', name: pool.label.replace(/^Antigravity\s*/, '') || pool.label }
+  return { group: '', name: pool.label }
+}
