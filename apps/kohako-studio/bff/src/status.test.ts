@@ -23,7 +23,16 @@ const board = (items: object[], truncated = false) => ({
 })
 it('parses real exposition, absent present series, and fixed pools', () => {
   const q = parseQuota(metrics, now)
-  expect(q.pools.map((p) => p.id)).toEqual(['claude_shared', 'claude_fable', 'claude_opus', 'codex_shared', 'localllm'])
+  expect(q.pools.map((p) => p.id)).toEqual([
+    'claude_shared',
+    'claude_fable',
+    'claude_opus',
+    'codex_shared',
+    'antigravity_gemini',
+    'antigravity_claude_gpt',
+    'antigravity_argon',
+    'localllm',
+  ])
   expect(q.pools[0].windows[0].state).toBe('not_provided')
   expect(q.pools[0].windows[0].usedPercent).toBeNull()
   expect(q.pools[0].windows[1]).toMatchObject({ state: 'ok', usedPercent: 67 })
@@ -170,6 +179,36 @@ it('プールの定義（対象の担当・窓・提供状態）を固定の一�
       label: 'Codex共有（codex/sol/astra）',
       agents: ['codex', 'codex-sol', 'codex-sol-xhigh', 'codex-astra'],
       windows: [['primary', '7日']],
+      state: undefined,
+      note: undefined,
+    },
+    {
+      id: 'antigravity_gemini',
+      label: 'Antigravity Gemini群',
+      agents: ['antigravity'],
+      windows: [
+        ['gemini_5h', '5時間'],
+        ['gemini_7d', '7日'],
+      ],
+      state: undefined,
+      note: '群内のGeminiモデルで共有',
+    },
+    {
+      id: 'antigravity_claude_gpt',
+      label: 'Antigravity Claude/GPT群',
+      agents: [],
+      windows: [
+        ['claude_gpt_5h', '5時間'],
+        ['claude_gpt_7d', '7日'],
+      ],
+      state: undefined,
+      note: 'Claude CLIの枠とは別',
+    },
+    {
+      id: 'antigravity_argon',
+      label: 'Antigravity Argon',
+      agents: [],
+      windows: [['argon_7d', '7日']],
       state: undefined,
       note: undefined,
     },
@@ -339,7 +378,7 @@ it('取得できない時は値の無い unavailable を返し、URL の無い�
     fetchedAt: new Date(now).toISOString(),
     generatedAt: null,
     fileAgeSeconds: null,
-    sourceUp: { claude: null, codex: null },
+    sourceUp: { claude: null, codex: null, antigravity: null },
     pools: parseQuota(metrics, now).pools.map((p) => ({
       ...p,
       windows: p.windows.map((w) => ({
@@ -418,5 +457,91 @@ it('同じ provider の別の窓の系列を混ぜない', () => {
   expect(q.pools[0].windows.map((w) => [w.name, w.state, w.status])).toEqual([
     ['shared_5h', 'unobserved', null],
     ['shared_7d', 'exhausted', 'rejected'],
+  ])
+})
+it('Antigravity の群ごとの枠を写し、残量 0 は上限到達、取得失敗は理由を添えて前回の観測を残す', () => {
+  const sec = now / 1000
+  const agy = (limit: string, name: string, window: string, rest: string) =>
+    `ai_subscription_window_${rest.replace(/\{(.*)\}/, (_, extra) => `{provider="antigravity",limit="${limit}",name="${name}",window="${window}"${extra}}`)}`
+  const base = [
+    'ai_subscription_source_up{provider="antigravity"} 1',
+    'ai_subscription_source_state{provider="antigravity",state="ok"} 1',
+    'ai_subscription_window_present{provider="antigravity",limit="gemini_weekly",name="gemini_7d"} 1',
+    'ai_subscription_window_present{provider="antigravity",limit="gemini_5h",name="gemini_5h"} 1',
+    'ai_subscription_window_present{provider="antigravity",limit="gemini_argon_wtu_weekly",name="argon_7d"} 0',
+    agy('gemini_weekly', 'gemini_7d', '7d', 'used_percent{} 25'),
+    agy('gemini_weekly', 'gemini_7d', '7d', `resets_at_seconds{} ${sec + 3600}`),
+    agy('gemini_weekly', 'gemini_7d', '7d', `observed_timestamp_seconds{} ${sec - 60}`),
+    agy('gemini_5h', 'gemini_5h', '5h', 'used_percent{} 100'),
+    agy('gemini_5h', 'gemini_5h', '5h', `observed_timestamp_seconds{} ${sec - 60}`),
+    agy('gemini_5h', 'gemini_5h', '5h', 'status{,status="rejected"} 1'),
+    agy('3p_weekly', 'claude_gpt_7d', '7d', `observed_timestamp_seconds{} ${sec - 60}`),
+    agy('3p_weekly', 'claude_gpt_7d', '7d', `resets_at_seconds{} ${sec - 1}`),
+    agy('3p_weekly', 'claude_gpt_7d', '7d', 'expired{} 1'),
+  ]
+  const q = parseQuota(base.join('\n'), now)
+  const pool = (id: string) => q.pools.find((p) => p.id === id)
+  expect(q.sourceUp).toMatchObject({ antigravity: true })
+  expect(pool('antigravity_gemini')?.windows).toEqual([
+    {
+      name: 'gemini_5h',
+      label: '5時間',
+      state: 'exhausted',
+      usedPercent: 100,
+      resetsAt: null,
+      observedAt: new Date(now - 60_000).toISOString(),
+      status: 'rejected',
+    },
+    {
+      name: 'gemini_7d',
+      label: '7日',
+      state: 'ok',
+      usedPercent: 25,
+      resetsAt: new Date(now + 3600_000).toISOString(),
+      observedAt: new Date(now - 60_000).toISOString(),
+      status: null,
+    },
+  ])
+  expect(pool('antigravity_gemini')?.note).toBe('群内のGeminiモデルで共有')
+  expect(pool('antigravity_claude_gpt')?.windows.map((w) => w.state)).toEqual(['unobserved', 'expired'])
+  expect(pool('antigravity_argon')?.windows[0]).toMatchObject({ state: 'not_provided', usedPercent: null })
+  // 最新の取得が失敗: 前回の値は残し、理由を pool に添える。理由が読めなければ「不明」。
+  const failed = (state: string) =>
+    parseQuota(
+      base
+        .map((l) =>
+          l
+            .replace('source_up{provider="antigravity"} 1', 'source_up{provider="antigravity"} 0')
+            .replace('state="ok"', `state="${state}"`),
+        )
+        .join('\n'),
+      now,
+    )
+  const f = failed('auth_required')
+  expect(f.sourceUp).toMatchObject({ antigravity: false })
+  expect(f.pools.find((p) => p.id === 'antigravity_gemini')).toMatchObject({
+    note: '群内のGeminiモデルで共有・最新の取得: 未ログイン',
+  })
+  expect(f.pools.find((p) => p.id === 'antigravity_gemini')?.windows[1]).toMatchObject({ usedPercent: 25, state: 'ok' })
+  expect(f.pools.find((p) => p.id === 'antigravity_argon')?.note).toBe('最新の取得: 未ログイン')
+  expect(f.pools.find((p) => p.id === 'codex_shared')?.note).toBeUndefined()
+  for (const [state, text] of [
+    ['no_snapshot', '未観測'],
+    ['parse_error', '記録を読めません'],
+    ['not_installed', 'CLI未導入'],
+    ['timeout', 'CLI応答なし'],
+    ['unsupported_auth', 'API鍵接続のため枠なし'],
+    ['command_failed', 'CLI失敗'],
+    ['invalid_output', '出力を解釈できません'],
+  ])
+    expect(failed(state).pools.find((p) => p.id === 'antigravity_argon')?.note).toBe(`最新の取得: ${text}`)
+  expect(failed('something_else').pools.find((p) => p.id === 'antigravity_argon')?.note).toBe('最新の取得: 不明')
+  // 系列が無い（古い exporter）なら注記しない。窓は不明のまま。
+  const none = parseQuota('ai_subscription_generated_timestamp_seconds 1', now)
+  expect(none.sourceUp).toMatchObject({ antigravity: null })
+  expect(none.pools.find((p) => p.id === 'antigravity_argon')?.note).toBeUndefined()
+  expect(none.pools.find((p) => p.id === 'antigravity_gemini')?.windows.map((w) => w.state)).toEqual([
+    'unobserved',
+    'unobserved',
   ])
 })

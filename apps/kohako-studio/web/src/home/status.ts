@@ -73,7 +73,7 @@ export function summaryLine(status: Status): string {
     const top = ws.reduce((a, b) => ((b.usedPercent as number) > (a.usedPercent as number) ? b : a))
     return `${formatPercent(top.usedPercent)}${['stale', 'expired'].includes(top.state) ? '（古い）' : top.state === 'freshness_unknown' ? '（時刻不明）' : ''}`
   }
-  return `Claude ${percent('claude_shared')}・Codex ${percent('codex_shared')}・${status.tasks.state === 'ok' ? `進行中 ${status.tasks.inProgress.total}件${status.tasks.inProgress.complete ? '' : '以上'}` : '進行中 不明'}`
+  return `Claude ${percent('claude_shared')}・Codex ${percent('codex_shared')}・Antigravity ${percent('antigravity_gemini')}・${status.tasks.state === 'ok' ? `進行中 ${status.tasks.inProgress.total}件${status.tasks.inProgress.complete ? '' : '以上'}` : '進行中 不明'}`
 }
 /** BFF は上流の取得失敗も HTTP 200 の unavailable で返すため、どちらかが取れていなければ再取得を間引く対象にする。 */
 export function upstreamUnavailable(status: Status): boolean {

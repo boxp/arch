@@ -307,6 +307,10 @@
       (try
         (when (and (not= "false" (env "CODEX_TASK_BOARD_SUBSCRIPTION_METRICS" "true"))
                    @subscription-module-loaded?)
+          ;; BOXP-637: opt-in Antigravity /usage refresh (at most one official
+          ;; CLI call per interval, in the background unless sync?).
+          (try ((resolve 'ai-subscription-usage/maybe-refresh-antigravity!) (root) sync?)
+               (catch Exception e (log! (str "antigravity usage refresh failed: " (.getMessage e)))))
           ((resolve 'ai-subscription-usage/write-metrics!) (root)))
         (catch Exception e (log! (str "subscription metrics write failed: " (.getMessage e)))))
       (try

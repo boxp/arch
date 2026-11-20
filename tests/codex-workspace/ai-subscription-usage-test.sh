@@ -307,6 +307,104 @@ Test.
 
 ## Notes
 TICKET
+# BOXP-637: Antigravity /usage collection (official CLI, fake binary here).
+cat >"${tmp}/bin/agy" <<'FAKE'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >"${AGY_FAKE_LOG}.args"
+env >"${AGY_FAKE_LOG}.env"
+[[ -t 0 ]] && exit 9
+case "$(cat "${AGY_FAKE_LOG}.mode" 2>/dev/null || echo ok)" in
+  ok) cat <<'JSON'
+{"command":{"name":"usage","data":{"description":"SECRET_DESC","groups":[
+ {"name":"Gemini Models","description":"SECRET_MODELS","buckets":[
+  {"id":"gemini-weekly","name":"Weekly","description":"SECRET_SENTENCE","window":"weekly","remaining_fraction":0.75,"reset_time":"2099-01-01T00:00:00Z"},
+  {"id":"gemini-5h","name":"5h","window":"5h","remaining_fraction":0,"reset_time":"2099-01-01T05:00:00Z"}]},
+ {"name":"Claude and GPT models","buckets":[
+  {"id":"3p-weekly","window":"weekly","remaining_fraction":1,"reset_time":"2000-01-01T00:00:00Z"},
+  {"id":"3p-5h","window":"5h","remaining_fraction":"bad","reset_time":"not a time"},
+  {"id":"Bad Id!!","window":"daily","remaining_fraction":1.5}]}]}},
+ "conversation_id":"","num_turns":0,"status":"SUCCESS","response":"x","usage":{"total_tokens":0}}
+JSON
+  ;;
+  auth) echo '{"status":"ERROR","error":"authentication failed or timed out","response":""}'; exit 1 ;;
+  apikey) echo 'not available with a Gemini API key'; exit 2 ;;
+  garbage) echo 'not json' ;;
+esac
+FAKE
+chmod +x "${tmp}/bin/agy"
+export AGY_FAKE_LOG="${tmp}/agy" TEST_AGY="${tmp}/bin/agy" TEST_AGY_ROOT="${tmp}/agy-root"
+GEMINI_API_KEY=SECRET_KEY GOOGLE_APPLICATION_CREDENTIALS=/SECRET AGY_ADC_AUTH=true bb -e '
+(load-file (System/getenv "TEST_MODULE"))
+(require (quote [clojure.string :as str]))
+(let [root (System/getenv "TEST_AGY_ROOT") bin (System/getenv "TEST_AGY") now 1900000000
+      call #(ai-subscription-usage/call-antigravity-usage bin 30000)
+      prom #(ai-subscription-usage/prom-text root "/nonexistent" %)
+      has? (fn [out part] (assert (str/includes? out part) part))
+      lacks? (fn [out part] (assert (not (str/includes? out part)) part))]
+  ;; Not opted in: no call at all.
+  (assert (nil? (ai-subscription-usage/maybe-refresh-antigravity! root true)))
+  (assert (not (babashka.fs/exists? (str (System/getenv "AGY_FAKE_LOG") ".args"))))
+  ;; No snapshot yet: unknown, never 0% or unlimited.
+  (let [out (prom now)]
+    (has? out "ai_subscription_source_up{provider=\"antigravity\"} 0")
+    (has? out "ai_subscription_source_state{provider=\"antigravity\",state=\"no_snapshot\"} 1")
+    (lacks? out "provider=\"antigravity\",limit="))
+  (let [data (ai-subscription-usage/refresh-antigravity! root now call)
+        args (slurp (str (System/getenv "AGY_FAKE_LOG") ".args"))
+        env (slurp (str (System/getenv "AGY_FAKE_LOG") ".env"))
+        raw (slurp (str root "/ai-ops/subscription/antigravity.json"))
+        out (prom now)]
+    (assert (= "ok" (:last_state data)))
+    (assert (= "-p /usage --output-format json --settings {\"useG1Credits\":false}" (str/trim args)) args)
+    (doseq [k ["GEMINI_API_KEY" "GOOGLE_APPLICATION_CREDENTIALS" "AGY_ADC_AUTH"]] (assert (not (str/includes? env k)) k))
+    (assert (not (str/includes? raw "SECRET")) raw)
+    (lacks? out "SECRET")
+    (has? out "ai_subscription_source_up{provider=\"antigravity\"} 1")
+    (has? out "ai_subscription_window_used_percent{provider=\"antigravity\",limit=\"gemini_weekly\",name=\"gemini_7d\",window=\"7d\"} 25")
+    (has? out "ai_subscription_window_used_percent{provider=\"antigravity\",limit=\"gemini_5h\",name=\"gemini_5h\",window=\"5h\"} 100")
+    (has? out "ai_subscription_window_status{provider=\"antigravity\",limit=\"gemini_5h\",name=\"gemini_5h\",window=\"5h\",status=\"rejected\"} 1")
+    (lacks? out "limit=\"gemini_weekly\",name=\"gemini_7d\",window=\"7d\",status=")
+    (has? out "ai_subscription_window_duration_seconds{provider=\"antigravity\",limit=\"gemini_weekly\",name=\"gemini_7d\",window=\"7d\"} 604800")
+    ;; A reset in the past is expired: no used% from before the reset.
+    (has? out "ai_subscription_window_expired{provider=\"antigravity\",limit=\"3p_weekly\",name=\"claude_gpt_7d\",window=\"7d\"} 1")
+    (lacks? out "ai_subscription_window_used_percent{provider=\"antigravity\",limit=\"3p_weekly\"")
+    ;; Unparseable fraction/time stays unknown, not 0.
+    (has? out "ai_subscription_window_present{provider=\"antigravity\",limit=\"3p_5h\",name=\"claude_gpt_5h\"} 1")
+    (lacks? out "ai_subscription_window_used_percent{provider=\"antigravity\",limit=\"3p_5h\"")
+    (lacks? out "ai_subscription_window_resets_at_seconds{provider=\"antigravity\",limit=\"3p_5h\"")
+    ;; A known bucket the CLI did not report is "not provided".
+    (has? out "ai_subscription_window_present{provider=\"antigravity\",limit=\"gemini_argon_wtu_weekly\",name=\"argon_7d\"} 0")
+    ;; Odd ids are normalized, odd windows are unknown, out-of-range fraction dropped.
+    (has? out "ai_subscription_window_present{provider=\"antigravity\",limit=\"bad_id\",name=\"bad_id\"} 1")
+    (lacks? out "ai_subscription_window_used_percent{provider=\"antigravity\",limit=\"bad_id\""))
+  ;; Throttled: a second call inside the interval does nothing.
+  (assert (nil? (ai-subscription-usage/refresh-antigravity! root (+ now 60) (fn [] (throw (ex-info "called" {}))))))
+  ;; Failures keep the last buckets with their old observation time and say why.
+  (doseq [[i mode state] [[1 "auth" "auth_required"] [2 "apikey" "unsupported_auth"] [3 "garbage" "invalid_output"]]]
+    (let [t (+ now (* i 700))
+          _ (spit (str (System/getenv "AGY_FAKE_LOG") ".mode") mode)
+          data (ai-subscription-usage/refresh-antigravity! root t (fn [] (ai-subscription-usage/call-antigravity-usage bin 30000)))]
+      (assert (= state (:last_state data)) [mode data])
+      (assert (= now (:observed_at data)))
+      (let [out (prom t)]
+        (has? out "ai_subscription_source_up{provider=\"antigravity\"} 0")
+        (has? out (str "ai_subscription_source_state{provider=\"antigravity\",state=\"" state "\"} 1"))
+        (has? out (str "ai_subscription_observed_timestamp_seconds{provider=\"antigravity\"} " now))
+        (has? out (str "ai_subscription_attempt_timestamp_seconds{provider=\"antigravity\"} " t)))))
+  (assert (= {:state "not_installed"} (ai-subscription-usage/antigravity-classify (ai-subscription-usage/call-antigravity-usage "/nonexistent/agy" 1000))))
+  (assert (= {:state "timeout"} (ai-subscription-usage/antigravity-classify {:timeout true})))
+  (assert (= "command_failed" (:last_state (ai-subscription-usage/refresh-antigravity! root (+ now 5000) (fn [] (throw (ex-info "boom" {})))))))
+  ;; A broken snapshot is a parse_error, not ok.
+  (spit (str root "/ai-ops/subscription/antigravity.json") "{")
+  (has? (prom now) "ai_subscription_source_state{provider=\"antigravity\",state=\"parse_error\"} 1")
+  (spit (str (System/getenv "AGY_FAKE_LOG") ".mode") "ok"))
+'
+CODEX_TASK_BOARD_ANTIGRAVITY_BIN="${tmp}/bin/agy" CODEX_TASK_BOARD_ANTIGRAVITY_USAGE=true bb -e '
+(load-file (System/getenv "TEST_MODULE"))
+(let [root (str (System/getenv "TEST_AGY_ROOT") "-sync")]
+  (assert (= "ok" (:last_state (ai-subscription-usage/maybe-refresh-antigravity! root true))))
+  (assert (nil? (ai-subscription-usage/maybe-refresh-antigravity! root true))))'
 cat >"${tmp}/bin/claude" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -317,10 +415,12 @@ fi
 printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"},"session_id":"SECRET_SESSION"}' '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}' '{"type":"result","result":"TASK_BOARD_RESULT: done"}'
 FAKE
 chmod +x "${tmp}/bin/claude"
-PATH="${tmp}/bin:${PATH}" TASK_BOARD_DELEGATION_HELPER="${repo}/docker/codex-workspace/task-board/delegate.py" CODEX_TASK_BOARD_CLAUDE_BIN="${tmp}/bin/claude" CODEX_TASK_BOARD_VAULT="${tmp}/vault" CODEX_TASK_BOARD_ROOT="${tmp}/runner-state" \
+CODEX_TASK_BOARD_ANTIGRAVITY_USAGE=true CODEX_TASK_BOARD_ANTIGRAVITY_BIN="${tmp}/bin/agy" PATH="${tmp}/bin:${PATH}" TASK_BOARD_DELEGATION_HELPER="${repo}/docker/codex-workspace/task-board/delegate.py" CODEX_TASK_BOARD_CLAUDE_BIN="${tmp}/bin/claude" CODEX_TASK_BOARD_VAULT="${tmp}/vault" CODEX_TASK_BOARD_ROOT="${tmp}/runner-state" \
   bb "${repo}/docker/codex-workspace/task-board/task_board_runner.bb" tick >/dev/null
 message="$(find "${tmp}/runner-state/runs/BOXP-149" -name last-message.md -print -quit)"
 [[ "$(cat "${message}")" == 'TASK_BOARD_RESULT: done' ]]
 [[ -f "${tmp}/runner-state/ai-ops/subscription/claude.json" ]]
+grep -q '"last_state":"ok"' "${tmp}/runner-state/ai-ops/subscription/antigravity.json"
+grep -q '^ai_subscription_source_up{provider="antigravity"} 1$' "${tmp}/runner-state/ai-ops/subscription-usage.prom"
 grep -q '^status: done$' "${tmp}/vault/Tickets/BOXP-149.md"
 echo 'ai-subscription-usage tests passed'

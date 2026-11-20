@@ -56,8 +56,40 @@ const definitions = [
     agents: ['codex', 'codex-sol', 'codex-sol-xhigh', 'codex-astra'],
     windows: [['primary', '7日']],
   },
+  // BOXP-637: Antigravity CLI の /usage。群の中のモデルは 5時間・週の枠を共有するので、群ごとに 1 つの pool にする。
+  {
+    id: 'antigravity_gemini',
+    label: 'Antigravity Gemini群',
+    agents: ['antigravity'],
+    windows: [
+      ['gemini_5h', '5時間'],
+      ['gemini_7d', '7日'],
+    ],
+    note: '群内のGeminiモデルで共有',
+  },
+  {
+    id: 'antigravity_claude_gpt',
+    label: 'Antigravity Claude/GPT群',
+    agents: [],
+    windows: [
+      ['claude_gpt_5h', '5時間'],
+      ['claude_gpt_7d', '7日'],
+    ],
+    note: 'Claude CLIの枠とは別',
+  },
+  { id: 'antigravity_argon', label: 'Antigravity Argon', agents: [], windows: [['argon_7d', '7日']] },
   { id: 'localllm', label: 'ローカルLLM', agents: ['localllm'], windows: [], state: 'not_applicable' as const },
 ]
+const antigravityFailure: Record<string, string> = {
+  no_snapshot: '未観測',
+  parse_error: '記録を読めません',
+  not_installed: 'CLI未導入',
+  timeout: 'CLI応答なし',
+  auth_required: '未ログイン',
+  unsupported_auth: 'API鍵接続のため枠なし',
+  command_failed: 'CLI失敗',
+  invalid_output: '出力を解釈できません',
+}
 const pools = (state: WindowState): Pool[] =>
   definitions.map((p) => ({
     ...p,
@@ -74,11 +106,32 @@ const pools = (state: WindowState): Pool[] =>
 const iso = (n: number | undefined) =>
   n !== undefined && Number.isFinite(n) && Math.abs(n) <= 8640000000000 / 1000 ? new Date(n * 1000).toISOString() : null
 const labelsAllowed: Record<string, string[]> = {
-  provider: ['claude', 'codex'],
-  limit: ['five_hour', 'seven_day', 'seven_day_overage_included', 'primary'],
-  name: ['shared_5h', 'shared_7d', 'fable_7d', 'primary'],
+  provider: ['claude', 'codex', 'antigravity'],
+  limit: [
+    'five_hour',
+    'seven_day',
+    'seven_day_overage_included',
+    'primary',
+    'gemini_5h',
+    'gemini_weekly',
+    '3p_5h',
+    '3p_weekly',
+    'gemini_argon_wtu_weekly',
+  ],
+  name: [
+    'shared_5h',
+    'shared_7d',
+    'fable_7d',
+    'primary',
+    'gemini_5h',
+    'gemini_7d',
+    'claude_gpt_5h',
+    'claude_gpt_7d',
+    'argon_7d',
+  ],
   window: ['5h', '7d'],
   status: ['allowed', 'allowed_warning', 'rejected'],
+  state: ['ok', ...Object.keys(antigravityFailure)],
 }
 type Sample = { metric: string; labels: Record<string, string>; value: number }
 function parseMetrics(text: string): Sample[] {
@@ -120,6 +173,11 @@ export function parseQuota(text: string, now: number) {
     shared_7d: ['claude', 'seven_day'],
     fable_7d: ['claude', 'seven_day_overage_included'],
     primary: ['codex', 'primary'],
+    gemini_5h: ['antigravity', 'gemini_5h'],
+    gemini_7d: ['antigravity', 'gemini_weekly'],
+    claude_gpt_5h: ['antigravity', '3p_5h'],
+    claude_gpt_7d: ['antigravity', '3p_weekly'],
+    argon_7d: ['antigravity', 'gemini_argon_wtu_weekly'],
   }
   for (const pool of result)
     for (const w of pool.windows) {
@@ -165,12 +223,21 @@ export function parseQuota(text: string, now: number) {
     const n = get('source_up', { provider })
     return n === undefined ? null : n === 1
   }
+  // 最新の取得が失敗した Antigravity は、前回の観測を残したまま理由を添える（0% や無制限とは読まない）。
+  const agyState = samples.find(
+    (s) => s.metric === 'ai_subscription_source_state' && s.labels.provider === 'antigravity' && s.value === 1,
+  )?.labels.state
+  if (up('antigravity') === false) {
+    const reason = `最新の取得: ${(agyState && antigravityFailure[agyState]) ?? '不明'}`
+    for (const pool of result)
+      if (pool.id.startsWith('antigravity_')) pool.note = pool.note ? `${pool.note}・${reason}` : reason
+  }
   return {
     state: 'ok' as const,
     fetchedAt: new Date(now).toISOString(),
     generatedAt: iso(get('generated_timestamp_seconds')),
     fileAgeSeconds: get('metrics_file_age_seconds') ?? null,
-    sourceUp: { claude: up('claude'), codex: up('codex') },
+    sourceUp: { claude: up('claude'), codex: up('codex'), antigravity: up('antigravity') },
     pools: result,
   }
 }
@@ -230,7 +297,7 @@ const unavailableQuota = (now: number) => ({
   fetchedAt: new Date(now).toISOString(),
   generatedAt: null,
   fileAgeSeconds: null,
-  sourceUp: { claude: null, codex: null },
+  sourceUp: { claude: null, codex: null, antigravity: null },
   pools: pools('unavailable'),
 })
 const unavailableBoard = (now: number) => ({

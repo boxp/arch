@@ -81,6 +81,7 @@ it('marks a stale top window in the summary and never shows 0 for unavailable ta
     tasks: { state: 'unavailable', inProgress: { total: null, complete: false, byAgent: [], conflicts: [] } },
   } as Status)
   expect(s).toContain('Claude 67%（古い）')
+  expect(s).toContain('Antigravity 不明')
   expect(s).toContain('進行中 不明')
   expect(s).not.toMatch(/進行中 0件/)
 })
