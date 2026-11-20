@@ -144,3 +144,30 @@ it('formats used percent without float noise and never invents zero for missing 
   expect(formatPool(expired)).toBe('Fable専用上限 7日 —（リセット後未観測）')
   expect(gaugeOf(expired).percent).toBeNull()
 })
+
+it('shows the highest Antigravity group in the summary instead of only the Gemini group', () => {
+  const w = (name: string, usedPercent: number | null, state: string) => ({
+    name,
+    label: name,
+    state,
+    usedPercent,
+    resetsAt: null,
+    observedAt: null,
+    status: null,
+  })
+  const s = summaryLine({
+    schema: '',
+    generatedAt: '',
+    quota: {
+      state: 'ok',
+      pools: [
+        { id: 'antigravity_gemini', label: 'Gemini', windows: [w('gemini_5h', 10, 'ok'), w('gemini_7d', 20, 'ok')] },
+        { id: 'antigravity_claude_gpt', label: 'Claude/GPT', windows: [w('claude_gpt_5h', 100, 'exhausted')] },
+        { id: 'antigravity_argon', label: 'Argon', windows: [w('argon_7d', null, 'not_provided')] },
+      ],
+    },
+    tasks: { state: 'unavailable', inProgress: { total: null, complete: false, byAgent: [], conflicts: [] } },
+  } as Status)
+  expect(s).toContain('Antigravity 100%')
+  expect(s).not.toContain('Antigravity 20%')
+})
