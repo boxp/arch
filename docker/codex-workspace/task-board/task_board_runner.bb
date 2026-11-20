@@ -6631,10 +6631,38 @@
           (not= ["Done"] lanes) "not-single-done-card"
           (not= "done" (str/trim (str (:status ticket)))) "not-done")))
 
+(defn retained-done-latest-enabled? []
+  (and (not= "off" (some-> (System/getenv "CODEX_TASK_BOARD_GENERATED_RECLAIM_RETAINED_DONE") str/trim str/lower-case))
+       (not= false (try (:retained-done-latest (read-edn-file (fs/path (root) "generated-reclaim.edn") nil)) (catch Exception _ false)))))
+
+(defn retained-done-run?
+  "True when the ticket is unlocked, has a single Done card, status done and
+  its `closed` date and the run start are both past the workspace retention:
+  the window in which the prune already deletes a clean run outright, latest
+  run included. Only then may the content-proven reclaim passes ignore the
+  latest-run protection; every other proof and hold still applies."
+  [ticket-id run-id]
+  (boolean
+   (and (retained-done-latest-enabled?)
+        (nil? (generated-ticket-hold ticket-id))
+        (:eligible? (prune-ticket-decision (ticket-frontmatter-or-nil ticket-id)
+                                           (java.time.LocalDate/now java.time.ZoneOffset/UTC)
+                                           (workspace-retention-days)))
+        (:eligible? (prune-run-decision run-id (now) (workspace-retention-days))))))
+
+(defn content-proof-run-decision
+  "stale-run-decision, except that the latest-run protection is lifted for a
+  run of a ticket whose Done retention has passed (retained-done-run?)."
+  [ticket-id run-id ids hours]
+  (let [decision (stale-run-decision run-id ids (now) hours (keep-latest-runs))]
+    (if (and (= "latest-run" (:reason decision)) (retained-done-run? ticket-id run-id))
+      {:eligible? true :basis :retained-done-latest}
+      decision)))
+
 (defn generated-run-hold [ticket-id run-id hours]
   (let [path (run-workspace-dir ticket-id run-id)
         ids (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))
-        decision (stale-run-decision run-id ids (now) hours (keep-latest-runs))]
+        decision (content-proof-run-decision ticket-id run-id ids hours)]
     (cond (not (:eligible? decision)) (:reason decision)
           (not (safe-run-workspace-path? ticket-id run-id path)) "unsafe-path"
           :else (stale-process-hold (fs/real-path path)))))
@@ -6894,7 +6922,7 @@
 (defn outside-copy-run-hold [ticket-id run-id]
   (let [path (run-workspace-dir ticket-id run-id)
         ids (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))
-        decision (stale-run-decision run-id ids (now) (stale-retention-hours) (keep-latest-runs))]
+        decision (content-proof-run-decision ticket-id run-id ids (stale-retention-hours))]
     (cond (= run-id (outside-copy-active-run ticket-id)) "active-run"
           (not (:eligible? decision)) (:reason decision)
           (not (safe-run-workspace-path? ticket-id run-id path)) "unsafe-path"
@@ -7149,7 +7177,8 @@
                   (let [run-id (fs/file-name run-path)]
                     (if-let [run-reason (generated-run-hold ticket-id run-id hours)]
                       (swap! stats update-in [:skipped-runs run-reason] (fnil inc 0))
-                      (let [run-real (fs/real-path run-path) checkouts (find-checkouts run-path)]
+                      (let [run-real (fs/real-path run-path) checkouts (find-checkouts run-path)
+                            basis (:basis (content-proof-run-decision ticket-id run-id (map fs/file-name (child-directories ticket-dir)) hours))]
                         (doseq [co checkouts :while (and (not (stop?)) (< (count-done) cap))]
                           (let [status (generated-git co "status" "--porcelain" "-z" "--ignored=matching")
                                 origin (generated-git co "remote" "get-url" "origin")
@@ -7187,7 +7216,10 @@
                                                                (catch Exception e (str "delete-failed " (one-line (.getMessage e)))))))))
                                         result (cond hold :held recheck :skipped-recheck (= mode :on) :reclaimed :else :would-reclaim)
                                         reason (or hold recheck)]
-                                    (workspace-metrics-write! {:event :generated-reclaim :ticket ticket-id :run run-id :path display :kind kind :result result :reason reason :allocated-bytes bytes})
+                                    (workspace-metrics-write! (cond-> {:event :generated-reclaim :ticket ticket-id :run run-id :path display :kind kind :result result :reason reason :allocated-bytes bytes}
+                                                                 basis (assoc :basis basis)))
+                                    (when (and basis (= result :reclaimed))
+                                      (swap! stats update :retained-done-latest-allocated-bytes (fnil + 0) bytes))
                                     (if (contains? #{:held :skipped-recheck} result)
                                       (do (swap! stats update :held inc) (swap! stats update-in [:held-by-reason reason] (fnil inc 0))
                                           (log! (str "generated-reclaim: hold " display " reason=" (one-line reason))))

@@ -6970,6 +6970,66 @@ test_generated_reclaim_basic() {
   CODEX_TASK_BOARD_GENERATED_RECLAIM=on run_prune "${vault}" "${state}" >"${out}"
 }
 
+test_generated_reclaim_retained_done_latest() {
+  local tmp vault state source co run out art
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  source="${tmp}/source"
+  out="${tmp}/out"
+  mkdir -p "${state}/locks" "${tmp}/proc/100"
+  ln -s / "${tmp}/proc/100/cwd"
+  echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"${tmp}/mountinfo"
+  export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo"
+  make_prune_source_repo "${source}"
+  printf '{}\n' >"${source}/package.json"
+  printf '{}\n' >"${source}/package-lock.json"
+  printf 'node_modules/\nnotes/\n' >"${source}/.gitignore"
+  head -c 70000 /dev/urandom >"${source}/asset.bin"
+  git -C "${source}" add .
+  prune_git -C "${source}" commit -qm inputs
+  git -C "${source}" update-ref refs/remotes/origin/main HEAD
+  write_board "${vault}" ""
+  echo '- [x] [[Tickets/BOXP-638|BOXP-638: done]] #ticket status::done' >>"${vault}/Boards/Task Board.md"
+  write_prune_ticket "${vault}" BOXP-638 "done" "$(date -u -d '10 days ago' +%Y-%m-%d)"
+  # The only (so latest) run, started past the retention and held by an
+  # unknown ignored note, with a dependency dir and a verification copy of a
+  # file that exists on origin.
+  run="$(date -u -d '5 days ago' +%Y%m%dT%H%M%SZ)"
+  co="$(add_prune_run "${state}" "${source}" BOXP-638 "${run}")"
+  mkdir -p "${co}/node_modules" "${co}/notes"
+  echo data >"${co}/node_modules/a"
+  echo keep >"${co}/notes/a"
+  art="${state}/workspaces/BOXP-638/${run}/artifact.bin"
+  cp "${source}/asset.bin" "${art}"
+  export CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true CODEX_TASK_BOARD_GENERATED_RECLAIM=on
+  printf '{:retained-done-latest false}\n' >"${state}/generated-reclaim.edn"
+  run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${co}/node_modules/a" && -f "${art}" ]] || fail 'retained-done flag off reclaimed the latest run'
+  rm "${state}/generated-reclaim.edn"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM_RETAINED_DONE=off run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${co}/node_modules/a" && -f "${art}" ]] || fail 'retained-done env off reclaimed the latest run'
+  write_prune_ticket "${vault}" BOXP-638 "done" "$(date -u +%Y-%m-%d)"
+  run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${co}/node_modules/a" && -f "${art}" ]] || fail 'latest run reclaimed within the ticket retention'
+  write_prune_ticket "${vault}" BOXP-638 "blocked" "$(date -u -d '10 days ago' +%Y-%m-%d)"
+  run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${co}/node_modules/a" && -f "${art}" ]] || fail 'latest run of a non-Done ticket reclaimed'
+  write_prune_ticket "${vault}" BOXP-638 "done" "$(date -u -d '10 days ago' +%Y-%m-%d)"
+  echo locked >"${state}/locks/BOXP-638.edn"
+  run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${co}/node_modules/a" && -f "${art}" ]] || fail 'latest run of a locked ticket reclaimed'
+  rm "${state}/locks/BOXP-638.edn"
+  run_prune "${vault}" "${state}" >"${out}"
+  [[ ! -e "${co}/node_modules/a" ]] || fail 'retained Done latest run kept its node_modules'
+  [[ ! -e "${art}" ]] || fail 'retained Done latest run kept its origin copy'
+  [[ -f "${co}/notes/a" && -f "${co}/package.json" ]] || fail 'unique or tracked data reclaimed'
+  [[ -d "${state}/workspaces/BOXP-638/${run}" ]] || fail 'held run deleted'
+  assert_file_contains "${state}/metrics/workspace-capacity.edn" ':basis :retained-done-latest'
+  assert_file_contains "${state}/metrics/outside-copy-reclaim-ledger.tsv" 'artifact.bin'
+  unset CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE CODEX_TASK_BOARD_GENERATED_RECLAIM
+}
+
 test_generated_reclaim_studio() {
   local tmp vault state source ticket co run i dist
   tmp="$(mktemp -d)"
