@@ -7639,7 +7639,7 @@ test_prune_salvage_reclaim() {
   run() {
     PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" \
       CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo" CODEX_TASK_BOARD_SALVAGE_MAX_BYTES=100000 \
-      run_prune "${vault}" "${state}" "$@"
+      run_prune "${vault}" "${state}"
   }
 
   # Default (dry-run mode): verified and measured, nothing kept or deleted.
