@@ -241,3 +241,37 @@ body[data-shape="portrait"] .trouble{top:29%}
 body.reduce .gate *,body.reduce .gate-ring::before,body.reduce .gate-ring::after,body.reduce .gate-beam::before,body.reduce .gate-beam::after,body.reduce .character[data-arrival] > :is(img,#rig){animation:none!important}
 body.reduce .character:not(.mini)[data-arrival="away"] > :is(img,#rig){opacity:0}
 @media (prefers-reduced-motion:reduce){.gate *,.gate-ring::before,.gate-ring::after,.gate-beam::before,.gate-beam::after,.character[data-arrival] > :is(img,#rig){animation:none!important}.character:not(.mini)[data-arrival="away"] > :is(img,#rig){opacity:0}}
+/* BOXP-504 TD-02: 枠が増えても（Antigravity 群など）ウィジェットが伸びて吹き出し・時計を覆わないようにする。
+   小さな帯は「名前・値・帯」の 1 行の表にし、横画面では吹き出しの下（コハコの右側）に円形ゲージ・進行中・帯の表を横一段で並べる。
+   ウィジェットの実高さ（--status-h、JS が設定）だけ吹き出し・カード・時計を舞台内で詰める。横画面の詳細はウィジェットに重ねて上へ開き、JS で舞台内の高さに収める。 */
+.stage{container-type:size}
+.status-minis{display:grid;grid-template-columns:auto auto minmax(28px,1fr);align-items:center;column-gap:6px;row-gap:3px;margin-top:6px;text-align:left}
+.status-mini{display:contents}.mini-label,.mini-value{white-space:nowrap}.mini-value{text-align:right;font-variant-numeric:tabular-nums}.mini-track{margin-top:0}
+.mini-group{grid-column:1/-1;color:#745988;font-weight:700;font-size:.5625rem;line-height:1.1;margin-top:1px}
+.status-widget>.task-chips{flex-direction:row;flex-wrap:wrap;justify-content:center;gap:3px;margin-top:5px;color:#604884;font-size:.625rem}
+body[data-shape="landscape"] .status-anchor,body[data-shape="landscape"]:not([data-scene="relax"]) .status-anchor{top:auto;bottom:2%;left:38%;right:2%;width:auto;transform:none}
+body[data-shape="landscape"] .status-widget{display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-areas:"row minis" "chips minis";align-items:center;column-gap:12px;padding:5px 10px;min-height:0}
+body[data-shape="landscape"] .status-row{grid-area:row}body[data-shape="landscape"] .status-widget>.task-chips{grid-area:chips;margin-top:3px;font-size:.5625rem;max-width:240px;justify-self:center}body[data-shape="landscape"] .status-minis{grid-area:minis}
+body[data-shape="landscape"] .status-tag{display:none}
+body[data-shape="landscape"] .status-row{flex:0 0 auto;gap:8px}
+body[data-shape="landscape"] .gauge-ring{width:46px;height:46px}
+body[data-shape="landscape"] .status-task{min-width:0}body[data-shape="landscape"] .task-total{font-size:1.4rem}body[data-shape="landscape"] .gauge-title{font-size:.6875rem}body[data-shape="landscape"] .gauge-value{font-size:.75rem}
+body[data-shape="landscape"] .status-minis{flex:0 1 auto;min-width:0;margin-top:0;row-gap:2px}
+body[data-shape="landscape"] .status-panel{top:auto;bottom:0;left:auto;right:0;transform:none;width:min(400px,100%);max-height:none}
+body[data-shape="landscape"]:not([data-scene="relax"]) .bubble{max-height:calc(95cqh - var(--status-h,0px) - 10px)}
+body[data-shape="landscape"][data-scene="show"] .cards{max-height:max(0px,min(20%,calc(72cqh - var(--status-h,0px) - 10px)))}
+body[data-shape="landscape"][data-scene="relax"] .clock{font-size:clamp(1.75rem,calc((92cqh - var(--status-h,0px) - 14px - 1.9rem) / 1.1),4rem)}
+body[data-shape="pc"][data-scene="relax"] .clock{font-size:clamp(2rem,min(12vw,calc((82cqh - var(--status-h,0px) - 16px - 5.4rem) / 1.1)),9rem)}
+/* PC: 結果表示中は左上のウィジェットの幅に合わせて吹き出しを右へずらす。舞台が低い PC（小さい窓・文字拡大）は横画面と同じ横長の配置にする。 */
+body[data-shape="pc"][data-scene="show"] .status-anchor{width:auto;max-width:min(330px,30%)}
+body[data-shape="pc"][data-scene="show"] .bubble{left:max(22%,calc(1% + var(--status-w,0px) + 14px))}
+@container (max-height:540px){
+body[data-shape="pc"] .status-anchor,body[data-shape="pc"]:not([data-scene="relax"]) .status-anchor{top:auto;bottom:2%;left:auto;right:2%;width:auto;max-width:60%;transform:none}
+body[data-shape="pc"] .status-widget{display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-areas:"row minis" "chips minis";align-items:center;column-gap:12px;padding:5px 10px;min-height:0}
+body[data-shape="pc"] .status-row{grid-area:row;gap:8px}body[data-shape="pc"] .status-widget>.task-chips{grid-area:chips;margin-top:3px;max-width:260px;justify-self:center}body[data-shape="pc"] .status-minis{grid-area:minis;margin-top:0;row-gap:2px}
+body[data-shape="pc"] .status-tag{display:none}body[data-shape="pc"] .gauge-ring{width:52px;height:52px}body[data-shape="pc"] .gauge-value{font-size:.8125rem}body[data-shape="pc"] .task-total{font-size:1.5rem}
+body[data-shape="pc"] .status-panel,body[data-shape="pc"][data-scene="show"] .status-panel{top:auto;bottom:0;left:auto;right:0;width:min(400px,100%)}
+body[data-shape="pc"][data-scene="show"] .bubble{left:22%}
+body[data-shape="pc"]:not([data-scene="relax"]) .bubble{max-height:calc(95cqh - var(--status-h,0px) - 14px)}
+body[data-shape="pc"][data-scene="show"] .cards{max-height:calc(95cqh - var(--status-h,0px) - 14px)}
+}

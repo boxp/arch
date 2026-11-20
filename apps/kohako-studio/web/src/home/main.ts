@@ -35,6 +35,7 @@ import {
   gaugeOf,
   taskBadgeOf,
   upstreamUnavailable,
+  miniLabelOf,
   type Status,
 } from './status'
 import { validateViews, mapsUrl, osmUrl, htmlSrcdoc, sanitizeHtml, type View } from './views'
@@ -998,23 +999,44 @@ function renderStatus() {
     chip.textContent = `${a.agent} ${a.count}`
     chips.append(chip)
   }
-  task.append(total, text, chips)
+  task.append(total, text)
   row.append(task)
+  // agent 別の内訳はゲージの列の下に横並びで置き、agent が増えても縦に伸びにくくする（BOXP-504 TD-02）。
+  if (chips.childElementCount) host.append(chips)
+  // 専用枠・Antigravity 群などの小さな帯は 1 本 1 行の列にまとめ、横画面では円形ゲージの横へ並べる（BOXP-504 TD-02）。
+  const minis = document.createElement('span')
+  minis.className = 'status-minis'
+  // 1 本を「名前・値・帯」の 1 行にし、同じ提供元の群（Antigravity）は見出しを 1 つだけ付ける。正常以外の状態は値の後に添える。
+  let lastGroup = ''
   for (const pool of statusValue.quota.pools.filter((p) => !['claude_shared', 'codex_shared'].includes(p.id))) {
     const g = gaugeOf(pool)
     if (g.percent === null) continue
+    const { group, name } = miniLabelOf(pool)
+    if (group && group !== lastGroup) {
+      const head = document.createElement('span')
+      head.className = 'mini-group'
+      head.textContent = group
+      minis.append(head)
+    }
+    lastGroup = group
     const mini = document.createElement('span')
     mini.className = `status-mini ${g.cls}`
-    const text = document.createElement('span')
-    text.textContent = `${pool.id === 'claude_fable' ? 'Fable専用' : pool.label} ${formatPercent(g.percent)} ${g.stateText}`
+    mini.dataset.pool = pool.id
+    const label = document.createElement('span')
+    label.className = 'mini-label'
+    label.textContent = name
+    const value = document.createElement('span')
+    value.className = 'mini-value'
+    value.textContent = `${formatPercent(g.percent)}${g.cls === 'ok' ? '' : ` ${g.stateText}`}`
     const track = document.createElement('span')
     track.className = 'mini-track'
     const fill = document.createElement('span')
     fill.style.width = `${Math.max(0, Math.min(100, g.percent))}%`
     track.append(fill)
-    mini.append(text, track)
-    host.append(mini)
+    mini.append(label, value, track)
+    minis.append(mini)
   }
+  if (minis.childElementCount) host.append(minis)
 }
 async function refreshStatus() {
   clearTimeout(statusTimer)
@@ -1034,6 +1056,7 @@ async function refreshStatus() {
   } finally {
     statusLoading = false
     renderStatus()
+    fitStatusPanel()
     if (!backoff) statusDelay = 60000
     if (!document.hidden) {
       statusTimer = window.setTimeout(() => void refreshStatus(), statusDelay)
@@ -1047,10 +1070,29 @@ document.addEventListener('visibilitychange', () => {
 })
 const statusOpen = el<HTMLButtonElement>('status-widget'),
   statusPanel = el('status-panel')
+// 詳細は舞台の中に収める。開く向きは CSS の配置に任せ、はみ出す分だけ高さを詰めて中をスクロールさせる（BOXP-504 TD-02）。
+function fitStatusPanel() {
+  statusPanel.style.maxHeight = ''
+  if (statusPanel.hidden) return
+  const stage = statusPanel.closest('.stage')
+  if (!stage) return
+  const p = statusPanel.getBoundingClientRect(),
+    s = stage.getBoundingClientRect(),
+    over = Math.max(0, s.top + 4 - p.top) + Math.max(0, p.bottom - (s.bottom - 4))
+  if (over > 0) statusPanel.style.maxHeight = `${Math.max(80, p.height - over)}px`
+}
 function setStatusShown(shown: boolean) {
   statusPanel.hidden = !shown
   statusOpen.setAttribute('aria-expanded', String(shown))
+  fitStatusPanel()
 }
+window.addEventListener('resize', fitStatusPanel)
+// ウィジェットの実際の高さを --status-h に出し、吹き出し・カード・時計がその分だけ上に収まるよう CSS で詰める。
+// 枠の数や文字の大きさで高さが変わっても重ならない（BOXP-504 TD-02）。隠れている間は 0。
+new ResizeObserver(() => {
+  document.body.style.setProperty('--status-h', `${Math.ceil(statusOpen.offsetHeight)}px`)
+  document.body.style.setProperty('--status-w', `${Math.ceil(statusOpen.offsetWidth)}px`)
+}).observe(statusOpen)
 function closeStatus() {
   setStatusShown(false)
 }
