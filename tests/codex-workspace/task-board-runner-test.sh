@@ -7030,6 +7030,8 @@ test_generated_reclaim_retained_done_latest() {
   [[ -d "${state}/workspaces/BOXP-638/${run}" ]] || fail 'held run deleted'
   assert_file_contains "${state}/metrics/workspace-capacity.edn" ':basis :retained-done-latest'
   assert_file_contains "${state}/metrics/outside-copy-reclaim-ledger.tsv" 'artifact.bin'
+  grep ':kind :outside-copy' "${state}/metrics/workspace-capacity.edn" | grep -q ':basis :retained-done-latest' || fail 'outside-copy reclaim of a retained Done latest run lacks its basis'
+  grep ':generated-reclaim-summary' "${state}/metrics/workspace-capacity.edn" | tail -1 | grep -q ':retained-done-latest-allocated-bytes' || fail 'summary lacks the retained-done bytes'
   unset CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE CODEX_TASK_BOARD_GENERATED_RECLAIM
 }
 
