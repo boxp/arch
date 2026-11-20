@@ -339,6 +339,29 @@ if [[ "$1 $2" == "pr diff" && "$3" =~ ^https://github.com/boxp/example/pull/[0-9
   exit 0
 fi
 
+if [[ "$1" == "api" && "$2" =~ ^repos/boxp/(example|arch)$ && "$*" == *".default_branch"* ]]; then
+  printf '%s\n' "${GH_FAKE_DEFAULT_BRANCH:-main}"
+  exit 0
+fi
+
+# compare BASE...BRANCH: "ahead" when BASE is on the default branch (listed in
+# GH_FAKE_DEFAULT_SHAS, or GH_FAKE_KNOWN_SHAS when unset), "diverged" when
+# GitHub only knows it from another ref, 404 otherwise.
+if [[ "$1" == "api" && "$2" =~ ^repos/boxp/(example|arch)/compare/([0-9a-f]{40})\.\.\.(.+)$ ]]; then
+  sha="${BASH_REMATCH[2]}"
+  on_default="${GH_FAKE_DEFAULT_SHAS:-${GH_FAKE_KNOWN_SHAS:-}}"
+  if [[ -n "${on_default}" ]] && grep -qx "${sha}" "${on_default}"; then
+    echo ahead
+    exit 0
+  fi
+  if [[ -n "${GH_FAKE_KNOWN_SHAS:-}" ]] && grep -qx "${sha}" "${GH_FAKE_KNOWN_SHAS}"; then
+    echo diverged
+    exit 0
+  fi
+  echo "gh: Not Found (HTTP 404)" >&2
+  exit 1
+fi
+
 if [[ "$1" == "api" && "$2" =~ ^repos/boxp/(example|arch)/commits/([0-9a-f]{40})$ ]]; then
   sha="${BASH_REMATCH[2]}"
   if [[ -n "${GH_FAKE_API_LOG:-}" ]]; then
@@ -7586,6 +7609,7 @@ test_notes_omission_prompt() {
 
 test_prune_salvage_reclaim() {
   local tmp vault state bin source known out old ws co big gh restore head
+  local default_shas feature feature_head pushed
   tmp="$(mktemp -d)"
   vault="${tmp}/vault"
   state="${tmp}/state"
@@ -7608,6 +7632,8 @@ test_prune_salvage_reclaim() {
   prune_git -C "${source}" commit -qm base
   git -C "${source}" update-ref refs/remotes/origin/main HEAD
   git -C "${source}" rev-list HEAD >>"${known}"
+  default_shas="${tmp}/default-shas"
+  git -C "${source}" rev-list HEAD >"${default_shas}"
   write_board "${vault}" ""
 
   # BOXP-701: old done run held by a local-only commit, staged and unstaged
@@ -7636,11 +7662,32 @@ test_prune_salvage_reclaim() {
   big="$(add_prune_run "${state}" "${source}" BOXP-702 "${old}")"
   head -c 200000 /dev/urandom >"${big}/big.bin"
 
+  # BOXP-703: a commit pushed to a branch that was later deleted (GitHub still
+  # knows the commit, a fresh clone does not) under a local-only commit. The
+  # bundle has to carry the pushed commit too, down to the default branch.
+  write_prune_ticket "${vault}" BOXP-703 "done" 2020-01-01
+  feature="$(add_prune_run "${state}" "${source}" BOXP-703 "${old}")"
+  pushed="$(prune_commit "${feature}" pushed)"
+  printf '%s\n' "${pushed}" >>"${known}"
+  git -C "${source}" update-ref refs/remotes/origin/deleted-703 "${pushed}"
+  prune_commit "${feature}" local-on-pushed >/dev/null
+  printf 'edit\n' >>"${feature}/tracked.txt"
+  feature_head="$(git -C "${feature}" rev-parse HEAD)"
+  mkdir -p "${tmp}/expected-703"
+  (cd "${feature}" && tar --exclude=.git -cf - .) | tar -C "${tmp}/expected-703" -xf -
+
   run() {
-    PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" \
+    PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" GH_FAKE_DEFAULT_SHAS="${default_shas}" CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" \
       CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo" CODEX_TASK_BOARD_SALVAGE_MAX_BYTES=100000 \
       run_prune "${vault}" "${state}"
   }
+
+  # GitHub's default branch does not reach the bundle prerequisites (for
+  # example a stale local origin/main after a force-push) -> held.
+  : >"${tmp}/no-default-shas"
+  default_shas="${tmp}/no-default-shas" run >"${out}" || fail "salvage off-default prune failed"
+  assert_file_contains "${out}" "^salvage: held ${ws}/BOXP-701/${old} reason=salvage-boundary-not-on-default-branch sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
+  default_shas="${tmp}/default-shas"
 
   # Default (dry-run mode): verified and measured, nothing kept or deleted.
   run >"${out}" || fail "salvage dry-run prune failed"
@@ -7686,6 +7733,19 @@ test_prune_salvage_reclaim() {
   [[ -x "${restore}/run.sh" ]] || fail "executable bit lost"
   [[ "$(git -C "${restore}" diff --cached --name-only | sort | tr '\n' ' ')" == "deleted.txt tracked.txt " ]] ||
     fail "staged state not restored"
+
+  # BOXP-703 restores from the default branch alone although its pushed
+  # commit is not there.
+  assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-703/${old}$"
+  if git -C "${gh}" cat-file -e "${pushed}^{commit}" 2>/dev/null; then fail "fixture: github clone must lack the pushed commit"; fi
+  archive="$(find "${state}/salvage/BOXP-703/${old}" -mindepth 1 -maxdepth 1 -type d)"
+  restore="${tmp}/restore-703"
+  git clone -q "${gh}" "${restore}"
+  git -C "${restore}" fetch -q "${archive}/0/commits.bundle" 'refs/salvage/keep/*:refs/salvage/keep/*' ||
+    fail "bundle must apply to a default-branch clone"
+  git -C "${restore}" checkout -q --detach "${feature_head}"
+  git -C "${restore}" apply "${archive}/0/worktree.patch"
+  diff -r --no-dereference -x .git "${tmp}/expected-703" "${restore}" || fail "restored BOXP-703 checkout differs from the original"
 }
 
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a

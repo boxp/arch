@@ -39,7 +39,7 @@ S1（BOXP-494: 継続 run の引継ぎと計測）は 7 日観察まで完了済
 ## S4 実装方針（退避 → 復元確認 → 回収）
 
 - 対象: prune(done) で、hold 理由が全 checkout とも `uncommitted-changes` / `commit-not-on-github` のみの run（lock なし）。
-- 退避物: checkout 毎に `staged.patch`・`worktree.patch`（binary/full-index）・`untracked.tar`（ignored 除外）・GitHub に無い commit の `commits.bundle`（境界 commit が GitHub に存在することを確認）。目録 `manifest.edn` に sha256・bytes・head・復元手順。
+- 退避物: checkout 毎に `staged.patch`・`worktree.patch`（binary/full-index）・`untracked.tar`（ignored 除外）・HEAD と GitHub に無い commit を GitHub 既定ブランチ上の commit まで含めた `commits.bundle`（境界 commit、bundle 不要時は HEAD が GitHub 既定ブランチの祖先であることを compare API で確認。GitHub に存在するだけの削除済みブランチ上の commit は fresh clone に含まれないため境界にしない）。目録 `manifest.edn` に sha256・bytes・head・復元手順。
 - 検証: alternates 付き一時 repo で index 一致、変更/untracked ファイルの bytes・実行 bit・symlink 一致、bundle verify / list-heads を確認できた場合のみ `$ROOT/salvage/<票>/<run>/<時刻>/` へ atomic move し、既存の削除経路へ。
 - 保護継続: stash・git 操作中・process 使用中・予算超過（既定 64MiB/run）・GitHub 照会失敗・境界 commit 不在。未 push tip の branch は共有 repo に残す。退避物は runner が削除しない（最終廃棄は範囲外）。
 - 段階: mode `off` / `dry-run`（既定、件数と bytes のみ計測）/ `on`。`generated-reclaim.edn` の `:salvage` が env `CODEX_TASK_BOARD_SALVAGE_RECLAIM` より優先。配備後 dry-run で would-salvage 件数・bytes を実測してから on。

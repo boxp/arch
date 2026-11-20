@@ -6234,6 +6234,38 @@
           (swap! cache assoc k status)
           status))))
 
+(defn github-default-branch
+  "GitHub's default branch name for `repo`, or nil when it cannot be read.
+  Cached for one prune pass."
+  [cache repo]
+  (let [k [:default-branch repo]]
+    (if (contains? @cache k)
+      (get @cache k)
+      (let [{:keys [exit out]} (command-result ["gh" "api" (str "repos/" repo) "--jq" ".default_branch"]
+                                               {:timeout-seconds 60})
+            branch (str/trim (str out))
+            v (when (and (zero? exit) (re-matches #"[A-Za-z0-9._/-]+" branch) (not (str/includes? branch ".."))) branch)]
+        (when v (swap! cache assoc k v))
+        v))))
+
+(defn github-on-default-branch
+  "Returns :yes when `sha` is an ancestor of (or equal to) the tip of GitHub's
+  `branch`, so a fresh clone contains it; :no when GitHub says otherwise
+  (diverged, behind or unknown commit); :unknown when GitHub cannot be asked."
+  [cache repo branch sha]
+  (let [k [:on-default repo branch sha]]
+    (or (get @cache k)
+        (let [{:keys [exit out err]} (command-result
+                                      ["gh" "api" (str "repos/" repo "/compare/" sha "..." branch) "--jq" ".status"]
+                                      {:timeout-seconds 60})
+              status (cond
+                       (and (zero? exit) (#{"ahead" "identical"} (str/trim out))) :yes
+                       (and (zero? exit) (#{"behind" "diverged"} (str/trim out))) :no
+                       (re-find #"HTTP (404|422)" (str err out)) :no
+                       :else :unknown)]
+          (swap! cache assoc k status)
+          status))))
+
 (defn find-checkouts
   "Directories under `dir` that contain `.git` (file or directory), deepest
   first. Symlinks are not followed and `.git` itself is not descended into,
@@ -6642,38 +6674,57 @@
                     (spit (str (fs/path verify-repo ".git" "objects" "info" "alternates"))
                           (str (fs/path common-dir "objects") "\n"))
                     (or
-                     ;; 1. Commits that GitHub does not have go into a bundle whose
-                     ;; prerequisites (boundary commits) GitHub does have.
-                     (when (seq missing)
-                       (let [unpushed (apply git "rev-list" (str "--max-count=" (inc max-unpushed-commits-per-checkout))
-                                             (concat missing ["--not" "--remotes"]))
-                             own (set (concat missing (remove str/blank? (str/split-lines (:out unpushed)))))
-                             parents (when (zero? (:exit unpushed))
-                                       (try @(p/process ["git" "-C" (str co) "log" "--no-walk=unsorted" "--format=%P" "--stdin"]
-                                                        {:in (str (str/join "\n" own) "\n") :out :string :err :string})
-                                            (catch Exception _ nil)))
-                             boundaries (when (and parents (zero? (:exit parents)))
-                                          (vec (distinct (remove #(or (str/blank? %) (own %)) (str/split (:out parents) #"\s+")))))]
-                         (cond
-                           (not (zero? (:exit unpushed))) {:hold "git-error"}
-                           (> (count own) max-unpushed-commits-per-checkout) {:hold "too-many-unpushed-commits"}
-                           (nil? boundaries) {:hold "git-error"}
-                           :else
-                           (or (some #(case (github-commit-status gh-cache repo %)
-                                        :exists nil
-                                        :missing {:hold (str "salvage-boundary-not-on-github sha=" %)}
-                                        {:hold (str "github-check-failed sha=" %)})
-                                     boundaries)
-                               (when-not (every? #(zero? (:exit (vgit {} "update-ref" (str "refs/salvage/keep/" %) %))) missing)
-                                 {:hold "salvage-bundle-failed"})
-                               (let [created (apply vgit {} "bundle" "create" "-q" (str (file "commits.bundle")) "--all"
-                                                    (when (seq boundaries) (cons "--not" boundaries)))
-                                     verified (when (zero? (:exit created)) (vgit {} "bundle" "verify" "-q" (str (file "commits.bundle"))))
-                                     heads (when (and verified (zero? (:exit verified)))
-                                             (vgit {} "bundle" "list-heads" (str (file "commits.bundle"))))
-                                     listed (set (map #(first (str/split % #"\s+")) (str/split-lines (str (:out heads)))))]
-                                 (when-not (and heads (zero? (:exit heads)) (every? listed missing))
-                                   {:hold "salvage-verify-failed bundle"}))))))
+                     ;; 1. A fresh clone is only guaranteed to contain what
+                     ;; GitHub's default branch reaches; a commit that GitHub
+                     ;; merely knows (a deleted or closed-PR branch) may be
+                     ;; absent from it. HEAD and every commit GitHub lacks go
+                     ;; into a bundle down to commits on the default branch,
+                     ;; and each of those prerequisites (or HEAD itself when it
+                     ;; is already on the default branch) is confirmed to be an
+                     ;; ancestor of GitHub's default branch.
+                     (let [default (github-default-branch gh-cache repo)
+                           default-ref (when default (str "refs/remotes/origin/" default))
+                           default-local (when default-ref (git "rev-parse" "--verify" "--quiet" (str default-ref "^{commit}")))
+                           keep (vec (distinct (cons head-sha missing)))
+                           unpushed (when (and default-local (zero? (:exit default-local)))
+                                      (apply git "rev-list" (str "--max-count=" (inc max-unpushed-commits-per-checkout))
+                                             (concat keep ["--not" default-ref])))
+                           own (when (and unpushed (zero? (:exit unpushed)))
+                                 (set (remove str/blank? (str/split-lines (:out unpushed)))))
+                           parents (when (seq own)
+                                     (try @(p/process ["git" "-C" (str co) "log" "--no-walk=unsorted" "--format=%P" "--stdin"]
+                                                      {:in (str (str/join "\n" own) "\n") :out :string :err :string})
+                                          (catch Exception _ nil)))
+                           anchors (cond
+                                     (nil? own) nil
+                                     (empty? own) [head-sha]
+                                     (and parents (zero? (:exit parents)))
+                                     (vec (distinct (remove #(or (str/blank? %) (own %)) (str/split (:out parents) #"\s+")))))
+                           kept (filterv #(contains? own %) keep)]
+                       (cond
+                         (nil? default) {:hold "github-check-failed default-branch"}
+                         (not (zero? (:exit default-local))) {:hold (str "salvage-default-branch-not-fetched ref=" default-ref)}
+                         (nil? own) {:hold "git-error"}
+                         (> (count own) max-unpushed-commits-per-checkout) {:hold "too-many-unpushed-commits"}
+                         (nil? anchors) {:hold "git-error"}
+                         :else
+                         (or (some #(case (github-on-default-branch gh-cache repo default %)
+                                      :yes nil
+                                      :no {:hold (str "salvage-boundary-not-on-default-branch sha=" %)}
+                                      {:hold (str "github-check-failed sha=" %)})
+                                   anchors)
+                             (when (seq own)
+                               (or
+                                (when-not (every? #(zero? (:exit (vgit {} "update-ref" (str "refs/salvage/keep/" %) %))) kept)
+                                  {:hold "salvage-bundle-failed"})
+                                (let [created (apply vgit {} "bundle" "create" "-q" (str (file "commits.bundle")) "--all"
+                                                     (when (seq anchors) (cons "--not" anchors)))
+                                      verified (when (zero? (:exit created)) (vgit {} "bundle" "verify" "-q" (str (file "commits.bundle"))))
+                                      heads (when (and verified (zero? (:exit verified)))
+                                              (vgit {} "bundle" "list-heads" (str (file "commits.bundle"))))
+                                      listed (set (map #(first (str/split % #"\s+")) (str/split-lines (str (:out heads)))))]
+                                  (when-not (and heads (zero? (:exit heads)) (every? listed kept))
+                                    {:hold "salvage-verify-failed bundle"})))))))
                      ;; 2. Index and worktree changes as binary patches; untracked
                      ;; files (not ignored ones, as before) as a tar archive.
                      (let [diff-args ["--binary" "--full-index" "--no-color" "--no-ext-diff" "--no-textconv" "--no-renames"]
