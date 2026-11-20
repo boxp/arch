@@ -51,3 +51,13 @@ S1（BOXP-494: 継続 run の引継ぎと計測）は 7 日観察まで完了済
 - 復元可能性: その既定ブランチ commit が GitHub 既定ブランチ上にあることを 1 回確認し、bundle ヘッダの prerequisite すべてがその祖先であることをローカルで確認。bundle に載らない ref（既定ブランチが到達済み）は祖先確認のうえ `refs.txt` に名前と sha を保存。shallow repo は保護。
 - 範囲: 退避するのは checkout 内の追跡差分と untracked のみなので、run 内の checkout 外のファイル（`outside-checkout`）や再生成可能でない ignored ファイル（`ignored-unknown` 等）が一つでもあれば run を保護。
 - 対象 checkout: hold のある checkout だけでなく run 内の **全 checkout** を退避対象にする（clean な run 所有 clone も削除済みブランチの ref 等を唯一保持し得るため、checkout の選別も列挙しない）。どれか一つでも退避・検証できなければ run を保護。
+
+## S4b: shallow 共有 checkout の worktree も退避対象にする (2026-11-20)
+
+- 配備後 dry-run(09:14Z〜) 1 pass: 対象 118 run のうち would-salvage 37 run(退避 9.6MB、回収見込み 0.16GB)、
+  保護 81 run の最大理由は salvage-shallow-repository 52 run/2.58GB。共有 checkout `~/ghq/github.com/boxp/arch` 自体が shallow のため。
+- shallow の graph は実 graph の部分 graph なので、ローカルで「祖先である」と出れば GitHub 上でも真。
+  scratch repo は shallow 一覧を持たないので、履歴が shallow 境界をまたぐ bundle は作成に失敗して hold(fail-closed)。
+  よって一律 hold を外し、manifest に `:shallow` を記録する。
+- 試験: BOXP-709(shallow worktree の local commit → 退避・既定ブランチ clone から復元一致)、
+  BOXP-710(depth 1 で取得した境界越え tip → `salvage-verify-failed bundle` で保護)。

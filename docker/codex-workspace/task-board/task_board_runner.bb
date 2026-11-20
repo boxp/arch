@@ -6683,7 +6683,11 @@
         (cond
           (some #(not (zero? (:exit %))) [head refs reflog shallow]) {:hold "git-error"}
           (not (contains? #{0 1} (:exit branch))) {:hold "git-error"}
-          (not= "false" (str/trim (:out shallow))) {:hold "salvage-shallow-repository"}
+          ;; A shallow repository (the shared checkouts are shallow clones)
+          ;; needs no hold of its own: its graph is a subgraph of the real one,
+          ;; so a local ancestry answer of yes is true on GitHub too, and the
+          ;; scratch repository below has no shallow list, so a bundle whose
+          ;; history crosses the shallow boundary fails to build and holds.
           (and stash (zero? (:exit stash))) {:hold "stash-present"}
           :else
           (let [head-sha (str/trim (:out head))
@@ -6813,6 +6817,7 @@
                                            :repo repo :head head-sha
                                            :branch (when (zero? (:exit branch)) (str/trim (:out branch)))
                                            :owned-clone owned-clone?
+                                           :shallow (= "true" (str/trim (:out shallow)))
                                            :kept-refs (count keep-refs)
                                            :changed-paths (count paths) :untracked-paths (count untracked)
                                            :files (into (sorted-map) (map (fn [n] [n {:bytes (fs/size (file n)) :sha256 (salvage-sha256 (file n))}]) files))
