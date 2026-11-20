@@ -96,6 +96,18 @@
        (is (= 403 (:status (h (req {:uri "/ws" :websocket? true :headers (assoc auth "origin" "https://evil.example")})))))
        (is (= 503 (:status ((ag/handler (assoc cfg :owner-emails #{})) (req {:uri "/" :headers auth})))) "unconfigured")))))
 
+(deftest mobile-key-bar
+  ;; Phone soft keyboards lack arrows/Tab: every on-screen key must exist in the
+  ;; page and be mapped in app.js (agy needs → to reach "Done" after login).
+  (let [static (str (fs/path repo "docker/codex-workspace/auth-gateway/static"))
+        html (slurp (str static "/index.html"))
+        js (slurp (str static "/app.js"))
+        keys (map second (re-seq #"data-key=\"([a-z]+)\"" html))]
+    (is (= #{"left" "up" "down" "right" "enter" "tab" "backtab" "space" "backspace" "esc" "ctrlc"} (set keys)))
+    (doseq [k keys]
+      (is (re-find (re-pattern (str "\\b" k ": '")) js) (str "key mapped: " k)))
+    (is (str/includes? js "applicationCursorKeysMode") "arrows follow DECCKM")))
+
 (deftest child-environment
   (let [e (ag/child-env {"HOME" "/home/boxp" "PATH" "/usr/bin" "ANTHROPIC_API_KEY" "x" "OPENAI_API_KEY" "x"
                          "GEMINI_API_KEY" "x" "GOOGLE_API_KEY" "x" "GOOGLE_APPLICATION_CREDENTIALS" "/x"
