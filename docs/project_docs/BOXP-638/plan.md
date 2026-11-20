@@ -74,3 +74,21 @@ S1（BOXP-494: 継続 run の引継ぎと計測）は 7 日観察まで完了済
 - 本番 BOXP-122 run で読み取り確認: 位置15の commit が main 上(compare=ahead)、境界以降は 34 commit で上限内。
 - 試験: BOXP-711(完全履歴で開始→後で depth 1 fetch で shallow 化、205 commit 先行に見える run)が旧版で保護・新版で退避→
   既定ブランチ clone へ bundle 適用・復元一致。
+
+## S4 の実測（配備後）
+
+- 11:02Z: 退避 40 run・削除 43 run、空き 64.95→65.39GB。
+- S4c 配備後 12:50Z: 退避 33 run・削除 42 run、保護 75→43（too-many-unpushed 42→0）、空き 65.90→67.18GB（df 実測）。
+- 残る保護 43: checkout 外の唯一成果 20、bundle 検証失敗 11（fail-closed）、不明 ignored 8、git 操作中 2、ほか 2。いずれも内容証明が通らないため保護を維持する。
+
+## S3a 段階 guard と容量対策印
+
+- 既存: 空き 8GiB 未満で新規 run を全停止（`CODEX_TASK_BOARD_MIN_FREE_BYTES`）。停止中は容量対策の票も起動できず、復帰に SSH の手作業が要った。
+- 変更:
+  - hard（8GiB 未満、従来どおり）: 通常票は止める。frontmatter に `capacity_relief: true` を持つ票だけ、空き 4GiB 以上（`CODEX_TASK_BOARD_RELIEF_MIN_FREE_BYTES`）かつ inode 余裕ありなら、repo checkout なしで起動する。prompt で clone/build/install をしないよう伝え、repo 変更が要るなら blocked で通常 run に渡す。
+  - soft（16GiB 未満、`CODEX_TASK_BOARD_SOFT_MIN_FREE_BYTES`）: run workspace をまだ持たない新規票だけ待たせ、継続中の票は進める（作業途中の票が終わり回収対象になれる）。
+- 閾値の根拠（2026-11-20 実測）: run 1 つの実割当は p50 17MB・p90 0.55GB・p99 0.97GB・最大 2.25GB（workspace-size-cache 121 run）。soft = hard 8GiB + 最大級 run 3〜4 本分。relief 起動は checkout なしで runs/ のログ程度（runs 全体で 0.70GB）のため 4GiB を下限とする。新規 checkout 自体の追加量は p99 3.4MB と小さく、増加は run 中の生成物が主。
+- rollback（再起動のみ・ロジック差し戻し不要）: `SOFT_MIN_FREE_BYTES` を MIN 以下にすると soft 段なし、`RELIEF_MIN_FREE_BYTES` を MIN 以上にすると relief 起動なし（従来の全停止）。
+- 印は Owner / coordinator が票 frontmatter に付ける。印があっても checkout は作らず、空き 4GiB 未満・inode 不足では起動しない。
+- localllm-coder 担当票は repo worktree が無いと起動前検査（no-repo-worktree）で失敗するため、hard 段の checkout なし起動の対象外とし通常票と同様に待たせる（codex review P1）。soft 段では従来どおり checkout ありで起動できる。
+- 次段 S3b: bytes 予算（票ごと・workspaces 全体）の観測と超過票だけの新規 checkout 停止。数値は 1 週間の実測から決める。
