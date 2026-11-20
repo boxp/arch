@@ -3761,6 +3761,59 @@
   (let [m (System/getenv "CODEX_TASK_BOARD_ANTIGRAVITY_MODEL")]
     (when-not (str/blank? m) (str/trim m))))
 
+;; BOXP-640: only a plain model slug (as `agy models` prints it) reaches --model,
+;; so a ticket value can never become another CLI flag.
+(def antigravity-model-slug-pattern #"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+
+(defn antigravity-model-slug [value]
+  (let [v (some-> value str str/trim (str/replace #"^([\"'])(.*)\1$" "$2") str/trim)]
+    (when (and v (re-matches antigravity-model-slug-pattern v)) v)))
+
+(defn antigravity-model-choice
+  "The model of an antigravity run: the ticket's `antigravity-model` frontmatter
+  (one ticket), then CODEX_TASK_BOARD_ANTIGRAVITY_MODEL (every run), else the CLI
+  default with no --model. A ticket value that is not a plain slug is not used
+  and is marked, so the summary never shows it as the run's model."
+  [ticket-fm]
+  (let [raw (:antigravity-model ticket-fm)
+        ticket-model (antigravity-model-slug raw)
+        env-model (antigravity-model-slug (antigravity-model))]
+    (cond-> (cond ticket-model {:model ticket-model :model-source :ticket}
+                  env-model {:model env-model :model-source :env}
+                  :else {:model "agy-default" :model-source :cli-default})
+      (and (not (str/blank? raw)) (nil? ticket-model)) (assoc :model-request-invalid true))))
+
+(defn antigravity-pinned-model [model-info]
+  (when (#{:ticket :env} (:model-source model-info)) (:model model-info)))
+
+(defn antigravity-listed-models
+  "Model slugs in `agy models` output: the first column of each line."
+  [text]
+  (->> (str/split-lines (str text))
+       (keep #(second (re-find #"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\s|$)" %)))
+       set))
+
+(defn antigravity-model-listing!
+  "BOXP-640: before a pinned run, the runner itself starts the official CLI's
+  `agy models` (no agent drives it) and keeps its stdout in the run dir as
+  agy-models.txt. `:model-listed` is true/false only when the listing worked."
+  [model run-dir env-map]
+  (let [out-path (fs/path run-dir "agy-models.txt")]
+    (try
+      (let [proc (p/process [(env "CODEX_TASK_BOARD_ANTIGRAVITY_BIN" "agy") "models"]
+                            {:dir (str run-dir) :in "" :out :string :err :string :env env-map})
+            res (deref proc 60000 ::timeout)]
+        (if (= ::timeout res)
+          (do (p/destroy-tree proc) {:model-list "timeout"})
+          (do (spit (str out-path) (str (:out res)))
+              (if (zero? (:exit res))
+                {:model-list (str out-path)
+                 :model-listed (contains? (antigravity-listed-models (:out res)) model)}
+                {:model-list (str out-path) :model-list-exit (:exit res)}))))
+      (catch Exception e
+        (log! (str "agy models failed: " (.getMessage e)))
+        {:model-list "failed"}))))
+
 (defn antigravity-prompt-arg
   "The prompt file can be far larger than one command-line argument allows, so
   the CLI gets a short instruction that points at it."
@@ -3769,9 +3822,8 @@
        "Read that whole file first with your file tools and follow it exactly: it is your task, not reference material. "
        "Your final response must end as that file specifies, with exactly one TASK_BOARD_RESULT marker line."))
 
-(defn antigravity-args [prompt-path run-dir workspace]
-  (let [bypass? (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
-        model (antigravity-model)]
+(defn antigravity-args [prompt-path run-dir workspace model]
+  (let [bypass? (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))]
     (cond-> [(env "CODEX_TASK_BOARD_ANTIGRAVITY_BIN" "agy")
              "--print" (antigravity-prompt-arg prompt-path)
              "--output-format" "stream-json"
@@ -3798,6 +3850,31 @@
                     (:result v)
                     acc)))
               nil (line-seq reader)))))
+
+(defn antigravity-stream-init
+  "The `init` object of the first `init` event ({\"event\":\"init\",\"init\":{cwd, tools,
+  permission_mode, model, ...}}), or nil. The CLI puts `model` there only when
+  --model or --agent was given."
+  [path]
+  (when (fs/exists? path)
+    (with-open [reader (io/reader (str path))]
+      (some (fn [line]
+              (let [v (when (str/starts-with? (str/triml line) "{")
+                        (try (json/parse-string line true) (catch Exception _ nil)))]
+                (when (and (map? v) (= "init" (or (:event v) (:type v))))
+                  (if (map? (:init v)) (:init v) (dissoc v :event :type)))))
+            (line-seq reader)))))
+
+(defn antigravity-model-evidence
+  "What the run itself shows about its model: the `init` model and whether it is
+  the pinned slug on a successful run. The CLI default is never confirmed."
+  [model-info init result]
+  (let [pinned (antigravity-pinned-model model-info)
+        init-model (some-> (:model init) str)]
+    (cond-> {}
+      init-model (assoc :init-model init-model)
+      (:agent init) (assoc :init-agent (str (:agent init)))
+      true (assoc :model-confirmed (boolean (and pinned (= pinned init-model) (= "SUCCESS" (:status result))))))))
 
 (def antigravity-quota-pattern
   #"(?i)RESOURCE_EXHAUSTED|quota|\b429\b|exhausted your capacity|rate.?limit")
@@ -3870,12 +3947,14 @@
           codex-hooks? (and todo-hooks? (not (claude-assignee? agent)) (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true")))
           toml-hook (fn [event matcher] (str "[{matcher=" (pr-str matcher) ",hooks=[{type=\"command\",command=" (pr-str (hook-command event)) "}]}]"))
           model-info (cond (and (claude-assignee? agent) (not= agent "fable")) (resolve-claude-model agent)
-                           (antigravity-assignee? agent) (if-let [m (antigravity-model)]
-                                                           {:model m :model-source :env}
-                                                           {:model "agy-default" :model-source :cli-default}))
+                           (antigravity-assignee? agent)
+                           (let [choice (antigravity-model-choice (try (ticket-frontmatter ticket-id) (catch Exception _ {})))]
+                             (if-let [pinned (antigravity-pinned-model choice)]
+                               (assoc choice :antigravity (antigravity-model-listing! pinned dir (antigravity-env (System/getenv) {})))
+                               choice)))
           agent-args (cond
                        (antigravity-assignee? agent)
-                       (antigravity-args prompt-path dir workspace)
+                       (antigravity-args prompt-path dir workspace (antigravity-pinned-model model-info))
 
                        (claude-assignee? agent)
                        (cond-> [(env "CODEX_TASK_BOARD_CLAUDE_BIN" "claude") "--print" "--output-format" "stream-json" "--verbose"]
@@ -3986,9 +4065,14 @@
                        ((resolve 'agent-auth-expiry/record-run-outcome!) (root) "antigravity"
                         outcome (quot (System/currentTimeMillis) 1000))))
                    (catch Exception _ (log! "agent auth outcome record failed"))))
+          antigravity-init (when (antigravity-assignee? agent)
+                             (try (antigravity-stream-init stdout-path)
+                                  (catch Exception e (log! (str "antigravity init read failed: " (.getMessage e))) nil)))
           model-info (cond-> model-info
                        (antigravity-assignee? agent)
-                       (assoc :antigravity (cond-> {:status (some-> antigravity-result :status str)
+                       (update :antigravity merge (antigravity-model-evidence model-info antigravity-init antigravity-result))
+                       (antigravity-assignee? agent)
+                       (update :antigravity merge (cond-> {:status (some-> antigravity-result :status str)
                                                     :failure (some-> (if antigravity-result (antigravity-failure-kind antigravity-result) :no-result) name)}
                                              (:finished_reason antigravity-result) (assoc :finished-reason (str (:finished_reason antigravity-result)))
                                              (map? (:usage antigravity-result)) (assoc :usage (select-keys (:usage antigravity-result) [:input_tokens :output_tokens :thinking_tokens :cache_read_tokens :total_tokens])))))
@@ -8737,10 +8821,25 @@
                                       "review" :review-fix "blocked" :blocked-retry "done" nil}]
                [(str "antigravity route " status) (candidate-action {:status status} "antigravity") expected])
              (let [ws {:workspace-dir "/ws/repo" :repos []}
-                   args (with-redefs [vault (constantly "/vault") workspace-add-dirs (constantly ["/ws"]) antigravity-model (constantly nil)]
-                          (antigravity-args "/runs/r/prompt.md" "/runs/r" ws))
-                   pinned (with-redefs [vault (constantly "/vault") workspace-add-dirs (constantly []) antigravity-model (constantly "gemini-4-argon")]
-                            (antigravity-args "/runs/r/prompt.md" "/runs/r" ws))
+                   args (with-redefs [vault (constantly "/vault") workspace-add-dirs (constantly ["/ws"])]
+                          (antigravity-args "/runs/r/prompt.md" "/runs/r" ws nil))
+                   pinned (with-redefs [vault (constantly "/vault") workspace-add-dirs (constantly [])]
+                            (antigravity-args "/runs/r/prompt.md" "/runs/r" ws "gemini-4-argon"))
+                   choice (fn [fm env-model] (with-redefs [antigravity-model (constantly env-model)] (antigravity-model-choice fm)))
+                   list-dir (fs/create-temp-dir)
+                   fake-agy (fs/path list-dir "agy")
+                   _ (spit (str fake-agy) (str "#!/bin/sh\n"
+                                               "[ \"$1\" = models ] || exit 9\n"
+                                               "printf 'gemini-4-neon-xhigh            Gemini 4 Neon (XHigh)\\n'\n"
+                                               "printf 'gemini-4-neon-high             Gemini 4 Neon (High)\\n...\\n'\n"))
+                   _ (fs/set-posix-file-permissions fake-agy "rwx------")
+                   listing (fn [model bin] (with-redefs [env (fn [k d] (if (= k "CODEX_TASK_BOARD_ANTIGRAVITY_BIN") bin d))]
+                                             (dissoc (antigravity-model-listing! model list-dir {"PATH" (System/getenv "PATH")}) :model-list)))
+                   init-tmp (fs/create-temp-file)
+                   _ (spit (str init-tmp) (str "{\"event\":\"init\",\"conversation_id\":\"c\",\"init\":{\"cwd\":\"/ws\",\"model\":\"gemini-4-neon-high\"}}\n"
+                                               "{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\"}}\n"))
+                   init (antigravity-stream-init init-tmp)
+                   neon {:model "gemini-4-neon-high" :model-source :ticket}
                    after (fn [xs flag] (second (drop-while #(not= flag %) xs)))
                    tmp (fs/create-temp-file)
                    _ (spit (str tmp) (str "{\"event\":\"init\",\"cwd\":\"/ws\"}\n"
@@ -8759,6 +8858,28 @@
                 ["antigravity add dirs" (->> args (partition 2 1) (filter #(= "--add-dir" (first %))) (mapv second)) ["/vault" "/runs/r" "/ws"]]
                 ["antigravity default model" (some #{"--model"} args) nil]
                 ["antigravity pinned model" (after pinned "--model") "gemini-4-argon"]
+                ;; BOXP-640: ticket slug, then the env var, then the CLI default.
+                ["antigravity model from ticket" (choice {:antigravity-model "gemini-4-neon-high"} "gemini-4-argon") neon]
+                ["antigravity quoted ticket model" (:model (choice {:antigravity-model "\"gemini-4-neon-high\""} nil)) "gemini-4-neon-high"]
+                ["antigravity model from env" (choice {} "gemini-4-argon") {:model "gemini-4-argon" :model-source :env}]
+                ["antigravity cli default" (choice {:antigravity-model ""} nil) {:model "agy-default" :model-source :cli-default}]
+                ["antigravity flag-like ticket model refused" (choice {:antigravity-model "--agent x"} nil)
+                 {:model "agy-default" :model-source :cli-default :model-request-invalid true}]
+                ["antigravity default is not pinned" (antigravity-pinned-model {:model "agy-default" :model-source :cli-default}) nil]
+                ["antigravity listed slugs" (antigravity-listed-models "gemini-4-neon-high             Gemini 4 Neon (High)\n...\n\ngemini-pro-orchestrator  Orchestrator (Carbon)")
+                 #{"gemini-4-neon-high" "gemini-pro-orchestrator"}]
+                ["antigravity models listing has neon" (listing "gemini-4-neon-high" (str fake-agy)) {:model-listed true}]
+                ["antigravity models listing lacks slug" (listing "gemini-4-neon-max" (str fake-agy)) {:model-listed false}]
+                ["antigravity models listing kept" (str/includes? (slurp (str (fs/path list-dir "agy-models.txt"))) "gemini-4-neon-high") true]
+                ["antigravity models listing failure" (listing "gemini-4-neon-high" "/bin/false") {:model-list-exit 1}]
+                ["antigravity init event" init {:cwd "/ws" :model "gemini-4-neon-high"}]
+                ["antigravity init without model" (antigravity-stream-init tmp) {:cwd "/ws"}]
+                ["antigravity pinned model confirmed" (antigravity-model-evidence neon init {:status "SUCCESS"})
+                 {:init-model "gemini-4-neon-high" :model-confirmed true}]
+                ["antigravity failed run not confirmed" (:model-confirmed (antigravity-model-evidence neon init {:status "ERROR"})) false]
+                ["antigravity other init model not confirmed" (:model-confirmed (antigravity-model-evidence {:model "gemini-4-neon-xhigh" :model-source :env} init {:status "SUCCESS"})) false]
+                ["antigravity cli default never confirmed" (antigravity-model-evidence {:model "agy-default" :model-source :cli-default} {:cwd "/ws"} {:status "SUCCESS"})
+                 {:model-confirmed false}]
                 ["antigravity bypass" (some #{"--dangerously-skip-permissions"} args) "--dangerously-skip-permissions"]
                 ["antigravity env drops api billing"
                  (antigravity-env {"PATH" "/bin" "GEMINI_API_KEY" "k" "GOOGLE_API_KEY" "k" "AGY_ADC_AUTH" "true" "GOOGLE_APPLICATION_CREDENTIALS" "/c"} {"CODEX_TASK_BOARD_RUN_ID" "r"})
