@@ -339,6 +339,29 @@ if [[ "$1 $2" == "pr diff" && "$3" =~ ^https://github.com/boxp/example/pull/[0-9
   exit 0
 fi
 
+if [[ "$1" == "api" && "$2" =~ ^repos/boxp/(example|arch)$ && "$*" == *".default_branch"* ]]; then
+  printf '%s\n' "${GH_FAKE_DEFAULT_BRANCH:-main}"
+  exit 0
+fi
+
+# compare BASE...BRANCH: "ahead" when BASE is on the default branch (listed in
+# GH_FAKE_DEFAULT_SHAS, or GH_FAKE_KNOWN_SHAS when unset), "diverged" when
+# GitHub only knows it from another ref, 404 otherwise.
+if [[ "$1" == "api" && "$2" =~ ^repos/boxp/(example|arch)/compare/([0-9a-f]{40})\.\.\.(.+)$ ]]; then
+  sha="${BASH_REMATCH[2]}"
+  on_default="${GH_FAKE_DEFAULT_SHAS:-${GH_FAKE_KNOWN_SHAS:-}}"
+  if [[ -n "${on_default}" ]] && grep -qx "${sha}" "${on_default}"; then
+    echo ahead
+    exit 0
+  fi
+  if [[ -n "${GH_FAKE_KNOWN_SHAS:-}" ]] && grep -qx "${sha}" "${GH_FAKE_KNOWN_SHAS}"; then
+    echo diverged
+    exit 0
+  fi
+  echo "gh: Not Found (HTTP 404)" >&2
+  exit 1
+fi
+
 if [[ "$1" == "api" && "$2" =~ ^repos/boxp/(example|arch)/commits/([0-9a-f]{40})$ ]]; then
   sha="${BASH_REMATCH[2]}"
   if [[ -n "${GH_FAKE_API_LOG:-}" ]]; then
@@ -7582,6 +7605,253 @@ test_notes_omission_prompt() {
         ;;
     esac
   done
+}
+
+test_prune_salvage_reclaim() {
+  local tmp vault state bin source known out old ws co big gh restore head
+  local default_shas feature feature_head pushed owned side tagged gone note junk held708 clean708 gone708
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  source="${tmp}/source"
+  known="${tmp}/known-shas"
+  out="${tmp}/prune.out"
+  old="20200101T000000Z-00000000-0000-0000-0000-000000000000"
+  ws="${state}/workspaces"
+  mkdir -p "${bin}" "${state}/locks" "${tmp}/proc/100"
+  ln -s / "${tmp}/proc/100/cwd"
+  echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"${tmp}/mountinfo"
+  : >"${known}"
+  make_fake_gh "${bin}"
+  make_prune_source_repo "${source}"
+  printf 'keep\n' >"${source}/tracked.txt"
+  printf 'gone\n' >"${source}/deleted.txt"
+  printf 'node_modules/\n' >"${source}/.gitignore"
+  git -C "${source}" add .
+  prune_git -C "${source}" commit -qm base
+  git -C "${source}" update-ref refs/remotes/origin/main HEAD
+  git -C "${source}" rev-list HEAD >>"${known}"
+  default_shas="${tmp}/default-shas"
+  git -C "${source}" rev-list HEAD >"${default_shas}"
+  write_board "${vault}" ""
+
+  # BOXP-701: old done run held by a local-only commit, staged and unstaged
+  # edits, a deletion, untracked files (an executable and a symlink) and an
+  # ignored file -> archived, verified, then deleted.
+  write_prune_ticket "${vault}" BOXP-701 "done" 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-701 "${old}")"
+  prune_commit "${co}" local-only >/dev/null
+  printf 'staged\n' >>"${co}/tracked.txt"
+  git -C "${co}" add tracked.txt
+  printf 'unstaged\n' >>"${co}/tracked.txt"
+  git -C "${co}" rm -q deleted.txt
+  printf 'new\n' >"${co}/new.txt"
+  head -c 3000 /dev/urandom >"${co}/blob.bin"
+  printf '#!/bin/sh\n' >"${co}/run.sh"
+  printf 'spaces\n' >"${co}/ "
+  chmod +x "${co}/run.sh"
+  ln -s tracked.txt "${co}/link"
+  mkdir -p "${co}/node_modules"
+  printf 'cache\n' >"${co}/node_modules/cache"
+  head="$(git -C "${co}" rev-parse HEAD)"
+  mkdir -p "${tmp}/expected"
+  (cd "${co}" && tar --exclude=.git --exclude=node_modules -cf - .) | tar -C "${tmp}/expected" -xf -
+
+  # BOXP-702: the untracked data exceeds the archive budget -> held.
+  write_prune_ticket "${vault}" BOXP-702 "done" 2020-01-01
+  big="$(add_prune_run "${state}" "${source}" BOXP-702 "${old}")"
+  head -c 200000 /dev/urandom >"${big}/big.bin"
+
+  # BOXP-703: a commit pushed to a branch that was later deleted (GitHub still
+  # knows the commit, a fresh clone does not) under a local-only commit. The
+  # bundle has to carry the pushed commit too, down to the default branch.
+  write_prune_ticket "${vault}" BOXP-703 "done" 2020-01-01
+  feature="$(add_prune_run "${state}" "${source}" BOXP-703 "${old}")"
+  pushed="$(prune_commit "${feature}" pushed)"
+  printf '%s\n' "${pushed}" >>"${known}"
+  git -C "${source}" update-ref refs/remotes/origin/deleted-703 "${pushed}"
+  prune_commit "${feature}" local-on-pushed >/dev/null
+  printf 'edit\n' >>"${feature}/tracked.txt"
+  feature_head="$(git -C "${feature}" rev-parse HEAD)"
+  mkdir -p "${tmp}/expected-703"
+  (cd "${feature}" && tar --exclude=.git -cf - .) | tar -C "${tmp}/expected-703" -xf -
+
+  # BOXP-704: a run-owned clone whose HEAD is on main with an edit, and a
+  # local branch whose tip GitHub knows only from a deleted branch. The tip
+  # is not HEAD and not missing on GitHub, yet the clone is its only copy.
+  write_prune_ticket "${vault}" BOXP-704 "done" 2020-01-01
+  owned="${ws}/BOXP-704/${old}/ghq/github.com/boxp/example"
+  mkdir -p "$(dirname "${owned}")"
+  git clone -q "${source}" "${owned}"
+  git -C "${owned}" remote set-url origin https://github.com/boxp/example.git
+  git -C "${owned}" checkout -q -b side-704
+  side="$(prune_commit "${owned}" side-pushed)"
+  printf '%s\n' "${side}" >>"${known}"
+  git -C "${owned}" checkout -q main
+  printf 'edit\n' >>"${owned}/tracked.txt"
+
+  # BOXP-705: a run-owned clone whose tag points into a remote-tracking ref of
+  # a branch GitHub deleted; neither HEAD nor a local branch reaches it. Every
+  # ref of a run-owned repository is kept, whatever its namespace.
+  write_prune_ticket "${vault}" BOXP-705 "done" 2020-01-01
+  tagged="${ws}/BOXP-705/${old}/ghq/github.com/boxp/example"
+  mkdir -p "$(dirname "${tagged}")"
+  git clone -q "${source}" "${tagged}"
+  git -C "${tagged}" remote set-url origin https://github.com/boxp/example.git
+  git -C "${tagged}" checkout -q -b gone-705
+  gone="$(prune_commit "${tagged}" gone-pushed)"
+  printf '%s\n' "${gone}" >>"${known}"
+  git -C "${tagged}" update-ref refs/remotes/origin/gone-705 "${gone}"
+  prune_git -C "${tagged}" tag -a -m release v705 "${gone}"
+  git -C "${tagged}" checkout -q main
+  git -C "${tagged}" branch -q -D gone-705
+  git -C "${tagged}" reflog expire --expire=all --all
+  printf 'edit\n' >>"${tagged}/tracked.txt"
+
+  # BOXP-706: a note next to the checkout is not archived -> held.
+  write_prune_ticket "${vault}" BOXP-706 "done" 2020-01-01
+  note="$(add_prune_run "${state}" "${source}" BOXP-706 "${old}")"
+  printf 'edit\n' >>"${note}/tracked.txt"
+  printf 'memo\n' >"${ws}/BOXP-706/${old}/notes.md"
+
+  # BOXP-707: an ignored file that is not regenerable is not archived -> held.
+  write_prune_ticket "${vault}" BOXP-707 "done" 2020-01-01
+  junk="$(add_prune_run "${state}" "${source}" BOXP-707 "${old}")"
+  printf 'edit\n' >>"${junk}/tracked.txt"
+  printf 'node_modules/\nsecret.env\n' >"${junk}/.git-info-exclude"
+  printf 'secret\n' >"${junk}/secret.env"
+  git -C "${junk}" config core.excludesFile "${junk}/.git-info-exclude"
+
+  # BOXP-708: one held clone and one clean run-owned clone whose only copy of
+  # a deleted branch is a remote-tracking ref. The clean clone is archived too.
+  write_prune_ticket "${vault}" BOXP-708 "done" 2020-01-01
+  held708="${ws}/BOXP-708/${old}/ghq/github.com/boxp/example"
+  clean708="${ws}/BOXP-708/${old}/ghq/github.com/boxp/other"
+  mkdir -p "$(dirname "${held708}")"
+  git clone -q "${source}" "${held708}"
+  git -C "${held708}" remote set-url origin https://github.com/boxp/example.git
+  printf 'edit\n' >>"${held708}/tracked.txt"
+  git clone -q "${source}" "${clean708}"
+  git -C "${clean708}" remote set-url origin https://github.com/boxp/example.git
+  git -C "${clean708}" checkout -q -b gone-708
+  gone708="$(prune_commit "${clean708}" gone-708)"
+  printf '%s\n' "${gone708}" >>"${known}"
+  git -C "${clean708}" update-ref refs/remotes/origin/gone-708 "${gone708}"
+  git -C "${clean708}" checkout -q main
+  git -C "${clean708}" branch -q -D gone-708
+  git -C "${clean708}" reflog expire --expire=all --all
+
+  run() {
+    PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" GH_FAKE_DEFAULT_SHAS="${default_shas}" CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" \
+      CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo" CODEX_TASK_BOARD_SALVAGE_MAX_BYTES=100000 \
+      run_prune "${vault}" "${state}"
+  }
+
+  # GitHub's default branch does not reach the bundle prerequisites (for
+  # example a stale local origin/main after a force-push) -> held.
+  : >"${tmp}/no-default-shas"
+  default_shas="${tmp}/no-default-shas" run >"${out}" || fail "salvage off-default prune failed"
+  assert_file_contains "${out}" "^salvage: held ${ws}/BOXP-701/${old} reason=salvage-boundary-not-on-default-branch sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
+  default_shas="${tmp}/default-shas"
+
+  # Default (dry-run mode): verified and measured, nothing kept or deleted.
+  run >"${out}" || fail "salvage dry-run prune failed"
+  assert_file_contains "${out}" "^salvage: would-salvage ${ws}/BOXP-701/${old} bytes=[0-9]+$"
+  assert_file_contains "${out}" "^salvage: held ${ws}/BOXP-702/${old} reason=salvage-too-large checkout=ghq/github.com/boxp/example$"
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-701/${old} reason=uncommitted-changes checkout=ghq/github.com/boxp/example$"
+  [[ -f "${co}/new.txt" ]] || fail "dry-run salvage must keep the run"
+  [[ -z "$(find "${state}/salvage" -mindepth 1 -not -path "${state}/salvage/.tmp")" ]] || fail "dry-run salvage must not keep an archive"
+
+  # Switched off in the config file: no attempt even with the env set to on.
+  printf '{:salvage :off}\n' >"${state}/generated-reclaim.edn"
+  CODEX_TASK_BOARD_SALVAGE_RECLAIM=on run >"${out}" || fail "salvage off prune failed"
+  if grep -q '^salvage:' "${out}"; then fail "salvage must not run when switched off"; fi
+  [[ -f "${co}/new.txt" ]] || fail "salvage off must keep the run"
+  rm "${state}/generated-reclaim.edn"
+
+  CODEX_TASK_BOARD_SALVAGE_RECLAIM=on run >"${out}" || fail "salvage on prune failed"
+  assert_file_contains "${out}" "^salvage: salvaged ${ws}/BOXP-701/${old} bytes=[0-9]+$"
+  assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-701/${old}$"
+  [[ ! -e "${ws}/BOXP-701" ]] || fail "salvaged run must be deleted"
+  [[ -f "${big}/big.bin" ]] || fail "run over the archive budget must remain"
+  git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/BOXP-701-${old}" ||
+    fail "branch with a local-only tip must remain"
+  local archive
+  archive="$(find "${state}/salvage/BOXP-701/${old}" -mindepth 1 -maxdepth 1 -type d)"
+  [[ -f "${archive}/manifest.edn" ]] || fail "salvage manifest missing"
+  assert_file_contains "${archive}/manifest.edn" ":head \"${head}\""
+  assert_file_contains "${archive}/manifest.edn" ':sha256 "[0-9a-f]{64}"'
+  [[ ! -e "${state}/salvage/.tmp" ]] || [[ -z "$(ls -A "${state}/salvage/.tmp")" ]] || fail "salvage scratch left behind"
+
+  # Restore from what GitHub has (main only) plus the archive.
+  gh="${tmp}/github"
+  git clone -q --no-local --single-branch -b main "${source}" "${gh}"
+  if git -C "${gh}" cat-file -e "${head}^{commit}" 2>/dev/null; then fail "fixture: github copy must lack the local commit"; fi
+  restore="${tmp}/restore"
+  git clone -q "${gh}" "${restore}"
+  git -C "${restore}" fetch -q "${archive}/0/commits.bundle" 'refs/salvage/*:refs/salvage/*'
+  git -C "${restore}" checkout -q --detach "${head}"
+  git -C "${restore}" apply --index "${archive}/0/staged.patch"
+  git -C "${restore}" apply "${archive}/0/worktree.patch"
+  tar -C "${restore}" -xf "${archive}/0/untracked.tar"
+  diff -r --no-dereference -x .git "${tmp}/expected" "${restore}" || fail "restored checkout differs from the original"
+  [[ -x "${restore}/run.sh" ]] || fail "executable bit lost"
+  [[ "$(git -C "${restore}" diff --cached --name-only | sort | tr '\n' ' ')" == "deleted.txt tracked.txt " ]] ||
+    fail "staged state not restored"
+
+  # BOXP-703 restores from the default branch alone although its pushed
+  # commit is not there.
+  assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-703/${old}$"
+  if git -C "${gh}" cat-file -e "${pushed}^{commit}" 2>/dev/null; then fail "fixture: github clone must lack the pushed commit"; fi
+  archive="$(find "${state}/salvage/BOXP-703/${old}" -mindepth 1 -maxdepth 1 -type d)"
+  restore="${tmp}/restore-703"
+  git clone -q "${gh}" "${restore}"
+  git -C "${restore}" fetch -q "${archive}/0/commits.bundle" 'refs/salvage/*:refs/salvage/*' ||
+    fail "bundle must apply to a default-branch clone"
+  git -C "${restore}" checkout -q --detach "${feature_head}"
+  git -C "${restore}" apply "${archive}/0/worktree.patch"
+  diff -r --no-dereference -x .git "${tmp}/expected-703" "${restore}" || fail "restored BOXP-703 checkout differs from the original"
+
+  # BOXP-704 keeps the side branch tip, restorable from the default branch.
+  assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-704/${old}$"
+  archive="$(find "${state}/salvage/BOXP-704/${old}" -mindepth 1 -maxdepth 1 -type d)"
+  [[ -f "${archive}/0/commits.bundle" ]] || fail "side branch tip must be bundled"
+  restore="${tmp}/restore-704"
+  git clone -q "${gh}" "${restore}"
+  git -C "${restore}" fetch -q "${archive}/0/commits.bundle" 'refs/salvage/*:refs/salvage/*' ||
+    fail "side bundle must apply to a default-branch clone"
+  git -C "${restore}" cat-file -e "${side}^{commit}" || fail "side branch tip not restored"
+
+  # BOXP-705 keeps the tag and its commit although only a remote-tracking ref
+  # of a deleted branch reached it.
+  assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-705/${old}$"
+  archive="$(find "${state}/salvage/BOXP-705/${old}" -mindepth 1 -maxdepth 1 -type d)"
+  restore="${tmp}/restore-705"
+  git clone -q "${gh}" "${restore}"
+  git -C "${restore}" fetch -q "${archive}/0/commits.bundle" 'refs/salvage/*:refs/salvage/*' ||
+    fail "tag bundle must apply to a default-branch clone"
+  [[ "$(git -C "${restore}" rev-parse "refs/salvage/refs/tags/v705^{commit}")" == "${gone}" ]] || fail "tag not restored"
+  [[ "$(git -C "${restore}" rev-parse refs/salvage/refs/remotes/origin/gone-705)" == "${gone}" ]] ||
+    fail "remote-tracking ref not restored"
+
+  # BOXP-706 and BOXP-707 keep content the archive does not cover.
+  assert_file_contains "${out}" "^salvage: held ${ws}/BOXP-706/${old} reason=outside-checkout path=notes.md$"
+  [[ -f "${ws}/BOXP-706/${old}/notes.md" ]] || fail "note next to the checkout must remain"
+  assert_file_contains "${out}" "^salvage: held ${ws}/BOXP-707/${old} reason=ignored-unknown path=secret.env checkout=ghq/github.com/boxp/example$"
+  [[ -f "${junk}/secret.env" ]] || fail "unknown ignored file must remain"
+
+  # BOXP-708 keeps the clean clone's remote-tracking ref of a deleted branch.
+  assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-708/${old}$"
+  archive="$(find "${state}/salvage/BOXP-708/${old}" -mindepth 1 -maxdepth 1 -type d)"
+  restore="${tmp}/restore-708"
+  git clone -q "${gh}" "${restore}"
+  local bundle708
+  for bundle708 in "${archive}"/*/commits.bundle; do
+    [[ -f "${bundle708}" ]] && git -C "${restore}" fetch -q "${bundle708}" 'refs/salvage/*:refs/salvage/*'
+  done
+  git -C "${restore}" cat-file -e "${gone708}^{commit}" 2>/dev/null ||
+    fail "clean clone's deleted-branch commit must be archived"
 }
 
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a

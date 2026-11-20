@@ -35,3 +35,19 @@ S1（BOXP-494: 継続 run の引継ぎと計測）は 7 日観察まで完了済
   条件成立時のみ node_modules と origin 一致コピーを回収、唯一成果（ignored の notes）と追跡ファイルと run 自体は残る。
 - 回収・prune・再利用・dehydrate・outside-copy 系 37 ケースがローカルで pass。
 - 配備後: prune summary の latest-run skip 数の減少、回収 bytes（`:basis :retained-done-latest`）、空きの前後、通常票の継続を確認。
+
+## S4 実装方針（退避 → 復元確認 → 回収）
+
+- 対象: prune(done) で、hold 理由が全 checkout とも `uncommitted-changes` / `commit-not-on-github` のみの run（lock なし）。
+- 退避物: checkout 毎に `staged.patch`・`worktree.patch`（binary/full-index）・`untracked.tar`（ignored 除外）・HEAD と GitHub に無い commit を GitHub 既定ブランチ上の commit まで含めた `commits.bundle`（境界 commit、bundle 不要時は HEAD が GitHub 既定ブランチの祖先であることを compare API で確認。GitHub に存在するだけの削除済みブランチ上の commit は fresh clone に含まれないため境界にしない）。目録 `manifest.edn` に sha256・bytes・head・復元手順。
+- 検証: alternates 付き一時 repo で index 一致、変更/untracked ファイルの bytes・実行 bit・symlink 一致、bundle verify / list-heads を確認できた場合のみ `$ROOT/salvage/<票>/<run>/<時刻>/` へ atomic move し、既存の削除経路へ。
+- 保護継続: stash・git 操作中・process 使用中・予算超過（既定 64MiB/run）・GitHub 照会失敗・境界 commit 不在。未 push tip の branch は共有 repo に残す。退避物は runner が削除しない（最終廃棄は範囲外）。
+- 段階: mode `off` / `dry-run`（既定、件数と bytes のみ計測）/ `on`。`generated-reclaim.edn` の `:salvage` が env `CODEX_TASK_BOARD_SALVAGE_RECLAIM` より優先。配備後 dry-run で would-salvage 件数・bytes を実測してから on。
+
+### S4 改訂: 列挙方式から fail-closed 方式へ（review 3 回連続指摘の根本原因対応）
+
+- 根本原因: 「残すものを列挙し、列挙から漏れたものが削除される」設計。ref の列挙（境界 commit / ローカルブランチ / タグ・リモート追跡 ref）と退避範囲の列挙（空白名ファイル / checkout 外のファイル）で同じ型の漏れが毎回見つかっていた。
+- ref: run 内に ref を持つ repo（run 所有 clone、run 内 common dir の worktree）は **全 ref（名前空間を問わない）・HEAD・全 reflog** を `refs/salvage/<refname>` / `refs/salvage/HEAD` / `refs/salvage/reflog/<sha>` に写し、ローカルの GitHub 既定ブランチ commit との差分を丸ごと bundle 化。tip の分類はしない。外部 repo の worktree は HEAD・HEAD reflog・per-worktree ref のみ（共有 ref は残る）。
+- 復元可能性: その既定ブランチ commit が GitHub 既定ブランチ上にあることを 1 回確認し、bundle ヘッダの prerequisite すべてがその祖先であることをローカルで確認。bundle に載らない ref（既定ブランチが到達済み）は祖先確認のうえ `refs.txt` に名前と sha を保存。shallow repo は保護。
+- 範囲: 退避するのは checkout 内の追跡差分と untracked のみなので、run 内の checkout 外のファイル（`outside-checkout`）や再生成可能でない ignored ファイル（`ignored-unknown` 等）が一つでもあれば run を保護。
+- 対象 checkout: hold のある checkout だけでなく run 内の **全 checkout** を退避対象にする（clean な run 所有 clone も削除済みブランチの ref 等を唯一保持し得るため、checkout の選別も列挙しない）。どれか一つでも退避・検証できなければ run を保護。
