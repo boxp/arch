@@ -30,7 +30,7 @@ async function scenario(name, viewport, set, scene, { large = false, longBubble 
   await page.waitForFunction(() => document.getElementById('connection').textContent.startsWith('接続中'))
   await page.waitForFunction(() => !document.getElementById('status-widget').textContent.includes('確認中'))
   if (large) await page.addStyleTag({ content: 'html{font-size:125%}' })
-  await page.evaluate(([scene, text]) => { document.body.dataset.scene = scene; new MutationObserver(() => { if (document.body.dataset.scene !== scene) document.body.dataset.scene = scene }).observe(document.body, { attributes: true, attributeFilter: ['data-scene'] }); if (text) document.getElementById('reply').textContent = text }, [scene, longBubble ? LONG : ''])
+  await page.evaluate(([scene, text]) => { document.body.dataset.scene = scene; new MutationObserver(() => { if (document.body.dataset.scene !== scene) document.body.dataset.scene = scene }).observe(document.body, { attributes: true, attributeFilter: ['data-scene'] }); if (text) document.getElementById('reply').textContent = text; if (scene === 'show') { const c = document.getElementById('cards'), l = document.getElementById('card-list'); c.hidden = false; for (let i = 0; i < 3; i++) { const d = document.createElement('div'); d.className = 'card'; d.textContent = `検証用カード ${i + 1}`; l.append(d) } } }, [scene, longBubble ? LONG.repeat(scene === 'show' ? 3 : 1) : ''])
   await page.waitForTimeout(500)
   const m = await page.evaluate(() => {
     const rect = e => { if (!e) return null; for (let o = e; o; o = o.parentElement) if (+getComputedStyle(o).opacity === 0) return null; const s = getComputedStyle(e), r = e.getBoundingClientRect(); return s.display !== 'none' && s.visibility !== 'hidden' && r.width && r.height ? { x: r.x, y: r.y, width: r.width, height: r.height } : null }
@@ -46,6 +46,7 @@ async function scenario(name, viewport, set, scene, { large = false, longBubble 
   check(!!w, `${name}: widget not visible`)
   check(w && w.y >= m.stage.y - 1 && w.y + w.height <= m.stage.y + m.stage.height + 1 && w.x >= m.stage.x - 1 && w.x + w.width <= m.stage.x + m.stage.width + 1, `${name}: widget outside stage`)
   for (const id of ['form', 'message', 'send', 'stop', 'bubble', 'cards', 'trouble', 'greeting', 'clock', 'date']) check(!overlap(w, m.boxes[id]), `${name}: widget overlaps ${id}`)
+  if (scene === 'show') { check(!!m.boxes.cards, `${name}: cards not visible`); check(!overlap(m.boxes.bubble, m.boxes.cards), `${name}: bubble overlaps cards`) }
   const avatar = m.boxes.rig || m.boxes.face; if (scene !== 'relax' && avatar && viewport.height < 600) { const c = avatar; check(!overlap(w, { x: c.x + c.width * .3, y: c.y + c.height * .15, width: c.width * .4, height: c.height * .7 }), `${name}: widget overlaps central character`) }
   for (const l of m.labels) { check(!l.cut, `${name}: label cut "${l.text}"`); check(l.size >= 9, `${name}: label too small ${l.size}px "${l.text}"`) }
   const shownPools = status.quota.pools.filter(p => !['claude_shared', 'claude_opus', 'codex_shared', 'localllm'].includes(p.id) && p.windows.some(x => x.usedPercent !== null && !['unavailable', 'unobserved', 'not_provided'].includes(x.state)))
@@ -65,4 +66,5 @@ const views = { pc: { width: 1280, height: 800 }, pcsmall: { width: 1024, height
 for (const set of ['few', 'live', 'max']) for (const v of ['pc', 'land', 'landse', 'portrait']) for (const scene of ['relax', 'talk', 'show']) await scenario(`${set}-${v}-${scene}`, views[v], set, scene)
 for (const v of ['pc', 'pcsmall', 'land', 'landse', 'landmax']) for (const scene of ['relax', 'talk', 'show']) await scenario(`large-max-${v}-${scene}`, views[v], 'max', scene, { large: true })
 for (const v of ['pc', 'land', 'landse']) await scenario(`long-live-${v}-talk`, views[v], 'live', 'talk', { longBubble: true, large: v === 'land' })
+for (const v of ['pc', 'pcsmall', 'land', 'landse', 'landmax']) for (const large of [false, true]) await scenario(`long-max-${v}-show${large ? '-large' : ''}`, views[v], 'max', 'show', { longBubble: true, large })
 await b.close(); srv.close(); fs.writeFileSync(`${outDir}/result.json`, JSON.stringify({ out, failures }, null, 1)); console.log(JSON.stringify({ count: Object.keys(out).length, failures }, null, 1)); process.exit(failures.length ? 1 : 0)
