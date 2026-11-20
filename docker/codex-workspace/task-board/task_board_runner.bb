@@ -7089,6 +7089,7 @@
                   (if-let [reason (outside-copy-run-hold ticket run-id)]
                     (skip! (first (str/split reason #" ")))
                     (let [files (outside-copy-files run min-bytes link-targets left)
+                          basis (:basis (content-proof-run-decision ticket run-id (map fs/file-name (child-directories ticket-dir)) (stale-retention-hours)))
                           known (get @cache key #{})
                           fresh (remove #(known [(:rel %) (:size %) (:mtime %)]) files)]
                       (cond
@@ -7139,9 +7140,12 @@
                               result (cond recheck :skipped-recheck (empty? matched) nil (= mode :on) :reclaimed :else :would-reclaim)]
                           (when (seq misses) (swap! cache update key (fnil into #{}) misses))
                           (when result
-                            (workspace-metrics-write! {:event :generated-reclaim :kind :outside-copy :ticket ticket :run run-id
-                                                       :files (if (= result :reclaimed) @removed (count matched))
-                                                       :allocated-bytes (if (= result :reclaimed) @removed-bytes bytes) :result result :reason recheck})
+                            (workspace-metrics-write! (cond-> {:event :generated-reclaim :kind :outside-copy :ticket ticket :run run-id
+                                                        :files (if (= result :reclaimed) @removed (count matched))
+                                                        :allocated-bytes (if (= result :reclaimed) @removed-bytes bytes) :result result :reason recheck}
+                                                       basis (assoc :basis basis)))
+                            (when (and basis (= result :reclaimed))
+                              (swap! stats update :retained-done-latest-allocated-bytes (fnil + 0) @removed-bytes))
                             (case result
                               :skipped-recheck (skip! (first (str/split recheck #" ")))
                               :reclaimed (do (swap! stats update :outside-copy-runs inc)
