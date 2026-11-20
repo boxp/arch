@@ -7584,6 +7584,110 @@ test_notes_omission_prompt() {
   done
 }
 
+test_prune_salvage_reclaim() {
+  local tmp vault state bin source known out old ws co big gh restore head
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  source="${tmp}/source"
+  known="${tmp}/known-shas"
+  out="${tmp}/prune.out"
+  old="20200101T000000Z-00000000-0000-0000-0000-000000000000"
+  ws="${state}/workspaces"
+  mkdir -p "${bin}" "${state}/locks" "${tmp}/proc/100"
+  ln -s / "${tmp}/proc/100/cwd"
+  echo '22 1 0:21 / / rw - ext4 /dev/root rw' >"${tmp}/mountinfo"
+  : >"${known}"
+  make_fake_gh "${bin}"
+  make_prune_source_repo "${source}"
+  printf 'keep\n' >"${source}/tracked.txt"
+  printf 'gone\n' >"${source}/deleted.txt"
+  printf 'ignored/\n' >"${source}/.gitignore"
+  git -C "${source}" add .
+  prune_git -C "${source}" commit -qm base
+  git -C "${source}" update-ref refs/remotes/origin/main HEAD
+  git -C "${source}" rev-list HEAD >>"${known}"
+  write_board "${vault}" ""
+
+  # BOXP-701: old done run held by a local-only commit, staged and unstaged
+  # edits, a deletion, untracked files (an executable and a symlink) and an
+  # ignored file -> archived, verified, then deleted.
+  write_prune_ticket "${vault}" BOXP-701 "done" 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-701 "${old}")"
+  prune_commit "${co}" local-only >/dev/null
+  printf 'staged\n' >>"${co}/tracked.txt"
+  git -C "${co}" add tracked.txt
+  printf 'unstaged\n' >>"${co}/tracked.txt"
+  git -C "${co}" rm -q deleted.txt
+  printf 'new\n' >"${co}/new.txt"
+  head -c 3000 /dev/urandom >"${co}/blob.bin"
+  printf '#!/bin/sh\n' >"${co}/run.sh"
+  chmod +x "${co}/run.sh"
+  ln -s tracked.txt "${co}/link"
+  mkdir -p "${co}/ignored"
+  printf 'cache\n' >"${co}/ignored/cache"
+  head="$(git -C "${co}" rev-parse HEAD)"
+  mkdir -p "${tmp}/expected"
+  (cd "${co}" && tar --exclude=.git --exclude=ignored -cf - .) | tar -C "${tmp}/expected" -xf -
+
+  # BOXP-702: the untracked data exceeds the archive budget -> held.
+  write_prune_ticket "${vault}" BOXP-702 "done" 2020-01-01
+  big="$(add_prune_run "${state}" "${source}" BOXP-702 "${old}")"
+  head -c 200000 /dev/urandom >"${big}/big.bin"
+
+  run() {
+    PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" \
+      CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo" CODEX_TASK_BOARD_SALVAGE_MAX_BYTES=100000 \
+      run_prune "${vault}" "${state}" "$@"
+  }
+
+  # Default (dry-run mode): verified and measured, nothing kept or deleted.
+  run >"${out}" || fail "salvage dry-run prune failed"
+  assert_file_contains "${out}" "^salvage: would-salvage ${ws}/BOXP-701/${old} bytes=[0-9]+$"
+  assert_file_contains "${out}" "^salvage: held ${ws}/BOXP-702/${old} reason=salvage-too-large checkout=ghq/github.com/boxp/example$"
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-701/${old} reason=uncommitted-changes checkout=ghq/github.com/boxp/example$"
+  [[ -f "${co}/new.txt" ]] || fail "dry-run salvage must keep the run"
+  [[ -z "$(find "${state}/salvage" -mindepth 1 -not -path "${state}/salvage/.tmp")" ]] || fail "dry-run salvage must not keep an archive"
+
+  # Switched off in the config file: no attempt even with the env set to on.
+  printf '{:salvage :off}\n' >"${state}/generated-reclaim.edn"
+  CODEX_TASK_BOARD_SALVAGE_RECLAIM=on run >"${out}" || fail "salvage off prune failed"
+  if grep -q '^salvage:' "${out}"; then fail "salvage must not run when switched off"; fi
+  [[ -f "${co}/new.txt" ]] || fail "salvage off must keep the run"
+  rm "${state}/generated-reclaim.edn"
+
+  CODEX_TASK_BOARD_SALVAGE_RECLAIM=on run >"${out}" || fail "salvage on prune failed"
+  assert_file_contains "${out}" "^salvage: salvaged ${ws}/BOXP-701/${old} bytes=[0-9]+$"
+  assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-701/${old}$"
+  [[ ! -e "${ws}/BOXP-701" ]] || fail "salvaged run must be deleted"
+  [[ -f "${big}/big.bin" ]] || fail "run over the archive budget must remain"
+  git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/BOXP-701-${old}" ||
+    fail "branch with a local-only tip must remain"
+  local archive
+  archive="$(find "${state}/salvage/BOXP-701/${old}" -mindepth 1 -maxdepth 1 -type d)"
+  [[ -f "${archive}/manifest.edn" ]] || fail "salvage manifest missing"
+  assert_file_contains "${archive}/manifest.edn" ":head \"${head}\""
+  assert_file_contains "${archive}/manifest.edn" ':sha256 "[0-9a-f]{64}"'
+  [[ ! -e "${state}/salvage/.tmp" ]] || [[ -z "$(ls -A "${state}/salvage/.tmp")" ]] || fail "salvage scratch left behind"
+
+  # Restore from what GitHub has (main only) plus the archive.
+  gh="${tmp}/github"
+  git clone -q --no-local --single-branch -b main "${source}" "${gh}"
+  if git -C "${gh}" cat-file -e "${head}^{commit}" 2>/dev/null; then fail "fixture: github copy must lack the local commit"; fi
+  restore="${tmp}/restore"
+  git clone -q "${gh}" "${restore}"
+  git -C "${restore}" fetch -q "${archive}/0/commits.bundle" 'refs/salvage/keep/*:refs/salvage/keep/*'
+  git -C "${restore}" checkout -q --detach "${head}"
+  git -C "${restore}" apply --index "${archive}/0/staged.patch"
+  git -C "${restore}" apply "${archive}/0/worktree.patch"
+  tar -C "${restore}" -xf "${archive}/0/untracked.tar"
+  diff -r --no-dereference -x .git "${tmp}/expected" "${restore}" || fail "restored checkout differs from the original"
+  [[ -x "${restore}/run.sh" ]] || fail "executable bit lost"
+  [[ "$(git -C "${restore}" diff --cached --name-only | sort | tr '\n' ' ')" == "deleted.txt tracked.txt " ]] ||
+    fail "staged state not restored"
+}
+
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a
 # deterministic subset in its own job, so vaults, processes and locks are isolated.
 mapfile -t cases <"${ROOT_DIR}/tests/codex-workspace/task-board-runner-cases.txt"

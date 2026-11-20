@@ -114,6 +114,7 @@ test_workspace_reuse_interplay
 test_generated_reclaim_basic
 test_generated_reclaim_studio
 test_generated_reclaim_retained_done_latest
+test_prune_salvage_reclaim
 test_stale_prune
 test_stale_prune_studio_dist
 test_stale_prune_bff_dist
