@@ -7807,6 +7807,20 @@
 (defn capacity-top-fresh [areas]
   (take 5 (sort-by (fn [[name data]] [(- (:fresh-bytes data)) name]) areas)))
 
+(defn workspace-ticket-budget
+  "BOXP-638 S3b: summarizes per-ticket workspace bytes for the bytes-budget
+  observation. Only the 30 largest tickets are kept by name; the distribution
+  covers every ticket. Budgets are decided from a week of these records."
+  [tickets]
+  (let [rows (map (fn [[t v]] [t {:bytes (:bytes v 0) :fresh-bytes (:fresh-bytes v 0) :runs (count (:runs v))}]) tickets)
+        sorted (vec (sort (map (comp :bytes second) rows)))
+        n (count sorted)
+        pct (fn [q] (when (pos? n) (nth sorted (min (dec n) (long (Math/floor (* q n)))))))]
+    {:workspace-tickets (into {} (take 30 (sort-by (fn [[t v]] [(- (:bytes v)) t]) rows)))
+     :workspace-ticket-stats {:count n :total-bytes (reduce + 0 sorted)
+                              :p50-bytes (pct 0.5) :p90-bytes (pct 0.9) :p99-bytes (pct 0.99) :max-bytes (when (pos? n) (peek sorted))
+                              :fresh-total-bytes (reduce + 0 (map (comp :fresh-bytes second) rows))}}))
+
 (defn capacity-attribution! []
   (try
     (when (prune-setting "CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION" parse-prune-enabled)
@@ -7865,7 +7879,9 @@
                                          kind (cond (some #{"node_modules"} (butlast parts)) "node_modules"
                                                     (some #{"dist"} (butlast parts)) "dist"
                                                     (some #{".git"} (butlast parts)) "git" :else "other")
-                                         fresh (if fresh? bytes 0)]
+                                         fresh (if fresh? bytes 0)
+                                         ticket (when (and workspace? (> (count parts) 3)) (nth parts 2))
+                                         run-id (when (and ticket (> (count parts) 4)) (nth parts 3))]
                                      (.reset record)
                                      (when (or (= "1" links) (.add seen inode))
                                        (swap! result (fn [r]
@@ -7876,7 +7892,11 @@
                                                                    (update-in [(if workspace? :workspaces :outside-workspaces) :fresh-bytes] + fresh))
                                                          subarea (update-in [:subareas subarea :bytes] (fnil + 0) bytes)
                                                          subarea (update-in [:subareas subarea :fresh-bytes] (fnil + 0) fresh)
-                                                         workspace? (update-in [:workspaces :by-kind kind] + bytes))))))
+                                                         workspace? (update-in [:workspaces :by-kind kind] + bytes)
+                                                         ;; BOXP-638 S3b: per-ticket workspace bytes (observation only).
+                                                         ticket (update-in [:tickets ticket :bytes] (fnil + 0) bytes)
+                                                         ticket (update-in [:tickets ticket :fresh-bytes] (fnil + 0) fresh)
+                                                         run-id (update-in [:tickets ticket :runs] (fnil conj #{}) run-id))))))
                                    (.write record b))
                                  (recur))))))
                        (catch java.io.IOException _ nil)))
@@ -7891,7 +7911,8 @@
                 subareas (into (sorted-map-by (fn [a b] (let [c (compare (get-in r [:subareas b :bytes]) (get-in r [:subareas a :bytes]))] (if (zero? c) (compare a b) c))))
                                (take 40 (sort-by (comp - :bytes val) (filter #(>= (:bytes (val %)) 536870912) (:subareas r)))))
                 area-deltas (if (and baseline complete) (into {} (keep (fn [area] (let [d (- (get-in r [:areas area :bytes] 0) (get-in baseline [:areas area :bytes] 0))] (when (>= (abs d) 268435456) [area d]))) (into (set (keys (:areas r))) (keys (:areas baseline))))) {})
-                event (merge r {:event :capacity-attribution :root root-path :fs-total-bytes total :fs-free-bytes free :fs-used-bytes used
+                ticket-budget (workspace-ticket-budget (:tickets r))
+                event (merge (dissoc r :tickets) ticket-budget {:event :capacity-attribution :root root-path :fs-total-bytes total :fs-free-bytes free :fs-used-bytes used
                                 :scan-ms (quot (- (System/nanoTime) started) 1000000) :scan-exit exit :scan-complete complete :fresh-window-hours 24 :subareas subareas
                                 :baseline-at (:at baseline) :baseline-hours hours :used-delta-bytes delta :used-bytes-per-day rate :area-delta-bytes area-deltas :days-to-guard days})]
             (workspace-metrics-write! event)
@@ -7985,7 +8006,10 @@
     (when attribution
       (println "capacity-used-bytes=" (:fs-used-bytes attribution) "free-bytes=" (:fs-free-bytes attribution))
       (println "capacity-days-to-guard=" (:days-to-guard attribution) "used-bytes-per-day=" (:used-bytes-per-day attribution))
-      (println "capacity-top-fresh=" (pr-str (capacity-top-fresh (:areas attribution)))))
+      (println "capacity-top-fresh=" (pr-str (capacity-top-fresh (:areas attribution))))
+      (when-let [stats (:workspace-ticket-stats attribution)]
+        (println "workspace-ticket-stats=" (pr-str stats))
+        (println "workspace-top-tickets=" (pr-str (take 5 (sort-by (fn [[t v]] [(- (:bytes v)) t]) (:workspace-tickets attribution)))))))
     (println "prepare-by-mode=" (pr-str (frequencies (map :mode prepares))))
     (println "fallback-by-reason=" (pr-str (frequencies (keep :reason prepares))))
     (println "generated-bytes-est=" generated)

@@ -92,3 +92,11 @@ S1（BOXP-494: 継続 run の引継ぎと計測）は 7 日観察まで完了済
 - 印は Owner / coordinator が票 frontmatter に付ける。印があっても checkout は作らず、空き 4GiB 未満・inode 不足では起動しない。
 - localllm-coder 担当票は repo worktree が無いと起動前検査（no-repo-worktree）で失敗するため、hard 段の checkout なし起動の対象外とし通常票と同様に待たせる（codex review P1）。soft 段では従来どおり checkout ありで起動できる。
 - 次段 S3b: bytes 予算（票ごと・workspaces 全体）の観測と超過票だけの新規 checkout 停止。数値は 1 週間の実測から決める。
+
+## S3b 票ごと・全体の bytes 予算の観測（観測のみ）
+
+- capacity-attribution（毎時 prune 後、50 分間隔の find 走査）の同じ走査で、`.codex-task-board/workspaces/<票>/<run>/...` を票ごとに集計し、
+  `:workspace-tickets`（大きい順 30 票の bytes / 24h 内 fresh-bytes / run 数）と `:workspace-ticket-stats`（全票の件数・合計・p50/p90/p99/max・fresh 合計）を記録。
+  追加の走査はしない。停止・起動判定には使わない（予算超過票だけの新規 checkout 停止は 1 週間の記録から数値を決めてから別 PR）。
+- 着手時の参考値（2026-11-20 14:1xZ, du 実測）: 113 票・計 39.39GB、票あたり p50 52MB・p90 1.06GB・p99 2.34GB・最大 5.70GB（BOXP-603、rec dump などの唯一成果）。
+- 確認: `task_board_runner.bb workspace-metrics` 相当の出力に `workspace-ticket-stats=` / `workspace-top-tickets=` が出る。
