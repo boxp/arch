@@ -6616,7 +6616,8 @@
            (zero? (:exit (command-result ["cmp" "-s" (str original) (str restored)]))))
       :else false)))
 
-(defn salvage-nul-list [out] (remove str/blank? (str/split (str out) #"\u0000")))
+;; Only the empty string is dropped: a name made of spaces is a real file.
+(defn salvage-nul-list [out] (remove #(= "" %) (str/split (str out) #"\u0000")))
 
 (defn salvage-checkout!
   "Archives one checkout into `dir` and proves the archive restores it.
@@ -6685,7 +6686,11 @@
                      (let [default (github-default-branch gh-cache repo)
                            default-ref (when default (str "refs/remotes/origin/" default))
                            default-local (when default-ref (git "rev-parse" "--verify" "--quiet" (str default-ref "^{commit}")))
-                           keep (vec (distinct (cons head-sha missing)))
+                           ;; Every tip the clone would lose (HEAD, local
+                           ;; branches, reflog entries, commits GitHub lacks);
+                           ;; those already on the default branch drop out
+                           ;; of `own` below.
+                           keep (vec (distinct (cons head-sha shas)))
                            unpushed (when (and default-local (zero? (:exit default-local)))
                                       (apply git "rev-list" (str "--max-count=" (inc max-unpushed-commits-per-checkout))
                                              (concat keep ["--not" default-ref])))

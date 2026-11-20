@@ -7609,7 +7609,7 @@ test_notes_omission_prompt() {
 
 test_prune_salvage_reclaim() {
   local tmp vault state bin source known out old ws co big gh restore head
-  local default_shas feature feature_head pushed
+  local default_shas feature feature_head pushed owned side
   tmp="$(mktemp -d)"
   vault="${tmp}/vault"
   state="${tmp}/state"
@@ -7649,6 +7649,7 @@ test_prune_salvage_reclaim() {
   printf 'new\n' >"${co}/new.txt"
   head -c 3000 /dev/urandom >"${co}/blob.bin"
   printf '#!/bin/sh\n' >"${co}/run.sh"
+  printf 'spaces\n' >"${co}/ "
   chmod +x "${co}/run.sh"
   ln -s tracked.txt "${co}/link"
   mkdir -p "${co}/ignored"
@@ -7675,6 +7676,20 @@ test_prune_salvage_reclaim() {
   feature_head="$(git -C "${feature}" rev-parse HEAD)"
   mkdir -p "${tmp}/expected-703"
   (cd "${feature}" && tar --exclude=.git -cf - .) | tar -C "${tmp}/expected-703" -xf -
+
+  # BOXP-704: a run-owned clone whose HEAD is on main with an edit, and a
+  # local branch whose tip GitHub knows only from a deleted branch. The tip
+  # is not HEAD and not missing on GitHub, yet the clone is its only copy.
+  write_prune_ticket "${vault}" BOXP-704 "done" 2020-01-01
+  owned="${ws}/BOXP-704/${old}/ghq/github.com/boxp/example"
+  mkdir -p "$(dirname "${owned}")"
+  git clone -q "${source}" "${owned}"
+  git -C "${owned}" remote set-url origin https://github.com/boxp/example.git
+  git -C "${owned}" checkout -q -b side-704
+  side="$(prune_commit "${owned}" side-pushed)"
+  printf '%s\n' "${side}" >>"${known}"
+  git -C "${owned}" checkout -q main
+  printf 'edit\n' >>"${owned}/tracked.txt"
 
   run() {
     PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" GH_FAKE_DEFAULT_SHAS="${default_shas}" CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" \
@@ -7746,6 +7761,16 @@ test_prune_salvage_reclaim() {
   git -C "${restore}" checkout -q --detach "${feature_head}"
   git -C "${restore}" apply "${archive}/0/worktree.patch"
   diff -r --no-dereference -x .git "${tmp}/expected-703" "${restore}" || fail "restored BOXP-703 checkout differs from the original"
+
+  # BOXP-704 keeps the side branch tip, restorable from the default branch.
+  assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-704/${old}$"
+  archive="$(find "${state}/salvage/BOXP-704/${old}" -mindepth 1 -maxdepth 1 -type d)"
+  [[ -f "${archive}/0/commits.bundle" ]] || fail "side branch tip must be bundled"
+  restore="${tmp}/restore-704"
+  git clone -q "${gh}" "${restore}"
+  git -C "${restore}" fetch -q "${archive}/0/commits.bundle" 'refs/salvage/keep/*:refs/salvage/keep/*' ||
+    fail "side bundle must apply to a default-branch clone"
+  git -C "${restore}" cat-file -e "${side}^{commit}" || fail "side branch tip not restored"
 }
 
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a
