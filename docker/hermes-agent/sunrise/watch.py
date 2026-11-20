@@ -416,6 +416,49 @@ def next_open(now):
     return opening if local < opening else opening + dt.timedelta(days=1)
 
 
+def room_label(room):
+    return f"{ROOMS[room][0]}（{ROOMS[room][2]}）"
+
+
+def party_summary(available, unconfirmed):
+    """Describe how many travellers the observed availability can be said to cover.
+
+    The official result page shows only a symbol per equipment ID (空席あり /
+    空席残りわずか / 残席なし), never a room count, so a single available ID
+    proves only one room. Two distinct available IDs prove at least two rooms.
+    """
+    available = list(dict.fromkeys(available))
+    if any(r in TWIN_ROOMS for r in available):
+        line = "人数: 2名で乗れる候補あり（サンライズツインは1室を2名で利用できる設備です）"
+    elif len(available) >= 2:
+        line = "人数: 2名で乗れる候補あり（異なる設備に空きがあり、1名用個室を2室分確認できます）"
+    elif any(ROOMS[r][0] == "シングルツイン" for r in available):
+        line = "人数: 2名は条件付き候補（シングルツインは補助ベッドで2名利用できる設備とされますが、2名利用の条件・料金は未確認です）。1名用個室としての空き室数は不明です"
+    else:
+        line = "人数: 1名分の空きを確認。2名分は不明です（公式表示では同じ設備の空き室数が分かりません）"
+    lines = [line, "今回空きを確認した設備: " + "、".join(room_label(r) for r in available)]
+    missing = [r for r in dict.fromkeys(unconfirmed) if r not in available]
+    if missing:
+        lines.append("今回確認できなかった設備: " + "、".join(room_label(r) for r in missing))
+    return "\n".join(lines)
+
+
+def availability_message(leg, now, fresh, available, unconfirmed):
+    names = "・".join(room_label(r) for r, _ in fresh)
+    urls = "\n".join(dict.fromkeys(url for _, url in fresh))
+    suffix = (
+        "\nサンライズツインは1名でも2名分の料金券が必要です。"
+        if any(r in TWIN_ROOMS for r, _ in fresh)
+        else ""
+    )
+    return (
+        f"【空席】{leg['date']} {leg['from']}→{leg['to']} {names}\n"
+        f"{party_summary(available, unconfirmed)}\n"
+        f"観測: {now.astimezone(JST):%Y-%m-%d %H:%M} JST\n{urls}\n"
+        f"料金は未確認です。予約は確保されておらず、空席は変動します。{suffix}"
+    )
+
+
 def run(cfg, state, now, getter=fetch, clock=None):
     # Stage a whole tick so closure never changes existing observation/history.
     original = state
@@ -438,6 +481,9 @@ def run(cfg, state, now, getter=fetch, clock=None):
         if not leg["enabled"] or now >= dt.datetime.fromisoformat(leg["stop"]):
             continue
         active = True
+        fresh = []  # (room, url) newly seen as available in this tick
+        seen_available = []  # rooms observed available in this tick
+        unconfirmed = []  # rooms whose state this tick could not confirm
         for index, q in enumerate(leg["queries"]):
             query_now = clock()
             if closed_hours(query_now):
@@ -496,20 +542,20 @@ def run(cfg, state, now, getter=fetch, clock=None):
                 item["count"] = 0
                 item["reason"] = None
                 item["reason_code"] = None
+            unconfirmed.extend(r for r in q["rooms"] if r not in found)
             for room, value in found.items():
                 key = direction + ":" + room
                 previous = state["rooms"].get(key)
                 state["rooms"][key] = value
-                if value == "available" and previous == "full":
-                    name = ROOMS[room][0]
-                    suffix = (
-                        "\nサンライズツインは1名でも2名分の料金券が必要です。"
-                        if name == "サンライズツイン"
-                        else ""
-                    )
-                    messages.append(
-                        f"【空席】{leg['date']} {leg['from']}→{leg['to']} {name}（{ROOMS[room][2]}）\n観測: {now.astimezone(JST):%Y-%m-%d %H:%M} JST\n{q['url']}\n料金は未確認です。予約は確保されておらず、空席は変動します。{suffix}"
-                    )
+                if value == "available":
+                    seen_available.append(room)
+                    # A room never confirmed before (e.g. a newly added leg whose
+                    # first observations were unknown) must not miss its first
+                    # availability; only a continuing availability stays silent.
+                    if previous != "available":
+                        fresh.append((room, q["url"]))
+        if fresh:
+            messages.append(availability_message(leg, now, fresh, seen_available, unconfirmed))
     # The final in-flight request may have crossed the closing boundary too.
     if closed_hours(clock()):
         return [], False

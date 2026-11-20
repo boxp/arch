@@ -73,7 +73,8 @@ class ClosedHoursTest(unittest.TestCase):
             self.assertEqual(state, saved)
         resumed = at('2030-01-03T05:30:00+09:00')
         messages, _ = w.run(future_cfg(), state, resumed, lambda _: html('空席あり'))
-        self.assertEqual(len(messages), 1)
+        # 'second' has never been confirmed, so its first availability is notified too.
+        self.assertEqual(len(messages), 2)
         self.assertNotIn('closed_until', state)
         self.assertEqual(w.run(future_cfg(), state, resumed, lambda _: html('空席あり'))[0], [])
         w.run(future_cfg(), state, resumed, lambda _: html('unknown'))
