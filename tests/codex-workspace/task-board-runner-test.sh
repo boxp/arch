@@ -7703,7 +7703,7 @@ test_prune_salvage_reclaim() {
   gone="$(prune_commit "${tagged}" gone-pushed)"
   printf '%s\n' "${gone}" >>"${known}"
   git -C "${tagged}" update-ref refs/remotes/origin/gone-705 "${gone}"
-  git -C "${tagged}" tag -a -m release v705 "${gone}"
+  prune_git -C "${tagged}" tag -a -m release v705 "${gone}"
   git -C "${tagged}" checkout -q main
   git -C "${tagged}" branch -q -D gone-705
   git -C "${tagged}" reflog expire --expire=all --all
