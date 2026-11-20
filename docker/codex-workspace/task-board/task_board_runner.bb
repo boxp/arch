@@ -6619,6 +6619,25 @@
 ;; Only the empty string is dropped: a name made of spaces is a real file.
 (defn salvage-nul-list [out] (remove #(= "" %) (str/split (str out) #"\u0000")))
 
+(defn salvage-bundle-prerequisites
+  "Commits a bundle requires (header lines starting with '-'), read from the
+  text header only; nil when the header cannot be read."
+  [bundle]
+  (try
+    (with-open [in (java.io.BufferedInputStream. (java.io.FileInputStream. (str bundle)))]
+      (loop [line (java.io.ByteArrayOutputStream.) acc [] n 0]
+        (let [b (.read in)]
+          (cond
+            (or (neg? b) (> n 4194304)) nil
+            (= b 10) (let [l (.toString line "UTF-8")]
+                       (if (str/blank? l)
+                         acc
+                         (recur (java.io.ByteArrayOutputStream.)
+                                (if (str/starts-with? l "-") (conj acc (first (str/split (subs l 1) #"\s+"))) acc)
+                                (inc n))))
+            :else (do (.write line b) (recur line acc (inc n)))))))
+    (catch Exception _ nil)))
+
 (defn salvage-checkout!
   "Archives one checkout into `dir` and proves the archive restores it.
   Returns {:hold reason} or {:checkout {...} :bytes n}. Nothing outside the
@@ -6643,93 +6662,95 @@
             common-dir (fs/real-path common-dir)
             linked? (not= git-dir common-dir)
             owned-clone? (and (not linked?) (fs/starts-with? git-dir run-real))
+            ;; Fail-closed ref coverage: a repository whose refs live inside the
+            ;; run (a run-owned clone, or the common directory of a worktree in
+            ;; the run) loses every ref with the run, so every ref, HEAD and
+            ;; every reflog entry is kept, whatever its namespace (branches,
+            ;; tags, remote-tracking refs, notes, ...). A worktree of a
+            ;; repository outside the run only loses HEAD, its reflog and its
+            ;; per-worktree refs.
+            owns-refs? (fs/starts-with? common-dir run-real)
             head (git "rev-parse" "--verify" "HEAD")
             branch (git "symbolic-ref" "-q" "--short" "HEAD")
-            stash (when owned-clone? (git "rev-parse" "--verify" "--quiet" "refs/stash"))
-            reflog (apply git "log" "-g" "--format=%H" (if owned-clone? ["--all"] ["HEAD"]))
-            reflog-shas (distinct (remove str/blank? (str/split-lines (:out reflog))))
-            rev-list (apply git "rev-list" (str "--max-count=" (inc max-unpushed-commits-per-checkout))
-                            (concat ["HEAD"] (if owned-clone? ["--all" "--reflog"] reflog-shas) ["--not" "--remotes"]))
-            tips (apply git "rev-parse" "HEAD" (when owned-clone? ["--branches"]))
-            shas (distinct (remove str/blank? (concat (str/split-lines (:out tips)) reflog-shas (str/split-lines (:out rev-list)))))]
+            shallow (git "rev-parse" "--is-shallow-repository")
+            stash (when owns-refs? (git "rev-parse" "--verify" "--quiet" "refs/stash"))
+            refs (apply git "for-each-ref" "--format=%(objectname) %(refname)"
+                        (when-not owns-refs? ["refs/worktree/" "refs/bisect/" "refs/rewritten/"]))
+            reflog (apply git "log" "-g" "--format=%H" (if owns-refs? ["--all" "HEAD"] ["HEAD"]))
+            ref-pairs (vec (keep #(let [[sha nm] (str/split % #" " 2)] (when (and sha nm) [nm sha]))
+                                 (remove str/blank? (str/split-lines (:out refs)))))
+            reflog-shas (distinct (remove str/blank? (str/split-lines (:out reflog))))]
         (cond
-          (some #(not (zero? (:exit %))) [head reflog rev-list tips]) {:hold "git-error"}
+          (some #(not (zero? (:exit %))) [head refs reflog shallow]) {:hold "git-error"}
           (not (contains? #{0 1} (:exit branch))) {:hold "git-error"}
+          (not= "false" (str/trim (:out shallow))) {:hold "salvage-shallow-repository"}
           (and stash (zero? (:exit stash))) {:hold "stash-present"}
-          (> (count shas) max-unpushed-commits-per-checkout) {:hold "too-many-unpushed-commits"}
           :else
-          (let [statuses (map (fn [sha] [sha (github-commit-status gh-cache repo sha)]) shas)
-                unknown (first (filter #(= :unknown (second %)) statuses))
-                missing (vec (map first (filter #(= :missing (second %)) statuses)))
-                head-sha (str/trim (:out head))
+          (let [head-sha (str/trim (:out head))
+                ;; refs/salvage/HEAD is the checked-out commit,
+                ;; refs/salvage/<refname> each lost ref under its own name and
+                ;; refs/salvage/reflog/<sha> each reflog entry.
+                keep-refs (vec (distinct (concat [["refs/salvage/HEAD" head-sha]]
+                                                 (map (fn [[nm sha]] [(str "refs/salvage/" nm) sha]) ref-pairs)
+                                                 (map (fn [sha] [(str "refs/salvage/reflog/" sha) sha]) reflog-shas))))
+                tips (vec (distinct (map second keep-refs)))
                 verify-repo (fs/path scratch "repo")
                 vgit (fn [env & args] (salvage-run-command (into ["git" "-C" (str verify-repo)] args) {:env env}))
                 index-env {"GIT_INDEX_FILE" (str (fs/path scratch "index"))}
-                file (fn [n] (fs/path dir n))]
-            (if unknown
-              {:hold (str "github-check-failed sha=" (first unknown))}
-              (let [init (command-result ["git" "init" "-q" (str verify-repo)])]
-                (if-not (zero? (:exit init))
-                  {:hold "salvage-scratch-failed"}
+                file (fn [n] (fs/path dir n))
+                init (command-result ["git" "init" "-q" (str verify-repo)])]
+            (cond
+              (not (zero? (:exit init))) {:hold "salvage-scratch-failed"}
+              :else
                   (do
                     (spit (str (fs/path verify-repo ".git" "objects" "info" "alternates"))
                           (str (fs/path common-dir "objects") "\n"))
                     (or
-                     ;; 1. A fresh clone is only guaranteed to contain what
-                     ;; GitHub's default branch reaches; a commit that GitHub
-                     ;; merely knows (a deleted or closed-PR branch) may be
-                     ;; absent from it. HEAD and every commit GitHub lacks go
-                     ;; into a bundle down to commits on the default branch,
-                     ;; and each of those prerequisites (or HEAD itself when it
-                     ;; is already on the default branch) is confirmed to be an
-                     ;; ancestor of GitHub's default branch.
+                     ;; 1. Everything the tips reach that the local copy of
+                     ;; GitHub's default branch does not goes into a bundle. Its
+                     ;; prerequisites are then ancestors of that commit, which
+                     ;; GitHub confirms is on its default branch, so a fresh
+                     ;; clone always has them; no tip has to be classified.
+                     (do (spit (str (file "refs.txt")) (apply str (map (fn [[r sha]] (str sha " " r "\n")) keep-refs))) nil)
                      (let [default (github-default-branch gh-cache repo)
                            default-ref (when default (str "refs/remotes/origin/" default))
                            default-local (when default-ref (git "rev-parse" "--verify" "--quiet" (str default-ref "^{commit}")))
-                           ;; Every tip the clone would lose (HEAD, local
-                           ;; branches, reflog entries, commits GitHub lacks);
-                           ;; those already on the default branch drop out
-                           ;; of `own` below.
-                           keep (vec (distinct (cons head-sha shas)))
-                           unpushed (when (and default-local (zero? (:exit default-local)))
-                                      (apply git "rev-list" (str "--max-count=" (inc max-unpushed-commits-per-checkout))
-                                             (concat keep ["--not" default-ref])))
-                           own (when (and unpushed (zero? (:exit unpushed)))
-                                 (set (remove str/blank? (str/split-lines (:out unpushed)))))
-                           parents (when (seq own)
-                                     (try @(p/process ["git" "-C" (str co) "log" "--no-walk=unsorted" "--format=%P" "--stdin"]
-                                                      {:in (str (str/join "\n" own) "\n") :out :string :err :string})
-                                          (catch Exception _ nil)))
-                           anchors (cond
-                                     (nil? own) nil
-                                     (empty? own) [head-sha]
-                                     (and parents (zero? (:exit parents)))
-                                     (vec (distinct (remove #(or (str/blank? %) (own %)) (str/split (:out parents) #"\s+")))))
-                           kept (filterv #(contains? own %) keep)]
+                           default-sha (when (and default-local (zero? (:exit default-local))) (str/trim (:out default-local)))
+                           commits (when default-sha (apply git "rev-list" "--count" (concat tips ["--not" default-sha])))
+                           objects (when (and commits (zero? (:exit commits)))
+                                     (apply git "rev-list" "--objects" (concat tips ["--not" default-sha])))
+                           commit-count (when (and objects (zero? (:exit objects))) (parse-long (str/trim (:out commits))))
+                           bundle (str (file "commits.bundle"))]
                        (cond
                          (nil? default) {:hold "github-check-failed default-branch"}
-                         (not (zero? (:exit default-local))) {:hold (str "salvage-default-branch-not-fetched ref=" default-ref)}
-                         (nil? own) {:hold "git-error"}
-                         (> (count own) max-unpushed-commits-per-checkout) {:hold "too-many-unpushed-commits"}
-                         (nil? anchors) {:hold "git-error"}
+                         (nil? default-sha) {:hold (str "salvage-default-branch-not-fetched ref=" default-ref)}
+                         (nil? commit-count) {:hold "git-error"}
+                         (> commit-count max-unpushed-commits-per-checkout) {:hold "too-many-unpushed-commits"}
                          :else
-                         (or (some #(case (github-on-default-branch gh-cache repo default %)
-                                      :yes nil
-                                      :no {:hold (str "salvage-boundary-not-on-default-branch sha=" %)}
-                                      {:hold (str "github-check-failed sha=" %)})
-                                   anchors)
-                             (when (seq own)
+                         (or (case (github-on-default-branch gh-cache repo default default-sha)
+                               :yes nil
+                               :no {:hold (str "salvage-boundary-not-on-default-branch sha=" default-sha)}
+                               {:hold (str "github-check-failed sha=" default-sha)})
+                             (when-not (str/blank? (:out objects))
                                (or
-                                (when-not (every? #(zero? (:exit (vgit {} "update-ref" (str "refs/salvage/keep/" %) %))) kept)
+                                (when-not (every? (fn [[r sha]] (zero? (:exit (vgit {} "update-ref" r sha)))) keep-refs)
                                   {:hold "salvage-bundle-failed"})
-                                (let [created (apply vgit {} "bundle" "create" "-q" (str (file "commits.bundle")) "--all"
-                                                     (when (seq anchors) (cons "--not" anchors)))
-                                      verified (when (zero? (:exit created)) (vgit {} "bundle" "verify" "-q" (str (file "commits.bundle"))))
-                                      heads (when (and verified (zero? (:exit verified)))
-                                              (vgit {} "bundle" "list-heads" (str (file "commits.bundle"))))
-                                      listed (set (map #(first (str/split % #"\s+")) (str/split-lines (str (:out heads)))))]
-                                  (when-not (and heads (zero? (:exit heads)) (every? listed kept))
-                                    {:hold "salvage-verify-failed bundle"})))))))
+                                (let [created (vgit {} "bundle" "create" "-q" bundle "--all" "--not" default-sha)
+                                      verified (when (zero? (:exit created)) (vgit {} "bundle" "verify" "-q" bundle))
+                                      heads (when (and verified (zero? (:exit verified))) (vgit {} "bundle" "list-heads" bundle))
+                                      listed (set (keep #(let [[sha nm] (str/split % #"\s+" 2)] (when nm [nm sha]))
+                                                        (str/split-lines (str (:out heads)))))
+                                      prereqs (when (and heads (zero? (:exit heads))) (salvage-bundle-prerequisites bundle))]
+                                  ;; A bundle leaves out refs whose tip the
+                                  ;; default branch already reaches; refs.txt
+                                  ;; keeps their names.
+                                  (cond
+                                    (not (and prereqs
+                                              (every? #(zero? (:exit (git "merge-base" "--is-ancestor" % default-sha)))
+                                                      (distinct (map second (remove listed keep-refs))))))
+                                    {:hold "salvage-verify-failed bundle"}
+                                    (not-every? #(zero? (:exit (git "merge-base" "--is-ancestor" % default-sha))) prereqs)
+                                    {:hold "salvage-verify-failed bundle-prerequisite"})))))))
                      ;; 2. Index and worktree changes as binary patches; untracked
                      ;; files (not ignored ones, as before) as a tar archive.
                      (let [diff-args ["--binary" "--full-index" "--no-color" "--no-ext-diff" "--no-textconv" "--no-renames"]
@@ -6779,7 +6800,7 @@
                                  untracked-same? (and work-same?
                                                       (or (empty? untracked) (zero? (:exit (command-result ["tar" "-C" (str restore-untracked) "-xf" (str (file "untracked.tar"))]))))
                                                       (every? #(salvage-same-entry? (fs/path co %) (fs/path restore-untracked %)) untracked))
-                                 files (filter #(fs/exists? (file %)) ["commits.bundle" "staged.patch" "worktree.patch" "untracked.tar"])
+                                 files (filter #(fs/exists? (file %)) ["refs.txt" "commits.bundle" "staged.patch" "worktree.patch" "untracked.tar"])
                                  bytes (reduce + 0 (map #(fs/size (file %)) files))]
                              (cond
                                (not index-ok?) {:hold (str "salvage-verify-failed index" (some #(when % (str " " %)) steps))}
@@ -6792,14 +6813,15 @@
                                            :repo repo :head head-sha
                                            :branch (when (zero? (:exit branch)) (str/trim (:out branch)))
                                            :owned-clone owned-clone?
-                                           :missing-commits missing
+                                           :kept-refs (count keep-refs)
                                            :changed-paths (count paths) :untracked-paths (count untracked)
                                            :files (into (sorted-map) (map (fn [n] [n {:bytes (fs/size (file n)) :sha256 (salvage-sha256 (file n))}]) files))
-                                           :external-common-dir (when (and linked? (not (fs/starts-with? common-dir run-real))) (str common-dir))}}))))))))))))))))
+                                           :external-common-dir (when (and linked? (not (fs/starts-with? common-dir run-real))) (str common-dir))}}))))))))))))))
 
 (def salvage-restore-steps
   ["git clone https://github.com/<repo>.git work && cd work"
-   "git fetch <dir>/commits.bundle 'refs/salvage/keep/*:refs/salvage/keep/*'   # only when commits.bundle exists"
+   "git fetch <dir>/commits.bundle 'refs/salvage/*:refs/salvage/*'   # only when commits.bundle exists; every lost ref is under refs/salvage/<refname>"
+   "git update-ref <ref> <sha>   # for each line of <dir>/refs.txt the bundle did not carry (already on the default branch)"
    "git checkout --detach <head>"
    "git apply --index <dir>/staged.patch && git apply <dir>/worktree.patch   # skip empty patches"
    "tar -xf <dir>/untracked.tar"])
@@ -6812,7 +6834,10 @@
         _ (fs/create-dirs scratch-root)
         work (fs/create-temp-dir {:dir scratch-root :prefix (str ticket-id "-")})]
     (try
+      ;; Only checkout contents are archived, so anything else in the run
+      ;; (notes or outputs next to the checkouts) keeps the run.
       (or (some->> (stale-process-hold run-real) (hash-map :hold))
+          (some->> (outside-checkout-hold run-path (map :path checkouts)) (hash-map :hold))
           (let [held (filterv :hold checkouts)
                 results (loop [[c & more] held i 0 used 0 acc []]
                           (if-not c
@@ -6826,6 +6851,14 @@
                                 (conj acc (assoc r :path (:path c)))
                                 (recur more (inc i) (+ used (:bytes r)) (conj acc (assoc r :index i :original c)))))))
                 failed (first (filter :hold results))
+                ;; Ignored files are not archived either: any checkout of the
+                ;; run may only hold regenerable ignored data.
+                failed (or failed
+                           (some (fn [c]
+                                   (let [repo (or (:repo c) (some #(when (= (:path c) (get-in % [:original :path])) (get-in % [:checkout :repo])) results))]
+                                     (when-let [h (inspect-ignored (:path c) repo)]
+                                       {:hold h :path (:path c)})))
+                                 checkouts))
                 bytes (reduce + 0 (keep :bytes results))]
             (cond
               failed {:hold (str (:hold failed) " checkout=" (fs/relativize run-path (:path failed)))}
