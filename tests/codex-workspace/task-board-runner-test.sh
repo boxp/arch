@@ -7020,6 +7020,9 @@ test_generated_reclaim_retained_done_latest() {
   run_prune "${vault}" "${state}" >"${out}"
   [[ -f "${co}/node_modules/a" && -f "${art}" ]] || fail 'latest run of a locked ticket reclaimed'
   rm "${state}/locks/BOXP-638.edn"
+  CODEX_TASK_BOARD_GENERATED_RECLAIM_MIN_AGE_HOURS=1000 CODEX_TASK_BOARD_WORKSPACE_STALE_RUN_RETENTION_HOURS=1000 \
+    run_prune "${vault}" "${state}" >"${out}"
+  [[ -f "${co}/node_modules/a" && -f "${art}" ]] || fail 'retained Done latest run reclaimed before the minimum age'
   run_prune "${vault}" "${state}" >"${out}"
   [[ ! -e "${co}/node_modules/a" ]] || fail 'retained Done latest run kept its node_modules'
   [[ ! -e "${art}" ]] || fail 'retained Done latest run kept its origin copy'

@@ -6656,7 +6656,12 @@
   [ticket-id run-id ids hours]
   (let [decision (stale-run-decision run-id ids (now) hours (keep-latest-runs))]
     (if (and (= "latest-run" (:reason decision)) (retained-done-run? ticket-id run-id))
-      {:eligible? true :basis :retained-done-latest}
+      ;; Only the latest-run slot is lifted: the minimum age (hours) is still
+      ;; evaluated by re-running the decision with no competing run ids.
+      (let [aged (stale-run-decision run-id [] (now) hours (keep-latest-runs))]
+        (if (:eligible? aged)
+          {:eligible? true :basis :retained-done-latest}
+          aged))
       decision)))
 
 (defn generated-run-hold [ticket-id run-id hours]
