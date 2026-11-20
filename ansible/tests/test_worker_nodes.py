@@ -165,8 +165,8 @@ class WorkerImagePlaybookResolutionTest(unittest.TestCase):
         self.assertIn('kubernetes_version={{ worker_kubernetes_version }}', content)
         self.assertIn('crio_package_version={{ worker_crio_package_version }}', content)
         self.assertEqual(metadata['when'], 'worker_image_build | bool')
-        self.assertEqual(play['vars']['worker_kubernetes_version'], '1.36.5')
-        self.assertEqual(play['vars']['worker_crio_package_version'], '1.36.6-3.1')
+        self.assertEqual(play['vars']['worker_kubernetes_version'], '1.37.2')
+        self.assertEqual(play['vars']['worker_crio_package_version'], '1.37.4-1.1')
 
 
 class WorkerNodeConfigScriptTest(unittest.TestCase):
@@ -183,8 +183,8 @@ class WorkerNodeConfigScriptTest(unittest.TestCase):
                 self.assertEqual(values['NODE_IP'], ip)
                 self.assertEqual(values['NETWORK_INTERFACE'], interface)
                 self.assertEqual(values['GPU_HOST_TOOLS'], 'true' if gpu else 'false')
-                self.assertEqual(values['KUBERNETES_PACKAGE_VERSION'], '1.36.5-1.1')
-                self.assertEqual(values['CRIO_PACKAGE_VERSION'], '1.36.6-3.1')
+                self.assertEqual(values['KUBERNETES_PACKAGE_VERSION'], '1.37.2-1.1')
+                self.assertEqual(values['CRIO_PACKAGE_VERSION'], '1.37.4-1.1')
                 self.assertEqual(values['GATEWAY'], '192.168.10.1')
 
     def test_rejects_non_worker_and_unknown_nodes(self):
