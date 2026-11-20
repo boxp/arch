@@ -2359,6 +2359,10 @@
 ;; runs never take the carryover path (they keep the legacy clean-only reuse).
 (def ^:dynamic *workspace-carryover-allowed?* true)
 
+;; BOXP-638 S3a: a capacity-relief run started below the hard disk guard gets no
+;; repository checkout, so the run that is meant to free space cannot fill it.
+(def ^:dynamic *capacity-relief-no-checkout?* false)
+
 (defn prepare-repo-worktree! [workspace-dir ticket-id run-id repo]
   (let [source (local-repo-path repo)
         target (fs/path workspace-dir "ghq/github.com" repo)
@@ -2391,7 +2395,8 @@
 
 (defn prepare-run-workspace! [ticket-id run-id]
   (let [workspace-dir (run-workspace-dir ticket-id run-id)
-        repos (ticket-repos ticket-id)]
+        relief? *capacity-relief-no-checkout?*
+        repos (if relief? [] (ticket-repos ticket-id))]
     (fs/create-dirs workspace-dir)
     (let [worktrees (mapv #(prepare-repo-worktree! workspace-dir ticket-id run-id %) repos)
           metrics (mapv #(record-workspace-prepare! ticket-id run-id %) worktrees)]
@@ -2400,7 +2405,8 @@
         (spit (str (fs/path (run-dir ticket-id run-id) "workspace-reuse.edn"))
               (pr-str (mapv #(select-keys % [:repo :reused-from :reuse-base :reuse-base-reason :reuse-fallback :worktree-failed :carryover :carryover-head :carryover-dirty :branch :detached? :mode :new-bytes-est :new-bytes-basis :moved]) (map merge worktrees metrics))))
         (catch Exception e (log! (str "workspace-reuse: audit-write-failed " (.getMessage e)))))
-      {:workspace-dir (str workspace-dir) :repo-worktrees worktrees})))
+      (cond-> {:workspace-dir (str workspace-dir) :repo-worktrees worktrees}
+        relief? (assoc :capacity-relief true)))))
 
 (defn workspace-prompt [workspace]
   (let [repo-worktrees (:repo-worktrees workspace)
@@ -2419,7 +2425,10 @@
                                                                 " Regenerable ignored outputs (node_modules, dist, ...) may remain; reinstall or rebuild when relevant.\n"))))
                                   prepared))
                 "Use these per-run worktrees for repository changes. Do not edit shared checkouts under /home/boxp/ghq for this task.\n")
-           "No repository worktree was prepared for this ticket.\n")
+           (if (:capacity-relief workspace)
+             (str "No repository worktree was prepared: this capacity-relief run started while free disk space is below the runner's guard (BOXP-638 S3a). "
+                  "Work on freeing space without new clones, builds or installs; if a repository change is needed, return blocked so a normal run takes it once space is back.\n")
+             "No repository worktree was prepared for this ticket.\n"))
          "Storage placement: put temporary clones, extra worktrees, caches, build outputs and verification copies inside this run workspace (it is cleaned up automatically). When verification needs a copy of a built site or large tracked assets, do not duplicate files already tracked in the repository; reference the checkout path or symlink into it, and delete such copies before the run ends; copies identical to origin are automatically removed from older runs. Do not create them under /home/boxp/ghq, ~/.cache or elsewhere in the home directory, where nothing cleans them up. Verification media (screenshots, screen recordings, rendered frames, comparison images, audio) must not be written or copied into the Obsidian vault, which syncs to a size-limited remote: keep the media that has to be kept under /home/boxp/verification-artifacts/<TICKET>/<label>/ (outside the vault, not cleaned up) and record in the vault only a text summary of the result and that path. Images the ticket itself asks for as deliverables are not verification media.\n"
          (when (seq unavailable)
            (str "Repositories that need preparation inside this run workspace:\n"
@@ -8275,12 +8284,43 @@
     {:free-bytes bytes :free-inode-percent inode}))
 
 (defn disk-guard []
+  ;; BOXP-638 S3a: two stages. Below MIN_FREE_BYTES (hard, unchanged) no normal run
+  ;; starts; only a ticket marked `capacity_relief: true` may start, without a
+  ;; repository checkout, while free space stays above RELIEF_MIN_FREE_BYTES.
+  ;; Below SOFT_MIN_FREE_BYTES (soft) tickets with no run workspace yet wait while
+  ;; continuing tickets go on. SOFT <= MIN disables the soft stage and
+  ;; RELIEF >= MIN disables relief starts (rollback without a redeploy of logic).
   (let [{:keys [free-bytes free-inode-percent] :as measured} (disk-guard-measure)
         min-bytes (prune-setting "CODEX_TASK_BOARD_MIN_FREE_BYTES" #(parse-bounded-long % 8589934592 0))
-        min-inode (prune-setting "CODEX_TASK_BOARD_MIN_FREE_INODE_PERCENT" #(parse-bounded-long % 3 0))]
+        min-inode (prune-setting "CODEX_TASK_BOARD_MIN_FREE_INODE_PERCENT" #(parse-bounded-long % 3 0))
+        soft-bytes (prune-setting "CODEX_TASK_BOARD_SOFT_MIN_FREE_BYTES" #(parse-bounded-long % 17179869184 0))
+        relief-bytes (prune-setting "CODEX_TASK_BOARD_RELIEF_MIN_FREE_BYTES" #(parse-bounded-long % 4294967296 0))
+        low? (disk-low? free-bytes free-inode-percent min-bytes min-inode)]
     (when (and (nil? free-bytes) (nil? free-inode-percent))
       (log! "disk-guard: measurement failed; allowing new runs"))
-    (assoc measured :low? (disk-low? free-bytes free-inode-percent min-bytes min-inode))))
+    (assoc measured
+           :low? low?
+           :soft? (and (not low?) (> soft-bytes min-bytes) (some? free-bytes) (< free-bytes soft-bytes))
+           :relief-ok? (and low? (< relief-bytes min-bytes) (some? free-bytes) (>= free-bytes relief-bytes)
+                            (not (and (some? free-inode-percent) (< free-inode-percent min-inode)))))))
+
+(defn capacity-relief-ticket? [ticket-id]
+  (contains? #{"true" "yes" "on"}
+             (some-> (:capacity_relief (ticket-frontmatter-or-nil ticket-id)) str/trim str/lower-case)))
+
+(defn ticket-has-run-workspace? [ticket-id]
+  (let [dir (fs/path (root) "workspaces" ticket-id)]
+    (boolean (and (fs/directory? dir) (seq (fs/list-dir dir))))))
+
+(defn disk-guard-admit
+  "Splits new candidates by the disk guard stage into {:start [...] :relief #{ids} :waiting n}."
+  [new-candidates {:keys [low? soft? relief-ok?]}]
+  (cond
+    low? (let [relief (if relief-ok? (filterv #(capacity-relief-ticket? (:ticket-id %)) new-candidates) [])]
+           {:start relief :relief (set (map :ticket-id relief)) :waiting (- (count new-candidates) (count relief))})
+    soft? (let [start (filterv #(or (ticket-has-run-workspace? (:ticket-id %)) (capacity-relief-ticket? (:ticket-id %))) new-candidates)]
+            {:start start :relief #{} :waiting (- (count new-candidates) (count start))})
+    :else {:start new-candidates :relief #{} :waiting 0}))
 
 (defn tick! []
   (recover-locks!)
@@ -8293,16 +8333,22 @@
             in-flight-ids (set (keys @in-flight-futures))
             candidates (candidate-cards)
             new-candidates (vec (remove #(contains? in-flight-ids (:ticket-id %)) candidates))
-            {:keys [low? free-bytes free-inode-percent]} (when (seq new-candidates) (disk-guard))
+            {:keys [low? soft? free-bytes free-inode-percent] :as guard} (when (seq new-candidates) (disk-guard))
+            {:keys [start relief waiting]} (disk-guard-admit new-candidates guard)
             _ (when low?
                 (log! (str "disk-guard: low free space free-bytes=" free-bytes
-                           " free-inode-percent=" free-inode-percent " ; not starting " (count new-candidates) " candidate(s)"))
+                           " free-inode-percent=" free-inode-percent " ; not starting " waiting " candidate(s)"
+                           (when (seq relief) (str ", starting capacity-relief without checkout: " (str/join "," (sort relief))))))
                 (maybe-start-workspace-prune! true))
-            new-candidates (if low? [] new-candidates)]
+            _ (when (and soft? (pos? waiting))
+                (log! (str "disk-guard: soft stage free-bytes=" free-bytes " ; " waiting
+                           " candidate(s) without a run workspace wait, continuing tickets start")))
+            new-candidates start]
         (doseq [card new-candidates]
-          (let [f (future
-                    (log! (str "processing " (:ticket-id card) " from " (:lane card)))
-                    (let [started? (process-card! card)]
+          (let [relief? (contains? relief (:ticket-id card))
+                f (future
+                    (log! (str "processing " (:ticket-id card) " from " (:lane card) (when relief? " (capacity-relief, no checkout)")))
+                    (let [started? (binding [*capacity-relief-no-checkout?* relief?] (process-card! card))]
                       (when-not started?
                         (log! (str "candidate could not start, leaving it for a future tick: " (:ticket-id card))))
                       {:ticket-id (:ticket-id card)
@@ -9035,6 +9081,52 @@
         (tick!))
       (if (and (empty? @started) @pruned) (println "PASS: disk guard blocks tick")
           (swap! failures conj "disk guard blocks tick")))
+
+    ;; BOXP-638 S3a: two-stage guard and capacity-relief starts.
+    (let [gib 1073741824
+          check (fn [label actual expected]
+                  (if (= actual expected) (println (str "PASS: " label))
+                      (do (println (str "FAIL: " label " actual=" (pr-str actual))) (swap! failures conj label))))
+          stage (fn [free inode] (with-redefs [disk-guard-measure (fn [] {:free-bytes free :free-inode-percent inode})]
+                                   (select-keys (disk-guard) [:low? :soft? :relief-ok?])))]
+      (check "guard ok above soft" (stage (* 20 gib) 50) {:low? false :soft? false :relief-ok? false})
+      (check "guard soft between" (stage (* 12 gib) 50) {:low? false :soft? true :relief-ok? false})
+      (check "guard hard relief ok" (stage (* 6 gib) 50) {:low? true :soft? false :relief-ok? true})
+      (check "guard hard below relief" (stage (* 3 gib) 50) {:low? true :soft? false :relief-ok? false})
+      (check "guard hard inode no relief" (stage (* 20 gib) 1) {:low? true :soft? false :relief-ok? false})
+      (check "guard unmeasured allows" (stage nil nil) {:low? false :soft? false :relief-ok? false})
+      (with-redefs [ticket-frontmatter-or-nil (fn [id] (case id "R" {:capacity_relief " True "} "N" {:capacity_relief "false"} nil))
+                    ticket-has-run-workspace? (fn [id] (= id "C"))]
+        (let [cards [{:ticket-id "R"} {:ticket-id "N"} {:ticket-id "C"} {:ticket-id "X"}]
+              ids (fn [r] (update r :start #(mapv :ticket-id %)))]
+          (check "admit ok" (ids (disk-guard-admit cards {})) {:start ["R" "N" "C" "X"] :relief #{} :waiting 0})
+          (check "admit soft continuing+relief" (ids (disk-guard-admit cards {:soft? true})) {:start ["R" "C"] :relief #{} :waiting 2})
+          (check "admit hard relief only" (ids (disk-guard-admit cards {:low? true :relief-ok? true})) {:start ["R"] :relief #{"R"} :waiting 3})
+          (check "admit hard below relief" (ids (disk-guard-admit cards {:low? true :relief-ok? false})) {:start [] :relief #{} :waiting 4})))
+      (let [seen (atom []) pruned (atom false)]
+        (with-redefs [candidate-cards (fn [] [{:ticket-id "TEST-RELIEF" :lane "Ready"} {:ticket-id "TEST-NORMAL" :lane "Ready"}])
+                      recover-locks! (fn [] nil) draining? (fn [] false) sync-all! (fn [] nil)
+                      disk-guard (fn [] {:low? true :relief-ok? true :free-bytes (* 6 gib) :free-inode-percent 50})
+                      capacity-relief-ticket? (fn [id] (= id "TEST-RELIEF"))
+                      maybe-start-workspace-prune! (fn [& _] (reset! pruned true))
+                      process-card! (fn [card] (swap! seen conj [(:ticket-id card) *capacity-relief-no-checkout?*]) true)]
+          (tick!)
+          (doseq [[_ f] @in-flight-futures] (deref f 5000 nil))
+          (reset! in-flight-futures {}))
+        (check "hard stage starts relief only without checkout" [@seen @pruned] [[["TEST-RELIEF" true]] true]))
+      (let [tmp (fs/create-temp-dir {:prefix "s3a-relief"})
+            called (atom 0)]
+        (with-redefs [run-workspace-dir (fn [_ _] (fs/path tmp "ws"))
+                      run-dir (fn [_ _] (fs/path tmp "run"))
+                      ticket-repos (fn [_] ["boxp/arch"])
+                      prepare-repo-worktree! (fn [& _] (swap! called inc) {:repo "boxp/arch" :path "/x"})
+                      record-workspace-prepare! (fn [& _] {})]
+          (let [w (binding [*capacity-relief-no-checkout?* true] (prepare-run-workspace! "T" "r"))]
+            (check "relief workspace has no checkout" [@called (:repo-worktrees w) (:capacity-relief w)] [0 [] true])
+            (check "relief prompt explains" (str/includes? (workspace-prompt w) "capacity-relief run") true))
+          (let [w (prepare-run-workspace! "T" "r2")]
+            (check "normal workspace checks out" [@called (boolean (:capacity-relief w))] [1 false])))
+        (fs/delete-tree tmp)))
 
     ;; Shutdown race: an agent registered while `stop-in-flight-agents!` is
     ;; waiting, and one registered after it finished, must both be killed.
