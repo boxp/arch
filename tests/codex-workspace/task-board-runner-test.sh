@@ -7611,7 +7611,7 @@ test_prune_salvage_reclaim() {
   local tmp vault state bin source known out old ws co big gh restore head
   local default_shas feature feature_head pushed owned side tagged gone note junk held708 clean708 gone708
   local deep cut_base cut_tip shallow_src shallow709 head709 cut710
-  local deep711 shared711 run711 head711
+  local deep711 shared711 run711 head711 run712 head712
   tmp="$(mktemp -d)"
   vault="${tmp}/vault"
   state="${tmp}/state"
@@ -7797,6 +7797,22 @@ test_prune_salvage_reclaim() {
   prune_commit "${run711}" local-711 >/dev/null
   printf 'edit\n' >"${run711}/edit.txt"
   head711="$(git -C "${run711}" rev-parse HEAD)"
+  # BOXP-712: same shared clone, but 150 local commits on top of the fork
+  # point. Probing only at 2^k-1 jumps from 127 to 255 past the 200 limit;
+  # the last ancestor within the limit must still be probed.
+  write_prune_ticket "${vault}" BOXP-712 "done" 2020-01-01
+  run712="${ws}/BOXP-712/${old}/ghq/github.com/boxp/example"
+  mkdir -p "$(dirname "${run712}")"
+  git -C "${shared711}" worktree add -q -b "codex-task-board/BOXP-712-${old}" "${run712}" HEAD
+  for ((i711 = 1; i711 <= 150; i711++)); do
+    git -C "${run712}" update-ref HEAD \
+      "$(prune_git -C "${run712}" commit-tree -p HEAD -m "l${i711}" "$(git -C "${run712}" rev-parse 'HEAD^{tree}')")"
+  done
+  # Expired reflogs: no reflog entry at the fork point offers a shortcut.
+  rm -f "$(git -C "${run712}" rev-parse --git-dir)/logs/HEAD" \
+    "$(git -C "${run712}" rev-parse --git-common-dir)/logs/refs/heads/codex-task-board/BOXP-712-${old}"
+  printf 'edit\n' >"${run712}/edit.txt"
+  head712="$(git -C "${run712}" rev-parse HEAD)"
   prune_git -C "${deep711}" commit -q --allow-empty -m e206
   prune_git -C "${deep711}" commit -q --allow-empty -m e207
   git -C "${shared711}" fetch -q --depth 1 origin +main:refs/remotes/origin/main
@@ -7942,6 +7958,13 @@ test_prune_salvage_reclaim() {
   git -C "${restore}" checkout -q --detach "${head711}"
   tar -C "${restore}" -xf "${archive}/0/untracked.tar"
   [[ -f "${restore}/local-711" && "$(cat "${restore}/edit.txt")" == edit ]] || fail "BOXP-711 checkout not restored"
+  assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-712/${old}$"
+  archive="$(find "${state}/salvage/BOXP-712/${old}" -mindepth 1 -maxdepth 1 -type d)"
+  restore="${tmp}/restore-712"
+  git clone -q --single-branch -b main "${deep711}" "${restore}"
+  git -C "${restore}" fetch -q "${archive}/0/commits.bundle" 'refs/salvage/*:refs/salvage/*' ||
+    fail "BOXP-712 bundle must apply to a default-branch clone"
+  [[ "$(git -C "${restore}" rev-list --count "${head712}" --not main)" == 150 ]] || fail "BOXP-712 local commits not restored"
 }
 
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a

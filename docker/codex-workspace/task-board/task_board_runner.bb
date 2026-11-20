@@ -6644,9 +6644,9 @@
   at the shallow boundary, while an old run branch still has its full local
   history, so `tip --not default-sha` counts every ancestor down to the root.
   For each such tip the first-parent ancestors are probed at exponentially
-  growing distances (0, 1, 3, 7, ...) and the first one GitHub confirms is on
-  its default branch becomes a boundary: a fresh clone has it and all its
-  ancestors, so bundling down to it at most doubles the commits carried.
+  growing distances (0, 1, 3, 7, ...), plus the last ancestor within `limit`,
+  and the first one GitHub confirms is on its default branch becomes a
+  boundary: a fresh clone has it and all its ancestors.
   `on-default` is called with a sha and returns :yes/:no/:unknown; the search
   for a tip stops on :unknown. Returns the boundary shas (possibly empty)."
   [git tips excludes limit on-default]
@@ -6659,7 +6659,11 @@
          found
          (let [listed (apply git "rev-list" "--first-parent" (str "--max-count=" (inc limit)) tip not-args)
                chain (when (zero? (:exit listed)) (vec (remove str/blank? (str/split-lines (:out listed)))))
-               probes (distinct (take-while #(< % (count chain)) (map #(dec (bit-shift-left 1 %)) (range 0 31))))]
+               probes (distinct (concat (take-while #(< % (count chain)) (map #(dec (bit-shift-left 1 %)) (range 0 31)))
+                                       ;; The last listed ancestor is always probed so a
+                                       ;; fork point between two powers of two within the
+                                       ;; limit (e.g. 128..200) is still found.
+                                       (when (seq chain) [(dec (count chain))])))]
            (loop [[i & more] probes]
              (if (nil? i)
                found
