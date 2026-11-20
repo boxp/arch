@@ -5,8 +5,8 @@ button { font-size: 1rem; padding: .55em .9em; margin: .2em; border-radius: 6px;
 button:disabled { opacity: .4; }
 .danger { border-color: #a33; background: #3a1515; }
 .providers button { min-width: 9em; }
-#term { width: 100%; height: 55vh; min-height: 260px; background: #000; }
-.keys button { min-width: 3.5em; }
+#term { width: 100%; height: 50vh; min-height: 260px; background: #000; }
+.keys button { min-width: 3.2em; min-height: 2.6em; }
 .paste { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .paste input { flex: 1 1 14em; font-size: 16px; padding: .5em; background: #222; color: #eee; border: 1px solid #555; border-radius: 6px; }
 #link-list a { color: #8cf; word-break: break-all; }
@@ -14,3 +14,9 @@ button:disabled { opacity: .4; }
 table { border-collapse: collapse; width: 100%; font-size: .9rem; }
 td, th { border: 1px solid #444; padding: .3em .5em; text-align: left; }
 code { background: #222; padding: 0 .2em; }
+/* Sticky so the keys stay reachable next to the terminal on a phone. */
+.keys { margin: .4em 0; position: sticky; bottom: 0; z-index: 2; background: #111; padding: 4px 0; }
+.keys .note { margin: .2em 0 0; }
+.keyrow { display: flex; flex-wrap: wrap; gap: 2px; }
+.keys button { touch-action: manipulation; user-select: none; -webkit-user-select: none; }
+.keys .primary { border-color: #3a7; background: #153a22; }

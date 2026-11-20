@@ -24,7 +24,7 @@
   <details class="howto">
     <summary>手順</summary>
     <ul>
-      <li><b>Antigravity</b>: 「1. Google OAuth」で Enter → 下の「リンク」を開いて本人の Google アカウントでログイン → 表示された認可コードを「貼り付け欄」から送信して Enter。ログイン後 <code>/config</code> で「Use AI Credits」が off であることを確認し、「セッション終了」。</li>
+      <li><b>Antigravity</b>: 「1. Google OAuth」で Enter → 下の「リンク」を開いて本人の Google アカウントでログイン → 表示された認可コードを「貼り付け欄」から送信して Enter。ログイン後に「Done」等の選択が出たら <b>→</b>/<b>↓</b> ボタンで選んで <b>Enter</b>。その後 <code>/config</code> で「Use AI Credits」が off であることを確認し、「セッション終了」。</li>
       <li><b>Claude Code</b>: 「リンク」を開いてサブスクリプションのアカウントでログイン → 表示されたコードを貼り付け欄から送信して Enter。完了すると自動で終了します。</li>
       <li><b>Codex</b>: 「リンク」を開き、画面に出たワンタイムコードを入力（ChatGPT 側でデバイスコード認証の許可が必要な場合があります）。完了すると自動で終了します。</li>
     </ul>
@@ -38,12 +38,23 @@
     <p>リンク（タップで別タブ。ログイン後この画面に戻ってください）:</p>
     <ul id="link-list"></ul>
   </div>
-  <div class="keys">
-    <button data-key="enter">Enter</button>
-    <button data-key="up">↑</button>
-    <button data-key="down">↓</button>
-    <button data-key="esc">Esc</button>
-    <button data-key="ctrlc">Ctrl+C</button>
+  <div class="keys" aria-label="キー送信">
+    <div class="keyrow">
+      <button data-key="left" aria-label="左矢印">←</button>
+      <button data-key="up" aria-label="上矢印">↑</button>
+      <button data-key="down" aria-label="下矢印">↓</button>
+      <button data-key="right" aria-label="右矢印">→</button>
+      <button data-key="enter" class="primary">Enter</button>
+    </div>
+    <div class="keyrow">
+      <button data-key="tab">Tab</button>
+      <button data-key="backtab">Shift+Tab</button>
+      <button data-key="space">Space</button>
+      <button data-key="backspace" aria-label="1文字削除">⌫</button>
+      <button data-key="esc">Esc</button>
+      <button data-key="ctrlc">Ctrl+C</button>
+    </div>
+    <p class="note">スマホのキーボードに無い矢印・Tab などはここから送れます（例: 「Done」へ移るには →、決定は Enter）。</p>
   </div>
   <div class="paste">
     <input id="paste-input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="貼り付け欄（認可コード・/config など）">

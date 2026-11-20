@@ -1,7 +1,18 @@
 'use strict';
 (function () {
   const $ = (s) => document.querySelector(s);
-  const KEYS = { enter: '\r', up: '\x1b[A', down: '\x1b[B', esc: '\x1b', ctrlc: '\x03' };
+  // Keys a phone soft keyboard cannot type. Arrows follow the terminal's
+  // cursor-key mode (DECCKM) like a real keyboard: ESC O x in application
+  // mode, ESC [ x otherwise.
+  const ARROWS = { up: 'A', down: 'B', right: 'C', left: 'D' };
+  const KEYS = { enter: '\r', tab: '\t', backtab: '\x1b[Z', space: ' ', backspace: '\x7f', esc: '\x1b', ctrlc: '\x03' };
+  function keySeq(name) {
+    if (ARROWS[name]) {
+      const app = !!(term && term.modes && term.modes.applicationCursorKeysMode);
+      return (app ? '\x1bO' : '\x1b[') + ARROWS[name];
+    }
+    return KEYS[name];
+  }
   const REASONS = {
     'process-exit': 'CLI が終了しました。下の「状態を確認」で結果を確かめてください。',
     'stopped-by-owner': 'セッションを終了しました。',
@@ -106,7 +117,9 @@
     });
   });
   document.querySelectorAll('.keys button').forEach((b) => {
-    b.addEventListener('click', () => sendInput(KEYS[b.dataset.key]));
+    // Keep focus where it was so the soft keyboard does not pop up/down.
+    b.addEventListener('mousedown', (e) => e.preventDefault());
+    b.addEventListener('click', () => sendInput(keySeq(b.dataset.key)));
   });
   $('#paste-send').addEventListener('click', () => { sendInput($('#paste-input').value); $('#paste-input').value = ''; });
   $('#paste-send-enter').addEventListener('click', () => { sendInput($('#paste-input').value + '\r'); $('#paste-input').value = ''; });
