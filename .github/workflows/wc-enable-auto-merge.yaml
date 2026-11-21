@@ -2,6 +2,19 @@
 name: Enable auto-merge
 on:
   workflow_call:
+    inputs:
+      plan_targets:
+        description: |
+          JSON array of tfaction targets planned in this workflow run (output of wc-test).
+          Auto-merge is enabled only when every target was planned successfully with no changes.
+        required: true
+        type: string
+      upstream_ok:
+        description: |
+          true only when the test (plan) job succeeded and status-check did not fail.
+          Otherwise auto-merge is kept disabled (and disabled if Renovate enabled it).
+        required: true
+        type: boolean
     secrets:
       gh_app_id:
         required: true
@@ -10,17 +23,58 @@ on:
 jobs:
   enable-automerge:
     # Enable automerge to merge pull requests from Renovate automatically.
+    #
+    # BOXP-651: tfaction disables auto-merge when `terraform plan` has changes in
+    # a Renovate PR. This job runs after the plan, so it must not enable
+    # auto-merge again in that case (including when only this job is re-run).
+    # It reads the plan results recorded by wc-plan.yaml in this workflow run and
+    # enables auto-merge only when every target has no changes. Changes, plan
+    # failures and missing or undetermined results keep auto-merge disabled.
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions: {}
+    permissions:
+      actions: read # Download plan result artifacts of this workflow run (all attempts)
+      contents: read # Check out the judge script from the base branch
     steps:
+      # pull_request_target: the default ref is the base branch, so the script is
+      # taken from the trusted base branch, not from the pull request.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Download plan results
+        # Use the REST API (run-id) so that artifacts uploaded by earlier attempts
+        # of this run are also found when only failed jobs are re-run.
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true # A missing result is judged as "block" below
+        with:
+          pattern: tfaction-plan-result-*
+          path: ${{runner.temp}}/tfaction-plan-results
+          # Each artifact contains <slug>.json. merge-multiple keeps the layout flat and
+          # identical whether one or many artifacts match the pattern.
+          merge-multiple: true
+          run-id: ${{github.run_id}}
+          github-token: ${{github.token}}
+
+      - name: Judge plan results
+        id: judge
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLAN_RESULTS_DIR"
+          .github/scripts/judge-renovate-plan-results.sh | tee "${RUNNER_TEMP}/judge.txt"
+        env:
+          PLAN_TARGETS_JSON: ${{inputs.plan_targets}}
+          PLAN_RESULTS_DIR: ${{runner.temp}}/tfaction-plan-results
+          UPSTREAM_OK: ${{inputs.upstream_ok}}
+
       - name: Generate token
         id: generate_token
         uses: tibdex/github-app-token@3beb63f4bd073e61482598c45c71c1019b59b73a # v2.1.0
         with:
           app_id: ${{secrets.gh_app_id}}
           private_key: ${{secrets.gh_app_private_key}}
-          # pull_requests:write - Enable auto-merge
+          # pull_requests:write - Enable or disable auto-merge
           # contents:write - Merge pull requests
           permissions: >-
             {
@@ -30,7 +84,33 @@ jobs:
           repositories: >-
             ["${{github.event.repository.name}}"]
 
-      - run: gh -R "$GITHUB_REPOSITORY" pr merge --squash --auto --delete-branch "$PR_NUMBER"
+      - if: steps.judge.outputs.decision == 'enable'
+        run: gh -R "$GITHUB_REPOSITORY" pr merge --squash --auto --delete-branch "$PR_NUMBER"
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}} # Use GitHub App to trigger GitHub Actions Workflow by merge commit.
+          PR_NUMBER: ${{github.event.pull_request.number}}
+
+      - name: Keep auto-merge disabled
+        if: steps.judge.outputs.decision != 'enable'
+        run: |
+          set -euo pipefail
+          # Renovate enables auto-merge when it creates the pull request. Make sure
+          # it stays disabled even if tfaction did not disable it.
+          if [[ "$(gh -R "$GITHUB_REPOSITORY" pr view "$PR_NUMBER" --json autoMergeRequest --jq '.autoMergeRequest != null')" == true ]]; then
+            gh -R "$GITHUB_REPOSITORY" pr merge --disable-auto "$PR_NUMBER"
+          fi
+          {
+            echo "## Auto-merge was not enabled"
+            echo
+            echo "The tfaction plan results of this run do not allow auto-merge."
+            echo "Review the plan and merge the pull request manually if the changes are expected."
+            echo "Re-running this job does not enable auto-merge while the plan has changes."
+            echo
+            echo '```'
+            cat "${RUNNER_TEMP}/judge.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::Auto-merge was not enabled because the tfaction plan results do not allow it. See the job summary."
+        env:
+          GITHUB_TOKEN: ${{steps.generate_token.outputs.token}}
           PR_NUMBER: ${{github.event.pull_request.number}}

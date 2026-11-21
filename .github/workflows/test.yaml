@@ -16,18 +16,69 @@ jobs:
       gh_app_id: ${{secrets.APP_ID}}
       gh_app_private_key: ${{secrets.APP_PRIVATE_KEY}}
 
+  disable-auto-merge:
+    # BOXP-651: Renovate enables auto-merge when it creates the PR. Disable it at
+    # the start of every run so that the PR cannot be merged as soon as the
+    # required status-check passes, before the enable-auto-merge job has judged
+    # the plan results (e.g. when the plan result artifacts cannot be read).
+    # Auto-merge is enabled again only by enable-auto-merge when every target has
+    # no changes. status-check needs this job, so it cannot pass before this
+    # job has finished, and fails if this job fails.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: {}
+    if: |
+      github.event.pull_request.user.login == 'renovate[bot]'
+    steps:
+      - name: Generate token
+        id: generate_token
+        uses: tibdex/github-app-token@3beb63f4bd073e61482598c45c71c1019b59b73a # v2.1.0
+        with:
+          app_id: ${{secrets.APP_ID}}
+          private_key: ${{secrets.APP_PRIVATE_KEY}}
+          # pull_requests:write - Disable auto-merge
+          permissions: >-
+            {
+              "pull_requests": "write"
+            }
+          repositories: >-
+            ["${{github.event.repository.name}}"]
+
+      - name: Disable auto-merge until the plan results are judged
+        run: |
+          set -euo pipefail
+          if [[ "$(gh -R "$GITHUB_REPOSITORY" pr view "$PR_NUMBER" --json autoMergeRequest --jq '.autoMergeRequest != null')" == true ]]; then
+            gh -R "$GITHUB_REPOSITORY" pr merge --disable-auto "$PR_NUMBER"
+            echo "Disabled auto-merge until the enable-auto-merge job judges the plan results."
+          fi
+        env:
+          GITHUB_TOKEN: ${{steps.generate_token.outputs.token}}
+          PR_NUMBER: ${{github.event.pull_request.number}}
+
   enable-auto-merge:
     # This job is used for main branch's branch protection rule's status check.
     # If all dependent jobs succeed or are skipped this job succeeds.
+    # BOXP-651: auto-merge is enabled only when the tfaction plan of every target
+    # in this run has no changes. See wc-enable-auto-merge.yaml.
+    # It also runs when test or status-check failed, so that it can keep
+    # auto-merge disabled (Renovate enables it when it creates the PR).
+    # status-check is the required check, so this job does not gate merging.
     uses: ./.github/workflows/wc-enable-auto-merge.yaml
     needs:
+      - disable-auto-merge
       - status-check
-    permissions: {}
+      - test
+    permissions:
+      actions: read
+      contents: read
+    with:
+      plan_targets: ${{needs.test.outputs.targets}}
+      upstream_ok: ${{needs.test.result == 'success' && needs.status-check.result != 'failure'}}
     secrets:
       gh_app_id: ${{secrets.APP_ID}}
       gh_app_private_key: ${{secrets.APP_PRIVATE_KEY}}
     if: |
-      ! failure() && ! cancelled() && github.event.pull_request.user.login == 'renovate[bot]' && contains(github.event.pull_request.body, ' **Automerge**: Enabled.')
+      ! cancelled() && github.event.pull_request.user.login == 'renovate[bot]' && contains(github.event.pull_request.body, ' **Automerge**: Enabled.')
 
   # This job is used for branch protection rule
   # Add this job to `Status checks that are required`
@@ -37,6 +88,7 @@ jobs:
     needs:
       - adr
       - conftest-verify
+      - disable-auto-merge
       - hide-comment
       - opa-fmt
       - renovate-config-validator
