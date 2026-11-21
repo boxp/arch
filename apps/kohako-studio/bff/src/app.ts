@@ -12,7 +12,7 @@ import type { createHermes } from './hermes.js'
 import { type createTts, TtsError } from './tts.js'
 import { pcmToWav, STT_FINAL_FIELDS } from './stt.js'
 import { isRecord } from './untrusted.js'
-import { locationInstructions, parseLocation, type TurnLocation } from './location.js'
+import { locationInstructions, locationLogLine, parseLocation, type TurnLocation } from './location.js'
 const BASE_INSTRUCTIONS = 'あなたの返答は Web UI の吹き出しに表示され、必要に応じて音声で読み上げられます。'
 export const vaultImageInstructions =
   ' vault内の画像を家の会話に表示するときは、実在確認したvault相対パスを encodeURIComponent 相当でURLエンコード（括弧も%28/%29へ変換）し、![短い説明](kohako-vault:エンコード済み相対パス) と返してください。絶対パスやMEDIA記法は表示できません。対応はPNG/JPEG/GIF/WebP各5MiBまで。SVG/PDF/動画/その他のファイルはインライン表示非対応です。画像を再生成したり、検証画像をvaultに保存したりしないでください。'
@@ -512,6 +512,8 @@ export function createApp(opts: {
       if (x.expiresAt <= now()) return json(410, { error: 'expired' })
       // BOXP-648: 現場（見てきて）は手入力・再送でも位置を使わない（Hermes へ渡す前にここで捨てる）。
       if (input.kind === 'text' && input.visit) location = undefined
+      if (input.kind === 'text' && input.views && !input.visit)
+        console.log(locationLogLine(principal, x.location !== undefined, location, now()))
       const turnInstructions =
         input.kind === 'touch'
           ? instructions

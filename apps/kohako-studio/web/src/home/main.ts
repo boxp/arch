@@ -88,6 +88,7 @@ import {
   isVisitText,
   noteOf as locationNoteOf,
   payloadOf,
+  settle as settleLocation,
   REUSE_MS,
   type Fix,
   type LocationMiss,
@@ -229,15 +230,9 @@ function refreshLocation(): Promise<void> {
   if (locationBusy) return locationBusy
   locationBusy = acquire(navigator.geolocation, Date.now).then(({ fix, miss }) => {
     locationBusy = null
-    if (!prefs.location) return
-    if (fix) {
-      locationFix = fix
-      locationMiss = null
-    } else {
-      // 取り直しに失敗した時は古い位置を残さない（現在地と誤って伝えないため）。
-      locationFix = null
-      locationMiss = miss
-    }
+    if (!prefs.location)
+      return // 一時的な測位失敗では 10 分以内の直前の位置を取得時刻つきで使い続け、拒否・非対応・古い位置は残さない（現在地と誤って伝えないため）。
+    ;({ fix: locationFix, miss: locationMiss } = settleLocation(locationFix, { fix, miss }, Date.now()))
     renderLocation()
   })
   return locationBusy
@@ -279,6 +274,10 @@ renderLocation()
 setInterval(() => {
   if (prefs.location && !document.hidden) renderLocation()
 }, 30_000)
+// BOXP-648 TD-01: 入力を始めた時点で取り始め、送信時に測位待ちで「現在地なし」になりにくくする（本人が画面を操作している間だけ）。
+message.addEventListener('focus', () => {
+  if (syncLocationPref() && (!locationFix || Date.now() - locationFix.capturedAt > REUSE_MS)) void refreshLocation()
+})
 
 // ---- 会話の状態（Studio と同じ） ----
 let voiceTrouble = false

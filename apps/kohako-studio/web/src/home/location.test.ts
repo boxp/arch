@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   acquire,
+  COARSE_TIMEOUT_MS,
+  settle,
   describe as describeLocation,
   FRESH_MS,
   isVisitText,
@@ -76,11 +78,52 @@ describe('acquire', () => {
     vi.useFakeTimers()
     try {
       const pending = acquire({ getCurrentPosition: () => undefined }, () => NOW)
-      await vi.advanceTimersByTimeAsync(TIMEOUT_MS + 2000)
+      await vi.advanceTimersByTimeAsync(TIMEOUT_MS + 2000 + COARSE_TIMEOUT_MS + 2000)
       expect(await pending).toEqual({ fix: null, miss: 'timeout' })
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('TD-01 transient failures', () => {
+  it('retries once with coarse accuracy after a precise timeout', async () => {
+    const calls: PositionOptions[] = []
+    const getCurrentPosition = vi.fn((ok: PositionCallback, ng?: PositionErrorCallback | null, o?: PositionOptions) => {
+      calls.push(o ?? {})
+      if (o?.enableHighAccuracy) ng?.({ code: 3 } as GeolocationPositionError)
+      else ok({ coords: { ...coords, accuracy: 800 }, timestamp: NOW - 60_000 } as unknown as GeolocationPosition)
+    })
+    expect(await acquire({ getCurrentPosition }, () => NOW)).toEqual({
+      fix: { lat: 35.68123, lon: 139.76712, accuracy: 800, capturedAt: NOW - 60_000 },
+      miss: 'unavailable',
+    })
+    expect(calls.map((o) => o.enableHighAccuracy)).toEqual([true, false])
+    expect(calls[1].maximumAge).toBe(FRESH_MS)
+  })
+  it('does not retry a denial and keeps the precise reason when both fail', async () => {
+    const denied = vi.fn((_ok: PositionCallback, ng?: PositionErrorCallback | null) =>
+      ng?.({ code: 1 } as GeolocationPositionError),
+    )
+    expect(await acquire({ getCurrentPosition: denied }, () => NOW)).toEqual({ fix: null, miss: 'denied' })
+    expect(denied).toHaveBeenCalledTimes(1)
+    const fails = vi.fn((_ok: PositionCallback, ng?: PositionErrorCallback | null, o?: PositionOptions) =>
+      ng?.({ code: o?.enableHighAccuracy ? 3 : 2 } as GeolocationPositionError),
+    )
+    expect(await acquire({ getCurrentPosition: fails }, () => NOW)).toEqual({ fix: null, miss: 'timeout' })
+    expect(fails).toHaveBeenCalledTimes(2)
+  })
+  it('keeps a fresh previous fix on a transient failure only', () => {
+    const prev = { lat: 1, lon: 2, accuracy: 30, capturedAt: NOW - 4 * 60_000 }
+    expect(settle(prev, { fix: null, miss: 'timeout' }, NOW)).toEqual({ fix: prev, miss: 'timeout' })
+    expect(settle(prev, { fix: null, miss: 'unavailable' }, NOW)).toEqual({ fix: prev, miss: 'unavailable' })
+    expect(settle(prev, { fix: null, miss: 'denied' }, NOW)).toEqual({ fix: null, miss: 'denied' })
+    const old = { ...prev, capturedAt: NOW - FRESH_MS - 1 }
+    expect(settle(old, { fix: null, miss: 'timeout' }, NOW)).toEqual({ fix: null, miss: 'timeout' })
+    const next = { ...prev, capturedAt: NOW }
+    expect(settle(prev, { fix: next, miss: 'unavailable' }, NOW)).toEqual({ fix: next, miss: null })
+    expect(payloadOf(prev, 'timeout', NOW)).toEqual({ status: 'ok', ...prev })
+    expect(noteOf(prev, 'timeout', NOW)).toContain('取り直し失敗')
   })
 })
 
