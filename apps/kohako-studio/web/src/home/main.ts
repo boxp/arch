@@ -84,6 +84,7 @@ import { parsePrefs, parseVolume, type Prefs } from './prefs'
 import {
   acquire,
   describe as describeLocation,
+  isVisitText,
   noteOf as locationNoteOf,
   payloadOf,
   REUSE_MS,
@@ -2148,8 +2149,8 @@ async function sendText(text: string, from: 'composer' | 'choice' | 'pending' | 
   if (typeof from === 'object') pendingFromQueue = true
   let result: Awaited<ReturnType<typeof call>> | null = null
   try {
-    // BOXP-648: 位置は送信の直前に添えるだけで、控え（unconfirmed）・送信待ち・履歴には保存しない。現場（見てきて）には添えない。
-    const location = from === 'visit' ? undefined : await locationForSend()
+    // BOXP-648: 位置は送信の直前に添えるだけで、控え（unconfirmed）・送信待ち・履歴には保存しない。現場（見てきて）は手入力・再送でも添えない。
+    const location = from === 'visit' || isVisitText(payload.text) ? undefined : await locationForSend()
     result = await call('messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

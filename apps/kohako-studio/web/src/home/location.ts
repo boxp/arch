@@ -92,3 +92,23 @@ export function noteOf(fix: Fix | null, miss: LocationMiss | null, now: number):
     return `📍 位置を共有中（${clock(fix.capturedAt)}取得・精度${meters(fix.accuracy)}${fix.accuracy > 1000 ? '・おおまか' : ''}）`
   return `📍 ${describe(true, fix, miss, now)}`
 }
+
+/**
+ * BOXP-648: 現場（見てきて）の依頼には位置を添えない。BFF の isVisitText（bff/src/visit.ts）と同じ言い回しで判定し、
+ * ボタン・手入力・受理未確認の再送のどれでも同じ扱いにする（BFF 側でも捨てる）。
+ */
+export function isVisitText(text: string): boolean {
+  const value = text
+    .normalize('NFKC')
+    .trim()
+    .replace(/[。!]+$/u, '')
+    .trim()
+  return [
+    'プラグイン',
+    'プラグインして',
+    '見てきて',
+    '現場を見てきて',
+    '自宅クラスタを見てきて',
+    'クラスタを見てきて',
+  ].includes(value)
+}

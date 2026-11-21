@@ -172,6 +172,24 @@ describe('messages with location', () => {
     }
   })
 
+  it('never passes the location to a typed or resent visit request', async () => {
+    const t = await setup('owner')
+    try {
+      for (const id of ['loc-visit-1', 'loc-visit-1']) {
+        const r = await t.post({ requestId: id, kind: 'text', text: '見てきて', views: true, location: ok })
+        expect([200, 202]).toContain(r.status)
+        await t.settle()
+      }
+      expect(t.seen.length).toBeGreaterThan(0)
+      for (const x of t.seen) {
+        expect(x.session).toMatch(/^kohako-visit-/)
+        expect(x.ins).not.toMatch(/35\.68|139\.76|緯度|経度/)
+      }
+    } finally {
+      await t.close()
+    }
+  })
+
   it('keeps the verifier location in the separate verify session', async () => {
     const owner = await setup('owner'),
       verifier = await setup('verifier')

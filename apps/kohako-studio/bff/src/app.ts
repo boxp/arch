@@ -510,6 +510,8 @@ export function createApp(opts: {
         }
       else return json(400, { error: 'invalid' })
       if (x.expiresAt <= now()) return json(410, { error: 'expired' })
+      // BOXP-648: 現場（見てきて）は手入力・再送でも位置を使わない（Hermes へ渡す前にここで捨てる）。
+      if (input.kind === 'text' && input.visit) location = undefined
       const turnInstructions =
         input.kind === 'touch'
           ? instructions

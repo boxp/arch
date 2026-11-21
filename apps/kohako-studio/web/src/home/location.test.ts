@@ -3,6 +3,7 @@ import {
   acquire,
   describe as describeLocation,
   FRESH_MS,
+  isVisitText,
   fixOf,
   missOf,
   noteOf,
@@ -80,5 +81,20 @@ describe('acquire', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('isVisitText', () => {
+  it('matches typed or resent visit requests so no location is attached', () => {
+    for (const t of [
+      '見てきて',
+      ' 見てきて。',
+      '見てきて!',
+      '現場を見てきて',
+      '自宅クラスタを見てきて',
+      'プラグインして',
+    ])
+      expect(isVisitText(t)).toBe(true)
+    for (const t of ['近くのカフェは？', '駅を見てきて', '']) expect(isVisitText(t)).toBe(false)
   })
 })
