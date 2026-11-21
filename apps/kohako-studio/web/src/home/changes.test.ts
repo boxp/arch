@@ -29,6 +29,7 @@ describe('ホーム表示', () => {
       expect(messageShown({ scene, touch: false, notice: false })).toBe(true)
     expect(messageShown({ scene: 'relax', touch: true, notice: false })).toBe(true)
     expect(messageShown({ scene: 'relax', touch: false, notice: true })).toBe(true)
+    expect(messageShown({ scene: 'relax', touch: false, notice: false, retained: true })).toBe(true)
     expect(atBottom(92, 100, 200)).toBe(true)
     expect(atBottom(91, 100, 200)).toBe(false)
   })

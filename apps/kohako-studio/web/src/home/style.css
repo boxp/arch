@@ -65,6 +65,8 @@ button:focus-visible,a:focus-visible,textarea:focus-visible,input:focus-visible{
 /* 場面（PC 横長） */
 body:not([data-scene="relax"]) .clock-face{opacity:0;pointer-events:none}
 body[data-scene="relax"] .bubble{opacity:0;pointer-events:none}
+body[data-scene="relax"] .bubble[data-retained="1"]{opacity:1;pointer-events:auto}
+body[data-scene="relax"]:has(.bubble[data-retained="1"]) .clock-face{opacity:0;pointer-events:none}
 body[data-scene="relax"] .bubble.touch{opacity:1;pointer-events:auto;left:32%;top:4%;width:auto;max-width:min(30%,360px)}
 body[data-shape="portrait"][data-scene="relax"] .bubble.touch{left:8%;right:8%;top:auto;bottom:58%;max-width:none}
 body[data-scene="talk"] .character,body[data-scene="confirm"] .character,body[data-scene="offline"] .character{left:2%;width:36%}

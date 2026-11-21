@@ -43,6 +43,16 @@ export class SceneDirector {
   }
 }
 
-export function messageShown({ scene, touch, notice }: { scene: string; touch: boolean; notice: boolean }): boolean {
-  return scene !== 'relax' || touch || notice
+export function messageShown({
+  scene,
+  touch,
+  notice,
+  retained = false,
+}: {
+  scene: string
+  touch: boolean
+  notice: boolean
+  retained?: boolean
+}): boolean {
+  return scene !== 'relax' || touch || notice || retained
 }
