@@ -197,6 +197,7 @@ jobs:
           TRIVY_IGNOREFILE: ${{ github.workspace }}/.trivyignore
 
       - uses: suzuki-shunsuke/tfaction@7e6ae7e4e2aa17f869f970f7fec8aa4b9de19138 # v2.3.5
+        id: plan
         with:
           action: plan
           github_token: ${{steps.generate_token.outputs.token}}
@@ -206,6 +207,38 @@ jobs:
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}} # For GitHub Provider and tfcmt and github-comment
           CLOUDFLARE_API_TOKEN: ${{secrets.gh_cloudflare_api_token}} # For cloudflare provider
+
+      # BOXP-651: Record this target's plan result for the enable-auto-merge job.
+      # tfaction disables auto-merge when a Renovate PR has plan changes, and the
+      # enable-auto-merge job must not enable it again. Record the result even
+      # when the plan failed or was skipped so that the result of a re-run
+      # overwrites the result of an earlier attempt.
+      - name: Record plan result for auto-merge decision
+        if: always() && github.event_name == 'pull_request_target'
+        id: plan_result
+        run: |
+          set -euo pipefail
+          slug="${TFACTION_TARGET//\//__}"
+          dir="${RUNNER_TEMP}/tfaction-plan-result"
+          mkdir -p "$dir"
+          jq -n --arg target "$TFACTION_TARGET" --arg outcome "$PLAN_OUTCOME" --arg exitcode "$PLAN_DETAILED_EXITCODE" \
+            '{target: $target, outcome: $outcome, detailed_exitcode: $exitcode}' > "${dir}/result.json"
+          cat "${dir}/result.json"
+          echo "artifact_name=tfaction-plan-result-${slug}" >> "$GITHUB_OUTPUT"
+          echo "dir=${dir}" >> "$GITHUB_OUTPUT"
+        env:
+          PLAN_OUTCOME: ${{steps.plan.outcome}}
+          PLAN_DETAILED_EXITCODE: ${{steps.plan.outputs.detailed_exitcode}}
+
+      - name: Upload plan result for auto-merge decision
+        if: always() && steps.plan_result.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{steps.plan_result.outputs.artifact_name}}
+          path: ${{steps.plan_result.outputs.dir}}/result.json
+          overwrite: true
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Create Renovate plan follow-up PR
         if: |

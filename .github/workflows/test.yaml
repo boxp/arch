@@ -19,10 +19,17 @@ jobs:
   enable-auto-merge:
     # This job is used for main branch's branch protection rule's status check.
     # If all dependent jobs succeed or are skipped this job succeeds.
+    # BOXP-651: auto-merge is enabled only when the tfaction plan of every target
+    # in this run has no changes. See wc-enable-auto-merge.yaml.
     uses: ./.github/workflows/wc-enable-auto-merge.yaml
     needs:
       - status-check
-    permissions: {}
+      - test
+    permissions:
+      actions: read
+      contents: read
+    with:
+      plan_targets: ${{needs.test.outputs.targets}}
     secrets:
       gh_app_id: ${{secrets.APP_ID}}
       gh_app_private_key: ${{secrets.APP_PRIVATE_KEY}}
