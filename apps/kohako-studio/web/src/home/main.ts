@@ -707,7 +707,10 @@ function show(next: State) {
     approvalBox.hidden = false
     el<HTMLButtonElement>('deny').focus()
   } else if (!showApproval) approvalBox.hidden = true
-  trouble.hidden = !(next === 'failed' || next === 'offline' || netDown || voiceTrouble) || !error.textContent
+  // 音声エラーは本文の後に置き、黙読する返答をパネルで覆わない。
+  el('voice-error').textContent = voiceTrouble ? error.textContent : ''
+  el('voice-error').hidden = !voiceTrouble
+  trouble.hidden = !(next === 'failed' || next === 'offline' || netDown) || !error.textContent
   refreshScene()
   renderQueue()
   scheduleDispatch()
@@ -1404,7 +1407,8 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
   }
 }
 let speechChunks: string[] = [],
-  speechNext = 0
+  speechNext = 0,
+  speechGeneration = 0
 const resumeSpeech = el<HTMLButtonElement>('resume-speech')
 const readFollowButton = el<HTMLButtonElement>('read-follow'),
   readFollow = createReadFollowState()
@@ -1459,6 +1463,7 @@ readFollowButton.addEventListener('click', () => {
   updateReading(true)
 })
 function clearSpeechResume() {
+  speechGeneration++
   clearReading()
   speechChunks = []
   speechNext = 0
@@ -1469,7 +1474,15 @@ function offerSpeechResume() {
   resumeSpeech.hidden = !speechChunks.length || speechNext >= speechChunks.length
 }
 function playReply() {
-  if (!speechChunks.length) return
+  const generation = ++speechGeneration
+  const retainReply = () => {
+    bubble.dataset.retained = '1'
+    updateMessage()
+  }
+  if (!speechChunks.length) {
+    retainReply()
+    return
+  }
   const kohaku = prefs.voice === 'kohaku'
   resumeSpeech.hidden = true
   voiceTrouble = false
@@ -1484,6 +1497,7 @@ function playReply() {
   readTimer = window.setInterval(updateReading, 120)
   const events = {
     onSentence: (index: number, sentence: string, duration = 0) => {
+      if (generation !== speechGeneration) return
       let last = index,
         joined = speechChunks[index] ?? ''
       while (last + 1 < speechChunks.length && joined.length < sentence.length) joined += speechChunks[++last]
@@ -1494,22 +1508,27 @@ function playReply() {
       if (acting) report.acting = acting.snapshot
     },
     onBoundary: (_index: number, charIndex: number) => {
+      if (generation !== speechGeneration) return
       if (readGroup) readGroup.boundary = charIndex
       updateReading()
       syncViseme(charIndex)
     },
     onChunkEnd: (index: number) => {
+      if (generation !== speechGeneration) return
       speechNext = index + 1
     },
     // 読み上げ失敗で止めた送信待ちは、続きを読み終えたら元どおり自動送信へ戻す。
     onEnd: () => {
+      if (generation !== speechGeneration) return
       clearSpeechResume()
       if (queue.held === 'speech') queue.resume()
       if (state === 'speaking') show('done')
     },
     onError: () => {
+      if (generation !== speechGeneration) return
       clearReading()
       if (state !== 'speaking') return
+      retainReply()
       voiceTrouble = true
       error.textContent = kohaku
         ? 'コハクの声で読み上げられませんでした。「続きから読む」で再試行できるほか、設定の「読み上げの声」から端末の声へ切り替えられます。'
@@ -1522,6 +1541,7 @@ function playReply() {
   else if (speaker) speaker.speak(speechChunks, events, speechNext)
   else {
     clearReading()
+    retainReply()
     show('done')
     offerSpeechResume()
   }
