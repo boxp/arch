@@ -73,7 +73,7 @@
 - 検証メディア/結果: /home/boxp/verification-artifacts/BOXP-645/wording/local/ 。phone-queue-before.png と phone-queue.png が表示比較。vaultにはメディアを保存しない。
 - ブラウザ環境に不足した共有ライブラリと日本語フォントはrun workspace内で展開、既存Chromium headless_shellを使用。巨大素材はcheckoutへのsymlinkで参照。子が通常buildで一時生成したpublic複製は削除済み。
 - trivyは環境に未導入でローカル実行不可。CIの通常gateを確認する。
-- 再認証 reauth523.mjs（PC16/スマホ16、合計32シナリオ）は全成功。PWA pwa510.mjs（PC/Pixel7）のmanifest・SW・fallback限定cache・オフライン復帰は全成功。オフライン文言を既存端末にも更新するためSW cache名をv2へ更新した。送信待ちの既存モック検証結果は追記する。本番本人認証後の実画面・実機Safari・聴感は未確認。
+- 再認証 reauth523.mjs（PC16/スマホ16、合計32シナリオ）は全成功。PWA pwa510.mjs（PC/Pixel7）のmanifest・SW・fallback限定cache・オフライン復帰は全成功。オフライン文言を既存端末にも更新するためSW cache名をv2へ更新した。送信待ち queue.mjs（PC14/スマホ14、合計28シナリオ）も全成功。FIFO・取消・読み上げ中の保留・未確認時の同一ID照会/再送・上限・通信/認証切れを確認した。本番本人認証後の実画面・実機Safari・聴感は未確認。
 
 ## レビュー・配備
 
