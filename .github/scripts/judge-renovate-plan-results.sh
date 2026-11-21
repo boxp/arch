@@ -32,7 +32,7 @@ block() {
   reasons+=("$1")
 }
 
-if [[ -z "$targets_json" ]] || ! jq -e 'type == "array" and all(.[]; type == "object" and (.target | type) == "string" and .target != "")' <<<"$targets_json" > /dev/null 2>&1; then
+if [[ -z "$targets_json" ]] || ! jq -e 'type == "array" and all(.[]; type == "object" and (.target | type) == "string" and .target != "")' <<<"$targets_json" >/dev/null 2>&1; then
   block "plan targets are unknown or malformed: ${targets_json:-<empty>}"
   targets=()
 else
@@ -50,7 +50,7 @@ for target in "${targets[@]}"; do
     block "${target}: plan result is missing (plan did not finish or the result could not be downloaded)"
     continue
   fi
-  if ! jq -e 'type == "object"' "$result_file" > /dev/null 2>&1; then
+  if ! jq -e 'type == "object"' "$result_file" >/dev/null 2>&1; then
     block "${target}: plan result is unreadable"
     continue
   fi
@@ -77,5 +77,5 @@ for reason in "${reasons[@]}"; do
 done
 echo "decision=${decision}"
 if [[ -n "${GITHUB_OUTPUT-}" ]]; then
-  echo "decision=${decision}" >> "$GITHUB_OUTPUT"
+  echo "decision=${decision}" >>"$GITHUB_OUTPUT"
 fi

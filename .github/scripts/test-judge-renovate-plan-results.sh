@@ -22,7 +22,7 @@ put_result() {
   mkdir -p "${dir}/tfaction-plan-result-${slug}"
   jq -n --arg target "$target" --arg outcome "$outcome" --arg exitcode "$exitcode" \
     '{target: $target, outcome: $outcome, detailed_exitcode: $exitcode}' \
-    > "${dir}/tfaction-plan-result-${slug}/result.json"
+    >"${dir}/tfaction-plan-result-${slug}/result.json"
 }
 
 new_dir() {
@@ -33,7 +33,7 @@ new_dir() {
 expect() {
   local name="$1" expected="$2" targets="$3" dir="$4"
   local out_file="${dir}.github_output" stdout actual
-  : > "$out_file"
+  : >"$out_file"
   if ! stdout="$(PLAN_TARGETS_JSON="$targets" PLAN_RESULTS_DIR="$dir" GITHUB_OUTPUT="$out_file" bash "$judge" 2>&1)"; then
     echo "FAIL: ${name}: judge exited non-zero"
     printf '    %s\n' "$stdout"
@@ -51,10 +51,13 @@ expect() {
 }
 
 # No changes: auto-merge may be enabled (normal Renovate path keeps working).
-d="$(new_dir)"; put_result "$d" "$t1" success 0
+d="$(new_dir)"
+put_result "$d" "$t1" success 0
 expect "single target, no changes" enable "$targets_one" "$d"
 
-d="$(new_dir)"; put_result "$d" "$t1" success 0; put_result "$d" "$t2" success 0
+d="$(new_dir)"
+put_result "$d" "$t1" success 0
+put_result "$d" "$t2" success 0
 expect "two targets, no changes" enable "$targets_two" "$d"
 
 # No terraform target at all (e.g. a docs or app only Renovate PR).
@@ -62,49 +65,67 @@ d="$(new_dir)"
 expect "no targets" enable "[]" "$d"
 
 # Changes: must block (the #15336 / #15443 regression).
-d="$(new_dir)"; put_result "$d" "$t1" success 2
+d="$(new_dir)"
+put_result "$d" "$t1" success 2
 expect "single target, plan has changes" block "$targets_one" "$d"
 
-d="$(new_dir)"; put_result "$d" "$t1" success 0; put_result "$d" "$t2" success 2
+d="$(new_dir)"
+put_result "$d" "$t1" success 0
+put_result "$d" "$t2" success 2
 expect "one of two targets has changes" block "$targets_two" "$d"
 
 # Plan failed / undetermined / missing: must block (fail safe).
-d="$(new_dir)"; put_result "$d" "$t1" failure 1
+d="$(new_dir)"
+put_result "$d" "$t1" failure 1
 expect "plan failed" block "$targets_one" "$d"
 
-d="$(new_dir)"; put_result "$d" "$t1" success ""
+d="$(new_dir)"
+put_result "$d" "$t1" success ""
 expect "plan succeeded without detailed_exitcode" block "$targets_one" "$d"
 
-d="$(new_dir)"; put_result "$d" "$t1" skipped ""
+d="$(new_dir)"
+put_result "$d" "$t1" skipped ""
 expect "plan step skipped" block "$targets_one" "$d"
 
-d="$(new_dir)"; put_result "$d" "$t1" cancelled ""
+d="$(new_dir)"
+put_result "$d" "$t1" cancelled ""
 expect "plan step cancelled" block "$targets_one" "$d"
 
-d="$(new_dir)"; put_result "$d" "$t1" success 0
+d="$(new_dir)"
+put_result "$d" "$t1" success 0
 expect "second target result missing" block "$targets_two" "$d"
 
 d="$(new_dir)"
 expect "result artifacts not downloaded" block "$targets_one" "$d"
 
-d="$(new_dir)"; mkdir -p "${d}/tfaction-plan-result-${t1//\//__}"; echo 'not json' > "${d}/tfaction-plan-result-${t1//\//__}/result.json"
+d="$(new_dir)"
+mkdir -p "${d}/tfaction-plan-result-${t1//\//__}"
+echo 'not json' >"${d}/tfaction-plan-result-${t1//\//__}/result.json"
 expect "result file is broken" block "$targets_one" "$d"
 
-d="$(new_dir)"; put_result "$d" "$t2" success 0; mv "${d}/tfaction-plan-result-${t2//\//__}" "${d}/tfaction-plan-result-${t1//\//__}"
+d="$(new_dir)"
+put_result "$d" "$t2" success 0
+mv "${d}/tfaction-plan-result-${t2//\//__}" "${d}/tfaction-plan-result-${t1//\//__}"
 expect "result belongs to another target" block "$targets_one" "$d"
 
-d="$(new_dir)"; put_result "$d" "$t1" success 0
+d="$(new_dir)"
+put_result "$d" "$t1" success 0
 expect "targets output is empty" block "" "$d"
 
-d="$(new_dir)"; put_result "$d" "$t1" success 0
+d="$(new_dir)"
+put_result "$d" "$t1" success 0
 expect "targets output is malformed" block "not-json" "$d"
 
 # Re-run order: a later attempt overwrites the result artifact with the same
 # name, so the judge sees only the latest plan result.
-d="$(new_dir)"; put_result "$d" "$t1" failure 1; put_result "$d" "$t1" success 2
+d="$(new_dir)"
+put_result "$d" "$t1" failure 1
+put_result "$d" "$t1" success 2
 expect "re-run: failure then changes" block "$targets_one" "$d"
 
-d="$(new_dir)"; put_result "$d" "$t1" failure 1; put_result "$d" "$t1" success 0
+d="$(new_dir)"
+put_result "$d" "$t1" failure 1
+put_result "$d" "$t1" success 0
 expect "re-run: failure then no changes" enable "$targets_one" "$d"
 
 if [[ "$failures" -ne 0 ]]; then
