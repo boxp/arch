@@ -1,0 +1,66 @@
+name: Test Task Board Lock Model
+
+# BOXP-650: report-only check of the Lean model of the Task Board runner's ticket lock
+# and planned shutdown (tests/codex-workspace/lock-model/). It checks the proofs and
+# that the committed operation sequences are what the model generates. It runs only
+# when the model or its generated file changes, is not a required check, and reports
+# a problem as a warning instead of failing.
+
+on:
+  pull_request:
+    paths:
+      - tests/codex-workspace/lock-model/**
+      - .github/workflows/test-task-board-lock-model.yml
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  lean:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      LEAN_VERSION: 4.36.0
+      LEAN_SHA256: 2b7ab1ed8b92d2e6abfaf41344823b510064dbc9c0260cac73eb496ab2dea6eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Lean
+        run: |
+          set -eux
+          test "leanprover/lean4:v${LEAN_VERSION}" = "$(cat tests/codex-workspace/lock-model/lean-toolchain)"
+          tmp="${RUNNER_TEMP}/lean"
+          mkdir -p "${tmp}"
+          curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 900 -fsSL \
+            "https://github.com/leanprover/lean4/releases/download/v${LEAN_VERSION}/lean-${LEAN_VERSION}-linux.tar.zst" \
+            -o "${tmp}/lean.tar.zst"
+          echo "${LEAN_SHA256}  ${tmp}/lean.tar.zst" | sha256sum -c -
+          tar --zstd -xf "${tmp}/lean.tar.zst" -C "${tmp}"
+          rm "${tmp}/lean.tar.zst"
+          echo "${tmp}/lean-${LEAN_VERSION}-linux/bin" >>"${GITHUB_PATH}"
+      - name: Check proofs and generated sequences (report only)
+        working-directory: tests/codex-workspace/lock-model
+        run: |
+          set -uo pipefail
+          proofs=0
+          drift=0
+          time lean LockModel.lean || proofs=$?
+          time lean --run LockModel.lean cover 5 >"${RUNNER_TEMP}/lock-traces.txt" || drift=$?
+          gzip -dc lock-traces.txt.gz | cmp "${RUNNER_TEMP}/lock-traces.txt" - || drift=1
+          {
+            echo "### Lock model (BOXP-650, report only)"
+            echo
+            echo "- proofs: $([ "${proofs}" -eq 0 ] && echo ok || echo FAILED)"
+            echo "- lock-traces.txt.gz is what the model generates: $([ "${drift}" -eq 0 ] && echo yes || echo NO)"
+            echo "- sequences: $(gzip -dc lock-traces.txt.gz | wc -l)"
+          } >>"${GITHUB_STEP_SUMMARY}"
+          if [ "${proofs}" -ne 0 ]; then
+            echo "::warning::LockModel.lean does not check (report only)"
+          fi
+          if [ "${drift}" -ne 0 ]; then
+            echo "::warning::lock-traces.txt.gz differs from what LockModel.lean generates (report only): regenerate it as in tests/codex-workspace/lock-model/README.md"
+          fi

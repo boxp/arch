@@ -1764,21 +1764,29 @@
 (defn release-lock! [ticket-id lock]
   (delete-lock-if-matches! ticket-id lock))
 
+(defn heartbeat-once!
+  "One heartbeat of a run: refresh the lock's heartbeat when the lock file still is
+  this run's lock and return true; otherwise leave the file alone and return false.
+  Split out of `heartbeat!` (BOXP-650) so the lock trace test can step it."
+  [ticket-id lock]
+  (with-ticket-lock-guard
+   ticket-id
+   (fn []
+     (let [path (lock-path ticket-id)
+           existing (try
+                      (read-edn-file path nil)
+                      (catch Exception _ nil))]
+       (if (same-ticket-lock? lock existing)
+         (do (write-edn-file! path (assoc existing :heartbeat-at (now-str)))
+             true)
+         false)))))
+
 (defn heartbeat! [ticket-id lock stop?]
   (future
     (while (not @stop?)
-      (with-ticket-lock-guard
-       ticket-id
-       (fn []
-        (let [path (lock-path ticket-id)
-              existing (try
-                         (read-edn-file path nil)
-                         (catch Exception _ nil))]
-          (if (same-ticket-lock? lock existing)
-            (write-edn-file! path (assoc existing :heartbeat-at (now-str)))
-            (do
-              (log! (str "heartbeat stopped because lock ownership changed: " ticket-id))
-              (reset! stop? true))))))
+      (when-not (heartbeat-once! ticket-id lock)
+        (log! (str "heartbeat stopped because lock ownership changed: " ticket-id))
+        (reset! stop? true))
       (Thread/sleep 1000))))
 
 (defn previous-run-summaries [ticket-id]
