@@ -62,7 +62,7 @@ import { applyPose, loadRig, type Player } from '../live2d/rig'
 import { ActingDirector, cueForSentence, type Emotion, splitSentences, type ActingStage } from '../live2d/acting'
 import { createActingStage } from '../live2d/gesture'
 import { createSentenceSpeaker, createSilentSentencer } from '../studio/acting-speech'
-import { SceneDirector, targetScene, messageShown, type Scene } from './scene'
+import { SceneDirector, targetScene, messageShown, canDismissReply, type Scene } from './scene'
 import { arrivalNote, arrivalPhase, LANDING_MS, type Arrival } from './arrival'
 import { cardsFromText, type Card } from './cards'
 import {
@@ -517,7 +517,8 @@ function addHistory(who: Entry['who'], text: string, at = Date.now(), rid = '') 
 const touchBubble = new TouchBubble()
 let touchLineTimer = 0,
   bubbleText = ''
-function setBubble(text: string, touch = false, retained = false) {
+function setBubble(text: string, touch = false, retained = false, restoring = false) {
+  if (!touch && !restoring) delete bubble.dataset.dismissed
   if (reading) clearReading()
   const bottom = chatFollower.following()
   clearTimeout(touchLineTimer)
@@ -542,16 +543,32 @@ function setBubble(text: string, touch = false, retained = false) {
   updateMessage()
 }
 function updateMessage() {
-  body.dataset.message = messageShown({
-    scene: body.dataset.scene ?? 'relax',
-    touch: bubble.classList.contains('touch'),
-    retained: bubble.dataset.retained === '1',
-    // 通知の操作欄・返答の選択肢ボタン（BOXP-646）が出ている間は、くつろぎ中でも吹き出しを出したままにする。
-    notice: !el('notice-actions').hidden || !el('reply-choices').hidden,
-  })
-    ? '1'
-    : '0'
+  const dismissed =
+    bubble.dataset.dismissed === '1' && !bubble.classList.contains('touch') && canDismissReply(state, reading)
+  body.dataset.message =
+    !dismissed &&
+    messageShown({
+      scene: body.dataset.scene ?? 'relax',
+      touch: bubble.classList.contains('touch'),
+      retained: bubble.dataset.retained === '1',
+      // 通知の操作欄・返答の選択肢ボタン（BOXP-646）が出ている間は、くつろぎ中でも吹き出しを出したままにする。
+      notice: !el('notice-actions').hidden || !el('reply-choices').hidden,
+    })
+      ? '1'
+      : '0'
 }
+// 押し始めも吹き出しの外の場合だけ閉じる。内部からのドラッグ選択やスクロールは対象外。
+let outsideBubble = false
+document.addEventListener('pointerdown', (event) => {
+  outsideBubble = event.target instanceof Node && !bubble.contains(event.target)
+})
+document.addEventListener('click', (event) => {
+  if (!outsideBubble || !(event.target instanceof Node) || bubble.contains(event.target)) return
+  if (bubble.dataset.retained !== '1' || bubble.classList.contains('touch') || !canDismissReply(state, reading)) return
+  if (!el('notice-actions').hidden || window.getSelection()?.toString()) return
+  bubble.dataset.dismissed = '1'
+  updateMessage()
+})
 function renderCards(next: Card[], views: View[] = []) {
   cardsOpen = next.length > 0 || views.length > 0
   cardList.replaceChildren()
@@ -2471,7 +2488,7 @@ async function sendTouch() {
           clearTimeout(touchLineTimer)
           touchLineTimer = window.setTimeout(() => {
             const before = touchBubble.take()
-            if (before && bubble.classList.contains('touch')) setBubble(before.text, false, before.retained)
+            if (before && bubble.classList.contains('touch')) setBubble(before.text, false, before.retained, true)
           }, 4500)
         }
         return
