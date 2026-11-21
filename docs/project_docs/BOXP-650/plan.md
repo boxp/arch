@@ -171,3 +171,5 @@ bb tests/codex-workspace/task-board-mutation.bb --config CFG --fn FN --jobs 1 --
 
 - この文書の「合否に影響しない CI のまま置く」「必須の CI ではない」は、Lean の検査（定理の検査と、生成済み手順の作り直し一致）については古い。Owner の指示で必須条件にした。経緯と確認は [BOXP-652](../BOXP-652/plan.md)。
 - 手順の再生（`lock-trace`）は合否に影響しない CI のまま。対象（lock と計画停止のモデルだけ）も変えていない。
+
+確認用の行（BOXP-652）。
