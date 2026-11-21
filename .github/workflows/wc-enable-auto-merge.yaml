@@ -11,10 +11,10 @@ on:
         type: string
       upstream_ok:
         description: |
-          "true" only when the test (plan) job succeeded and status-check did not fail.
+          true only when the test (plan) job succeeded and status-check did not fail.
           Otherwise auto-merge is kept disabled (and disabled if Renovate enabled it).
         required: true
-        type: string
+        type: boolean
     secrets:
       gh_app_id:
         required: true
