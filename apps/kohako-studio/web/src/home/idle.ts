@@ -3,6 +3,7 @@
 // 新しい絵は使わず、既存の頭・体の角度、視線、表情、閉眼だけで作る。ここは「いつ・どれを・どの強さで」を決める純粋な係で、描画は gesture.ts の stage が行う。
 // 顔と頭だけでなく、腕と体のしぐさも混ぜる（Owner 要望）。腕は肩・肘・手首を小さく回すだけのもの（arms / sway）と、
 // 会話で使っている身振りのクリップをそのまま借りるもの（gesture: 小さく手を振る・口元に手を添える）がある。どちらも新しい絵は使わない。
+// 表情（ほほえみ・目を細める・はにかみ）を多くのしぐさに添え、小首をかしげる時は体を逆へ少し傾ける（Owner 要望「もう少し女の子らしくかわいく」）。
 // しぐさの間は待機クリップを止める（クリップ再生中は頭の角度を足しても描画に出ない。止めている間は揺れも小さく落ち着く）。
 import type { Emotion, Gesture } from '../live2d/acting'
 import type { BodyPose, IdleArm } from '../live2d/gesture'
@@ -21,6 +22,8 @@ export type IdleAct =
   | 'stretch'
   | 'tidy'
   | 'sway'
+  | 'shy'
+  | 'giggle'
 type Arms = { right?: IdleArm; left?: IdleArm }
 type Def = {
   /** 保つ長さ（秒）の範囲。入り・戻りは別。 */
@@ -29,6 +32,8 @@ type Def = {
   /** 左右どちらにも出す（毎回どちらかを選ぶ）。false は画面の向きが決まっているしぐさ（月は右上）。 */
   mirror: boolean
   emotion?: Emotion
+  /** 保つ間の途中（at は保つ長さに対する割合）から表情を替える（はにかんでから、ほほえむ）。 */
+  later?: { at: number; emotion: Emotion }
   /** 目を閉じる。 */
   eyes?: boolean
   /** 自分で視線を動かす（その間はカーソル追従を退かせる）。 */
@@ -57,8 +62,15 @@ export const idleActs: Record<IdleAct, Def> = {
     weight: 1,
     dayparts: { evening: 1.4, night: 1.6 },
   },
-  // 小首をかしげる。
-  tilt: { seconds: [1.8, 3], pose: { headZ: 7, headX: 3, bodyZ: 1.5 }, mirror: true, weight: 1 },
+  // 小首をかしげて、ほほえむ。体は頭と逆へ少しだけ傾け、首から肩の線をやわらかく見せる（Owner 要望「もう少し女の子らしくかわいく」）。
+  // ほほえみの表情は頭を 3° 傾けるので、左右どちらへ出ても傾きが読める大きさにする（10° / 4°）。
+  tilt: {
+    seconds: [2, 3.2],
+    pose: { headZ: 7, headX: 3, bodyZ: -2 },
+    mirror: true,
+    emotion: 'smile',
+    weight: 1.2,
+  },
   // 目を閉じてひと息つく。
   rest: {
     seconds: [2.4, 4],
@@ -68,13 +80,13 @@ export const idleActs: Record<IdleAct, Def> = {
     weight: 0.8,
     dayparts: { night: 1.6 },
   },
-  // こちらへほほえむ。
+  // 目を細めて、にこっと笑う（少しあごを引いて、こちらへ寄る）。目を閉じたままが長いと眠って見えるので短くする。
   smile: {
-    seconds: [2.6, 4.2],
-    pose: { headZ: 3, headY: -1.5 },
-    mirror: true,
-    emotion: 'smile',
-    weight: 0.9,
+    seconds: [1.5, 2.3],
+    pose: { headZ: 3, headY: -2.5, lean: 2 },
+    mirror: false,
+    emotion: 'smileClosed',
+    weight: 1,
     dayparts: { morning: 1.4 },
   },
   // 手元へ目を落とす。
@@ -83,12 +95,12 @@ export const idleActs: Record<IdleAct, Def> = {
     pose: { headY: -7, headX: -3, eyeY: -0.45, eyeX: -0.15 },
     mirror: true,
     gaze: true,
-    weight: 0.9,
+    weight: 0.7,
   },
   // 横へ目をやる。
-  aside: { seconds: [1.8, 3], pose: { headX: 5, eyeX: 0.55 }, mirror: true, gaze: true, weight: 0.9 },
+  aside: { seconds: [1.8, 3], pose: { headX: 5, eyeX: 0.55 }, mirror: true, gaze: true, weight: 0.8 },
   // じっと落ち着く（待機クリップを止めて小さな揺れだけにする）。
-  still: { seconds: [4, 7], pose: {}, mirror: false, quiet: true, weight: 0.7 },
+  still: { seconds: [4, 7], pose: {}, mirror: false, quiet: true, weight: 0.5 },
   // 小さく手を振る（挨拶の身振り 2.6 秒）。
   wave: {
     seconds: [1.9, 1.9],
@@ -115,23 +127,47 @@ export const idleActs: Record<IdleAct, Def> = {
     pose: { headY: 6, lean: -3 },
     arms: { right: { up: -0.17, ha: -0.25 }, left: { up: -0.17, ha: -0.25 } },
     mirror: false,
-    weight: 0.8,
+    weight: 0.6,
   },
-  // 両手を体の脇へ寄せて、姿勢を正す。肘の曲げは腕の絵が切り替わらない範囲（0.3 未満）に留める。
+  // 両手を体の前へ寄せてそろえ、小首をかしげてほほえむ。肘の曲げは腕の絵が切り替わらない範囲（0.3 未満）に留める。
   tidy: {
     seconds: [2.6, 4],
-    pose: { headY: -2, lean: 1 },
+    pose: { headZ: 5, headY: -2, bodyZ: -1.5, lean: 1 },
     arms: { right: { up: 0.04, fo: 0.28 }, left: { up: 0.04, fo: 0.28 } },
     mirror: false,
-    weight: 0.8,
+    emotion: 'smile',
+    weight: 0.9,
   },
-  // 体を左右へゆっくり揺らす。腕は体の傾きと同じ側へ振る（逆向きにすると体の傾きと打ち消し合って、手がほとんど動いて見えない）。
+  // 鼻歌まじりに、体を左右へゆっくり揺らす（ほほえんで、頭は体と逆へ傾けて拍子を取る）。
+  // 腕は体の傾きと同じ側へ振る（逆向きにすると体の傾きと打ち消し合って、手がほとんど動いて見えない）。
   sway: {
-    seconds: [4.6, 6.2],
+    seconds: [5, 6.4],
     pose: {},
-    sway: { period: 3.2, pose: { bodyZ: 6, bodyX: 3, headZ: -2.5 }, swing: -0.12 },
+    sway: { period: 2.8, pose: { bodyZ: 6, bodyX: 3, headZ: -4 }, swing: -0.12 },
     mirror: true,
-    weight: 0.8,
+    emotion: 'smile',
+    weight: 0.9,
+  },
+  // ふと目が合って、はにかむ。頬を染めて目をそらし、両手を体の前へ寄せ、少しして、こちらへ向き直ってほほえむ。
+  // 照れの表情は頭と視線を大きくそらす（頭X -10° / 頭Y -7°）ので、待機では頭を少し戻して控えめにする。
+  shy: {
+    seconds: [3.4, 4.4],
+    pose: { headX: 4, headY: 3, lean: 1 },
+    arms: { right: { up: 0.03, fo: 0.2 }, left: { up: 0.03, fo: 0.2 } },
+    mirror: false,
+    emotion: 'shy',
+    later: { at: 0.6, emotion: 'smile' },
+    gaze: true,
+    weight: 0.5,
+  },
+  // くすっと笑う。目を細めてあごを引き、肩を小さく弾ませる（速い揺れは描画側でなまるので、見た目は書いた角度の半分ほど）。
+  giggle: {
+    seconds: [1.5, 2],
+    pose: { headZ: 2, headY: -3, lean: 1.5 },
+    sway: { period: 0.55, pose: { headY: 3, bodyZ: 2, headZ: 1.5 }, swing: -0.015 },
+    mirror: true,
+    emotion: 'smileClosed',
+    weight: 0.7,
   },
 }
 export const idleActNames = Object.keys(idleActs) as IdleAct[]
@@ -301,12 +337,19 @@ export class IdleDirector {
       if (![arms.right, arms.left].some((a) => ARM_KEYS.some((k) => Math.abs(a[k] ?? 0) > 1e-4))) arms = null
     }
     // 目と表情は頭が動き出してから変え、頭が戻り始める時に戻す。
-    const inner = now >= run.start + IN_SECONDS * 0.45 && now < run.end
+    // later の切り替えは保つ間の割合で決める（中断では run.end が今になるので inner が偽になり、ここは効かない）。
+    const inner = now >= run.start + IN_SECONDS * 0.45 && now < run.end,
+      held = run.t0 + IN_SECONDS
     return {
       act: run.act,
       pose,
       eyes: !!def.eyes && inner,
-      emotion: def.emotion && inner ? def.emotion : null,
+      emotion:
+        !def.emotion || !inner
+          ? null
+          : def.later && now >= held + (run.end - held) * def.later.at
+            ? def.later.emotion
+            : def.emotion,
       hold: true,
       gaze: !!def.gaze && now < run.end + run.out,
       arms,

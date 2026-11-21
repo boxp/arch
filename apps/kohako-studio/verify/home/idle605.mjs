@@ -65,16 +65,19 @@ const PC = { viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 }
 // 揺れの小さい値（頭 Z・視線・目）か、しぐさ中の平均と直前の差で見る。
 const EXPECT = {
   moon: r => { const ex = col(r, 'ParamEyeBallX'), ey = col(r, 'ParamEyeBallY'), ay = col(r, 'ParamAngleY'); return Math.max(...ex) > 0.35 && Math.max(...ey) > 0.2 && Math.max(...ay) > 3 },
-  tilt: r => Math.max(...col(r, 'ParamAngleZ').map(Math.abs)) > 5,
+  tilt: r => Math.max(...col(r, 'ParamAngleZ').map(Math.abs)) > 3 && r.some(x => x.emotion === 'smile'),
   rest: r => Math.min(...col(r, 'ParamEyeLOpen')) < 0.05 && col(r, 'ParamEyeLOpen').filter(v => v < 0.1).length * STEP / 1000 > 2,
-  smile: r => r.some(x => x.emotion === 'smile'),
+  smile: r => r.some(x => x.emotion === 'smileClosed'),
   down: r => Math.min(...col(r, 'ParamEyeBallY')) < -0.35 && Math.min(...col(r, 'ParamAngleY')) < -5,
   aside: r => Math.max(...col(r, 'ParamEyeBallX').map(Math.abs)) > 0.45,
   // 腕・体: 始まる前（最初の 3 行）からの手の動きで見る。1280x800 でキャラの高さは約 600px。
   wave: r => r.some(x => x.gesture === 'greet' && x.greet && x.armBlend === 1) && r.some(x => x.emotion === 'smile'),
   mouth: r => r.some(x => x.gesture === 'shyHand' && x.shy && x.armBlend === 1) && r.some(x => x.emotion === 'smileClosed'),
   stretch: r => Math.max(...nums(r.map(span))) - span(r[0]) > 12 && Math.max(...col(r, 'ParamAngleY')) > 3,
-  tidy: r => span(r[0]) - Math.min(...nums(r.map(span))) > 12,
+  tidy: r => span(r[0]) - Math.min(...nums(r.map(span))) > 12 && r.some(x => x.emotion === 'smile'),
+  // かわいく（Owner 要望）: はにかむ＝照れ→ほほえみの順に替わり、両手が寄る。くすっと笑う＝目を細めて頭が小さく弾む。
+  shy: r => { const a = r.findIndex(x => x.emotion === 'shy'), b = r.findIndex(x => x.emotion === 'smile'); return a >= 0 && b > a && span(r[0]) - Math.min(...nums(r.map(span))) > 8 },
+  giggle: r => r.some(x => x.emotion === 'smileClosed') && Math.max(...col(r, 'ParamAngleY')) - Math.min(...col(r, 'ParamAngleY')) > 2,
   sway: r => { const xs = nums(r.map(handsX)); return Math.max(...xs) - handsX(r[0]) > 5 && handsX(r[0]) - Math.min(...xs) > 5 && Math.max(...col(r, 'ParamBodyAngleZ')) - Math.min(...col(r, 'ParamBodyAngleZ')) > 7 },
   still: r => { const on = r.filter(x => x.idle?.act === 'still'); return on.length * STEP / 1000 > 5.5 && on.every(x => x.held) && Math.max(...col(on.slice(40), 'ParamAngleX').map(Math.abs)) < 8 },
 }
@@ -161,7 +164,7 @@ if (want('natural')) {
   check(sorted.at(-1) <= 50, `natural: 目に見える変化が ${sorted.at(-1)} 秒あいた`)
   check(seen.every((s, i) => i === 0 || s.act !== seen[i - 1].act), 'natural: 同じしぐさが続いた')
   // Owner 要望（顔だけでなくジェスチャーも）: 腕・体を使うしぐさが 6 分に 3 回以上・2 種以上まじる。
-  const BODY = ['wave', 'mouth', 'stretch', 'tidy', 'sway'], bodySeen = seen.filter(s => BODY.includes(s.act))
+  const BODY = ['wave', 'mouth', 'stretch', 'tidy', 'sway', 'shy', 'giggle'], bodySeen = seen.filter(s => BODY.includes(s.act))
   result.natural.bodyActs = { count: bodySeen.length, kinds: [...new Set(bodySeen.map(s => s.act))] }
   check(bodySeen.length >= 3 && result.natural.bodyActs.kinds.length >= 2, `natural: 腕・体のしぐさが少ない（${bodySeen.map(s => s.act).join(',')}）`)
   check(new Set(seen.map(s => s.act)).size >= 4, `natural: 種類が少ない（${[...new Set(seen.map(s => s.act))].join(',')}）`)

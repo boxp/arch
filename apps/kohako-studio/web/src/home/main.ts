@@ -58,7 +58,7 @@ import {
 } from '../studio/model'
 import { clipIdFor, clipName, lookFor, modelFor, mouthLevel, poseFor, type RigState } from '../live2d/model'
 import { applyPose, loadRig, type Player } from '../live2d/rig'
-import { ActingDirector, cueForSentence, splitSentences, type ActingStage } from '../live2d/acting'
+import { ActingDirector, cueForSentence, type Emotion, splitSentences, type ActingStage } from '../live2d/acting'
 import { createActingStage } from '../live2d/gesture'
 import { createSentenceSpeaker, createSilentSentencer } from '../studio/acting-speech'
 import { SceneDirector, targetScene, messageShown, type Scene } from './scene'
@@ -2661,7 +2661,7 @@ let petEyesLatched = false
 // BOXP-605: 待機中のしぐさ。待機が続き、会話・ふれあい・演出・操作が無い間だけ、不規則な間をあけて小さなしぐさを挟む（決め方は idle.ts）。
 const idleDirector = new IdleDirector()
 let pointerMovedAt = -Infinity,
-  idleEmotion = false
+  idleEmotion: Emotion | null = null
 /** 待機のしぐさが始めた身振りの印。会話・ふれあいの身振りはこの印を持たないので、止める時に巻き込まない。 */
 const IDLE_GESTURE_TAG = 'idle'
 /** Owner が手を動かした直後は、しぐさを始めずカーソルや操作へ注意を向けたままにする（ms）。 */
@@ -2723,11 +2723,12 @@ function rigTick(now: number) {
     else stage?.cancelGesture?.(IDLE_GESTURE_TAG)
     idleGesture = idle.gesture
   }
-  if (idle.emotion && !idleEmotion) {
+  if (idle.emotion && idle.emotion !== idleEmotion) {
+    // 途中で表情を替えるしぐさ（はにかんでから、ほほえむ）もあるので、変わるたびに伝える。
     stage?.setEmotion(idle.emotion)
-    idleEmotion = true
+    idleEmotion = idle.emotion
   } else if (!idle.emotion && idleEmotion) {
-    idleEmotion = false
+    idleEmotion = null
     // 会話やふれあいが表情を決めた後なら触らない（待機のまま終わった時だけ元の表情へ戻す）。
     if (rigStateOf[state] === 'idle' && !reacting && touchGesture === 'none') stage?.setEmotion('neutral')
   }

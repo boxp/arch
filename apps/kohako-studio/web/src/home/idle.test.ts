@@ -157,7 +157,7 @@ it('目を閉じる・ほほえむのは頭が動き出してから、頭が戻�
   smile.force('smile')
   const s = run(smile, 0, 8)
   expect(s[0].f.emotion).toBeNull()
-  expect(s.some((x) => x.f.emotion === 'smile')).toBe(true)
+  expect(s.some((x) => x.f.emotion === 'smileClosed')).toBe(true)
   expect(s[s.length - 1].f.emotion).toBeNull()
   // ほほえむ・じっとする間はカーソル追従を止めない。視線を動かすしぐさだけ退かせる。
   expect(s.every((x) => !x.f.gaze)).toBe(true)
@@ -311,7 +311,7 @@ it('腕や体を使うしぐさが 3 割前後あり、顔だけのしぐさも�
   const body = idleActNames.filter((a) => idleActs[a].arms || idleActs[a].sway || idleActs[a].gesture),
     total = idleActNames.reduce((s, a) => s + idleActs[a].weight, 0),
     share = body.reduce((s, a) => s + idleActs[a].weight, 0) / total
-  expect(body.sort()).toEqual(['mouth', 'stretch', 'sway', 'tidy', 'wave'])
+  expect(body.sort()).toEqual(['giggle', 'mouth', 'shy', 'stretch', 'sway', 'tidy', 'wave'])
   expect(share).toBeGreaterThan(0.25)
   expect(share).toBeLessThan(0.45)
 })
@@ -429,4 +429,52 @@ it('控えめでは身振りを借りるしぐさを選ばず、腕の大きさ�
     0.25 * SUBTLE_SCALE,
     5,
   )
+})
+
+// ---- もう少し女の子らしくかわいく（Owner 要望）----
+it('はにかむしぐさは、照れてから途中でほほえみに替わり、戻る時には表情を返す', () => {
+  const d = new IdleDirector(seq(0))
+  d.force('shy')
+  const frames = run(d, 0, 8),
+    shy = frames.filter((x) => x.f.emotion === 'shy'),
+    smile = frames.filter((x) => x.f.emotion === 'smile')
+  expect(frames[0].f.emotion).toBeNull()
+  expect(shy.length * 0.05).toBeGreaterThan(1.5)
+  expect(smile.length * 0.05).toBeGreaterThan(1)
+  // 照れが先、ほほえみが後で、行き来しない。
+  expect(shy[shy.length - 1].t).toBeLessThan(smile[0].t)
+  expect(frames.filter((x) => x.t > smile[smile.length - 1].t).every((x) => x.f.emotion === null)).toBe(true)
+  // 目をそらす間はカーソル追従を退かせ、両手を体の前へ寄せる。
+  expect(shy.every((x) => x.f.gaze)).toBe(true)
+  expect(Math.max(...frames.map((x) => x.f.arms?.right.fo ?? 0))).toBeCloseTo(idleActs.shy.arms?.right?.fo ?? 0, 5)
+  expect(frames.at(-1)?.f.act).toBeNull()
+})
+
+it('はにかむ途中で中断すると、表情を返して短く戻る（ほほえみへは進まない）', () => {
+  const d = new IdleDirector(seq(0))
+  d.force('shy')
+  run(d, 0, 2)
+  const after = run(d, 2, 4, { ...calm, calm: false })
+  expect(after.every((x) => x.f.emotion === null)).toBe(true)
+  expect(after.find((x) => x.t > 2 + CANCEL_SECONDS + 0.5)?.f.act ?? null).toBeNull()
+})
+
+it('くすっと笑うしぐさは短く、弾みは小さく、1 コマで跳ばない', () => {
+  const d = new IdleDirector(seq(0))
+  d.force('giggle')
+  const frames = run(d, 0, 6),
+    on = frames.filter((x) => x.f.act === 'giggle')
+  expect(on.length * 0.05).toBeLessThan(IN_SECONDS + idleActs.giggle.seconds[1] + 1.6)
+  expect(frames.some((x) => x.f.emotion === 'smileClosed')).toBe(true)
+  for (let i = 1; i < frames.length; i++) {
+    expect(Math.abs(frames[i].f.pose.headY - frames[i - 1].f.pose.headY)).toBeLessThan(2)
+    expect(Math.abs(frames[i].f.pose.bodyZ - frames[i - 1].f.pose.bodyZ)).toBeLessThan(1.2)
+  }
+  expect(Math.max(...frames.map((x) => Math.abs(x.f.pose.headY)))).toBeLessThanOrEqual(6)
+})
+
+it('ほほえみや照れを伴うしぐさが半分以上を占める', () => {
+  const warm = idleActNames.filter((a) => idleActs[a].emotion),
+    total = idleActNames.reduce((s, a) => s + idleActs[a].weight, 0)
+  expect(warm.reduce((s, a) => s + idleActs[a].weight, 0) / total).toBeGreaterThan(0.5)
 })
