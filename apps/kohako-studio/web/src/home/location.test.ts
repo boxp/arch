@@ -8,6 +8,7 @@ import {
   isVisitText,
   fixOf,
   missOf,
+  chipOf,
   noteOf,
   payloadOf,
   TIMEOUT_MS,
@@ -51,6 +52,19 @@ describe('location helpers', () => {
     expect(describeLocation(true, null, null, NOW)).toContain('次の送信時に位置を取得')
     expect(noteOf(fix, null, NOW)).toBe('📍 位置を共有中（11:57取得・精度約25m）')
     expect(noteOf(null, 'denied', NOW)).toContain('許可されていません')
+  })
+  it('keeps the composer chip to a few characters and flags states that do not send a fresh location', () => {
+    const fix = { lat: 35.68123, lon: 139.76712, accuracy: 25, capturedAt: NOW - 3 * 60_000 }
+    expect(chipOf(fix, null, NOW)).toEqual({ label: '11:57', warn: false })
+    expect(chipOf(fix, 'timeout', NOW)).toEqual({ label: '11:57', warn: true })
+    expect(chipOf(null, 'denied', NOW)).toEqual({ label: '未許可', warn: true })
+    expect(chipOf(null, 'unsupported', NOW)).toEqual({ label: '非対応', warn: true })
+    expect(chipOf(null, 'timeout', NOW)).toEqual({ label: '取得失敗', warn: true })
+    expect(chipOf(null, 'unavailable', NOW)).toEqual({ label: '取得失敗', warn: true })
+    expect(chipOf({ ...fix, capturedAt: NOW - FRESH_MS - 1 }, null, NOW)).toEqual({ label: '古い位置', warn: true })
+    expect(chipOf(null, null, NOW)).toEqual({ label: 'ON', warn: false })
+    for (const miss of [null, 'denied', 'timeout', 'unsupported', 'stale'] as const)
+      expect(chipOf(miss ? null : fix, miss, NOW).label.length).toBeLessThanOrEqual(5)
   })
 })
 

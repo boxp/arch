@@ -38,7 +38,7 @@ for (const [name, viewport, mobile] of [['pc', { width: 1280, height: 800 }, fal
     b = await send('現在地を共有できてませんか')
     const age = b?.location?.capturedAt ? (await page.evaluate(() => Date.now())) - b.location.capturedAt : -1
     check(b?.location?.status === 'ok' && age >= 3 * 60_000 && age < 4 * 60_000, `${tag}: transient failure keeps previous fix with its capture time (age ${Math.round(age / 1000)}s)`)
-    check((await page.locator('#location-note').textContent()).includes('取り直し失敗'), `${tag}: note says refresh failed`)
+    check((await page.locator('#location-chip').textContent()).includes('⚠') && (await page.locator('#location-chip').getAttribute('title')).includes('取り直し失敗'), `${tag}: composer chip says refresh failed`)
     await page.screenshot({ path: `${out}/${name}-kept.png` })
     // 10 分を超えたら送らない（stale/timeout）。
     await skew(8 * 60_000)

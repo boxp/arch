@@ -124,6 +124,20 @@ export function noteOf(fix: Fix | null, miss: LocationMiss | null, now: number):
 }
 
 /**
+ * BOXP-648 TD-02: 入力欄の横に出す小さな表示（📍 + label + warn なら ⚠）。共有中か・取れていないかだけを数文字で示し、
+ * 理由と対処（noteOf）は押したとき・title で出す。warn は「今の送信で現在地が伝わらない／取り直しに失敗した」状態。
+ * 縦画面ではボタン列を折り返させないよう label を隠し 📍（注意時は 📍⚠）だけにして入力欄と同じ行に置く（style.css）。
+ */
+export function chipOf(fix: Fix | null, miss: LocationMiss | null, now: number): { label: string; warn: boolean } {
+  if (fix && now - fix.capturedAt <= FRESH_MS) return { label: clock(fix.capturedAt), warn: !!miss }
+  if (miss === 'denied') return { label: '未許可', warn: true }
+  if (miss === 'unsupported') return { label: '非対応', warn: true }
+  if (miss === 'timeout' || miss === 'unavailable') return { label: '取得失敗', warn: true }
+  if (fix || miss === 'stale') return { label: '古い位置', warn: true }
+  return { label: 'ON', warn: false }
+}
+
+/**
  * BOXP-648: 現場（見てきて）の依頼には位置を添えない。BFF の isVisitText（bff/src/visit.ts）と同じ言い回しで判定し、
  * ボタン・手入力・受理未確認の再送のどれでも同じ扱いにする（BFF 側でも捨てる）。
  */

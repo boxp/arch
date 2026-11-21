@@ -86,6 +86,7 @@ import {
   acquire,
   describe as describeLocation,
   isVisitText,
+  chipOf as locationChipOf,
   noteOf as locationNoteOf,
   payloadOf,
   settle as settleLocation,
@@ -214,7 +215,9 @@ applyPrefs()
 // ---- BOXP-648: 現在地の共有（本人が ON にした端末だけ・送信時に 1 回取得・このタブのメモリにだけ直近 1 件） ----
 const locationBox = el<HTMLInputElement>('pref-location'),
   locationStatus = el('location-status'),
-  locationNote = el('location-note')
+  locationNote = el('location-note'),
+  locationChip = el<HTMLButtonElement>('location-chip')
+let locationOpen = false
 let locationFix: Fix | null = null,
   locationMiss: LocationMiss | null = null,
   locationBusy: Promise<void> | null = null
@@ -222,8 +225,27 @@ function renderLocation() {
   locationBox.checked = prefs.location
   const text = describeLocation(prefs.location, locationFix, locationMiss, Date.now())
   locationStatus.textContent = text
-  locationNote.hidden = !prefs.location
-  locationNote.textContent = prefs.location ? locationNoteOf(locationFix, locationMiss, Date.now()) : ''
+  // TD-02: 入力欄の下には全文を出さず、入力欄横の小さな表示にする。全文は押したとき（と title）だけ。
+  const note = prefs.location ? locationNoteOf(locationFix, locationMiss, Date.now()) : ''
+  if (!prefs.location) locationOpen = false
+  const chip = locationChipOf(locationFix, locationMiss, Date.now())
+  locationChip.hidden = !prefs.location
+  locationChip.replaceChildren()
+  if (prefs.location) {
+    const label = document.createElement('span'),
+      warn = document.createElement('span')
+    label.className = 'loc-label'
+    label.textContent = chip.label
+    warn.className = 'loc-warn'
+    warn.textContent = chip.warn ? '⚠' : ''
+    locationChip.append('📍', label, warn)
+  }
+  locationChip.classList.toggle('warn', prefs.location && chip.warn)
+  locationChip.title = note
+  locationChip.setAttribute('aria-label', note ? `${note}（押すと詳しく表示）` : '')
+  locationChip.setAttribute('aria-expanded', String(locationOpen))
+  locationNote.hidden = !(prefs.location && locationOpen)
+  locationNote.textContent = locationOpen ? note : ''
 }
 /** 位置を取り直す（同時に 1 回だけ）。共有 OFF に切り替わった後に届いた結果は捨てる。 */
 function refreshLocation(): Promise<void> {
@@ -269,6 +291,11 @@ locationBox.addEventListener('change', () => {
   renderLocation()
   // ON にした操作の直後に取得し、ブラウザの許可ダイアログを本人の操作に結び付けて出す。
   if (prefs.location) void refreshLocation()
+})
+// TD-02: 入力欄横の小さな表示を押すと、理由と対処の全文を入力欄の上に開閉する。
+locationChip.addEventListener('click', () => {
+  locationOpen = !locationOpen
+  renderLocation()
 })
 renderLocation()
 setInterval(() => {
