@@ -104,6 +104,10 @@ main の必須 check は `status-check`（`.github/workflows/test.yaml`、`pull_
 - `test-task-board-lock-model.yml` 自体を変える PR では、変更後の定義を merge 前に試すために同じ検査が `pull_request` でも 1 回動く（こちらは必須 check ではない）。
 - runner の実装だけを変えた PR では Lean の検査は動かない（モデルも生成物も変わらないため）。実装とモデルの食い違いを見るのは手順の再生で、これは必須にしていない。
 - job が時間切れで cancel 扱いになると `status-check`（`if: failure()`）は失敗にならない。これを避けるため各 step に上限を置き、時間切れは step の失敗として数える。
+- Lean は証明を `sorry` に置き換えた定理も、`axiom` で足した主張も、終了コード 0 で通す（`sorry` は warning だけ）。このため検査は、
+  コンパイルしたモデルを読み直し、モデル内の全ての宣言が Lean 標準の公理 3 つ（`propext`・`Classical.choice`・`Quot.sound`）以外に依存していないことも調べる。
+  `sorry`（`sorryAx`）や足した公理、`native_decide` などがあれば失敗する。この検査は workflow の中に書いてあり、モデルのディレクトリには置いていない
+  （PR が自分で弱められないようにするため）。手元の `lean LockModel.lean` だけではこの点は調べられないので、warning が出ていないことを見る。
 
 Lean の入手: <https://github.com/leanprover/lean4/releases/tag/v4.36.0>（展開後 約 3GB）。
 `elan` を使う場合は `lean-toolchain` が版を決める。Lean の版を変えるときは `lean-toolchain` と、

@@ -79,18 +79,51 @@ jobs:
           set -uo pipefail
           proofs=0
           drift=0
-          time lean LockModel.lean || proofs=$?
+          # Lean exits 0 for a theorem whose proof is `sorry` (a warning only) and for a
+          # statement added as an `axiom`. So the compiled model is loaded again and every
+          # declaration in it is required to depend on Lean's three standard axioms only.
+          # This check is written here, not in the model directory, because the gate runs
+          # the base branch's copy of this file: a PR cannot weaken it for itself.
+          out="${RUNNER_TEMP}/lock-model-olean"
+          mkdir -p "${out}"
+          cat >"${RUNNER_TEMP}/LockModelAxioms.lean" <<'LEAN'
+          import Lean
+          import LockModel
+          open Lean
+
+          #eval show CoreM Unit from do
+            let allowed : List Name := [``propext, ``Classical.choice, ``Quot.sound]
+            let env ← getEnv
+            let some idx := env.getModuleIdx? `LockModel
+              | throwError "module LockModel is not loaded"
+            let mut theorems := 0
+            let mut bad : Array String := #[]
+            for (name, info) in env.constants.map₁.toList do
+              if env.getModuleIdxFor? name != some idx then continue
+              if info matches .thmInfo _ then theorems := theorems + 1
+              let extra := (← collectAxioms name).toList.filter (!allowed.contains ·)
+              unless extra.isEmpty do
+                bad := bad.push s!"{name} depends on {extra}"
+            IO.println s!"theorems (with the ones Lean generates): {theorems}"
+            unless bad.isEmpty do
+              throwError "not proved from the standard axioms only:\n{"\n".intercalate bad.qsort.toList}"
+            if theorems == 0 then throwError "LockModel has no theorem"
+          LEAN
+          time lean -o "${out}/LockModel.olean" LockModel.lean || proofs=$?
+          if [ "${proofs}" -eq 0 ]; then
+            time env LEAN_PATH="${out}" lean "${RUNNER_TEMP}/LockModelAxioms.lean" || proofs=$?
+          fi
           time lean --run LockModel.lean cover 5 >"${RUNNER_TEMP}/lock-traces.txt" || drift=$?
           gzip -dc lock-traces.txt.gz | cmp "${RUNNER_TEMP}/lock-traces.txt" - || drift=1
           {
             echo "### Lock model (BOXP-650 / BOXP-652, required)"
             echo
-            echo "- proofs: $([ "${proofs}" -eq 0 ] && echo ok || echo FAILED)"
+            echo "- proofs (no sorry, no added axiom): $([ "${proofs}" -eq 0 ] && echo ok || echo FAILED)"
             echo "- lock-traces.txt.gz is what the model generates: $([ "${drift}" -eq 0 ] && echo yes || echo NO)"
             echo "- sequences: $(gzip -dc lock-traces.txt.gz | wc -l)"
           } >>"${GITHUB_STEP_SUMMARY}"
           if [ "${proofs}" -ne 0 ]; then
-            echo "::error::LockModel.lean does not check"
+            echo "::error::LockModel.lean does not check, or a declaration in it uses sorry or an added axiom"
           fi
           if [ "${drift}" -ne 0 ]; then
             echo "::error::lock-traces.txt.gz differs from what LockModel.lean generates: regenerate it as in tests/codex-workspace/lock-model/README.md"

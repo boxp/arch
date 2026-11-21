@@ -30,6 +30,7 @@ ruleset は変えず、既存の必須 check `status-check` に Lean の検査�
 
 - 必須の検査は base（main）側の workflow 定義で動く（`pull_request_target`）。PR の中で workflow を書き換えても、その PR の判定は変わらない。
 - 検査 step は `continue-on-error` を使わず、定理と生成物の両方を調べてからどちらかが駄目なら exit 1。
+- Lean は `sorry` や足した `axiom` を終了コード 0 で通すため、モデル内の全宣言が標準の公理 3 つ以外に依存しないことを workflow 内の検査で調べる（codex review P1 への対応）。
 - job の時間切れは cancel 扱いで `status-check`（`if: failure()`）に数えられないため、step ごとの上限で失敗にする。
 - path-filter 自体が失敗した場合は `status-check` が失敗する（祖先 job の失敗）。
 - 対象外の変更では job は skip で、`status-check` に影響しない。
@@ -68,3 +69,18 @@ ruleset は変えず、既存の必須 check `status-check` に Lean の検査�
 | `boxp-652-demo-drift` | モデルはそのまま、生成物の最後の 1 行を削った | **失敗**（定理は ok、`cmp: EOF ... line 24206`） | [44890167136](https://github.com/boxp/arch/actions/runs/44890167136) |
 
 ここまでで確かめたのは「検査が失敗で終わる」こと。`status-check` 経由で merge が止まること（実経路）は merge 後に確かめる。
+
+### `sorry`・公理の追加への対応（codex review P1、2026-11-21）
+
+指摘: 証明を `sorry` に置き換えても Lean は warning だけで終了コード 0 を返し、必須の検査を通ってしまう。
+対応: モデルを `.olean` にコンパイルして読み直し、モデル内の全宣言について依存する公理を集め、標準の 3 つ以外があれば失敗にした。
+
+workflow から取り出した検査 step をそのまま手元で流した結果（Lean 4.36.0）:
+
+| 対象 | 結果 |
+|---|---|
+| 変更なしのモデル | 成功 |
+| `good_init` の証明を `sorry` に置き換え | **失敗**（`good_init depends on [sorryAx]`、それに依存する `good_reachable` も報告） |
+| `axiom cheat : False` と、それを使う定理を追加 | **失敗**（`anything depends on [cheat]`） |
+
+調べていないもの: 定理そのものを削る・主張を弱める変更（証明としては正しいので検査は通る。PR の review で見る範囲）。
