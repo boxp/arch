@@ -7,7 +7,7 @@ owner 2 つ (A・B)、チケット 1 件。規則の日本語での説明・定�
 省いたものは同じディレクトリの README.md にある。このファイルは Lean 本体だけを使う。
 
 - 証明の検査:   `lean LockModel.lean`
-- 手順の生成:   `lean --run LockModel.lean cover 5 > lock-traces.txt`
+- 手順の生成:   `lean --run LockModel.lean cover 5 | gzip -n -9 > lock-traces.txt.gz`
 -/
 
 inductive R | A | B

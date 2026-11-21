@@ -14,7 +14,15 @@
 (def args (vec *command-line-args*))
 (defn arg [flag default] (or (second (drop-while #(not= flag %) args)) default))
 (def here (-> *file* fs/canonicalize fs/parent))
-(def traces-file (arg "--traces" (str (fs/path here "lock-model" "lock-traces.txt"))))
+(def traces-file (arg "--traces" (str (fs/path here "lock-model" "lock-traces.txt.gz"))))
+
+;; The committed sequences are gzip-compressed (about 2.4MB as text, generated, not edited by
+;; hand); a plain text file given with --traces is read as it is.
+(defn read-traces [path]
+  (if (str/ends-with? (str path) ".gz")
+    (with-open [in (java.util.zip.GZIPInputStream. (java.io.FileInputStream. (str path)))]
+      (slurp in))
+    (slurp path)))
 (def runner-file (arg "--runner" (str (fs/path (fs/parent (fs/parent here)) "docker" "codex-workspace" "task-board" "task_board_runner.bb"))))
 (def max-report (parse-long (arg "--max-report" "5")))
 
@@ -123,7 +131,7 @@
             (recur (inc i))
             {:trace (str/join "," (take (inc i) evs)) :expected (nth exp i) :actual o}))))))
 
-(let [lines (remove str/blank? (str/split-lines (slurp traces-file)))
+(let [lines (remove str/blank? (str/split-lines (read-traces traces-file)))
       t0 (System/currentTimeMillis)
       bad (vec (keep replay-line lines))
       steps (reduce + (map #(inc (count (filter #{\,} (first (str/split % #"\|"))))) lines))]

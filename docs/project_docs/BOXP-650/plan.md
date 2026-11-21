@@ -20,7 +20,7 @@
 | 置いたもの | 中身 |
 |---|---|
 | `tests/codex-workspace/lock-model/LockModel.lean` | モデル（394 行）、定理 9 件、手順の生成器 |
-| `tests/codex-workspace/lock-model/lock-traces.txt` | 生成済みの手順 24,207 本（116,697 操作、約 2.4MB） |
+| `tests/codex-workspace/lock-model/lock-traces.txt.gz` | 生成済みの手順 24,207 本（116,697 操作。展開後 約 2.4MB、gzip 圧縮後 約 0.1MB） |
 | `tests/codex-workspace/lock-model/README.md` | 規則と定理の対応、モデルの操作と実装の対応、対象外、再生成の手順 |
 | `tests/codex-workspace/task-board-lock-trace-test.bb` | 手順を runner の実関数に再生して比べる（bb だけで動く、約 25 秒） |
 | `task_board_runner.bb` | heartbeat の 1 回分を `heartbeat-once!` に切り出した（挙動は同じ）。他は変えていない |
@@ -160,3 +160,9 @@ bb tests/codex-workspace/task-board-mutation.bb --config CFG --fn FN --jobs 1 --
 
 比較に使った設定（`cfg-existing.edn` / `cfg-trace.edn` / 全ケースの `cfg-full.edn`）、変異ごとの結果、集計は
 `/home/boxp/verification-artifacts/BOXP-650/mutation/` に置いた（リポジトリには入れていない）。
+
+## 追記: 生成済み手順を圧縮して置く理由（2026-11-21）
+
+- 生成済み手順をテキストのまま置くと PR の差分が約 250 万文字になり、PR gate の codex review（差分全文を 1 回の入力で渡す。上限 1,048,576 文字）が開始直後に入力超過で失敗した。レビューの指摘ではなく、レビュー自体が実行できなかった。
+- 手順は生成物で人が読んで直すものではないため、gzip で圧縮した `lock-traces.txt.gz`（約 0.1MB）として置く。展開後の内容は圧縮前と同一（sha256 一致）で、再生テストは 24,207 本・不一致 0 のまま。
+- 保守上の注意: 今後モデルを広げて手順が増えても、差分に載るのは圧縮ファイルの差し替えだけになる。手順の中身の変化を見たいときは `gzip -dc` で展開して比べる。

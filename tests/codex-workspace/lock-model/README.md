@@ -4,12 +4,12 @@ Task Board runner の **ticket lock（取得・heartbeat・解放・期限切れ
 小さなモデルにし、そこから「操作の並びと、各操作後にこうなっているはず」を機械的に作って、runner の実際の関数に流して比べる。
 
 - 試行の結果と採否の評価: [docs/project_docs/BOXP-650/plan.md](../../../docs/project_docs/BOXP-650/plan.md)
-- 必須の CI ではない。普段のテストは Lean なしで動く（生成済みの手順 `lock-traces.txt` を読むだけ）。
+- 必須の CI ではない。普段のテストは Lean なしで動く（生成済みの手順 `lock-traces.txt.gz` を読むだけ）。
 
 | ファイル | 役割 | 要るもの |
 |---|---|---|
 | `LockModel.lean` | モデル（規則）、定理、手順の生成器 | Lean 4.36.0（`lean-toolchain`）。外部ライブラリなし |
-| `lock-traces.txt` | 生成済みの手順。1 行 = `操作列\|各操作後の期待` | なし（生成物。手で編集しない） |
+| `lock-traces.txt.gz` | 生成済みの手順を gzip で圧縮したもの。展開後の 1 行 = `操作列\|各操作後の期待` | なし（生成物。手で編集しない） |
 | `../task-board-lock-trace-test.bb` | 手順を runner の実関数に再生して比べる | bb だけ |
 
 ## モデルが言っていること
@@ -79,7 +79,7 @@ lock の期限は 180 秒なので、90+90 は「ちょうど期限（まだ有�
 ```sh
 cd tests/codex-workspace/lock-model
 lean LockModel.lean                                   # 定理の検査（通れば何も出ない。2CPU で約 55 秒）
-lean --run LockModel.lean cover 5 > lock-traces.txt   # 手順の生成（約 40 秒、24,207 本・約 2.4MB）
+lean --run LockModel.lean cover 5 | gzip -n -9 > lock-traces.txt.gz   # 手順の生成（約 40 秒、24,207 本。展開後 約 2.4MB、圧縮後 約 0.1MB）
 bb ../task-board-lock-trace-test.bb                   # 再生（約 25 秒、Lean 不要）
 ```
 
@@ -94,11 +94,11 @@ Lean の入手: <https://github.com/leanprover/lean4/releases/tag/v4.36.0>（展
 ## モデルや実装を変えるとき
 
 1. 実装の挙動を変えるなら、先に上の規則のどれが変わるかを決め、`LockModel.lean` の `step` と該当の定理を直す。
-2. `lean LockModel.lean` で定理が通ることを確かめ、`lock-traces.txt` を生成し直す。
+2. `lean LockModel.lean` で定理が通ることを確かめ、`lock-traces.txt.gz` を生成し直す。
 3. `bb ../task-board-lock-trace-test.bb` が不一致 0 になることを確かめる。不一致は「操作列・期待・実際」を最短のものから表示する。
 4. 規則・対応・対象外が変わったら、この README の表を直す。
 
-`lock-traces.txt` を手で直さない。モデルを直さずに実装だけ変えた場合は再生テストが不一致を報告する（それが目的）。
+`lock-traces.txt.gz` を手で直さない。中身は `gzip -dc lock-traces.txt.gz` で読める。モデルを直さずに実装だけ変えた場合は再生テストが不一致を報告する（それが目的）。
 
 ## 隔離
 

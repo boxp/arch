@@ -50,17 +50,17 @@ jobs:
           drift=0
           time lean LockModel.lean || proofs=$?
           time lean --run LockModel.lean cover 5 >"${RUNNER_TEMP}/lock-traces.txt" || drift=$?
-          cmp "${RUNNER_TEMP}/lock-traces.txt" lock-traces.txt || drift=1
+          gzip -dc lock-traces.txt.gz | cmp "${RUNNER_TEMP}/lock-traces.txt" - || drift=1
           {
             echo "### Lock model (BOXP-650, report only)"
             echo
             echo "- proofs: $([ "${proofs}" -eq 0 ] && echo ok || echo FAILED)"
-            echo "- lock-traces.txt is what the model generates: $([ "${drift}" -eq 0 ] && echo yes || echo NO)"
-            echo "- sequences: $(wc -l <lock-traces.txt)"
+            echo "- lock-traces.txt.gz is what the model generates: $([ "${drift}" -eq 0 ] && echo yes || echo NO)"
+            echo "- sequences: $(gzip -dc lock-traces.txt.gz | wc -l)"
           } >>"${GITHUB_STEP_SUMMARY}"
           if [ "${proofs}" -ne 0 ]; then
             echo "::warning::LockModel.lean does not check (report only)"
           fi
           if [ "${drift}" -ne 0 ]; then
-            echo "::warning::lock-traces.txt differs from what LockModel.lean generates (report only): regenerate it as in tests/codex-workspace/lock-model/README.md"
+            echo "::warning::lock-traces.txt.gz differs from what LockModel.lean generates (report only): regenerate it as in tests/codex-workspace/lock-model/README.md"
           fi
