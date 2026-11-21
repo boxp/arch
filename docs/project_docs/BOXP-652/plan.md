@@ -56,3 +56,15 @@ ruleset は変えず、既存の必須 check `status-check` に Lean の検査�
 - 既に開いている PR は、次に更新されるまで新しい判定が走らない。
 - repository の admin は ruleset を bypass できる（既存の設定。変えていない）。
 - `pull_request_target` で PR のモデル（Lean）を実行する。渡す権限は `contents: read` だけで secret は渡さない（`test-ansible` と同じ扱い）。
+
+## merge 前の確認結果（2026-11-21）
+
+変更後の workflow 定義を 3 通り流した（確認用 branch は `workflow_dispatch` で流し、PR は作らず、確認後に削除）。
+
+| 対象 | 中身 | 結果 | run |
+|---|---|---|---|
+| この PR | 変更なしのモデルと生成物 | 成功（定理 29 秒、生成 29 秒） | [44890107745](https://github.com/boxp/arch/actions/runs/44890107745) |
+| `boxp-652-demo-proof` | `sweep` から「自分の lock は片付けない」を外した（規則 5 を壊す） | **失敗**（`LockModel.lean:202: grind failed`） | [44890165030](https://github.com/boxp/arch/actions/runs/44890165030) |
+| `boxp-652-demo-drift` | モデルはそのまま、生成物の最後の 1 行を削った | **失敗**（定理は ok、`cmp: EOF ... line 24206`） | [44890167136](https://github.com/boxp/arch/actions/runs/44890167136) |
+
+ここまでで確かめたのは「検査が失敗で終わる」こと。`status-check` 経由で merge が止まること（実経路）は merge 後に確かめる。
