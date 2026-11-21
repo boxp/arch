@@ -53,4 +53,27 @@ for (const [name, viewport, mobile] of [['pc', { width: 1280, height: 800 }, fal
     } catch (e) { failures.push(`${tag}: ${e.message}`) } finally { await ctx.close() }
   }
 }
+// 同じ端末の 2 タブ: 片方で共有を OFF にしたら、もう片方の送信も off になる。
+{
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, geolocation: FAKE, permissions: ['geolocation'] }), bodies = []
+  await ctx.route('**/kohako/api/v1/**', async route => { const p = new URL(route.request().url()).pathname.split('/v1/')[1], j = (code, data) => route.fulfill({ status: code, contentType: 'application/json', body: JSON.stringify(data) }); if (p === 'me') return j(200, { authenticated: true }); if (p === 'conversation') return j(200, { enabled: true, stt: null }); if (p === 'status') return j(503, {}); if (p === 'messages') { bodies.push(JSON.parse(route.request().postData())); return j(202, {}) } if (p.startsWith('requests/')) return j(200, { status: 'done', reply: { text: '返答です', at: Date.now() } }); return j(404, {}) })
+  const a = await ctx.newPage(), b = await ctx.newPage()
+  const send = async (page, text) => { const before = bodies.length; await page.locator('#message').fill(text); await page.locator('#form').evaluate(e => e.requestSubmit()); for (let i = 0; i < 60 && bodies.length === before; i++) await page.waitForTimeout(200); await page.waitForTimeout(800); return bodies.at(-1) }
+  try {
+    for (const page of [a, b]) { await page.goto(`${origin}/kohako/home.html`); await page.waitForFunction(() => !document.querySelector('#send').disabled) }
+    await a.bringToFront(); await a.locator('#settings-open').click(); await a.locator('#pref-location').check(); await a.locator('#settings-close').click(); await a.waitForTimeout(1500)
+    await b.bringToFront(); let r = await send(b, '近くに何がある？')
+    check(r?.location?.status === 'ok', `two-tabs: other tab follows on ${r?.location?.status}`)
+    await a.bringToFront(); await a.locator('#settings-open').click(); await a.locator('#pref-location').uncheck(); await a.locator('#settings-close').click(); await a.waitForTimeout(300)
+    await b.bringToFront()
+    check(await b.locator('#location-note').isHidden(), 'two-tabs: other tab note hidden after stop')
+    r = await send(b, 'いまどこ？')
+    check(r && JSON.stringify(r.location) === '{"status":"off"}', `two-tabs: other tab off after stop ${JSON.stringify(r?.location)}`)
+    // storage イベントを取りこぼした場合（保存値だけ OFF）も、送信直前の読み直しで off。
+    await a.locator('#settings-open').click(); await a.locator('#pref-location').check(); await a.locator('#settings-close').click(); await a.waitForTimeout(1500)
+    await b.evaluate(() => { const p = JSON.parse(localStorage.getItem('kohako-home-prefs')); localStorage.setItem('kohako-home-prefs', JSON.stringify({ ...p, location: false })) })
+    r = await send(b, 'ここはどこ？')
+    check(r && JSON.stringify(r.location) === '{"status":"off"}', `two-tabs: stored off honored at send ${JSON.stringify(r?.location)}`)
+  } catch (e) { failures.push(`two-tabs: ${e.message}`) } finally { await ctx.close() }
+}
 await browser.close(); server.close(); fs.writeFileSync(`${out}/result.json`, JSON.stringify({ failures, log }, null, 2)); console.log(log.join('\n')); console.log(JSON.stringify({ failures }, null, 2)); process.exitCode = failures.length ? 1 : 0

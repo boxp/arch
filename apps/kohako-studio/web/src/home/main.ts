@@ -241,11 +241,28 @@ function refreshLocation(): Promise<void> {
   })
   return locationBusy
 }
+// 同じ端末の別タブで共有を切り替えたら、このタブにも反映する（OFF にしたのに別タブから送り続けないため）。
+// storage イベントを取りこぼしても送信直前に保存値を読み直し、保存値が OFF なら送らない。
+function syncLocationPref(): boolean {
+  const raw = local.get(PREFS_KEY)
+  if (raw === null) return prefs.location
+  const stored = parsePrefs(raw).location
+  if (stored !== prefs.location) {
+    prefs = { ...prefs, location: stored }
+    locationFix = null
+    locationMiss = null
+    renderLocation()
+  }
+  return stored
+}
+addEventListener('storage', (e) => {
+  if (e.key === PREFS_KEY || e.key === null) syncLocationPref()
+})
 /** 発言に添える位置。OFF なら取得せず 'off'。直近 2 分以内に取れていればそれを使い、なければ取り直す。 */
 async function locationForSend(): Promise<LocationPayload> {
-  if (!prefs.location) return { status: 'off' }
+  if (!syncLocationPref()) return { status: 'off' }
   if (!locationFix || Date.now() - locationFix.capturedAt > REUSE_MS) await refreshLocation()
-  if (!prefs.location) return { status: 'off' }
+  if (!syncLocationPref()) return { status: 'off' }
   return payloadOf(locationFix, locationMiss ?? 'unavailable', Date.now())
 }
 locationBox.addEventListener('change', () => {
