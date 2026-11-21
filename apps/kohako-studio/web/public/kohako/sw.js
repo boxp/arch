@@ -1,5 +1,5 @@
 // Only the self-contained fallback is stored. Never cache authenticated pages or API responses.
-const CACHE = 'kohako-offline-v1'
+const CACHE = 'kohako-offline-v2'
 const OFFLINE = '/kohako/kohako/offline-v1.html'
 // オフライン画面の保存に失敗しても（Access 期限切れ等）SW の導入は止めない。Push を巻き込まないため。
 self.addEventListener('install', event => {

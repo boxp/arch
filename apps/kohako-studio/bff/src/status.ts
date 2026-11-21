@@ -40,7 +40,7 @@ const definitions = [
     label: 'Fable専用上限',
     agents: ['claude-fable', 'fable'],
     windows: [['fable_7d', '7日']],
-    note: '共有枠にも同時に掛かります',
+    note: 'Claude共有枠も同時に消費します',
   },
   {
     id: 'claude_opus',
@@ -48,7 +48,7 @@ const definitions = [
     agents: ['claude-opus'],
     windows: [],
     state: 'not_provided' as const,
-    note: '窓ごとの利用率は提供されていません',
+    note: '期間別の利用率は提供されていません',
   },
   {
     id: 'codex_shared',
@@ -82,13 +82,13 @@ const definitions = [
 ]
 const antigravityFailure: Record<string, string> = {
   no_snapshot: '未観測',
-  parse_error: '記録を読めません',
+  parse_error: '集計データの読み取り失敗',
   not_installed: 'CLI未導入',
   timeout: 'CLI応答なし',
   auth_required: '未ログイン',
   unsupported_auth: 'API鍵接続のため枠なし',
   command_failed: 'CLI失敗',
-  invalid_output: '出力を解釈できません',
+  invalid_output: '応答の読み取り失敗',
 }
 const pools = (state: WindowState): Pool[] =>
   definitions.map((p) => ({

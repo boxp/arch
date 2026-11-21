@@ -17,14 +17,14 @@ describe('現場の入口と表示', () => {
     for (const value of ['見てきてください', '現場を見てきて、その後教えて', '']) expect(isVisitText(value)).toBe(false)
   })
   it('道具を短い表示にする', () => {
-    expect(visitToolLabel('mcp__grafana__list_alert_rules')).toBe('警告の一覧を見ています')
-    expect(visitToolLabel('mcp__grafana__prometheus_query')).toBe('指標を見ています')
-    expect(visitToolLabel('mcp__grafana__loki_query')).toBe('記録を見ています')
+    expect(visitToolLabel('mcp__grafana__list_alert_rules')).toBe('アラート一覧を確認しています')
+    expect(visitToolLabel('mcp__grafana__prometheus_query')).toBe('稼働指標を確認しています')
+    expect(visitToolLabel('mcp__grafana__loki_query')).toBe('ログを確認しています')
     expect(visitToolLabel('mcp__grafana__dashboard')).toBe('ダッシュボードを見ています')
-    expect(visitToolLabel('mcp__grafana__search')).toBe('探しています')
-    expect(visitToolLabel('mcp__grafana__datasource')).toBe('データの出どころを確かめています')
-    expect(visitToolLabel('mcp__grafana__annotations')).toBe('注記を見ています')
-    expect(visitToolLabel('other')).toBe('調べています')
+    expect(visitToolLabel('mcp__grafana__search')).toBe('関連する画面を探しています')
+    expect(visitToolLabel('mcp__grafana__datasource')).toBe('データソースを確認しています')
+    expect(visitToolLabel('mcp__grafana__annotations')).toBe('メモ・注記を確認しています')
+    expect(visitToolLabel('other')).toBe('自宅クラスタを調べています')
   })
   it('専用セッションを使い、範囲外の開始で止めて報告する', async () => {
     let emit: (event: Record<string, unknown>) => void = () => {}
@@ -55,12 +55,15 @@ describe('現場の入口と表示', () => {
     )
     await vi.waitFor(() => expect(run).toHaveBeenCalled())
     expect(run.mock.calls[0][2]).toMatch(/^kohako-visit-/)
-    expect(conv.transcript().items[0]).toMatchObject({ text: '現場へ：自宅クラスタ', visit: { place: 'home-cluster' } })
+    expect(conv.transcript().items[0]).toMatchObject({
+      text: '自宅クラスタを見てきて',
+      visit: { place: 'home-cluster' },
+    })
     emit({ event: 'tool.started', tool: 'terminal' })
     await vi.waitFor(() => expect(stop).toHaveBeenCalled())
     await vi.waitFor(() => expect(conv.get('request-1')?.status).toBe('done'))
     const stopped = conv.get('request-1')?.reply?.text ?? ''
-    expect(stopped).toContain('Grafana の読み取り口ではない道具が動きかけたので、そこで止めています')
+    expect(stopped).toContain('Grafana の読み取り口ではない道具が動きかけたため、そこで止めています')
     expect(stopped).toContain('ご主人さま')
     expect(stopped).not.toMatch(/見た物:|分かった事:|次に要る事:/)
   })
@@ -97,7 +100,7 @@ describe('現場の入口と表示', () => {
     expect(stop).not.toHaveBeenCalled()
     emit({ event: 'tool.started', tool: 'mcp__grafana__search', tool_call_id: '20' })
     await vi.waitFor(() => expect(stop).toHaveBeenCalled())
-    await vi.waitFor(() => expect(conv.get('request-2')?.reply?.text).toContain('上限に届いた'))
+    await vi.waitFor(() => expect(conv.get('request-2')?.reply?.text).toContain('上限に達した'))
   })
   it('停止や終了を確かめられない時は「戻りました」と出さない', async () => {
     let emit: (event: Record<string, unknown>) => void = () => {}
@@ -153,9 +156,7 @@ describe('現場の入口と表示', () => {
       '',
     )
     await vi.waitFor(() => expect(stop).toHaveBeenCalled())
-    await vi.waitFor(() =>
-      expect(conv.get('request-4')?.reply?.text).toContain('見守れなくなったので、そこで切り上げて'),
-    )
+    await vi.waitFor(() => expect(conv.get('request-4')?.reply?.text).toContain('見守れなくなったためです'))
   })
   it('終了通知を受けてから購読が終わった時は止めない', async () => {
     let finish: (result: { status: 'done'; text: string }) => void = () => {}
@@ -237,13 +238,13 @@ describe('現場の入口と表示', () => {
   it('途中で戻した報告は理由を話し、見た内容を作らない', () => {
     const at = Date.UTC(2026, 10, 18, 2, 5)
     expect(visitStoppedReport('limit', at)).toContain('11:05（日本時間）')
-    expect(visitStoppedReport('limit', at)).toContain('時間か回数の上限に届いた')
+    expect(visitStoppedReport('limit', at)).toContain('時間か回数の上限に達した')
     expect(visitStoppedReport('unwatched', at)).toContain('見守れなくなった')
     expect(visitStoppedReport('tool', at)).toContain('確かなものとしてお伝えできません')
     // 範囲外の道具・見守れない間は、変更が無かったと言い切らない（開始通知の後に止めるため確かめられない）。
     for (const r of ['tool', 'limit', 'unwatched'] as const)
       expect(visitStoppedReport(r, at)).not.toContain('何も変えていません')
-    expect(visitStoppedReport('tool', at)).toContain('確かめられていません')
+    expect(visitStoppedReport('tool', at)).toContain('確かめきれていません')
     expect(visitStoppedReport('unwatched', at)).toContain('確かめられていません')
     expect(visitStoppedReport('limit', at)).toContain('読み取りだけでした')
     expect(visitStoppedReport('limit', at)).not.toContain('確かめられていません')

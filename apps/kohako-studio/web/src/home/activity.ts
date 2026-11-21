@@ -195,17 +195,40 @@ export function toolLabel(tool: string): { noun: string; doing: string; name: st
   if (tool === 'tool_call') return { noun, name: 'ツール呼び出し', doing: 'ツールを呼び出しています' }
   if (tool === 'tool_search') return { noun, name: 'ツール探し', doing: '使えるツールを探しています' }
   if (tool === 'tool_describe') return { noun, name: 'ツールの説明確認', doing: 'ツールの説明を読んでいます' }
+  const names: Record<string, string> = {
+    terminal: 'コマンド実行',
+    execute_code: 'コマンド実行',
+    process: 'コマンド実行',
+    read_file: 'ファイル読込',
+    write_file: 'ファイル編集',
+    patch: 'ファイル編集',
+    search_files: 'ファイル検索',
+    web_search: 'Web検索',
+    web_extract: 'Webページ閲覧',
+    vision_analyze: '画像確認',
+    image_generate: '画像生成',
+    memory: '記憶確認',
+    session_search: '過去会話の検索',
+    skill_view: '手順書確認',
+    skills_list: '手順書確認',
+    skill_manage: '手順書確認',
+    delegate_task: '別担当へ委任',
+    todo_list: 'やること整理',
+    todo: 'やること整理',
+    cronjob_manage: '予定確認',
+    cronjob: '予定確認',
+    text_to_speech: '音声生成',
+    clarify: '確認事項の整理',
+  }
   return {
     noun,
-    name: name
-      .replace(/読んで$/, '読む')
-      .replace(/書き換えて$/, '書き換え')
-      .replace(/探して$/, '探す')
-      .replace(/見て$/, '見る')
-      .replace(/作って$/, '作る')
-      .replace(/任せて$/, '任せる')
-      .replace(/まとめて$/, 'まとめる')
-      .replace(/使って$/, '使用'),
+    name:
+      names[tool] ??
+      (tool.startsWith('browser_')
+        ? 'Webページ閲覧'
+        : tool.startsWith('mcp_')
+          ? '外部ツール利用'
+          : `ツール利用（${tool}）`),
     doing: name.endsWith('て') ? `${name}います` : `${name}しています`,
   }
 }
@@ -221,9 +244,14 @@ export function activityHeadline(a: Activity, opts: { live: boolean; nowMs: numb
     unconfirmed = tools.filter((s) => s.status === 'unconfirmed').length
   const counts = new Map<string, number>()
   for (const s of tools) counts.set(s.tool, (counts.get(s.tool) ?? 0) + 1)
-  const names = [...counts].slice(0, 3).map(([name, count]) => `${name}${count > 1 ? `×${count}` : ''}`)
+  const names = [...counts].slice(0, 3).map(([name, count]) => `${toolLabel(name).name}${count > 1 ? `×${count}` : ''}`)
   if (counts.size > 3) names.push('ほか')
-  return `ツールを ${tools.length} 回使いました（${names.join('、')}）${failed ? `（うち失敗 ${failed}）` : ''}${interrupted ? `（中断 ${interrupted}）` : ''}${unconfirmed ? `（結果未確認 ${unconfirmed}）` : ''}`
+  const issues = [
+    failed ? `失敗 ${failed}` : '',
+    interrupted ? `中断 ${interrupted}` : '',
+    unconfirmed ? `結果未確認 ${unconfirmed}` : '',
+  ].filter(Boolean)
+  return `ツールを ${tools.length} 回使用（${names.join('、')}${issues.length ? `／${issues.join('・')}` : ''}）`
 }
 export function formatDuration(ms: number): string {
   if (ms < 100) return '0.1秒未満'
@@ -237,7 +265,7 @@ export function activityTime(s: Tool): string {
     ? ''
     : s.durationMs === undefined
       ? s.startMissing
-        ? '開始未受信・時間不明'
+        ? '時間不明（開始記録なし）'
         : '時間不明'
       : formatDuration(s.durationMs)
 }
@@ -480,7 +508,7 @@ export function renderActivity(
       mark.setAttribute('aria-hidden', 'true')
       const label = toolLabel(s.tool)
       li.append(mark, make('span', 'activity-name', label.name))
-      if (!label.name.startsWith('ツール（')) {
+      if (!label.name.startsWith('ツール利用（')) {
         const parts = s.tool.split('__')
         const name =
           parts.length === 3 && parts[0] === 'mcp' && parts[1] && parts[2] ? `${parts[1]} / ${parts[2]}` : s.tool

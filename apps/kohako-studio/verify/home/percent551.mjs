@@ -10,7 +10,7 @@ const win = (name, label, state, usedPercent) => ({ name, label, state, usedPerc
 const statusOf = fable => ({ schema: 'kohako-home-status/v1', generatedAt: iso(now), quota: { state: 'ok', pools: [
   { id: 'claude_shared', label: 'Claude共有（Opus/Fable）', windows: [win('shared_5h', '5時間', 'ok', 0.2 * 100), win('shared_7d', '7日', 'ok', 0.43 * 100)] },
   { id: 'claude_fable', label: 'Fable専用上限', windows: [fable], note: '共有枠にも同時に掛かります' },
-  { id: 'claude_opus', label: 'Opus専用', windows: [], state: 'not_provided', note: '窓ごとの利用率は提供されていません' },
+  { id: 'claude_opus', label: 'Opus専用', windows: [], state: 'not_provided', note: '期間別の利用率は提供されていません' },
   { id: 'codex_shared', label: 'Codex共有（codex/sol/astra）', windows: [win('primary', '7日', 'ok', 0.31 * 100)] },
   { id: 'localllm', label: 'ローカルLLM', windows: [], state: 'not_applicable' }] },
   tasks: { state: 'ok', inProgress: { total: 1, complete: true, byAgent: [{ agent: 'claude-opus', count: 1 }], conflicts: [] } } })

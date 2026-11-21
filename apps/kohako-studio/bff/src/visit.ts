@@ -56,27 +56,26 @@ export function visitInstructions(opts?: {
 export function visitStoppedReport(reason: 'tool' | 'limit' | 'unwatched', at: number): string {
   const why =
     reason === 'tool'
-      ? 'Grafana の読み取り口ではない道具が動きかけたので、そこで止めて'
+      ? 'Grafana の読み取り口ではない道具が動きかけたため、そこで止めています。'
       : reason === 'unwatched'
-        ? '道具の動きを家から見守れなくなったので、そこで切り上げて'
-        : '決めてある時間か回数の上限に届いたので、そこで切り上げて'
-  // 家（BFF）は道具の開始通知を受けてから止めるので、範囲外の道具や見守れない間の動きについて「何も変えていない」とは言い切らない。
+        ? '道具の動きを家から見守れなくなったためです。'
+        : '決めてある時間か回数の上限に達したためです。'
   const changed =
     reason === 'tool'
-      ? 'その道具は現場側の守りで動く前に止まるはずですが、家から止めたのは動き始めの知らせを受けた後なので、何も変わっていないとまでは私には確かめられていません。'
+      ? '現場側の守りで動く前に止まる仕組みですが、家側が止めに入ったのは開始の知らせを受けた後なので、何も変わっていないとまでは、わたしの方で確かめきれていません。'
       : reason === 'unwatched'
-        ? '見守れていた間に動いたのは Grafana の読み取りだけでしたが、見守れなくなった後に何かが動いたかどうかは、私には確かめられていません。'
-        : '止めるまでに動いたのは Grafana の読み取りだけでした。'
-  return `ご主人さま、ごめんなさい。${jstTime(at)}（日本時間）に、現場の途中で戻ってきました。${why}います。途中までしか見られていないので、今回はクラスタの様子を確かなものとしてお伝えできません。${changed}`
+        ? '見守れていた間に動いたのは Grafana の読み取りだけでしたが、その後に何かが動いたかどうかは、わたしの方で確かめられていません。'
+        : 'なお、止めるまでに動いたのは Grafana の読み取りだけでした。'
+  return `ご主人さま、ごめんなさい。${jstTime(at)}（日本時間）に、現場の確認を途中で切り上げて戻りました。${why}途中までしか見られていないので、今回はクラスタの様子を確かなものとしてお伝えできません。${changed}`
 }
 
 export function visitToolLabel(tool: string): string {
-  if (tool.includes('alert')) return '警告の一覧を見ています'
-  if (tool.includes('prometheus')) return '指標を見ています'
-  if (tool.includes('loki')) return '記録を見ています'
+  if (tool.includes('alert')) return 'アラート一覧を確認しています'
+  if (tool.includes('prometheus')) return '稼働指標を確認しています'
+  if (tool.includes('loki')) return 'ログを確認しています'
   if (tool.includes('dashboard')) return 'ダッシュボードを見ています'
-  if (tool.includes('search')) return '探しています'
-  if (tool.includes('datasource')) return 'データの出どころを確かめています'
-  if (tool.includes('annotation')) return '注記を見ています'
-  return '調べています'
+  if (tool.includes('search')) return '関連する画面を探しています'
+  if (tool.includes('datasource')) return 'データソースを確認しています'
+  if (tool.includes('annotation')) return 'メモ・注記を確認しています'
+  return '自宅クラスタを調べています'
 }
