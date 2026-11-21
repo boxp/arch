@@ -1,6 +1,7 @@
 import { must } from '../must'
 import { renderMarkdown } from './markdown'
 import { atBottom } from './scroll'
+import { choiceButtonText, extractChoices } from './choices'
 export type Item = {
   eventId: string
   source: string
@@ -55,6 +56,14 @@ export const sourceLabel = (source: string) =>
         : source
 export const replyText = (i: Pick<Item, 'title' | 'ticketId'>, kind: 'choice' | 'text', value: string) =>
   `通知「${i.title}」${i.ticketId ? `（${i.ticketId}）` : ''}への${kind === 'choice' ? '選択' : '返信'}: ${value}`
+/** BOXP-646: 通知の選択肢ボタン。送る値は BFF が受け付ける記号（A など）のまま、表示だけ本文の説明を添える。 */
+export function noticeChoices(i: Pick<Item, 'choices' | 'body'>): { value: string; text: string }[] {
+  const labels = new Map((extractChoices(i.body) ?? []).map((c) => [c.value, c]))
+  return (i.choices ?? []).map((value) => ({
+    value,
+    text: choiceButtonText(labels.get(value) ?? { value, label: '' }),
+  }))
+}
 export const stateLabel = (i: Pick<Item, 'readAt' | 'handledAt'>) =>
   i.handledAt ? '処理済み' : i.readAt ? '既読' : '未読'
 export function formatReceived(value: string, now = Date.now()) {
@@ -352,10 +361,10 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
         }),
       )
     } else {
-      for (const choice of i.choices ?? [])
+      for (const choice of noticeChoices(i))
         detail.append(
-          button(choice, () => {
-            void sendReply('choice', choice)
+          button(choice.text, () => {
+            void sendReply('choice', choice.value)
           }),
         )
       const input = document.createElement('textarea')

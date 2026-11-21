@@ -19,7 +19,8 @@ import {
 } from './readfollow'
 import { chatEntries } from './chatlog'
 import { renderMarkdown, plainText } from './markdown'
-import { initInbox } from './inbox'
+import { initInbox, noticeChoices } from './inbox'
+import { type Choice, choiceButtonText, choiceMessage, extractChoices } from './choices'
 // BOXP-500: コハコの家（kohako-home）。Studio と同じ BFF・認証・Web 専用会話を使う全画面 UI。
 // 会話の送信・重複防止・停止・承認・追跡は Studio（src/studio/main.ts）と同じ規則。人格・判断・記憶は Hermes だけが持つ。
 import './style.css'
@@ -380,6 +381,14 @@ const chatlog = el('chatlog'),
 const chatFollower = createFollower(),
   bubbleFollower = createFollower()
 chatFollower.attach(chatlog)
+// BOXP-646: スマホ縦で会話ログの高さが変わった（カードが出て場面が変わる等）ときも、末尾を見ていたなら末尾へ合わせ直す。
+// 吹き出し末尾の選択肢ボタンが枠の外へ押し出されないようにする。利用者が遡って読んでいる間は動かさない。
+let chatlogHeight = 0
+new ResizeObserver(() => {
+  if (chatlog.clientHeight === chatlogHeight) return
+  chatlogHeight = chatlog.clientHeight
+  if (chatFollower.following() && !readingFollowsChat()) chatFollower.pin(chatlog)
+}).observe(chatlog)
 bubbleFollower.attach(bubble)
 function renderChat() {
   const bottom = chatFollower.following(),
@@ -439,6 +448,8 @@ function setBubble(text: string, touch = false) {
   // 吹き出しが別の内容に変わったら、前のお知らせの操作欄は閉じる（通知は受信箱に未読で残る）。
   el('notice-actions').hidden = true
   el('notice-status').textContent = ''
+  // BOXP-646: 返答の選択肢ボタンもその返答だけのもの。吹き出しが変わったら閉じ、前の返答へ誤って結び付けない。
+  clearReplyChoices()
   renderChat()
   if (bottom && !readingFollowsChat()) chatFollower.pin(chatlog)
   if (readingFollowsChat()) updateReading()
@@ -1526,6 +1537,7 @@ function deliver(text: string, views: View[] = [], id = '', quiet = false) {
   lastActivity = Date.now()
   reply.dataset.reply = '1'
   setBubble(text || '（返答の本文がありませんでした）')
+  showReplyChoices(text, id)
   if (!id || seen.markReply(id)) addHistory('コハコ', text, Date.now(), id)
   renderCards(cardsFromText(text), views)
   const spoken = plainText(text)
@@ -1719,7 +1731,7 @@ function tryDispatch(force: boolean) {
     show(state)
   })
 }
-function enqueue(text: string): boolean {
+function enqueue(text: string, fromComposer = true): boolean {
   const added = queue.add(text, Date.now())
   if (!added.ok) {
     queueNote.textContent = addErrorText[added.error]
@@ -1727,9 +1739,11 @@ function enqueue(text: string): boolean {
     return false
   }
   queueNote.textContent = ''
-  message.value = ''
-  message.style.height = ''
-  typingUntil = 0
+  if (fromComposer) {
+    message.value = ''
+    message.style.height = ''
+    typingUntil = 0
+  }
   show(state)
   return true
 }
@@ -1903,6 +1917,71 @@ el<HTMLFormElement>('form').addEventListener('submit', (event) => {
   message.style.height = ''
   void sendText(text, 'composer')
 })
+// ---- 返答の選択肢ボタン（BOXP-646） ----
+// 状態は要素の dataset に持つ（setBubble が初期化途中で呼ばれても参照できるよう、モジュール変数を使わない）。
+function clearReplyChoices() {
+  const box = el('reply-choices')
+  delete box.dataset.owner
+  box.hidden = true
+  box.replaceChildren()
+}
+/**
+ * 最新の返答に選択肢（A／B…）があれば、吹き出しの下にボタンを出す。押すと「A：説明」を通常の発言と同じ経路
+ * （受理未確認の確認・送信待ちを含む）で送る。押した時点でボタンを消して二重送信を防ぎ、自動で選ぶことはしない。
+ * 入力欄の下書きは消さない。返答が別のものに変わったら（setBubble）ボタンも消える。
+ */
+function showReplyChoices(text: string, id: string) {
+  clearReplyChoices()
+  const choices = extractChoices(text)
+  if (!choices) return
+  const owner = id || `local-${Date.now()}`,
+    box = el('reply-choices'),
+    bottom = chatFollower.following()
+  box.dataset.owner = owner
+  for (const choice of choices) {
+    const b = document.createElement('button')
+    b.type = 'button'
+    b.className = 'secondary'
+    b.textContent = choiceButtonText(choice)
+    b.title = choiceMessage(choice)
+    b.addEventListener('click', () => sendReplyChoice(choice, owner))
+    box.append(b)
+  }
+  box.hidden = false
+  // スマホ縦では吹き出しが会話ログの末尾にあるので、ボタンを足した分も末尾へ追従する（読んでいる途中なら動かさない）。
+  if (bottom && !readingFollowsChat()) chatFollower.pin(chatlog)
+}
+function sendReplyChoice(choice: Choice, owner: string) {
+  const box = el('reply-choices')
+  if (box.dataset.owner !== owner || box.hidden) return
+  if (touchActive || !enabled || recording || starting) {
+    el('notice-status').textContent = !enabled
+      ? '認証が切れているため送れません。再接続してから選んでください。'
+      : '今は送れません。少し待ってから選んでください。'
+    return
+  }
+  const text = choiceMessage(choice)
+  const action = submitAction({
+    hasUnconfirmed: !!unconfirmed,
+    queueing: queueing(),
+    confirmingBlocked: busy || dispatching || state === 'speaking',
+  })
+  if (action === 'send') {
+    clearReplyChoices()
+    void sendText(text, 'composer')
+    return
+  }
+  if (!enqueue(text, false)) return
+  clearReplyChoices()
+  if (action === 'enqueue-and-confirm' && unconfirmed) {
+    addHistory(
+      'お知らせ',
+      '受理未確認の前回メッセージを先に同じ受付番号で確認します（重複実行防止）。選んだ内容は送信待ちに積みました。',
+    )
+    const pending = unconfirmed
+    void sendText(pending.text, 'pending')
+  }
+}
 /**
  * 1 件の発言を送る。from: 'composer' は入力欄から、'pending' は受理未確認の控えの確認・再送、QueueItem は送信待ちの先頭。
  * 受理（202）されるまで履歴に「あなた」として出さない。受理されなかったと確定したら本文を元の場所（入力欄が空ならそこ、送信待ちなら先頭）へ戻す。
@@ -2937,16 +3016,15 @@ const inbox = initInbox(followRequest, {
         updateMessage()
       }
     }
-    if (item.choices?.length) for (const choice of item.choices) button(choice, () => void sendNotice('choice', choice))
-    else {
-      const input = document.createElement('textarea')
-      input.maxLength = 500
-      input.placeholder = '返信を入力'
-      box.append(input)
-      button('返信する', () => {
-        if (input.value.trim()) void sendNotice('text', input.value)
-      })
-    }
+    // BOXP-646: 受信箱（BOXP-568）と同じく、選択肢ボタンと自由文の返信を並べて出す。
+    for (const choice of noticeChoices(item)) button(choice.text, () => void sendNotice('choice', choice.value))
+    const input = document.createElement('textarea')
+    input.maxLength = 500
+    input.placeholder = '返信を入力'
+    box.append(input)
+    button('返信する', () => {
+      if (input.value.trim()) void sendNotice('text', input.value)
+    })
     button('受信箱で開く', () => {
       box.hidden = true
       updateMessage()
@@ -2991,6 +3069,7 @@ async function syncTranscript() {
         addHistory('コハコ', op.text, op.at, op.id)
         if (op.latest && !initial && !busy && state !== 'speaking' && state !== 'approval') {
           setBubble(op.text)
+          showReplyChoices(op.text, op.id)
           reply.dataset.reply = '1'
           lastReply = op.text
           renderCards(cardsFromText(op.text), op.views)

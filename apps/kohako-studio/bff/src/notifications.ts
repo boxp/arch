@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { atomic, load } from './storage.js'
 import { isRecord } from './untrusted.js'
+import { extractChoices } from './choices.js'
 export type PushStats = { subscriptions: number; sent: number; errors: number; removed: number }
 export type Item = {
   eventId: string
@@ -34,6 +35,9 @@ export type Item = {
   }
 }
 const string = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 && v.length <= max
+/** BOXP-646: 通知側が選択肢を付けていなくても、本文の選択肢（家の会話と同じ規則）を返信ボタンにする。表示用で、承認には使わない。 */
+export const choicesOf = (i: Pick<Item, 'choices' | 'body'>): string[] | undefined =>
+  i.choices ?? extractChoices(i.body)?.map((c) => c.value)
 /** ingest で受け付ける通知本体（受信側で付ける項目を除いた Item）。 */
 export type Payload = Pick<
   Item,
@@ -94,7 +98,12 @@ export async function createNotifications(
   return {
     flush: () => queue,
     list: () => {
-      const visible = items.filter((i) => i.source !== 'task-board')
+      const visible = items
+        .filter((i) => i.source !== 'task-board')
+        .map((i) => {
+          const choices = choicesOf(i)
+          return choices && !i.choices ? { ...i, choices } : i
+        })
       return { items: visible, unread: visible.filter((i) => !i.readAt).length }
     },
     status: (ids: string[]) =>
@@ -113,7 +122,13 @@ export async function createNotifications(
           await save()
           return { status: 'duplicate' as const }
         }
-        const item: Item = { ...x, receivedAt: new Date(now()).toISOString(), deliveries: 1 }
+        const choices = choicesOf(x)
+        const item: Item = {
+          ...x,
+          ...(choices ? { choices } : {}),
+          receivedAt: new Date(now()).toISOString(),
+          deliveries: 1,
+        }
         items.push(item)
         while (items.length > 500) {
           let idx = items.findIndex((i) => i.handledAt)
@@ -182,7 +197,7 @@ export async function createNotifications(
           (x.kind !== 'text' && x.kind !== 'choice') ||
           !string(x.value, 500) ||
           !x.value.trim() ||
-          (x.kind === 'choice' && !item.choices?.includes(x.value))
+          (x.kind === 'choice' && !choicesOf(item)?.includes(x.value))
         )
           return { error: 'invalid' }
         if (item.reply && item.reply.replyId !== x.replyId) return { error: 'already_replied' }
