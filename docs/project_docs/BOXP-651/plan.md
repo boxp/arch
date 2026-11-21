@@ -61,4 +61,12 @@
 - Renovate が PR 作成後の更新（rebase 等）で platform automerge を再度有効化し、かつ新しい CI run が起きない経路。
   rebase は新しい commit なので CI が再実行され、本修正の判定で再び無効化される想定だが、実観測はしていない。
 - `actions/download-artifact` の `run-id` 指定で前 attempt の artifact が取得できることは実運用で確認する（取得できない場合も block 側に倒れる）。
-- `skip:<target>` ラベル等で `skip_terraform=true` になった target は plan が実行されず exit code が出ないため、判定は block（自動 merge しない）になる。Renovate PR に人が skip ラベルを付けた場合は手動 merge が必要。
+- `skip:<target>` ラベル等で `skip_terraform=true` になった target は plan が実行されず exit code が出ないため、plan job 内で automerge を無効化し、判定も block（自動 merge しない）になる。Renovate PR に人が skip ラベルを付けた場合は手動 merge が必要。
+
+## 追加修正（codex review P1: skip_terraform の競合）
+
+- `skip_terraform=true` の target では plan が実行されず tfaction は automerge を無効化しない。必須 check の status-check は
+  test 成功後すぐ通過（skipped）するため、enable-auto-merge job が無効化する前に Renovate が有効化済みの automerge で merge され得た。
+- 対策: `wc-plan.yaml` の plan job 内で、Renovate PR かつ「plan step が success かつ `detailed_exitcode=0`」以外の target について
+  `gh pr merge --disable-auto` を実行する。plan job は test → status-check より前に完了するので、必須 check 通過前に無効化される。
+  enable-auto-merge job の判定（全 target が差分なしの時だけ有効化）はそのまま残す。
