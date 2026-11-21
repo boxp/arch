@@ -3,7 +3,7 @@
 # The annotated tag v0.23.1 records this index digest as dockerManifestDigest.
 # Do NOT drop the tag (a bare digest cannot be version-looked-up: "Updates: undefined")
 # and do NOT move to :latest / :stable (an unpinned moving tag).
-FROM docker.io/nousresearch/hermes-agent:v0.23.1@sha256:276d44685c65c0cb2a25f190b63c65c8906f9dc76486fb1c05ae71b5826bda08
+FROM docker.io/nousresearch/hermes-agent:v0.23.2@sha256:d6746a084e9341baada483e3d6210444d3c1aeb7c130f0915150065fb2851459
 
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.14
 ARG BABASHKA_VERSION=1.13.229
