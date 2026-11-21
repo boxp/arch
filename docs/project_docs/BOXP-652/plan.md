@@ -84,3 +84,27 @@ workflow から取り出した検査 step をそのまま手元で流した結�
 | `axiom cheat : False` と、それを使う定理を追加 | **失敗**（`anything depends on [cheat]`） |
 
 調べていないもの: 定理そのものを削る・主張を弱める変更（証明としては正しいので検査は通る。PR の review で見る範囲）。
+
+## merge 後の確認結果（実経路、2026-11-21）
+
+PR #15462 を merge した後（main `b5705ea5a`）、main の `test.yaml` に対して確認用 PR を 5 本作り、
+必須 check `status-check` と PR の merge 判定（`mergeStateStatus`）を見た。確認用 PR は merge せずに閉じ、branch も削除した。
+ruleset の変更・強制 merge はしていない。
+
+| PR | 中身 | `lock-model / lean` | `status-check` | merge 判定 | run |
+|---|---|---|---|---|---|
+| #15463 | `sweep` から「自分の lock は片付けない」を外した（証明が通らない） | 失敗 | **失敗** | **BLOCKED** | [44892700601](https://github.com/boxp/arch/actions/runs/44892700601) |
+| #15464 | `good_init` の証明を `sorry` に置き換え | 失敗（`good_init depends on [sorryAx]`） | **失敗** | **BLOCKED** | [44892707665](https://github.com/boxp/arch/actions/runs/44892707665) |
+| #15465 | モデルはそのまま、生成物の最後の 1 行を削った | 失敗（`cmp: EOF ... line 24206`） | **失敗** | **BLOCKED** | [44892713816](https://github.com/boxp/arch/actions/runs/44892713816) |
+| #15466 | モデルに注記を 1 行足しただけ（中身は同じ） | 成功 | skip（＝通過） | CLEAN | [44892720587](https://github.com/boxp/arch/actions/runs/44892720587) |
+| #15467 | 対象外の文書だけを変更 | skip | skip（＝通過） | CLEAN | [44892726335](https://github.com/boxp/arch/actions/runs/44892726335) |
+
+`status-check` は「needs のどれかが失敗したときだけ動いて失敗する」job なので、skip が通過にあたる（既存の作り）。
+
+BOXP-207 の hold: merge 後に `scripts/list-blocked-workflow-runs.sh` を流し、`apply.yaml`・`test.yaml` とも `latest=ran blocked=0`。
+
+確かめていないもの:
+
+- 失敗している PR に対して実際に merge 操作を試すこと（判定が BLOCKED であることまでを見た）。
+- 定理の削除・主張の弱体化（前述のとおり検査の対象外）。
+- #15463・#15464 では定理の検査が失敗すると生成物の不一致も併せて報告される。どちらが原因かは log の先頭側の報告で読む。
