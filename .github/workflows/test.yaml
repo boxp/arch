@@ -37,9 +37,12 @@ jobs:
           app_id: ${{secrets.APP_ID}}
           private_key: ${{secrets.APP_PRIVATE_KEY}}
           # pull_requests:write - Disable auto-merge
+          # contents:write - disablePullRequestAutoMerge is rejected with
+          #   "Resource not accessible by integration" without it (BOXP-651)
           permissions: >-
             {
-              "pull_requests": "write"
+              "pull_requests": "write",
+              "contents": "write"
             }
           repositories: >-
             ["${{github.event.repository.name}}"]
