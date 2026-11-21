@@ -9,6 +9,12 @@ on:
           Auto-merge is enabled only when every target was planned successfully with no changes.
         required: true
         type: string
+      upstream_ok:
+        description: |
+          "true" only when the test (plan) job succeeded and status-check did not fail.
+          Otherwise auto-merge is kept disabled (and disabled if Renovate enabled it).
+        required: true
+        type: string
     secrets:
       gh_app_id:
         required: true
@@ -45,6 +51,9 @@ jobs:
         with:
           pattern: tfaction-plan-result-*
           path: ${{runner.temp}}/tfaction-plan-results
+          # Each artifact contains <slug>.json. merge-multiple keeps the layout flat and
+          # identical whether one or many artifacts match the pattern.
+          merge-multiple: true
           run-id: ${{github.run_id}}
           github-token: ${{github.token}}
 
@@ -57,6 +66,7 @@ jobs:
         env:
           PLAN_TARGETS_JSON: ${{inputs.plan_targets}}
           PLAN_RESULTS_DIR: ${{runner.temp}}/tfaction-plan-results
+          UPSTREAM_OK: ${{inputs.upstream_ok}}
 
       - name: Generate token
         id: generate_token

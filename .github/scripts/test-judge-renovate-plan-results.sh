@@ -19,22 +19,21 @@ targets_two="[{\"target\":\"${t1}\",\"job_type\":\"terraform\"},{\"target\":\"${
 put_result() {
   local dir="$1" target="$2" outcome="$3" exitcode="$4"
   local slug="${target//\//__}"
-  mkdir -p "${dir}/tfaction-plan-result-${slug}"
   jq -n --arg target "$target" --arg outcome "$outcome" --arg exitcode "$exitcode" \
     '{target: $target, outcome: $outcome, detailed_exitcode: $exitcode}' \
-    >"${dir}/tfaction-plan-result-${slug}/result.json"
+    >"${dir}/${slug}.json"
 }
 
 new_dir() {
   mktemp -d "${work}/case.XXXXXX"
 }
 
-# expect NAME EXPECTED_DECISION TARGETS_JSON DIR
+# expect NAME EXPECTED_DECISION TARGETS_JSON DIR [UPSTREAM_OK]
 expect() {
-  local name="$1" expected="$2" targets="$3" dir="$4"
+  local name="$1" expected="$2" targets="$3" dir="$4" upstream="${5-true}"
   local out_file="${dir}.github_output" stdout actual
   : >"$out_file"
-  if ! stdout="$(PLAN_TARGETS_JSON="$targets" PLAN_RESULTS_DIR="$dir" GITHUB_OUTPUT="$out_file" bash "$judge" 2>&1)"; then
+  if ! stdout="$(UPSTREAM_OK="$upstream" PLAN_TARGETS_JSON="$targets" PLAN_RESULTS_DIR="$dir" GITHUB_OUTPUT="$out_file" bash "$judge" 2>&1)"; then
     echo "FAIL: ${name}: judge exited non-zero"
     printf '    %s\n' "$stdout"
     failures=$((failures + 1))
@@ -99,13 +98,12 @@ d="$(new_dir)"
 expect "result artifacts not downloaded" block "$targets_one" "$d"
 
 d="$(new_dir)"
-mkdir -p "${d}/tfaction-plan-result-${t1//\//__}"
-echo 'not json' >"${d}/tfaction-plan-result-${t1//\//__}/result.json"
+echo 'not json' >"${d}/${t1//\//__}.json"
 expect "result file is broken" block "$targets_one" "$d"
 
 d="$(new_dir)"
 put_result "$d" "$t2" success 0
-mv "${d}/tfaction-plan-result-${t2//\//__}" "${d}/tfaction-plan-result-${t1//\//__}"
+mv "${d}/${t2//\//__}.json" "${d}/${t1//\//__}.json"
 expect "result belongs to another target" block "$targets_one" "$d"
 
 d="$(new_dir)"
@@ -127,6 +125,19 @@ d="$(new_dir)"
 put_result "$d" "$t1" failure 1
 put_result "$d" "$t1" success 0
 expect "re-run: failure then no changes" enable "$targets_one" "$d"
+
+# test or status-check failed (the judge job now runs in that case too, so it
+# must keep auto-merge disabled even if a plan result says "no changes").
+d="$(new_dir)"
+put_result "$d" "$t1" success 0
+expect "test job failed, plan had no changes" block "$targets_one" "$d" false
+
+d="$(new_dir)"
+expect "test job failed, no targets" block "[]" "$d" false
+
+d="$(new_dir)"
+put_result "$d" "$t1" success 0
+expect "upstream state unknown" block "$targets_one" "$d" ""
 
 if [[ "$failures" -ne 0 ]]; then
   echo "${failures} test(s) failed"

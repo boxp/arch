@@ -21,6 +21,9 @@ jobs:
     # If all dependent jobs succeed or are skipped this job succeeds.
     # BOXP-651: auto-merge is enabled only when the tfaction plan of every target
     # in this run has no changes. See wc-enable-auto-merge.yaml.
+    # It also runs when test or status-check failed, so that it can keep
+    # auto-merge disabled (Renovate enables it when it creates the PR).
+    # status-check is the required check, so this job does not gate merging.
     uses: ./.github/workflows/wc-enable-auto-merge.yaml
     needs:
       - status-check
@@ -30,11 +33,12 @@ jobs:
       contents: read
     with:
       plan_targets: ${{needs.test.outputs.targets}}
+      upstream_ok: ${{needs.test.result == 'success' && needs.status-check.result != 'failure'}}
     secrets:
       gh_app_id: ${{secrets.APP_ID}}
       gh_app_private_key: ${{secrets.APP_PRIVATE_KEY}}
     if: |
-      ! failure() && ! cancelled() && github.event.pull_request.user.login == 'renovate[bot]' && contains(github.event.pull_request.body, ' **Automerge**: Enabled.')
+      ! cancelled() && github.event.pull_request.user.login == 'renovate[bot]' && contains(github.event.pull_request.body, ' **Automerge**: Enabled.')
 
   # This job is used for branch protection rule
   # Add this job to `Status checks that are required`

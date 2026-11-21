@@ -13,8 +13,10 @@
 #   PLAN_TARGETS_JSON  JSON array of tfaction targets (output of wc-setup).
 #                      Each element is an object with a `target` field.
 #   PLAN_RESULTS_DIR   Directory containing downloaded plan result artifacts:
-#                      ${PLAN_RESULTS_DIR}/tfaction-plan-result-<slug>/result.json
+#                      ${PLAN_RESULTS_DIR}/<slug>.json (downloaded with merge-multiple)
 #                      where <slug> is the target with "/" replaced by "__".
+#   UPSTREAM_OK        "true" only when the test (plan) job succeeded and
+#                      status-check did not fail. Anything else blocks.
 #   GITHUB_OUTPUT      Optional. `decision=enable|block` is appended to it.
 #
 # Output: prints the reasons and `decision=enable|block` to stdout.
@@ -32,6 +34,10 @@ block() {
   reasons+=("$1")
 }
 
+if [[ "${UPSTREAM_OK-}" != true ]]; then
+  block "test or status-check did not succeed in this run (UPSTREAM_OK=${UPSTREAM_OK:-<empty>})"
+fi
+
 if [[ -z "$targets_json" ]] || ! jq -e 'type == "array" and all(.[]; type == "object" and (.target | type) == "string" and .target != "")' <<<"$targets_json" >/dev/null 2>&1; then
   block "plan targets are unknown or malformed: ${targets_json:-<empty>}"
   targets=()
@@ -45,7 +51,7 @@ fi
 
 for target in "${targets[@]}"; do
   slug="${target//\//__}"
-  result_file="${results_dir}/tfaction-plan-result-${slug}/result.json"
+  result_file="${results_dir}/${slug}.json"
   if [[ ! -f "$result_file" ]]; then
     block "${target}: plan result is missing (plan did not finish or the result could not be downloaded)"
     continue

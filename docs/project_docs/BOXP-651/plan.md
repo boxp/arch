@@ -20,11 +20,13 @@
 
 1. `wc-plan.yaml`: plan step に `id: plan` を付け、target ごとに plan 結果
    `{target, outcome: steps.plan.outcome, detailed_exitcode}` を `if: always()` で記録し、
-   run artifact `tfaction-plan-result-<target の / を __ に置換>` として `overwrite: true` で upload する。
+   ファイル名 `<slug>.json`（slug = target の / を __ に置換）で run artifact `tfaction-plan-result-<slug>` として `overwrite: true` で upload する。
    再実行 attempt の結果は同名 artifact を上書きするので、判定は常に最新の plan 結果を見る。
 2. `wc-test.yaml`: setup の `targets` を reusable workflow の output として公開する。
 3. `test.yaml`: `enable-auto-merge` に `needs: test` を足し、`plan_targets` を渡す。権限は `actions: read`（artifact 取得）と `contents: read`（base branch の判定スクリプト checkout）だけ。
 4. `wc-enable-auto-merge.yaml`: `actions/download-artifact` を `run-id` 指定（REST API 経由）で使い、前 attempt の artifact も取得する。
+   `merge-multiple: true` で常に `<dir>/<slug>.json` に平坦に展開する（一致 artifact が1件だと名前付きサブディレクトリが作られない挙動への対策）。
+   job 条件は `! cancelled()` とし、test/status-check が失敗しても実行して `upstream_ok=false` で block → 既存 automerge を無効化する（必須 check は status-check のみなので merge 可否には影響しない）。
    `.github/scripts/judge-renovate-plan-results.sh` で判定し、
    - 全 target が `success` かつ `detailed_exitcode=0`（または target なし）→ 従来どおり `gh pr merge --auto`
    - 差分あり（2）、plan 失敗、skipped/cancelled、exit code 不明、結果欠落・破損・target 不一致、targets 不明 → **有効化しない**。
