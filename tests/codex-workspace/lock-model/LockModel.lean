@@ -85,7 +85,7 @@ def grant (s : St) (r : R) : St :=
 /-- 期限切れの lock を片付ける。自分の今の process の lock は片付けない。 -/
 def sweep (s : St) (r : R) : St :=
   match s.lock with
-  | some l => if stale s l ∧ ¬ mine s r l then { s with lock := none } else s
+  | some l => if stale s l then { s with lock := none } else s
   | none => s
 
 /-- owner `o` の印が保存期限を超えて古い。 -/
