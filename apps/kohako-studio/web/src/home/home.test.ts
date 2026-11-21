@@ -220,6 +220,13 @@ describe('home.html', () => {
       /body\[data-shape="portrait"\] \.clock-face,body\[data-shape="portrait"\] \.status-anchor\{display:none\}/,
     )
   })
+  it('縦表示の位置表示は hidden のとき表示指定を当てない (BOXP-648 TD-02)', () => {
+    const css = readFileSync('src/home/style.css', 'utf8')
+    expect(css).toMatch(/\[hidden\]\{display:none!important\}/)
+    for (const m of css.matchAll(/([^{}]*\.location-chip[^{}]*)\{[^}]*display:inline-grid/g)) {
+      expect(m[1]).toContain(':not([hidden])')
+    }
+  })
   it('必要な要素があり、インラインスクリプトがない', () => {
     const html = readFileSync('home.html', 'utf8')
     for (const id of [

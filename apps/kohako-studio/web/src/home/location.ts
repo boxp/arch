@@ -118,9 +118,24 @@ export function describe(enabled: boolean, fix: Fix | null, miss: LocationMiss |
 
 /** 入力欄の上に出す短い表示（共有中であることと鮮度だけ）。取れていない時は設定欄と同じ理由を出す。 */
 export function noteOf(fix: Fix | null, miss: LocationMiss | null, now: number): string {
-  if (fix && now - fix.capturedAt <= FRESH_MS)
-    return `📍 位置を共有中（${clock(fix.capturedAt)}取得・精度${meters(fix.accuracy)}${fix.accuracy > 1000 ? '・おおまか' : ''}${miss ? '・取り直し失敗' : ''}）`
+  // 取り直しに失敗して直前の位置を使っている時は、取得時刻つきで伝える理由まで全文を出す（describe）。
+  if (fix && !miss && now - fix.capturedAt <= FRESH_MS)
+    return `📍 位置を共有中（${clock(fix.capturedAt)}取得・精度${meters(fix.accuracy)}${fix.accuracy > 1000 ? '・おおまか' : ''}）`
   return `📍 ${describe(true, fix, miss, now)}`
+}
+
+/**
+ * BOXP-648 TD-02: 入力欄の横に出す小さな表示（📍 + label + warn なら ⚠）。共有中か・取れていないかだけを数文字で示し、
+ * 理由と対処（noteOf）は押したとき・title で出す。warn は「今の送信で現在地が伝わらない／取り直しに失敗した」状態。
+ * 縦画面ではボタン列を折り返させないよう入力欄と同じ行に置き、label は 📍 の下に小さく出す（style.css）。
+ */
+export function chipOf(fix: Fix | null, miss: LocationMiss | null, now: number): { label: string; warn: boolean } {
+  if (fix && now - fix.capturedAt <= FRESH_MS) return { label: clock(fix.capturedAt), warn: !!miss }
+  if (miss === 'denied') return { label: '未許可', warn: true }
+  if (miss === 'unsupported') return { label: '非対応', warn: true }
+  if (miss === 'timeout' || miss === 'unavailable') return { label: '取得失敗', warn: true }
+  if (fix || miss === 'stale') return { label: '古い位置', warn: true }
+  return { label: 'ON', warn: false }
 }
 
 /**
