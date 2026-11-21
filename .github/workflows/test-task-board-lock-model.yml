@@ -1,15 +1,31 @@
 name: Test Task Board Lock Model
 
-# BOXP-650: report-only check of the Lean model of the Task Board runner's ticket lock
+# BOXP-650 / BOXP-652: check of the Lean model of the Task Board runner's ticket lock
 # and planned shutdown (tests/codex-workspace/lock-model/). It checks the proofs and
-# that the committed operation sequences are what the model generates. It runs only
-# when the model or its generated file changes, is not a required check, and reports
-# a problem as a warning instead of failing.
+# that the committed operation sequences are what the model generates, and fails when
+# either does not hold.
+#
+# Merge gate (BOXP-652): test.yaml (pull_request_target) calls this workflow as the job
+# `lock-model` when a PR changes the model, its generated file, this file or test.yaml,
+# and the required check `status-check` needs that job. That run uses this file as it is
+# on the base branch, so a PR cannot turn the check off for itself.
+# The pull_request trigger below runs only when this file changes, to try the changed
+# definition before it is merged. It is not the required check.
+#
+# The Lean version and the archive checksum are read from the model directory
+# (lean-toolchain, lean-linux.tar.zst.sha256), not pinned here: the gate runs the base
+# branch's copy of this file against the PR's model, so a pin here would reject every
+# PR that upgrades Lean.
 
 on:
+  workflow_call:
+    inputs:
+      ref:
+        description: The ref to checkout
+        type: string
+        default: ""
   pull_request:
     paths:
-      - tests/codex-workspace/lock-model/**
       - .github/workflows/test-task-board-lock-model.yml
   workflow_dispatch: {}
 
@@ -21,28 +37,42 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      LEAN_VERSION: 4.36.0
-      LEAN_SHA256: 2b7ab1ed8b92d2e6abfaf41344823b510064dbc9c0260cac73eb496ab2dea6eb
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
+      # A step that times out fails the job. A job that reaches its own timeout is
+      # cancelled instead, and status-check (if: failure()) does not count a cancelled
+      # job, so every step has a limit that adds up to less than the job's.
       - name: Install Lean
+        timeout-minutes: 10
+        working-directory: tests/codex-workspace/lock-model
         run: |
-          set -eux
-          test "leanprover/lean4:v${LEAN_VERSION}" = "$(cat tests/codex-workspace/lock-model/lean-toolchain)"
+          set -euo pipefail
+          toolchain="$(cat lean-toolchain)"
+          sha256="$(cat lean-linux.tar.zst.sha256)"
+          if ! [[ "${toolchain}" =~ ^leanprover/lean4:v([0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?)$ ]]; then
+            echo "::error::lean-toolchain is not leanprover/lean4:vX.Y.Z"
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}"
+          if ! [[ "${sha256}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::lean-linux.tar.zst.sha256 is not a sha256"
+            exit 1
+          fi
           tmp="${RUNNER_TEMP}/lean"
           mkdir -p "${tmp}"
-          curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 900 -fsSL \
-            "https://github.com/leanprover/lean4/releases/download/v${LEAN_VERSION}/lean-${LEAN_VERSION}-linux.tar.zst" \
+          curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 500 -fsSL \
+            "https://github.com/leanprover/lean4/releases/download/v${version}/lean-${version}-linux.tar.zst" \
             -o "${tmp}/lean.tar.zst"
-          echo "${LEAN_SHA256}  ${tmp}/lean.tar.zst" | sha256sum -c -
+          echo "${sha256}  ${tmp}/lean.tar.zst" | sha256sum -c -
           tar --zstd -xf "${tmp}/lean.tar.zst" -C "${tmp}"
           rm "${tmp}/lean.tar.zst"
-          echo "${tmp}/lean-${LEAN_VERSION}-linux/bin" >>"${GITHUB_PATH}"
-      - name: Check proofs and generated sequences (report only)
+          echo "${tmp}/lean-${version}-linux/bin" >>"${GITHUB_PATH}"
+      - name: Check proofs and generated sequences
+        timeout-minutes: 15
         working-directory: tests/codex-workspace/lock-model
         run: |
           set -uo pipefail
@@ -52,15 +82,16 @@ jobs:
           time lean --run LockModel.lean cover 5 >"${RUNNER_TEMP}/lock-traces.txt" || drift=$?
           gzip -dc lock-traces.txt.gz | cmp "${RUNNER_TEMP}/lock-traces.txt" - || drift=1
           {
-            echo "### Lock model (BOXP-650, report only)"
+            echo "### Lock model (BOXP-650 / BOXP-652, required)"
             echo
             echo "- proofs: $([ "${proofs}" -eq 0 ] && echo ok || echo FAILED)"
             echo "- lock-traces.txt.gz is what the model generates: $([ "${drift}" -eq 0 ] && echo yes || echo NO)"
             echo "- sequences: $(gzip -dc lock-traces.txt.gz | wc -l)"
           } >>"${GITHUB_STEP_SUMMARY}"
           if [ "${proofs}" -ne 0 ]; then
-            echo "::warning::LockModel.lean does not check (report only)"
+            echo "::error::LockModel.lean does not check"
           fi
           if [ "${drift}" -ne 0 ]; then
-            echo "::warning::lock-traces.txt.gz differs from what LockModel.lean generates (report only): regenerate it as in tests/codex-workspace/lock-model/README.md"
+            echo "::error::lock-traces.txt.gz differs from what LockModel.lean generates: regenerate it as in tests/codex-workspace/lock-model/README.md"
           fi
+          [ "${proofs}" -eq 0 ] && [ "${drift}" -eq 0 ]

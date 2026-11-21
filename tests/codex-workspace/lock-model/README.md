@@ -4,11 +4,13 @@ Task Board runner の **ticket lock（取得・heartbeat・解放・期限切れ
 小さなモデルにし、そこから「操作の並びと、各操作後にこうなっているはず」を機械的に作って、runner の実際の関数に流して比べる。
 
 - 試行の結果と採否の評価: [docs/project_docs/BOXP-650/plan.md](../../../docs/project_docs/BOXP-650/plan.md)
-- 必須の CI ではない。普段のテストは Lean なしで動く（生成済みの手順 `lock-traces.txt.gz` を読むだけ）。
+- 定理の検査と「`lock-traces.txt.gz` がモデルから作り直したものと同じか」は **merge の必須条件**（BOXP-652。下の「merge の必須条件」）。
+- 手順の再生（`lock-trace`）は合否に影響しない CI のまま。普段のテストは Lean なしで動く（生成済みの手順 `lock-traces.txt.gz` を読むだけ）。
 
 | ファイル | 役割 | 要るもの |
 |---|---|---|
 | `LockModel.lean` | モデル（規則）、定理、手順の生成器 | Lean 4.36.0（`lean-toolchain`）。外部ライブラリなし |
+| `lean-linux.tar.zst.sha256` | CI が入れる Lean（`lean-<版>-linux.tar.zst`）の sha256。`lean-toolchain` と一緒に変える | なし |
 | `lock-traces.txt.gz` | 生成済みの手順を gzip で圧縮したもの。展開後の 1 行 = `操作列\|各操作後の期待` | なし（生成物。手で編集しない） |
 | `../task-board-lock-trace-test.bb` | 手順を runner の実関数に再生して比べる | bb だけ |
 
@@ -86,10 +88,26 @@ bb ../task-board-lock-trace-test.bb                   # 再生（約 25 秒、Le
 `cover N` は、初期状態から N-1 手以内で届く全ての状態について、そこからの 15 操作を 1 回ずつ通る手順の集合を出す。手順は最長 N 手で、N 手目で初めて届く状態はそこへ届くところまで
 （同じ状態へは最短の手順 1 本だけを伸ばす）。`full N` は N 手の全ての並び（15^N 本。比較用で、コミットしない）。
 出力は決定的で、同じモデルからは同じファイルになる。CI（`Test Task Board Lock Model`）は Lean を入れて
-定理の検査と「生成し直した結果がコミット済みファイルと同じか」を調べる。
+定理の検査と「生成し直した結果がコミット済みファイルと同じか」を調べ、どちらかが成り立たなければ失敗する。
+
+## merge の必須条件（BOXP-652）
+
+main の必須 check は `status-check`（`.github/workflows/test.yaml`、`pull_request_target`）だけなので、Lean の検査はそこへつないである。
+
+- `test.yaml` の job `lock-model` が `test-task-board-lock-model.yml` を呼び、`status-check` がその結果を待つ。
+  検査が失敗すると `status-check` が失敗し、merge できない。Task Board runner の PR gate も失敗した check があると通さない。
+- 動く条件（`wc-path-filter.yaml` の `lock-model`）: `tests/codex-workspace/lock-model/**`、`test-task-board-lock-model.yml`、
+  `wc-path-filter.yaml`、`test.yaml` のどれかを PR が変えたとき。それ以外の PR では job は skip され、`status-check` に影響しない。
+- 必須の検査は **base（main）側の workflow** で PR のモデルを調べる。PR の中で workflow を書き換えても、その PR の必須の検査は変わらない。
+  このため Lean の版と sha256 は workflow ではなく、このディレクトリの `lean-toolchain` と `lean-linux.tar.zst.sha256` から読む
+  （Lean を上げる PR は 2 つのファイルを一緒に変える）。
+- `test-task-board-lock-model.yml` 自体を変える PR では、変更後の定義を merge 前に試すために同じ検査が `pull_request` でも 1 回動く（こちらは必須 check ではない）。
+- runner の実装だけを変えた PR では Lean の検査は動かない（モデルも生成物も変わらないため）。実装とモデルの食い違いを見るのは手順の再生で、これは必須にしていない。
+- job が時間切れで cancel 扱いになると `status-check`（`if: failure()`）は失敗にならない。これを避けるため各 step に上限を置き、時間切れは step の失敗として数える。
 
 Lean の入手: <https://github.com/leanprover/lean4/releases/tag/v4.36.0>（展開後 約 3GB）。
-`elan` を使う場合は `lean-toolchain` が版を決める。
+`elan` を使う場合は `lean-toolchain` が版を決める。Lean の版を変えるときは `lean-toolchain` と、
+新しい `lean-<版>-linux.tar.zst` の sha256 を書いた `lean-linux.tar.zst.sha256` を同じ PR で変える。
 
 ## モデルや実装を変えるとき
 
