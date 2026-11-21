@@ -459,7 +459,8 @@ function updateMessage() {
   body.dataset.message = messageShown({
     scene: body.dataset.scene ?? 'relax',
     touch: bubble.classList.contains('touch'),
-    notice: !el('notice-actions').hidden,
+    // 通知の操作欄・返答の選択肢ボタン（BOXP-646）が出ている間は、くつろぎ中でも吹き出しを出したままにする。
+    notice: !el('notice-actions').hidden || !el('reply-choices').hidden,
   })
     ? '1'
     : '0'
@@ -1924,6 +1925,7 @@ function clearReplyChoices() {
   delete box.dataset.owner
   box.hidden = true
   box.replaceChildren()
+  updateMessage()
 }
 /**
  * 最新の返答に選択肢（A／B…）があれば、吹き出しの下にボタンを出す。押すと「A：説明」を通常の発言と同じ経路
@@ -1948,6 +1950,7 @@ function showReplyChoices(text: string, id: string) {
     box.append(b)
   }
   box.hidden = false
+  updateMessage()
   // スマホ縦では吹き出しが会話ログの末尾にあるので、ボタンを足した分も末尾へ追従する（読んでいる途中なら動かさない）。
   if (bottom && !readingFollowsChat()) chatFollower.pin(chatlog)
 }

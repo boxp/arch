@@ -161,7 +161,7 @@ body[data-shape="landscape"] .viewer iframe{height:min(300px,55vh)}
 
 #inbox-detail p { white-space: pre-wrap; }
 
-body[data-scene="relax"] .bubble:has(#notice-actions:not([hidden])){opacity:1;pointer-events:auto}
+body[data-scene="relax"] .bubble:has(#notice-actions:not([hidden])),body[data-scene="relax"] .bubble:has(#reply-choices:not([hidden])){opacity:1;pointer-events:auto}
 #reply-choices{white-space:normal;display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.4rem} #reply-choices button{max-width:100%;text-align:left;white-space:normal;overflow-wrap:anywhere} #notice-actions{white-space:normal} #notice-actions button{margin:.2rem} #notice-actions textarea{width:100%} #notice-status:empty{display:none}
 
 #inbox-list{max-height:45vh;overflow:auto;flex-shrink:0;overscroll-behavior:contain}

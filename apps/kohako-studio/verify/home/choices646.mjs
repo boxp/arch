@@ -155,6 +155,16 @@ for (const [device, viewport, mobile] of [['pc', { width: 1440, height: 900 }, f
     await page.waitForTimeout(1500)
     check('会話: 閉じた古いボタンからは送信しない', posts.length === base + 5, posts.map((p) => p.text))
     done(base + 4, 'はい。'); await idle()
+
+    // 5. くつろぎ（返答から約 60 秒）に入っても、未回答の選択肢ボタンは見えて押せる。
+    await send('最後の相談'); await wait(() => posts.length === base + 6, 'last post')
+    done(base + 5, CHAT_CHOICES); await choiceButtons().first().waitFor({ timeout: 15000 })
+    await wait(() => page.evaluate(() => document.body.dataset.scene === 'relax'), 'relax not reached', 90000)
+    await page.waitForTimeout(800)
+    check('くつろぎ中も選択肢ボタンが見えて押せる', (await reachable(choiceButtons())) && (await page.evaluate(() => getComputedStyle(document.getElementById('bubble')).opacity === '1')))
+    await page.screenshot({ path: path.join(out, `${device}-relax.png`) })
+    await choiceButtons().nth(1).click(); await wait(() => posts.length === base + 7, 'relax choice post')
+    check('くつろぎ中の選択も通常の発言で送信', posts[base + 6].text === '2：来週まで待つ', posts.map((p) => p.text))
   } catch (e) {
     checks.exception = { pass: false, evidence: e.message }; failures.push(`${device}: ${e.message}`)
     await page.screenshot({ path: path.join(out, `${device}-failure.png`) }).catch(() => {})
