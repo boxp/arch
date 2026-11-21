@@ -73,3 +73,5 @@ Web 45ファイル490テスト・typecheck・build・Biome・check-docs・構文
 初回の通常 build では指定に反して public の大アセットが dist に複製された。再ビルドは publicDir 無効で行い、作業後に生成された dist/kohako の複製を削除した。検証用コンテナと一時設定・リンクを削除した。
 
 親で契約子のexit0/completed・delegate verify成功を確認。親もWeb490テスト・型検査・Biomeを実行して成功。検証を短文/長文×PC/縦/横の6条件へ拡張し、スマホは外側touchscreen.tapで確認。計114検査（短文18/長文20×3画面）と外部通信0が成功。短文はrelax移行、長文はリンクの自動カード表示を含むshow場面での保持と閉鎖を確認。親が縦横短文の閉鎖後画像と長文の利用枠を目視。証跡 `/home/boxp/verification-artifacts/BOXP-647/dismiss-parent/`。独立review/CIゲート後のmerge・通常配備・配備版検証が残るためTD-01は未完了。
+
+通常読み上げ回帰も親でPC/Pixel7各9検査が成功（強調/追従/手動スクロール停止/追従再開/音声停止再開/終了、外部通信0）。証跡 `/home/boxp/verification-artifacts/BOXP-647/dismiss-readfollow-restored/`。初回のcode143に続き、追加した `--alsa-output-device=null` の環境では音声が早く終了して追従検査が失敗し、WAVを延ばしても失敗した。前runで成功した起動条件（network host、shm-size 1g、SwiftShader、autoplay許可、音声出力先の上書きなし）へ戻すと元のWAVで全成功。失敗結果はdismiss-readfollow/とdismiss-readfollow-longwav/に残す。実装に音声関連の補修は加えていない。
