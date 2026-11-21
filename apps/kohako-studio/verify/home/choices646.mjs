@@ -159,6 +159,8 @@ for (const [device, viewport, mobile] of [['pc', { width: 1440, height: 900 }, f
     // 5. くつろぎ（返答から約 60 秒）に入っても、未回答の選択肢ボタンは見えて押せる。
     await send('最後の相談'); await wait(() => posts.length === base + 6, 'last post')
     done(base + 5, CHAT_CHOICES); await choiceButtons().first().waitFor({ timeout: 15000 })
+    // 箇条書きの返答は結果カードも開く（場面が show のまま）ので、閉じてからくつろぎを待つ。
+    if (await page.locator('#cards-close').isVisible()) await page.locator('#cards-close').click()
     await wait(() => page.evaluate(() => document.body.dataset.scene === 'relax'), 'relax not reached', 90000)
     await page.waitForTimeout(800)
     check('くつろぎ中も選択肢ボタンが見えて押せる', (await reachable(choiceButtons())) && (await page.evaluate(() => getComputedStyle(document.getElementById('bubble')).opacity === '1')))
