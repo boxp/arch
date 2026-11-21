@@ -18,6 +18,7 @@ import {
   type Span,
 } from './readfollow'
 import { chatEntries } from './chatlog'
+import { TouchBubble } from './touch-bubble'
 import { renderMarkdown, plainText } from './markdown'
 import { initInbox, noticeChoices } from './inbox'
 import { type Choice, choiceButtonText, choiceMessage, extractChoices } from './choices'
@@ -432,14 +433,17 @@ function addHistory(who: Entry['who'], text: string, at = Date.now(), rid = '') 
   if (bottom) scroller.scrollTop = scroller.scrollHeight
   renderChat()
 }
+const touchBubble = new TouchBubble()
 let touchLineTimer = 0,
   bubbleText = ''
-function setBubble(text: string, touch = false) {
+function setBubble(text: string, touch = false, retained = false) {
   if (reading) clearReading()
   const bottom = chatFollower.following()
   clearTimeout(touchLineTimer)
   bubbleText = text
-  delete bubble.dataset.retained
+  if (!touch) touchBubble.clear()
+  if (retained) bubble.dataset.retained = '1'
+  else delete bubble.dataset.retained
   reply.replaceChildren(renderMarkdown(text))
   reply.classList.add('md')
   bubble.classList.toggle('touch', touch)
@@ -2359,12 +2363,12 @@ async function sendTouch() {
       const next = interpretRequest(result.data)
       if (next.state === 'done' && next.text) {
         if (touchSendable()) {
-          const before = bubbleText,
-            wasTouch = bubble.classList.contains('touch')
+          touchBubble.begin(bubbleText, bubble.dataset.retained === '1')
           setBubble(next.text, true)
           clearTimeout(touchLineTimer)
           touchLineTimer = window.setTimeout(() => {
-            if (bubble.classList.contains('touch')) setBubble(wasTouch ? '' : before)
+            const before = touchBubble.take()
+            if (before && bubble.classList.contains('touch')) setBubble(before.text, false, before.retained)
           }, 4500)
         }
         return
