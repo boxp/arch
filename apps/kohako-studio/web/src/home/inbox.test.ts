@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { sourceLabel, formatReceived, notificationParam, replyText, stateLabel, canVisitNotification } from './inbox'
+import {
+  sourceLabel,
+  formatReceived,
+  notificationParam,
+  replyText,
+  stateLabel,
+  canVisitNotification,
+  noticeChoices,
+} from './inbox'
 describe('受信箱の表示', () => {
   it('定期通知の送信元を表示する', () => {
     expect(sourceLabel('hermes-cron')).toBe('定期通知')
@@ -202,4 +210,15 @@ it('詳細キーは内容の変化を検出し、既読・処理済み・受信�
     { reply: { replyId: 'r', kind: 'text' as const, value: 'v', requestId: 'q', status: 'submitted' } },
   ])
     expect(detailKey({ ...item, ...change })).not.toBe(key)
+})
+describe('通知の選択肢ボタン（BOXP-646）', () => {
+  it('送る値は記号のまま、表示に本文の説明を添える', () => {
+    expect(noticeChoices({ choices: ['A', 'B'], body: '**A：実装へ進む／B：あとで決める**' })).toEqual([
+      { value: 'A', text: 'A：実装へ進む' },
+      { value: 'B', text: 'B：あとで決める' },
+    ])
+    // 本文に説明が見つからない古い選択肢はそのまま
+    expect(noticeChoices({ choices: ['はい'], body: '本文' })).toEqual([{ value: 'はい', text: 'はい' }])
+    expect(noticeChoices({ body: 'A) x\nB) y' })).toEqual([])
+  })
 })

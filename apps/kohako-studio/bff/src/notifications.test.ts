@@ -635,3 +635,53 @@ describe('notifications の操作対象と境界 (BOXP-613)', () => {
       })
     }))
 })
+describe('choices from the body (BOXP-646)', () => {
+  it('derives choices when the sender did not attach them, also for items stored before the change', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'inbox-')),
+      push = vi.fn(async () => ({}))
+    try {
+      const body = '次の判断です。\n**A：このおすすめで実装へ進む／B：監修結果を見てから決める**'
+      // 変更前に保存された選択肢なしの通知
+      await atomic(join(dir, 'notifications.json'), [
+        { ...payload, eventId: 'old-event-1', body, choices: undefined, receivedAt: payload.createdAt, deliveries: 1 },
+      ])
+      const store = await createNotifications(dir, push)
+      const { choices: _, ...noChoices } = payload
+      expect(await store.ingest({ ...noChoices, eventId: 'new-event-1', body })).toMatchObject({ status: 'stored' })
+      expect(await store.ingest({ ...noChoices, eventId: 'plain-event-1', body: '1. 手順\n2. 手順' })).toMatchObject({
+        status: 'stored',
+      })
+      const listed = Object.fromEntries(store.list().items.map((i) => [i.eventId, i.choices]))
+      expect(listed['old-event-1']).toEqual(['A', 'B'])
+      expect(listed['new-event-1']).toEqual(['A', 'B'])
+      expect(listed['plain-event-1']).toBeUndefined()
+      // 送り手が付けた選択肢はそのまま優先
+      await store.ingest({ ...payload, body })
+      expect(store.list().items.find((i) => i.eventId === payload.eventId)?.choices).toEqual(['はい'])
+      const submit = vi.fn(() => true)
+      expect(
+        (await store.reply('old-event-1', { replyId: 'reply-123456', kind: 'choice', value: 'C' }, submit)).error,
+      ).toBe('invalid')
+      expect(
+        (await store.reply('old-event-1', { replyId: 'reply-123456', kind: 'choice', value: 'A' }, submit)).status,
+      ).toBe('submitted')
+      expect(
+        (await store.reply('plain-event-1', { replyId: 'reply-654321', kind: 'choice', value: '1' }, submit)).error,
+      ).toBe('invalid')
+      expect(submit).toHaveBeenCalledTimes(1)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+  it('keeps the bff copy of the choice rules identical to the web copy', async () => {
+    const { readFile, access } = await import('node:fs/promises'),
+      web = new URL('../../web/src/home/choices.ts', import.meta.url)
+    const exists = await access(web).then(
+      () => true,
+      () => false,
+    )
+    // Docker の bff ビルドには web が無いので、リポジトリ上でのみ照合する。
+    if (!exists) return
+    expect(await readFile(new URL('./choices.ts', import.meta.url), 'utf8')).toBe(await readFile(web, 'utf8'))
+  })
+})
