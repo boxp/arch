@@ -90,6 +90,7 @@ jobs:
       - conftest-verify
       - disable-auto-merge
       - hide-comment
+      - lock-model
       - opa-fmt
       - renovate-config-validator
       - test
@@ -186,6 +187,20 @@ jobs:
     needs: path-filter
     if: |
       needs.path-filter.outputs.test-ansible == 'true'
+    permissions:
+      contents: read
+    with:
+      ref: ${{needs.path-filter.outputs.merge_commit_sha}}
+
+  lock-model:
+    # BOXP-652: proofs of the Task Board lock model and its generated operation
+    # sequences. status-check needs this job, so a failure blocks the merge. It is
+    # skipped (and status-check is not affected) when the PR changes none of the
+    # paths of the lock-model filter in wc-path-filter.yaml. No secret is passed.
+    uses: ./.github/workflows/test-task-board-lock-model.yml
+    needs: path-filter
+    if: |
+      needs.path-filter.outputs.lock-model == 'true'
     permissions:
       contents: read
     with:
