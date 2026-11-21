@@ -89,7 +89,8 @@ export function extractChoices(text: string): Choice[] | null {
         continue
       }
       // 同じ記号の再掲（「A）もう一度」など）は無視し、連番が飛んだら（G や 7 など）その組は使わない。
-      if (current.items.some((x) => x.value === t.value)) continue
+      // ただし 2 個以上そろった組のあとに先頭（A／1）が再び来たら、後続の新しい選択肢の組として読み直す（最後の組を使う）。
+      if (current.items.some((x) => x.value === t.value) && !(t.index === 1 && current.items.length >= 2)) continue
       if (t.index !== 1) {
         current.broken = true
         continue

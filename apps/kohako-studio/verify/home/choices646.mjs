@@ -71,6 +71,7 @@ for (const [device, viewport, mobile] of [['pc', { width: 1440, height: 900 }, f
       if (m[2] === 'announced') item.announcedAt = new Date().toISOString()
       return json(200, { claimed: m[2] === 'announcing' })
     }
+    if (p === 'attachments') return json(201, { attachmentId: 'a'.repeat(32), kind: 'text', name: 'memo.txt', size: 6, truncated: false })
     if (p === 'messages') { const data = req.postDataJSON(); posts.push(data); states.set(data.requestId, { status: 'pending' }); return json(202, { status: 'accepted' }) }
     if (p === 'approvals') { approvals.push(req.postDataJSON()); return json(202, {}) }
     const r = p.match(/^requests\/([^/]+)$/)
@@ -130,11 +131,15 @@ for (const [device, viewport, mobile] of [['pc', { width: 1440, height: 900 }, f
     check('会話: ボタンが画面内で押せる（覆われていない）', await inViewport(choiceButtons()) && (await reachable(choiceButtons())))
     await page.screenshot({ path: path.join(out, `${device}-chat.png`) })
     await page.locator('#message').fill('下書き')
+    // 下書きの添付は選択内容と一緒に送らず、添付欄に残す。
+    await page.setInputFiles('#attachment-file', { name: 'memo.txt', mimeType: 'text/plain', buffer: Buffer.from('memo\n') })
+    await page.locator('#attachment-chips', { hasText: 'memo.txt' }).waitFor({ timeout: 5000 })
     await choiceButtons().first().evaluate((b) => { b.click(); b.click(); b.click() })
     await wait(() => posts.length === base + 2, 'choice post', 20000)
     await page.waitForTimeout(2200)
     check('会話: 選択は通常の発言として一度だけ送信', posts.length === base + 2 && posts[base + 1].text === '1：いま更新する（おすすめ）', posts.map((p) => p.text))
     check('会話: 入力欄の下書きを保持', (await page.locator('#message').inputValue()) === '下書き')
+    check('会話: 下書きの添付は選択に混ぜず添付欄に残す', !posts[base + 1].attachments && (await page.locator('#attachment-chips', { hasText: 'memo.txt' }).count()) === 1, posts[base + 1])
     check('会話: 送信後はボタンを閉じる', (await choiceButtons().count()) === 0)
     check('会話: 承認 API は呼ばない', approvals.length === 0)
     done(base + 1, 'わかりました。いま更新しますね。')

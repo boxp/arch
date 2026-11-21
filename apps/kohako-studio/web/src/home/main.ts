@@ -1971,7 +1971,8 @@ function sendReplyChoice(choice: Choice, owner: string) {
   })
   if (action === 'send') {
     clearReplyChoices()
-    void sendText(text, 'composer')
+    // 下書きの添付は選択内容に混ぜない（'choice' は添付を付けずに送る）。
+    void sendText(text, 'choice')
     return
   }
   if (!enqueue(text, false)) return
@@ -1989,10 +1990,10 @@ function sendReplyChoice(choice: Choice, owner: string) {
  * 1 件の発言を送る。from: 'composer' は入力欄から、'pending' は受理未確認の控えの確認・再送、QueueItem は送信待ちの先頭。
  * 受理（202）されるまで履歴に「あなた」として出さない。受理されなかったと確定したら本文を元の場所（入力欄が空ならそこ、送信待ちなら先頭）へ戻す。
  */
-async function sendText(text: string, from: 'composer' | 'pending' | 'visit' | QueueItem): Promise<void> {
+async function sendText(text: string, from: 'composer' | 'choice' | 'pending' | 'visit' | QueueItem): Promise<void> {
   const giveBack = () => {
     if (typeof from === 'object') queue.putBack(from)
-    else if (from === 'composer') {
+    else if (from === 'composer' || from === 'choice') {
       if (!message.value.trim()) message.value = text
       else queue.putBack({ id: -Date.now(), text, addedAt: Date.now() })
     }
@@ -2048,7 +2049,7 @@ async function sendText(text: string, from: 'composer' | 'pending' | 'visit' | Q
     }
     if (decision === 'wait') {
       busy = false
-      if (from === 'composer') giveBack()
+      if (from === 'composer' || from === 'choice') giveBack()
       // 照会が 401/403（Access 期限切れのリダイレクトを含む）なら認証切れ。控えと送信待ちは残したまま、再認証用の再読み込みボタンへ切り替える。
       if (lookup && classifyFailure({ status: lookup.status }) === 'auth') {
         fail(lookup.status, lookup.data)

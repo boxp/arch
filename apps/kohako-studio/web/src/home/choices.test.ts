@@ -59,6 +59,10 @@ describe('extractChoices (BOXP-646)', () => {
   })
   it('最後の選択肢の組を使う', () => {
     expect(values('どれにする？\n1. 手順a\n2. 手順b\n\nA: 案a\nB: 案b')).toEqual(['A', 'B'])
+    expect(extractChoices('A: 最初\nB: 最初\n\nA: 後続\nB: 後続')?.map((x) => x.label)).toEqual(['後続', '後続'])
+    expect(extractChoices('A: 最初\nB: 最初\nC: 最初\n\nA: 後続\nB: 後続')?.map((x) => x.value)).toEqual(['A', 'B'])
+    // 組の途中の再掲は無視し、1 個だけの再掲で前の組を捨てない
+    expect(extractChoices('A: 案a\nB: 案b\n\nA）もう一度言うと案a')?.map((x) => x.label)).toEqual(['案a', '案b'])
   })
   it('ボタン文言は記号＋説明の先頭', () => {
     expect(choiceButtonText({ value: 'A', label: 'はい' })).toBe('A：はい')
