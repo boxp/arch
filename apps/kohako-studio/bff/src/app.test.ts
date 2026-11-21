@@ -12,6 +12,7 @@ import { generateKeyPairSync, sign } from 'node:crypto'
 import { createServer, type IncomingMessage } from 'node:http'
 import { createAuth } from './auth.js'
 import { createApp, instructions, ownerTaskInstructions, studioInstructions } from './app.js'
+import { locationInstructions } from './location.js'
 import type { createHermes } from './hermes.js'
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
 const jwt = () => {
@@ -895,7 +896,7 @@ it('returns cleaned replies and only valid views', async () => {
       expect(item.reply.views).toEqual(valid ? [{ kind: 'usage' }] : undefined)
     }
     // Studio（views 未指定）では view 形式を指示せず、本文もそのまま返す（ブロックを消して結果を失わない）。
-    expect(seen.at(-1)).toBe(instructions + ownerTaskInstructions)
+    expect(seen.at(-1)).toBe(instructions + locationInstructions(undefined, 0) + ownerTaskInstructions)
     output = '返答\n```kohako-view\n{"kind":"usage"}\n```'
     await fetch(`${base}messages`, {
       method: 'POST',
@@ -1217,7 +1218,9 @@ it('asks Hermes to register home-requested tickets only on owner text turns', as
         })
       await post({ requestId: `${principal}-text-1`, kind: 'text', text: 'これを票にして', views: true })
       await new Promise((r) => setTimeout(r, 10))
-      expect(seen.at(-1)).toBe(principal === 'owner' ? instructions + ownerTaskInstructions : instructions)
+      expect(seen.at(-1)).toBe(
+        instructions + locationInstructions(undefined, 0) + (principal === 'owner' ? ownerTaskInstructions : ''),
+      )
       await post({ requestId: `${principal}-touch-1`, kind: 'touch', touch: { zone: 'head', action: 'pat', count: 1 } })
       await new Promise((r) => setTimeout(r, 10))
       expect(seen.at(-1)).toBe(instructions)
