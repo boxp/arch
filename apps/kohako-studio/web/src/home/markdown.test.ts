@@ -200,12 +200,12 @@ describe('renderMarkdown の DOM 出力', () => {
     expect(image.hidden).toBe(true)
     expect(wrap.children[1].tag).toBe('span')
     expect(wrap.children[1].textContent).toBe(
-      '画像を表示できません（和装）。削除・移動・対応形式・認証を確認してください。',
+      '画像を表示できません（和装）。ファイルの移動・削除、対応形式、認証を確認してください。',
     )
     const unnamed = render('![](kohako-vault:b.png)').children[0].children[0]
     unnamed.children[0].children[0].listeners.error()
     expect(unnamed.children[1].textContent).toBe(
-      '画像を表示できません（vault画像）。削除・移動・対応形式・認証を確認してください。',
+      '画像を表示できません（添付画像）。ファイルの移動・削除、対応形式、認証を確認してください。',
     )
   })
 

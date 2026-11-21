@@ -172,7 +172,7 @@ export function createDictation(deps: {
         (result.status === 200 && (typeof result.data?.text !== 'string' || !result.data.text.trim()))
       )
         deps.onError('音声を認識できませんでした。')
-      else if (result.status === 413) deps.onError('録音が長すぎます。')
+      else if (result.status === 413) deps.onError('録音が長すぎます（最大30秒までです）。')
       else if (result.status !== 200) deps.onError('音声認識に接続できませんでした。もう一度お試しください。')
       else deps.onText((must(result.data).text as string).trim())
     } catch {

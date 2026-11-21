@@ -173,7 +173,7 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
         return false
       }
       if (result.data.status !== 'submitted') {
-        status.textContent = `受付番号: ${result.data.requestId}（送信できませんでした。同じ返信を再試行できます）`
+        status.textContent = `返信を送信できませんでした。同じ返信を再試行できます（受付番号: ${result.data.requestId}）。`
         return false
       }
       await call(`notifications/${encodeURIComponent(i.eventId)}/read`, 'POST')
@@ -181,7 +181,7 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
       if (follow(result.data.requestId, replyText(i, kind, value))) panel.hidden = true
       else
         notice =
-          status.textContent = `返信は受付済みです（受付番号: ${result.data.requestId}）。会話が終わってから受信箱で「会話で続きを見る」を押してください。`
+          status.textContent = `返信を受け付けました。いまの会話が終わってから、受信箱の「会話で続きを見る」を押してください（受付番号: ${result.data.requestId}）。`
       await refresh()
       return true
     } catch {
@@ -294,7 +294,7 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
     const i = items.find((x) => x.eventId === selected)
     const key = i ? detailKey(i) : null
     const meta = i
-      ? `${sourceLabel(i.source)} ${i.ticketId ?? ''} ${i.eventId} ${formatReceived(i.receivedAt)} ${stateLabel(i)}`
+      ? `${sourceLabel(i.source)} ${i.ticketId ?? ''}・${formatReceived(i.receivedAt)}・${stateLabel(i)}・ID: ${i.eventId}`
       : ''
     if (i && key === renderedKey && !notice) {
       const row = detail.querySelector('.detail-meta')
@@ -334,7 +334,7 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
       )
     if (i.reply && i.reply.status === 'submitted') {
       const r = i.reply
-      line(detail, `返信済み。受付番号: ${r.requestId}`)
+      line(detail, `返信済みです（受付番号: ${r.requestId}）。`)
       detail.append(
         button('会話で続きを見る', () => {
           void sendReply(r.kind, r.value)
@@ -344,7 +344,7 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
       const r = i.reply
       line(
         detail,
-        `「${r.value}」の送信を確認できませんでした（受付番号: ${r.requestId}）。同じ受付番号で再送できます。`,
+        `「${r.value}」の送信を確認できませんでした。同じ受付番号のまま再送できます（受付番号: ${r.requestId}）。`,
       )
       detail.append(
         button('同じ返信を再送', () => {
@@ -409,7 +409,8 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
           return
         }
         if ((await Notification.requestPermission()) !== 'granted') {
-          message.textContent = '通知は許可されていません。受信箱とTelegramで確認できます'
+          message.textContent =
+            '通知が許可されていません。ブラウザのサイト設定から許可できます（未設定の間も受信箱とTelegramで確認できます）。'
           return
         }
         const key = await call('push/key')
@@ -427,9 +428,9 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
           (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: bytes }))
         const result = await call('push/subscriptions', 'POST', sub.toJSON())
         if (result.status !== 201) throw Error()
-        message.textContent = 'この端末の通知を有効にしました。'
+        message.textContent = 'この端末の通知をONにしました。'
       } catch {
-        message.textContent = '通知を設定できませんでした。'
+        message.textContent = 'この端末の通知をONにできませんでした。'
       }
     })()
   })
@@ -445,7 +446,7 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
         }
         message.textContent = 'この端末の通知をOFFにしました。'
       } catch {
-        message.textContent = '通知をOFFにできませんでした。'
+        message.textContent = 'この端末の通知をOFFにできませんでした。'
       }
     })()
   })

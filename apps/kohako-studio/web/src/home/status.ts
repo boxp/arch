@@ -40,7 +40,7 @@ export function formatPercent(v: number | null | undefined): string {
 }
 export function relativeTime(s: string, now = Date.now()) {
   const ms = new Date(s).getTime() - now
-  if (ms <= 0) return '経過'
+  if (ms <= 0) return 'リセット時刻経過'
   const hours = Math.ceil(ms / 3600000)
   return hours >= 24 ? `あと${Math.ceil(hours / 24)}日` : `あと${hours}時間`
 }
@@ -57,10 +57,10 @@ export function formatPool(pool: Pool, now = Date.now()): string {
   ].join(' ')
 }
 export function formatTasks(tasks: Tasks): string {
-  if (tasks.state !== 'ok') return '進行中 取得できません'
+  if (tasks.state !== 'ok') return '進行中タスク：取得できません'
   const t = tasks.inProgress,
     detail = t.byAgent.map((x) => `${x.agent} ${x.count}`).join('・')
-  return `進行中 ${t.total}件${t.complete ? '' : '以上（全件は不明）'}${detail ? `（${detail}）` : ''}${t.conflicts.length ? '・整合不明あり' : ''}`
+  return `進行中 ${t.total}件${t.complete ? '' : '以上（全件は不明）'}${detail ? `（${detail}）` : ''}${t.conflicts.length ? '・件数に不整合あり' : ''}`
 }
 export function summaryLine(status: Status): string {
   // 共有範囲の異なる複数の群（Antigravity の Gemini / Claude+GPT / Argon など）は、どれか一つでも上限に近ければ
@@ -128,7 +128,7 @@ export function taskBadgeOf(tasks?: Tasks) {
   return {
     total: t.total,
     suffix: t.complete ? '' : '以上',
-    stateText: t.conflicts.length ? '整合不明' : '',
+    stateText: t.conflicts.length ? '件数に不整合あり' : '',
     agents: t.byAgent,
   }
 }

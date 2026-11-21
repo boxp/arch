@@ -244,7 +244,7 @@ export function renderMarkdown(src: string, doc: Document = document): DocumentF
           () => {
             image.hidden = true
             const error = doc.createElement('span')
-            error.textContent = `画像を表示できません（${n.text || 'vault画像'}）。削除・移動・対応形式・認証を確認してください。`
+            error.textContent = `画像を表示できません（${n.text || '添付画像'}）。ファイルの移動・削除、対応形式、認証を確認してください。`
             wrap.append(error)
           },
           { once: true },

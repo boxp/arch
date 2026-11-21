@@ -279,3 +279,6 @@ body[data-shape="pc"][data-scene="show"] .bubble{left:22%;width:28%}
 body[data-shape="pc"]:not([data-scene="relax"]) .bubble{max-height:calc(95cqh - var(--status-h,0px) - 14px)}
 body[data-shape="pc"][data-scene="show"] .cards{max-height:calc(95cqh - var(--status-h,0px) - 14px)}
 }
+/* BOXP-645: 長い送信・録音ラベルでも縦画面の入力欄をつぶさない。 */
+body[data-shape="portrait"] .bar textarea{flex:1 0 100%;order:1}
+body[data-shape="portrait"] .bar>button{order:2}

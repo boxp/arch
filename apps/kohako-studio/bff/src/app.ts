@@ -461,7 +461,7 @@ export function createApp(opts: {
         input = {
           kind: 'text',
           requestId: x.requestId,
-          text: '現場へ：自宅クラスタ',
+          text: '自宅クラスタを見てきて',
           expiresAt: x.expiresAt,
           visit: true,
         }

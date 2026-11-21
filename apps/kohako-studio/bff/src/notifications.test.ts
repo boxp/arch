@@ -338,8 +338,8 @@ it('伏字と本文の短縮、空本文と minimal を扱う', async () => {
   expect(result.body).toBe('URL (リンク) パス (パス) (パス) token (省略) mail (メール) 次')
   expect(summarizePush({ ...item, body: 'あ'.repeat(121) }).body).toBe(`${'あ'.repeat(119)}…`)
   expect(summarizePush({ ...item, body: '**BOXP-1 完了**\n# 結果\n`ok`' }).body).toBe('BOXP-1 完了 結果 ok')
-  expect(summarizePush({ ...item, body: '  ' }).body).toBe('完了しました')
-  expect(summarizePush({ ...item, body: '', eventType: 'unknown' }).body).toBe('新しいお知らせがあります')
+  expect(summarizePush({ ...item, body: '  ' }).body).toBe('作業が完了しました')
+  expect(summarizePush({ ...item, body: '', eventType: 'unknown' }).body).toBe('新しいお知らせが届いています')
   // タイトルもロック画面に出るため伏字にする
   expect(
     summarizePush({
@@ -348,7 +348,7 @@ it('伏字と本文の短縮、空本文と minimal を扱う', async () => {
     }).title,
   ).toBe('BOXP-1: (リンク) を (メール) へ (パス) (省略)')
   expect(summarizePush({ ...item, title: '**' }).title).toBe('コハコ')
-  expect(summarizePush(item, true)).toEqual({ title: 'コハコ', body: 'コハコからお知らせがあります' })
+  expect(summarizePush(item, true)).toEqual({ title: 'コハコの家', body: '新しいお知らせが届いています' })
   // ハイフン等で区切った各部分が短くても、連続した英数字・記号列が20文字以上なら伏せる
   expect(
     summarizePush({ ...item, body: 'token abc-def-ghi-jkl-mno-pqr-stu 次', title: 'BOXP-1: abc.def.ghi.jkl.mno.pqr' }),

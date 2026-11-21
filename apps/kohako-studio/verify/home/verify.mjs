@@ -199,7 +199,7 @@ try {
     await page.goto(LOCAL + '/kohako/studio.html', { waitUntil: 'load' }); await page.waitForFunction(() => window.__studioRig?.player, null, { timeout: 40000 })
     await page.waitForFunction(() => document.getElementById('connection').textContent === '接続中', null, { timeout: 20000 })
     await page.fill('#message', 'Studio の確認です。ひとことで返事をください。'); await page.click('#send')
-    await page.waitForFunction(() => /話しています|応答を表示中/.test(document.getElementById('state').textContent), null, { timeout: 240000 })
+    await page.waitForFunction(() => /話しています|返答を表示中/.test(document.getElementById('state').textContent), null, { timeout: 240000 })
     result.steps.studio = { reply: await page.textContent('#reply'), state: await page.textContent('#state'), errors: log.errors }; await page.screenshot({ path: OUT + '/studio.png' }); save(); await ctx.close()
   }
 } catch (e) { result.fatal = String(e.stack || e).slice(0, 1500); save() }

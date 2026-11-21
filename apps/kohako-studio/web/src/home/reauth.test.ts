@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { classifyFailure, parseReauth, serializeReauth, recentlyReloaded } from './reauth'
+import { classifyFailure, parseReauth, serializeReauth, recentlyReloaded, restoredNotice } from './reauth'
 
 describe('再認証の退避', () => {
   const now = 1_000_000,
@@ -34,5 +34,14 @@ describe('再認証の退避', () => {
     ])
       expect(parseReauth(JSON.stringify(value), now)).toBeNull()
     expect(parseReauth('{', now)).toBeNull()
+  })
+})
+
+describe('再認証後の復元案内', () => {
+  it('草稿と送信待ちの復元先を区別する', () => {
+    expect(restoredNotice(true, false, 0)).toBe('再認証前の入力を戻しました（まだ送信されていません）。')
+    expect(restoredNotice(false, false, 2)).toBe('再認証前の送信待ち 2 件を戻しました（まだ送信されていません）。')
+    expect(restoredNotice(true, false, 2)).toContain('入力と送信待ち 2 件')
+    expect(restoredNotice(true, true, 2)).toContain('先頭に戻しました。送信待ち 2 件も戻しました')
   })
 })
