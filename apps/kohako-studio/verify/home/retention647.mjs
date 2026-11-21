@@ -1,15 +1,11 @@
 // BOXP-647: 実時間で relax 後の返答保持を検証する。BFF はすべてモック。
 import { chromium } from 'playwright'
-import http from 'node:http'
+import { createStaticServer } from './retention647-static.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 const out = process.argv[2] || '/out', site = process.env.SITE || '/site', port = Number(process.env.PORT || 8847)
 fs.mkdirSync(out, { recursive: true })
-const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.wasm': 'application/wasm', '.svg': 'image/svg+xml' }
-const server = http.createServer((req, res) => {
-  const p = decodeURIComponent(new URL(req.url, 'http://localhost').pathname)
-  fs.readFile(path.join(site, p), (err, data) => { if (err) { res.writeHead(404); return res.end() } res.writeHead(200, { 'content-type': types[path.extname(p)] || 'application/octet-stream' }); res.end(data) })
-}).listen(port)
+const server = createStaticServer(site).listen(port, '127.0.0.1')
 const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] })
 const results = {}, failures = [], external = []
 const short = '短い返答です。', long = Array.from({ length: 45 }, (_, i) => `段落 ${i + 1}：いつでも読み返せる長い返答です。`).join('\n\n')
@@ -19,8 +15,8 @@ await Promise.all(['pc', 'mobile', 'landscape'].flatMap((device) => ['short', 'l
   let count = 0
   const check = (name, ok) => { checks[name] = !!ok; if (!ok) failures.push(`${label}: ${name}`) }
   page.on('pageerror', e => errors.push(e.message))
-  page.on('request', req => { if (new URL(req.url()).hostname !== 'localhost') external.push(req.url()) })
-  await page.route(/^https?:\/\/(?!localhost)/, route => route.abort())
+  page.on('request', req => { if (new URL(req.url()).hostname !== '127.0.0.1') external.push(req.url()) })
+  await page.route(/^https?:\/\/(?!127\.0\.0\.1(?::|\/))/, route => route.abort())
   await page.route('**/kohako/api/v1/**', async route => {
     const req = route.request(), p = new URL(req.url()).pathname.split('/v1/')[1], json = (status, data) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) })
     if (p === 'me') return json(200, { authenticated: true })
@@ -32,7 +28,7 @@ await Promise.all(['pc', 'mobile', 'landscape'].flatMap((device) => ['short', 'l
     return json(200, {})
   })
   try {
-    await page.goto(`http://localhost:${port}/kohako/home.html?acting=0&face=static&daypart=day`)
+    await page.goto(`http://127.0.0.1:${port}/kohako/home.html?acting=0&face=static&daypart=day`)
     await page.waitForFunction(() => !document.querySelector('#send').disabled, null, { timeout: 30000 })
     await page.locator('#speech').uncheck({ force: true })
     await page.locator('#message').fill('確認'); await page.locator('#send').click()
