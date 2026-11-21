@@ -70,3 +70,13 @@
 - 対策: `wc-plan.yaml` の plan job 内で、Renovate PR かつ「plan step が success かつ `detailed_exitcode=0`」以外の target について
   `gh pr merge --disable-auto` を実行する。plan job は test → status-check より前に完了するので、必須 check 通過前に無効化される。
   enable-auto-merge job の判定（全 target が差分なしの時だけ有効化）はそのまま残す。
+
+## 追加修正（codex review P1: 判定前 merge の競合）
+
+- Renovate が PR 作成時に automerge を有効化しているため、artifact の download 失敗や結果欠落で enable-auto-merge job が
+  block と判定する前に、必須 check の status-check 通過で PR が merge され得た。
+- 対策: `test.yaml` に `disable-auto-merge` job を追加し、Renovate PR の run 開始時に automerge を必ず無効化する。
+  status-check と enable-auto-merge はこの job を `needs` に持つので、無効化が終わるまで status-check は完了せず、
+  無効化に失敗すれば status-check が失敗して merge されない。automerge を再び有効化するのは、全 target が差分なしと
+  判定された enable-auto-merge job だけ（「先に止めて、確認できた時だけ有効化」）。
+- 通常経路: 差分なしの Renovate PR は enable job で有効化され、必須 check 通過済みなら即 merge される。
