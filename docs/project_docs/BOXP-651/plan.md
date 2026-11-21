@@ -2,7 +2,7 @@
 
 ## 背景（修正前の再現）
 
-- tfaction v2.1.0 の plan action は、Renovate PR（`auto_apps.logins`）で `terraform plan` に差分があると
+- tfaction の plan action（v2.1.0 で調査、rebase 後の v2.3.5 でも `detailed_exitcode` 出力と差分時の無効化処理が同じことを確認）は、Renovate PR（`auto_apps.logins`）で `terraform plan` に差分があると
   `disablePullRequestAutoMerge` を実行し、警告コメント（template `renovate-plan-change`）を投稿する。
 - しかし `test.yaml` の `enable-auto-merge` job（`wc-enable-auto-merge.yaml`）は `status-check` の成否だけを見て
   `gh pr merge --auto` を実行するため、同じ run の中で無効化が上書きされていた。
@@ -59,3 +59,4 @@
 - Renovate が PR 作成後の更新（rebase 等）で platform automerge を再度有効化し、かつ新しい CI run が起きない経路。
   rebase は新しい commit なので CI が再実行され、本修正の判定で再び無効化される想定だが、実観測はしていない。
 - `actions/download-artifact` の `run-id` 指定で前 attempt の artifact が取得できることは実運用で確認する（取得できない場合も block 側に倒れる）。
+- `skip:<target>` ラベル等で `skip_terraform=true` になった target は plan が実行されず exit code が出ないため、判定は block（自動 merge しない）になる。Renovate PR に人が skip ラベルを付けた場合は手動 merge が必要。
