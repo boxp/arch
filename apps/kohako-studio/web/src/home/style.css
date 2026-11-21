@@ -176,7 +176,8 @@ body[data-scene="relax"] .bubble:has(#notice-actions:not([hidden])),body[data-sc
 .bar.dictating #attach,.bar.dictating #send{display:none}#record{min-width:44px;white-space:nowrap}
 /* BOXP-648 TD-02: 位置の共有状態は入力欄横の小さなボタンにまとめ、詳しい理由は押したときだけ出す（会話・入力欄を圧迫しない）。 */
 .location-chip{padding:0 10px;font-size:.8125rem;white-space:nowrap;font-variant-numeric:tabular-nums}.location-chip.warn{background:#fff6e5;color:#8a4b00;border-color:#e3b25c}.location-note[hidden]{display:none}
-body[data-shape="portrait"] .bar>.location-chip{order:1;padding:0 8px;min-width:44px}body[data-shape="portrait"] .location-chip:not([hidden])~textarea{flex:1 1 calc(100% - 80px)}body[data-shape="portrait"] .location-chip .loc-label{display:none}
+/* 縦画面は入力欄と同じ行に置くため、📍(と⚠)の下に時刻・状態を小さく 2 段で出す（状態は常に見えるまま幅を抑える）。 */
+body[data-shape="portrait"] .bar>.location-chip{order:1;padding:0 6px;min-width:44px;display:inline-grid;grid-template-columns:auto auto;justify-content:center;align-content:center;line-height:1.1}body[data-shape="portrait"] .location-chip .loc-label{grid-column:1/-1;grid-row:2;font-size:.6875rem}body[data-shape="portrait"] .location-chip:not([hidden])~textarea{flex:1 1 calc(100% - 90px)}
 /* Owner-authenticated vault images remain within both bubble and history. */
 .vault-image{display:block;margin:.5rem 0}.vault-image img{display:block;max-width:100%;height:auto;max-height:65vh;object-fit:contain;border-radius:8px}.vault-image img[hidden]{display:none}
 

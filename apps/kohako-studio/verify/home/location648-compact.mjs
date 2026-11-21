@@ -26,7 +26,7 @@ for (const [name, viewport, mobile] of shapes) {
   const toggle = async on => { await page.locator('#settings-open').click(); const box = page.locator('#pref-location'); on ? await box.check() : await box.uncheck(); await page.waitForTimeout(500); await page.keyboard.press('Escape'); await page.waitForTimeout(300) }
   const layout = () => page.evaluate(() => { const r = s => document.querySelector(s).getBoundingClientRect(), f = document.querySelector('#form'), c = document.querySelector('#location-chip'), a = document.querySelector('#send')
     const h1 = f.getBoundingClientRect().height, was = c.hidden; c.hidden = true; const h0 = f.getBoundingClientRect().height; c.hidden = was
-    return { cost: h1 - h0, portrait: document.body.dataset.shape === 'portrait', bar: r('#form').height, text: r('#message').width, overflow: f.scrollWidth - f.clientWidth, chip: c.hidden ? null : { w: r('#location-chip').width, h: r('#location-chip').height, top: r('#location-chip').top, text: c.textContent, shown: c.innerText.replace(/\s/g, ''), warn: c.classList.contains('warn'), title: c.title, expanded: c.getAttribute('aria-expanded') }, send: { top: r('#send').top, h: r('#send').height }, noteShown: !document.querySelector('#location-note').hidden, noteText: document.querySelector('#location-note').textContent } })
+    return { cost: h1 - h0, portrait: document.body.dataset.shape === 'portrait', bar: r('#form').height, text: r('#message').width, overflow: f.scrollWidth - f.clientWidth, chip: c.hidden ? null : { w: r('#location-chip').width, h: r('#location-chip').height, top: r('#location-chip').top, text: c.textContent, shown: c.innerText.replace(/\s/g, ''), warn: c.classList.contains('warn'), title: c.title, expanded: c.getAttribute('aria-expanded'), labelVisible: (() => { const s = c.querySelector('.loc-label'), b = s?.getBoundingClientRect(); return !!b && b.width > 0 && b.height > 0 && getComputedStyle(s).display !== 'none' && b.right <= r('#location-chip').right + 0.5 })() }, send: { top: r('#send').top, h: r('#send').height }, noteShown: !document.querySelector('#location-note').hidden, noteText: document.querySelector('#location-note').textContent } })
   const tag = name
   try {
     await page.goto(`${origin}/kohako/home.html`); await page.waitForFunction(() => !document.querySelector('#send').disabled)
@@ -36,7 +36,7 @@ for (const [name, viewport, mobile] of shapes) {
     await toggle(true); await send('ここの近くの温泉は？')
     let l = await layout()
     log.push(`   ${tag}: base bar ${Math.round(base.bar)} text ${Math.round(base.text)} / on bar ${Math.round(l.bar)} text ${Math.round(l.text)} chip ${l.chip && Math.round(l.chip.w)}x${l.chip && Math.round(l.chip.h)}`)
-    check((l.portrait ? l.chip?.shown === '📍' : /^📍\d\d:\d\d$/.test(l.chip?.shown ?? '')) && !l.chip.warn, `${tag}: sharing shows short chip (${l.chip?.shown}${l.portrait ? ' / label hidden in portrait' : ''})`)
+    check(/^📍\d\d:\d\d$/.test(l.chip?.shown ?? '') && l.chip.labelVisible && !l.chip.warn, `${tag}: sharing shows short chip with time (${l.chip?.shown})`)
     check(l.cost <= 1, `${tag}: chip adds no row (cost ${l.cost})`)
     check(l.bar <= base.bar + 1, `${tag}: bar height not increased (${Math.round(base.bar)} -> ${Math.round(l.bar)})`)
     check(l.text >= base.text * 0.8, `${tag}: textarea keeps >=80% width (${Math.round(base.text)} -> ${Math.round(l.text)})`)
@@ -56,7 +56,7 @@ for (const [name, viewport, mobile] of shapes) {
     check(!l.noteShown && l.chip.expanded === 'false' && l.cost <= 1, `${tag}: tapping again closes it, chip adds no row (cost ${l.cost})`)
     await mode('denied'); await skew(3 * 60_000); const b = await send('今どこ？')
     l = await layout()
-    check(b?.location?.status === 'denied' && l.chip.shown === (l.portrait ? '📍⚠' : '📍未許可⚠') && l.chip.warn && l.cost <= 1 && l.chip.title.includes('許可されていません'), `${tag}: denied shown as warn chip (${l.chip.shown})`)
+    check(b?.location?.status === 'denied' && l.chip.shown === '📍未許可⚠' && l.chip.labelVisible && l.chip.warn && l.cost <= 1 && l.chip.title.includes('許可されていません'), `${tag}: denied shown as warn chip (${l.chip.shown})`)
     await page.screenshot({ path: `${out}/${name}-denied.png` })
     await toggle(false)
     l = await layout()

@@ -126,7 +126,7 @@ export function noteOf(fix: Fix | null, miss: LocationMiss | null, now: number):
 /**
  * BOXP-648 TD-02: 入力欄の横に出す小さな表示（📍 + label + warn なら ⚠）。共有中か・取れていないかだけを数文字で示し、
  * 理由と対処（noteOf）は押したとき・title で出す。warn は「今の送信で現在地が伝わらない／取り直しに失敗した」状態。
- * 縦画面ではボタン列を折り返させないよう label を隠し 📍（注意時は 📍⚠）だけにして入力欄と同じ行に置く（style.css）。
+ * 縦画面ではボタン列を折り返させないよう入力欄と同じ行に置き、label は 📍 の下に小さく出す（style.css）。
  */
 export function chipOf(fix: Fix | null, miss: LocationMiss | null, now: number): { label: string; warn: boolean } {
   if (fix && now - fix.capturedAt <= FRESH_MS) return { label: clock(fix.capturedAt), warn: !!miss }
