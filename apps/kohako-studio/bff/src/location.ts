@@ -62,7 +62,7 @@ const clock = (t: number) =>
 export function locationInstructions(loc: TurnLocation | undefined, now: number): string {
   if (loc?.status !== 'ok') {
     const reason = REASON[loc?.status ?? 'off']
-    return ` 現在地: この発言には有効な現在地がありません（${reason}）。以前の会話に出た場所や過去の位置を、今いる場所と断定しないでください。現在地が必要な話題では、家の設定「現在地をコハコに伝える」をONにするか場所を教えてほしいと伝えてください。`
+    return ` 現在地: この発言には有効な現在地がありません（${reason}）。以前の会話に出た場所や過去の位置を、今いる場所と断定しないでください。以前の返答で場所に触れていても、共有が今は無いこと（OFF・期限切れなど）だけを理由にその返答を誤りとして訂正・謝罪せず、「今の場所はわからない」と伝えてください（ご主人さまが内容の誤りを指摘した場合はその指摘に沿って対応してください）。現在地が必要な話題では、家の設定「現在地をコハコに伝える」をONにするか場所を教えてほしいと伝えてください。`
   }
   const minutes = Math.max(0, Math.floor((now - loc.capturedAt) / 60_000))
   const accuracy = Math.round(loc.accuracy)

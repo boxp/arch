@@ -60,6 +60,7 @@ describe('locationInstructions', () => {
       const text = locationInstructions({ status }, NOW)
       expect(text).toContain('有効な現在地がありません')
       expect(text).toContain('今いる場所と断定しないでください')
+      expect(text).toContain('だけを理由にその返答を誤りとして訂正・謝罪せず')
       expect(text).not.toMatch(/緯度|経度/)
     }
     expect(locationInstructions(undefined, NOW)).toBe(locationInstructions({ status: 'off' }, NOW))
