@@ -118,8 +118,9 @@ export function describe(enabled: boolean, fix: Fix | null, miss: LocationMiss |
 
 /** 入力欄の上に出す短い表示（共有中であることと鮮度だけ）。取れていない時は設定欄と同じ理由を出す。 */
 export function noteOf(fix: Fix | null, miss: LocationMiss | null, now: number): string {
-  if (fix && now - fix.capturedAt <= FRESH_MS)
-    return `📍 位置を共有中（${clock(fix.capturedAt)}取得・精度${meters(fix.accuracy)}${fix.accuracy > 1000 ? '・おおまか' : ''}${miss ? '・取り直し失敗' : ''}）`
+  // 取り直しに失敗して直前の位置を使っている時は、取得時刻つきで伝える理由まで全文を出す（describe）。
+  if (fix && !miss && now - fix.capturedAt <= FRESH_MS)
+    return `📍 位置を共有中（${clock(fix.capturedAt)}取得・精度${meters(fix.accuracy)}${fix.accuracy > 1000 ? '・おおまか' : ''}）`
   return `📍 ${describe(true, fix, miss, now)}`
 }
 

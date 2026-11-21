@@ -137,7 +137,7 @@ describe('TD-01 transient failures', () => {
     const next = { ...prev, capturedAt: NOW }
     expect(settle(prev, { fix: next, miss: 'unavailable' }, NOW)).toEqual({ fix: next, miss: null })
     expect(payloadOf(prev, 'timeout', NOW)).toEqual({ status: 'ok', ...prev })
-    expect(noteOf(prev, 'timeout', NOW)).toContain('取り直し失敗')
+    expect(noteOf(prev, 'timeout', NOW)).toContain('最新の取り直しに失敗したため、この位置を取得時刻つきで伝えます')
   })
 })
 
