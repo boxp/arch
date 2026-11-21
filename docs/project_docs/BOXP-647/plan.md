@@ -39,3 +39,7 @@ Web の `npm test` は44ファイル481テスト成功、`npm run typecheck`、`
 モック BFF と Chromium で PC 1440×900・縦 412×915・横 915×412 を確認。各画面で保持返答、連続ふれあい後の本文と保持の復元、復元後の実時間67秒待機後の relax 表示、一時表示中の新返答への切替を確認し全成功、外部通信0。連続ふれあいを表示期限内に試すため、送信の15秒間隔判定には `Date.now` を進めた。初回のブラウザ試行は会話中の操作、次の試行は検証スクリプトのメニュー開閉で失敗し、修正後に成功した。証跡は `/home/boxp/verification-artifacts/BOXP-647/p1-retry/`。実 API、実機 Safari、音声再生は未確認。
 
 今回の委譲は正常終了し、親で `delegate.py verify` の成功を確認した。親も関連7テスト・typecheck・Biome・差分検査に成功し、PC/縦スマホの復元画像を目視した。再現用の画面検証を `verify/home/retention647-touch.mjs` として保存（環境依存のパスを引数・環境変数に変更、`node --check` 成功）。リポジトリ全体の `trivy config .` は実行ファイルがなく未実施。既存PR15437を更新し、通常review/CIゲートをrunnerで再評価してからmerge・配備へ進む。
+
+## CI 説明ファイル修正
+
+CI の `check-docs.sh` は検証スクリプトと同名の専用説明ファイルを必須としている。既存 `retention647.md` 内にあったふれあい回帰の説明を `retention647-touch.md` に分離し、保存先と検証範囲も明記。実装・検証スクリプトの動作変更なし。専用ファイルの追加後、同じ `check-docs.sh` と `git diff --check` が成功した。
