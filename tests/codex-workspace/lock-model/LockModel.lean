@@ -3,6 +3,8 @@ import Std.Data.HashSet
 /-!
 # Task Board runner: ticket lock と計画停止・再起動の小さなモデル (BOXP-650)
 
+確認用の注記（BOXP-652）。モデルの中身は変えない。
+
 owner 2 つ (A・B)、チケット 1 件。規則の日本語での説明・定理との対応・実装との対応・
 省いたものは同じディレクトリの README.md にある。このファイルは Lean 本体だけを使う。
 
