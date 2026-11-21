@@ -439,6 +439,7 @@ function setBubble(text: string, touch = false) {
   const bottom = chatFollower.following()
   clearTimeout(touchLineTimer)
   bubbleText = text
+  delete bubble.dataset.retained
   reply.replaceChildren(renderMarkdown(text))
   reply.classList.add('md')
   bubble.classList.toggle('touch', touch)
@@ -459,6 +460,7 @@ function updateMessage() {
   body.dataset.message = messageShown({
     scene: body.dataset.scene ?? 'relax',
     touch: bubble.classList.contains('touch'),
+    retained: bubble.dataset.retained === '1',
     // 通知の操作欄・返答の選択肢ボタン（BOXP-646）が出ている間は、くつろぎ中でも吹き出しを出したままにする。
     notice: !el('notice-actions').hidden || !el('reply-choices').hidden,
   })
@@ -1538,6 +1540,9 @@ function deliver(text: string, views: View[] = [], id = '', quiet = false) {
   lastActivity = Date.now()
   reply.dataset.reply = '1'
   setBubble(text || '（返答の本文がありませんでした）')
+  const willSpeak = !quiet && speech.checked && !!text && (prefs.voice === 'kohaku' || !!speaker)
+  if (!willSpeak) bubble.dataset.retained = '1'
+  updateMessage()
   showReplyChoices(text, id)
   if (!id || seen.markReply(id)) addHistory('コハコ', text, Date.now(), id)
   renderCards(cardsFromText(text), views)
@@ -1546,7 +1551,7 @@ function deliver(text: string, views: View[] = [], id = '', quiet = false) {
   const first = views[0],
     firstButton = first && cardList.querySelector<HTMLButtonElement>('button[data-view]')
   if (!quiet && first && firstButton) openViewer(first, firstButton, false)
-  if (!quiet && speech.checked && text && (prefs.voice === 'kohaku' || speaker)) {
+  if (willSpeak) {
     speechChunks = splitVoiceSentences(splitSentences(spoken))
     speechNext = 0
     playReply()
