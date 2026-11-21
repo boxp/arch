@@ -62,7 +62,7 @@ import { applyPose, loadRig, type Player } from '../live2d/rig'
 import { ActingDirector, cueForSentence, type Emotion, splitSentences, type ActingStage } from '../live2d/acting'
 import { createActingStage } from '../live2d/gesture'
 import { createSentenceSpeaker, createSilentSentencer } from '../studio/acting-speech'
-import { SceneDirector, targetScene, messageShown, type Scene } from './scene'
+import { SceneDirector, targetScene, messageShown, canDismissReply, type Scene } from './scene'
 import { arrivalNote, arrivalPhase, LANDING_MS, type Arrival } from './arrival'
 import { cardsFromText, type Card } from './cards'
 import {
@@ -86,8 +86,10 @@ import {
   acquire,
   describe as describeLocation,
   isVisitText,
+  chipOf as locationChipOf,
   noteOf as locationNoteOf,
   payloadOf,
+  settle as settleLocation,
   REUSE_MS,
   type Fix,
   type LocationMiss,
@@ -213,7 +215,9 @@ applyPrefs()
 // ---- BOXP-648: 現在地の共有（本人が ON にした端末だけ・送信時に 1 回取得・このタブのメモリにだけ直近 1 件） ----
 const locationBox = el<HTMLInputElement>('pref-location'),
   locationStatus = el('location-status'),
-  locationNote = el('location-note')
+  locationNote = el('location-note'),
+  locationChip = el<HTMLButtonElement>('location-chip')
+let locationOpen = false
 let locationFix: Fix | null = null,
   locationMiss: LocationMiss | null = null,
   locationBusy: Promise<void> | null = null
@@ -221,23 +225,36 @@ function renderLocation() {
   locationBox.checked = prefs.location
   const text = describeLocation(prefs.location, locationFix, locationMiss, Date.now())
   locationStatus.textContent = text
-  locationNote.hidden = !prefs.location
-  locationNote.textContent = prefs.location ? locationNoteOf(locationFix, locationMiss, Date.now()) : ''
+  // TD-02: 入力欄の下には全文を出さず、入力欄横の小さな表示にする。全文は押したとき（と title）だけ。
+  const note = prefs.location ? locationNoteOf(locationFix, locationMiss, Date.now()) : ''
+  if (!prefs.location) locationOpen = false
+  const chip = locationChipOf(locationFix, locationMiss, Date.now())
+  locationChip.hidden = !prefs.location
+  locationChip.replaceChildren()
+  if (prefs.location) {
+    const label = document.createElement('span'),
+      warn = document.createElement('span')
+    label.className = 'loc-label'
+    label.textContent = chip.label
+    warn.className = 'loc-warn'
+    warn.textContent = chip.warn ? '⚠' : ''
+    locationChip.append('📍', label, warn)
+  }
+  locationChip.classList.toggle('warn', prefs.location && chip.warn)
+  locationChip.title = note
+  locationChip.setAttribute('aria-label', note ? `${note}（押すと詳しく表示）` : '')
+  locationChip.setAttribute('aria-expanded', String(locationOpen))
+  locationNote.hidden = !(prefs.location && locationOpen)
+  locationNote.textContent = locationOpen ? note : ''
 }
 /** 位置を取り直す（同時に 1 回だけ）。共有 OFF に切り替わった後に届いた結果は捨てる。 */
 function refreshLocation(): Promise<void> {
   if (locationBusy) return locationBusy
   locationBusy = acquire(navigator.geolocation, Date.now).then(({ fix, miss }) => {
     locationBusy = null
-    if (!prefs.location) return
-    if (fix) {
-      locationFix = fix
-      locationMiss = null
-    } else {
-      // 取り直しに失敗した時は古い位置を残さない（現在地と誤って伝えないため）。
-      locationFix = null
-      locationMiss = miss
-    }
+    if (!prefs.location)
+      return // 一時的な測位失敗では 10 分以内の直前の位置を取得時刻つきで使い続け、拒否・非対応・古い位置は残さない（現在地と誤って伝えないため）。
+    ;({ fix: locationFix, miss: locationMiss } = settleLocation(locationFix, { fix, miss }, Date.now()))
     renderLocation()
   })
   return locationBusy
@@ -275,10 +292,19 @@ locationBox.addEventListener('change', () => {
   // ON にした操作の直後に取得し、ブラウザの許可ダイアログを本人の操作に結び付けて出す。
   if (prefs.location) void refreshLocation()
 })
+// TD-02: 入力欄横の小さな表示を押すと、理由と対処の全文を入力欄の上に開閉する。
+locationChip.addEventListener('click', () => {
+  locationOpen = !locationOpen
+  renderLocation()
+})
 renderLocation()
 setInterval(() => {
   if (prefs.location && !document.hidden) renderLocation()
 }, 30_000)
+// BOXP-648 TD-01: 入力を始めた時点で取り始め、送信時に測位待ちで「現在地なし」になりにくくする（本人が画面を操作している間だけ）。
+message.addEventListener('focus', () => {
+  if (syncLocationPref() && (!locationFix || Date.now() - locationFix.capturedAt > REUSE_MS)) void refreshLocation()
+})
 
 // ---- 会話の状態（Studio と同じ） ----
 let voiceTrouble = false
@@ -517,7 +543,8 @@ function addHistory(who: Entry['who'], text: string, at = Date.now(), rid = '') 
 const touchBubble = new TouchBubble()
 let touchLineTimer = 0,
   bubbleText = ''
-function setBubble(text: string, touch = false, retained = false) {
+function setBubble(text: string, touch = false, retained = false, restoring = false) {
+  if (!touch && !restoring) delete bubble.dataset.dismissed
   if (reading) clearReading()
   const bottom = chatFollower.following()
   clearTimeout(touchLineTimer)
@@ -542,16 +569,32 @@ function setBubble(text: string, touch = false, retained = false) {
   updateMessage()
 }
 function updateMessage() {
-  body.dataset.message = messageShown({
-    scene: body.dataset.scene ?? 'relax',
-    touch: bubble.classList.contains('touch'),
-    retained: bubble.dataset.retained === '1',
-    // 通知の操作欄・返答の選択肢ボタン（BOXP-646）が出ている間は、くつろぎ中でも吹き出しを出したままにする。
-    notice: !el('notice-actions').hidden || !el('reply-choices').hidden,
-  })
-    ? '1'
-    : '0'
+  const dismissed =
+    bubble.dataset.dismissed === '1' && !bubble.classList.contains('touch') && canDismissReply(state, reading)
+  body.dataset.message =
+    !dismissed &&
+    messageShown({
+      scene: body.dataset.scene ?? 'relax',
+      touch: bubble.classList.contains('touch'),
+      retained: bubble.dataset.retained === '1',
+      // 通知の操作欄・返答の選択肢ボタン（BOXP-646）が出ている間は、くつろぎ中でも吹き出しを出したままにする。
+      notice: !el('notice-actions').hidden || !el('reply-choices').hidden,
+    })
+      ? '1'
+      : '0'
 }
+// 押し始めも吹き出しの外の場合だけ閉じる。内部からのドラッグ選択やスクロールは対象外。
+let outsideBubble = false
+document.addEventListener('pointerdown', (event) => {
+  outsideBubble = event.target instanceof Node && !bubble.contains(event.target)
+})
+document.addEventListener('click', (event) => {
+  if (!outsideBubble || !(event.target instanceof Node) || bubble.contains(event.target)) return
+  if (bubble.dataset.retained !== '1' || bubble.classList.contains('touch') || !canDismissReply(state, reading)) return
+  if (!el('notice-actions').hidden || window.getSelection()?.toString()) return
+  bubble.dataset.dismissed = '1'
+  updateMessage()
+})
 function renderCards(next: Card[], views: View[] = []) {
   cardsOpen = next.length > 0 || views.length > 0
   cardList.replaceChildren()
@@ -2471,7 +2514,7 @@ async function sendTouch() {
           clearTimeout(touchLineTimer)
           touchLineTimer = window.setTimeout(() => {
             const before = touchBubble.take()
-            if (before && bubble.classList.contains('touch')) setBubble(before.text, false, before.retained)
+            if (before && bubble.classList.contains('touch')) setBubble(before.text, false, before.retained, true)
           }, 4500)
         }
         return

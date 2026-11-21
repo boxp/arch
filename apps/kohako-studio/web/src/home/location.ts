@@ -36,10 +36,40 @@ export function payloadOf(fix: Fix | null, miss: LocationMiss, now: number): Loc
   return { status: 'ok', ...fix }
 }
 
+/** 高精度（GPS）で取れなかった時の、端末が持つ低精度の位置（Wi-Fi/基地局）での取り直しの待ち時間。 */
+export const COARSE_TIMEOUT_MS = 4000
+
 type Geo = Pick<Geolocation, 'getCurrentPosition'>
-/** 位置を 1 回だけ取得する（watchPosition は使わない）。失敗は理由として返し、例外にしない。 */
-export function acquire(geo: Geo | undefined, now: () => number): Promise<{ fix: Fix | null; miss: LocationMiss }> {
-  if (!geo) return Promise.resolve({ fix: null, miss: 'unsupported' })
+type Acquired = { fix: Fix | null; miss: LocationMiss }
+/**
+ * 位置を取得する（watchPosition は使わない）。失敗は理由として返し、例外にしない。
+ * BOXP-648 TD-01: 屋外・移動中のスマホは高精度測位が時間内に終わらないことがあるため、時間切れ・取得不可のときだけ
+ * 低精度（端末が直近 FRESH_MS 以内に得た位置も可）で 1 回取り直す。拒否・非対応は取り直さない。
+ */
+export async function acquire(geo: Geo | undefined, now: () => number): Promise<Acquired> {
+  if (!geo) return { fix: null, miss: 'unsupported' }
+  const precise = await attempt(geo, now, { enableHighAccuracy: true, maximumAge: REUSE_MS, timeout: TIMEOUT_MS })
+  if (precise.fix || (precise.miss !== 'timeout' && precise.miss !== 'unavailable')) return precise
+  const coarse = await attempt(geo, now, {
+    enableHighAccuracy: false,
+    maximumAge: FRESH_MS,
+    timeout: COARSE_TIMEOUT_MS,
+  })
+  return coarse.fix || coarse.miss === 'denied' ? coarse : precise
+}
+
+/**
+ * 取り直しの結果を直前の位置と合わせる。時間切れ・取得不可の一時的な失敗では、FRESH_MS 以内に取れた直前の位置を
+ * 取得時刻つきのまま使い続ける（1 回の測位失敗で「現在地なし」にしない）。拒否・非対応・古い位置は捨てる。
+ */
+export function settle(prev: Fix | null, got: Acquired, now: number): { fix: Fix | null; miss: LocationMiss | null } {
+  if (got.fix) return { fix: got.fix, miss: null }
+  const transient = got.miss === 'timeout' || got.miss === 'unavailable'
+  if (transient && prev && now - prev.capturedAt <= FRESH_MS) return { fix: prev, miss: got.miss }
+  return { fix: null, miss: got.miss }
+}
+
+function attempt(geo: Geo, now: () => number, options: PositionOptions): Promise<Acquired> {
   return new Promise((resolve) => {
     let done = false
     const finish = (v: { fix: Fix | null; miss: LocationMiss }) => {
@@ -49,7 +79,7 @@ export function acquire(geo: Geo | undefined, now: () => number): Promise<{ fix:
       resolve(v)
     }
     // 許可ダイアログが開いたまま放置されると timeout が効かないブラウザがあるため、送信を待たせすぎない上限を別に持つ。
-    const guard = setTimeout(() => finish({ fix: null, miss: 'timeout' }), TIMEOUT_MS + 2000)
+    const guard = setTimeout(() => finish({ fix: null, miss: 'timeout' }), (options.timeout ?? TIMEOUT_MS) + 2000)
     try {
       geo.getCurrentPosition(
         (p) => {
@@ -57,7 +87,7 @@ export function acquire(geo: Geo | undefined, now: () => number): Promise<{ fix:
           finish(fix ? { fix, miss: 'unavailable' } : { fix: null, miss: 'unavailable' })
         },
         (e) => finish({ fix: null, miss: missOf(e?.code) }),
-        { enableHighAccuracy: true, maximumAge: REUSE_MS, timeout: TIMEOUT_MS },
+        options,
       )
     } catch {
       finish({ fix: null, miss: 'unavailable' })
@@ -74,7 +104,7 @@ const meters = (m: number) => (m >= 1000 ? `約${round(m / 1000, 1)}km` : `約${
 export function describe(enabled: boolean, fix: Fix | null, miss: LocationMiss | null, now: number): string {
   if (!enabled) return '位置を共有していません。コハコには現在地を伝えません。'
   if (fix && now - fix.capturedAt <= FRESH_MS)
-    return `位置を共有中: ${clock(fix.capturedAt)}取得（${ago(now - fix.capturedAt)}）・精度${meters(fix.accuracy)}${fix.accuracy > 1000 ? '（おおまか）' : ''}。送信のたびに取り直します。`
+    return `位置を共有中: ${clock(fix.capturedAt)}取得（${ago(now - fix.capturedAt)}）・精度${meters(fix.accuracy)}${fix.accuracy > 1000 ? '（おおまか）' : ''}。${miss ? '最新の取り直しに失敗したため、この位置を取得時刻つきで伝えます。' : ''}送信のたびに取り直します。`
   if (miss === 'denied')
     return '位置の利用がブラウザで許可されていません。ブラウザ（またはOS）のサイト設定で位置情報を許可してください。許可されるまで現在地は伝えません。'
   if (miss === 'unsupported') return 'この端末・ブラウザでは位置情報を取得できません。現在地は伝えません。'
@@ -88,9 +118,24 @@ export function describe(enabled: boolean, fix: Fix | null, miss: LocationMiss |
 
 /** 入力欄の上に出す短い表示（共有中であることと鮮度だけ）。取れていない時は設定欄と同じ理由を出す。 */
 export function noteOf(fix: Fix | null, miss: LocationMiss | null, now: number): string {
-  if (fix && now - fix.capturedAt <= FRESH_MS)
+  // 取り直しに失敗して直前の位置を使っている時は、取得時刻つきで伝える理由まで全文を出す（describe）。
+  if (fix && !miss && now - fix.capturedAt <= FRESH_MS)
     return `📍 位置を共有中（${clock(fix.capturedAt)}取得・精度${meters(fix.accuracy)}${fix.accuracy > 1000 ? '・おおまか' : ''}）`
   return `📍 ${describe(true, fix, miss, now)}`
+}
+
+/**
+ * BOXP-648 TD-02: 入力欄の横に出す小さな表示（📍 + label + warn なら ⚠）。共有中か・取れていないかだけを数文字で示し、
+ * 理由と対処（noteOf）は押したとき・title で出す。warn は「今の送信で現在地が伝わらない／取り直しに失敗した」状態。
+ * 縦画面ではボタン列を折り返させないよう入力欄と同じ行に置き、label は 📍 の下に小さく出す（style.css）。
+ */
+export function chipOf(fix: Fix | null, miss: LocationMiss | null, now: number): { label: string; warn: boolean } {
+  if (fix && now - fix.capturedAt <= FRESH_MS) return { label: clock(fix.capturedAt), warn: !!miss }
+  if (miss === 'denied') return { label: '未許可', warn: true }
+  if (miss === 'unsupported') return { label: '非対応', warn: true }
+  if (miss === 'timeout' || miss === 'unavailable') return { label: '取得失敗', warn: true }
+  if (fix || miss === 'stale') return { label: '古い位置', warn: true }
+  return { label: 'ON', warn: false }
 }
 
 /**

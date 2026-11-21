@@ -197,6 +197,7 @@ jobs:
           TRIVY_IGNOREFILE: ${{ github.workspace }}/.trivyignore
 
       - uses: suzuki-shunsuke/tfaction@7e6ae7e4e2aa17f869f970f7fec8aa4b9de19138 # v2.3.5
+        id: plan
         with:
           action: plan
           github_token: ${{steps.generate_token.outputs.token}}
@@ -206,6 +207,63 @@ jobs:
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}} # For GitHub Provider and tfcmt and github-comment
           CLOUDFLARE_API_TOKEN: ${{secrets.gh_cloudflare_api_token}} # For cloudflare provider
+
+      # BOXP-651: Record this target's plan result for the enable-auto-merge job.
+      # tfaction disables auto-merge when a Renovate PR has plan changes, and the
+      # enable-auto-merge job must not enable it again. Record the result even
+      # when the plan failed or was skipped so that the result of a re-run
+      # overwrites the result of an earlier attempt.
+      - name: Record plan result for auto-merge decision
+        if: always() && github.event_name == 'pull_request_target'
+        id: plan_result
+        run: |
+          set -euo pipefail
+          slug="${TFACTION_TARGET//\//__}"
+          dir="${RUNNER_TEMP}/tfaction-plan-result"
+          mkdir -p "$dir"
+          jq -n --arg target "$TFACTION_TARGET" --arg outcome "$PLAN_OUTCOME" --arg exitcode "$PLAN_DETAILED_EXITCODE" \
+            '{target: $target, outcome: $outcome, detailed_exitcode: $exitcode}' > "${dir}/${slug}.json"
+          cat "${dir}/${slug}.json"
+          echo "artifact_name=tfaction-plan-result-${slug}" >> "$GITHUB_OUTPUT"
+          echo "file=${dir}/${slug}.json" >> "$GITHUB_OUTPUT"
+        env:
+          PLAN_OUTCOME: ${{steps.plan.outcome}}
+          PLAN_DETAILED_EXITCODE: ${{steps.plan.outputs.detailed_exitcode}}
+
+      # BOXP-651: Renovate enables auto-merge when it creates the PR. tfaction
+      # disables it only when the plan has changes, so a target whose plan was
+      # skipped (skip_terraform, e.g. a skip:<target> label) or whose result is
+      # undetermined would keep auto-merge enabled, and the PR could be merged
+      # as soon as the required status-check passes, before the
+      # enable-auto-merge job runs. Disable it here, inside the plan job, so
+      # that it happens before status-check can complete.
+      - name: Disable auto-merge unless the plan has no changes
+        if: |
+          always() &&
+          github.event_name == 'pull_request_target' &&
+          github.event.pull_request.user.login == 'renovate[bot]' &&
+          !(steps.plan.outcome == 'success' && steps.plan.outputs.detailed_exitcode == '0')
+        run: |
+          set -euo pipefail
+          if [[ "$(gh -R "$GITHUB_REPOSITORY" pr view "$PR_NUMBER" --json autoMergeRequest --jq '.autoMergeRequest != null')" == true ]]; then
+            gh -R "$GITHUB_REPOSITORY" pr merge --disable-auto "$PR_NUMBER"
+          fi
+          echo "::warning::Auto-merge is disabled because the plan of ${TFACTION_TARGET} did not finish with no changes (outcome=${PLAN_OUTCOME}, detailed_exitcode=${PLAN_DETAILED_EXITCODE:-<empty>})."
+        env:
+          GITHUB_TOKEN: ${{steps.generate_token.outputs.token}}
+          PR_NUMBER: ${{github.event.pull_request.number}}
+          PLAN_OUTCOME: ${{steps.plan.outcome}}
+          PLAN_DETAILED_EXITCODE: ${{steps.plan.outputs.detailed_exitcode}}
+
+      - name: Upload plan result for auto-merge decision
+        if: always() && steps.plan_result.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{steps.plan_result.outputs.artifact_name}}
+          path: ${{steps.plan_result.outputs.file}}
+          overwrite: true
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Create Renovate plan follow-up PR
         if: |

@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import { describe, expect, it } from 'vitest'
 import { createApp, instructions, ownerTaskInstructions, studioInstructions } from './app.js'
 import type { createHermes } from './hermes.js'
-import { LOCATION_FRESH_MS, locationInstructions, parseLocation } from './location.js'
+import { LOCATION_FRESH_MS, locationInstructions, locationLogLine, parseLocation } from './location.js'
 
 // 架空の位置（実在の本人位置ではない）: 東京駅付近。
 const NOW = Date.UTC(2026, 10, 21, 3, 0, 0)
@@ -60,9 +60,30 @@ describe('locationInstructions', () => {
       const text = locationInstructions({ status }, NOW)
       expect(text).toContain('有効な現在地がありません')
       expect(text).toContain('今いる場所と断定しないでください')
+      expect(text).toContain('会話履歴には残りません')
+      expect(text).toContain('だけを理由にその返答を「根拠がない」「誤り」として訂正・謝罪せず')
       expect(text).not.toMatch(/緯度|経度/)
     }
     expect(locationInstructions(undefined, NOW)).toBe(locationInstructions({ status: 'off' }, NOW))
+  })
+  it('TD-01: does not ask to turn sharing on when it is on but the fix failed', () => {
+    for (const status of ['timeout', 'unavailable', 'stale'] as const) {
+      const text = locationInstructions({ status }, NOW)
+      expect(text).toContain('共有の設定はONのまま')
+      expect(text).toContain('設定のON確認は求めず')
+      expect(text).not.toContain('ONにするか')
+    }
+    expect(locationInstructions({ status: 'off' }, NOW)).toContain('ONにするか場所を教えて')
+    expect(locationInstructions({ status: 'denied' }, NOW)).toContain('位置情報を許可するか')
+    expect(locationInstructions(parseLocation(ok, NOW) ?? undefined, NOW)).toContain('この発言には届いています')
+  })
+  it('TD-01: logs only the non-secret status', () => {
+    const line = locationLogLine('owner', true, parseLocation(ok, NOW) ?? undefined, NOW)
+    expect(line).toBe('kohako_web_location principal=owner sent=yes status=ok age_min=1 coarse=false')
+    expect(locationLogLine('owner', true, { status: 'timeout' }, NOW)).toBe(
+      'kohako_web_location principal=owner sent=yes status=timeout',
+    )
+    expect(locationLogLine('verifier', false, undefined, NOW)).toContain('sent=none status=off')
   })
 })
 
