@@ -368,7 +368,8 @@ def full : Nat → List (List Ev)
   | 0 => [[]]
   | n + 1 => (full n).flatMap fun t => evs.map fun e => e :: t
 
-/-- 初期状態から `depth` 手以内で届く全ての状態について、そこからの全操作を 1 回ずつ通る手順の集合。
+/-- 初期状態から `depth - 1` 手以内で届く全ての状態について、そこからの全操作を 1 回ずつ通る手順の集合
+（手順は最長 `depth` 手。`depth` 手目で初めて届く状態は、届くところまでで、そこからは伸ばさない）。
 同じ状態へは最短の手順 1 本だけを伸ばす。他の手順の先頭部分になる手順は出力しない。 -/
 def cover (depth : Nat) : IO Unit := do
   let mut seen : Std.HashSet St := Std.HashSet.emptyWithCapacity.insert {}
