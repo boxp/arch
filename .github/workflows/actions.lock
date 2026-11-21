@@ -212,7 +212,8 @@ workflows:
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
     '.github/workflows/test-usb-ssd-storage.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-    '.github/workflows/test.yaml': []
+    '.github/workflows/test.yaml':
+        - 'tibdex/github-app-token@3beb63f4bd073e61482598c45c71c1019b59b73a'
     '.github/workflows/upgrade-k8s.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0'
