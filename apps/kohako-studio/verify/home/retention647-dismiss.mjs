@@ -29,7 +29,7 @@ await Promise.all(['pc', 'mobile', 'landscape'].flatMap((device) => ['short', 'l
     if (p === 'status') return json(200, { schema: 'kohako-home-status/v1', quota: { state: 'ok', pools: [] }, tasks: { state: 'ok', inProgress: { total: 0, complete: true, byAgent: [], conflicts: [] } } })
     if (p === 'notifications') return json(200, { items: [], unread: 0 })
     if (p === 'messages') { const body = req.postDataJSON(); if (body.kind === 'touch') touchIds.add(body.requestId); else count++; return json(202, { status: 'accepted' }) }
-    if (p.startsWith('requests/')) return json(200, { status: 'done', reply: { text: touchIds.has(p.split('/')[1]) ? 'ふれあいの返答' : count === 1 ? content : '次の返答です。\n\nA: 案1\nB: 案2' } })
+    if (p.startsWith('requests/')) return json(200, { status: 'done', reply: { text: touchIds.has(p.split('/')[1]) ? 'ふれあいの返答' : count <= 2 ? content : '次の返答です。\n\nA: 案1\nB: 案2' } })
     return json(200, {})
   })
   try {
@@ -38,6 +38,17 @@ await Promise.all(['pc', 'mobile', 'landscape'].flatMap((device) => ['short', 'l
     await page.locator('#speech').uncheck({ force: true })
     await page.locator('#message').fill('確認'); await page.locator('#send').click()
     await page.waitForFunction(text => document.querySelector('#reply').textContent.includes(text), content.slice(0, 7), { timeout: 20000 })
+    check('無音アニメーション中', await page.locator('#state').textContent() === '話しています')
+    if (mobile) await page.touchscreen.tap(5, 200)
+    else await page.mouse.click(5, 200)
+    check('アニメーション中に即時閉じる', await page.locator('body').getAttribute('data-message') === '0')
+    check('即時に利用枠へヒット', await page.locator('.status-widget').evaluate(e => { const r = e.getBoundingClientRect(), hit = document.elementFromPoint(r.x+r.width/2, r.y+r.height/2); return r.width > 0 && r.height > 0 && !!hit && e.contains(hit) }))
+    await page.screenshot({ path: path.join(out, `${label}-immediate.png`) })
+    await page.waitForFunction(() => document.querySelector('#state').textContent !== '話しています', null, { timeout: 20000 })
+    check('アニメーション終了後も閉鎖', await page.locator('body').getAttribute('data-message') === '0')
+    await page.locator('#message').fill('もう一度'); await page.locator('#send').click()
+    await page.waitForFunction(() => document.body.dataset.message === '1' && document.querySelector('#bubble').dataset.retained === '1' && document.querySelector('#bubble').dataset.dismissed !== '1' && document.querySelector('#state').textContent === '話しています', null, { timeout: 20000 })
+    check('新返答を再表示', await page.locator('#bubble').isVisible())
     const delivered = Date.now(), scroll = device === 'mobile' ? '#chatlog' : '#bubble'
     if (size === 'long') await page.locator(scroll).evaluate(e => { e.dispatchEvent(new WheelEvent('wheel', { deltaY: -1000, bubbles: true })); e.scrollTop = 0; e.dispatchEvent(new Event('scroll')) })
     await page.waitForTimeout(67000)
@@ -87,7 +98,7 @@ await Promise.all(['pc', 'mobile', 'landscape'].flatMap((device) => ['short', 'l
     await page.locator('#reply-choices button').first().click()
     await choiceRequest
     await page.waitForFunction(() => document.querySelector('#reply').textContent.includes('次の返答です。') && document.querySelector('#bubble').dataset.retained === '1', null, { timeout: 20000 })
-    check('選択肢で送信して返答を表示', count >= 3 && await page.locator('#bubble').isVisible())
+    check('選択肢で送信して返答を表示', count >= 4 && await page.locator('#bubble').isVisible())
     check('ページエラーなし', errors.length === 0)
   } catch (e) { failures.push(`${label}: ${e.message}`); checks.exception = e.message; await page.screenshot({ path: path.join(out, `${label}-failure.png`) }).catch(() => {}) }
   await ctx.close()

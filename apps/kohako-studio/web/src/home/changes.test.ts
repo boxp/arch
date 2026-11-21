@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { shouldSubmit } from './keys'
 import { sortAscending, type Item } from './inbox'
-import { messageShown } from './scene'
+import { canDismissReply, messageShown } from './scene'
 import { atBottom } from './scroll'
 import { parseInline, parseMarkdown, plainText } from './markdown'
 describe('ホーム表示', () => {
@@ -54,4 +54,12 @@ describe('Markdown の境界', () => {
     expect(parseInline('foo_bar_baz と 2 * 3 * 4').every((n) => n.type === 'text')).toBe(true)
     expect(parseInline('_強調_ と *斜体*').map((n) => n.type)).toEqual(['italic', 'text', 'italic'])
   })
+})
+
+it('allows dismissal during silent animation but protects speech and processing', () => {
+  expect(canDismissReply('speaking', false)).toBe(true)
+  expect(canDismissReply('speaking', true)).toBe(false)
+  expect(canDismissReply('done', false)).toBe(true)
+  for (const state of ['thinking', 'approval', 'listening', 'failed', 'offline', 'idle', 'stopped'] as const)
+    expect(canDismissReply(state, false)).toBe(false)
 })

@@ -62,7 +62,7 @@ import { applyPose, loadRig, type Player } from '../live2d/rig'
 import { ActingDirector, cueForSentence, type Emotion, splitSentences, type ActingStage } from '../live2d/acting'
 import { createActingStage } from '../live2d/gesture'
 import { createSentenceSpeaker, createSilentSentencer } from '../studio/acting-speech'
-import { SceneDirector, targetScene, messageShown, type Scene } from './scene'
+import { SceneDirector, targetScene, messageShown, canDismissReply, type Scene } from './scene'
 import { arrivalNote, arrivalPhase, LANDING_MS, type Arrival } from './arrival'
 import { cardsFromText, type Card } from './cards'
 import {
@@ -543,7 +543,8 @@ function setBubble(text: string, touch = false, retained = false, restoring = fa
   updateMessage()
 }
 function updateMessage() {
-  const dismissed = bubble.dataset.dismissed === '1' && !bubble.classList.contains('touch') && state === 'done'
+  const dismissed =
+    bubble.dataset.dismissed === '1' && !bubble.classList.contains('touch') && canDismissReply(state, reading)
   body.dataset.message =
     !dismissed &&
     messageShown({
@@ -563,7 +564,7 @@ document.addEventListener('pointerdown', (event) => {
 })
 document.addEventListener('click', (event) => {
   if (!outsideBubble || !(event.target instanceof Node) || bubble.contains(event.target)) return
-  if (bubble.dataset.retained !== '1' || bubble.classList.contains('touch') || state !== 'done') return
+  if (bubble.dataset.retained !== '1' || bubble.classList.contains('touch') || !canDismissReply(state, reading)) return
   if (!el('notice-actions').hidden || window.getSelection()?.toString()) return
   bubble.dataset.dismissed = '1'
   updateMessage()

@@ -56,3 +56,8 @@ export function messageShown({
 }): boolean {
   return scene !== 'relax' || touch || notice || retained
 }
+
+/** 無音の演技中も返答を閉じられるが、実際の読み上げや処理中は閉じない。 */
+export function canDismissReply(state: State, reading: boolean): boolean {
+  return state === 'done' || (state === 'speaking' && !reading)
+}

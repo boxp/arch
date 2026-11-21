@@ -75,3 +75,16 @@ Web 45ファイル490テスト・typecheck・build・Biome・check-docs・構文
 親で契約子のexit0/completed・delegate verify成功を確認。親もWeb490テスト・型検査・Biomeを実行して成功。検証を短文/長文×PC/縦/横の6条件へ拡張し、スマホは外側touchscreen.tapで確認。計114検査（短文18/長文20×3画面）と外部通信0が成功。短文はrelax移行、長文はリンクの自動カード表示を含むshow場面での保持と閉鎖を確認。親が縦横短文の閉鎖後画像と長文の利用枠を目視。証跡 `/home/boxp/verification-artifacts/BOXP-647/dismiss-parent/`。独立review/CIゲート後のmerge・通常配備・配備版検証が残るためTD-01は未完了。
 
 通常読み上げ回帰も親でPC/Pixel7各9検査が成功（強調/追従/手動スクロール停止/追従再開/音声停止再開/終了、外部通信0）。証跡 `/home/boxp/verification-artifacts/BOXP-647/dismiss-readfollow-restored/`。初回のcode143に続き、追加した `--alsa-output-device=null` の環境では音声が早く終了して追従検査が失敗し、WAVを延ばしても失敗した。前runで成功した起動条件（network host、shm-size 1g、SwiftShader、autoplay許可、音声出力先の上書きなし）へ戻すと元のWAVで全成功。失敗結果はdismiss-readfollow/とdismiss-readfollow-longwav/に残す。実装に音声関連の補修は加えていない。
+
+
+## P1 再修正（無音アニメーション中の即時閉鎖）
+
+読み上げなしでも表示直後は無音アニメーションで `speaking` になるため、前版の `done` 限定では閉じられなかった。実際の読み上げを示す `reading` と区別し、`done` または無音の `speaking` では外側操作を受け付ける。表示反映にも同じ条件を使い、演技終了後も閉鎖を維持する。処理・承認や実音声の間は保護し、音声失敗後に閉じてから再試行する場合は本文を再表示する。既存の新本文による解除・内部操作保護は維持する。
+
+回帰スクリプトに表示直後の `speaking` 明示確認、即時 click/tap、利用枠 hit test、演技終了後の閉鎖維持、新返答再表示を追加した。Web491テスト・typecheck・Biome・publicDir無効build・check-docs・構文・差分検査成功。親の最終コードでの画面結果は下記に追記する。
+
+契約helperへ一度委譲したが、親から停止していない状態で終了コード143となり、今回のdelegate verifyは不成立。子の修正と6画面画像を親が引継ぎ、再委任や別モデルへの代替はしていない。今回のrunでは完了扱いにせず、同一PRの独立ゲートと次runでの委譲検証・merge・通常配備確認を続ける。trivyは実行ファイルなしで未実施。実API・実機Safari・音声聴感は未確認。
+
+親の最終コード（無音/実音声判定を閉鎖反映にも適用）でPC・縦・横×短文/長文6条件144検査が全成功。無音speaking中を明示して即時dismiss/利用枠hit test、演技終了後閉鎖、新返答再表示、実時間67秒保持、内部リンク/本文選択/スクロール/選択肢、ふれあい復元、履歴/入力を確認。証跡 `/home/boxp/verification-artifacts/BOXP-647/dismiss-immediate-final/`（result.json・画像・verified-sha256.json）。親がPC/縦スマホの即時閉鎖画像を目視した。親引継ぎの初回実行も成功したが途中で再ビルドしたため最終コードで再実行した。
+
+さらに音声失敗の既存スクリプトを基に端末音声をモックし、PC/mobile各7検査で失敗後閉鎖→音声再試行時本文再表示→実音声読み上げ中の外側操作保護→次返答/遅延callback保護を確認。14検査全成功・外部通信0。証跡 `/home/boxp/verification-artifacts/BOXP-647/dismiss-immediate-voice/`（result.json、voice-retry.mjs、画像。スクリプト再実行時は元verify/home配下へ置き、共有helperを参照）。最終修正後のtypecheck/Biome/build/構文/差分検査も成功。TD-01は独立gate・merge・通常配備と配備版再確認が残るため未完了。
