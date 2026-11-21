@@ -14,9 +14,10 @@ Task Board runner の **ticket lock（取得・heartbeat・解放・期限切れ
 
 ## モデルが言っていること
 
-owner（runner の Pod）は A・B の 2 つ、チケットは 1 件。操作は 14 種:
-取得・heartbeat・解放・回収・計画停止・再起動（それぞれ A・B）と、時計を 90 秒 / 91 秒進める。
+owner（runner の Pod）は A・B の 2 つ、チケットは 1 件。操作は 15 種:
+取得・heartbeat・解放・回収・計画停止・再起動（それぞれ A・B）と、時計を 90 秒 / 91 秒 / 3601 秒進める。
 lock の期限は 180 秒なので、90+90 は「ちょうど期限（まだ有効）」、90+91 は「期限切れ」になる。
+計画停止の印の保存期限は 3600 秒（既定値）で、3601 秒進めると期限を超える。
 
 ### 規則と定理の対応
 
@@ -33,6 +34,7 @@ lock の期限は 180 秒なので、90+90 は「ちょうど期限（まだ有�
 | 6 | 持ち主の計画停止の印と世代が一致する lock は、期限を待たずに回収される（他 owner の回収・他 owner の再起動・持ち主自身の再起動のどれでも） | `marked_lock_recovered` |
 | 7 | 状態ファイルの世代は今の process の世代で、印があればその世代を指し、印がある間は active でない。lock の世代・番号・時刻は現在を超えない | `good_reachable`（不変条件 `Good`） |
 | 8 | 再起動した owner は必ず lock を取れる状態（印なし・active）に戻る | `restart_resumes` |
+| 9 | 保存期限を超えた計画停止の印は、一致する lock がなければ、他の owner の回収で片付き、印の owner は terminated になる | `expired_marker_retired` |
 
 ### モデルの操作と実装の対応
 
@@ -46,7 +48,7 @@ lock の期限は 180 秒なので、90+90 は「ちょうど期限（まだ有�
 | 回収 | `cA` `cB` | `recover-locks!`（tick の先頭と同じ。計画停止の回収 → 期限切れの回収） |
 | 計画停止 | `sA` `sB` | `prepare-shutdown!` |
 | 再起動 | `RA` `RB` | 新しい instance id で `(recover-locks! true)` → `activate-owner!`（`loop!` の起動順） |
-| 時計 | `t90` `t91` | `now` を進める |
+| 時計 | `t90` `t91` `t3601` | `now` を進める |
 
 各操作の後に比べるもの（`期待` の 1 項 = `結果;lock;A;B`）:
 
@@ -63,7 +65,8 @@ lock の期限は 180 秒なので、90+90 は「ちょうど期限（まだ有�
 - **同時実行**。手順は 1 操作ずつ順に実行する。2 つの process が同時にファイルを取り合う場面、
   `with-ticket-lock-guard` / `with-owner-lock-guard` の排他そのものは対象外（既存の e2e ケースが一部を見ている）。
 - **heartbeat のループ**。1 回分 `heartbeat-once!` だけが対象。1 秒ごとの繰り返しと、所有が変わったときに止まる処理は対象外。
-- **計画停止の印の保存期限**（既定 3600 秒で、どの lock とも一致しなかった印を片付ける）。
+- **計画停止の印の保存期限の設定値**。既定の 3600 秒だけを扱う（環境変数での変更と下限 600 秒は対象外）。
+  期限ちょうど（3600 秒）の境界も、時計の刻みが 90・91・3601 秒なので通らない。
 - **壊れたファイル**（lock・印・状態ファイルが読めない、欠けている）と、その片付け。
 - **チケットが複数ある場合**と `tick --ticket` の絞り込み。
 - **回収したときにチケットへ書く Notes・run summary**、lane の移動、agent の停止。
@@ -75,13 +78,13 @@ lock の期限は 180 秒なので、90+90 は「ちょうど期限（まだ有�
 
 ```sh
 cd tests/codex-workspace/lock-model
-lean LockModel.lean                                   # 定理の検査（通れば何も出ない。2CPU で約 45 秒）
-lean --run LockModel.lean cover 5 > lock-traces.txt   # 手順の生成（約 30 秒）
-bb ../task-board-lock-trace-test.bb                   # 再生（約 10 秒、Lean 不要）
+lean LockModel.lean                                   # 定理の検査（通れば何も出ない。2CPU で約 55 秒）
+lean --run LockModel.lean cover 5 > lock-traces.txt   # 手順の生成（約 40 秒、24,207 本・約 2.4MB）
+bb ../task-board-lock-trace-test.bb                   # 再生（約 25 秒、Lean 不要）
 ```
 
-`cover N` は、初期状態から N 手以内で届く全ての状態について、そこからの 14 操作を 1 回ずつ通る手順の集合を出す
-（同じ状態へは最短の手順 1 本だけを伸ばす）。`full N` は N 手の全ての並び（14^N 本。比較用で、コミットしない）。
+`cover N` は、初期状態から N 手以内で届く全ての状態について、そこからの 15 操作を 1 回ずつ通る手順の集合を出す
+（同じ状態へは最短の手順 1 本だけを伸ばす）。`full N` は N 手の全ての並び（15^N 本。比較用で、コミットしない）。
 出力は決定的で、同じモデルからは同じファイルになる。CI（`Test Task Board Lock Model`）は Lean を入れて
 定理の検査と「生成し直した結果がコミット済みファイルと同じか」を調べる。
 

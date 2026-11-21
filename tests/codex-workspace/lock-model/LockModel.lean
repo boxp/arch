@@ -33,6 +33,8 @@ structure Own where
   stInst : Nat := 0
   status : Status := .active
   marker : Option Nat := none
+  /-- 印を書いた時刻（印がないときは 0）。 -/
+  markAt : Nat := 0
   deriving DecidableEq, Hashable, Repr
 
 structure St where
@@ -49,6 +51,9 @@ inductive Ev
   deriving Repr
 
 def staleAfter : Nat := 180
+
+/-- どの lock とも一致しない計画停止の印を残しておく秒数。 -/
+def markerRetention : Nat := 3600
 
 def other : R → R
   | .A => .B
@@ -83,8 +88,11 @@ def sweep (s : St) (r : R) : St :=
   | some l => if stale s l ∧ ¬ mine s r l then { s with lock := none } else s
   | none => s
 
+/-- owner `o` の印が保存期限を超えて古い。 -/
+abbrev markerExpired (clock : Nat) (o : Own) : Prop := clock - o.markAt > markerRetention
+
 /-- owner `o` の計画停止の印を処理する。印と同じ owner・世代の lock は期限を待たず回収し、
-回収したとき（または `retireEmpty` のとき）は owner を terminated にして印を消す。 -/
+回収したとき（または `retireEmpty` のとき、印が保存期限を超えたとき）は owner を terminated にして印を消す。 -/
 def recoverMarker (s : St) (o : R) (retireEmpty : Bool) : St :=
   match (ownOf s o).marker with
   | none => s
@@ -94,14 +102,14 @@ def recoverMarker (s : St) (o : R) (retireEmpty : Bool) : St :=
       if l.owner = o ∧ l.inst = j then
         let s1 := { s with lock := none }
         if (ownOf s o).stInst = j then
-          setOwn s1 o { ownOf s o with status := .terminated, marker := none }
+          setOwn s1 o { ownOf s o with status := .terminated, marker := none, markAt := 0 }
         else s1
-      else if retireEmpty ∧ (ownOf s o).stInst = j then
-        setOwn s o { ownOf s o with status := .terminated, marker := none }
+      else if (retireEmpty ∨ markerExpired s.clock (ownOf s o)) ∧ (ownOf s o).stInst = j then
+        setOwn s o { ownOf s o with status := .terminated, marker := none, markAt := 0 }
       else s
     | none =>
-      if retireEmpty ∧ (ownOf s o).stInst = j then
-        setOwn s o { ownOf s o with status := .terminated, marker := none }
+      if (retireEmpty ∨ markerExpired s.clock (ownOf s o)) ∧ (ownOf s o).stInst = j then
+        setOwn s o { ownOf s o with status := .terminated, marker := none, markAt := 0 }
       else s
 
 /-- 仕様: 1 操作の後の状態。 -/
@@ -132,7 +140,7 @@ def step (s : St) : Ev → St
   | .recover r => sweep (recoverMarker s (other r) false) r
   | .shutdown r =>
     let o := ownOf s r
-    setOwn s r { o with status := .terminating, marker := some o.stInst }
+    setOwn s r { o with status := .terminating, marker := some o.stInst, markAt := s.clock }
   | .restart r =>
     -- 古い process は消え、新しい世代が「回収してから active にする」順で起動する。
     let o := ownOf s r
@@ -187,11 +195,11 @@ theorem stopping_owner_cannot_acquire (s : St) (r : R) (h : ¬ accepting (ownOf 
 theorem own_lock_not_reclaimed_by_self (s : St) (r : R) (l : Lock)
     (h : s.lock = some l) (hm : mine s r l) :
     (step s (.acquire r)).lock = some l ∧ (step s (.recover r)).lock = some l := by
-  obtain ⟨clock, lock, nextRun, a, b⟩ := s
+  obtain ⟨clock, lock, nextRun, ⟨ai, ah, asi, ast, am, amt⟩, ⟨bi, bh, bsi, bst, bm, bmt⟩⟩ := s
   obtain ⟨o, i, n, hb⟩ := l
   simp only at h
   subst h
-  refine ⟨?_, ?_⟩ <;> cases r <;> cases o <;> unfold_model <;> grind
+  refine ⟨?_, ?_⟩ <;> cases r <;> cases o <;> cases am <;> cases bm <;> unfold_model <;> grind [ownOf]
 
 /-- 規則 6: 持ち主の計画停止の印と世代が一致する lock は、期限を待たずに、
 他の owner の回収・他の owner の再起動・持ち主自身の再起動のどれでも回収される。 -/
@@ -230,7 +238,7 @@ theorem good_init : Good {} := by
 macro "good_one" : tactic =>
   `(tactic| (
     intro s h
-    obtain ⟨clock, lock, nextRun, ⟨ai, ah, asi, ast, am⟩, ⟨bi, bh, bsi, bst, bm⟩⟩ := s
+    obtain ⟨clock, lock, nextRun, ⟨ai, ah, asi, ast, am, amt⟩, ⟨bi, bh, bsi, bst, bm, bmt⟩⟩ := s
     obtain ⟨ha, hb, hl, hh⟩ := h
     have hhA := hh .A
     have hhB := hh .B
@@ -239,14 +247,14 @@ macro "good_one" : tactic =>
     cases am <;> cases bm <;> cases lock with
     | none =>
       refine ⟨?_, ?_, ?_, ?_⟩ <;> (try (intro r'; cases r')) <;>
-        (try simp only [OwnOk]) <;> (try unfold_model) <;> grind
+        (try simp only [OwnOk]) <;> (try unfold_model) <;> grind (splits := 20)
     | some l =>
       obtain ⟨o, i, n, t⟩ := l
       have hl' := hl _ rfl
       clear hl
       cases o <;> simp only at hl' <;>
         refine ⟨?_, ?_, ?_, ?_⟩ <;> (try (intro r'; cases r')) <;>
-        (try simp only [OwnOk]) <;> (try unfold_model) <;> grind))
+        (try simp only [OwnOk]) <;> (try unfold_model) <;> grind (splits := 20)))
 
 theorem good_tick (dt : Nat) : ∀ s, Good s → Good (step s (.tick dt)) := by good_one
 theorem good_acquire (r : R) : ∀ s, Good s → Good (step s (.acquire r)) := by cases r <;> good_one
@@ -254,6 +262,7 @@ theorem good_beat (r : R) : ∀ s, Good s → Good (step s (.beat r)) := by case
 theorem good_release (r : R) : ∀ s, Good s → Good (step s (.release r)) := by cases r <;> good_one
 theorem good_recover (r : R) : ∀ s, Good s → Good (step s (.recover r)) := by cases r <;> good_one
 theorem good_shutdown (r : R) : ∀ s, Good s → Good (step s (.shutdown r)) := by cases r <;> good_one
+set_option maxHeartbeats 1000000 in
 theorem good_restart (r : R) : ∀ s, Good s → Good (step s (.restart r)) := by cases r <;> good_one
 
 theorem good_step (s : St) (e : Ev) (h : Good s) : Good (step s e) := by
@@ -280,12 +289,27 @@ theorem restart_resumes (s : St) (r : R) (h : Good s) :
   simp only [OwnOk] at ha hb
   cases r <;> unfold_model <;> grind
 
+/-- 規則 9: 保存期限を超えた計画停止の印は、一致する lock がなければ、他の owner の回収で片付き、
+印の owner は terminated になる。 -/
+theorem expired_marker_retired (s : St) (o : R) (j : Nat)
+    (hm : (ownOf s o).marker = some j) (hs : (ownOf s o).stInst = j) (he : markerExpired s.clock (ownOf s o))
+    (hl : ∀ l, s.lock = some l → ¬ (l.owner = o ∧ l.inst = j)) :
+    (ownOf (step s (.recover (other o))) o).marker = none
+      ∧ (ownOf (step s (.recover (other o))) o).status = .terminated := by
+  obtain ⟨clock, lock, nextRun, a, b⟩ := s
+  cases lock with
+  | none => cases o <;> unfold_model <;> grind
+  | some l =>
+    have hl := hl l rfl
+    obtain ⟨lo, i, n, t⟩ := l
+    cases o <;> cases lo <;> unfold_model <;> grind
+
 /-! ## テストケースの機械生成 -/
 
 def evs : List Ev :=
   [.acquire .A, .acquire .B, .beat .A, .beat .B, .release .A, .release .B,
    .recover .A, .recover .B, .shutdown .A, .shutdown .B, .restart .A, .restart .B,
-   .tick 90, .tick 91]
+   .tick 90, .tick 91, .tick 3601]
 
 def rs : R → String
   | .A => "A"

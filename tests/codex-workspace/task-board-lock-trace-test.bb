@@ -13,7 +13,7 @@
 
 (def args (vec *command-line-args*))
 (defn arg [flag default] (or (second (drop-while #(not= flag %) args)) default))
-(def here (-> *file* fs/absolutize fs/parent))
+(def here (-> *file* fs/canonicalize fs/parent))
 (def traces-file (arg "--traces" (str (fs/path here "lock-model" "lock-traces.txt"))))
 (def runner-file (arg "--runner" (str (fs/path (fs/parent (fs/parent here)) "docker" "codex-workspace" "task-board" "task_board_runner.bb"))))
 (def max-report (parse-long (arg "--max-report" "5")))
