@@ -11,6 +11,7 @@ export const defaults = {
   bgMotion: true,
   chestSway: true,
   idleActs: true,
+  location: false,
 } as const
 export type Prefs = {
   voice: 'kohaku' | 'browser'
@@ -25,6 +26,8 @@ export type Prefs = {
   bgMotion: boolean
   chestSway: boolean
   idleActs: boolean
+  /** BOXP-648: 送信時に現在地をコハコへ添える（既定 OFF・本人が ON にした端末だけ）。 */
+  location: boolean
 }
 /** 読み上げ音量（0〜100 の整数 %）。範囲外・数値以外は既定に戻す。 */
 export function parseVolume(raw: unknown): number {
@@ -49,6 +52,7 @@ export function parsePrefs(raw: string | null): Prefs {
       bgMotion: typeof v.bgMotion === 'boolean' ? v.bgMotion : defaults.bgMotion,
       chestSway: typeof v.chestSway === 'boolean' ? v.chestSway : defaults.chestSway,
       idleActs: typeof v.idleActs === 'boolean' ? v.idleActs : defaults.idleActs,
+      location: typeof v.location === 'boolean' ? v.location : defaults.location,
     }
   } catch {
     return { ...defaults }

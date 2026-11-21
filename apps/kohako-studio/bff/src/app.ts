@@ -12,6 +12,7 @@ import type { createHermes } from './hermes.js'
 import { type createTts, TtsError } from './tts.js'
 import { pcmToWav, STT_FINAL_FIELDS } from './stt.js'
 import { isRecord } from './untrusted.js'
+import { locationInstructions, parseLocation, type TurnLocation } from './location.js'
 const BASE_INSTRUCTIONS = 'あなたの返答は Web UI の吹き出しに表示され、必要に応じて音声で読み上げられます。'
 export const vaultImageInstructions =
   ' vault内の画像を家の会話に表示するときは、実在確認したvault相対パスを encodeURIComponent 相当でURLエンコード（括弧も%28/%29へ変換）し、![短い説明](kohako-vault:エンコード済み相対パス) と返してください。絶対パスやMEDIA記法は表示できません。対応はPNG/JPEG/GIF/WebP各5MiBまで。SVG/PDF/動画/その他のファイルはインライン表示非対応です。画像を再生成したり、検証画像をvaultに保存したりしないでください。'
@@ -436,6 +437,14 @@ export function createApp(opts: {
       if (typeof x.expiresAt !== 'number' || !Number.isFinite(x.expiresAt) || x.expiresAt > now() + 600000)
         return json(400, { error: 'invalid' })
       if (x.kind === 'visit' && principal !== 'owner') return json(403, { error: 'forbidden' })
+      // BOXP-648: 家の画面が送信時に添えた現在地（本人の許可時のみ ok）。Input には入れず、この turn の instructions にだけ載せる。
+      let location: TurnLocation | undefined
+      if (x.location !== undefined) {
+        if (x.kind !== 'text' || x.views !== true) return json(400, { error: 'invalid' })
+        const parsed = parseLocation(x.location, now())
+        if (!parsed) return json(400, { error: 'invalid' })
+        location = parsed
+      }
       let input: Input
       const files: NonNullable<Extract<Input, { kind: 'text' }>['attachments']> = []
       if (x.attachments !== undefined) {
@@ -501,7 +510,12 @@ export function createApp(opts: {
         }
       else return json(400, { error: 'invalid' })
       if (x.expiresAt <= now()) return json(410, { error: 'expired' })
-      const turnInstructions = input.kind === 'touch' || input.views ? instructions : studioInstructions
+      const turnInstructions =
+        input.kind === 'touch'
+          ? instructions
+          : input.views
+            ? instructions + locationInstructions(location, now())
+            : studioInstructions
       const entry = conv.submit(
         input,
         principal === 'owner' && input.kind === 'text' ? turnInstructions + ownerTaskInstructions : turnInstructions,

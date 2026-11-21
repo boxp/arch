@@ -185,9 +185,13 @@ describe('保存', () => {
       bgMotion: true,
       chestSway: true,
       idleActs: true,
+      location: false,
     })
     // BOXP-605: 待機中のしぐさは既定 ON。OFF だけを保存から読む。
     expect(parsePrefs('{"idleActs":false}').idleActs).toBe(false)
+    // BOXP-648: 現在地の共有は既定 OFF。真偽値の true だけを ON として読む。
+    expect(parsePrefs('{"location":true}').location).toBe(true)
+    expect(parsePrefs('{"location":"yes"}').location).toBe(false)
     expect(parsePrefs('{"idleActs":"no"}').idleActs).toBe(true)
     expect(parsePrefs('{"bgMotion":false}').bgMotion).toBe(false)
     expect(parsePrefs('{"voice":"browser"}').voice).toBe('browser')

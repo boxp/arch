@@ -81,6 +81,16 @@ import {
 } from './touch'
 import { createVoicePlayer, splitVoiceSentences } from './voice'
 import { parsePrefs, parseVolume, type Prefs } from './prefs'
+import {
+  acquire,
+  describe as describeLocation,
+  noteOf as locationNoteOf,
+  payloadOf,
+  REUSE_MS,
+  type Fix,
+  type LocationMiss,
+  type LocationPayload,
+} from './location'
 import { blendLook, followWeightFor, lookTarget, smoothLook, TouchLook, type Look } from './lookfollow'
 import { parseResume, parseUnconfirmed, pollVerdict, type Inflight } from './resume'
 import { addErrorText, holdLabel, MessageQueue, QUEUE_MAX_ITEMS, type HoldReason, type QueueItem } from './queue'
@@ -197,6 +207,59 @@ subtleBox.addEventListener('change', () => {
 systemReduce.addEventListener?.('change', applyPrefs)
 document.addEventListener('visibilitychange', () => body.classList.toggle('tab-hidden', document.hidden))
 applyPrefs()
+
+// ---- BOXP-648: 現在地の共有（本人が ON にした端末だけ・送信時に 1 回取得・このタブのメモリにだけ直近 1 件） ----
+const locationBox = el<HTMLInputElement>('pref-location'),
+  locationStatus = el('location-status'),
+  locationNote = el('location-note')
+let locationFix: Fix | null = null,
+  locationMiss: LocationMiss | null = null,
+  locationBusy: Promise<void> | null = null
+function renderLocation() {
+  locationBox.checked = prefs.location
+  const text = describeLocation(prefs.location, locationFix, locationMiss, Date.now())
+  locationStatus.textContent = text
+  locationNote.hidden = !prefs.location
+  locationNote.textContent = prefs.location ? locationNoteOf(locationFix, locationMiss, Date.now()) : ''
+}
+/** 位置を取り直す（同時に 1 回だけ）。共有 OFF に切り替わった後に届いた結果は捨てる。 */
+function refreshLocation(): Promise<void> {
+  if (locationBusy) return locationBusy
+  locationBusy = acquire(navigator.geolocation, Date.now).then(({ fix, miss }) => {
+    locationBusy = null
+    if (!prefs.location) return
+    if (fix) {
+      locationFix = fix
+      locationMiss = null
+    } else {
+      // 取り直しに失敗した時は古い位置を残さない（現在地と誤って伝えないため）。
+      locationFix = null
+      locationMiss = miss
+    }
+    renderLocation()
+  })
+  return locationBusy
+}
+/** 発言に添える位置。OFF なら取得せず 'off'。直近 2 分以内に取れていればそれを使い、なければ取り直す。 */
+async function locationForSend(): Promise<LocationPayload> {
+  if (!prefs.location) return { status: 'off' }
+  if (!locationFix || Date.now() - locationFix.capturedAt > REUSE_MS) await refreshLocation()
+  if (!prefs.location) return { status: 'off' }
+  return payloadOf(locationFix, locationMiss ?? 'unavailable', Date.now())
+}
+locationBox.addEventListener('change', () => {
+  prefs = { ...prefs, location: locationBox.checked }
+  applyPrefs()
+  locationFix = null
+  locationMiss = null
+  renderLocation()
+  // ON にした操作の直後に取得し、ブラウザの許可ダイアログを本人の操作に結び付けて出す。
+  if (prefs.location) void refreshLocation()
+})
+renderLocation()
+setInterval(() => {
+  if (prefs.location && !document.hidden) renderLocation()
+}, 30_000)
 
 // ---- 会話の状態（Studio と同じ） ----
 let voiceTrouble = false
@@ -2085,10 +2148,12 @@ async function sendText(text: string, from: 'composer' | 'choice' | 'pending' | 
   if (typeof from === 'object') pendingFromQueue = true
   let result: Awaited<ReturnType<typeof call>> | null = null
   try {
+    // BOXP-648: 位置は送信の直前に添えるだけで、控え（unconfirmed）・送信待ち・履歴には保存しない。現場（見てきて）には添えない。
+    const location = from === 'visit' ? undefined : await locationForSend()
     result = await call('messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...payload, views: true }),
+      body: JSON.stringify({ ...payload, views: true, ...(location ? { location } : {}) }),
     })
   } catch {
     result = null
