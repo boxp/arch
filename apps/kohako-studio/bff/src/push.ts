@@ -7,14 +7,14 @@ import { atomic, load } from './storage.js'
 import { isRecord } from './untrusted.js'
 type Subscription = { endpoint: string; keys: { p256dh: string; auth: string } }
 export function summarizePush(item: Pick<Item, 'title' | 'body' | 'eventType'>, minimal = false) {
-  if (minimal) return { title: 'コハコ', body: 'コハコからお知らせがあります' }
+  if (minimal) return { title: 'コハコの家', body: '新しいお知らせが届いています' }
   const fallback: Record<string, string> = {
-    'run-finished': '完了しました',
+    'run-finished': '作業が完了しました',
     'lane-changed': '確認が必要です',
-    'morning-digest': 'お知らせがあります',
-    'run-stopped': '止まっています',
+    'morning-digest': '定期のお知らせが届いています',
+    'run-stopped': '作業が停止しています',
   }
-  let body = redact(item.body) || fallback[item.eventType] || '新しいお知らせがあります'
+  let body = redact(item.body) || fallback[item.eventType] || '新しいお知らせが届いています'
   if (body.length > 120) body = `${body.slice(0, 119)}…`
   // タイトルもロック画面に出るため本文と同じ伏字処理を通す
   const title = redact(item.title).slice(0, 80) || 'コハコ'

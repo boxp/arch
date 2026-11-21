@@ -51,7 +51,7 @@ try {
         if (scenario === 'o') await ctx.addInitScript(() => { if (sessionStorage.getItem('o523')) return; sessionStorage.setItem('o523', '1'); const now = Date.now(); sessionStorage.setItem('kohako-home-reauth', JSON.stringify({ v: 1, draft: 'x'.repeat(3995), queue: ['旧待ち'], at: now - 1000, reloadAt: now - 1000 })) })
         await page.goto(url)
         if (scenario === 'l' || scenario === 'm') {
-          await page.waitForFunction(() => document.querySelector('#history')?.textContent.includes('受理を確認できませんでした'))
+          await page.waitForFunction(() => document.querySelector('#history')?.textContent.includes('送信できたか確認できませんでした'))
           await page.locator('#message').fill('同文')
           if (scenario === 'm') { await page.locator('#message').fill('同文x'); await page.locator('#message').fill('同文') }
           lookupReady = true
@@ -65,7 +65,7 @@ try {
         }
         // p: 受理未確認のまま新しい発言を送り、照会が 401 なら再認証の再読み込みボタンへ切り替える（控え・送信待ちは残し POST しない）。
         if (scenario === 'p') {
-          await page.waitForFunction(() => document.querySelector('#history')?.textContent.includes('受理を確認できませんでした'))
+          await page.waitForFunction(() => document.querySelector('#history')?.textContent.includes('送信できたか確認できませんでした'))
           await page.locator('#message').fill('新文')
           lookupAuth = true; lookupReady = true
           await page.locator('#send').click()
@@ -115,7 +115,7 @@ try {
         }
         if (scenario === 'k') {
           await page.locator('#message').fill('同文')
-          await page.waitForFunction(() => document.querySelector('#history')?.textContent.includes('受理を確認できませんでした')); await page.waitForTimeout(300)
+          await page.waitForFunction(() => document.querySelector('#history')?.textContent.includes('送信できたか確認できませんでした')); await page.waitForTimeout(300)
           assert(await page.locator('#message').inputValue() === '同文', '手入力の同文が失われた')
           mode = 'auth'; await page.evaluate(() => window.dispatchEvent(new Event('online')))
           await page.waitForFunction(() => document.querySelector('#reconnect')?.textContent === '再認証のため再読み込み', null, { timeout: 8000 })
@@ -146,7 +146,7 @@ try {
           // 同じ家の HTML を再読込し、Access ログイン後の応答を模擬する。
           await page.route('**/kohako/home.html**', route => route.continue())
           await Promise.all([page.waitForNavigation(), page.locator('#reconnect').click()])
-          if (scenario === 'c') { await page.locator('#error').waitFor(); assert((await page.locator('#error').textContent()).includes('再読み込みしても認証できませんでした。ログイン画面が開かない場合はブラウザで家のURLを開き直してください。'), '再認証失敗の案内なし'); await page.waitForTimeout(5000); assert(navigations === 2, `自動再読込 ${navigations}`) }
+          if (scenario === 'c') { await page.locator('#error').waitFor(); assert((await page.locator('#error').textContent()).includes('再読み込みしても認証できませんでした。ログイン画面が開かない場合は、ブラウザで「コハコの家」のURLを開き直してください。'), '再認証失敗の案内なし'); await page.waitForTimeout(5000); assert(navigations === 2, `自動再読込 ${navigations}`) }
           else if (scenario === 'g') { await page.waitForFunction(() => document.querySelector('#queue-list')?.textContent.includes('q5')); await page.waitForTimeout(800); assert(navigations === 2, `再読込回数 ${navigations}`); assert(await page.locator('#message').inputValue() === '同文', '満杯時に草稿が消えた'); assert(posts.length === 0, '予期しない POST') }
           else if (scenario === 'f') { await page.waitForFunction(() => document.querySelector('#queue-list')?.textContent.includes('同文')); await page.waitForTimeout(800); assert(gets.includes('requests/pending-f523'), '控えの照会なし'); assert(await page.locator('#queue-resume').isVisible(), '退避した発言が保留されていない'); assert(await page.locator('#message').inputValue() === '同文', '手入力の草稿が復元されない'); assert(await page.evaluate(() => JSON.parse(sessionStorage.getItem('kohako-home-unconfirmed') || 'null')?.requestId) === 'pending-f523', '控えが失われた'); assert(await page.evaluate(() => sessionStorage.getItem('kohako-home-reauth')) === null, '退避が残存'); assert(posts.length === 0, '予期しない POST') }
           else { await page.waitForFunction(() => !document.querySelector('#send').disabled); assert(await page.locator('#message').inputValue() === '下書き', '草稿未復元'); assert(await page.evaluate(() => sessionStorage.getItem('kohako-home-reauth')) === null, '退避が残存'); await page.waitForTimeout(500); assert(posts.length === (scenario === 'a' ? 1 : 0), '予期しない POST'); if (scenario === 'a') { assert((await page.locator('#queue-list').textContent()).includes('待ち'), 'キュー未復元'); assert(await page.locator('#queue-resume').isVisible(), 'キューが保留されていない') } if (scenario === 'd') assert(gets.some(x => x === 'requests/pending-523'), '未確認の GET 照会なし') }

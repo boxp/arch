@@ -46,7 +46,7 @@ it('shows task totals, breakdown and incomplete lower bound', () => {
   }
   expect(tasks.inProgress.byAgent.reduce((n, x) => n + x.count, 0)).toBe(tasks.inProgress.total)
   expect(formatTasks(tasks)).toContain('3件以上（全件は不明）')
-  expect(formatTasks(tasks)).toContain('整合不明あり')
+  expect(formatTasks(tasks)).toContain('件数に不整合あり')
 })
 it('formats relative reset and summary', () => {
   expect(relativeTime('2026-11-13T00:00:00Z', Date.parse('2026-11-11T00:00:00Z'))).toBe('あと2日')
@@ -111,7 +111,7 @@ it('models gauges without inventing zero and picks the highest observed window',
 })
 it('models incomplete and unavailable task totals', () => {
   const tasks = { state: 'ok', inProgress: { total: 2, complete: false, byAgent: [], conflicts: ['x'] } }
-  expect(taskBadgeOf(tasks)).toMatchObject({ total: 2, suffix: '以上', stateText: '整合不明' })
+  expect(taskBadgeOf(tasks)).toMatchObject({ total: 2, suffix: '以上', stateText: '件数に不整合あり' })
   expect(taskBadgeOf({ ...tasks, state: 'unavailable' }).total).toBeNull()
 })
 it('formats used percent without float noise and never invents zero for missing values (BOXP-551)', () => {

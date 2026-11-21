@@ -1,5 +1,5 @@
 import { Seen, Shared, nextRev, planSync, validateTranscript } from './sync'
-import { classifyFailure, parseReauth, recentlyReloaded, REAUTH_KEY, serializeReauth } from './reauth'
+import { classifyFailure, parseReauth, recentlyReloaded, restoredNotice, REAUTH_KEY, serializeReauth } from './reauth'
 import { submitAction } from './composer'
 import { must } from '../must'
 import './activity.css'
@@ -538,7 +538,7 @@ function openViewer(view: View, opener: HTMLElement, focus = true) {
       frame.title = view.title
       viewerBody.append(frame)
       line('© OpenStreetMap contributors')
-    } else line('地図の位置を特定できませんでした。下の Google マップで開けます')
+    } else line('地図上の位置を特定できませんでした。下のリンクから Google マップで開けます。')
     line([view.destination.name, view.destination.address].filter(Boolean).join(' '))
     if (view.mode)
       line(`移動手段: ${{ transit: '公共交通', walking: '徒歩', driving: '車', bicycling: '自転車' }[view.mode]}`)
@@ -546,8 +546,8 @@ function openViewer(view: View, opener: HTMLElement, focus = true) {
     if (view.geo) {
       line(
         view.geo.precision === 'area'
-          ? `番地まで特定できなかったため『${view.geo.label}』付近を表示しています（目的地の正確な位置ではありません）`
-          : `『${view.geo.label}』の位置（OpenStreetMap の検索結果）`,
+          ? `番地まで特定できなかったため、「${view.geo.label}」付近を表示しています（正確な目的地とは異なる場合があります）。`
+          : `「${view.geo.label}」付近（OpenStreetMap の検索結果）`,
       )
       line(
         '地図は OpenStreetMap から読み込みます（目的地付近の位置だけが送られ、出発地は送りません）。経路はこの地図には描かれません。',
@@ -563,12 +563,10 @@ function openViewer(view: View, opener: HTMLElement, focus = true) {
       viewerBody.append(a, document.createElement('br'))
     }
     link('Google マップで経路を開く', false)
-    if (view.origin) link(`出発地『${view.origin}』から開く`, true)
-    line(
-      '開くと目的地（出発地を選んだ場合は出発地も）が Google に送られます。Google マップの家の中への埋め込みは API キー（新しい契約）が必要なため、地図は OpenStreetMap で表示しています。',
-    )
+    if (view.origin) link(`出発地「${view.origin}」からの経路を Google マップで開く`, true)
+    line('Google マップを開くと、目的地（および選択した出発地）が Google に送信されます。')
   } else if (view.kind === 'html') {
-    line('コハコが作った図です。数値は会話内容にもとづくもので、確認されたデータではありません。')
+    line('※コハコが作成した参考図です。数値は会話内容にもとづくもので、確認されたデータではありません。')
     const frame = document.createElement('iframe')
     frame.setAttribute('sandbox', '')
     frame.referrerPolicy = 'no-referrer'
@@ -578,7 +576,7 @@ function openViewer(view: View, opener: HTMLElement, focus = true) {
     viewerBody.append(frame)
   } else {
     const refresh = document.createElement('button')
-    refresh.textContent = '最新にする'
+    refresh.textContent = '最新の状態にする'
     refresh.type = 'button'
     viewerBody.append(refresh)
     const chart = document.createElement('div')
@@ -637,7 +635,21 @@ function show(next: State) {
   state = next
   if ((!enabled || netDown) && (recording || starting)) cancelDictation?.()
   syncDictationNoteHook?.()
-  stateLabel.textContent = netDown ? '通信が切れています' : presentation[next].label
+  stateLabel.textContent = netDown
+    ? '通信断'
+    : (
+        {
+          idle: '待機中',
+          listening: '聞き取り中',
+          thinking: '考えています',
+          speaking: '話しています',
+          done: '返答を表示中',
+          approval: '確認待ち',
+          failed: 'エラー',
+          offline: '未接続',
+          stopped: '停止済み',
+        } satisfies Record<State, string>
+      )[next]
   face.src = `./kohako/studio/c48v6-${presentation[next].face}-color.png`
   if (next !== 'speaking') {
     speakingSince = 0
@@ -655,9 +667,9 @@ function show(next: State) {
     acting.setOperational(rigStateOf[next])
     report.acting = acting.snapshot
   }
-  // 応答待ち中も入力欄は使え、送信ボタンは「キューに追加」になる（送信待ちがある間も順序を守るため積む）。
+  // 応答待ち中も入力欄は使え、送信ボタンは「送信待ちに追加」になる（送信待ちがある間も順序を守るため積む）。
   send.disabled = !enabled || touchActive || !!recording || starting
-  send.textContent = queueing() ? 'キューに追加' : '送信'
+  send.textContent = queueing() ? '送信待ちに追加' : '送信'
   stop.hidden = !busy || !requestId || !accepted
   el<HTMLButtonElement>('visit').hidden = busy
   el<HTMLButtonElement>('visit').disabled =
@@ -779,8 +791,8 @@ function refreshScene(force = false) {
   } else apply()
   if (scene === 'work' || busy) elapsedLabel.textContent = `${Math.floor((Date.now() - started) / 1000)}秒`
   elapsedLabel.hidden = !busy
-  if (scene === 'work' && !reply.dataset.reply && !reply.textContent?.startsWith('少し時間'))
-    setBubble('少し時間がかかっています。終わったらお知らせしますね。止めたいときは「停止」を押してください。')
+  if (scene === 'work' && !reply.dataset.reply && !reply.textContent?.startsWith('少しお時間'))
+    setBubble('少しお時間をいただいています。終わりしだいお伝えしますね。途中で止める場合は「停止」を押してください。')
   return scene
 }
 
@@ -856,7 +868,7 @@ function tickClock() {
     body.dataset.daypart = room.daypart ?? daypartOf(h)
     el('greeting').textContent =
       h < 5
-        ? 'こんな時間まで、おつかれさまです、ご主人さま。'
+        ? '遅くまでおつかれさまです、ご主人さま。'
         : h < 11
           ? 'おはようございます、ご主人さま。'
           : h < 18
@@ -881,11 +893,11 @@ function problem(status: number, data: Record<string, unknown> | null): string {
   if (data?.error === 'pdf_no_text') return 'PDFから文字を抽出できませんでした。'
   if (data?.error === 'pdf_unreadable') return 'PDFを読み取れませんでした。'
   if (data?.error === 'attachments_too_large')
-    return 'サイズ超過：画像は1回の送信で合計5.5 MiBまでです。添付を減らしてください。'
+    return '画像の合計サイズが大きすぎます（1回の送信で合計 5.5 MiB まで）。添付を減らしてください。'
   if (data?.error === 'attachment_text_too_large')
-    return 'サイズ超過：PDF・テキストの本文は1回の送信で合計約48KBまでです。添付を分けて送ってください。'
+    return 'PDFやテキストの本文が長すぎます（合計約 48 KB まで）。ファイルを分けて送ってください。'
   if (status === 413) return 'サイズ超過です。'
-  if (status === 415) return '未対応の形式、またはファイル形式が一致しません。'
+  if (status === 415) return '対応していないファイル形式か、拡張子と中身が一致しません。'
   if (status === 422 || data?.error === 'no_speech') return '音声を認識できませんでした。'
   return `処理に失敗しました（${status}）。`
 }
@@ -928,7 +940,8 @@ function renderStatus() {
         `更新 ${new Date(statusValue.generatedAt).toLocaleString('ja-JP')}`,
       ]
     : []
-  if (statusFailed) lines.unshift(statusValue ? '取得できません（前回の古い情報）' : '取得できません')
+  if (statusFailed)
+    lines.unshift(statusValue ? '最新情報を取得できなかったため、前回の値を表示しています' : '取得できません')
   const detail = el('status-detail')
   detail.replaceChildren()
   for (const line of lines) {
@@ -941,12 +954,12 @@ function renderStatus() {
   // 取得失敗中は前回値を表示しているため、横長配置でも「古い情報」の見出しを必ず出す（BOXP-504 TD-02）。
   host.classList.toggle('is-stale', statusFailed && !!statusValue)
   if (!statusValue) {
-    host.textContent = statusFailed ? '利用枠・進行中 取得できません' : '利用枠・進行中を確認中'
+    host.textContent = statusFailed ? '利用枠・タスクを取得できません' : '利用枠・タスクを確認中'
     return
   }
   const tag = document.createElement('span')
   tag.className = 'status-tag'
-  tag.textContent = statusFailed ? '古い情報' : '利用枠と進行中'
+  tag.textContent = statusFailed ? '古い情報' : '利用枠とタスク'
   host.append(tag)
   const row = document.createElement('span')
   row.className = 'status-row'
@@ -1117,13 +1130,13 @@ function fail(status: number, data: Record<string, unknown> | null) {
   setError(
     authExpired
       ? recentlyReloaded(reauth, Date.now())
-        ? '再読み込みしても認証できませんでした。ログイン画面が開かない場合はブラウザで家のURLを開き直してください。'
+        ? '再読み込みしても認証できませんでした。ログイン画面が開かない場合は、ブラウザで「コハコの家」のURLを開き直してください。'
         : 'Cloudflare Access の認証が切れました。ボタンで画面を再読み込みしてログインし直してください。'
       : problem(status, data),
   )
   if (authExpired) {
     enabled = false
-    connection.textContent = '未認証'
+    connection.textContent = '認証切れ'
     show('offline')
   } else show('failed')
   if (status === 429 && data?.error === 'busy') void syncTranscript()
@@ -1142,31 +1155,30 @@ async function initialize() {
       let restored = 0
       for (const text of reauth.queue) if (queue.add(text, Date.now()).ok) restored++
       let merged = false
-      if (reauth.draft && !message.value) message.value = reauth.draft
-      else if (reauth.draft && (message.value !== reauth.draft || typedSinceLoad)) {
+      let draftRestored = false
+      if (reauth.draft && !message.value) {
+        message.value = reauth.draft
+        draftRestored = true
+      } else if (reauth.draft && (message.value !== reauth.draft || typedSinceLoad)) {
         if (queue.add(reauth.draft, Date.now()).ok) restored++
         else {
           message.value = `${reauth.draft}\n${message.value}`
           merged = true
+          draftRestored = true
         }
       }
       if (restored) queue.hold('auth')
-      if (restored || reauth.draft)
-        addHistory(
-          'お知らせ',
-          merged
-            ? '再認証前の入力を入力中の文の前に戻しました（まだ送っていません）。'
-            : `再認証前の入力と送信待ち ${restored} 件を戻しました（まだ送っていません）。`,
-        )
+      if (restored || draftRestored) addHistory('お知らせ', restoredNotice(draftRestored, merged, restored))
       tab.set(REAUTH_KEY, null)
       reauth = null
     }
     enabled = conv.data.enabled === true
     stt = enabled && !!conv.data.stt
     netDown = false
-    connection.textContent = enabled ? '接続中・Web 専用の会話（端末間で共有）' : '会話は無効です'
+    connection.title = 'Web専用の会話・端末間で共有中'
+    connection.textContent = enabled ? '接続中' : '会話オフ'
     el('features').textContent =
-      `音声認識: ${stt ? '有効（家サーバー内のwhisper・保存なし）' : '無効'} ／ セッション開始: ${typeof conv.data.sessionStartedAt === 'number' ? new Date(conv.data.sessionStartedAt).toLocaleString('ja-JP') : '未開始'}`
+      `音声入力: ${stt ? '利用可能（自宅サーバー内で認識・音声保存なし）' : 'オフ'} ／ 会話の開始: ${typeof conv.data.sessionStartedAt === 'number' ? new Date(conv.data.sessionStartedAt).toLocaleString('ja-JP') : '未開始'}`
     error.textContent = ''
     show(enabled ? 'idle' : 'offline')
     if (enabled) {
@@ -1271,7 +1283,7 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
     const lost = () => {
       if (++misses >= 2 && !netDown) {
         netDown = true
-        connection.textContent = '通信が切れています（自動で問い合わせ中）'
+        connection.textContent = '再接続中'
         show(state)
       }
     }
@@ -1291,7 +1303,7 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
     if (netDown || misses) {
       misses = 0
       netDown = false
-      connection.textContent = '接続中・Web 専用の会話（端末間で共有）'
+      connection.textContent = '接続中'
       error.textContent = ''
       show(state)
     }
@@ -1329,7 +1341,7 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
         el('approval-summary').textContent = next.approval.summary
         el('approval-error').textContent = ''
         addHistory('お知らせ', `確認が必要です: ${next.approval.summary}`, Date.now(), id)
-        setBubble('実行する前に確認させてください、ご主人さま。')
+        setBubble('ご主人さま、実行する前に一度だけ確認させてください。')
       }
       show('approval')
     } else if (next.state === 'thinking') {
@@ -1357,7 +1369,7 @@ async function poll(id: string, deadline = Date.now() + 11 * 60_000) {
         show('failed')
       } else if (next.state === 'stopped') {
         seen.markEnd(id)
-        setBubble('止めました。ほかにご用はありますか、ご主人さま。')
+        setBubble('処理を止めました、ご主人さま。ほかに何かお手伝いできることはありますか？')
         addHistory('お知らせ', '依頼を止めました。', Date.now(), id)
       }
       remoteIds.delete(id)
@@ -1482,7 +1494,7 @@ function playReply() {
       if (state !== 'speaking') return
       voiceTrouble = true
       error.textContent = kohaku
-        ? 'コハクの声で読めませんでした。「続きから読む」で読み直せます。設定の「読み上げの声」で端末の声に戻せます。'
+        ? 'コハクの声で読み上げられませんでした。「続きから読む」で再試行できるほか、設定の「読み上げの声」から端末の声へ切り替えられます。'
         : '読み上げが途中で止まりました。「続きから読む」で続きを読めます。'
       offerSpeechResume()
       show('done')
@@ -1513,7 +1525,7 @@ function deliver(text: string, views: View[] = [], id = '', quiet = false) {
   lastReply = text
   lastActivity = Date.now()
   reply.dataset.reply = '1'
-  setBubble(text || '（空の返答でした）')
+  setBubble(text || '（返答の本文がありませんでした）')
   if (!id || seen.markReply(id)) addHistory('コハコ', text, Date.now(), id)
   renderCards(cardsFromText(text), views)
   const spoken = plainText(text)
@@ -1622,7 +1634,7 @@ function renderQueue() {
     li.className = 'unconfirmed'
     const label = document.createElement('span')
     label.className = 'q-state'
-    label.textContent = busy ? '受理を確認中' : '受理未確認'
+    label.textContent = busy ? '送信状況を確認中' : '届いたか未確認'
     const text = document.createElement('span')
     text.className = 'q-text'
     text.textContent = pending.text
@@ -1633,7 +1645,7 @@ function renderQueue() {
     const li = document.createElement('li')
     const label = document.createElement('span')
     label.className = 'q-state'
-    label.textContent = `${i + 1}番目・未送信`
+    label.textContent = `${i + 1}番目・待機中`
     const text = document.createElement('span')
     text.className = 'q-text'
     text.textContent = item.text
@@ -1654,11 +1666,15 @@ function renderQueue() {
   })
   const held = queue.held ?? (pending && !busy ? 'unknown' : null)
   queueStatus.textContent = held
-    ? `${holdLabel[held]}、送信待ちの自動送信を止めています。「再開」で${pending ? '受理状況を確認してから' : '先頭から順に'}送ります。`
+    ? pending
+      ? `${holdLabel[held]}、送信待ちを一時停止しています。「確認して再開」で前回の送信状況を確かめてから送ります。`
+      : held === 'speech'
+        ? '読み上げが途中のため、送信待ちを一時停止しています。「続きから読む」で読み終えるか、「再開」で上から順に送ります。'
+        : `${holdLabel[held]}、送信待ちを一時停止しています。「再開」で上から順に送ります。`
     : items.length
       ? busy || state === 'speaking'
-        ? `いまの応答が終わったら、上から順に 1 件ずつ送ります（${items.length}/${QUEUE_MAX_ITEMS}）。`
-        : 'まもなく先頭を送ります。'
+        ? `いまの返答が終わったら、上から順に1件ずつ送ります（${items.length}/${QUEUE_MAX_ITEMS}）。`
+        : 'まもなく次のメッセージを送ります。'
       : ''
   queueResume.textContent = pending ? '確認して再開' : '再開'
   queueResume.hidden = !held
@@ -1720,7 +1736,8 @@ function enqueue(text: string): boolean {
 queueResume.addEventListener('click', () => {
   if (busy) return
   if (!enabled) {
-    queueNote.textContent = '認証が切れています。再ログイン後に「再接続」してから再開してください。'
+    queueNote.textContent =
+      '認証が切れています。「再認証のため再読み込み」でログインし直したあと、「再開」を押してください。'
     renderQueue()
     return
   }
@@ -1759,20 +1776,26 @@ const chips: Chip[] = [],
   chipBox = el('attachment-chips'),
   fileInput = el<HTMLInputElement>('attachment-file'),
   form = el<HTMLFormElement>('form')
+function formatFileSize(bytes: number): string {
+  if (bytes < 1000) return `${bytes} B`
+  if (bytes < 1_000_000) return `${(bytes / 1000).toFixed(1)} KB`
+  return `${(bytes / 1_000_000).toFixed(1)} MB`
+}
 function renderChips() {
   chipBox.replaceChildren()
   for (const chip of chips) {
     const span = document.createElement('span'),
       cancel = document.createElement('button')
-    span.textContent = `${chip.name} (${chip.size} bytes) ${chip.state}`
+    span.textContent = `${chip.name} (${formatFileSize(chip.size)}) ${chip.state}`
     cancel.type = 'button'
-    cancel.textContent = '×取消'
-    cancel.setAttribute('aria-label', `${chip.name}を取消`)
+    cancel.textContent = '×'
+    cancel.setAttribute('aria-label', `${chip.name}の添付を取り消す`)
     cancel.onclick = () => {
       const i = chips.indexOf(chip)
       if (i >= 0) chips.splice(i, 1)
       renderChips()
     }
+    if (chip.state === '本文一部省略') span.title = '上限を超えた末尾を省略して送信します'
     span.append(cancel)
     chipBox.append(span)
   }
@@ -1803,7 +1826,7 @@ async function addFiles(files: FileList | File[]) {
       } else {
         chip.id = result.data.attachmentId
         chip.name = String(result.data.name)
-        chip.state = result.data.truncated ? '一部省略' : ''
+        chip.state = result.data.truncated ? '本文一部省略' : ''
       }
     } catch {
       chip.state = '失敗'
@@ -1836,7 +1859,7 @@ el<HTMLFormElement>('form').addEventListener('submit', (event) => {
   }
   const attachAction = attachmentSubmitAction(chips.length > 0, queueing(), !!unconfirmed)
   if (attachAction === 'reject-queue') {
-    setError('添付付きの発言は送信待ちに追加できません。前の依頼が終わってから送信してください。')
+    setError('ファイル付きのメッセージは送信待ちに入れられません。いまの返答が終わってから送信してください。')
     return
   }
   if (attachAction === 'confirm-pending' && unconfirmed) {
@@ -2012,7 +2035,7 @@ async function sendText(text: string, from: 'composer' | 'pending' | 'visit' | Q
   if (sendOutcomeUnknown(result ? result.status : null) || resending) {
     // 受理されたか不明。本文は控え（同じ受付番号）に残し、送信待ちには戻さない（戻すと二重に送り得る）。
     setUnconfirmed(payload)
-    setError('送信結果を確認できません。送信待ち欄の受理未確認行から、前回の受理状況を確認できます。')
+    setError('送信できたか確認できませんでした。送信待ちの「確認して再開」から、前回の送信状況を確認できます。')
     show('failed')
     return
   }
@@ -2051,7 +2074,8 @@ async function decide(choice: 'once' | 'deny') {
       message.focus()
     }
   } catch {
-    el('approval-error').textContent = '承認結果を確認できません。通信を確認してください。'
+    el('approval-error').textContent =
+      '許可・拒否の結果を送信できたか確認できませんでした。通信状態を確認してください。'
   }
   allow.disabled = deny.disabled = false
 }
@@ -2084,7 +2108,7 @@ stop.addEventListener('click', async () => {
   if (!requestId || !accepted) return
   if (actingEnabled) interruptActing()
   stop.disabled = true
-  stateLabel.textContent = '止めています'
+  stateLabel.textContent = '停止しています'
   try {
     const result = await call(`requests/${requestId}/cancel`, { method: 'POST' })
     if (result.status !== 202) setError(problem(result.status, result.data))
@@ -2125,11 +2149,11 @@ const dictation = createDictation({
     starting = phase === 'starting'
     recording = phase === 'recording' || phase === 'transcribing'
     record.dataset.transcribing = String(phase === 'transcribing')
-    record.textContent = phase === 'recording' ? '■ 停止' : phase === 'transcribing' ? '…' : '🎤'
+    record.textContent = phase === 'recording' ? '■ 録音終了' : phase === 'transcribing' ? '…' : '🎤'
     record.setAttribute(
       'aria-label',
       phase === 'recording'
-        ? '録音を停止して文字にする'
+        ? '録音を終えて文字にする'
         : phase === 'transcribing'
           ? '文字にしています'
           : '音声入力を始める',
@@ -2138,7 +2162,7 @@ const dictation = createDictation({
     record.setAttribute('aria-pressed', String(phase === 'recording'))
     recordCancel.hidden = phase === 'idle'
     if (phase === 'recording')
-      recordStatus.textContent = `${recordStatus.dataset.hushed === 'true' ? '録音のため読み上げを止めました（自動では再開しません） ' : ''}● 録音中 0:${String(seconds).padStart(2, '0')} / 0:30`
+      recordStatus.textContent = `${recordStatus.dataset.hushed === 'true' ? '（読み上げを停止中・自動では再開しません） ' : ''}● 録音中 0:${String(seconds).padStart(2, '0')} / 0:30`
     else if (phase !== 'idle') recordStatus.textContent = '文字にしています…'
     else if (/^(● 録音中|録音のため|文字にしています)/.test(recordStatus.textContent ?? ''))
       recordStatus.textContent = '録音を中止しました（音声は破棄しました）。'
@@ -2165,7 +2189,7 @@ const dictation = createDictation({
     message.focus()
     message.setSelectionRange(message.value.length, message.value.length)
     message.dispatchEvent(new Event('input', { bubbles: true }))
-    const done = '認識した文を確認・修正してから送信してください。'
+    const done = '文字起こしが完了しました。内容を確認してから送信してください。'
     recordStatus.textContent = done
     window.setTimeout(() => {
       if (recordStatus.textContent === done) {
@@ -2173,7 +2197,7 @@ const dictation = createDictation({
         syncDictationNote()
       }
     }, 10000)
-    if (result.truncated) setError('入力欄の上限で一部を切り詰めました。')
+    if (result.truncated) setError('入力欄の上限（500文字）を超えたため、末尾を省略しました。')
     syncDictationNote()
   },
 })
@@ -2301,9 +2325,9 @@ let touchGesture = 'none',
   idleGesture: string | null = null
 function touchBlocked(): string | null {
   if (!prefs.touch) return 'ふれあいは設定で OFF です。'
-  if (state === 'approval') return '確認待ちの間はふれあいを止めています。'
+  if (state === 'approval') return '確認待ちの間はふれあいを停止しています。'
   if (state === 'failed' || state === 'offline' || netDown) return 'いまはふれあいできません。'
-  if (recording) return '録音中はふれあいを止めています。'
+  if (recording) return '録音中はふれあいを停止しています。'
   return null
 }
 function touchReact(zone: Zone, kind: 'tap' | 'pat', via: 'pointer' | 'menu') {
@@ -2730,7 +2754,7 @@ async function startRig() {
     rigCanvas.hidden = false
     rigLoading = false
     refreshArrival()
-    el('face-mode').textContent = `${rigModel.name}（独自 runtime・公式 Live2D ではありません）`
+    el('face-mode').textContent = `表示モデル: ${rigModel.name}（独自描画・公式 Live2D ではありません）`
     Object.assign(report, {
       loaded: true,
       model: rigModel.id,
@@ -2743,7 +2767,7 @@ async function startRig() {
   } catch (e) {
     ;(report.errors as string[]).push(e instanceof Error ? e.message : String(e))
     el('face-mode').textContent =
-      'リグを読み込めなかったため静止表情で表示しています（ふれあいは「ふれあい」ボタンから）'
+      '動く姿を読み込めなかったため、静止画で表示しています（ふれあいは上部の「ふれあい」から行えます）。'
     rigLoading = false
     refreshArrival()
   }
@@ -2848,7 +2872,7 @@ async function resumeUnconfirmed(pending: Outgoing) {
   if (unconfirmed === pending) {
     addHistory(
       'お知らせ',
-      '再読み込み前の送信の受理を確認できませんでした。送信待ち欄の受理未確認行から同じ受付番号で確認できます。',
+      '再読み込み前に送信できたか確認できませんでした。送信待ちの「確認して再開」から、同じ受付番号で前回の送信状況を確認できます。',
     )
   }
   show(state)
@@ -2889,8 +2913,8 @@ const inbox = initInbox(followRequest, {
     !touchActive &&
     !CONVERSING.includes(state),
   announce: (item, actions, more) => {
-    const body = item.body.length > 300 ? `${item.body.slice(0, 300)}… 続きは受信箱で` : item.body
-    const text = `ご主人さま、お知らせです。${item.title}\n${body}${more ? `\nほかに ${more} 件のお知らせは受信箱にあります` : ''}`
+    const body = item.body.length > 300 ? `${item.body.slice(0, 300)}…（続きは受信箱でご覧いただけます）` : item.body
+    const text = `ご主人さま、お知らせが届いています。\n${item.title}\n${body}${more ? `\nほかにも ${more} 件、受信箱に届いています。` : ''}`
     setBubble(text)
     addHistory('お知らせ', text)
     const box = el('notice-actions'),
@@ -2923,12 +2947,12 @@ const inbox = initInbox(followRequest, {
         if (input.value.trim()) void sendNotice('text', input.value)
       })
     }
-    button('受信箱で見る', () => {
+    button('受信箱で開く', () => {
       box.hidden = true
       updateMessage()
       actions.open()
     })
-    button('あとで', () => {
+    button('あとで見る', () => {
       box.hidden = true
       updateMessage()
       actions.later()
@@ -2974,28 +2998,28 @@ async function syncTranscript() {
       } else if (op.op === 'ended')
         addHistory(
           'お知らせ',
-          op.stopped ? 'この依頼は止められました。' : 'この依頼は結果を確認できませんでした。',
+          op.stopped ? 'この依頼は停止されました。' : 'この依頼の結果を確認できませんでした。',
           op.at,
           op.id,
         )
       else if (op.op === 'divider')
         addHistory(
           'お知らせ',
-          'ここから現在の会話です（これより前は以前の会話の履歴で、続きの文脈には含まれません）。',
+          'ここから新しい会話です（これより前は以前の履歴で、文脈には引き継がれません）。',
           op.at,
           op.id,
         )
       else if (op.op === 'stale')
         addHistory(
           'お知らせ',
-          'ここまでは以前の会話の履歴です（時間が空いたため、次の発言からは新しい会話になり、続きの文脈には含まれません）。',
+          'ここまでは以前の会話です（時間が空いたため、次のメッセージから新しい会話になります）。',
           Date.now(),
           op.id,
         )
       else if (op.op === 'follow') {
         if (followRemote(op.id)) {
           if (op.kind === 'reply') addHistory('お知らせ', '別の端末から通知への返信が送られました。')
-          addHistory('お知らせ', '別の端末から送られた依頼の続きを追っています。')
+          addHistory('お知らせ', '別の端末から送られたやり取りの続きを表示しています。')
         }
       }
     }
@@ -3034,6 +3058,6 @@ function pruneHistory(gone: string[]) {
     delete reply.dataset.reply
     lastReply = ''
     renderCards([], [])
-    setBubble('（前の返答は保存期間を過ぎたため、表示を終えました。）')
+    setBubble('（前の返答は保存期間を過ぎたため、表示を終了しました）')
   } else renderChat()
 }

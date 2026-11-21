@@ -16,9 +16,7 @@ describe('activity', () => {
     )
     expect(a.steps).toHaveLength(1)
     expect(JSON.stringify(a)).not.toContain('secret')
-    expect(activityHeadline(a, { live: false, nowMs: 0, receivedAtMs: 0 })).toBe(
-      'ツールを 1 回使いました（web_search）',
-    )
+    expect(activityHeadline(a, { live: false, nowMs: 0, receivedAtMs: 0 })).toBe('ツールを 1 回使用（Web検索）')
   })
   it('ラベルと時間を表示する', () => {
     expect(toolLabel('web_search').doing).toBe('Web を検索しています')
@@ -49,7 +47,7 @@ describe('activity', () => {
     expect(make({ runningMs: 86400001 }).steps).toHaveLength(0)
     expect(make({ startMissing: false }).steps).toHaveLength(0)
     const step = make({ startMissing: true }).steps[0]
-    if (step.kind === 'tool') expect(activityTime(step)).toBe('開始未受信・時間不明')
+    if (step.kind === 'tool') expect(activityTime(step)).toBe('時間不明（開始記録なし）')
     const other = make({}).steps[0]
     if (other.kind === 'tool') expect(activityTime(other)).toBe('時間不明')
     expect(formatDuration(0)).toBe('0.1秒未満')
@@ -73,7 +71,7 @@ describe('activity', () => {
       }),
     )
     expect(activityHeadline(a, { live: false, nowMs: 0, receivedAtMs: 0 })).toBe(
-      'ツールを 5 回使いました（terminal×2、web_search、memory、ほか）',
+      'ツールを 5 回使用（コマンド実行×2、Web検索、記憶確認、ほか）',
     )
   })
 })

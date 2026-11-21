@@ -17,7 +17,7 @@ export const holdLabel: Record<HoldReason, string> = {
   unknown: '前の送信が受理されたか確認できないため',
   offline: '接続できないため',
   timeout: '前の依頼の確認がタイムアウトしたため',
-  speech: '読み上げが途中で止まったため（「続きから読む」で続きを読めます）',
+  speech: '読み上げが途中のため',
 }
 
 export class MessageQueue {
@@ -86,6 +86,6 @@ export class MessageQueue {
 
 export const addErrorText: Record<'empty' | 'too_long' | 'full', string> = {
   empty: '',
-  too_long: `送信待ちに積めるのは ${QUEUE_MAX_CHARS} 文字までです。`,
-  full: `送信待ちは ${QUEUE_MAX_ITEMS} 件までです。送られるか取り消すまでお待ちください（入力した本文はそのまま残しています）。`,
+  too_long: `送信待ちに入れられるのは${QUEUE_MAX_CHARS}文字までです。`,
+  full: `送信待ちは${QUEUE_MAX_ITEMS}件までです。送信が終わるか取り消してからお試しください（入力中の文章は残っています）。`,
 }

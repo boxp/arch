@@ -164,7 +164,7 @@ it('プールの定義（対象の担当・窓・提供状態）を固定の一�
       agents: ['claude-fable', 'fable'],
       windows: [['fable_7d', '7日']],
       state: undefined,
-      note: '共有枠にも同時に掛かります',
+      note: 'Claude共有枠も同時に消費します',
     },
     {
       id: 'claude_opus',
@@ -172,7 +172,7 @@ it('プールの定義（対象の担当・窓・提供状態）を固定の一�
       agents: ['claude-opus'],
       windows: [],
       state: 'not_provided',
-      note: '窓ごとの利用率は提供されていません',
+      note: '期間別の利用率は提供されていません',
     },
     {
       id: 'codex_shared',
@@ -527,12 +527,12 @@ it('Antigravity の群ごとの枠を写し、残量 0 は上限到達、取得�
   expect(f.pools.find((p) => p.id === 'codex_shared')?.note).toBeUndefined()
   for (const [state, text] of [
     ['no_snapshot', '未観測'],
-    ['parse_error', '記録を読めません'],
+    ['parse_error', '集計データの読み取り失敗'],
     ['not_installed', 'CLI未導入'],
     ['timeout', 'CLI応答なし'],
     ['unsupported_auth', 'API鍵接続のため枠なし'],
     ['command_failed', 'CLI失敗'],
-    ['invalid_output', '出力を解釈できません'],
+    ['invalid_output', '応答の読み取り失敗'],
   ])
     expect(failed(state).pools.find((p) => p.id === 'antigravity_argon')?.note).toBe(`最新の取得: ${text}`)
   expect(failed('something_else').pools.find((p) => p.id === 'antigravity_argon')?.note).toBe('最新の取得: 不明')

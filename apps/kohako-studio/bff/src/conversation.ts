@@ -96,10 +96,10 @@ export function approvalSummary(approval: { description: string; command: string
   const command = redact(rawCommand)
   // command が欠落/空なら実行内容を確認できないので、一度だけ許可は出さない。
   const fullyShown = !!rawCommand && !hasControl && !approval.commandTruncated && command === rawCommand
-  const lines = [description || '操作の許可']
+  const lines = [description || '実行の許可']
   lines.push(
     command
-      ? `実行内容: ${command}${fullyShown ? '' : '（全文を表示できないため拒否のみ可能）'}`
+      ? `実行内容: ${command}${fullyShown ? '' : '（安全のため全文を表示できない操作は拒否のみ可能です）'}`
       : '実行内容: （不明のため拒否のみ可能）',
   )
   return { summary: lines.join('\n'), fullyShown }
@@ -413,7 +413,7 @@ export function createConversation({
         requestId: input.requestId,
         payloadHash: hash(input),
         ...(input.kind === 'text' && (!resume || isVisit)
-          ? { text: isVisit ? '現場へ：自宅クラスタ' : input.text }
+          ? { text: isVisit ? '自宅クラスタを見てきて' : input.text }
           : {}),
         ...(isVisit ? { visit: { place: 'home-cluster' as const, steps: [], starts: 0 } } : {}),
         status: 'pending',

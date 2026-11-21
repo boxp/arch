@@ -23,7 +23,7 @@ const server = http.createServer((req, res) => {
   const filePath = ['/kohako/sw.js', '/kohako/manifest.webmanifest'].includes(p) ? p.replace('/kohako/', '/kohako/kohako/') : p
   fs.readFile(path.join(site, filePath), (err, data) => { if (err) { res.writeHead(404); res.end(); return }; res.writeHead(200, { 'content-type': types[path.extname(p)] || 'application/octet-stream', 'cache-control': 'no-cache' }); res.end(data) })
 }).listen(port)
-const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] })
+const browser = await chromium.launch({ ...(process.env.CHROME ? { executablePath: process.env.CHROME } : {}), args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] })
 const results = {}, failures = [], external = []
 const assert = (v, m) => { if (!v) throw Error(m) }
 for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, false], ['pixel7', { width: 412, height: 915 }, true]]) {
@@ -63,6 +63,7 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     networkDown = true
     await ctx.setOffline(true)
     await page.goto(`${base}/kohako/home.html`)
+    assert(await page.locator('h1').innerText() === 'ただいまオフラインです', 'offline heading missing')
     assert((await page.locator('body').innerText()).includes('未送信のメッセージは送られていません'), 'offline message missing')
     assert(await page.locator('form').count() === 0 && posts === before, 'offline page sent a POST')
     networkDown = false
