@@ -63,11 +63,16 @@ export function preflight(found: ServerReply, n: Pick<NoticeReply, 'kind' | 'val
  */
 export type ReplyOutcome =
   | { kind: 'accepted'; requestId: string }
+  | { kind: 'expired'; requestId: string }
   | { kind: 'auth'; attempted: 'revert' }
   | { kind: 'hold'; reason: HoldReason; attempted: 'keep' | 'revert' | 'set'; sync?: true }
   | { kind: 'unsure' }
 export function classifyReply(status: number, data: Record<string, unknown> | null, isAuth: boolean): ReplyOutcome {
   const requestId = typeof data?.requestId === 'string' ? data.requestId : ''
+  // 既存返信の確認期限（23h）切れ（tracking: expired）: BFF は二重実行を避けるため再送も追跡の作り直しもしない。
+  // 受付番号を返しても追える応答は無く、同じ replyId で送り直しても結果は変わらない。受付成功として扱わず、
+  // 「受け付けられた可能性があるが確認できない」終端として送信待ちから外し、後続は保留する（main 側）。
+  if ((status === 200 || status === 202) && data?.tracking === 'expired') return { kind: 'expired', requestId }
   // 受理済みだが BFF が追跡を作り直せなかった（tracking: unavailable = 再起動で追跡を失い、別の run の進行中などで再開できない）。
   // 受付番号はあっても応答を追えないので受付成功として外さず、印を残して保留し、現 run の後に同じ replyId で追跡を作り直す。
   if ((status === 200 || status === 202) && data?.status === 'submitted' && data?.tracking === 'unavailable')

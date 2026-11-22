@@ -1985,7 +1985,7 @@ async function serverReplyOf(n: NoticeReply): Promise<ServerReply> {
 async function followAcceptedNotice(
   n: NoticeReply,
   text: string,
-): Promise<{ ok: true } | { ok: false; reason: HoldReason }> {
+): Promise<{ ok: true } | { ok: false; reason: HoldReason } | { ok: 'expired'; requestId: string }> {
   let id: string
   try {
     const r = await call(`notifications/${encodeURIComponent(n.eventId)}/reply`, {
@@ -1994,6 +1994,8 @@ async function followAcceptedNotice(
       body: JSON.stringify({ replyId: n.replyId, kind: n.kind, value: n.value }),
     })
     const out = classifyReply(r.status, r.data, classifyFailure({ status: r.status }) === 'auth')
+    // 確認期限切れ（tracking: expired）: BFF は追跡を作り直さないので、受付番号を追わずに終端として返す。
+    if (out.kind === 'expired') return { ok: 'expired', requestId: out.requestId }
     // 追跡を作り直せなかった（tracking: unavailable・busy など）: 存在しない受付番号を追わず、送信待ちに残して保留する。
     if (out.kind !== 'accepted') {
       if (out.kind === 'hold' && out.sync) void syncTranscript()
@@ -2011,6 +2013,9 @@ async function followAcceptedNotice(
   void inboxView?.refresh()
   return { ok: true }
 }
+/** 確認期限（23h）を過ぎた通知返信の案内。受け付けられた可能性はあるが、応答は追えず再送もされない。 */
+const expiredNoticeText = (text: string, requestId: string) =>
+  `${text} は受け付けられている可能性がありますが、確認期限（23時間）を過ぎているため応答を追えず、取り消しもできません${requestId ? `（受付番号: ${requestId}）` : ''}。二重実行を避けるため再送もしません。送信待ちから外しました。結果は受信箱で通知を開き「会話で続きを見る」から確認してください。`
 async function cancelAttemptedNotice(item: QueueItem) {
   if (cancelChecking.has(item.id)) return
   cancelChecking.add(item.id)
@@ -2035,6 +2040,16 @@ async function cancelAttemptedNoticeChecked(item: QueueItem) {
     // 作り直せなければ（別の run の進行中など）送信待ちに残して保留し、「確認して再開」で同じ replyId のまま追跡を作り直す。
     const followed = await followAcceptedNotice(n, item.text)
     if (!queue.list().some((x) => x.id === item.id)) return show(state)
+    if (followed.ok === 'expired') {
+      // 確認期限切れ: 同じ replyId で送り直しても追跡は作られず、BFF も再送しない。取り消したとは表示せず送信待ちから外す。
+      queue.remove(item.id)
+      queueNote.textContent = ''
+      addHistory('お知らせ', expiredNoticeText(item.text, followed.requestId || decision.requestId))
+      void inboxView?.refresh()
+      void syncTranscript()
+      show(state)
+      return
+    }
     if (!followed.ok) {
       if (!queue.held) queue.hold(followed.reason)
       queueNote.textContent = `${item.text} はすでに受け付けられているため取り消せません（受付番号: ${decision.requestId}）。いまは応答を追えないため送信待ちに残しています。「確認して再開」で同じ返信番号のまま追跡を作り直してください（二重には実行されません）。`
@@ -2099,6 +2114,14 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
       addHistory('お知らせ', `${item.text} を送りました（受付番号: ${requestId}）。`)
     void inboxView?.refresh()
   }
+  // 確認期限切れ: 受付成功として追わず（存在しない受付番号を追わない）、送り直しても変わらないので送信待ちから外す。
+  // 受け付けられた可能性があるため後続は自動送信せず保留し、明示の「再開」を待つ。
+  const expired = (requestId: string) => {
+    addHistory('お知らせ', expiredNoticeText(item.text, requestId))
+    queue.hold('notice_expired')
+    void inboxView?.refresh()
+    void syncTranscript()
+  }
   const auth = (status: number, data: Record<string, unknown> | null) => {
     queue.putBack(item)
     queue.hold('auth')
@@ -2137,6 +2160,7 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
       ? ({ kind: 'unsure' } as const)
       : classifyReply(result.status, result.data, classifyFailure({ status: result.status }) === 'auth')
   if (out.kind === 'accepted') return accepted(out.requestId)
+  if (out.kind === 'expired') return expired(out.requestId)
   if (out.kind === 'auth') {
     if (!prior) delete n.attempted
     return auth(result.status, result.data)
@@ -2151,7 +2175,8 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
   const after = unsureOutcome(await serverReplyOf(n))
   if (after.kind === 'accepted') {
     const followed = await followAcceptedNotice(n, item.text)
-    if (followed.ok) return
+    if (followed.ok === true) return
+    if (followed.ok === 'expired') return expired(followed.requestId || after.requestId)
     return stop(followed.reason, true)
   }
   return stop(after.reason)

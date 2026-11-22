@@ -41,6 +41,7 @@ export type HoldReason =
   | 'notice_replied'
   | 'notice_gone'
   | 'notice_invalid'
+  | 'notice_expired'
 export type AddError = 'empty' | 'too_long' | 'full' | 'duplicate' | 'sending'
 export type AddResult = { ok: true; item: QueueItem } | { ok: false; error: AddError }
 
@@ -56,6 +57,7 @@ export const holdLabel: Record<HoldReason, string> = {
   notice_replied: '先頭の通知には別の返信が先に届いていたため',
   notice_gone: '先頭の通知が見つからなくなったため',
   notice_invalid: '先頭の通知の選択肢が変わり、その選択を送れないため',
+  notice_expired: '前の通知返信は確認期限（23時間）を過ぎ、受け付けられたか確認できなかったため',
 }
 /** 通知返信の保留理由（送り直しても同じ結果になるので、取消を案内する）。 */
 export const noticeHold = (r: HoldReason | null): boolean =>

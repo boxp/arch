@@ -72,12 +72,13 @@ describe('classifyReply（返信 API の応答）', () => {
       false,
       'hold:busy:set',
     ],
+    ['既存返信・追跡期限切れ', 200, { status: 'submitted', requestId: 'r1', tracking: 'expired' }, false, 'expired:r1'],
     [
-      '既存返信・追跡期限切れ',
+      '未確認 claim・確認期限切れ（受付成功にも成否不明の再送にもしない）',
       200,
-      { status: 'submitted', requestId: 'r1', tracking: 'expired' },
+      { status: 'claimed', requestId: 'r1', tracking: 'expired' },
       false,
-      'accepted:r1',
+      'expired:r1',
     ],
     ['認証切れ', 401, { error: 'unauthorized' }, true, 'auth:revert'],
     ['busy（claim なし）', 429, { error: 'busy' }, false, 'hold:busy:revert'],
@@ -94,11 +95,13 @@ describe('classifyReply（返信 API の応答）', () => {
     const got =
       o.kind === 'accepted'
         ? `accepted:${o.requestId}`
-        : o.kind === 'auth'
-          ? `auth:${o.attempted}`
-          : o.kind === 'hold'
-            ? `hold:${o.reason}:${o.attempted}`
-            : 'unsure'
+        : o.kind === 'expired'
+          ? `expired:${o.requestId}`
+          : o.kind === 'auth'
+            ? `auth:${o.attempted}`
+            : o.kind === 'hold'
+              ? `hold:${o.reason}:${o.attempted}`
+              : 'unsure'
     expect(got).toBe(want)
   })
 })

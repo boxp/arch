@@ -79,6 +79,7 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
           }
           if (mode === 'hang') await new Promise((r) => setTimeout(r, 5000))
           else if (mode === 'busy_claimed') return json(429, { error: 'busy_claimed' })
+          else if (mode === 'expired') return json(200, { requestId: `request-${id}`, status: 'submitted', tracking: 'expired' }) // 確認期限（23h）切れ: BFF は追跡を作り直さない
           else if (mode === 'unavailable') return json(200, { requestId: item.reply.requestId, status: 'submitted', tracking: 'unavailable' }) // 受理済みだが別 run の進行中で追跡を作り直せない
           if (mode && mode !== 'hang') return json(mode, mode === 429 ? { error: 'busy' } : mode === 401 ? { error: 'unauthenticated' } : {})
           if (!item) return json(404, { error: 'not_found' })
@@ -482,6 +483,26 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     await wait(async () => (await e.page.locator('#history-list').textContent()).includes('了解しました。'), 'reply answer not shown')
     assert(e.distinct() === 1 && e.replies.every((x) => x.replyId === first.replyId) && (await e.rows().count()) === 0, 'resume after unavailable misjudged')
     ev.replies = e.replies.length
+  })
+
+  // s: 返信 API が既存返信の確認期限切れ（tracking: expired）を返したら、受付成功として存在しない受付番号を追わず、
+  //    送信待ちから外して「確認できない」と案内し、後続の通常発言は自動送信せず保留する（明示の再開で送る）。
+  await scenario('s-tracking-expired', async (e, ev) => {
+    await e.submit('実行'); await e.count(1)
+    await e.select('one'); await e.page.locator('#inbox-detail').getByRole('button', { name: /^A/ }).click(); await wait(async () => (await e.rows().count()) === 1, 'queued')
+    await e.closeInbox()
+    await e.submit('その次'); await wait(async () => (await e.rows().count()) === 2, 'text queued')
+    e.replyMode.set('event-658-one', 'expired')
+    e.done(e.posts[0].requestId)
+    await e.replyCount(1); await e.page.locator('#queue-resume').waitFor({ state: 'visible', timeout: 10000 })
+    await e.settle()
+    const hist = await e.page.locator('#history-list').textContent()
+    assert(!e.log.includes('poll:request-event-658-one') && e.posts.length === 1 && (await e.rows().count()) === 1 && /確認期限（23時間）/.test(hist) && !/通知「通知one」.*を送りました/.test(hist), `expired treated as accepted ${e.log.join(',')} ${hist}`)
+    ev.status = await e.status()
+    await e.screenshot('s-tracking-expired-held')
+    await e.page.locator('#queue-resume').click()
+    await e.count(2)
+    assert(e.posts[1].text === 'その次' && e.replies.length === 1, 'resume after expired misjudged')
   })
 
   // q: 受信箱に同じ replyId の claim（送信確認できず）が見えている通知で、会話中に「同じ返信を再送」すると送信待ちへ積まれるが、
