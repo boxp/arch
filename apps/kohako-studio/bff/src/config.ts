@@ -43,7 +43,8 @@ export function readConfig(env: NodeJS.ProcessEnv) {
   // BOXP-657: 眼鏡の入口（principal g2）。未設定なら無効で、今までと同じ動作。read = 履歴と依頼の読み取りだけ、write = 送信・停止・許可も。
   const g2Mode = env.KOHAKO_G2_MODE || undefined,
     g2Audience = env.KOHAKO_G2_ACCESS_AUD ?? '',
-    g2Username = env.KOHAKO_G2_USERNAME ?? 'system:serviceaccount:even-g2-lab:kohako-g2-bff'
+    // 既定値は持たない（眼鏡の Pod 専用の ServiceAccount を lolice で作り、その名前を明示する。default の SA では通さない）。
+    g2Username = env.KOHAKO_G2_USERNAME ?? ''
   if (g2Mode !== undefined && g2Mode !== 'read' && g2Mode !== 'write') throw Error('invalid G2 mode')
   // 家用の AUD と同じ値は受け付けない（家の画面用の JWT を眼鏡の入口の証明として流用させない）。
   if (
@@ -51,7 +52,8 @@ export function readConfig(env: NodeJS.ProcessEnv) {
     (!team ||
       !/^[a-f\d]+$/i.test(g2Audience) ||
       g2Audience.toLowerCase() === audience.toLowerCase() ||
-      !/^system:serviceaccount:[a-z0-9-]+:[a-z0-9-]+$/.test(g2Username))
+      !/^system:serviceaccount:[a-z0-9-]+:[a-z0-9-]+$/.test(g2Username) ||
+      g2Username.endsWith(':default'))
   )
     throw Error('invalid G2 configuration')
   const port = Number(env.KOHAKO_BFF_PORT ?? '8787')

@@ -127,18 +127,21 @@ it('validates the G2 configuration', () => {
   }
   expect(readConfig(base).g2Mode).toBeUndefined()
   expect(readConfig({ ...base, KOHAKO_G2_MODE: '' }).g2Mode).toBeUndefined()
-  const ok = readConfig({ ...base, KOHAKO_G2_MODE: 'read', KOHAKO_G2_ACCESS_AUD: 'def456' })
+  const g2 = { KOHAKO_G2_ACCESS_AUD: 'def456', KOHAKO_G2_USERNAME: G2_USER }
+  const ok = readConfig({ ...base, KOHAKO_G2_MODE: 'read', ...g2 })
   expect(ok).toMatchObject({ g2Mode: 'read', g2Audience: 'def456', g2Username: G2_USER })
-  expect(readConfig({ ...base, KOHAKO_G2_MODE: 'write', KOHAKO_G2_ACCESS_AUD: 'def456' }).g2Mode).toBe('write')
+  expect(readConfig({ ...base, KOHAKO_G2_MODE: 'write', ...g2 }).g2Mode).toBe('write')
   for (const bad of [
-    { KOHAKO_G2_MODE: 'on', KOHAKO_G2_ACCESS_AUD: 'def456' },
+    { KOHAKO_G2_MODE: 'on', ...g2 },
     { KOHAKO_G2_MODE: 'read' },
-    { KOHAKO_G2_MODE: 'read', KOHAKO_G2_ACCESS_AUD: 'ABC123' },
-    { KOHAKO_G2_MODE: 'read', KOHAKO_G2_ACCESS_AUD: 'not-hex' },
-    { KOHAKO_G2_MODE: 'read', KOHAKO_G2_ACCESS_AUD: 'def456', KOHAKO_G2_USERNAME: 'kohako' },
+    { KOHAKO_G2_MODE: 'read', KOHAKO_G2_ACCESS_AUD: 'def456' },
+    { KOHAKO_G2_MODE: 'read', ...g2, KOHAKO_G2_ACCESS_AUD: 'ABC123' },
+    { KOHAKO_G2_MODE: 'read', ...g2, KOHAKO_G2_ACCESS_AUD: 'not-hex' },
+    { KOHAKO_G2_MODE: 'read', ...g2, KOHAKO_G2_USERNAME: 'kohako' },
+    { KOHAKO_G2_MODE: 'read', ...g2, KOHAKO_G2_USERNAME: 'system:serviceaccount:even-g2-lab:default' },
   ])
     expect(() => readConfig({ ...base, ...bad })).toThrow()
-  expect(() => readConfig({ KOHAKO_G2_MODE: 'read', KOHAKO_G2_ACCESS_AUD: 'def456' })).toThrow()
+  expect(() => readConfig({ KOHAKO_G2_MODE: 'read', ...g2 })).toThrow()
 })
 it('opens only the designed routes to g2', () => {
   const id = 'request-1'
