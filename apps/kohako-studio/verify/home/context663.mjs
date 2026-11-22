@@ -2,7 +2,7 @@
 // コハコが消えたまま・canvas が白く残ったままにならず、静止画で姿を保ち、コンテキストが戻れば動く姿に復帰することを確かめる。
 // BFF は完全にモック（token 不要）。コンテキストの喪失と復帰は WEBGL_lose_context で起こす（実機の喪失と同じ webglcontextlost / restored が届く）。
 // 実行: Playwright 1.56.1 で `node context663.mjs <build の dist> <出力先>`。`BASE=` で配備版の画面を開ける（API はモック）。
-// `ONLY=mobile,pc,norestore,hidden,again` で絞れる。`EXPECT=0` は判定せず測定だけ（修正前の build との比較用）。失敗があれば終了コード 1。
+// `ONLY=mobile,pc,norestore,hidden,again,loading` で絞れる。`EXPECT=0` は判定せず測定だけ（修正前の build との比較用）。失敗があれば終了コード 1。
 import { chromium } from 'playwright'
 import http from 'node:http'; import fs from 'node:fs'; import path from 'node:path'
 const SITE = process.argv[2] ?? '/site', OUT = process.argv[3] ?? '/out'; fs.mkdirSync(OUT, { recursive: true })
@@ -33,7 +33,7 @@ const probe = () => {
 }
 const visible = p => (!p.rigHidden && p.lost === false && p.painted > 0) || (p.rigHidden && !p.faceHidden && p.faceLoaded)
 
-async function run(name, config, { restore = true, hidden = false, again = false } = {}) {
+async function run(name, config, { restore = true, hidden = false, again = false, duringLoad = false } = {}) {
   const ctx = await browser.newContext({ ...config, serviceWorkers: 'block' }), page = await ctx.newPage(), errors = []
   page.on('pageerror', e => errors.push(e.message))
   await ctx.route('**/*', r => { const u = new URL(r.request().url()); if (u.hostname !== HOST) return r.abort(); return r.fallback() })
@@ -46,12 +46,19 @@ async function run(name, config, { restore = true, hidden = false, again = false
     return json(200, {})
   })
   await ctx.addInitScript(() => localStorage.setItem('kohako-home-prefs', JSON.stringify({ idleActs: false })))
+  // duringLoad: 初回の読み込みの途中（コンテキストを作った直後）で失われ、読み込みが終わる前に戻る。
+  if (duringLoad) await ctx.addInitScript(() => { const g = HTMLCanvasElement.prototype.getContext; let done = false; HTMLCanvasElement.prototype.getContext = function (...a) { const c = g.apply(this, a); if (!done && this.id === 'rig' && c && String(a[0]).startsWith('webgl')) { done = true; const l = c.getExtension('WEBGL_lose_context'); setTimeout(() => { l.loseContext(); setTimeout(() => l.restoreContext(), 20) }, 0) } return c } })
   await page.goto(`${BASE}/kohako/home.html?daypart=day`)
   await page.waitForFunction(() => window.__kohakoHome?.report.loaded, null, { timeout: 60000 })
   await page.waitForTimeout(2500)
   const dir = path.join(OUT, name); fs.mkdirSync(dir, { recursive: true })
   const r = { steps: {} }
   r.steps.before = await page.evaluate(probe); await page.screenshot({ path: path.join(dir, '1-before.png') })
+  if (duringLoad) {
+    r.errors = errors; result[name] = r
+    if (EXPECT) { check(!r.steps.before.rigHidden && r.steps.before.painted > 0, `${name}: 読み込み中の喪失・復帰の後に動く姿が描けていない（${JSON.stringify(r.steps.before)}）`); check(!errors.length, `${name}: ページのエラー ${errors.join(' / ')}`) }
+    return ctx.close()
+  }
   // 失う。hidden の時は「画面を離れている間に失い、戻ってから復帰する」流れにする。
   if (hidden) await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' }); document.dispatchEvent(new Event('visibilitychange')) })
   await page.evaluate(() => { window.__lose = window.__kohakoHome.player.gl.getExtension('WEBGL_lose_context'); window.__lose.loseContext() })
@@ -81,6 +88,7 @@ if (want('pc')) await run('pc', { viewport: { width: 1200, height: 800 } })
 if (want('norestore')) await run('norestore', phone, { restore: false })
 if (want('hidden')) await run('hidden', phone, { hidden: true })
 if (want('again')) await run('again', phone, { again: true })
+if (want('loading')) await run('loading', phone, { duringLoad: true })
 fs.writeFileSync(path.join(OUT, 'result.json'), JSON.stringify({ result, failures }, null, 2))
 console.log(JSON.stringify({ failures }, null, 2))
 await browser.close(); srv.close()

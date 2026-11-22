@@ -6,7 +6,8 @@
 - `norestore`: 復帰しない場合も静止画で姿が見え続けること。
 - `hidden`: 画面を離れている間に失われ、戻ってから復帰する流れでも同じこと。
 - `again`: 復帰後の読み直しの途中で失われては戻ることを繰り返し、読み直しが重なっても、最後の読み直しの動く姿が描かれ、ページのエラーが出ないこと。
+- `loading`: 初回の読み込みの途中（コンテキストを作った直後）で失われ、読み込みが終わる前に戻った場合も、読み込み後に動く姿を読み直して canvas に絵が描かれること。
 
-`node context663.mjs <build の dist> <出力先>`（Playwright 1.56.1、token 不要、`ONLY=mobile,pc,norestore,hidden,again` で絞れます。`PW_WS=ws://host:port/` で起動済みの Playwright サーバーへ接続できます。`BASE=` で配備版の画面を開けます（API は同じくモック）。`EXPECT=0` は判定せず測定だけ行います）。各項目の喪失前・喪失中・復帰後の画面と `result.json` を出力先に保存し、失敗があれば終了コード 1 です。
+`node context663.mjs <build の dist> <出力先>`（Playwright 1.56.1、token 不要、`ONLY=mobile,pc,norestore,hidden,again,loading` で絞れます。`PW_WS=ws://host:port/` で起動済みの Playwright サーバーへ接続できます。`BASE=` で配備版の画面を開けます（API は同じくモック）。`EXPECT=0` は判定せず測定だけ行います）。各項目の喪失前・喪失中・復帰後の画面と `result.json` を出力先に保存し、失敗があれば終了コード 1 です。
 
 headless の swiftshader での測定です。iOS 実機で失われた canvas が白く見えるか、実機の開き直しで実際に喪失・復帰が起きるかはこの環境では確かめられません。

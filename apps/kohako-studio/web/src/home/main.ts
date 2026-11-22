@@ -3329,7 +3329,10 @@ let rigLoad: RigLoad | null = null,
   rigGl: RigGl = 'none',
   rigGlCtx: WebGLRenderingContext | null = null
 const contextLost = () => !!rigGlCtx?.isContextLost()
+// 初回の読み込み中（rigGl が none）に失われたか。読み込み中に失われて戻ると、読み込んだプレイヤーは失われる前の GPU 資源を持つため描けない。
+let lostWhileLoading = false
 function rigGlEvent(ev: GlEvent) {
+  if (rigGl === 'none' && rigLoading && ev === 'lost') lostWhileLoading = true
   const { next, action } = nextRigGl(rigGl, ev, contextLost())
   rigGl = next
   if (action === 'fallback') {
@@ -3406,8 +3409,12 @@ async function startRig() {
       headMeshes: headIdx.length,
       handMeshes: handIdx.length,
     })
-    // 読み込みの途中で失われていた時は、ここで静止画へ切り替える。
-    if (contextLost()) rigGlEvent('lost')
+    // 読み込みの途中で失われていた時は、ここで静止画へ切り替える。途中で戻っていた時も、読み込んだ資源は失われる前のものなので読み直す。
+    if (lostWhileLoading || contextLost()) {
+      lostWhileLoading = false
+      rigGlEvent('lost')
+      if (!contextLost()) rigGlEvent('restored')
+    }
   } catch (e) {
     ;(report.errors as string[]).push(e instanceof Error ? e.message : String(e))
     el('face-mode').textContent =
