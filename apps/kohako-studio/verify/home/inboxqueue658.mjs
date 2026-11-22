@@ -108,7 +108,7 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     await wait(async () => (await e.detail()).includes('送信待ち（未送信）'), 'queued detail')
     const d1 = await e.detail()
     assert(e.replies.length === 0, 'reply sent while busy')
-    assert(!d1.includes('返信済み') && !d1.includes('処理済み'), `detail looks replied ${d1}`)
+    assert(!d1.includes('返信済み') && !d1.includes('・処理済み') && d1.includes('・既読'), `detail looks replied ${d1}`)
     assert(await e.page.locator('#inbox-detail').getByRole('button', { name: /^A/ }).count() === 0, 'choices still shown (duplicate possible)')
     await e.closeInbox()
     await e.submit('次の発言')
@@ -125,7 +125,9 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     await e.replyCount(1)
     assert(e.replies[0].id === 'event-658-one' && e.replies[0].kind === 'choice' && e.replies[0].value === 'A' && /^[0-9a-f-]{36}$/.test(e.replies[0].replyId), `reply1 ${JSON.stringify(e.replies[0])}`)
     await e.settle(); assert(e.posts.length === 1 && e.replies.length === 1, 'sent more than one while reply pending')
-    assert((await e.page.locator('#history-list').textContent()).includes('通知「通知one」（BOXP-658）への選択: A'), 'reply not followed in history')
+    const hist = await e.page.locator('#history-list').evaluate((el) => [...el.querySelectorAll('li')].map((li) => `${li.dataset.who}:${li.textContent}`))
+    ev.history = hist
+    assert(hist.some((h) => h.startsWith('あなた:') && h.includes('通知one') && h.includes('への選択: A')), `reply not followed in history ${JSON.stringify(hist)}`)
     e.done('request-event-658-one'); await e.count(2); assert(e.posts[1].text === '次の発言', 'second FIFO')
     e.done(e.posts[1].requestId); await e.replyCount(2)
     assert(e.replies[1].id === 'event-658-two' && e.replies[1].kind === 'text' && e.replies[1].value === '自由文の返信', 'reply2')
@@ -169,9 +171,9 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     await e.page.locator('#queue-resume').waitFor({ state: 'visible', timeout: 15000 }); await e.settle()
     const s1 = await e.status(); assert(s1.includes('別の返信が先に') && e.replies.length === 0 && await e.rows().count() === 3, `409 hold ${s1}`)
     await e.screenshot('c-replied-hold')
-    await e.rows().first().getByRole('button', { name: '取消' }).click()
+    await e.rows().first().locator('button').click()
     await wait(async () => (await e.status()).includes('選択肢が変わり'), 'invalid hold'); const s2 = await e.status()
-    await e.rows().first().getByRole('button', { name: '取消' }).click()
+    await e.rows().first().locator('button').click()
     await wait(async () => (await e.status()).includes('見つからなく'), 'gone hold'); const s3 = await e.status()
     assert(e.replies.length === 0 && await e.rows().count() === 1, 'sent stale reply')
     ev.status = [s1, s2, s3]
@@ -199,18 +201,20 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     ev.status = [s1, s2, s3]; ev.replyIds = [...ids]
   })
 
-  // e: 吹き出しのお知らせを出した後に会話を始め、吹き出しの選択肢を押しても送信待ちへ積まれる（共通経路）。
-  await scenario('e-bubble', async (e, ev) => {
+  // e: 吹き出しのお知らせから返信した時に、別端末の依頼が進行中で BFF が 429 busy を返したら、本文を失わず送信待ちへ積んで保留し、再開で同じ replyId を送る。
+  //    （この画面で会話を始めると吹き出しの操作欄は閉じるので、画面内の応答待ち中は受信箱の詳細から積む: a〜d）。
+  await scenario('e-bubble-busy', async (e, ev) => {
     await wait(async () => !(await e.page.locator('#notice-actions').isHidden()), 'bubble not announced', 20000)
-    await e.submit('会話を始める'); await e.count(1)
+    e.replyMode.set('event-658-bubble', 429)
     await e.page.locator('#notice-actions').getByRole('button', { name: /^A/ }).click()
-    await wait(async () => (await e.rows().count()) === 1, 'bubble reply not queued')
-    const rows = await e.rows().allTextContents()
-    assert(rows[0].includes('通知「通知bubble」（BOXP-658）への選択: A') && e.replies.length === 0, `bubble rows ${rows}`)
+    await wait(async () => (await e.rows().count()) === 1, 'bubble reply not queued after 429')
+    const rows = await e.rows().allTextContents(), status = await e.status()
+    assert(rows[0].includes('通知「通知bubble」（BOXP-658）への選択: A') && status.includes('進行中') && e.replies.length === 1, `bubble rows ${rows} ${status}`)
+    await e.settle(); assert(e.replies.length === 1, 'auto resent after busy')
     await e.screenshot('e-bubble-queued')
-    e.done(e.posts[0].requestId); await e.replyCount(1)
-    assert(e.replies[0].id === 'event-658-bubble' && e.replies[0].value === 'A', 'bubble reply target')
-    ev.rows = rows
+    await e.page.locator('#queue-resume').click(); await e.replyCount(2)
+    assert(e.replies[1].id === 'event-658-bubble' && e.replies[1].value === 'A' && e.replies[1].replyId === e.replies[0].replyId, 'bubble resend target/replyId')
+    ev.rows = rows; ev.status = status; ev.replyIds = e.replies.map((r) => r.replyId)
   }, { items: [notice('bubble', 9, { readAt: undefined, announcedAt: undefined, receivedAt: new Date(Date.now() - 30000).toISOString() })] })
 
   // f: 再読み込み前の確認が通知返信にも効く。

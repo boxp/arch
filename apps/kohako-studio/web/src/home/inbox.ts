@@ -124,6 +124,8 @@ export type ReplyQueue = {
     kind: 'choice' | 'text',
     value: string,
     replyId: string,
+    /** 'busy': この画面は空いていたが BFF が会話の進行中（別端末など）で断った。送信待ちは「再開」まで止める。 */
+    held?: 'busy',
   ) => { ok: true } | { ok: false; message: string }
   /** その通知への返信が送信待ちにあれば、表示と保留理由を返す。 */
   pending: (eventId: string) => { text: string; held: string } | null
@@ -131,6 +133,8 @@ export type ReplyQueue = {
 }
 export const QUEUED_REPLY_TEXT =
   '送信待ちに追加しました（まだ送信していません）。いまの返答が終わったら、送信待ちの順に送ります。やめるときは「取消」を押してください。'
+export const QUEUED_BUSY_TEXT =
+  'ほかの依頼がまだ進行中のため、返信は送らずに送信待ちに追加しました（まだ送信していません）。終わったら送信待ち欄の「再開」で送ります。やめるときは「取消」を押してください。'
 export function initInbox(
   follow: (requestId: string, text: string) => boolean = () => false,
   announcer?: Announcer,
@@ -194,18 +198,19 @@ export function initInbox(
       replyId = i.reply?.replyId ?? sessionStorage.getItem(key) ?? crypto.randomUUID()
     sessionStorage.setItem(key, replyId)
     // BOXP-658: 応答待ち・送信待ちがある間は BFF へ送らず送信待ちへ積む（受理済みの返信の「会話で続きを見る」は追跡だけなので積まない）。
-    if (replyQueue && i.reply?.status !== 'submitted' && replyQueue.active()) {
-      const queued = replyQueue.add(i, kind, value, replyId)
+    const enqueue = (held?: 'busy') => {
+      const queued = must(replyQueue).add(i, kind, value, replyId, held)
       if (!queued.ok) {
         status.textContent = queued.message
         return false
       }
       if (kind === 'text') drafts.clear(i.eventId)
-      notice = status.textContent = QUEUED_REPLY_TEXT
+      notice = status.textContent = held ? QUEUED_BUSY_TEXT : QUEUED_REPLY_TEXT
       renderedKey = null
       render()
       return true
     }
+    if (replyQueue && i.reply?.status !== 'submitted' && replyQueue.active()) return enqueue()
     sending.add(i.eventId)
     try {
       const result = await call(`notifications/${encodeURIComponent(i.eventId)}/reply`, 'POST', {
@@ -213,6 +218,8 @@ export function initInbox(
         kind,
         value,
       })
+      // BOXP-658: BFF は会話の進行中（別端末の依頼など）なら返信を保存せず 429 busy を返す。本文を失わないよう送信待ちへ積む。
+      if (replyQueue && result.status === 429 && result.data?.error === 'busy') return enqueue('busy')
       if (result.status >= 300) {
         status.textContent = '返信を送信できませんでした。'
         return false

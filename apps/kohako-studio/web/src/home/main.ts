@@ -3297,7 +3297,7 @@ const inbox = initInbox(
   {
     // BOXP-658: 応答待ち・読み上げ中・送信待ちがある間の通知返信は、通常の発言と同じ送信待ち（FIFO・上限共通）へ積む。
     active: () => queueing() || !!unconfirmed,
-    add: (item, kind, value, replyId) => {
+    add: (item, kind, value, replyId, held) => {
       const added = queue.addNotice(
         {
           eventId: item.eventId,
@@ -3314,6 +3314,10 @@ const inbox = initInbox(
         return { ok: false, message: addErrorText[added.error] || '返信を送信待ちに追加できませんでした。' }
       queueNote.textContent = ''
       addHistory('お知らせ', `${added.item.text} を送信待ちに追加しました（まだ送信していません）。`)
+      if (held) {
+        queue.hold(held)
+        void syncTranscript()
+      }
       show(state)
       return { ok: true }
     },
