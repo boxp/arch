@@ -36,7 +36,7 @@ export type HoldReason =
   | 'notice_replied'
   | 'notice_gone'
   | 'notice_invalid'
-export type AddError = 'empty' | 'too_long' | 'full' | 'duplicate'
+export type AddError = 'empty' | 'too_long' | 'full' | 'duplicate' | 'sending'
 export type AddResult = { ok: true; item: QueueItem } | { ok: false; error: AddError }
 
 export const holdLabel: Record<HoldReason, string> = {
@@ -63,6 +63,8 @@ export const noticeText = (n: Pick<NoticeReply, 'title' | 'ticketId' | 'kind' | 
 export class MessageQueue {
   private items: QueueItem[] = []
   private seq = 0
+  /** 取り出して送信中の項目（結果が出るまで同じ通知への別の返信を積ませない）。 */
+  private inflight: QueueItem | null = null
   held: HoldReason | null = null
 
   get size(): number {
@@ -96,6 +98,8 @@ export class MessageQueue {
     if (!value.trim()) return { ok: false, error: 'empty' }
     if (value.length > QUEUE_MAX_CHARS) return { ok: false, error: 'too_long' }
     if (this.noticeFor(raw.eventId)) return { ok: false, error: 'duplicate' }
+    // 送信中の同じ通知への返信は、登録時の replyId で送られている最中。別の内容を積むと同じ replyId の既存返信として扱われ失われるため拒否する。
+    if (this.inflight?.notice?.eventId === raw.eventId) return { ok: false, error: 'sending' }
     if (this.items.length >= QUEUE_MAX_ITEMS) return { ok: false, error: 'full' }
     const notice = { ...raw, value }
     const item = {
@@ -121,16 +125,20 @@ export class MessageQueue {
   clear(): void {
     this.items = []
     this.held = null
+    this.inflight = null
   }
 
   /** 先頭を送り出すために取り出す。保留中・空なら null（同じ項目を 2 回取り出すことはない）。 */
   take(): QueueItem | null {
     if (this.held) return null
-    return this.items.shift() ?? null
+    const item = this.items.shift() ?? null
+    if (item) this.inflight = item
+    return item
   }
 
   /** 受理されなかったことが確定した項目を先頭へ戻す（順序を保つ）。 */
   putBack(item: QueueItem): void {
+    if (this.inflight?.id === item.id) this.inflight = null
     if (this.items.some((x) => x.id === item.id)) return
     this.items.unshift(item)
   }
@@ -140,6 +148,11 @@ export class MessageQueue {
     if (!this.items.length) return false
     this.held = reason
     return true
+  }
+
+  /** 取り出した項目の送信が終わった（受理・確定失敗とも）。putBack 済みなら何もしない。 */
+  settle(id: number): void {
+    if (this.inflight?.id === id) this.inflight = null
   }
 
   resume(): void {
@@ -152,4 +165,5 @@ export const addErrorText: Record<AddError, string> = {
   too_long: `送信待ちに入れられるのは${QUEUE_MAX_CHARS}文字までです。`,
   full: `送信待ちは${QUEUE_MAX_ITEMS}件までです。送信が終わるか取り消してからお試しください（入力中の文章は残っています）。`,
   duplicate: 'この通知への返信はすでに送信待ちにあります。変えるときは送信待ちから取り消してください。',
+  sending: 'この通知への返信を送信中です。結果が出るまでお待ちください（入力中の文章は残っています）。',
 }

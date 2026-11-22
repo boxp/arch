@@ -1913,6 +1913,7 @@ function tryDispatch(force: boolean) {
   if (!item) return
   dispatching = true
   void (item.notice ? sendNoticeReply(item) : sendText(item.text, item)).finally(() => {
+    queue.settle(item.id)
     dispatching = false
     show(state)
   })

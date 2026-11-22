@@ -773,3 +773,25 @@ it('keeps a failed claim unchanged when re-sent while busy (BOXP-658)', async ()
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+it('returns busy and drops its own claim when a run starts while the claim is being saved (BOXP-658)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'inbox-busy-'))
+  try {
+    const store = await createNotifications(dir, async () => ({}))
+    await store.ingest(payload)
+    const reply = { replyId: 'reply-123456', kind: 'choice', value: 'はい' },
+      submit = vi.fn(() => true)
+    // 1 回目の判定（claim 保存前）は空き、claim 保存後の再判定では別の発言が始まっている。
+    let calls = 0
+    const busy = () => ++calls > 1
+    expect(await store.reply(payload.eventId, reply, submit, undefined, undefined, busy)).toEqual({ error: 'busy' })
+    expect(submit).not.toHaveBeenCalled()
+    expect(store.list().items[0].reply).toBeUndefined()
+    const restart = await createNotifications(dir, async () => ({}))
+    expect(restart.list().items[0].reply).toBeUndefined()
+    expect(await restart.reply(payload.eventId, reply, submit)).toMatchObject({ status: 'submitted' })
+    expect(submit).toHaveBeenCalledTimes(1)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

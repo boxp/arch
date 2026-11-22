@@ -109,6 +109,22 @@ describe('通知返信の送信待ち（BOXP-658）', () => {
     expect(q.noticeFor('event-2222222')?.notice?.value).toBe('了解です')
     expect(q.noticeFor('event-none')).toBeNull()
   })
+  it('送信中の通知へは結果が出るまで別の返信を積まない（同じ replyId の既存返信として失われるのを防ぐ）', () => {
+    const q = new MessageQueue()
+    const a = q.addNotice(notice(), 1)
+    const taken = must(q.take())
+    expect(taken.id).toBe(must(a.ok ? a.item : null).id)
+    expect(q.addNotice({ ...notice(), value: 'B' }, 2)).toEqual({ ok: false, error: 'sending' })
+    expect(q.addNotice(notice('event-3333333'), 3).ok).toBe(true)
+    // 受理されず先頭へ戻したら、待機中の重複として扱う。
+    q.putBack(taken)
+    expect(q.addNotice({ ...notice(), value: 'B' }, 4)).toEqual({ ok: false, error: 'duplicate' })
+    // 送信が終わった（settle）後は積める。
+    const again = must(q.take())
+    q.settle(again.id)
+    expect(q.addNotice({ ...notice(), value: 'B' }, 5).ok).toBe(true)
+    expect(addErrorText.sending).toContain('送信中')
+  })
   it('通知固有の保留は先頭の返信を取り消すと解け、他の保留は残る', () => {
     const q = new MessageQueue()
     const a = q.addNotice(notice(), 1)

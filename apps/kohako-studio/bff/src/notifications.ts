@@ -214,6 +214,7 @@ export async function createNotifications(
         // 画面はこれを「送信待ち」に戻して現 run の後で同じ replyId で送り直す（submit_failed を残さない）。
         if (busy() && (!item.reply || (item.reply.status !== 'submitted' && !item.reply.runId)))
           return { error: 'busy' as const }
+        const fresh = !item.reply
         if (!item.reply) {
           item.reply = {
             replyId: x.replyId,
@@ -228,6 +229,15 @@ export async function createNotifications(
         } else if (!item.reply.sessionId && sessionId) {
           item.reply.sessionId = sessionId
           await save()
+        }
+        // claim の保存（await）中に別の発言が始まった場合も、submit の直前（同期で submit まで await なし）に再判定して busy を返す。
+        // この呼び出しで作った未受理の claim は取り消し、未返信のまま保つ（submit_failed を残さない）。
+        if (busy() && item.reply.status !== 'submitted' && !item.reply.runId) {
+          if (fresh) {
+            delete item.reply
+            await save()
+          }
+          return { error: 'busy' as const }
         }
         const was = item.reply.status
         let ok = false
