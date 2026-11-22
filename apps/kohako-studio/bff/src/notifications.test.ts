@@ -813,7 +813,16 @@ it('never reports an existing claim as unsent busy or invalid (BOXP-658)', async
     expect(item.reply?.replyId).toBe('reply-123456')
     const submit = vi.fn(() => true)
     // 会話が進行中でも、既存の claim は busy（未送信の確定）ではなく busy_claimed を返し、状態を変えない。
-    expect(await restart.reply(payload.eventId, reply, submit, () => false, undefined, () => true)).toEqual({
+    expect(
+      await restart.reply(
+        payload.eventId,
+        reply,
+        submit,
+        () => false,
+        undefined,
+        () => true,
+      ),
+    ).toEqual({
       error: 'busy_claimed',
     })
     expect(submit).not.toHaveBeenCalled()
