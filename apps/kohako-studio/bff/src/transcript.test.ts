@@ -71,7 +71,7 @@ it('なでると通知返信は履歴に載せず、通知返信の進行中は�
   conv.submit(text('reply-001', '通知の本文つき返信'), '', undefined, { sessionId: 's', idempotencyKey: 'k' })
   const shown = conv.transcript()
   expect(shown.items).toEqual([])
-  expect(shown.active).toEqual({ requestId: 'reply-001', kind: 'reply' })
+  expect(shown.active).toEqual({ requestId: 'reply-001', kind: 'reply', origin: 'home' })
   expect(JSON.stringify(shown)).not.toContain('通知の本文つき返信')
   expect(conv.get('reply-001')?.text).toBeUndefined()
 })

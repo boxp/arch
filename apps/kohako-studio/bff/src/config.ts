@@ -40,9 +40,28 @@ export function readConfig(env: NodeJS.ProcessEnv) {
   if (dataDir && !isAbsolute(dataDir)) throw Error('invalid data directory')
   if (!origin(pushSubject, true) && !/^mailto:[^\s@]+@[^\s@]+$/.test(pushSubject)) throw Error('invalid push subject')
   if (!/^(?:[01]?\d|2[0-3])-(?:[01]?\d|2[0-3])$/.test(quietHours)) throw Error('invalid quiet hours')
+  // BOXP-657: 眼鏡の入口（principal g2）。未設定なら無効で、今までと同じ動作。read = 履歴と依頼の読み取りだけ、write = 送信・停止・許可も。
+  const g2Mode = env.KOHAKO_G2_MODE || undefined,
+    g2Audience = env.KOHAKO_G2_ACCESS_AUD ?? '',
+    // 既定値は持たない（眼鏡の Pod 専用の ServiceAccount を lolice で作り、その名前を明示する。default の SA では通さない）。
+    g2Username = env.KOHAKO_G2_USERNAME ?? ''
+  if (g2Mode !== undefined && g2Mode !== 'read' && g2Mode !== 'write') throw Error('invalid G2 mode')
+  // 家用の AUD と同じ値は受け付けない（家の画面用の JWT を眼鏡の入口の証明として流用させない）。
+  if (
+    g2Mode &&
+    (!team ||
+      !/^[a-f\d]+$/i.test(g2Audience) ||
+      g2Audience.toLowerCase() === audience.toLowerCase() ||
+      !/^system:serviceaccount:[a-z0-9-]+:[a-z0-9-]+$/.test(g2Username) ||
+      g2Username.endsWith(':default'))
+  )
+    throw Error('invalid G2 configuration')
   const port = Number(env.KOHAKO_BFF_PORT ?? '8787')
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('invalid port')
   return {
+    g2Mode: g2Mode as 'read' | 'write' | undefined,
+    g2Audience,
+    g2Username,
     dataDir,
     pushSubject,
     quietHours,

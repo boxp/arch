@@ -1,0 +1,254 @@
+{
+  "contract": "kohako-home-bff/g2/v1",
+  "note": "BOXP-657: 家の BFF（boxp/arch apps/kohako-studio/bff）が principal g2 へ返す応答の形。boxp/even-g2-lab apps/kohako-bff の代理 client と同じ内容に保つ。rev・approvalId・時刻は置き換え済み（<rev>・<approvalId>・0）。再生成: KOHAKO_WRITE_CONTRACT=1 npx vitest run src/g2.test.ts",
+  "request": {
+    "base": "/kohako/api/v1/",
+    "headers": {
+      "authorization": "Bearer <ServiceAccount token, audience kohako-bff-g2>",
+      "x-kohako-owner-assertion": "<本人の Access JWT（G2 の AUD）>"
+    },
+    "message": {
+      "requestId": "[A-Za-z0-9-]{8,64}",
+      "kind": "text",
+      "text": "1..500 字",
+      "expiresAt": "epoch ms（10 分以内）",
+      "via": "text|voice|candidate|choice|realtime|ring（任意）"
+    },
+    "approval": {
+      "requestId": "…",
+      "approvalId": "[a-f0-9]{16}",
+      "choice": "once|deny"
+    }
+  },
+  "responses": {
+    "requestHomePending": {
+      "status": 200,
+      "body": {
+        "requestId": "home-0001",
+        "origin": "home",
+        "status": "pending"
+      }
+    },
+    "messageBusy": {
+      "status": 429,
+      "body": {
+        "error": "busy"
+      }
+    },
+    "requestHomeDone": {
+      "status": 200,
+      "body": {
+        "requestId": "home-0001",
+        "origin": "home",
+        "status": "done",
+        "reply": {
+          "text": "家への返答",
+          "at": 0
+        }
+      }
+    },
+    "messageAccepted": {
+      "status": 202,
+      "body": {
+        "requestId": "g2-00001",
+        "origin": "g2",
+        "via": "text",
+        "status": "pending"
+      }
+    },
+    "transcriptActive": {
+      "status": 200,
+      "body": {
+        "rev": "<rev>",
+        "sessionStartedAt": 0,
+        "items": [
+          {
+            "requestId": "home-0001",
+            "at": 0,
+            "current": true,
+            "origin": "home",
+            "text": "家の発言",
+            "status": "done",
+            "reply": {
+              "text": "家への返答",
+              "at": 0
+            }
+          },
+          {
+            "requestId": "g2-00001",
+            "at": 0,
+            "current": true,
+            "origin": "g2",
+            "via": "text",
+            "text": "眼鏡の発言",
+            "status": "pending"
+          }
+        ],
+        "active": {
+          "requestId": "g2-00001",
+          "kind": "text",
+          "origin": "g2"
+        }
+      }
+    },
+    "requestApproval": {
+      "status": 200,
+      "body": {
+        "requestId": "g2-00001",
+        "origin": "g2",
+        "via": "text",
+        "status": "approval",
+        "approval": {
+          "approvalId": "<approvalId>",
+          "summary": "実行\n実行内容: ls /tmp",
+          "expiresAt": 0,
+          "fullyShown": true
+        }
+      }
+    },
+    "approvalAccepted": {
+      "status": 200,
+      "body": {
+        "status": "pending"
+      }
+    },
+    "approvalConflict": {
+      "status": 409,
+      "body": {
+        "error": "approval_conflict"
+      }
+    },
+    "approvalStale": {
+      "status": 409,
+      "body": {
+        "error": "approval_stale"
+      }
+    },
+    "requestDone": {
+      "status": 200,
+      "body": {
+        "requestId": "g2-00001",
+        "origin": "g2",
+        "via": "text",
+        "status": "done",
+        "reply": {
+          "text": "どちらにしますか。\nA：進める\nB：やめる",
+          "at": 0,
+          "choices": [
+            {
+              "value": "A",
+              "label": "進める"
+            },
+            {
+              "value": "B",
+              "label": "やめる"
+            }
+          ]
+        }
+      }
+    },
+    "transcriptIdle": {
+      "status": 200,
+      "body": {
+        "rev": "<rev>",
+        "sessionStartedAt": 0,
+        "items": [
+          {
+            "requestId": "home-0001",
+            "at": 0,
+            "current": true,
+            "origin": "home",
+            "text": "家の発言",
+            "status": "done",
+            "reply": {
+              "text": "家への返答",
+              "at": 0
+            }
+          },
+          {
+            "requestId": "g2-00001",
+            "at": 0,
+            "current": true,
+            "origin": "g2",
+            "via": "text",
+            "text": "眼鏡の発言",
+            "status": "done",
+            "reply": {
+              "text": "どちらにしますか。\nA：進める\nB：やめる",
+              "at": 0,
+              "choices": [
+                {
+                  "value": "A",
+                  "label": "進める"
+                },
+                {
+                  "value": "B",
+                  "label": "やめる"
+                }
+              ]
+            }
+          }
+        ],
+        "active": null
+      }
+    },
+    "transcriptUnchanged": {
+      "status": 200,
+      "body": {
+        "rev": "<rev>",
+        "unchanged": true
+      }
+    },
+    "cancelNotPending": {
+      "status": 409,
+      "body": {
+        "error": "not_pending"
+      }
+    },
+    "cancelAccepted": {
+      "status": 202,
+      "body": {
+        "status": "cancelling"
+      }
+    },
+    "requestCancelled": {
+      "status": 200,
+      "body": {
+        "requestId": "g2-00002",
+        "origin": "g2",
+        "status": "failed",
+        "error": "cancelled"
+      }
+    },
+    "requestUnknown": {
+      "status": 404,
+      "body": {
+        "error": "unknown_request"
+      }
+    },
+    "messageInvalid": {
+      "status": 400,
+      "body": {
+        "error": "invalid"
+      }
+    },
+    "messageExpired": {
+      "status": 410,
+      "body": {
+        "error": "expired"
+      }
+    },
+    "forbidden": {
+      "status": 403,
+      "body": {
+        "error": "forbidden"
+      }
+    },
+    "unauthenticated": {
+      "status": 401,
+      "body": {
+        "error": "unauthenticated"
+      }
+    }
+  }
+}
