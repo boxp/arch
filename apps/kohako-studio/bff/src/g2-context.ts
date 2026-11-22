@@ -26,9 +26,11 @@ export function redact(text: string) {
       .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '<url>')
       .replace(/(?:~|\b[A-Za-z]:)?[/\\][\w.~-]+(?:[/\\][\w.~-]+)+/g, '<path>')
       .replace(/[^\s@]+@[^\s@]+\.[A-Za-z]{2,}/g, '<email>')
-      // 1 回で伏せる: api_key=… / accessToken: … のような複合名は名前ごと（: か = が続く時だけ）、単独の語は区切りなしでも
+      // 1 回で伏せる（置いた <secret> をもう一度拾わない）。PEM の塊は丸ごと（短い最終行も残さない）。
+      // 秘密らしい名前の後は、値の形を当てにせず行末まで伏せる（`Authorization: Bearer abc` や空白入りの値を残さない）。
+      // 複合名（api_key=… / accessToken: …）は : か = が続く時だけ、単独の語は区切りなしでも。値が次の行にある時はその行まで。
       .replace(
-        /[\w.-]*(?:token|key|secret|passw(?:or)?d|bearer|auth|credential)[\w.-]*\s*[:=]\s*\S+|\b(?:token|key|secret|password|bearer)\b\s*\S+/gi,
+        /-----BEGIN[\s\S]*?(?:-----END[^\n]*|$)|[\w.-]*(?:token|key|secret|passw(?:or)?d|pwd|passphrase|bearer|auth|credential|cookie|session|otp)[\w.-]*\s*[:=]\s*[^\n]*|\b(?:token|key|secret|password|passphrase|bearer)\b\s*[^\n]*/gi,
         '<secret>',
       )
       .replace(/[A-Za-z0-9_\-+/=]{32,}/g, '…')

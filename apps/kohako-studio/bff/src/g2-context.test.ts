@@ -147,7 +147,7 @@ it('redacts urls, paths, emails, secrets, long tokens and control characters', (
   expect(redact('~/a/b と /etc/passwd と D:\\x\\y と 1/2')).toBe('<path> と <path> と <path> と 1/2')
   expect(redact('連絡は a.b@c.example まで')).toBe('連絡は <email> まで')
   for (const word of ['token', 'KEY', 'secret', 'Password', 'bearer'])
-    expect(redact(`x ${word}: abc123 y`)).toBe('x <secret> y')
+    expect(redact(`x ${word}: abc123 y`)).toBe('x <secret>')
   expect(redact('monkey business')).toBe('monkey business')
   // 複合名（api_key・accessToken など）の短い値も、名前ごと伏せる
   for (const field of [
@@ -161,7 +161,31 @@ it('redacts urls, paths, emails, secrets, long tokens and control characters', (
     'Authorization: shortsecret',
     'aws_credentials=shortsecret',
   ]) {
-    expect(redact(`設定 ${field} です`)).toBe('設定 <secret> です')
+    expect(redact(`設定 ${field} です`)).toBe('設定 <secret>')
+  }
+  // 名前の後は値の形を当てにせず行末まで伏せる（scheme つき・空白入り・次の行の値・PEM も残さない）。次の行の本文は残す
+  for (const line of [
+    'Authorization: Bearer abc123',
+    'authorization:bearer abc123',
+    'Authorization: Basic abc123',
+    'Proxy-Authorization: Token abc123',
+    'Bearer abc123',
+    'bearer   abc123 abc123',
+    'password: abc123 abc123',
+    'password is abc123',
+    'token\nabc123',
+    'api_key:\n  abc123',
+    'Cookie: sid=abc123; other=abc123',
+    'session_id=abc123',
+    'X-Auth-Token: "abc123"',
+    "key = 'abc123' , abc123",
+    '-----BEGIN PRIVATE KEY-----\nabc123\nabc123\n-----END PRIVATE KEY-----',
+    '-----BEGIN OPENSSH PRIVATE KEY-----\nabc123',
+  ]) {
+    const out = redact(`前の行\nこれ ${line}\n次の行`)
+    expect(out, line).not.toContain('abc123')
+    expect(out, line).toMatch(/^前の行 これ <secret>/)
+    if (!line.startsWith('-----BEGIN OPENSSH')) expect(out, line).toMatch(/ 次の行$/)
   }
   expect(redact('monkeys are fun')).toBe('monkeys are fun')
   expect(redact(`id ${'a'.repeat(32)} と ${'b'.repeat(31)}`)).toBe(`id … と ${'b'.repeat(31)}`)
