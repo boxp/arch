@@ -62,6 +62,8 @@ export function createApp(opts: {
   authenticate: (headers: IncomingMessage['headers']) => Promise<Principal | null>
   /** BOXP-657: principal g2 に開ける範囲。未設定なら g2 は全 route で 403（認証側でも無効）。 */
   g2Mode?: 'read' | 'write'
+  /** BOXP-657 段2: 眼鏡発の turn の指示文に参照（Board 要約・Telegram の直近）を添える。未設定なら固定の g2Instructions のまま。 */
+  g2Reference?: (base: string) => Promise<string>
   hermes?: ReturnType<typeof createHermes>
   notifications?: Awaited<ReturnType<typeof createNotifications>>
   push?: Awaited<ReturnType<typeof createPush>>
@@ -561,7 +563,9 @@ export function createApp(opts: {
         console.log(locationLogLine(principal, x.location !== undefined, location, now()))
       const turnInstructions =
         input.origin === 'g2'
-          ? g2Instructions
+          ? opts.g2Reference
+            ? await opts.g2Reference(g2Instructions)
+            : g2Instructions
           : input.kind === 'touch'
             ? instructions
             : input.views
