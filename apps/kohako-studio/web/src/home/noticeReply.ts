@@ -68,6 +68,10 @@ export type ReplyOutcome =
   | { kind: 'unsure' }
 export function classifyReply(status: number, data: Record<string, unknown> | null, isAuth: boolean): ReplyOutcome {
   const requestId = typeof data?.requestId === 'string' ? data.requestId : ''
+  // 受理済みだが BFF が追跡を作り直せなかった（tracking: unavailable = 再起動で追跡を失い、別の run の進行中などで再開できない）。
+  // 受付番号はあっても応答を追えないので受付成功として外さず、印を残して保留し、現 run の後に同じ replyId で追跡を作り直す。
+  if ((status === 200 || status === 202) && data?.status === 'submitted' && data?.tracking === 'unavailable')
+    return { kind: 'hold', reason: 'busy', attempted: 'set', sync: true }
   if ((status === 200 || status === 202) && data?.status === 'submitted' && requestId)
     return { kind: 'accepted', requestId }
   if (isAuth) return { kind: 'auth', attempted: 'revert' }

@@ -79,6 +79,7 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
           }
           if (mode === 'hang') await new Promise((r) => setTimeout(r, 5000))
           else if (mode === 'busy_claimed') return json(429, { error: 'busy_claimed' })
+          else if (mode === 'unavailable') return json(200, { requestId: item.reply.requestId, status: 'submitted', tracking: 'unavailable' }) // 受理済みだが別 run の進行中で追跡を作り直せない
           if (mode && mode !== 'hang') return json(mode, mode === 429 ? { error: 'busy' } : mode === 401 ? { error: 'unauthenticated' } : {})
           if (!item) return json(404, { error: 'not_found' })
           if (item.reply && item.reply.replyId !== body.replyId) return json(409, { error: 'already_replied' })
@@ -451,6 +452,36 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     assert(e.distinct() === 1 && e.replies.every((x) => x.replyId === first.replyId) && (await e.rows().count()) === 0 && !e.log.includes('poll:lost-tracker-one'), `tracker lost misjudged ${e.log.join(',')}`)
     ev.replies = e.replies.length; ev.polls = e.log.filter((l) => l.startsWith('poll:'))
     await e.screenshot('p-resume-tracker-lost')
+  })
+
+  // r: 追跡を失った受理済み返信を再開したとき、BFF が別 run の進行中で追跡を作り直せず tracking: unavailable を返したら、
+  //    受付成功として外さず（存在しない受付番号を追わない）送信待ちに残して保留し、次の「再開」で同じ replyId のまま追跡を作り直す。
+  await scenario('r-resume-tracking-unavailable', async (e, ev) => {
+    await e.submit('実行'); await e.count(1)
+    await e.select('one'); await e.page.locator('#inbox-detail').getByRole('button', { name: /^A/ }).click(); await wait(async () => (await e.rows().count()) === 1, 'queued')
+    await e.closeInbox()
+    e.replyMode.set('event-658-one', 502)
+    e.done(e.posts[0].requestId)
+    await e.replyCount(1); await e.page.locator('#queue-resume').waitFor({ state: 'visible', timeout: 10000 })
+    const first = e.replies[0], it = e.item('one')
+    it.reply = { replyId: first.replyId, kind: first.kind, value: first.value, requestId: 'lost-tracker-one', status: 'submitted' }
+    e.lostTrackers.add('lost-tracker-one')
+    e.replyMode.set('event-658-one', 'unavailable')
+    await e.page.locator('#queue-resume').click()
+    await e.replyCount(2)
+    await e.page.locator('#queue-resume').waitFor({ state: 'visible', timeout: 10000 })
+    await e.settle()
+    const hist = await e.page.locator('#history-list').textContent()
+    assert((await e.rows().count()) === 1 && !e.log.includes('poll:lost-tracker-one') && /受け付けられている可能性があります/.test(hist) && !/通知「通知one」.*は送っていません/.test(hist), `unavailable treated as accepted ${e.log.join(',')} ${hist}`)
+    ev.heldNote = hist.slice(-200)
+    await e.screenshot('r-tracking-unavailable-held')
+    await e.page.locator('#queue-resume').click()
+    await e.replyCount(3)
+    await wait(() => e.log.includes('poll:request-event-658-one'), 'did not follow after re-attach')
+    e.states.set('request-event-658-one', { status: 'done', reply: { text: '了解しました。' } })
+    await wait(async () => (await e.page.locator('#history-list').textContent()).includes('了解しました。'), 'reply answer not shown')
+    assert(e.distinct() === 1 && e.replies.every((x) => x.replyId === first.replyId) && (await e.rows().count()) === 0, 'resume after unavailable misjudged')
+    ev.replies = e.replies.length
   })
 
   // q: 受信箱に同じ replyId の claim（送信確認できず）が見えている通知で、会話中に「同じ返信を再送」すると送信待ちへ積まれるが、

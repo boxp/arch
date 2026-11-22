@@ -1982,8 +1982,11 @@ async function serverReplyOf(n: NoticeReply): Promise<ServerReply> {
  * サーバーで受理済み（submitted）と分かった通知返信の応答を追う。BFF の会話追跡が再起動などで受付番号を失っていても追えるよう、
  * 同じ replyId で返信 API へ送り、BFF に既存の返信として扱わせる（追跡中なら同じ受付番号を返し、失っていれば追跡を作り直す。新しい返信は作られない）。
  */
-async function followAcceptedNotice(n: NoticeReply, text: string, known: string) {
-  let id = known
+async function followAcceptedNotice(
+  n: NoticeReply,
+  text: string,
+): Promise<{ ok: true } | { ok: false; reason: HoldReason }> {
+  let id: string
   try {
     const r = await call(`notifications/${encodeURIComponent(n.eventId)}/reply`, {
       method: 'POST',
@@ -1991,9 +1994,14 @@ async function followAcceptedNotice(n: NoticeReply, text: string, known: string)
       body: JSON.stringify({ replyId: n.replyId, kind: n.kind, value: n.value }),
     })
     const out = classifyReply(r.status, r.data, classifyFailure({ status: r.status }) === 'auth')
-    if (out.kind === 'accepted') id = out.requestId
+    // 追跡を作り直せなかった（tracking: unavailable・busy など）: 存在しない受付番号を追わず、送信待ちに残して保留する。
+    if (out.kind !== 'accepted') {
+      if (out.kind === 'hold' && out.sync) void syncTranscript()
+      return { ok: false, reason: out.kind === 'auth' ? 'auth' : out.kind === 'hold' ? out.reason : 'unknown' }
+    }
+    id = out.requestId
   } catch {
-    // 追跡の作り直しに失敗しても、分かっている受付番号で追う（届かなければ会話の同期で拾う）。
+    return { ok: false, reason: 'offline' }
   }
   void call(`notifications/${encodeURIComponent(n.eventId)}/read`, { method: 'POST' }).catch(() => {})
   if (!followRequest(id, text)) {
@@ -2001,6 +2009,7 @@ async function followAcceptedNotice(n: NoticeReply, text: string, known: string)
     void syncTranscript()
   }
   void inboxView?.refresh()
+  return { ok: true }
 }
 async function cancelAttemptedNotice(item: QueueItem) {
   if (cancelChecking.has(item.id)) return
@@ -2022,13 +2031,21 @@ async function cancelAttemptedNoticeChecked(item: QueueItem) {
   if (!queue.list().some((x) => x.id === item.id)) return
   const decision = cancelDecision(found)
   if (decision.kind === 'accepted') {
-    // 受理済み: 取り消せないことを伝え、送信待ちから外して応答を追う（送っていないとは表示しない）。
-    if (!queue.remove(item.id)) return show(state)
+    // 受理済み: 取り消せない。同じ replyId で追跡を作り直せたら送信待ちから外して応答を追う（送っていないとは表示しない）。
+    // 作り直せなければ（別の run の進行中など）送信待ちに残して保留し、「確認して再開」で同じ replyId のまま追跡を作り直す。
+    const followed = await followAcceptedNotice(n, item.text)
+    if (!queue.list().some((x) => x.id === item.id)) return show(state)
+    if (!followed.ok) {
+      if (!queue.held) queue.hold(followed.reason)
+      queueNote.textContent = `${item.text} はすでに受け付けられているため取り消せません（受付番号: ${decision.requestId}）。いまは応答を追えないため送信待ちに残しています。「確認して再開」で同じ返信番号のまま追跡を作り直してください（二重には実行されません）。`
+      renderQueue()
+      return
+    }
+    queue.remove(item.id)
     addHistory(
       'お知らせ',
       `${item.text} はすでに受け付けられていたため取り消せませんでした（受付番号: ${decision.requestId}）。`,
     )
-    await followAcceptedNotice(n, item.text, decision.requestId)
     show(state)
     return
   }
@@ -2064,14 +2081,16 @@ async function cancelAttemptedNoticeChecked(item: QueueItem) {
 async function sendNoticeReply(item: QueueItem): Promise<void> {
   const n = must(item.notice),
     path = `notifications/${encodeURIComponent(n.eventId)}`
-  const stop = (reason: HoldReason) => {
+  const stop = (reason: HoldReason, sent = false) => {
     queue.putBack(item)
     queue.hold(reason)
     addHistory(
       'お知らせ',
-      reason === 'unknown'
-        ? `${item.text} が受け付けられたか確認できませんでした。${holdLabel[reason]}、送信待ちを一時停止しました（「再開」で同じ返信番号のまま確認・再送します）。`
-        : `${item.text} は送っていません。${holdLabel[reason]}、送信待ちを一時停止しました（本文は送信待ちに残っています）。`,
+      sent
+        ? `${item.text} は受け付けられている可能性があります（取り消しはできません）。${holdLabel[reason]}応答を追えないので、送信待ちを一時停止しました（「再開」で同じ返信番号のまま追跡を作り直します。二重には実行されません）。`
+        : reason === 'unknown'
+          ? `${item.text} が受け付けられたか確認できませんでした。${holdLabel[reason]}、送信待ちを一時停止しました（「再開」で同じ返信番号のまま確認・再送します）。`
+          : `${item.text} は送っていません。${holdLabel[reason]}、送信待ちを一時停止しました（本文は送信待ちに残っています）。`,
     )
   }
   const accepted = (requestId: string) => {
@@ -2126,11 +2145,15 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
     if (out.attempted === 'revert' && !prior) delete n.attempted
     if (out.attempted === 'set') n.attempted = true
     if (out.sync) void syncTranscript()
-    return stop(out.reason)
+    return stop(out.reason, out.attempted === 'set')
   }
   // 応答が失われた・成否不明: 通知の最新状態で受理を確かめてから保留する（受理済みを未送信扱いにしない）。
   const after = unsureOutcome(await serverReplyOf(n))
-  if (after.kind === 'accepted') return void (await followAcceptedNotice(n, item.text, after.requestId))
+  if (after.kind === 'accepted') {
+    const followed = await followAcceptedNotice(n, item.text)
+    if (followed.ok) return
+    return stop(followed.reason, true)
+  }
   return stop(after.reason)
 }
 queueResume.addEventListener('click', () => {
