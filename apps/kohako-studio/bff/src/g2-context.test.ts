@@ -14,6 +14,7 @@ import {
   G2_INSTRUCTIONS_MAX,
   G2_REFERENCE_NOTICE,
   g2ReferenceInstructions,
+  telegramLines,
   parseBoardSnapshot,
   pickTurns,
   redact,
@@ -125,7 +126,7 @@ it('drops Kohako replies to a delivery notice until the Owner speaks again', () 
     msg('assistant', '本人への返答', 12),
   ])
   expect(notices).toBe(2)
-  expect(turns.map((t) => t.text)).toEqual(['先頭の返答', '空の発言への返答', '本人の発言', '本人への返答'])
+  expect(turns.map((t) => t.text)).toEqual(['先頭の返答', '本人の発言', '本人への返答'])
 })
 
 it('redacts urls, paths, emails, secrets, long tokens and control characters', () => {
@@ -493,9 +494,13 @@ it('keeps the fixed text and the whole Telegram reference within the limit by cu
   const text = g2ReferenceInstructions(base, huge, shared)
   expect(text.length).toBe(G2_INSTRUCTIONS_MAX)
   expect(text.startsWith(`${base}\n${G2_REFERENCE_NOTICE}`)).toBe(true)
-  expect(text.endsWith(`\nTelegram DM の直近:\n${lines.slice(0, 900)}`)).toBe(true)
-  expect(text).toContain(`Owner: ${'1'.repeat(150)}\nOwner: `)
-  expect(text).not.toContain('1'.repeat(151))
+  // 上限を超える時は古い発言を行ごと落とし、最新の発言を必ず残す（行の途中で切らない）。
+  const kept = lines.split('\n').slice(1).join('\n')
+  expect(kept.length).toBeLessThanOrEqual(900)
+  expect(text.endsWith(`\nTelegram DM の直近:\n${kept}`)).toBe(true)
+  expect(text).toContain(`Owner: ${'6'.repeat(150)}`)
+  expect(text).not.toContain('Owner: 1')
+  expect(text).not.toContain('6'.repeat(151))
   expect(text).toContain('\nBOXP-0 / Blocked / 題')
   expect(text).not.toContain('BOXP-4')
   // 実際の固定文でも上限に収まり、固定文は欠けない。
@@ -505,7 +510,7 @@ it('keeps the fixed text and the whole Telegram reference within the limit by cu
   // 固定文だけで上限を超える時は Board 要約を全部落とす（負の長さで切らない）。
   const over = g2ReferenceInstructions('基'.repeat(G2_INSTRUCTIONS_MAX), huge, shared)
   expect(over).not.toContain('BOXP-0 /')
-  expect(over.endsWith(lines.slice(0, 900))).toBe(true)
+  expect(over.endsWith(kept)).toBe(true)
 })
 
 it('reads the Board with a short timeout, caches it and retries a failure sooner', async () => {
@@ -774,4 +779,39 @@ it('sends a glasses turn with exactly the fixed instructions when no reference i
   expect((await down.send('g2', 'g2-00001')).status).toBe(202)
   expect(down.calls).toHaveLength(1)
   expect(down.calls[0].instructions).toBe(g2Instructions)
+})
+
+it('releases the after-notice state only on a real Owner message, whatever comes in between', () => {
+  // 通知の後に来うる「本人の発言でないもの」のどれでも、通知への返答は参照に入らない。
+  for (const between of [
+    [msg('user', '', 3)],
+    [msg('user', '   \n\t', 3)],
+    [msg('tool', 'TOOL', 3)],
+    [msg('assistant', '', 3, true)],
+    [msg('user', '', 3), msg('tool', 'TOOL', 3.5), msg('user', ' ', 3.6)],
+  ]) {
+    const { turns } = pickTurns([
+      msg('user', '前の発言', 1),
+      msg('user', '[Webhook delivery: x] 通知の中身', 2),
+      ...between,
+      msg('assistant', '通知の中身への返答', 4),
+      msg('user', '次の発言', 5),
+      msg('assistant', '次への返答', 6),
+    ])
+    expect(turns.map((t) => t.text)).toEqual(['前の発言', '次の発言', '次への返答'])
+  }
+})
+
+it('always keeps the newest Telegram turns when the reference is over the limit', () => {
+  for (const n of [1, 5, 6, 12]) {
+    const turns = Array.from({ length: n }, (_, i) => turn(i % 2 ? 'kohako' : 'owner', `${i % 10}`.repeat(160), i))
+    const text = telegramLines({ turns }, 150, 900)
+    expect(text.length).toBeLessThanOrEqual(900)
+    const all = turns.map((t) => `${t.role === 'owner' ? 'Owner' : 'Kohako'}: ${t.text.slice(0, 150)}`)
+    const lines = text.split('\n')
+    // 残るのは末尾（新しい側）の連続した行で、どの行も欠けていない。
+    expect(lines).toEqual(all.slice(-lines.length))
+    expect(lines.length).toBe(Math.min(n, 5))
+  }
+  expect(telegramLines(undefined, 150, 900)).toBe('')
 })

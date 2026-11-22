@@ -41,6 +41,7 @@ export function redact(text: string) {
 /**
  * Owner とコハコの本文だけを残す（配信通知・tool 呼び出し・tool 出力は除く）。
  * 配信通知へのコハコの返答も、次の本人の発言まで除く（返答だけ残ると通知の中身が漏れるため）。
+ * 「通知の後」を解くのは、参照に載る本人の発言（空でなく通知でもない user）だけ。空の発言やほかの role では解かない。
  */
 export function pickTurns(messages: SessionMessage[], max = 6, chars = 160) {
   const turns: Turn[] = []
@@ -48,9 +49,13 @@ export function pickTurns(messages: SessionMessage[], max = 6, chars = 160) {
     afterNotice = false
   for (const m of messages) {
     if (m.role === 'user') {
-      afterNotice = NOTICE.test(m.content)
-      if (afterNotice) notices++
-      else if (m.content.trim()) turns.push({ role: 'owner', text: redact(m.content).slice(0, chars), at: m.at })
+      if (NOTICE.test(m.content)) {
+        afterNotice = true
+        notices++
+      } else if (m.content.trim()) {
+        afterNotice = false
+        turns.push({ role: 'owner', text: redact(m.content).slice(0, chars), at: m.at })
+      }
     } else if (m.role === 'assistant' && !m.toolCalls && m.content.trim() && !afterNotice)
       turns.push({ role: 'kohako', text: redact(m.content).slice(0, chars), at: m.at })
   }
@@ -239,10 +244,18 @@ export const boardSummary = (board: BoardSnapshot) =>
     .slice(0, 5)
     .map(format)
     .join('\n')
-const telegramLines = (shared: Pick<SharedContext, 'turns'> | undefined, chars: number) =>
-  shared
-    ? shared.turns.map((t) => `${t.role === 'owner' ? 'Owner' : 'Kohako'}: ${t.text.slice(0, chars)}`).join('\n')
-    : ''
+/** 上限（max 字）に収まるだけ、新しい発言から行ごとに残す（古い側を落とす。行の途中では切らない）。 */
+export function telegramLines(shared: Pick<SharedContext, 'turns'> | undefined, chars: number, max: number) {
+  const lines: string[] = []
+  let used = 0
+  for (const t of [...(shared?.turns ?? [])].reverse()) {
+    const line = `${t.role === 'owner' ? 'Owner' : 'Kohako'}: ${t.text.slice(0, chars)}`
+    if (used + line.length + (lines.length ? 1 : 0) > max) break
+    used += line.length + (lines.length ? 1 : 0)
+    lines.unshift(line)
+  }
+  return lines.join('\n')
+}
 /** Hermes へ渡す指示文の上限（字）。眼鏡の BFF と同じ。 */
 export const G2_INSTRUCTIONS_MAX = 3800
 /** 参照を添える時だけ足す断り書き（眼鏡の BFF の前置きと同じ扱い）。 */
@@ -253,7 +266,7 @@ export const G2_REFERENCE_NOTICE =
  * 固定文（base・断り書き）と上限の決まっている Telegram 参照は必ず残し、長さに上限の無い Board 要約の側を残りに収まるよう切る。
  */
 export function g2ReferenceInstructions(base: string, board?: BoardSnapshot, shared?: Pick<SharedContext, 'turns'>) {
-  const telegram = telegramLines(shared, 150).slice(0, 900)
+  const telegram = telegramLines(shared, 150, 900)
   const summary = board ? boardSummary(board) : ''
   if (!summary && !telegram) return base
   const head = [
