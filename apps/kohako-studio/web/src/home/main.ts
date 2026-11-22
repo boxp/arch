@@ -1877,10 +1877,14 @@ function cancelQueued(item: QueueItem) {
   }
   dropQueued(item)
 }
+/** 取り消した通知への自由文の返信を、その通知の下書きへ戻す（本文を失わない）。個別・一括取消で共通。 */
+function restoreNoticeDraft(item: QueueItem) {
+  if (item.notice?.kind === 'text') inboxView?.restoreDraft(item.notice.eventId, item.notice.value)
+}
 function dropQueued(item: QueueItem) {
   if (!queue.remove(item.id)) return
   queueNote.textContent = ''
-  if (item.notice?.kind === 'text') inboxView?.restoreDraft(item.notice.eventId, item.notice.value)
+  restoreNoticeDraft(item)
   addHistory(
     'お知らせ',
     item.notice?.attempted
@@ -2115,15 +2119,17 @@ queueClear.addEventListener('click', () => {
   const attempted = queue.list().filter((x) => x.notice?.attempted)
   if (attempted.length) {
     const rest = queue.list().filter((x) => !attempted.includes(x))
-    for (const x of rest) queue.remove(x.id)
+    for (const x of rest) if (queue.remove(x.id)) restoreNoticeDraft(x)
     queueNote.textContent = ''
     if (rest.length) addHistory('お知らせ', `送信待ち ${rest.length} 件を取り消しました（送っていません）。`)
     for (const x of attempted) void cancelAttemptedNotice(x)
     show(state)
     return
   }
-  const n = queue.size
+  const cleared = queue.list()
+  const n = cleared.length
   queue.clear()
+  for (const x of cleared) restoreNoticeDraft(x)
   queueNote.textContent = ''
   if (n) addHistory('お知らせ', `送信待ち ${n} 件をすべて取り消しました（送っていません）。`)
   show(state)

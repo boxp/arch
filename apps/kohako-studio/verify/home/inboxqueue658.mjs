@@ -163,6 +163,24 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     ev.draftAfterCancel = draft; ev.approvals = e.approvals.length
   })
 
+  // i: 「すべて取消」でも通知への自由文の返信は、個別取消と同じくその通知の下書きへ戻る（本文を失わない）。
+  await scenario('i-clear-all-restores-draft', async (e, ev) => {
+    await e.submit('実行'); await e.count(1)
+    await e.select('two')
+    await e.page.locator('#inbox-detail textarea').fill('一括取消でも残る返信')
+    await e.page.locator('#inbox-detail').getByRole('button', { name: '返信する' }).click()
+    await wait(async () => (await e.rows().count()) === 1, 'text queued')
+    await e.closeInbox(); await e.submit('通常の後続'); await wait(async () => (await e.rows().count()) === 2, 'mixed queued')
+    await e.page.locator('#queue-clear').click()
+    await wait(async () => (await e.rows().count()) === 0, 'cleared')
+    await e.select('two')
+    await wait(async () => (await e.page.locator('#inbox-detail textarea').count()) === 1, 'input back after clear all')
+    const draft = await e.page.locator('#inbox-detail textarea').inputValue()
+    assert(draft === '一括取消でも残る返信' && e.replies.length === 0 && e.posts.length === 1, `clear-all draft=${draft}`)
+    await e.screenshot('i-clear-all-draft')
+    ev.draftAfterClearAll = draft
+  })
+
   // c: 送る直前に通知状態を確かめ、別端末の先行返信（409 相当）・選択肢変更（400 相当）・通知消失（404 相当）では送らずに保留、取消で次へ進む。
   await scenario('c-stale-notice', async (e, ev) => {
     await e.submit('実行'); await e.count(1)
