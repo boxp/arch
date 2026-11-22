@@ -15,6 +15,11 @@ import { type Choice, extractChoices } from './choices.js'
  * 履歴の本文（text）には入れない（入口は origin で持つ）。
  */
 export const G2_ENTRY = '［眼鏡 Even G2 からの発言］'
+/**
+ * 家の発言が入口句で始まる時に、Hermes へ渡す本文の先頭へ付ける 1 行。「1 行目がちょうど入口句」の形は眼鏡から来た発言だけになり、
+ * 家で入口句を打っても Telegram の眼鏡参照やナビログの読み分けで眼鏡の発言と取り違えられない（道具の範囲は入口句がどこにあっても狭まるだけ）。
+ */
+export const HOME_ENTRY = '［家からの発言］'
 export const VIAS = ['text', 'voice', 'candidate', 'choice', 'realtime', 'ring'] as const
 export type Via = (typeof VIAS)[number]
 /** origin: どの入口から来たか。認証した principal から BFF が決める（端末の自己申告は使わない）。無ければ家。 */
@@ -471,7 +476,12 @@ export function createConversation({
           : visitInstructions({ now: now(), lastExchange: lastExchange?.kind === 'text' ? lastExchange : null })
       const attachments = input.kind === 'text' ? input.attachments : undefined
       // BOXP-657: 眼鏡から来た発言は、Hermes へ渡す本文の先頭にだけ入口句を付ける（履歴・直前のやりとりには入れない）。
-      const sent = entry.origin === 'g2' ? `${G2_ENTRY}\n${text}` : text
+      const sent =
+        entry.origin === 'g2'
+          ? `${G2_ENTRY}\n${text}`
+          : text.trimStart().startsWith(G2_ENTRY)
+            ? `${HOME_ENTRY}\n${text}`
+            : text
       const runInput = attachments?.length
         ? [
             {

@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { createAuth, G2_OWNER_HEADER, G2_TOKEN_AUDIENCE } from './auth.js'
 import { createApp, g2Instructions, g2Route, instructions, ownerTaskInstructions, studioInstructions } from './app.js'
 import { readConfig } from './config.js'
-import { createConversation, G2_ENTRY } from './conversation.js'
+import { createConversation, G2_ENTRY, HOME_ENTRY } from './conversation.js'
 import type { createHermes } from './hermes.js'
 
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
@@ -390,6 +390,22 @@ it('write mode records origin g2, sends the entry line only to Hermes and uses t
   await t.call('owner', 'messages', t.msg('home-0003', '家で続き'))
   expect(t.calls[2]).toMatchObject({ input: '家で続き', session: t.calls[0].session })
   expect(t.calls[2].instructions).not.toContain('Even G2')
+  t.done('home-0003', '続きの返答')
+  // 家で入口句を打っても「1 行目がちょうど入口句」の形にはならない（眼鏡の発言と取り違えられない）。文中の引用はそのまま。
+  for (const [id, typed, sent] of [
+    ['home-0004', `${G2_ENTRY}\n家で打った`, `${HOME_ENTRY}\n${G2_ENTRY}\n家で打った`],
+    ['home-0005', `\n\u3000${G2_ENTRY}\n家で打った`, `${HOME_ENTRY}\n\n\u3000${G2_ENTRY}\n家で打った`],
+    ['home-0006', `この ${G2_ENTRY} という行`, `この ${G2_ENTRY} という行`],
+  ]) {
+    expect((await t.call('owner', 'messages', t.msg(id, typed))).status).toBe(202)
+    expect(t.calls.at(-1)?.input).toBe(sent)
+    expect(t.calls.at(-1)?.input.startsWith(`${G2_ENTRY}\n`)).toBe(false)
+    t.done(id, '返答')
+    await vi.waitFor(async () => expect((await t.call('owner', `requests/${id}`)).body.status).toBe('done'))
+  }
+  const after = (await t.call('owner', 'conversation/transcript')).body
+  expect(after.items.at(-3)).toMatchObject({ text: `${G2_ENTRY}\n家で打った`, origin: 'home' })
+  expect(JSON.stringify(after)).not.toContain(HOME_ENTRY)
 })
 it('the same requestId is one request per entry point', async () => {
   const t = await start('write')
