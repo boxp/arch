@@ -104,6 +104,7 @@ import {
   noticeHold,
   QUEUE_MAX_ITEMS,
   type HoldReason,
+  type NoticeReply,
   type QueueItem,
 } from './queue'
 import { createCharacterMorph, layoutKey } from './morph'
@@ -1868,7 +1869,17 @@ function renderQueue() {
 }
 /** 送信待ちの 1 件を取り消す（送っていない）。通知への自由文の返信は、その通知の下書きへ戻す。 */
 function cancelQueued(item: QueueItem) {
+  // 一度返信 API へ送り、受理されたか確認できなかった通知返信は、取り消す前にサーバー側の受理を確かめる
+  // （受理済みなのに「送っていません」として取り消すと、取り消したつもりの返信が実行されるため）。
+  if (item.notice && attemptedNotice.has(item.id)) {
+    void cancelAttemptedNotice(item)
+    return
+  }
+  dropQueued(item)
+}
+function dropQueued(item: QueueItem) {
   if (!queue.remove(item.id)) return
+  attemptedNotice.delete(item.id)
   queueNote.textContent = ''
   if (item.notice?.kind === 'text') inboxView?.restoreDraft(item.notice.eventId, item.notice.value)
   addHistory(
@@ -1939,6 +1950,50 @@ function enqueue(text: string, fromComposer = true): boolean {
  * 送る直前に通知の最新状態を確かめ、先に返信済み・消失・選択肢変更なら送らずに保留する（本文は送信待ちに残す）。
  * 失敗・成否不明・認証切れ・通信切れでは先頭へ戻して保留し、明示の「再開」（同じ replyId で再送）か「取消」を待つ。
  */
+/** 返信 API へ一度送った通知返信の項目 ID（成否不明のまま取り消す前にサーバー側の受理を確かめる）。 */
+const attemptedNotice = new Set<number>()
+type ServerReply = { state: 'none' } | { state: 'error' } | { state: 'mine'; status: string; requestId: string }
+/** 通知の最新状態から、登録時の replyId の返信がサーバーに受理（claim）されているかを調べる。 */
+async function serverReplyOf(n: NoticeReply): Promise<ServerReply> {
+  try {
+    const r = await call('notifications')
+    if (r.status !== 200 || !Array.isArray(r.data?.items)) return { state: 'error' }
+    const cur = (r.data.items as InboxItem[]).find((x) => x.eventId === n.eventId)
+    if (cur?.reply?.replyId === n.replyId)
+      return { state: 'mine', status: cur.reply.status, requestId: cur.reply.requestId }
+    return { state: 'none' }
+  } catch {
+    return { state: 'error' }
+  }
+}
+async function cancelAttemptedNotice(item: QueueItem) {
+  const n = must(item.notice)
+  queueNote.textContent = '取り消す前に、この返信が受け付けられていないか確認しています…'
+  renderQueue()
+  const found = await serverReplyOf(n)
+  queueNote.textContent = ''
+  if (found.state === 'mine' && found.status === 'submitted' && found.requestId) {
+    // 受理済み: 取り消せないことを伝え、送信待ちから外して応答を追う（送っていないとは表示しない）。
+    if (!queue.remove(item.id)) return show(state)
+    attemptedNotice.delete(item.id)
+    addHistory(
+      'お知らせ',
+      `${item.text} はすでに受け付けられていたため取り消せませんでした（受付番号: ${found.requestId}）。`,
+    )
+    if (!followRequest(found.requestId, item.text)) void syncTranscript()
+    void inboxView?.refresh()
+    show(state)
+    return
+  }
+  if (found.state === 'error') {
+    queueNote.textContent =
+      'この返信が受け付けられたか確認できないため、まだ取り消していません。通信が戻ってからもう一度「取消」するか、受信箱で通知の状態を確認してください。'
+    renderQueue()
+    return
+  }
+  // 未受理（none）・会話へ渡せず失敗（submit_failed）の返信は実行されないので、送っていないとして取り消す。
+  dropQueued(item)
+}
 async function sendNoticeReply(item: QueueItem): Promise<void> {
   const n = must(item.notice),
     path = `notifications/${encodeURIComponent(n.eventId)}`
@@ -1947,8 +2002,24 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
     queue.hold(reason)
     addHistory(
       'お知らせ',
-      `${item.text} は送っていません。${holdLabel[reason]}、送信待ちを一時停止しました（本文は送信待ちに残っています）。`,
+      reason === 'unknown'
+        ? `${item.text} が受け付けられたか確認できませんでした。${holdLabel[reason]}、送信待ちを一時停止しました（「再開」で同じ返信番号のまま確認・再送します）。`
+        : `${item.text} は送っていません。${holdLabel[reason]}、送信待ちを一時停止しました（本文は送信待ちに残っています）。`,
     )
+  }
+  const accepted = (requestId: string) => {
+    attemptedNotice.delete(item.id)
+    void call(`${path}/read`, { method: 'POST' }).catch(() => {})
+    if (!followRequest(requestId, item.text))
+      addHistory('お知らせ', `${item.text} を送りました（受付番号: ${requestId}）。`)
+    void inboxView?.refresh()
+  }
+  // 応答が失われた・成否不明の応答では、通知の最新状態で受理を確かめてから保留する（受理済みを未送信扱いにしない）。
+  const unsure = async () => {
+    const found = await serverReplyOf(n)
+    if (found.state === 'mine' && found.status === 'submitted' && found.requestId) return accepted(found.requestId)
+    if (found.state === 'mine' && found.status === 'submit_failed') return stop('failed')
+    return stop('unknown')
   }
   const auth = (status: number, data: Record<string, unknown> | null) => {
     queue.putBack(item)
@@ -1968,6 +2039,7 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
   if (current.reply && current.reply.replyId !== n.replyId) return stop('notice_replied')
   if (n.kind === 'choice' && !current.choices?.includes(n.value)) return stop('notice_invalid')
   let result: Awaited<ReturnType<typeof call>>
+  attemptedNotice.add(item.id)
   try {
     result = await call(`${path}/reply`, {
       method: 'POST',
@@ -1975,16 +2047,11 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
       body: JSON.stringify({ replyId: n.replyId, kind: n.kind, value: n.value }),
     })
   } catch {
-    return stop('unknown')
+    return unsure()
   }
   const requestId = typeof result.data?.requestId === 'string' ? result.data.requestId : ''
-  if ((result.status === 200 || result.status === 202) && result.data?.status === 'submitted' && requestId) {
-    void call(`${path}/read`, { method: 'POST' }).catch(() => {})
-    if (!followRequest(requestId, item.text))
-      addHistory('お知らせ', `${item.text} を送りました（受付番号: ${requestId}）。`)
-    void inboxView?.refresh()
-    return
-  }
+  if ((result.status === 200 || result.status === 202) && result.data?.status === 'submitted' && requestId)
+    return accepted(requestId)
   if (classifyFailure({ status: result.status }) === 'auth') return auth(result.status, result.data)
   if (result.status === 429 && result.data?.error === 'busy') {
     void syncTranscript()
@@ -1994,7 +2061,8 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
   if (result.status === 404) return stop('notice_gone')
   if (result.status === 400) return stop('notice_invalid')
   // submit_failed（BFF は受け付けたが会話へ渡せなかった）は失敗、それ以外（5xx・不明な応答）は成否不明。どちらも同じ replyId でのみ再送する。
-  return stop(result.data?.status === 'submit_failed' ? 'failed' : 'unknown')
+  if (result.data?.status === 'submit_failed') return stop('failed')
+  return unsure()
 }
 queueResume.addEventListener('click', () => {
   if (busy) return
@@ -2020,6 +2088,17 @@ queueResume.addEventListener('click', () => {
   tryDispatch(true)
 })
 queueClear.addEventListener('click', () => {
+  // 一度送って成否不明の通知返信は、受理を確かめてから個別に取り消す（受理済みを「送っていません」としない）。
+  const attempted = queue.list().filter((x) => x.notice && attemptedNotice.has(x.id))
+  if (attempted.length) {
+    const rest = queue.list().filter((x) => !attempted.includes(x))
+    for (const x of rest) queue.remove(x.id)
+    queueNote.textContent = ''
+    if (rest.length) addHistory('お知らせ', `送信待ち ${rest.length} 件を取り消しました（送っていません）。`)
+    for (const x of attempted) void cancelAttemptedNotice(x)
+    show(state)
+    return
+  }
   const n = queue.size
   queue.clear()
   queueNote.textContent = ''

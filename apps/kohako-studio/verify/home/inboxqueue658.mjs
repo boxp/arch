@@ -68,6 +68,10 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
         if (m[2] === 'reply') {
           const body = req.postDataJSON(); replies.push({ id, ...body }); log.push(`reply:${id}:${body.kind}:${body.value}`)
           const mode = replyMode.get(id); replyMode.delete(id)
+          if (mode === 'lost') { // サーバーは受理したが応答が失われた（502）
+            const requestId = `request-${id}`; item.reply = { ...body, requestId, status: 'submitted' }; states.set(requestId, { status: 'pending' })
+            return json(502, {})
+          }
           if (mode) return json(mode, mode === 429 ? { error: 'busy' } : mode === 401 ? { error: 'unauthenticated' } : {})
           if (!item) return json(404, { error: 'not_found' })
           if (item.reply && item.reply.replyId !== body.replyId) return json(409, { error: 'already_replied' })
@@ -199,6 +203,37 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     const stored = await e.page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }))
     assert(!stored.includes('後続') && !stored.includes('通知「'), 'queued text persisted')
     ev.status = [s1, s2, s3]; ev.replyIds = [...ids]
+  })
+
+  // g: 返信 API の応答が失われても、受理済みなら送信済みとして扱う。成否不明の保留を取り消す時は受理を確かめ、受理済みなら取り消したと表示しない。
+  await scenario('g-lost-response-cancel', async (e, ev) => {
+    await e.submit('実行'); await e.count(1)
+    await e.select('one'); await e.page.locator('#inbox-detail').getByRole('button', { name: /^A/ }).click(); await wait(async () => (await e.rows().count()) === 1, 'queued one')
+    await e.select('two'); await e.page.locator('#inbox-detail').getByRole('button', { name: /^A/ }).click(); await wait(async () => (await e.rows().count()) === 2, 'queued two')
+    await e.closeInbox()
+    e.replyMode.set('event-658-one', 'lost')
+    e.done(e.posts[0].requestId)
+    await e.replyCount(1); await e.settle()
+    const hist1 = await e.page.locator('#history-list').textContent()
+    assert(!(await e.page.locator('#queue-resume').isVisible()) && !hist1.includes('確認できませんでした'), 'accepted reply was treated as unknown')
+    e.done('request-event-658-one')
+    await e.replyCount(2); e.done('request-event-658-two'); await e.settle()
+    // 2 件目: 502（未受理）→ 成否不明で保留。その後サーバーへ遅れて届いた（受理済み）状態で「取消」→ 取り消せないと表示。
+    e.replyMode.set('event-658-three', 502)
+    await e.submit('実行2'); await e.count(2)
+    await e.select('three'); await e.page.locator('#inbox-detail').getByRole('button', { name: /^B/ }).click(); await wait(async () => (await e.rows().count()) === 1, 'queued three')
+    await e.closeInbox()
+    e.done(e.posts[1].requestId)
+    await e.replyCount(3); await e.page.locator('#queue-resume').waitFor({ state: 'visible', timeout: 10000 })
+    const last = e.replies[2]
+    e.item('three').reply = { replyId: last.replyId, kind: last.kind, value: last.value, requestId: 'request-event-658-three', status: 'submitted' }
+    e.states.set('request-event-658-three', { status: 'pending' })
+    await e.rows().first().getByRole('button', { name: '送信待ち 1番目を取り消す' }).click()
+    await wait(async () => (await e.page.locator('#history-list').textContent()).includes('取り消せませんでした'), 'accepted reply shown as cancelled')
+    const hist2 = await e.page.locator('#history-list').textContent()
+    assert(!/通知「通知three」.*を取り消しました（送っていません）/.test(hist2) && (await e.rows().count()) === 0 && e.replies.length === 3, 'cancel misreported')
+    ev.history = hist2.split('\n').filter((l) => l.includes('通知')).slice(-4)
+    await e.screenshot('g-lost-response-cancel')
   })
 
   // e: 吹き出しのお知らせから返信した時に、別端末の依頼が進行中で BFF が 429 busy を返したら、本文を失わず送信待ちへ積んで保留し、再開で同じ replyId を送る。

@@ -122,10 +122,10 @@ export class MessageQueue {
     return true
   }
 
+  /** 待機中の項目をすべて取り消す。送信中（take 済み）の項目は取り消せないため、結果が出るまで inflight を保つ。 */
   clear(): void {
     this.items = []
     this.held = null
-    this.inflight = null
   }
 
   /** 先頭を送り出すために取り出す。保留中・空なら null（同じ項目を 2 回取り出すことはない）。 */

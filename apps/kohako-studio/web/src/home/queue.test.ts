@@ -125,6 +125,17 @@ describe('通知返信の送信待ち（BOXP-658）', () => {
     expect(q.addNotice({ ...notice(), value: 'B' }, 5).ok).toBe(true)
     expect(addErrorText.sending).toContain('送信中')
   })
+  it('送信中に残りを一括取消しても、送信中の通知への別の返信は結果が出るまで積まない', () => {
+    const q = new MessageQueue()
+    q.addNotice(notice(), 1)
+    q.add('通常の発言', 1)
+    const taken = must(q.take())
+    q.clear()
+    expect(q.size).toBe(0)
+    expect(q.addNotice({ ...notice(), value: 'B' }, 2)).toEqual({ ok: false, error: 'sending' })
+    q.settle(taken.id)
+    expect(q.addNotice({ ...notice(), value: 'B' }, 3).ok).toBe(true)
+  })
   it('通知固有の保留は先頭の返信を取り消すと解け、他の保留は残る', () => {
     const q = new MessageQueue()
     const a = q.addNotice(notice(), 1)
