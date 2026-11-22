@@ -20,7 +20,7 @@ import {
 import { chatEntries } from './chatlog'
 import { TouchBubble } from './touch-bubble'
 import { renderMarkdown, plainText } from './markdown'
-import { initInbox, noticeChoices } from './inbox'
+import { initInbox, noticeChoiceValues, noticeChoices, type Item as InboxItem } from './inbox'
 import { type Choice, choiceButtonText, choiceMessage, extractChoices } from './choices'
 // BOXP-500: コハコの家（kohako-home）。Studio と同じ BFF・認証・Web 専用会話を使う全画面 UI。
 // 会話の送信・重複防止・停止・承認・追跡は Studio（src/studio/main.ts）と同じ規則。人格・判断・記憶は Hermes だけが持つ。
@@ -97,7 +97,24 @@ import {
 } from './location'
 import { blendLook, followWeightFor, lookTarget, smoothLook, TouchLook, type Look } from './lookfollow'
 import { parseResume, parseUnconfirmed, pollVerdict, type Inflight } from './resume'
-import { addErrorText, holdLabel, MessageQueue, QUEUE_MAX_ITEMS, type HoldReason, type QueueItem } from './queue'
+import {
+  addErrorText,
+  holdLabel,
+  MessageQueue,
+  noticeHold,
+  QUEUE_MAX_ITEMS,
+  type HoldReason,
+  type NoticeReply,
+  type QueueItem,
+} from './queue'
+import {
+  cancelDecision,
+  classifyReply,
+  preflight,
+  serverReplyFrom,
+  unsureOutcome,
+  type ServerReply,
+} from './noticeReply'
 import { createCharacterMorph, layoutKey } from './morph'
 
 // BOXP-510 TD-03: 家を開いた時点で SW を登録し、PWA としてインストール可能にする（Push と同じ SW・scope）。
@@ -338,9 +355,17 @@ const setUnconfirmed = (o: Outgoing | null) => {
 }
 // BOXP-508: 送信待ち（本文はメモリだけ）。pendingFromQueue は受理未確認の控えが送信待ちから送り出したものか（入力欄に戻さず送信待ち欄に出す）。
 const queue = new MessageQueue()
+// 受信箱の表示（BOXP-658: 送信待ちの通知返信を詳細へ反映する）。initInbox の後で設定する。
+let inboxView: ReturnType<typeof initInbox> | null = null,
+  inboxQueueKey = ''
 let pendingFromQueue = false,
   dispatching = false,
   dispatchTimer = 0
+/**
+ * 取消のための受理確認中の項目。確認中は送信（自動・「再開」とも）を止める:
+ * 確認中に同じ replyId で再送されて受理されると、古い確認結果（submit_failed 等）で取り消して追跡を失うため。
+ */
+const cancelChecking = new Set<number>()
 const queueBox = el('queue'),
   queueList = el('queue-list'),
   queueStatus = el('queue-status'),
@@ -1298,7 +1323,9 @@ async function initialize() {
     if (!reauth) tab.set(REAUTH_KEY, null)
     if (reauth) {
       let restored = 0
-      for (const text of reauth.queue) if (queue.add(text, Date.now()).ok) restored++
+      for (const entry of reauth.queue)
+        if ((typeof entry === 'string' ? queue.add(entry, Date.now()) : queue.addNotice(entry, Date.now())).ok)
+          restored++
       let merged = false
       let draftRestored = false
       if (reauth.draft && !message.value) {
@@ -1344,6 +1371,11 @@ reconnect.addEventListener('click', () => {
     void initialize()
     return
   }
+  // 送信中（結果未確定）の項目は退避できないため、結果が出て送信待ちへ戻る・送信済みになるまで再読み込みしない。
+  if (queue.sending) {
+    setError('送信中の返信の結果を確認しています。確認が終わってから「再認証のため再読み込み」を押してください。')
+    return
+  }
   if (
     chips.length &&
     !window.confirm('添付ファイルは再読み込みで外れます。再認証後に追加し直してください。再読み込みしますか？')
@@ -1352,7 +1384,7 @@ reconnect.addEventListener('click', () => {
   const now = Date.now(),
     previous = parseReauth(tab.get(REAUTH_KEY), now)
   // 認証できないまま再度押した場合は、前回退避した分を上書きせず今回の入力と合わせて退避する。
-  const texts = [...(previous?.queue ?? []), ...queue.list().map((x) => x.text)]
+  const texts = [...(previous?.queue ?? []), ...queue.list().map((x) => x.notice ?? x.text)]
   const typed = message.value,
     kept = previous?.draft ?? ''
   const draft = kept && typed && (typed !== kept || typedSinceLoad) ? `${kept}\n${typed}` : typed || kept
@@ -1777,7 +1809,7 @@ hush.addEventListener('click', () => hushNow(true))
 // ---- 送信待ち（BOXP-508） ----
 /** 入力欄からの送信を送信待ちへ積むか。応答待ち中・送信中・読み上げ中、または送信待ち（保留を含む）が残っている間は順序を守るため積む（読み上げを新しい発言で中断しない）。 */
 function queueing(): boolean {
-  return busy || state === 'speaking' || queue.size > 0 || pendingFromQueue
+  return busy || state === 'speaking' || queue.size > 0 || pendingFromQueue || dispatching
 }
 /** 自動送信を止める理由（なければ null）。正常終了（done）と待機（idle）以外では送らない。 */
 function holdFor(): HoldReason | null {
@@ -1811,32 +1843,32 @@ function renderQueue() {
     const li = document.createElement('li')
     const label = document.createElement('span')
     label.className = 'q-state'
-    label.textContent = `${i + 1}番目・待機中`
+    label.textContent = `${i + 1}番目・待機中${item.notice ? '（通知への返信）' : ''}`
     const text = document.createElement('span')
     text.className = 'q-text'
     text.textContent = item.text
+    if (item.notice) li.dataset.notice = item.notice.eventId
     const cancel = document.createElement('button')
     cancel.type = 'button'
     cancel.className = 'ghost'
     cancel.textContent = '取消'
     cancel.setAttribute('aria-label', `送信待ち ${i + 1}番目を取り消す`)
-    cancel.addEventListener('click', () => {
-      if (queue.remove(item.id)) {
-        queueNote.textContent = ''
-        addHistory('お知らせ', '送信待ちを 1 件取り消しました（送っていません）。')
-        show(state)
-      }
-    })
+    cancel.addEventListener('click', () => cancelQueued(item))
     li.append(label, text, cancel)
     queueList.append(li)
   })
   const held = queue.held ?? (pending && !busy ? 'unknown' : null)
+  const head = items[0]?.notice
   queueStatus.textContent = held
-    ? pending
-      ? `${holdLabel[held]}、送信待ちを一時停止しています。「確認して再開」で前回の送信状況を確かめてから送ります。`
-      : held === 'speech'
-        ? '読み上げが途中のため、送信待ちを一時停止しています。「続きから読む」で読み終えるか、「再開」で上から順に送ります。'
-        : `${holdLabel[held]}、送信待ちを一時停止しています。「再開」で上から順に送ります。`
+    ? head && noticeHold(held)
+      ? `${holdLabel[held]}、送信待ちを一時停止しています。先頭の返信（${items[0].text}）は送っていません。「取消」で外すと次から順に送ります。受信箱で通知を開くと最新の状態と「会話で続きを見る」を確認できます。`
+      : head && held === 'unknown' && !pending
+        ? `${holdLabel[held]}、送信待ちを一時停止しています。「再開」で同じ返信番号のまま確認・再送します（新しい返信は作りません）。`
+        : pending
+          ? `${holdLabel[held]}、送信待ちを一時停止しています。「確認して再開」で前回の送信状況を確かめてから送ります。`
+          : held === 'speech'
+            ? '読み上げが途中のため、送信待ちを一時停止しています。「続きから読む」で読み終えるか、「再開」で上から順に送ります。'
+            : `${holdLabel[held]}、送信待ちを一時停止しています。「再開」で上から順に送ります。`
     : items.length
       ? busy || state === 'speaking'
         ? `いまの返答が終わったら、上から順に1件ずつ送ります（${items.length}/${QUEUE_MAX_ITEMS}）。`
@@ -1844,8 +1876,42 @@ function renderQueue() {
       : ''
   queueResume.textContent = pending ? '確認して再開' : '再開'
   queueResume.hidden = !held
-  queueResume.disabled = busy
+  queueResume.disabled = busy || cancelChecking.size > 0
   queueClear.hidden = !items.length
+  // 通知返信の待機・保留が変わったときだけ受信箱の詳細へ反映する（入力中の返信を毎回作り直さない）。
+  const key = JSON.stringify([items.filter((x) => x.notice).map((x) => x.id), queue.held])
+  if (key !== inboxQueueKey) {
+    inboxQueueKey = key
+    inboxView?.rerender()
+  }
+}
+/** 送信待ちの 1 件を取り消す（送っていない）。通知への自由文の返信は、その通知の下書きへ戻す。 */
+function cancelQueued(item: QueueItem) {
+  // 一度返信 API へ送った通知返信は、サーバーが「実行しない」と確定させた場合しか取り消さない（fail-closed）。
+  // 一覧に見えない・未返信に見えるだけでは、先に送った要求が後から受理されうるため「送っていません」とはしない。
+  if (item.notice?.attempted) {
+    void cancelAttemptedNotice(item)
+    return
+  }
+  dropQueued(item)
+}
+/** 取り消した通知への自由文の返信を、その通知の下書きへ戻す（本文を失わない）。個別・一括取消で共通。 */
+function restoreNoticeDraft(item: QueueItem) {
+  if (item.notice?.kind === 'text') inboxView?.restoreDraft(item.notice.eventId, item.notice.value)
+}
+function dropQueued(item: QueueItem) {
+  if (!queue.remove(item.id)) return
+  queueNote.textContent = ''
+  restoreNoticeDraft(item)
+  addHistory(
+    'お知らせ',
+    item.notice?.attempted
+      ? `送信待ちの${item.text} を取り消しました（サーバーでは実行されないことを確認済みです）。`
+      : item.notice
+        ? `送信待ちの${item.text} を取り消しました（送っていません）。`
+        : '送信待ちを 1 件取り消しました（送っていません）。',
+  )
+  show(state)
 }
 function scheduleDispatch() {
   if (!dispatchTimer)
@@ -1862,7 +1928,7 @@ function tryDispatch(force: boolean) {
     addHistory('お知らせ', `${holdLabel.offline}、送信待ち ${queue.size} 件の自動送信を止めました。`)
     renderQueue()
   }
-  if (busy || dispatching) return
+  if (busy || dispatching || cancelChecking.size) return
   if (!force) {
     if (queue.held) return
     const reason = holdFor()
@@ -1880,7 +1946,8 @@ function tryDispatch(force: boolean) {
   const item = queue.take()
   if (!item) return
   dispatching = true
-  void sendText(item.text, item).finally(() => {
+  void (item.notice ? sendNoticeReply(item) : sendText(item.text, item)).finally(() => {
+    queue.settle(item.id)
     dispatching = false
     show(state)
   })
@@ -1901,8 +1968,226 @@ function enqueue(text: string, fromComposer = true): boolean {
   show(state)
   return true
 }
+/** 通知の最新状態から、登録時の replyId の返信の状態を調べる（判定は noticeReply.ts）。 */
+async function serverReplyOf(n: NoticeReply): Promise<ServerReply> {
+  try {
+    const r = await call('notifications')
+    if (r.status !== 200) return { state: 'error' }
+    return serverReplyFrom(r.data?.items, n)
+  } catch {
+    return { state: 'error' }
+  }
+}
+/**
+ * サーバーで受理済み（submitted）と分かった通知返信の応答を追う。BFF の会話追跡が再起動などで受付番号を失っていても追えるよう、
+ * 同じ replyId で返信 API へ送り、BFF に既存の返信として扱わせる（追跡中なら同じ受付番号を返し、失っていれば追跡を作り直す。新しい返信は作られない）。
+ */
+async function followAcceptedNotice(
+  n: NoticeReply,
+  text: string,
+): Promise<{ ok: true } | { ok: false; reason: HoldReason } | { ok: 'expired'; requestId: string }> {
+  let id: string
+  try {
+    const r = await call(`notifications/${encodeURIComponent(n.eventId)}/reply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ replyId: n.replyId, kind: n.kind, value: n.value }),
+    })
+    const out = classifyReply(r.status, r.data, classifyFailure({ status: r.status }) === 'auth')
+    // 確認期限切れ（tracking: expired）: BFF は追跡を作り直さないので、受付番号を追わずに終端として返す。
+    if (out.kind === 'expired') return { ok: 'expired', requestId: out.requestId }
+    // 追跡を作り直せなかった（tracking: unavailable・busy など）: 存在しない受付番号を追わず、送信待ちに残して保留する。
+    if (out.kind !== 'accepted') {
+      if (out.kind === 'hold' && out.sync) void syncTranscript()
+      return { ok: false, reason: out.kind === 'auth' ? 'auth' : out.kind === 'hold' ? out.reason : 'unknown' }
+    }
+    id = out.requestId
+  } catch {
+    return { ok: false, reason: 'offline' }
+  }
+  void call(`notifications/${encodeURIComponent(n.eventId)}/read`, { method: 'POST' }).catch(() => {})
+  if (!followRequest(id, text)) {
+    addHistory('お知らせ', `${text} は受け付けられています（受付番号: ${id}）。`)
+    void syncTranscript()
+  }
+  void inboxView?.refresh()
+  return { ok: true }
+}
+/** 確認期限（23h）を過ぎた通知返信の案内。受け付けられた可能性はあるが、応答は追えず再送もされない。 */
+const expiredNoticeText = (text: string, requestId: string) =>
+  `${text} は受け付けられている可能性がありますが、確認期限（23時間）を過ぎているため応答を追えず、取り消しもできません${requestId ? `（受付番号: ${requestId}）` : ''}。二重実行を避けるため再送もしません。送信待ちから外しました。結果は受信箱で通知を開き「会話で続きを見る」から確認してください。`
+async function cancelAttemptedNotice(item: QueueItem) {
+  if (cancelChecking.has(item.id)) return
+  cancelChecking.add(item.id)
+  try {
+    await cancelAttemptedNoticeChecked(item)
+  } finally {
+    cancelChecking.delete(item.id)
+    show(state)
+  }
+}
+async function cancelAttemptedNoticeChecked(item: QueueItem) {
+  const n = must(item.notice)
+  queueNote.textContent = '取り消す前に、この返信が受け付けられていないか確認しています…'
+  renderQueue()
+  const found = await serverReplyOf(n)
+  queueNote.textContent = ''
+  // 確認中に送信待ちから外れた（送信・取消済み）項目には、古い確認結果を当てはめない。
+  if (!queue.list().some((x) => x.id === item.id)) return
+  const decision = cancelDecision(found)
+  if (decision.kind === 'accepted') {
+    // 受理済み: 取り消せない。同じ replyId で追跡を作り直せたら送信待ちから外して応答を追う（送っていないとは表示しない）。
+    // 作り直せなければ（別の run の進行中など）送信待ちに残して保留し、「確認して再開」で同じ replyId のまま追跡を作り直す。
+    const followed = await followAcceptedNotice(n, item.text)
+    if (!queue.list().some((x) => x.id === item.id)) return show(state)
+    if (followed.ok === 'expired') {
+      // 確認期限切れ: 同じ replyId で送り直しても追跡は作られず、BFF も再送しない。取り消したとは表示せず送信待ちから外す。
+      queue.remove(item.id)
+      queueNote.textContent = ''
+      addHistory('お知らせ', expiredNoticeText(item.text, followed.requestId || decision.requestId))
+      void inboxView?.refresh()
+      void syncTranscript()
+      show(state)
+      return
+    }
+    if (!followed.ok) {
+      if (!queue.held) queue.hold(followed.reason)
+      queueNote.textContent = `${item.text} はすでに受け付けられているため取り消せません（受付番号: ${decision.requestId}）。いまは応答を追えないため送信待ちに残しています。「確認して再開」で同じ返信番号のまま追跡を作り直してください（二重には実行されません）。`
+      renderQueue()
+      return
+    }
+    queue.remove(item.id)
+    addHistory(
+      'お知らせ',
+      `${item.text} はすでに受け付けられていたため取り消せませんでした（受付番号: ${decision.requestId}）。`,
+    )
+    show(state)
+    return
+  }
+  if (decision.kind === 'drop') {
+    dropQueued(item)
+    return
+  }
+  if (decision.kind === 'release') {
+    // 同じ replyId の送信失敗記録がサーバーに残り、その番号での再送は後から実行されうる。取消済みとは表示せず、
+    // 送信待ちから外して受信箱の記録へ委ねる（自動では再送しない。本文はサーバーの記録と受信箱に残るため下書きへは戻さない）。
+    if (!queue.remove(item.id)) return show(state)
+    queueNote.textContent = ''
+    addHistory(
+      'お知らせ',
+      `${item.text} を送信待ちから外しました。取り消しにはなっていません: 会話へ渡せなかった返信の記録がサーバーに残っており、受信箱から同じ返信番号で再送すると実行されます。`,
+    )
+    void inboxView?.refresh()
+    show(state)
+    return
+  }
+  // 後から受理されうる・確認できない: 送信待ちに残して保留し、同じ返信番号での「確認して再開」（二重には実行されない）を案内する。
+  if (!queue.held) queue.hold('unknown')
+  queueNote.textContent = decision.error
+    ? `${item.text} は一度送っており、受け付けられたか確認できないため取り消していません。通信が戻ってから「確認して再開」で同じ返信番号のまま確かめてください（二重には実行されません）。`
+    : `${item.text} は一度送っており、あとから受け付けられる可能性があるため取り消せません。「確認して再開」で同じ返信番号のまま確かめてください（二重には実行されません）。`
+  renderQueue()
+}
+/**
+ * BOXP-658: 送信待ちの通知返信を、その通知の返信 API へ登録時の replyId で 1 回だけ送る（通常の発言・承認としては送らない）。
+ * 送る直前に通知の最新状態を確かめ（preflight）、応答は classifyReply / unsureOutcome で分類する（判定は noticeReply.ts に集約）。
+ * 同じ replyId の返信がサーバーにあれば状態に関わらず同じ replyId で送り、BFF に既存返信として扱わせる（追跡の作り直しを含む）。
+ */
+async function sendNoticeReply(item: QueueItem): Promise<void> {
+  const n = must(item.notice),
+    path = `notifications/${encodeURIComponent(n.eventId)}`
+  const stop = (reason: HoldReason, sent = false) => {
+    queue.putBack(item)
+    queue.hold(reason)
+    addHistory(
+      'お知らせ',
+      sent
+        ? `${item.text} は受け付けられている可能性があります（取り消しはできません）。${holdLabel[reason]}応答を追えないので、送信待ちを一時停止しました（「再開」で同じ返信番号のまま追跡を作り直します。二重には実行されません）。`
+        : reason === 'unknown'
+          ? `${item.text} が受け付けられたか確認できませんでした。${holdLabel[reason]}、送信待ちを一時停止しました（「再開」で同じ返信番号のまま確認・再送します）。`
+          : `${item.text} は送っていません。${holdLabel[reason]}、送信待ちを一時停止しました（本文は送信待ちに残っています）。`,
+    )
+  }
+  const accepted = (requestId: string) => {
+    void call(`${path}/read`, { method: 'POST' }).catch(() => {})
+    if (!followRequest(requestId, item.text))
+      addHistory('お知らせ', `${item.text} を送りました（受付番号: ${requestId}）。`)
+    void inboxView?.refresh()
+  }
+  // 確認期限切れ: 受付成功として追わず（存在しない受付番号を追わない）、送り直しても変わらないので送信待ちから外す。
+  // 受け付けられた可能性があるため後続は自動送信せず保留し、明示の「再開」を待つ。
+  const expired = (requestId: string) => {
+    addHistory('お知らせ', expiredNoticeText(item.text, requestId))
+    queue.hold('notice_expired')
+    void inboxView?.refresh()
+    void syncTranscript()
+  }
+  const auth = (status: number, data: Record<string, unknown> | null) => {
+    queue.putBack(item)
+    queue.hold('auth')
+    fail(status, data)
+  }
+  let latest: Awaited<ReturnType<typeof call>>
+  try {
+    latest = await call('notifications')
+  } catch {
+    return stop('offline')
+  }
+  if (classifyFailure({ status: latest.status }) === 'auth') return auth(latest.status, latest.data)
+  const found = latest.status === 200 ? serverReplyFrom(latest.data?.items, n) : ({ state: 'error' } as const)
+  const current =
+    found.state === 'none'
+      ? ((latest.data?.items ?? []) as InboxItem[]).find((x) => x.eventId === n.eventId)
+      : undefined
+  const pre = preflight(found, n, current ? noticeChoiceValues(current) : [])
+  if (pre.kind === 'hold') return stop(pre.reason)
+  // 返信 API へ送る直前に印を付ける（応答が失われても、以後は受理を確定できるまで取り消さない。再認証の退避にも残る）。
+  // この送信より前に返信 API へ送っていたか（成否不明の再開など）。BFF が claim を残していないと確定させた応答では元へ戻す。
+  const prior = n.attempted
+  n.attempted = true
+  let result: Awaited<ReturnType<typeof call>>
+  try {
+    result = await call(`${path}/reply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ replyId: n.replyId, kind: n.kind, value: n.value }),
+    })
+  } catch {
+    result = { status: 0, data: null }
+  }
+  const out =
+    result.status === 0
+      ? ({ kind: 'unsure' } as const)
+      : classifyReply(result.status, result.data, classifyFailure({ status: result.status }) === 'auth')
+  if (out.kind === 'accepted') return accepted(out.requestId)
+  if (out.kind === 'expired') return expired(out.requestId)
+  if (out.kind === 'auth') {
+    if (!prior) delete n.attempted
+    return auth(result.status, result.data)
+  }
+  if (out.kind === 'hold') {
+    if (out.attempted === 'revert' && !prior) delete n.attempted
+    if (out.attempted === 'set') n.attempted = true
+    if (out.sync) void syncTranscript()
+    return stop(out.reason, out.attempted === 'set')
+  }
+  // 応答が失われた・成否不明: 通知の最新状態で受理を確かめてから保留する（受理済みを未送信扱いにしない）。
+  const after = unsureOutcome(await serverReplyOf(n))
+  if (after.kind === 'accepted') {
+    const followed = await followAcceptedNotice(n, item.text)
+    if (followed.ok === true) return
+    if (followed.ok === 'expired') return expired(followed.requestId || after.requestId)
+    return stop(followed.reason, true)
+  }
+  return stop(after.reason)
+}
 queueResume.addEventListener('click', () => {
   if (busy) return
+  if (cancelChecking.size) {
+    queueNote.textContent = '取消のための確認が終わるまで、再開はできません。'
+    renderQueue()
+    return
+  }
   if (!enabled) {
     queueNote.textContent =
       '認証が切れています。「再認証のため再読み込み」でログインし直したあと、「再開」を押してください。'
@@ -1925,15 +2210,29 @@ queueResume.addEventListener('click', () => {
   tryDispatch(true)
 })
 queueClear.addEventListener('click', () => {
-  const n = queue.size
+  // 一度送った通知返信は、サーバーが実行しないと確定させた場合だけ個別に取り消す（受理されうるものを「送っていません」としない）。
+  const attempted = queue.list().filter((x) => x.notice?.attempted)
+  if (attempted.length) {
+    const rest = queue.list().filter((x) => !attempted.includes(x))
+    for (const x of rest) if (queue.remove(x.id)) restoreNoticeDraft(x)
+    queueNote.textContent = ''
+    if (rest.length) addHistory('お知らせ', `送信待ち ${rest.length} 件を取り消しました（送っていません）。`)
+    for (const x of attempted) void cancelAttemptedNotice(x)
+    show(state)
+    return
+  }
+  const cleared = queue.list()
+  const n = cleared.length
   queue.clear()
+  for (const x of cleared) restoreNoticeDraft(x)
   queueNote.textContent = ''
   if (n) addHistory('お知らせ', `送信待ち ${n} 件をすべて取り消しました（送っていません）。`)
   show(state)
 })
 // 送信待ちはメモリだけに持つため、再読み込み・タブを閉じる前にブラウザの確認を出す（黙って再送・保存はしない）。
 window.addEventListener('beforeunload', (e) => {
-  if (queue.size && !intentionalReload) {
+  // 送信中（結果未確定）の項目もメモリにしか無いため、待機中と同じく確認を出す。
+  if ((queue.size || queue.sending) && !intentionalReload) {
     e.preventDefault()
     e.returnValue = ''
   }
@@ -3140,63 +3439,113 @@ function followRequest(id: string, text: string): boolean {
   void poll(requestId)
   return true
 }
-const inbox = initInbox(followRequest, {
-  canAnnounce: () =>
-    enabled &&
-    !busy &&
-    !unconfirmed &&
-    !queue.size &&
-    !netDown &&
-    !recording &&
-    !starting &&
-    !touchActive &&
-    !CONVERSING.includes(state),
-  announce: (item, actions, more) => {
-    const body = item.body.length > 300 ? `${item.body.slice(0, 300)}…（続きは受信箱でご覧いただけます）` : item.body
-    const text = `ご主人さま、お知らせが届いています。\n${item.title}\n${body}${more ? `\nほかにも ${more} 件、受信箱に届いています。` : ''}`
-    setBubble(text)
-    addHistory('お知らせ', text)
-    const box = el('notice-actions'),
-      status = el('notice-status')
-    box.replaceChildren()
-    status.textContent = ''
-    box.hidden = false
-    updateMessage()
-    const button = (label: string, fn: () => void) => {
-      const b = document.createElement('button')
-      b.type = 'button'
-      b.textContent = label
-      b.addEventListener('click', fn)
-      box.append(b)
-    }
-    const sendNotice = async (kind: 'choice' | 'text', value: string) => {
-      if (await actions.send(kind, value)) {
-        box.hidden = true
-        status.textContent = ''
-        updateMessage()
+const inbox = initInbox(
+  followRequest,
+  {
+    canAnnounce: () =>
+      enabled &&
+      !busy &&
+      !unconfirmed &&
+      !queue.size &&
+      !dispatching &&
+      !netDown &&
+      !recording &&
+      !starting &&
+      !touchActive &&
+      !CONVERSING.includes(state),
+    announce: (item, actions, more) => {
+      const body = item.body.length > 300 ? `${item.body.slice(0, 300)}…（続きは受信箱でご覧いただけます）` : item.body
+      const text = `ご主人さま、お知らせが届いています。\n${item.title}\n${body}${more ? `\nほかにも ${more} 件、受信箱に届いています。` : ''}`
+      setBubble(text)
+      addHistory('お知らせ', text)
+      const box = el('notice-actions'),
+        status = el('notice-status')
+      box.replaceChildren()
+      status.textContent = ''
+      box.hidden = false
+      updateMessage()
+      const button = (label: string, fn: () => void) => {
+        const b = document.createElement('button')
+        b.type = 'button'
+        b.textContent = label
+        b.addEventListener('click', fn)
+        box.append(b)
       }
-    }
-    // BOXP-646: 受信箱（BOXP-568）と同じく、選択肢ボタンと自由文の返信を並べて出す。
-    for (const choice of noticeChoices(item)) button(choice.text, () => void sendNotice('choice', choice.value))
-    const input = document.createElement('textarea')
-    input.maxLength = 500
-    input.placeholder = '返信を入力'
-    box.append(input)
-    button('返信する', () => {
-      if (input.value.trim()) void sendNotice('text', input.value)
-    })
-    button('受信箱で開く', () => {
-      box.hidden = true
-      updateMessage()
-      actions.open()
-    })
-    button('あとで見る', () => {
-      box.hidden = true
-      updateMessage()
-      actions.later()
-    })
+      const sendNotice = async (kind: 'choice' | 'text', value: string) => {
+        if (await actions.send(kind, value)) {
+          box.hidden = true
+          status.textContent = ''
+          updateMessage()
+        }
+      }
+      // BOXP-646: 受信箱（BOXP-568）と同じく、選択肢ボタンと自由文の返信を並べて出す。
+      for (const choice of noticeChoices(item)) button(choice.text, () => void sendNotice('choice', choice.value))
+      const input = document.createElement('textarea')
+      input.maxLength = 500
+      input.placeholder = '返信を入力'
+      box.append(input)
+      button('返信する', () => {
+        if (input.value.trim()) void sendNotice('text', input.value)
+      })
+      button('受信箱で開く', () => {
+        box.hidden = true
+        updateMessage()
+        actions.open()
+      })
+      button('あとで見る', () => {
+        box.hidden = true
+        updateMessage()
+        actions.later()
+      })
+    },
   },
-})
+  {
+    // BOXP-658: 応答待ち・読み上げ中・送信待ちがある間の通知返信は、通常の発言と同じ送信待ち（FIFO・上限共通）へ積む。
+    active: () => queueing() || !!unconfirmed,
+    add: (item, kind, value, replyId, held, attempted) => {
+      const added = queue.addNotice(
+        {
+          eventId: item.eventId,
+          ...(item.ticketId ? { ticketId: item.ticketId } : {}),
+          source: item.source,
+          title: item.title,
+          kind,
+          value,
+          replyId,
+          // サーバーに同じ replyId の claim がある再送は、後から受理されうるので「送っていません」として取り消さない。
+          ...(attempted ? { attempted: true as const } : {}),
+        },
+        Date.now(),
+      )
+      if (!added.ok)
+        return { ok: false, message: addErrorText[added.error] || '返信を送信待ちに追加できませんでした。' }
+      queueNote.textContent = ''
+      addHistory('お知らせ', `${added.item.text} を送信待ちに追加しました（まだ送信していません）。`)
+      if (held) {
+        queue.hold(held)
+        void syncTranscript()
+      }
+      show(state)
+      return { ok: true }
+    },
+    pending: (eventId) => {
+      const item = queue.noticeFor(eventId)
+      if (!item) return null
+      return {
+        text: item.text,
+        held:
+          queue.peek() === item && queue.held
+            ? `${holdLabel[queue.held]}、送信待ちを一時停止しています（送信待ち欄の「再開」か「取消」を選んでください）。`
+            : '',
+      }
+    },
+    cancel: (eventId) => {
+      const item = queue.noticeFor(eventId)
+      if (item) cancelQueued(item)
+    },
+  },
+)
+inboxView = inbox
 window.setInterval(() => inbox.retry(), 2000)
 
 /**

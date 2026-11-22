@@ -185,6 +185,7 @@ export async function createNotifications(
       submit: (item: Item, reply: NonNullable<Item['reply']>) => boolean,
       tracked: (requestId: string) => boolean = () => true,
       sessionId?: string,
+      busy: () => boolean = () => false,
     ) =>
       mutate(async () => {
         const item = items.find((i) => i.eventId === id)
@@ -196,11 +197,13 @@ export async function createNotifications(
           !/^[A-Za-z0-9-]{8,64}$/.test(x.replyId) ||
           (x.kind !== 'text' && x.kind !== 'choice') ||
           !string(x.value, 500) ||
-          !x.value.trim() ||
-          (x.kind === 'choice' && !choicesOf(item)?.includes(x.value))
+          !x.value.trim()
         )
           return { error: 'invalid' }
         if (item.reply && item.reply.replyId !== x.replyId) return { error: 'already_replied' }
+        // 選択肢の妥当性は新しい返信にだけ問う。同じ replyId の既存返信（受理済みの可能性あり）は、後から選択肢が変わっても
+        // invalid で「未送信」と誤認させず、保存済みの返信として扱う（送るのは保存済みの本文）。
+        if (!item.reply && x.kind === 'choice' && !choicesOf(item)?.includes(x.value)) return { error: 'invalid' }
         if (item.reply && item.reply.status === 'submitted' && tracked(item.reply.requestId))
           return { requestId: item.reply.requestId, status: item.reply.status, existing: true }
         // ここに来る既存返信は、会話トラッカー（メモリ）が受付番号を知らない = BFF 再起動等で追跡が失われたもの。
@@ -209,6 +212,14 @@ export async function createNotifications(
         // replay 保証期間を過ぎた未確認の返信は、claimed（受理直後に状態保存前で停止した可能性あり）も含め再送しない（Hermes が受理済みなら二重実行になりうるため）。
         if (item.reply && !item.reply.runId && now() - Date.parse(item.reply.claimedAt) > 23 * 3600_000)
           return { requestId: item.reply.requestId, status: item.reply.status, existing: true, expired: true }
+        // BOXP-658: 会話が進行中なら、未送信（未受理・run 未記録）の返信は claim を保存せず busy を返す。
+        // 画面はこれを「送信待ち」に戻して現 run の後で同じ replyId で送り直す（submit_failed を残さない）。
+        // 既存の claim（BFF 再起動前に Hermes が受理した可能性あり）は busy でも「未送信」とは言わない: busy_claimed を返し、
+        // 画面に取消前の受理確認を求める（状態は変えず、submit_failed も残さない）。
+        if (busy() && !item.reply) return { error: 'busy' as const }
+        if (busy() && item.reply && item.reply.status !== 'submitted' && !item.reply.runId)
+          return { error: 'busy_claimed' as const }
+        const fresh = !item.reply
         if (!item.reply) {
           item.reply = {
             replyId: x.replyId,
@@ -223,6 +234,16 @@ export async function createNotifications(
         } else if (!item.reply.sessionId && sessionId) {
           item.reply.sessionId = sessionId
           await save()
+        }
+        // claim の保存（await）中に別の発言が始まった場合も、submit の直前（同期で submit まで await なし）に再判定して busy を返す。
+        // この呼び出しで作った未受理の claim は取り消し、未返信のまま保つ（submit_failed を残さない）。
+        if (busy() && item.reply.status !== 'submitted' && !item.reply.runId) {
+          if (fresh) {
+            delete item.reply
+            await save()
+            return { error: 'busy' as const }
+          }
+          return { error: 'busy_claimed' as const }
         }
         const was = item.reply.status
         let ok = false
