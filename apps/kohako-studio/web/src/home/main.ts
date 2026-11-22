@@ -500,7 +500,9 @@ let lastReply = '',
   lastActivity = Date.now(),
   thinkingSince = 0,
   cardsOpen = false
-type Entry = { who: 'あなた' | 'コハコ' | 'お知らせ'; text: string; at: number; rid?: string }
+/** g2: 眼鏡（Even G2）から送った発言（BOXP-657）。表示の名前に印を足すだけで、who は「あなた」のまま。 */
+type Entry = { who: 'あなた' | 'コハコ' | 'お知らせ'; text: string; at: number; rid?: string; g2?: true }
+const whoLabel = (entry: Pick<Entry, 'who' | 'g2'>) => (entry.g2 ? `${entry.who}・眼鏡` : entry.who)
 const history: Entry[] = []
 // BOXP-565: 端末間の会話共有。seen は履歴へ出した発言・返答の受付番号、remoteIds は他端末が送り、この端末が追っているだけの依頼。
 const seen = new Seen()
@@ -532,7 +534,7 @@ function renderChat() {
       li.dataset.who = entry.who
       const label = document.createElement('span')
       label.className = 'chat-who'
-      label.textContent = entry.who
+      label.textContent = whoLabel(entry)
       const content = document.createElement('div')
       content.className = 'md'
       content.append(renderMarkdown(entry.text))
@@ -544,8 +546,8 @@ function renderChat() {
   else chatlog.scrollTop = top
   if (readingFollowsChat()) updateReading()
 }
-function addHistory(who: Entry['who'], text: string, at = Date.now(), rid = '') {
-  history.push({ who, text, at, ...(rid ? { rid } : {}) })
+function addHistory(who: Entry['who'], text: string, at = Date.now(), rid = '', g2 = false) {
+  history.push({ who, text, at, ...(rid ? { rid } : {}), ...(g2 ? { g2: true as const } : {}) })
   if (history.length > 100) history.shift()
   const li = document.createElement('li'),
     w = document.createElement('span'),
@@ -557,7 +559,7 @@ function addHistory(who: Entry['who'], text: string, at = Date.now(), rid = '') 
   if (rid) li.dataset.rid = rid
   li.dataset.who = who
   w.className = 'who'
-  w.textContent = `${who}（${time}）`
+  w.textContent = `${whoLabel({ who, ...(g2 ? { g2: true as const } : {}) })}（${time}）`
   t.className = 'md'
   t.append(renderMarkdown(text))
   li.append(w, t)
@@ -3573,7 +3575,7 @@ async function syncTranscript() {
       canFollow: !busy && !unconfirmed && !touchActive && enabled && !parseResume(tab.get(INFLIGHT_KEY), Date.now()),
     })
     for (const op of ops) {
-      if (op.op === 'user') addHistory('あなた', op.text, op.at, op.id)
+      if (op.op === 'user') addHistory('あなた', op.text, op.at, op.id, op.g2 === true)
       else if (op.op === 'reply') {
         addHistory('コハコ', op.text, op.at, op.id)
         if (op.latest && !initial && !busy && state !== 'speaking' && state !== 'approval') {
