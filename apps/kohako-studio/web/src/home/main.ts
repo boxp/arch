@@ -107,6 +107,14 @@ import {
   type NoticeReply,
   type QueueItem,
 } from './queue'
+import {
+  cancelDecision,
+  classifyReply,
+  preflight,
+  serverReplyFrom,
+  unsureOutcome,
+  type ServerReply,
+} from './noticeReply'
 import { createCharacterMorph, layoutKey } from './morph'
 
 // BOXP-510 TD-03: 家を開いた時点で SW を登録し、PWA としてインストール可能にする（Push と同じ SW・scope）。
@@ -1960,37 +1968,39 @@ function enqueue(text: string, fromComposer = true): boolean {
   show(state)
   return true
 }
-/**
- * BOXP-658: 送信待ちの通知返信を、その通知の返信 API へ登録時の replyId で 1 回だけ送る（通常の発言・承認としては送らない）。
- * 送る直前に通知の最新状態を確かめ、先に返信済み・消失・選択肢変更なら送らずに保留する（本文は送信待ちに残す）。
- * 失敗・成否不明・認証切れ・通信切れでは先頭へ戻して保留し、明示の「再開」（同じ replyId で再送）か「取消」を待つ。
- */
-/**
- * 通知の最新状態から見た、登録時の replyId の返信の状態。
- * gone = 通知が BFF に無い（返信 API は not_found のため後から受理されない）、none = まだ返信がない（先に送った要求が後から受理されうるので「実行されない」とは確定しない）、
- * other = 別の replyId の返信が先にある（BFF は 1 項目 1 回なので、この返信は実行されない）。
- */
-type ServerReply =
-  | { state: 'none' }
-  | { state: 'error' }
-  | { state: 'other' }
-  | { state: 'gone' }
-  | { state: 'mine'; status: string; requestId: string }
-/** 通知の最新状態から、登録時の replyId の返信がサーバーに受理（claim）されているかを調べる。 */
+/** 通知の最新状態から、登録時の replyId の返信の状態を調べる（判定は noticeReply.ts）。 */
 async function serverReplyOf(n: NoticeReply): Promise<ServerReply> {
   try {
     const r = await call('notifications')
-    if (r.status !== 200 || !Array.isArray(r.data?.items)) return { state: 'error' }
-    const cur = (r.data.items as InboxItem[]).find((x) => x.eventId === n.eventId)
-    if (cur?.reply?.replyId === n.replyId)
-      return { state: 'mine', status: cur.reply.status, requestId: cur.reply.requestId }
-    if (cur?.reply) return { state: 'other' }
-    // 通知そのものが BFF に無い: 返信 API は not_found を返すため、この返信は後から受理されない。
-    if (!cur) return { state: 'gone' }
-    return { state: 'none' }
+    if (r.status !== 200) return { state: 'error' }
+    return serverReplyFrom(r.data?.items, n)
   } catch {
     return { state: 'error' }
   }
+}
+/**
+ * サーバーで受理済み（submitted）と分かった通知返信の応答を追う。BFF の会話追跡が再起動などで受付番号を失っていても追えるよう、
+ * 同じ replyId で返信 API へ送り、BFF に既存の返信として扱わせる（追跡中なら同じ受付番号を返し、失っていれば追跡を作り直す。新しい返信は作られない）。
+ */
+async function followAcceptedNotice(n: NoticeReply, text: string, known: string) {
+  let id = known
+  try {
+    const r = await call(`notifications/${encodeURIComponent(n.eventId)}/reply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ replyId: n.replyId, kind: n.kind, value: n.value }),
+    })
+    const out = classifyReply(r.status, r.data, classifyFailure({ status: r.status }) === 'auth')
+    if (out.kind === 'accepted') id = out.requestId
+  } catch {
+    // 追跡の作り直しに失敗しても、分かっている受付番号で追う（届かなければ会話の同期で拾う）。
+  }
+  void call(`notifications/${encodeURIComponent(n.eventId)}/read`, { method: 'POST' }).catch(() => {})
+  if (!followRequest(id, text)) {
+    addHistory('お知らせ', `${text} は受け付けられています（受付番号: ${id}）。`)
+    void syncTranscript()
+  }
+  void inboxView?.refresh()
 }
 async function cancelAttemptedNotice(item: QueueItem) {
   if (cancelChecking.has(item.id)) return
@@ -2010,37 +2020,34 @@ async function cancelAttemptedNoticeChecked(item: QueueItem) {
   queueNote.textContent = ''
   // 確認中に送信待ちから外れた（送信・取消済み）項目には、古い確認結果を当てはめない。
   if (!queue.list().some((x) => x.id === item.id)) return
-  if (found.state === 'mine' && found.status === 'submitted' && found.requestId) {
+  const decision = cancelDecision(found)
+  if (decision.kind === 'accepted') {
     // 受理済み: 取り消せないことを伝え、送信待ちから外して応答を追う（送っていないとは表示しない）。
     if (!queue.remove(item.id)) return show(state)
     addHistory(
       'お知らせ',
-      `${item.text} はすでに受け付けられていたため取り消せませんでした（受付番号: ${found.requestId}）。`,
+      `${item.text} はすでに受け付けられていたため取り消せませんでした（受付番号: ${decision.requestId}）。`,
     )
-    if (!followRequest(found.requestId, item.text)) void syncTranscript()
-    void inboxView?.refresh()
+    await followAcceptedNotice(n, item.text, decision.requestId)
     show(state)
     return
   }
-  // サーバーが「この返信は実行しない」と確定させた場合だけ取り消す: 同じ replyId が会話へ渡せず失敗（submit_failed・BFF は自分では再送しない）、
-  // または別の replyId の返信が先にある（1 項目 1 回のため、この返信は後から受理されない）。
-  if (
-    (found.state === 'mine' && found.status === 'submit_failed') ||
-    found.state === 'other' ||
-    found.state === 'gone'
-  ) {
+  if (decision.kind === 'drop') {
     dropQueued(item)
     return
   }
-  // それ以外（未返信に見える・受理途中 claimed・確認できない）は、先に送った要求が後から受理されうるので取り消さない。
-  // 送信待ちに残して保留し、同じ返信番号での「確認して再開」（二重には実行されない）を案内する。
+  // 後から受理されうる・確認できない: 送信待ちに残して保留し、同じ返信番号での「確認して再開」（二重には実行されない）を案内する。
   if (!queue.held) queue.hold('unknown')
-  queueNote.textContent =
-    found.state === 'error'
-      ? `${item.text} は一度送っており、受け付けられたか確認できないため取り消していません。通信が戻ってから「確認して再開」で同じ返信番号のまま確かめてください（二重には実行されません）。`
-      : `${item.text} は一度送っており、あとから受け付けられる可能性があるため取り消せません。「確認して再開」で同じ返信番号のまま確かめてください（二重には実行されません）。`
+  queueNote.textContent = decision.error
+    ? `${item.text} は一度送っており、受け付けられたか確認できないため取り消していません。通信が戻ってから「確認して再開」で同じ返信番号のまま確かめてください（二重には実行されません）。`
+    : `${item.text} は一度送っており、あとから受け付けられる可能性があるため取り消せません。「確認して再開」で同じ返信番号のまま確かめてください（二重には実行されません）。`
   renderQueue()
 }
+/**
+ * BOXP-658: 送信待ちの通知返信を、その通知の返信 API へ登録時の replyId で 1 回だけ送る（通常の発言・承認としては送らない）。
+ * 送る直前に通知の最新状態を確かめ（preflight）、応答は classifyReply / unsureOutcome で分類する（判定は noticeReply.ts に集約）。
+ * 同じ replyId の返信がサーバーにあれば状態に関わらず同じ replyId で送り、BFF に既存返信として扱わせる（追跡の作り直しを含む）。
+ */
 async function sendNoticeReply(item: QueueItem): Promise<void> {
   const n = must(item.notice),
     path = `notifications/${encodeURIComponent(n.eventId)}`
@@ -2060,15 +2067,6 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
       addHistory('お知らせ', `${item.text} を送りました（受付番号: ${requestId}）。`)
     void inboxView?.refresh()
   }
-  // 応答が失われた・成否不明の応答では、通知の最新状態で受理を確かめてから保留する（受理済みを未送信扱いにしない）。
-  const unsure = async () => {
-    const found = await serverReplyOf(n)
-    if (found.state === 'mine' && found.status === 'submitted' && found.requestId) return accepted(found.requestId)
-    if (found.state === 'mine' && found.status === 'submit_failed') return stop('failed')
-    if (found.state === 'other') return stop('notice_replied')
-    if (found.state === 'gone') return stop('notice_gone')
-    return stop('unknown')
-  }
   const auth = (status: number, data: Record<string, unknown> | null) => {
     queue.putBack(item)
     queue.hold('auth')
@@ -2081,23 +2079,18 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
     return stop('offline')
   }
   if (classifyFailure({ status: latest.status }) === 'auth') return auth(latest.status, latest.data)
-  if (latest.status !== 200 || !Array.isArray(latest.data?.items)) return stop('failed')
-  const current = (latest.data.items as InboxItem[]).find((x) => x.eventId === n.eventId)
-  if (!current) return stop('notice_gone')
-  if (current.reply && current.reply.replyId !== n.replyId) return stop('notice_replied')
-  // 同じ replyId の返信がすでにサーバーにある（応答喪失後の再開など）なら、現在の選択肢では判定しない。
-  // 受理済みならそのまま追い、claim 済みなら同じ replyId で再送して BFF に既存の返信として扱わせる（未送信として保留しない）。
-  const mine = current.reply?.replyId === n.replyId ? current.reply : null
-  if (mine?.status === 'submitted' && mine.requestId) return accepted(mine.requestId)
-  if (!mine && n.kind === 'choice' && !noticeChoiceValues(current).includes(n.value)) return stop('notice_invalid')
-  let result: Awaited<ReturnType<typeof call>>
+  const found = latest.status === 200 ? serverReplyFrom(latest.data?.items, n) : ({ state: 'error' } as const)
+  const current =
+    found.state === 'none'
+      ? ((latest.data?.items ?? []) as InboxItem[]).find((x) => x.eventId === n.eventId)
+      : undefined
+  const pre = preflight(found, n, current ? noticeChoiceValues(current) : [])
+  if (pre.kind === 'hold') return stop(pre.reason)
   // 返信 API へ送る直前に印を付ける（応答が失われても、以後は受理を確定できるまで取り消さない。再認証の退避にも残る）。
-  // この送信より前に返信 API へ送っていたか（成否不明の再開など）。BFF が「受け付けず claim も残していない」と確定させた応答では元へ戻す。
+  // この送信より前に返信 API へ送っていたか（成否不明の再開など）。BFF が claim を残していないと確定させた応答では元へ戻す。
   const prior = n.attempted
   n.attempted = true
-  const rejected = () => {
-    if (!prior) delete n.attempted
-  }
+  let result: Awaited<ReturnType<typeof call>>
   try {
     result = await call(`${path}/reply`, {
       method: 'POST',
@@ -2105,35 +2098,27 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
       body: JSON.stringify({ replyId: n.replyId, kind: n.kind, value: n.value }),
     })
   } catch {
-    return unsure()
+    result = { status: 0, data: null }
   }
-  const requestId = typeof result.data?.requestId === 'string' ? result.data.requestId : ''
-  if ((result.status === 200 || result.status === 202) && result.data?.status === 'submitted' && requestId)
-    return accepted(requestId)
-  // 以下（認証切れ・busy・409/404/400）は BFF が返信を受け付けず、この送信で claim も保存していない確定応答。
-  // 初回の送信なら「未送信」のまま保留し、取消で不要になった返信を送らずに先へ進めるようにする。
-  if (classifyFailure({ status: result.status }) === 'auth') {
-    rejected()
+  const out =
+    result.status === 0
+      ? ({ kind: 'unsure' } as const)
+      : classifyReply(result.status, result.data, classifyFailure({ status: result.status }) === 'auth')
+  if (out.kind === 'accepted') return accepted(out.requestId)
+  if (out.kind === 'auth') {
+    if (!prior) delete n.attempted
     return auth(result.status, result.data)
   }
-  // 既存の claim（受理済みの可能性あり）がある返信への busy は、未送信の確定ではない。印を残し、取消前に受理確認を必須にする。
-  if (result.status === 429 && result.data?.error === 'busy_claimed') {
-    n.attempted = true
-    void syncTranscript()
-    return stop('busy')
+  if (out.kind === 'hold') {
+    if (out.attempted === 'revert' && !prior) delete n.attempted
+    if (out.attempted === 'set') n.attempted = true
+    if (out.sync) void syncTranscript()
+    return stop(out.reason)
   }
-  if (result.status === 429 && result.data?.error === 'busy') {
-    rejected()
-    void syncTranscript()
-    return stop('busy')
-  }
-  if (result.status === 409 || result.status === 404 || result.status === 400) rejected()
-  if (result.status === 409) return stop('notice_replied')
-  if (result.status === 404) return stop('notice_gone')
-  if (result.status === 400) return stop('notice_invalid')
-  // submit_failed（BFF は受け付けたが会話へ渡せなかった）は失敗、それ以外（5xx・不明な応答）は成否不明。どちらも同じ replyId でのみ再送する。
-  if (result.data?.status === 'submit_failed') return stop('failed')
-  return unsure()
+  // 応答が失われた・成否不明: 通知の最新状態で受理を確かめてから保留する（受理済みを未送信扱いにしない）。
+  const after = unsureOutcome(await serverReplyOf(n))
+  if (after.kind === 'accepted') return void (await followAcceptedNotice(n, item.text, after.requestId))
+  return stop(after.reason)
 }
 queueResume.addEventListener('click', () => {
   if (busy) return

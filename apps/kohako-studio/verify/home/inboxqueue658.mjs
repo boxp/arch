@@ -35,11 +35,15 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     await page.route(/^https?:\/\/(?!localhost)/, (route) => route.abort())
     const env = {
       slow: 0,
+      lostTrackers: new Set(),
       page, posts, replies, approvals, states, items, replyMode, log,
       item: (id) => items.find((i) => i.eventId === `event-658-${id}`),
       submit: async (text) => { await page.locator('#message').fill(text); await page.locator('#send').click() },
       count: async (n) => wait(() => posts.length === n, `messages POST expected ${n}, got ${posts.length}`),
       replyCount: async (n) => wait(() => replies.length === n, `reply POST expected ${n}, got ${replies.length}`),
+      // 受理済みの返信は同じ replyId で返信 API へ送り直して追跡を作り直す（新しい返信は作らない）ため、返信の数は replyId の種類で数える。
+      distinct: () => new Set(replies.map((x) => x.replyId)).size,
+      replyIds: async (n) => wait(() => new Set(replies.map((x) => x.replyId)).size === n, `distinct replyIds expected ${n}, got ${new Set(replies.map((x) => x.replyId)).size}`),
       rows: () => page.locator('#queue-list li'),
       settle: () => page.waitForTimeout(2200),
       done: (requestId) => states.set(requestId, { status: 'done', reply: { text: 'はい。' } }),
@@ -90,7 +94,7 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
         return json(200, {})
       }
       const r = p.match(/^requests\/([^/]+)(\/cancel)?$/)
-      if (r) { const id = decodeURIComponent(r[1]); if (r[2]) { states.set(id, { status: 'failed', error: 'cancelled' }); return json(202, {}) } const s = states.get(id) || { status: 'pending' }; return json(200, s) }
+      if (r) { const id = decodeURIComponent(r[1]); if (!r[2]) log.push(`poll:${id}`); if (!r[2] && env.lostTrackers.has(id)) return json(404, { error: 'not_found' }); if (r[2]) { states.set(id, { status: 'failed', error: 'cancelled' }); return json(202, {}) } const s = states.get(id) || { status: 'pending' }; return json(200, s) }
       if (p === 'transcript') return json(200, { entries: [], active: null })
       return json(404, {})
     })
@@ -139,9 +143,10 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     e.done(e.posts[1].requestId); await e.replyCount(2)
     assert(e.replies[1].id === 'event-658-two' && e.replies[1].kind === 'text' && e.replies[1].value === '自由文の返信', 'reply2')
     e.done('request-event-658-two'); await e.settle()
-    assert(e.log.join('|') === 'message:最初|reply:event-658-one:choice:A|message:次の発言|reply:event-658-two:text:自由文の返信', `order ${e.log.join('|')}`)
+    const order = e.log.filter((l) => !l.startsWith('poll:'))
+    assert(order.join('|') === 'message:最初|reply:event-658-one:choice:A|message:次の発言|reply:event-658-two:text:自由文の返信', `order ${order.join('|')}`)
     assert(e.posts.every((p) => p.text !== 'A' && p.text !== '自由文の返信') && e.approvals.length === 0, 'reply sent as normal message or approval')
-    ev.order = e.log
+    ev.order = order
   })
 
   // b: 連打・同じ通知への重複は 1 件だけ。待機中の「A」は承認に使われない。取消で自由文は下書きへ戻る。
@@ -248,25 +253,25 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     await e.closeInbox()
     e.replyMode.set('event-658-one', 'lost')
     e.done(e.posts[0].requestId)
-    await e.replyCount(1); await e.settle()
+    await e.replyIds(1); await e.settle()
     const hist1 = await e.page.locator('#history-list').textContent()
     assert(!(await e.page.locator('#queue-resume').isVisible()) && !hist1.includes('確認できませんでした'), 'accepted reply was treated as unknown')
     e.done('request-event-658-one')
-    await e.replyCount(2); e.done('request-event-658-two'); await e.settle()
+    await e.replyIds(2); e.done('request-event-658-two'); await e.settle()
     // 2 件目: 502（未受理）→ 成否不明で保留。その後サーバーへ遅れて届いた（受理済み）状態で「取消」→ 取り消せないと表示。
     e.replyMode.set('event-658-three', 502)
     await e.submit('実行2'); await e.count(2)
     await e.select('three'); await e.page.locator('#inbox-detail').getByRole('button', { name: /^B/ }).click(); await wait(async () => (await e.rows().count()) === 1, 'queued three')
     await e.closeInbox()
     e.done(e.posts[1].requestId)
-    await e.replyCount(3); await e.page.locator('#queue-resume').waitFor({ state: 'visible', timeout: 10000 })
-    const last = e.replies[2]
+    await e.replyIds(3); await e.page.locator('#queue-resume').waitFor({ state: 'visible', timeout: 10000 })
+    const last = e.replies[e.replies.length - 1]
     e.item('three').reply = { replyId: last.replyId, kind: last.kind, value: last.value, requestId: 'request-event-658-three', status: 'submitted' }
     e.states.set('request-event-658-three', { status: 'pending' })
     await e.rows().first().getByRole('button', { name: '送信待ち 1番目を取り消す' }).click()
     await wait(async () => (await e.page.locator('#history-list').textContent()).includes('取り消せませんでした'), 'accepted reply shown as cancelled')
     const hist2 = await e.page.locator('#history-list').textContent()
-    assert(!/通知「通知three」.*を取り消しました（送っていません）/.test(hist2) && (await e.rows().count()) === 0 && e.replies.length === 3, 'cancel misreported')
+    assert(!/通知「通知three」.*を取り消しました（送っていません）/.test(hist2) && (await e.rows().count()) === 0 && e.distinct() === 3, 'cancel misreported')
     ev.history = hist2.split('\n').filter((l) => l.includes('通知')).slice(-4)
     await e.screenshot('g-lost-response-cancel')
   })
@@ -404,7 +409,7 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     await wait(async () => (await e.rows().count()) === 0, 'accepted reply kept as unsent')
     await e.settle()
     const hist = await e.page.locator('#history-list').textContent()
-    assert(e.replies.length === 1 && !(await e.page.locator('#queue-resume').isVisible()) && !hist.includes('選択肢が変わ'), `resume misjudged ${hist}`)
+    assert(e.distinct() === 1 && !(await e.page.locator('#queue-resume').isVisible()) && !hist.includes('選択肢が変わ'), `resume misjudged ${hist}`)
     ev.replies = e.replies.length
     await e.screenshot('n-resume-accepted')
   })
@@ -423,6 +428,28 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     assert((await e.rows().count()) === 1 && !/通知「通知one」.*を取り消しました（送っていません）/.test(hist), 'cancelled claimed reply')
     ev.note = await e.page.locator('#queue-note').textContent()
     await e.screenshot('o-busy-claimed')
+  })
+
+  // p: 応答喪失後に通知は submitted だが、BFF の会話追跡が再起動などで受付番号を失っている（requests/{id} が 404）。
+  //    「再開」で同じ replyId のまま返信 API へ送り、BFF が返した受付番号で応答を追える（新しい返信は作らない）。
+  await scenario('p-resume-accepted-tracker-lost', async (e, ev) => {
+    await e.submit('実行'); await e.count(1)
+    await e.select('one'); await e.page.locator('#inbox-detail').getByRole('button', { name: /^A/ }).click(); await wait(async () => (await e.rows().count()) === 1, 'queued')
+    await e.closeInbox()
+    e.replyMode.set('event-658-one', 502)
+    e.done(e.posts[0].requestId)
+    await e.replyCount(1); await e.page.locator('#queue-resume').waitFor({ state: 'visible', timeout: 10000 })
+    const first = e.replies[0], it = e.item('one')
+    it.reply = { replyId: first.replyId, kind: first.kind, value: first.value, requestId: 'lost-tracker-one', status: 'submitted' }
+    e.lostTrackers.add('lost-tracker-one')
+    await e.page.locator('#queue-resume').click()
+    await e.replyCount(2)
+    await wait(() => e.log.includes('poll:request-event-658-one'), 'did not follow the re-attached request id')
+    e.states.set('request-event-658-one', { status: 'done', reply: { text: '了解しました。' } })
+    await wait(async () => (await e.page.locator('#history-list').textContent()).includes('了解しました。'), 'reply answer not shown')
+    assert(e.distinct() === 1 && e.replies.every((x) => x.replyId === first.replyId) && (await e.rows().count()) === 0 && !e.log.includes('poll:lost-tracker-one'), `tracker lost misjudged ${e.log.join(',')}`)
+    ev.replies = e.replies.length; ev.polls = e.log.filter((l) => l.startsWith('poll:'))
+    await e.screenshot('p-resume-tracker-lost')
   })
 
   // f: 再読み込み前の確認が通知返信にも効く。
