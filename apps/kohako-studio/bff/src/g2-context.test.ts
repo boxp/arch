@@ -126,7 +126,7 @@ it('drops Kohako replies to a delivery notice until the Owner speaks again', () 
     msg('assistant', '本人への返答', 12),
   ])
   expect(notices).toBe(2)
-  expect(turns.map((t) => t.text)).toEqual(['先頭の返答', '本人の発言', '本人への返答'])
+  expect(turns.map((t) => t.text)).toEqual(['本人の発言', '本人への返答'])
 })
 
 it('redacts urls, paths, emails, secrets, long tokens and control characters', () => {
@@ -799,6 +799,18 @@ it('releases the after-notice state only on a real Owner message, whatever comes
       msg('assistant', '次への返答', 6),
     ])
     expect(turns.map((t) => t.text)).toEqual(['前の発言', '次の発言', '次への返答'])
+  }
+})
+
+it('drops Kohako replies whose trigger lies before the window that was read', () => {
+  // 読んだ範囲より前に配信通知があったかは分からない。範囲の中に先行する本人の発言が無い返答は、何件続いても載せない。
+  const tools = (n: number) =>
+    Array.from({ length: n }, (_, i) => (i % 2 ? msg('tool', 'TOOL', 10 + i) : msg('assistant', '', 10 + i, true)))
+  for (const head of [[], tools(1), tools(39), tools(80), [msg('user', '', 1)], [msg('assistant', '途中の返答', 1)]]) {
+    const cut = [...head, msg('assistant', '範囲より前の通知への返答', 100)]
+    expect(pickTurns(cut).turns).toEqual([])
+    const { turns } = pickTurns([...cut, msg('user', '本人の発言', 101), msg('assistant', '本人への返答', 102)])
+    expect(turns.map((t) => t.text)).toEqual(['本人の発言', '本人への返答'])
   }
 })
 

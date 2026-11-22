@@ -42,11 +42,13 @@ export function redact(text: string) {
  * Owner とコハコの本文だけを残す（配信通知・tool 呼び出し・tool 出力は除く）。
  * 配信通知へのコハコの返答も、次の本人の発言まで除く（返答だけ残ると通知の中身が漏れるため）。
  * 「通知の後」を解くのは、参照に載る本人の発言（空でなく通知でもない user）だけ。空の発言やほかの role では解かない。
+ * 読んだ範囲の先頭も「通知の後」として始める: 範囲より前に何があったか（配信通知かどうか）は分からないので、
+ * コハコの返答は、同じ範囲の中にそれより前の本人の発言がある時だけ載せる（確かめられない返答は載せない）。
  */
 export function pickTurns(messages: SessionMessage[], max = 6, chars = 160) {
   const turns: Turn[] = []
   let notices = 0,
-    afterNotice = false
+    afterNotice = true
   for (const m of messages) {
     if (m.role === 'user') {
       if (NOTICE.test(m.content)) {
