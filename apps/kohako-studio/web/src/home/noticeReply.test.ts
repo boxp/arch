@@ -98,7 +98,7 @@ describe('unsureOutcome / cancelDecision（応答喪失後・取消時の状態�
     ['claimed', 'hold:unknown', 'keep'],
     ['submitted', 'accepted:mine-0001', 'accepted:mine-0001'],
     ['submittedNoId', 'hold:unknown', 'keep'],
-    ['failed', 'hold:failed', 'drop'],
+    ['failed', 'hold:failed', 'release'],
   ]
   it.each(table)('%s', (key, unsure, cancel) => {
     const s = states[key] as ServerReply
@@ -112,8 +112,11 @@ describe('unsureOutcome / cancelDecision（応答喪失後・取消時の状態�
           ? c.error
             ? 'keep:error'
             : 'keep'
-          : 'drop',
+          : c.kind,
     ).toBe(cancel)
+  })
+  it('同じ replyId の送信失敗記録は再送で実行されうるため取消済み（drop）にしない', () => {
+    expect(cancelDecision(states.failed as ServerReply).kind).toBe('release')
   })
   it('受理済みの可能性がある状態（none・claimed・確認不能）は取り消さない', () => {
     for (const key of ['none', 'claimed', 'error', 'submittedNoId'])

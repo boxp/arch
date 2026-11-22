@@ -2036,6 +2036,19 @@ async function cancelAttemptedNoticeChecked(item: QueueItem) {
     dropQueued(item)
     return
   }
+  if (decision.kind === 'release') {
+    // 同じ replyId の送信失敗記録がサーバーに残り、その番号での再送は後から実行されうる。取消済みとは表示せず、
+    // 送信待ちから外して受信箱の記録へ委ねる（自動では再送しない。本文はサーバーの記録と受信箱に残るため下書きへは戻さない）。
+    if (!queue.remove(item.id)) return show(state)
+    queueNote.textContent = ''
+    addHistory(
+      'お知らせ',
+      `${item.text} を送信待ちから外しました。取り消しにはなっていません: 会話へ渡せなかった返信の記録がサーバーに残っており、受信箱から同じ返信番号で再送すると実行されます。`,
+    )
+    void inboxView?.refresh()
+    show(state)
+    return
+  }
   // 後から受理されうる・確認できない: 送信待ちに残して保留し、同じ返信番号での「確認して再開」（二重には実行されない）を案内する。
   if (!queue.held) queue.hold('unknown')
   queueNote.textContent = decision.error

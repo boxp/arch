@@ -31,7 +31,11 @@ export function validNotice(x: unknown): x is NoticeReply {
     n.title.length > 0 &&
     n.title.length <= 200 &&
     (n.kind === 'choice' || n.kind === 'text') &&
-    text(n.value, QUEUE_MAX_CHARS) &&
+    // 選択肢の値は BFF と同じく前後の空白を許す（BFF は空白込みの選択肢をそのまま受け付ける）。
+    typeof n.value === 'string' &&
+    n.value.length <= QUEUE_MAX_CHARS &&
+    !!n.value.trim() &&
+    (n.kind === 'choice' || n.value === n.value.trim()) &&
     typeof n.replyId === 'string' &&
     /^[A-Za-z0-9-]{8,64}$/.test(n.replyId) &&
     (n.attempted === undefined || n.attempted === true)

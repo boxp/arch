@@ -5,8 +5,9 @@
 // - 同じ replyId の返信がサーバーに記録されていれば、状態（claimed/submitted/submit_failed）に関わらず同じ replyId で返信 API へ送る。
 //   BFF は同じ replyId を冪等に扱い、追跡中ならその受付番号を返し、再起動などで追跡を失っていれば追跡を作り直す。
 //   画面側で「受理済みだから送らない」「未送信だから取り消す」と推定しない。
-// - 一度返信 API へ送った返信（attempted）は、サーバーが実行しないと確定させた場合（同じ replyId が submit_failed・
-//   別の replyId が先に返信済み・通知が BFF に無い）だけ取り消せる。それ以外は保留して同じ replyId の再開を案内する。
+// - 一度返信 API へ送った返信（attempted）は、サーバーが実行しないと確定させた場合（別の replyId が先に返信済み・
+//   通知が BFF に無い）だけ取り消せる。同じ replyId が submit_failed の記録は BFF が同じ replyId の再送を受け付けるため
+//   「取り消した」とは扱わず、送信待ちから外して受信箱の送信失敗の記録へ委ねる（release）。それ以外は保留して同じ replyId の再開を案内する。
 import type { HoldReason, NoticeReply } from './queue'
 
 /** 通知の最新状態から見た、登録時の replyId の返信の状態。 */
@@ -100,16 +101,20 @@ export function unsureOutcome(found: ServerReply): UnsureOutcome {
 /**
  * 一度送った通知返信（attempted）の取消可否。
  * accepted = 受理済みなので取り消せない（送信待ちから外し、同じ replyId で追跡を作り直して応答を追う）、
- * drop = サーバーが実行しないと確定させたので取り消してよい、keep = 後から受理されうる・確認できないので取り消さない。
+ * drop = サーバーが実行しないと確定させたので取り消してよい、
+ * release = 同じ replyId の送信失敗記録（submit_failed）がサーバーに残り、同じ replyId の再送で後から実行されうる。
+ *   取消済みとは表示せず、送信待ちから外して受信箱の「同じ受付番号で再送できる」記録として残す（自動では再送しない）、
+ * keep = 後から受理されうる・確認できないので取り消さない。
  */
 export type CancelDecision =
   | { kind: 'accepted'; requestId: string }
   | { kind: 'drop' }
+  | { kind: 'release' }
   | { kind: 'keep'; error: boolean }
 export function cancelDecision(found: ServerReply): CancelDecision {
   if (found.state === 'mine' && found.status === 'submitted' && found.requestId)
     return { kind: 'accepted', requestId: found.requestId }
-  if ((found.state === 'mine' && found.status === 'submit_failed') || found.state === 'other' || found.state === 'gone')
-    return { kind: 'drop' }
+  if (found.state === 'mine' && found.status === 'submit_failed') return { kind: 'release' }
+  if (found.state === 'other' || found.state === 'gone') return { kind: 'drop' }
   return { kind: 'keep', error: found.state === 'error' }
 }

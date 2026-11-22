@@ -277,7 +277,8 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
   })
 
   // h: 一度送った通知返信（502 で成否不明）は、通知が未返信・受理途中に見えても取り消さない（先の要求が後から受理されうる）。
-  //    「すべて取消」でも残す。サーバーが同じ replyId を submit_failed と確定させた後だけ取り消せる。
+  //    「すべて取消」でも残す。同じ replyId が submit_failed の記録は同じ replyId の再送で実行されうるため、取消済みとは表示せず
+  //    送信待ちから外して受信箱の記録へ委ねる（再送しない）。
   await scenario('h-attempted-cancel-failclosed', async (e, ev) => {
     e.replyMode.set('event-658-one', 502)
     await e.submit('実行'); await e.count(1)
@@ -297,12 +298,12 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     assert((await e.rows().count()) === 1, 'attempted reply removed while claimed')
     let hist = await e.page.locator('#history-list').textContent()
     assert(!/通知「通知one」.*を取り消しました/.test(hist), 'refused cancel reported as cancelled')
-    // submit_failed（実行されないと確定）→ 取り消せる
+    // submit_failed（同じ replyId の再送で実行されうる）→ 送信待ちから外すが「取り消した」とは表示しない
     e.item('one').reply.status = 'submit_failed'
     await e.rows().first().getByRole('button', { name: '送信待ち 1番目を取り消す' }).click()
-    await wait(async () => (await e.rows().count()) === 0, 'submit_failed not cancellable')
+    await wait(async () => (await e.rows().count()) === 0, 'submit_failed not released')
     hist = await e.page.locator('#history-list').textContent()
-    assert(hist.includes('実行されないことを確認済み') && e.replies.length === 1, 'cancel after submit_failed')
+    assert(hist.includes('取り消しにはなっていません') && !hist.includes('実行されないことを確認済み') && e.replies.length === 1, 'release after submit_failed')
     // 通知そのものが BFF から消えた（返信 API は not_found）→ 後から受理されないので取り消せる（送信待ちが詰まらない）。
     e.replyMode.set('event-658-two', 502)
     await e.submit('実行2'); await e.count(2)

@@ -67,12 +67,19 @@ describe('通知返信の退避（BOXP-658）', () => {
     expect(parseReauth(serializeReauth(stash), now)?.queue).toEqual([sent])
     expect(parseReauth(JSON.stringify({ ...stash, queue: [{ ...notice, attempted: false }] }), now)).toBeNull()
   })
+  it('BFF が受け付ける前後に空白のある選択肢の値も退避・復元する（ほかの送信待ちを失わない）', () => {
+    const spaced = { ...notice, value: ' A ' }
+    const stash = { v: 1 as const, draft: '', queue: ['先', spaced, '後'], at: now, reloadAt: now }
+    expect(parseReauth(serializeReauth(stash), now)?.queue).toEqual(['先', spaced, '後'])
+  })
   it('不正な通知返信は退避全体を拒否する（通常の発言へ変えない）', () => {
     for (const bad of [
       { ...notice, extra: 1 },
       { ...notice, eventId: 'short' },
       { ...notice, kind: 'other' },
       { ...notice, value: '' },
+      { ...notice, value: '   ' },
+      { ...notice, kind: 'text', value: ' 前後空白 ' },
       { ...notice, value: 'a'.repeat(501) },
       { ...notice, replyId: '!bad-reply' },
       { ...notice, ticketId: 'boxp-1' },
