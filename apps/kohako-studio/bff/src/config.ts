@@ -56,12 +56,28 @@ export function readConfig(env: NodeJS.ProcessEnv) {
       g2Username.endsWith(':default'))
   )
     throw Error('invalid G2 configuration')
+  // BOXP-657 段2: 眼鏡発の turn の指示文にだけ添える参照（どちらも任意・未設定なら付けない＝今までと同じ指示文）。
+  // KOHAKO_G2_BOARD_CONTEXT=summary で Board 要約、KOHAKO_G2_SHARED_CONTEXT=telegram-dm で本人の Telegram DM の直近（読むだけ）。
+  const g2BoardContext = env.KOHAKO_G2_BOARD_CONTEXT || undefined,
+    g2SharedContext = env.KOHAKO_G2_SHARED_CONTEXT || undefined,
+    g2TelegramUserId = env.KOHAKO_G2_TELEGRAM_USER_ID || undefined
+  if (
+    (g2BoardContext !== undefined && g2BoardContext !== 'summary') ||
+    (g2SharedContext !== undefined && g2SharedContext !== 'telegram-dm') ||
+    (g2TelegramUserId !== undefined && !/^\d{1,20}$/.test(g2TelegramUserId)) ||
+    // 参照する相手は Owner 本人の Telegram user に固定する（未設定なら共有しない＝起動失敗）。
+    (g2SharedContext === 'telegram-dm' && (g2TelegramUserId === undefined || !hermesUrl))
+  )
+    throw Error('invalid G2 context configuration')
   const port = Number(env.KOHAKO_BFF_PORT ?? '8787')
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('invalid port')
   return {
     g2Mode: g2Mode as 'read' | 'write' | undefined,
     g2Audience,
     g2Username,
+    g2BoardContext: g2BoardContext === 'summary',
+    g2SharedContext: g2SharedContext === 'telegram-dm',
+    g2TelegramUserId,
     dataDir,
     pushSubject,
     quietHours,

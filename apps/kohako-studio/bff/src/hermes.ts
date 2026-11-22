@@ -502,5 +502,68 @@ export function createHermes({
       })
     },
     execute,
+    // BOXP-657 段2: 公式 session API の読み取り専用 view（GET だけ。これらの session へは何も書かない）。
+    // 進行中だけに絞る filter は無いので全 page を見る（上限を超えたら判定できないので null）。
+    async sessions(source: string, pageSize = 200, maxPages = 10): Promise<SessionInfo[] | null> {
+      try {
+        const rows: Record<string, unknown>[] = []
+        for (let page = 0; ; page++) {
+          if (page === maxPages) return null
+          const result = await request(
+            `/api/sessions?source=${encodeURIComponent(source)}&limit=${pageSize}&offset=${page * pageSize}`,
+            { headers: auth },
+            1048576,
+            5000,
+          )
+          const data = result.data?.data
+          if (!Array.isArray(data)) return null
+          rows.push(...data)
+          if (result.data?.has_more !== true) break
+        }
+        return rows.flatMap((x) =>
+          x && typeof x.id === 'string' && x.source === source
+            ? [
+                {
+                  id: x.id,
+                  userId: String(x.user_id ?? ''),
+                  endedAt: x.ended_at ?? null,
+                  lastActive: typeof x.last_active === 'number' ? x.last_active : 0,
+                  messageCount: typeof x.message_count === 'number' ? x.message_count : 0,
+                },
+              ]
+            : [],
+        )
+      } catch {
+        return null
+      }
+    },
+    async messages(sessionId: string, limit: number): Promise<SessionMessage[] | null> {
+      try {
+        const result = await request(
+          `/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=${limit}&order=latest`,
+          { headers: auth },
+          1048576,
+          5000,
+        )
+        const data = result.data?.data
+        if (!Array.isArray(data)) return null
+        return data
+          .flatMap((x: Record<string, unknown>) =>
+            x && typeof x.role === 'string'
+              ? [
+                  {
+                    role: x.role,
+                    content: typeof x.content === 'string' ? x.content : '',
+                    toolCalls: Array.isArray(x.tool_calls) ? x.tool_calls.length > 0 : !!x.tool_calls,
+                    at: typeof x.timestamp === 'number' ? x.timestamp : 0,
+                  },
+                ]
+              : [],
+          )
+          .sort((a, b) => a.at - b.at)
+      } catch {
+        return null
+      }
+    },
   }
 }
