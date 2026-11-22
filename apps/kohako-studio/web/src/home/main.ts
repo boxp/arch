@@ -353,6 +353,11 @@ let inboxView: ReturnType<typeof initInbox> | null = null,
 let pendingFromQueue = false,
   dispatching = false,
   dispatchTimer = 0
+/**
+ * 取消のための受理確認中の項目。確認中は送信（自動・「再開」とも）を止める:
+ * 確認中に同じ replyId で再送されて受理されると、古い確認結果（submit_failed 等）で取り消して追跡を失うため。
+ */
+const cancelChecking = new Set<number>()
 const queueBox = el('queue'),
   queueList = el('queue-list'),
   queueStatus = el('queue-status'),
@@ -1858,7 +1863,7 @@ function renderQueue() {
       : ''
   queueResume.textContent = pending ? '確認して再開' : '再開'
   queueResume.hidden = !held
-  queueResume.disabled = busy
+  queueResume.disabled = busy || cancelChecking.size > 0
   queueClear.hidden = !items.length
   // 通知返信の待機・保留が変わったときだけ受信箱の詳細へ反映する（入力中の返信を毎回作り直さない）。
   const key = JSON.stringify([items.filter((x) => x.notice).map((x) => x.id), queue.held])
@@ -1910,7 +1915,7 @@ function tryDispatch(force: boolean) {
     addHistory('お知らせ', `${holdLabel.offline}、送信待ち ${queue.size} 件の自動送信を止めました。`)
     renderQueue()
   }
-  if (busy || dispatching) return
+  if (busy || dispatching || cancelChecking.size) return
   if (!force) {
     if (queue.held) return
     const reason = holdFor()
@@ -1983,11 +1988,23 @@ async function serverReplyOf(n: NoticeReply): Promise<ServerReply> {
   }
 }
 async function cancelAttemptedNotice(item: QueueItem) {
+  if (cancelChecking.has(item.id)) return
+  cancelChecking.add(item.id)
+  try {
+    await cancelAttemptedNoticeChecked(item)
+  } finally {
+    cancelChecking.delete(item.id)
+    show(state)
+  }
+}
+async function cancelAttemptedNoticeChecked(item: QueueItem) {
   const n = must(item.notice)
   queueNote.textContent = '取り消す前に、この返信が受け付けられていないか確認しています…'
   renderQueue()
   const found = await serverReplyOf(n)
   queueNote.textContent = ''
+  // 確認中に送信待ちから外れた（送信・取消済み）項目には、古い確認結果を当てはめない。
+  if (!queue.list().some((x) => x.id === item.id)) return
   if (found.state === 'mine' && found.status === 'submitted' && found.requestId) {
     // 受理済み: 取り消せないことを伝え、送信待ちから外して応答を追う（送っていないとは表示しない）。
     if (!queue.remove(item.id)) return show(state)
@@ -2105,6 +2122,11 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
 }
 queueResume.addEventListener('click', () => {
   if (busy) return
+  if (cancelChecking.size) {
+    queueNote.textContent = '取消のための確認が終わるまで、再開はできません。'
+    renderQueue()
+    return
+  }
   if (!enabled) {
     queueNote.textContent =
       '認証が切れています。「再認証のため再読み込み」でログインし直したあと、「再開」を押してください。'

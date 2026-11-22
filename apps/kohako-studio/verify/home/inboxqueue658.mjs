@@ -34,6 +34,7 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     page.on('request', (req) => { if (new URL(req.url()).hostname !== 'localhost') external.push(req.url()) })
     await page.route(/^https?:\/\/(?!localhost)/, (route) => route.abort())
     const env = {
+      slow: 0,
       page, posts, replies, approvals, states, items, replyMode, log,
       item: (id) => items.find((i) => i.eventId === `event-658-${id}`),
       submit: async (text) => { await page.locator('#message').fill(text); await page.locator('#send').click() },
@@ -59,7 +60,7 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
       if (p === 'me') return json(200, { authenticated: true })
       if (p === 'conversation') return json(200, { enabled: true, stt: false })
       if (p === 'status') return json(200, { schema: 'kohako-home-status/v1', quota: { state: 'ok', pools: [] }, tasks: { state: 'ok', inProgress: { total: 0, complete: true, byAgent: [], conflicts: [] } } })
-      if (p === 'notifications') return json(200, { items, unread: items.filter((i) => !i.readAt).length })
+      if (p === 'notifications') { if (env.slow) await new Promise((r) => setTimeout(r, env.slow)); return json(200, { items, unread: items.filter((i) => !i.readAt).length }) }
       if (p === 'messages') { const data = req.postDataJSON(); posts.push(data); log.push(`message:${data.text}`); states.set(data.requestId, { status: 'pending' }); return json(202, { status: 'accepted' }) }
       if (p === 'approvals') { approvals.push(req.postDataJSON()); return json(202, {}) }
       const m = /^notifications\/([^/]+)\/(read|handled|reply|announcing|announced)$/.exec(p)
@@ -308,6 +309,31 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     hist = await e.page.locator('#history-list').textContent()
     ev.history = hist.split('\n').filter((l) => l.includes('通知')).slice(-4)
     await e.screenshot('h-attempted-cancel-failclosed')
+  })
+
+  // l: 取消のための受理確認中は「再開」できず自動送信もしない（確認中に同じ replyId で再送・受理されて、古い確認結果で取り消されるのを防ぐ）。
+  await scenario('l-cancel-check-locks-resume', async (e, ev) => {
+    e.replyMode.set('event-658-one', 502)
+    await e.submit('実行'); await e.count(1)
+    await e.select('one'); await e.page.locator('#inbox-detail').getByRole('button', { name: /^A/ }).click(); await wait(async () => (await e.rows().count()) === 1, 'queued one')
+    await e.closeInbox()
+    e.done(e.posts[0].requestId)
+    await e.replyCount(1); await e.page.locator('#queue-resume').waitFor({ state: 'visible', timeout: 10000 })
+    const r = e.replies[0]
+    e.item('one').reply = { replyId: r.replyId, kind: r.kind, value: r.value, requestId: 'request-event-658-one', status: 'submit_failed' }
+    e.slow = 2500
+    await e.rows().first().getByRole('button', { name: '送信待ち 1番目を取り消す' }).click()
+    await wait(async () => (await e.page.locator('#queue-note').textContent()).includes('確認しています'), 'checking note')
+    const disabled = await e.page.locator('#queue-resume').isDisabled()
+    await e.page.locator('#queue-resume').click({ force: true }).catch(() => {})
+    await e.page.waitForTimeout(500)
+    assert(disabled && e.replies.length === 1, `resume during check: disabled=${disabled} replies=${e.replies.length}`)
+    e.slow = 0
+    await wait(async () => (await e.rows().count()) === 0, 'cancel after check')
+    await e.settle()
+    assert(e.replies.length === 1, 'reply resent after check')
+    ev.resumeDisabledDuringCheck = disabled
+    await e.screenshot('l-cancel-check-locks-resume')
   })
 
   // k: キューからの初回送信が BFF に 429 busy で断られた（claim 未保存）返信は「未送信」のまま。確認なしで取り消せ、不要な返信を送らずに先へ進める。
