@@ -1,10 +1,46 @@
-import { QUEUE_MAX_CHARS, QUEUE_MAX_ITEMS } from './queue'
+import { QUEUE_MAX_CHARS, QUEUE_MAX_ITEMS, type NoticeReply } from './queue'
 
 export const REAUTH_KEY = 'kohako-home-reauth'
 export const REAUTH_DRAFT_MAX = 4000
 const TTL = 15 * 60_000,
   RELOAD_GUARD = 2 * 60_000
-export type ReauthStash = { v: 1; draft: string; queue: string[]; at: number; reloadAt: number }
+/** 送信待ちの退避形式。通常の発言は本文の文字列、通知返信（BOXP-658）は返信先の文脈ごと退避する（復元後は保留）。 */
+export type ReauthEntry = string | NoticeReply
+export type ReauthStash = {
+  v: 1
+  draft: string
+  queue: ReauthEntry[]
+  at: number
+  reloadAt: number
+}
+const text = (t: unknown, max: number): t is string =>
+  typeof t === 'string' && t.length <= max && !!t.trim() && t === t.trim()
+export function validNotice(x: unknown): x is NoticeReply {
+  if (!x || typeof x !== 'object' || Array.isArray(x)) return false
+  const n = x as Record<string, unknown>
+  return (
+    Object.keys(n).every((k) =>
+      ['eventId', 'ticketId', 'source', 'title', 'kind', 'value', 'replyId', 'attempted'].includes(k),
+    ) &&
+    typeof n.eventId === 'string' &&
+    /^[A-Za-z0-9._:-]{8,200}$/.test(n.eventId) &&
+    (n.ticketId === undefined || (typeof n.ticketId === 'string' && /^[A-Z]+-\d+$/.test(n.ticketId))) &&
+    typeof n.source === 'string' &&
+    /^[a-z0-9-]{1,40}$/.test(n.source) &&
+    typeof n.title === 'string' &&
+    n.title.length > 0 &&
+    n.title.length <= 200 &&
+    (n.kind === 'choice' || n.kind === 'text') &&
+    // 選択肢の値は BFF と同じく前後の空白を許す（BFF は空白込みの選択肢をそのまま受け付ける）。
+    typeof n.value === 'string' &&
+    n.value.length <= QUEUE_MAX_CHARS &&
+    !!n.value.trim() &&
+    (n.kind === 'choice' || n.value === n.value.trim()) &&
+    typeof n.replyId === 'string' &&
+    /^[A-Za-z0-9-]{8,64}$/.test(n.replyId) &&
+    (n.attempted === undefined || n.attempted === true)
+  )
+}
 export const classifyFailure = ({ status }: { status: number }): 'auth' | 'other' =>
   status === 401 || status === 403 ? 'auth' : 'other'
 export const serializeReauth = (stash: ReauthStash): string => JSON.stringify(stash)
@@ -20,7 +56,7 @@ export function parseReauth(raw: string | null, now: number): ReauthStash | null
       v.draft.length > REAUTH_DRAFT_MAX ||
       !Array.isArray(v.queue) ||
       v.queue.length > QUEUE_MAX_ITEMS ||
-      !v.queue.every((t) => typeof t === 'string' && t.length <= QUEUE_MAX_CHARS && !!t.trim() && t === t.trim()) ||
+      !v.queue.every((t) => text(t, QUEUE_MAX_CHARS) || validNotice(t)) ||
       typeof v.at !== 'number' ||
       !Number.isFinite(v.at) ||
       v.at > now ||

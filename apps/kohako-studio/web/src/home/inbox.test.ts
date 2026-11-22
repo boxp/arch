@@ -6,6 +6,7 @@ import {
   replyText,
   stateLabel,
   canVisitNotification,
+  noticeChoiceValues,
   noticeChoices,
 } from './inbox'
 describe('受信箱の表示', () => {
@@ -220,5 +221,12 @@ describe('通知の選択肢ボタン（BOXP-646）', () => {
     // 本文に説明が見つからない古い選択肢はそのまま
     expect(noticeChoices({ choices: ['はい'], body: '本文' })).toEqual([{ value: 'はい', text: 'はい' }])
     expect(noticeChoices({ body: 'A) x\nB) y' })).toEqual([])
+  })
+})
+describe('送信直前の選択肢確認（BOXP-658）', () => {
+  it('明示の choices が無ければ BFF と同じく本文から抽出した選択肢を有効とする', () => {
+    expect(noticeChoiceValues({ body: 'A) 進める\nB) やめる' })).toEqual(['A', 'B'])
+    expect(noticeChoiceValues({ choices: ['はい'], body: 'A) 進める\nB) やめる' })).toEqual(['はい'])
+    expect(noticeChoiceValues({ body: '本文' })).toEqual([])
   })
 })

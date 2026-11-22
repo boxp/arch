@@ -2,6 +2,7 @@ import { must } from '../must'
 import { renderMarkdown } from './markdown'
 import { atBottom } from './scroll'
 import { choiceButtonText, extractChoices } from './choices'
+import { queuedAttempted } from './noticeReply'
 export type Item = {
   eventId: string
   source: string
@@ -56,6 +57,9 @@ export const sourceLabel = (source: string) =>
         : source
 export const replyText = (i: Pick<Item, 'title' | 'ticketId'>, kind: 'choice' | 'text', value: string) =>
   `通知「${i.title}」${i.ticketId ? `（${i.ticketId}）` : ''}への${kind === 'choice' ? '選択' : '返信'}: ${value}`
+/** BOXP-658: BFF の choicesOf と同じく、明示の choices が無ければ本文から抽出した選択肢を有効な値とする（送信直前の確認で正当な選択を無効扱いにしない）。 */
+export const noticeChoiceValues = (i: Pick<Item, 'choices' | 'body'>): string[] =>
+  i.choices ?? (extractChoices(i.body) ?? []).map((c) => c.value)
 /** BOXP-646: 通知の選択肢ボタン。送る値は BFF が受け付ける記号（A など）のまま、表示だけ本文の説明を添える。 */
 export function noticeChoices(i: Pick<Item, 'choices' | 'body'>): { value: string; text: string }[] {
   const labels = new Map((extractChoices(i.body) ?? []).map((c) => [c.value, c]))
@@ -112,7 +116,36 @@ type Announcer = {
     more: number,
   ) => void
 }
-export function initInbox(follow: (requestId: string, text: string) => boolean = () => false, announcer?: Announcer) {
+/**
+ * BOXP-658: 応答待ち・送信待ちがある間の通知返信を、家の会話の送信待ち（508 と同じ FIFO）へ積むための口。
+ * 積んだ返信は送信待ちから同じ replyId で通知の返信 API へ送られる（受信箱からは送らない）。
+ */
+export type ReplyQueue = {
+  /** いま返信を送らず送信待ちへ積むべきか。 */
+  active: () => boolean
+  add: (
+    item: Item,
+    kind: 'choice' | 'text',
+    value: string,
+    replyId: string,
+    /** 'busy': この画面は空いていたが BFF が会話の進行中（別端末など）で断った。送信待ちは「再開」まで止める。 */
+    held?: 'busy',
+    /** サーバーに同じ replyId の返信記録がある（再送）。取消前に受理確認を必須にする。 */
+    attempted?: boolean,
+  ) => { ok: true } | { ok: false; message: string }
+  /** その通知への返信が送信待ちにあれば、表示と保留理由を返す。 */
+  pending: (eventId: string) => { text: string; held: string } | null
+  cancel: (eventId: string) => void
+}
+export const QUEUED_REPLY_TEXT =
+  '送信待ちに追加しました（まだ送信していません）。いまの返答が終わったら、送信待ちの順に送ります。やめるときは「取消」を押してください。'
+export const QUEUED_BUSY_TEXT =
+  'ほかの依頼がまだ進行中のため、返信は送らずに送信待ちに追加しました（まだ送信していません）。終わったら送信待ち欄の「再開」で送ります。やめるときは「取消」を押してください。'
+export function initInbox(
+  follow: (requestId: string, text: string) => boolean = () => false,
+  announcer?: Announcer,
+  replyQueue?: ReplyQueue,
+) {
   const el = (id: string) => must(document.getElementById(id)),
     panel = el('inbox'),
     list = el('inbox-list'),
@@ -167,16 +200,32 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
   }
   const send = async (i: Item, kind: 'choice' | 'text', value: string, status: HTMLElement) => {
     if (sending.has(i.eventId)) return false
-    sending.add(i.eventId)
     const key = `kohako-reply-${i.eventId}`,
       replyId = i.reply?.replyId ?? sessionStorage.getItem(key) ?? crypto.randomUUID()
     sessionStorage.setItem(key, replyId)
+    // BOXP-658: 応答待ち・送信待ちがある間は BFF へ送らず送信待ちへ積む（受理済みの返信の「会話で続きを見る」は追跡だけなので積まない）。
+    const enqueue = (held?: 'busy') => {
+      const queued = must(replyQueue).add(i, kind, value, replyId, held, queuedAttempted(i.reply, replyId))
+      if (!queued.ok) {
+        status.textContent = queued.message
+        return false
+      }
+      if (kind === 'text') drafts.clear(i.eventId)
+      notice = status.textContent = held ? QUEUED_BUSY_TEXT : QUEUED_REPLY_TEXT
+      renderedKey = null
+      render()
+      return true
+    }
+    if (replyQueue && i.reply?.status !== 'submitted' && replyQueue.active()) return enqueue()
+    sending.add(i.eventId)
     try {
       const result = await call(`notifications/${encodeURIComponent(i.eventId)}/reply`, 'POST', {
         replyId,
         kind,
         value,
       })
+      // BOXP-658: BFF は会話の進行中（別端末の依頼など）なら返信を保存せず 429 busy を返す。本文を失わないよう送信待ちへ積む。
+      if (replyQueue && result.status === 429 && result.data?.error === 'busy') return enqueue('busy')
       if (result.status >= 300) {
         status.textContent = '返信を送信できませんでした。'
         return false
@@ -286,7 +335,7 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
         part('row-sep', `｜${i.eventId.slice(0, 16)}｜`),
         part('row-time', formatReceived(i.receivedAt)),
         part('row-sep', '｜'),
-        part('row-state', state),
+        part('row-state', replyQueue?.pending(i.eventId) ? `${state}・送信待ち` : state),
       )
       list.append(row)
     }
@@ -301,7 +350,8 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
       firstOpen = false
     }
     const i = items.find((x) => x.eventId === selected)
-    const key = i ? detailKey(i) : null
+    const queued = i ? (replyQueue?.pending(i.eventId) ?? null) : null
+    const key = i ? detailKey(i) + JSON.stringify(queued) : null
     const meta = i
       ? `${sourceLabel(i.source)} ${i.ticketId ?? ''}・${formatReceived(i.receivedAt)}・${stateLabel(i)}・ID: ${i.eventId}`
       : ''
@@ -341,6 +391,18 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
           void sendReply('text', '見てきて')
         }),
       )
+    if (queued) {
+      // 送信待ちの返信は「返信済み」「処理済み」とは別に、未送信であることと取消を出す（承認・返信の完了に見せない）。
+      line(detail, `送信待ち（未送信）: ${queued.text}`).className = 'detail-queued'
+      if (queued.held) line(detail, queued.held).className = 'detail-queued-hold'
+      detail.append(
+        button('取消', () => {
+          replyQueue?.cancel(i.eventId)
+          renderedKey = null
+          render()
+        }),
+      )
+    }
     if (i.reply && i.reply.status === 'submitted') {
       const r = i.reply
       line(detail, `返信済みです（受付番号: ${r.requestId}）。`)
@@ -360,7 +422,7 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
           void sendReply(r.kind, r.value)
         }),
       )
-    } else {
+    } else if (!queued) {
       for (const choice of noticeChoices(i))
         detail.append(
           button(choice.text, () => {
@@ -487,5 +549,14 @@ export function initInbox(follow: (requestId: string, text: string) => boolean =
   }
   document.addEventListener('visibilitychange', schedule)
   schedule()
-  return { retry: () => void tryAnnounce() }
+  return {
+    retry: () => void tryAnnounce(),
+    refresh: () => refresh(),
+    /** 送信待ちの変化を詳細に反映する（入力中の返信とカーソル位置は保つ）。 */
+    rerender: () => render(),
+    /** 送信待ちから取り消した自由文の返信を、その通知の下書きへ戻す（入力中の下書きがあれば消さない）。 */
+    restoreDraft: (eventId: string, value: string) => {
+      if (!drafts.get(eventId).trim()) drafts.set(eventId, value)
+    },
+  }
 }
