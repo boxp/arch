@@ -571,6 +571,8 @@ export function createApp(opts: {
             : input.views
               ? instructions + locationInstructions(location, now())
               : studioInstructions
+      // 参照の取得を待つ間に期限が切れた発言は Hermes へ渡さない（待つ前の確認だけでは足りない）。
+      if (x.expiresAt <= now()) return json(410, { error: 'expired' })
       const entry = conv.submit(
         input,
         principal === 'owner' && input.kind === 'text' ? turnInstructions + ownerTaskInstructions : turnInstructions,

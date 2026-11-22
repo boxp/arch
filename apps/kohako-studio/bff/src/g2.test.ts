@@ -245,7 +245,7 @@ afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
   vi.restoreAllMocks()
 })
-async function start(g2Mode?: 'read' | 'write', store?: string) {
+async function start(g2Mode?: 'read' | 'write', store?: string, g2Reference?: (base: string) => Promise<string>) {
   const h = fakeHermes(),
     log = vi.spyOn(console, 'log').mockImplementation(() => {})
   const conv = (prefix: string) =>
@@ -267,6 +267,7 @@ async function start(g2Mode?: 'read' | 'write', store?: string) {
           ? x.authorization
           : null,
       g2Mode,
+      g2Reference,
       hermes: h.hermes,
       conversations,
     }),
@@ -607,4 +608,39 @@ it('matches the shared contract fixture (contract/g2-v1.json)', async () => {
       `${JSON.stringify({ ...fixture, responses: got }, null, 2)}\n`,
     )
   else expect(got).toEqual(fixture.responses)
+})
+
+it('does not run a g2 message that expires while the reference is being fetched', async () => {
+  let release: (text: string) => void = () => {}
+  const waiting: Promise<void>[] = []
+  let arrived: () => void = () => {}
+  const t = await start('write', undefined, (base) => {
+    waiting.push(Promise.resolve())
+    arrived()
+    return new Promise<string>((r) => {
+      release = (extra) => r(base + extra)
+    })
+  })
+  const until = () =>
+    new Promise<void>((r) => {
+      if (waiting.length) r()
+      else arrived = r
+    })
+  // 送った時は期限内、参照を待つ間に切れる → 410 で Hermes は呼ばれず、依頼も残らない。
+  const expiresAt = Date.now() + 150
+  const late = t.call('g2', 'messages', { ...t.msg('g2-late-0001', '遅い'), expiresAt })
+  await until()
+  await new Promise((r) => setTimeout(r, 200))
+  release('\n参照')
+  expect(await late).toEqual({ status: 410, body: { error: 'expired' } })
+  expect(t.calls).toHaveLength(0)
+  expect((await t.call('g2', 'requests/g2-late-0001')).status).toBe(404)
+  // 期限内に参照が返れば、参照つきの指示文で 1 回だけ実行される。
+  waiting.length = 0
+  const ok = t.call('g2', 'messages', t.msg('g2-fast-0001', '速い'))
+  await until()
+  release('\n参照')
+  expect((await ok).status).toBe(202)
+  expect(t.calls).toHaveLength(1)
+  expect(t.calls[0].instructions).toBe(`${g2Instructions}\n参照`)
 })
