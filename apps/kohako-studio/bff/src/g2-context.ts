@@ -22,7 +22,8 @@ export function redact(text: string) {
     text
       // biome-ignore lint/suspicious/noControlCharactersInRegex: 参照欄へ入れる前に C0/C1 制御文字（改行・タブ以外）を落とす
       .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '')
-      .replace(/https?:\/\/\S+/g, '<url>')
+      // scheme は大文字小文字を問わず、http(s) 以外（wss・ftp など）も URL ごと伏せる（query の認証情報を残さない）
+      .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '<url>')
       .replace(/(?:~|\b[A-Za-z]:)?[/\\][\w.~-]+(?:[/\\][\w.~-]+)+/g, '<path>')
       .replace(/[^\s@]+@[^\s@]+\.[A-Za-z]{2,}/g, '<email>')
       .replace(/\b(?:token|key|secret|password|bearer)\b\s*[:=]?\s*\S+/gi, '<secret>')

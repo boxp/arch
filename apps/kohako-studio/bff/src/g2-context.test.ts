@@ -113,6 +113,18 @@ it('redacts urls, paths, emails, secrets, long tokens and control characters', (
   expect(redact('a\x00b\x1fc\x7fd\x9fe')).toBe('abcde')
   expect(redact('  行1\n\t行2   行3  ')).toBe('行1 行2 行3')
   expect(redact('http://a.test/x と HTTPS は https://b.test')).toBe('<url> と HTTPS は <url>')
+  // scheme の大文字小文字・http(s) 以外でも、URL と query の認証情報を残さない
+  for (const url of [
+    'HTTPS://example.com/?auth=shortsecret',
+    'Http://example.com/?auth=shortsecret',
+    'WSS://example.com/?auth=shortsecret',
+    'ftp://user:shortsecret@example.com/',
+    'git+ssh://example.com/?auth=shortsecret',
+  ]) {
+    expect(redact(`見て ${url} です`)).toBe('見て <url> です')
+    expect(redact(url)).not.toMatch(/shortsecret|example/)
+  }
+  expect(redact('比は 3:// ではない')).toBe('比は 3:// ではない')
   expect(redact('~/a/b と /etc/passwd と D:\\x\\y と 1/2')).toBe('<path> と <path> と <path> と 1/2')
   expect(redact('連絡は a.b@c.example まで')).toBe('連絡は <email> まで')
   for (const word of ['token', 'KEY', 'secret', 'Password', 'bearer'])
