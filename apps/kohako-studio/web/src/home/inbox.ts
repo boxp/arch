@@ -56,6 +56,9 @@ export const sourceLabel = (source: string) =>
         : source
 export const replyText = (i: Pick<Item, 'title' | 'ticketId'>, kind: 'choice' | 'text', value: string) =>
   `通知「${i.title}」${i.ticketId ? `（${i.ticketId}）` : ''}への${kind === 'choice' ? '選択' : '返信'}: ${value}`
+/** BOXP-658: BFF の choicesOf と同じく、明示の choices が無ければ本文から抽出した選択肢を有効な値とする（送信直前の確認で正当な選択を無効扱いにしない）。 */
+export const noticeChoiceValues = (i: Pick<Item, 'choices' | 'body'>): string[] =>
+  i.choices ?? (extractChoices(i.body) ?? []).map((c) => c.value)
 /** BOXP-646: 通知の選択肢ボタン。送る値は BFF が受け付ける記号（A など）のまま、表示だけ本文の説明を添える。 */
 export function noticeChoices(i: Pick<Item, 'choices' | 'body'>): { value: string; text: string }[] {
   const labels = new Map((extractChoices(i.body) ?? []).map((c) => [c.value, c]))

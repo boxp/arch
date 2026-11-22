@@ -20,7 +20,7 @@ import {
 import { chatEntries } from './chatlog'
 import { TouchBubble } from './touch-bubble'
 import { renderMarkdown, plainText } from './markdown'
-import { initInbox, noticeChoices, type Item as InboxItem } from './inbox'
+import { initInbox, noticeChoiceValues, noticeChoices, type Item as InboxItem } from './inbox'
 import { type Choice, choiceButtonText, choiceMessage, extractChoices } from './choices'
 // BOXP-500: コハコの家（kohako-home）。Studio と同じ BFF・認証・Web 専用会話を使う全画面 UI。
 // 会話の送信・重複防止・停止・承認・追跡は Studio（src/studio/main.ts）と同じ規則。人格・判断・記憶は Hermes だけが持つ。
@@ -2063,7 +2063,7 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
   const current = (latest.data.items as InboxItem[]).find((x) => x.eventId === n.eventId)
   if (!current) return stop('notice_gone')
   if (current.reply && current.reply.replyId !== n.replyId) return stop('notice_replied')
-  if (n.kind === 'choice' && !current.choices?.includes(n.value)) return stop('notice_invalid')
+  if (n.kind === 'choice' && !noticeChoiceValues(current).includes(n.value)) return stop('notice_invalid')
   let result: Awaited<ReturnType<typeof call>>
   // 返信 API へ送る直前に印を付ける（応答が失われても、以後は受理を確定できるまで取り消さない。再認証の退避にも残る）。
   n.attempted = true

@@ -201,6 +201,20 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     ev.status = [s1, s2, s3]
   })
 
+  // j: 送る直前の一覧で明示の choices が無く本文だけに選択肢がある通知でも、BFF と同じく本文の選択肢を有効とみなして送る（選択肢変更と誤判定しない）。
+  await scenario('j-body-choices', async (e, ev) => {
+    await e.submit('実行'); await e.count(1)
+    await e.select('one'); await e.page.locator('#inbox-detail').getByRole('button', { name: /^A/ }).click(); await wait(async () => (await e.rows().count()) === 1, 'queued')
+    await e.closeInbox()
+    delete e.item('one').choices
+    e.done(e.posts[0].requestId)
+    await e.replyCount(1)
+    assert(e.replies[0].id === 'event-658-one' && e.replies[0].value === 'A', 'body choice reply target')
+    await e.settle(); const s = await e.status()
+    assert(!s.includes('選択肢が変わり'), `invalid hold ${s}`)
+    ev.status = s; ev.reply = e.replies[0]
+  })
+
   // d: 成否不明（502）・BFF busy（429）・認証切れ（401）は保留し、明示の再開で同じ replyId だけを再送する。後続の通常発言は自動送信しない。
   await scenario('d-unknown-busy-auth', async (e, ev) => {
     await e.submit('実行'); await e.count(1)
