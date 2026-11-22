@@ -26,21 +26,30 @@ export function redact(text: string) {
       .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '<url>')
       .replace(/(?:~|\b[A-Za-z]:)?[/\\][\w.~-]+(?:[/\\][\w.~-]+)+/g, '<path>')
       .replace(/[^\s@]+@[^\s@]+\.[A-Za-z]{2,}/g, '<email>')
-      .replace(/\b(?:token|key|secret|password|bearer)\b\s*[:=]?\s*\S+/gi, '<secret>')
+      // 1 回で伏せる: api_key=… / accessToken: … のような複合名は名前ごと（: か = が続く時だけ）、単独の語は区切りなしでも
+      .replace(
+        /[\w.-]*(?:token|key|secret|passw(?:or)?d|bearer|auth|credential)[\w.-]*\s*[:=]\s*\S+|\b(?:token|key|secret|password|bearer)\b\s*\S+/gi,
+        '<secret>',
+      )
       .replace(/[A-Za-z0-9_\-+/=]{32,}/g, '…')
       .replace(/\s+/g, ' ')
       .trim()
   )
 }
-/** Owner とコハコの本文だけを残す（配信通知・tool 呼び出し・tool 出力は除く）。 */
+/**
+ * Owner とコハコの本文だけを残す（配信通知・tool 呼び出し・tool 出力は除く）。
+ * 配信通知へのコハコの返答も、次の本人の発言まで除く（返答だけ残ると通知の中身が漏れるため）。
+ */
 export function pickTurns(messages: SessionMessage[], max = 6, chars = 160) {
   const turns: Turn[] = []
-  let notices = 0
+  let notices = 0,
+    afterNotice = false
   for (const m of messages) {
     if (m.role === 'user') {
-      if (NOTICE.test(m.content)) notices++
+      afterNotice = NOTICE.test(m.content)
+      if (afterNotice) notices++
       else if (m.content.trim()) turns.push({ role: 'owner', text: redact(m.content).slice(0, chars), at: m.at })
-    } else if (m.role === 'assistant' && !m.toolCalls && m.content.trim())
+    } else if (m.role === 'assistant' && !m.toolCalls && m.content.trim() && !afterNotice)
       turns.push({ role: 'kohako', text: redact(m.content).slice(0, chars), at: m.at })
   }
   return { turns: turns.slice(-max), notices }

@@ -109,6 +109,25 @@ it('keeps only Owner and Kohako text from the Telegram DM, dropping notices, too
   expect(turns.map((t) => t.at)).toEqual([2, 5, 6.5, 7])
 })
 
+it('drops Kohako replies to a delivery notice until the Owner speaks again', () => {
+  const { turns, notices } = pickTurns([
+    msg('assistant', '先頭の返答', 1),
+    msg('user', '[Webhook delivery: task-board] BOXP-9 の中身', 2),
+    msg('assistant', 'BOXP-9 の中身を確認しました', 3),
+    msg('assistant', '', 4, true),
+    msg('tool', 'TOOL', 5),
+    msg('assistant', '通知の続きの返答', 6),
+    msg('user', '   ', 7),
+    msg('assistant', '空の発言への返答', 8),
+    msg('user', '[Cron delivery] 定期', 9),
+    msg('assistant', '定期の返答', 10),
+    msg('user', '本人の発言', 11),
+    msg('assistant', '本人への返答', 12),
+  ])
+  expect(notices).toBe(2)
+  expect(turns.map((t) => t.text)).toEqual(['先頭の返答', '空の発言への返答', '本人の発言', '本人への返答'])
+})
+
 it('redacts urls, paths, emails, secrets, long tokens and control characters', () => {
   expect(redact('a\x00b\x1fc\x7fd\x9fe')).toBe('abcde')
   expect(redact('  行1\n\t行2   行3  ')).toBe('行1 行2 行3')
@@ -130,6 +149,21 @@ it('redacts urls, paths, emails, secrets, long tokens and control characters', (
   for (const word of ['token', 'KEY', 'secret', 'Password', 'bearer'])
     expect(redact(`x ${word}: abc123 y`)).toBe('x <secret> y')
   expect(redact('monkey business')).toBe('monkey business')
+  // 複合名（api_key・accessToken など）の短い値も、名前ごと伏せる
+  for (const field of [
+    'api_key=shortsecret',
+    'access_token=shortsecret',
+    'accessToken: shortsecret',
+    'X-Api-Key: shortsecret',
+    'client.secret = shortsecret',
+    'DB_PASSWORD=shortsecret',
+    'passwd=shortsecret',
+    'Authorization: shortsecret',
+    'aws_credentials=shortsecret',
+  ]) {
+    expect(redact(`設定 ${field} です`)).toBe('設定 <secret> です')
+  }
+  expect(redact('monkeys are fun')).toBe('monkeys are fun')
   expect(redact(`id ${'a'.repeat(32)} と ${'b'.repeat(31)}`)).toBe(`id … と ${'b'.repeat(31)}`)
 })
 
