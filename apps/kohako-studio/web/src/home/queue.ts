@@ -75,6 +75,10 @@ export class MessageQueue {
   get size(): number {
     return this.items.length
   }
+  /** 上限判定に使う件数。送信中の項目は失敗すると先頭へ戻るため、待機中と合わせて数える（戻しても上限を超えない）。 */
+  private get occupied(): number {
+    return this.items.length + (this.inflight ? 1 : 0)
+  }
   /** 取り出して送信中（結果未確定）の項目。再読み込みで失わないよう、待機中の項目と同じく扱う。 */
   get sending(): QueueItem | null {
     return this.inflight
@@ -95,7 +99,7 @@ export class MessageQueue {
     const text = raw.trim()
     if (!text) return { ok: false, error: 'empty' }
     if (text.length > QUEUE_MAX_CHARS) return { ok: false, error: 'too_long' }
-    if (this.items.length >= QUEUE_MAX_ITEMS) return { ok: false, error: 'full' }
+    if (this.occupied >= QUEUE_MAX_ITEMS) return { ok: false, error: 'full' }
     const item = { id: ++this.seq, text, addedAt: now }
     this.items.push(item)
     return { ok: true, item }
@@ -109,7 +113,7 @@ export class MessageQueue {
     if (this.noticeFor(raw.eventId)) return { ok: false, error: 'duplicate' }
     // 送信中の同じ通知への返信は、登録時の replyId で送られている最中。別の内容を積むと同じ replyId の既存返信として扱われ失われるため拒否する。
     if (this.inflight?.notice?.eventId === raw.eventId) return { ok: false, error: 'sending' }
-    if (this.items.length >= QUEUE_MAX_ITEMS) return { ok: false, error: 'full' }
+    if (this.occupied >= QUEUE_MAX_ITEMS) return { ok: false, error: 'full' }
     const notice = { ...raw, value }
     const item = {
       id: ++this.seq,

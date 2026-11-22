@@ -1,6 +1,7 @@
 import { must } from '../must'
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { parseReauth, serializeReauth } from './reauth'
 import { addErrorText, holdLabel, MessageQueue, noticeHold, QUEUE_MAX_CHARS, QUEUE_MAX_ITEMS } from './queue'
 
 describe('送信待ち（BOXP-508）', () => {
@@ -124,6 +125,22 @@ describe('通知返信の送信待ち（BOXP-658）', () => {
     q.settle(again.id)
     expect(q.addNotice({ ...notice(), value: 'B' }, 5).ok).toBe(true)
     expect(addErrorText.sending).toContain('送信中')
+  })
+  it('送信中の項目も上限に数え、失敗して先頭へ戻しても上限を超えない（再認証の退避で全件拒否されない）', () => {
+    const q = new MessageQueue()
+    q.addNotice(notice(), 1)
+    const taken = must(q.take())
+    for (let i = 0; i < QUEUE_MAX_ITEMS - 1; i++) expect(q.add(`m${i}`, i).ok).toBe(true)
+    expect(q.add('溢れ', 9)).toEqual({ ok: false, error: 'full' })
+    expect(q.addNotice(notice('event-999999'), 9)).toEqual({ ok: false, error: 'full' })
+    q.putBack(taken)
+    expect(q.size).toBe(QUEUE_MAX_ITEMS)
+    const texts = q.list().map((x) => x.notice ?? x.text)
+    expect(parseReauth(serializeReauth({ v: 1, draft: '', queue: texts, at: 1, reloadAt: 1 }), 1)?.queue).toEqual(texts)
+    // 送信が終われば、空いた分だけ積める。
+    const next = must(q.take())
+    q.settle(next.id)
+    expect(q.add('次', 10).ok).toBe(true)
   })
   it('送信中に残りを一括取消しても、送信中の通知への別の返信は結果が出るまで積まない', () => {
     const q = new MessageQueue()
