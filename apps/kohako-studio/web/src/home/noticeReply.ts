@@ -118,3 +118,12 @@ export function cancelDecision(found: ServerReply): CancelDecision {
   if (found.state === 'other' || found.state === 'gone') return { kind: 'drop' }
   return { kind: 'keep', error: found.state === 'error' }
 }
+
+/**
+ * 送信待ちへ積むときに attempted 印を付けるか。受信箱に同じ replyId の返信記録（claimed・submit_failed など）が
+ * 見えている返信の「同じ返信を再送」は、すでに返信 API へ送られサーバーに claim がある（後から受理されうる）ため、
+ * 未送信の新しい返信として積まず、取消前に受理確認を必須にする。
+ */
+export function queuedAttempted(serverReply: { replyId: string } | null | undefined, replyId: string): boolean {
+  return !!serverReply && serverReply.replyId === replyId
+}

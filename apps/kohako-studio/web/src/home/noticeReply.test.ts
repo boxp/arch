@@ -3,6 +3,7 @@ import {
   cancelDecision,
   classifyReply,
   preflight,
+  queuedAttempted,
   type ServerReply,
   serverReplyFrom,
   unsureOutcome,
@@ -121,5 +122,17 @@ describe('unsureOutcome / cancelDecision（応答喪失後・取消時の状態�
   it('受理済みの可能性がある状態（none・claimed・確認不能）は取り消さない', () => {
     for (const key of ['none', 'claimed', 'error', 'submittedNoId'])
       expect(cancelDecision(states[key] as ServerReply).kind).toBe('keep')
+  })
+})
+
+describe('queuedAttempted（送信待ちへ積むときの記録 × replyId）', () => {
+  const table: [string, { replyId: string } | null | undefined, boolean][] = [
+    ['記録なし（新しい返信）', undefined, false],
+    ['記録なし（null）', null, false],
+    ['同じ replyId の記録（claimed・submit_failed の再送）', { replyId: 'mine-0001' }, true],
+    ['別の replyId の記録', { replyId: 'other-0002' }, false],
+  ]
+  it.each(table)('%s', (_label, reply, expected) => {
+    expect(queuedAttempted(reply, 'mine-0001')).toBe(expected)
   })
 })

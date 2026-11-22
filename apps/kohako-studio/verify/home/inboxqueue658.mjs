@@ -453,6 +453,23 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     await e.screenshot('p-resume-tracker-lost')
   })
 
+  // q: 受信箱に同じ replyId の claim（送信確認できず）が見えている通知で、会話中に「同じ返信を再送」すると送信待ちへ積まれるが、
+  //    すでにサーバーへ送られ後から受理されうるため、取消で「送っていません」とせず確認なしでは取り消さない。
+  await scenario('q-resend-claimed-queued-failclosed', async (e, ev) => {
+    await e.page.evaluate(() => sessionStorage.setItem('kohako-reply-event-658-one', 'claimed-reply-one'))
+    await e.submit('実行'); await e.count(1)
+    await e.select('one')
+    await e.page.locator('#inbox-detail').getByRole('button', { name: '同じ返信を再送' }).click()
+    await wait(async () => (await e.rows().count()) === 1, 'resend not queued')
+    await e.closeInbox()
+    await e.rows().first().getByRole('button', { name: '送信待ち 1番目を取り消す' }).click()
+    await wait(async () => (await e.page.locator('#queue-note').textContent()).includes('取り消せません'), 'claimed resend cancelled without check')
+    const hist = await e.page.locator('#history-list').textContent()
+    assert(e.replies.length === 0 && (await e.rows().count()) === 1 && !/通知「通知one」.*を取り消しました（送っていません）/.test(hist), `claimed resend misjudged ${hist}`)
+    ev.note = await e.page.locator('#queue-note').textContent()
+    await e.screenshot('q-resend-claimed')
+  }, { items: [notice('one', 1, { reply: { replyId: 'claimed-reply-one', kind: 'choice', value: 'A', requestId: 'claimed-request-one', status: 'claimed' } }), notice('two', 2)] })
+
   // f: 再読み込み前の確認が通知返信にも効く。
   await scenario('f-reload-confirm', async (e, ev) => {
     await e.submit('実行'); await e.count(1)

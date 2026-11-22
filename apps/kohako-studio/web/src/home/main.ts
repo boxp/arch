@@ -3454,7 +3454,7 @@ const inbox = initInbox(
   {
     // BOXP-658: 応答待ち・読み上げ中・送信待ちがある間の通知返信は、通常の発言と同じ送信待ち（FIFO・上限共通）へ積む。
     active: () => queueing() || !!unconfirmed,
-    add: (item, kind, value, replyId, held) => {
+    add: (item, kind, value, replyId, held, attempted) => {
       const added = queue.addNotice(
         {
           eventId: item.eventId,
@@ -3464,6 +3464,8 @@ const inbox = initInbox(
           kind,
           value,
           replyId,
+          // サーバーに同じ replyId の claim がある再送は、後から受理されうるので「送っていません」として取り消さない。
+          ...(attempted ? { attempted: true as const } : {}),
         },
         Date.now(),
       )

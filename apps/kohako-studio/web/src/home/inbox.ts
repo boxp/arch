@@ -2,6 +2,7 @@ import { must } from '../must'
 import { renderMarkdown } from './markdown'
 import { atBottom } from './scroll'
 import { choiceButtonText, extractChoices } from './choices'
+import { queuedAttempted } from './noticeReply'
 export type Item = {
   eventId: string
   source: string
@@ -129,6 +130,8 @@ export type ReplyQueue = {
     replyId: string,
     /** 'busy': この画面は空いていたが BFF が会話の進行中（別端末など）で断った。送信待ちは「再開」まで止める。 */
     held?: 'busy',
+    /** サーバーに同じ replyId の返信記録がある（再送）。取消前に受理確認を必須にする。 */
+    attempted?: boolean,
   ) => { ok: true } | { ok: false; message: string }
   /** その通知への返信が送信待ちにあれば、表示と保留理由を返す。 */
   pending: (eventId: string) => { text: string; held: string } | null
@@ -202,7 +205,7 @@ export function initInbox(
     sessionStorage.setItem(key, replyId)
     // BOXP-658: 応答待ち・送信待ちがある間は BFF へ送らず送信待ちへ積む（受理済みの返信の「会話で続きを見る」は追跡だけなので積まない）。
     const enqueue = (held?: 'busy') => {
-      const queued = must(replyQueue).add(i, kind, value, replyId, held)
+      const queued = must(replyQueue).add(i, kind, value, replyId, held, queuedAttempted(i.reply, replyId))
       if (!queued.ok) {
         status.textContent = queued.message
         return false
