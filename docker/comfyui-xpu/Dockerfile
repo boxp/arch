@@ -2,7 +2,7 @@ FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884
 
 ARG COMFYUI_REPO=https://github.com/comfyanonymous/ComfyUI.git
 # renovate: datasource=github-releases depName=comfyanonymous/ComfyUI
-ARG COMFYUI_REF=v0.45.0
+ARG COMFYUI_REF=v0.46.0
 
 LABEL org.opencontainers.image.title="ComfyUI XPU" \
       org.opencontainers.image.description="ComfyUI native PyTorch XPU image for Intel GPUs" \
