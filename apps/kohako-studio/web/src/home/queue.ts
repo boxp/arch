@@ -16,6 +16,11 @@ export type NoticeReply = {
   kind: 'choice' | 'text'
   value: string
   replyId: string
+  /**
+   * 一度その通知の返信 API へ送った（応答の有無を問わない）。送った返信は、サーバーが「実行しない」と確定させた場合
+   * （同じ replyId が submit_failed・別の replyId が先に返信済み）以外は取り消せない（後から受理されうるため）。再認証の退避にも含める。
+   */
+  attempted?: true
 }
 export type QueueItem = {
   id: number

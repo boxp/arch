@@ -1869,9 +1869,9 @@ function renderQueue() {
 }
 /** 送信待ちの 1 件を取り消す（送っていない）。通知への自由文の返信は、その通知の下書きへ戻す。 */
 function cancelQueued(item: QueueItem) {
-  // 一度返信 API へ送り、受理されたか確認できなかった通知返信は、取り消す前にサーバー側の受理を確かめる
-  // （受理済みなのに「送っていません」として取り消すと、取り消したつもりの返信が実行されるため）。
-  if (item.notice && attemptedNotice.has(item.id)) {
+  // 一度返信 API へ送った通知返信は、サーバーが「実行しない」と確定させた場合しか取り消さない（fail-closed）。
+  // 一覧に見えない・未返信に見えるだけでは、先に送った要求が後から受理されうるため「送っていません」とはしない。
+  if (item.notice?.attempted) {
     void cancelAttemptedNotice(item)
     return
   }
@@ -1879,14 +1879,15 @@ function cancelQueued(item: QueueItem) {
 }
 function dropQueued(item: QueueItem) {
   if (!queue.remove(item.id)) return
-  attemptedNotice.delete(item.id)
   queueNote.textContent = ''
   if (item.notice?.kind === 'text') inboxView?.restoreDraft(item.notice.eventId, item.notice.value)
   addHistory(
     'お知らせ',
-    item.notice
-      ? `送信待ちの${item.text} を取り消しました（送っていません）。`
-      : '送信待ちを 1 件取り消しました（送っていません）。',
+    item.notice?.attempted
+      ? `送信待ちの${item.text} を取り消しました（サーバーでは実行されないことを確認済みです）。`
+      : item.notice
+        ? `送信待ちの${item.text} を取り消しました（送っていません）。`
+        : '送信待ちを 1 件取り消しました（送っていません）。',
   )
   show(state)
 }
@@ -1950,9 +1951,17 @@ function enqueue(text: string, fromComposer = true): boolean {
  * 送る直前に通知の最新状態を確かめ、先に返信済み・消失・選択肢変更なら送らずに保留する（本文は送信待ちに残す）。
  * 失敗・成否不明・認証切れ・通信切れでは先頭へ戻して保留し、明示の「再開」（同じ replyId で再送）か「取消」を待つ。
  */
-/** 返信 API へ一度送った通知返信の項目 ID（成否不明のまま取り消す前にサーバー側の受理を確かめる）。 */
-const attemptedNotice = new Set<number>()
-type ServerReply = { state: 'none' } | { state: 'error' } | { state: 'mine'; status: string; requestId: string }
+/**
+ * 通知の最新状態から見た、登録時の replyId の返信の状態。
+ * gone = 通知が BFF に無い（返信 API は not_found のため後から受理されない）、none = まだ返信がない（先に送った要求が後から受理されうるので「実行されない」とは確定しない）、
+ * other = 別の replyId の返信が先にある（BFF は 1 項目 1 回なので、この返信は実行されない）。
+ */
+type ServerReply =
+  | { state: 'none' }
+  | { state: 'error' }
+  | { state: 'other' }
+  | { state: 'gone' }
+  | { state: 'mine'; status: string; requestId: string }
 /** 通知の最新状態から、登録時の replyId の返信がサーバーに受理（claim）されているかを調べる。 */
 async function serverReplyOf(n: NoticeReply): Promise<ServerReply> {
   try {
@@ -1961,6 +1970,9 @@ async function serverReplyOf(n: NoticeReply): Promise<ServerReply> {
     const cur = (r.data.items as InboxItem[]).find((x) => x.eventId === n.eventId)
     if (cur?.reply?.replyId === n.replyId)
       return { state: 'mine', status: cur.reply.status, requestId: cur.reply.requestId }
+    if (cur?.reply) return { state: 'other' }
+    // 通知そのものが BFF に無い: 返信 API は not_found を返すため、この返信は後から受理されない。
+    if (!cur) return { state: 'gone' }
     return { state: 'none' }
   } catch {
     return { state: 'error' }
@@ -1975,7 +1987,6 @@ async function cancelAttemptedNotice(item: QueueItem) {
   if (found.state === 'mine' && found.status === 'submitted' && found.requestId) {
     // 受理済み: 取り消せないことを伝え、送信待ちから外して応答を追う（送っていないとは表示しない）。
     if (!queue.remove(item.id)) return show(state)
-    attemptedNotice.delete(item.id)
     addHistory(
       'お知らせ',
       `${item.text} はすでに受け付けられていたため取り消せませんでした（受付番号: ${found.requestId}）。`,
@@ -1985,14 +1996,24 @@ async function cancelAttemptedNotice(item: QueueItem) {
     show(state)
     return
   }
-  if (found.state === 'error') {
-    queueNote.textContent =
-      'この返信が受け付けられたか確認できないため、まだ取り消していません。通信が戻ってからもう一度「取消」するか、受信箱で通知の状態を確認してください。'
-    renderQueue()
+  // サーバーが「この返信は実行しない」と確定させた場合だけ取り消す: 同じ replyId が会話へ渡せず失敗（submit_failed・BFF は自分では再送しない）、
+  // または別の replyId の返信が先にある（1 項目 1 回のため、この返信は後から受理されない）。
+  if (
+    (found.state === 'mine' && found.status === 'submit_failed') ||
+    found.state === 'other' ||
+    found.state === 'gone'
+  ) {
+    dropQueued(item)
     return
   }
-  // 未受理（none）・会話へ渡せず失敗（submit_failed）の返信は実行されないので、送っていないとして取り消す。
-  dropQueued(item)
+  // それ以外（未返信に見える・受理途中 claimed・確認できない）は、先に送った要求が後から受理されうるので取り消さない。
+  // 送信待ちに残して保留し、同じ返信番号での「確認して再開」（二重には実行されない）を案内する。
+  if (!queue.held) queue.hold('unknown')
+  queueNote.textContent =
+    found.state === 'error'
+      ? `${item.text} は一度送っており、受け付けられたか確認できないため取り消していません。通信が戻ってから「確認して再開」で同じ返信番号のまま確かめてください（二重には実行されません）。`
+      : `${item.text} は一度送っており、あとから受け付けられる可能性があるため取り消せません。「確認して再開」で同じ返信番号のまま確かめてください（二重には実行されません）。`
+  renderQueue()
 }
 async function sendNoticeReply(item: QueueItem): Promise<void> {
   const n = must(item.notice),
@@ -2008,7 +2029,6 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
     )
   }
   const accepted = (requestId: string) => {
-    attemptedNotice.delete(item.id)
     void call(`${path}/read`, { method: 'POST' }).catch(() => {})
     if (!followRequest(requestId, item.text))
       addHistory('お知らせ', `${item.text} を送りました（受付番号: ${requestId}）。`)
@@ -2019,6 +2039,8 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
     const found = await serverReplyOf(n)
     if (found.state === 'mine' && found.status === 'submitted' && found.requestId) return accepted(found.requestId)
     if (found.state === 'mine' && found.status === 'submit_failed') return stop('failed')
+    if (found.state === 'other') return stop('notice_replied')
+    if (found.state === 'gone') return stop('notice_gone')
     return stop('unknown')
   }
   const auth = (status: number, data: Record<string, unknown> | null) => {
@@ -2039,7 +2061,8 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
   if (current.reply && current.reply.replyId !== n.replyId) return stop('notice_replied')
   if (n.kind === 'choice' && !current.choices?.includes(n.value)) return stop('notice_invalid')
   let result: Awaited<ReturnType<typeof call>>
-  attemptedNotice.add(item.id)
+  // 返信 API へ送る直前に印を付ける（応答が失われても、以後は受理を確定できるまで取り消さない。再認証の退避にも残る）。
+  n.attempted = true
   try {
     result = await call(`${path}/reply`, {
       method: 'POST',
@@ -2088,8 +2111,8 @@ queueResume.addEventListener('click', () => {
   tryDispatch(true)
 })
 queueClear.addEventListener('click', () => {
-  // 一度送って成否不明の通知返信は、受理を確かめてから個別に取り消す（受理済みを「送っていません」としない）。
-  const attempted = queue.list().filter((x) => x.notice && attemptedNotice.has(x.id))
+  // 一度送った通知返信は、サーバーが実行しないと確定させた場合だけ個別に取り消す（受理されうるものを「送っていません」としない）。
+  const attempted = queue.list().filter((x) => x.notice?.attempted)
   if (attempted.length) {
     const rest = queue.list().filter((x) => !attempted.includes(x))
     for (const x of rest) queue.remove(x.id)

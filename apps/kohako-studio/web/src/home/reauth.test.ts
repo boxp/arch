@@ -61,6 +61,12 @@ describe('通知返信の退避（BOXP-658）', () => {
     const stash = { v: 1 as const, draft: '', queue: ['先', notice, '後'], at: now, reloadAt: now }
     expect(parseReauth(serializeReauth(stash), now)?.queue).toEqual(['先', notice, '後'])
   })
+  it('一度返信 API へ送った印（attempted）も退避・復元する（復元後も受理を確定するまで取り消さないため）', () => {
+    const sent = { ...notice, attempted: true as const }
+    const stash = { v: 1 as const, draft: '', queue: [sent], at: now, reloadAt: now }
+    expect(parseReauth(serializeReauth(stash), now)?.queue).toEqual([sent])
+    expect(parseReauth(JSON.stringify({ ...stash, queue: [{ ...notice, attempted: false }] }), now)).toBeNull()
+  })
   it('不正な通知返信は退避全体を拒否する（通常の発言へ変えない）', () => {
     for (const bad of [
       { ...notice, extra: 1 },

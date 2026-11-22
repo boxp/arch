@@ -236,6 +236,48 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     await e.screenshot('g-lost-response-cancel')
   })
 
+  // h: 一度送った通知返信（502 で成否不明）は、通知が未返信・受理途中に見えても取り消さない（先の要求が後から受理されうる）。
+  //    「すべて取消」でも残す。サーバーが同じ replyId を submit_failed と確定させた後だけ取り消せる。
+  await scenario('h-attempted-cancel-failclosed', async (e, ev) => {
+    e.replyMode.set('event-658-one', 502)
+    await e.submit('実行'); await e.count(1)
+    await e.select('one'); await e.page.locator('#inbox-detail').getByRole('button', { name: /^A/ }).click(); await wait(async () => (await e.rows().count()) === 1, 'queued one')
+    await e.closeInbox()
+    e.done(e.posts[0].requestId)
+    await e.replyCount(1); await e.page.locator('#queue-resume').waitFor({ state: 'visible', timeout: 10000 })
+    // 未返信に見える（none）→ 取り消さない
+    await e.rows().first().getByRole('button', { name: '送信待ち 1番目を取り消す' }).click()
+    await wait(async () => (await e.page.locator('#queue-note').textContent()).includes('取り消せません'), 'none refused')
+    assert((await e.rows().count()) === 1, 'attempted reply removed while server shows none')
+    // 受理途中（claimed）→「すべて取消」でも取り消さない
+    const r = e.replies[0]
+    e.item('one').reply = { replyId: r.replyId, kind: r.kind, value: r.value, requestId: 'request-event-658-one', status: 'claimed' }
+    await e.page.locator('#queue-clear').click()
+    await wait(async () => (await e.page.locator('#queue-note').textContent()).includes('取り消せません'), 'claimed refused')
+    assert((await e.rows().count()) === 1, 'attempted reply removed while claimed')
+    let hist = await e.page.locator('#history-list').textContent()
+    assert(!/通知「通知one」.*を取り消しました/.test(hist), 'refused cancel reported as cancelled')
+    // submit_failed（実行されないと確定）→ 取り消せる
+    e.item('one').reply.status = 'submit_failed'
+    await e.rows().first().getByRole('button', { name: '送信待ち 1番目を取り消す' }).click()
+    await wait(async () => (await e.rows().count()) === 0, 'submit_failed not cancellable')
+    hist = await e.page.locator('#history-list').textContent()
+    assert(hist.includes('実行されないことを確認済み') && e.replies.length === 1, 'cancel after submit_failed')
+    // 通知そのものが BFF から消えた（返信 API は not_found）→ 後から受理されないので取り消せる（送信待ちが詰まらない）。
+    e.replyMode.set('event-658-two', 502)
+    await e.submit('実行2'); await e.count(2)
+    await e.select('two'); await e.page.locator('#inbox-detail').getByRole('button', { name: /^B/ }).click(); await wait(async () => (await e.rows().count()) === 1, 'queued two')
+    await e.closeInbox()
+    e.done(e.posts[1].requestId)
+    await e.replyCount(2); await e.page.locator('#queue-resume').waitFor({ state: 'visible', timeout: 10000 })
+    e.items.splice(e.items.indexOf(e.item('two')), 1)
+    await e.rows().first().getByRole('button', { name: '送信待ち 1番目を取り消す' }).click()
+    await wait(async () => (await e.rows().count()) === 0, 'gone notice not cancellable')
+    hist = await e.page.locator('#history-list').textContent()
+    ev.history = hist.split('\n').filter((l) => l.includes('通知')).slice(-4)
+    await e.screenshot('h-attempted-cancel-failclosed')
+  })
+
   // e: 吹き出しのお知らせから返信した時に、別端末の依頼が進行中で BFF が 429 busy を返したら、本文を失わず送信待ちへ積んで保留し、再開で同じ replyId を送る。
   //    （この画面で会話を始めると吹き出しの操作欄は閉じるので、画面内の応答待ち中は受信箱の詳細から積む: a〜d）。
   await scenario('e-bubble-busy', async (e, ev) => {

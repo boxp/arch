@@ -19,7 +19,9 @@ export function validNotice(x: unknown): x is NoticeReply {
   if (!x || typeof x !== 'object' || Array.isArray(x)) return false
   const n = x as Record<string, unknown>
   return (
-    Object.keys(n).every((k) => ['eventId', 'ticketId', 'source', 'title', 'kind', 'value', 'replyId'].includes(k)) &&
+    Object.keys(n).every((k) =>
+      ['eventId', 'ticketId', 'source', 'title', 'kind', 'value', 'replyId', 'attempted'].includes(k),
+    ) &&
     typeof n.eventId === 'string' &&
     /^[A-Za-z0-9._:-]{8,200}$/.test(n.eventId) &&
     (n.ticketId === undefined || (typeof n.ticketId === 'string' && /^[A-Z]+-\d+$/.test(n.ticketId))) &&
@@ -31,7 +33,8 @@ export function validNotice(x: unknown): x is NoticeReply {
     (n.kind === 'choice' || n.kind === 'text') &&
     text(n.value, QUEUE_MAX_CHARS) &&
     typeof n.replyId === 'string' &&
-    /^[A-Za-z0-9-]{8,64}$/.test(n.replyId)
+    /^[A-Za-z0-9-]{8,64}$/.test(n.replyId) &&
+    (n.attempted === undefined || n.attempted === true)
   )
 }
 export const classifyFailure = ({ status }: { status: number }): 'auth' | 'other' =>
