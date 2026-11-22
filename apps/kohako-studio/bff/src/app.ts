@@ -219,7 +219,7 @@ export function createApp(opts: {
                 ? 404
                 : result.error === 'already_replied'
                   ? 409
-                  : result.error === 'busy'
+                  : result.error === 'busy' || result.error === 'busy_claimed'
                     ? 429
                     : 400,
               {

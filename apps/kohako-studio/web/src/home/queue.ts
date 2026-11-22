@@ -75,6 +75,10 @@ export class MessageQueue {
   get size(): number {
     return this.items.length
   }
+  /** 取り出して送信中（結果未確定）の項目。再読み込みで失わないよう、待機中の項目と同じく扱う。 */
+  get sending(): QueueItem | null {
+    return this.inflight
+  }
   list(): readonly QueueItem[] {
     return this.items
   }

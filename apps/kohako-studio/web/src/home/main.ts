@@ -1363,6 +1363,11 @@ reconnect.addEventListener('click', () => {
     void initialize()
     return
   }
+  // 送信中（結果未確定）の項目は退避できないため、結果が出て送信待ちへ戻る・送信済みになるまで再読み込みしない。
+  if (queue.sending) {
+    setError('送信中の返信の結果を確認しています。確認が終わってから「再認証のため再読み込み」を押してください。')
+    return
+  }
   if (
     chips.length &&
     !window.confirm('添付ファイルは再読み込みで外れます。再認証後に追加し直してください。再読み込みしますか？')
@@ -2080,7 +2085,11 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
   const current = (latest.data.items as InboxItem[]).find((x) => x.eventId === n.eventId)
   if (!current) return stop('notice_gone')
   if (current.reply && current.reply.replyId !== n.replyId) return stop('notice_replied')
-  if (n.kind === 'choice' && !noticeChoiceValues(current).includes(n.value)) return stop('notice_invalid')
+  // 同じ replyId の返信がすでにサーバーにある（応答喪失後の再開など）なら、現在の選択肢では判定しない。
+  // 受理済みならそのまま追い、claim 済みなら同じ replyId で再送して BFF に既存の返信として扱わせる（未送信として保留しない）。
+  const mine = current.reply?.replyId === n.replyId ? current.reply : null
+  if (mine?.status === 'submitted' && mine.requestId) return accepted(mine.requestId)
+  if (!mine && n.kind === 'choice' && !noticeChoiceValues(current).includes(n.value)) return stop('notice_invalid')
   let result: Awaited<ReturnType<typeof call>>
   // 返信 API へ送る直前に印を付ける（応答が失われても、以後は受理を確定できるまで取り消さない。再認証の退避にも残る）。
   // この送信より前に返信 API へ送っていたか（成否不明の再開など）。BFF が「受け付けず claim も残していない」と確定させた応答では元へ戻す。
@@ -2106,6 +2115,12 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
   if (classifyFailure({ status: result.status }) === 'auth') {
     rejected()
     return auth(result.status, result.data)
+  }
+  // 既存の claim（受理済みの可能性あり）がある返信への busy は、未送信の確定ではない。印を残し、取消前に受理確認を必須にする。
+  if (result.status === 429 && result.data?.error === 'busy_claimed') {
+    n.attempted = true
+    void syncTranscript()
+    return stop('busy')
   }
   if (result.status === 429 && result.data?.error === 'busy') {
     rejected()
@@ -2170,7 +2185,8 @@ queueClear.addEventListener('click', () => {
 })
 // 送信待ちはメモリだけに持つため、再読み込み・タブを閉じる前にブラウザの確認を出す（黙って再送・保存はしない）。
 window.addEventListener('beforeunload', (e) => {
-  if (queue.size && !intentionalReload) {
+  // 送信中（結果未確定）の項目もメモリにしか無いため、待機中と同じく確認を出す。
+  if ((queue.size || queue.sending) && !intentionalReload) {
     e.preventDefault()
     e.returnValue = ''
   }

@@ -56,7 +56,7 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     }
     await ctx.route('**/kohako/api/v1/**', async (route) => {
       const req = route.request(), p = new URL(req.url()).pathname.split('/v1/')[1]
-      const json = (status, data) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) })
+      const json = (status, data) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) }).catch(() => {})
       if (p === 'me') return json(200, { authenticated: true })
       if (p === 'conversation') return json(200, { enabled: true, stt: false })
       if (p === 'status') return json(200, { schema: 'kohako-home-status/v1', quota: { state: 'ok', pools: [] }, tasks: { state: 'ok', inProgress: { total: 0, complete: true, byAgent: [], conflicts: [] } } })
@@ -73,7 +73,9 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
             const requestId = `request-${id}`; item.reply = { ...body, requestId, status: 'submitted' }; states.set(requestId, { status: 'pending' })
             return json(502, {})
           }
-          if (mode) return json(mode, mode === 429 ? { error: 'busy' } : mode === 401 ? { error: 'unauthenticated' } : {})
+          if (mode === 'hang') await new Promise((r) => setTimeout(r, 5000))
+          else if (mode === 'busy_claimed') return json(429, { error: 'busy_claimed' })
+          if (mode && mode !== 'hang') return json(mode, mode === 429 ? { error: 'busy' } : mode === 401 ? { error: 'unauthenticated' } : {})
           if (!item) return json(404, { error: 'not_found' })
           if (item.reply && item.reply.replyId !== body.replyId) return json(409, { error: 'already_replied' })
           const requestId = `request-${id}`
@@ -370,6 +372,58 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     assert(e.replies[1].id === 'event-658-bubble' && e.replies[1].value === 'A' && e.replies[1].replyId === e.replies[0].replyId, 'bubble resend target/replyId')
     ev.rows = rows; ev.status = status; ev.replyIds = e.replies.map((r) => r.replyId)
   }, { items: [notice('bubble', 9, { readAt: undefined, announcedAt: undefined, receivedAt: new Date(Date.now() - 30000).toISOString() })] })
+
+  // m: 送信待ちから取り出して送信中（一覧取得・返信 API の応答待ち）の最後の通知返信も、再読み込み前に確認を出す（queue は空でも結果未確定のため）。
+  await scenario('m-reload-confirm-inflight', async (e, ev) => {
+    await e.submit('実行'); await e.count(1)
+    await e.select('one'); await e.page.locator('#inbox-detail').getByRole('button', { name: /^A/ }).click(); await wait(async () => (await e.rows().count()) === 1, 'queued')
+    await e.closeInbox()
+    e.replyMode.set('event-658-one', 'hang')
+    e.done(e.posts[0].requestId)
+    await e.replyCount(1) // 送信待ちから取り出され、返信 API の応答待ち（キューは空・結果未確定）
+    let unload = false
+    e.page.once('dialog', async (d) => { unload = d.type() === 'beforeunload'; await d.dismiss() })
+    await e.page.reload({ timeout: 3000 }).catch(() => {})
+    assert(unload, 'reload during in-flight notice reply did not confirm')
+    ev.unload = unload
+  })
+
+  // n: 成否不明で保留した返信が、再開時には同じ replyId で受理済み（submitted）になっていれば、選択肢が変わっていても受理済みとして追う（未送信の「選択肢変更」保留にしない・再送しない）。
+  await scenario('n-resume-accepted-choices-changed', async (e, ev) => {
+    await e.submit('実行'); await e.count(1)
+    await e.select('one'); await e.page.locator('#inbox-detail').getByRole('button', { name: /^A/ }).click(); await wait(async () => (await e.rows().count()) === 1, 'queued')
+    await e.closeInbox()
+    e.replyMode.set('event-658-one', 502)
+    e.done(e.posts[0].requestId)
+    await e.replyCount(1); await e.page.locator('#queue-resume').waitFor({ state: 'visible', timeout: 10000 })
+    const first = e.replies[0], it = e.item('one')
+    it.reply = { replyId: first.replyId, kind: first.kind, value: first.value, requestId: 'request-event-658-one', status: 'submitted' }
+    it.choices = ['X', 'Y']; it.body = '本文\nX) 別案\nY) 別案2'
+    e.states.set('request-event-658-one', { status: 'pending' })
+    await e.page.locator('#queue-resume').click()
+    await wait(async () => (await e.rows().count()) === 0, 'accepted reply kept as unsent')
+    await e.settle()
+    const hist = await e.page.locator('#history-list').textContent()
+    assert(e.replies.length === 1 && !(await e.page.locator('#queue-resume').isVisible()) && !hist.includes('選択肢が変わ'), `resume misjudged ${hist}`)
+    ev.replies = e.replies.length
+    await e.screenshot('n-resume-accepted')
+  })
+
+  // o: BFF が既存の claim への busy（busy_claimed）を返した返信は、受理済みの可能性があるため確認なしでは取り消さない（未返信に見えても取消を断る）。
+  await scenario('o-busy-claimed-failclosed', async (e, ev) => {
+    await e.submit('実行'); await e.count(1)
+    await e.select('one'); await e.page.locator('#inbox-detail').getByRole('button', { name: /^A/ }).click(); await wait(async () => (await e.rows().count()) === 1, 'queued')
+    await e.closeInbox()
+    e.replyMode.set('event-658-one', 'busy_claimed')
+    e.done(e.posts[0].requestId)
+    await e.replyCount(1); await e.page.locator('#queue-resume').waitFor({ state: 'visible', timeout: 10000 })
+    await e.rows().first().getByRole('button', { name: '送信待ち 1番目を取り消す' }).click()
+    await wait(async () => (await e.page.locator('#queue-note').textContent()).includes('取り消せません'), 'busy_claimed reply cancelled without check')
+    const hist = await e.page.locator('#history-list').textContent()
+    assert((await e.rows().count()) === 1 && !/通知「通知one」.*を取り消しました（送っていません）/.test(hist), 'cancelled claimed reply')
+    ev.note = await e.page.locator('#queue-note').textContent()
+    await e.screenshot('o-busy-claimed')
+  })
 
   // f: 再読み込み前の確認が通知返信にも効く。
   await scenario('f-reload-confirm', async (e, ev) => {
