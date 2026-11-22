@@ -310,6 +310,25 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     await e.screenshot('h-attempted-cancel-failclosed')
   })
 
+  // k: キューからの初回送信が BFF に 429 busy で断られた（claim 未保存）返信は「未送信」のまま。確認なしで取り消せ、不要な返信を送らずに先へ進める。
+  await scenario('k-busy-first-cancel', async (e, ev) => {
+    await e.submit('実行'); await e.count(1)
+    await e.select('one'); await e.page.locator('#inbox-detail').getByRole('button', { name: /^A/ }).click(); await wait(async () => (await e.rows().count()) === 1, 'queued one')
+    await e.closeInbox(); await e.submit('後続')
+    e.replyMode.set('event-658-one', 429)
+    e.done(e.posts[0].requestId)
+    await e.replyCount(1); await e.page.locator('#queue-resume').waitFor({ state: 'visible', timeout: 10000 }); await e.settle()
+    assert((await e.status()).includes('進行中') && e.posts.length === 1, 'busy hold')
+    await e.rows().first().getByRole('button', { name: '送信待ち 1番目を取り消す' }).click()
+    await wait(async () => (await e.rows().count()) === 1, 'busy-rejected reply not cancellable')
+    const hist = await e.page.locator('#history-list').textContent()
+    assert(/通知「通知one」.*を取り消しました（送っていません）/.test(hist) && !(await e.page.locator('#queue-note').textContent()).includes('取り消せません'), `cancel note ${hist}`)
+    await e.page.locator('#queue-resume').click(); await e.count(2)
+    assert(e.posts[1].text === '後続' && e.replies.length === 1, 'queue did not advance or reply resent')
+    ev.history = hist.split('\n').filter((l) => l.includes('通知')).slice(-3)
+    await e.screenshot('k-busy-first-cancel')
+  })
+
   // e: 吹き出しのお知らせから返信した時に、別端末の依頼が進行中で BFF が 429 busy を返したら、本文を失わず送信待ちへ積んで保留し、再開で同じ replyId を送る。
   //    （この画面で会話を始めると吹き出しの操作欄は閉じるので、画面内の応答待ち中は受信箱の詳細から積む: a〜d）。
   await scenario('e-bubble-busy', async (e, ev) => {

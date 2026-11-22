@@ -2066,7 +2066,12 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
   if (n.kind === 'choice' && !noticeChoiceValues(current).includes(n.value)) return stop('notice_invalid')
   let result: Awaited<ReturnType<typeof call>>
   // 返信 API へ送る直前に印を付ける（応答が失われても、以後は受理を確定できるまで取り消さない。再認証の退避にも残る）。
+  // この送信より前に返信 API へ送っていたか（成否不明の再開など）。BFF が「受け付けず claim も残していない」と確定させた応答では元へ戻す。
+  const prior = n.attempted
   n.attempted = true
+  const rejected = () => {
+    if (!prior) delete n.attempted
+  }
   try {
     result = await call(`${path}/reply`, {
       method: 'POST',
@@ -2079,11 +2084,18 @@ async function sendNoticeReply(item: QueueItem): Promise<void> {
   const requestId = typeof result.data?.requestId === 'string' ? result.data.requestId : ''
   if ((result.status === 200 || result.status === 202) && result.data?.status === 'submitted' && requestId)
     return accepted(requestId)
-  if (classifyFailure({ status: result.status }) === 'auth') return auth(result.status, result.data)
+  // 以下（認証切れ・busy・409/404/400）は BFF が返信を受け付けず、この送信で claim も保存していない確定応答。
+  // 初回の送信なら「未送信」のまま保留し、取消で不要になった返信を送らずに先へ進めるようにする。
+  if (classifyFailure({ status: result.status }) === 'auth') {
+    rejected()
+    return auth(result.status, result.data)
+  }
   if (result.status === 429 && result.data?.error === 'busy') {
+    rejected()
     void syncTranscript()
     return stop('busy')
   }
+  if (result.status === 409 || result.status === 404 || result.status === 400) rejected()
   if (result.status === 409) return stop('notice_replied')
   if (result.status === 404) return stop('notice_gone')
   if (result.status === 400) return stop('notice_invalid')
