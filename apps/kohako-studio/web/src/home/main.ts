@@ -58,12 +58,13 @@ import {
   type State,
 } from '../studio/model'
 import { clipIdFor, clipName, lookFor, modelFor, mouthLevel, poseFor, type RigState } from '../live2d/model'
-import { applyPose, loadRig, type Player } from '../live2d/rig'
+import { applyPose, loadRig, type Player, type RigLoad } from '../live2d/rig'
 import { ActingDirector, cueForSentence, type Emotion, splitSentences, type ActingStage } from '../live2d/acting'
 import { createActingStage } from '../live2d/gesture'
 import { createSentenceSpeaker, createSilentSentencer } from '../studio/acting-speech'
 import { SceneDirector, targetScene, messageShown, canDismissReply, type Scene } from './scene'
 import { arrivalNote, arrivalPhase, LANDING_MS, type Arrival } from './arrival'
+import { type GlEvent, nextRigGl, type RigGl } from './glloss'
 import { cardsFromText, type Card } from './cards'
 import {
   acts,
@@ -3144,7 +3145,10 @@ function idleCalm(now: number, petBusy: boolean): boolean {
   )
 }
 function rigTick(now: number) {
-  if (!rig) return
+  if (!rig) {
+    rigTickId = 0
+    return
+  }
   const dt = petTick ? Math.min(0.1, (now - petTick) / 1000) : 0
   petTick = now
   const petTrack =
@@ -3262,8 +3266,118 @@ function rigTick(now: number) {
   rig.lipSync(mouth)
   report.mouth = mouth
   report.viseme = v.vowel
-  requestAnimationFrame(rigTick)
+  rigTickId = requestAnimationFrame(rigTick)
 }
+let rigTickId = 0
+const startRigTick = () => {
+  if (!rigTickId) rigTickId = requestAnimationFrame(rigTick)
+}
+type MountedRig = {
+  load: RigLoad
+  player: Player
+  stage: ActingStage & { report(): Record<string, unknown> }
+  clips: ReturnType<typeof clipHold>
+  headIdx: number[]
+  handIdx: number[]
+}
+/** 動く姿を読み込み、演技の舞台まで用意する（まだ画面には出さない）。初回と、BOXP-663 のコンテキスト復帰後の読み直しで使う。 */
+async function mountRig(): Promise<MountedRig> {
+  const load = await loadRig(rigCanvas, rigModel, './kohako/live2d/sample/')
+  try {
+    const player = load.player
+    // 待機クリップは頭の角度（ParamAngleX/Y/Z）を毎フレーム上書きし、setParameter で足した追従は描画に出ない（BOXP-505 TD-01 で実測）。
+    // なでている間（と離して戻り切るまで）だけクリップを止め、戻ったら最後に指定されたクリップを再開する。
+    const clips = clipHold(player.play.bind(player))
+    player.play = (id) => clips.play(id)
+    const ids = (player as Player & { meshIds?: string[] }).meshIds ?? []
+    // stage は ?acting=0 でも作る（なで追従の ParamAngle と母音口形は stage の update フックで毎フレーム反映される）。
+    const stage = createActingStage(player, rigModel)
+    return {
+      load,
+      player,
+      stage,
+      clips,
+      headIdx: HEAD_MESHES.map((n) => ids.indexOf(n)).filter((i) => i >= 0),
+      handIdx: HAND_MESHES.map((n) => ids.indexOf(n)).filter((i) => i >= 0),
+    }
+  } catch (e) {
+    load.release()
+    throw e
+  }
+}
+/** 読み込んだ動く姿を画面に出す（静止画を隠し、描画ループを動かす）。 */
+function showRig(m: MountedRig) {
+  rigLoad = m.load
+  rig = m.player
+  rig.start()
+  holdClipForPet = (on) => {
+    m.clips.hold(on)
+    report.petHeld = m.clips.held
+  }
+  headIdx = m.headIdx
+  handIdx = m.handIdx
+  stage = m.stage
+  if (actingEnabled) acting = new ActingDirector(calmStage(stage))
+  face.hidden = true
+  rigCanvas.hidden = false
+  el('face-mode').textContent = `表示モデル: ${rigModel.name}（独自描画・公式 Live2D ではありません）`
+  show(state)
+  startRigTick()
+}
+// ---- BOXP-663: WebGL のコンテキストが失われた時（開き直し・GPU のメモリ逼迫）の静止画への切替と、戻った後の読み直し ----
+let rigLoad: RigLoad | null = null,
+  rigGl: RigGl = 'none',
+  rigGlCtx: WebGLRenderingContext | null = null
+const contextLost = () => !!rigGlCtx?.isContextLost()
+function rigGlEvent(ev: GlEvent) {
+  const { next, action } = nextRigGl(rigGl, ev, contextLost())
+  rigGl = next
+  if (action === 'fallback') {
+    report.contextLost = ((report.contextLost as number) ?? 0) + 1
+    // 古いプレイヤーを止めて捨てる（失われたコンテキストへの描画・監視を残さない）。rig が無い間は描画ループ・ふれあいの当たり判定が止まる。
+    acting?.interrupt()
+    acting = null
+    stage = null
+    holdClipForPet = () => {}
+    rig = null
+    headIdx = []
+    handIdx = []
+    rigLoad?.release()
+    rigLoad = null
+    rigCanvas.hidden = true
+    face.hidden = false
+    el('face-mode').textContent =
+      '画面の描画がいったん途切れたため、静止画で表示しています（描画が戻ると動く姿に戻ります）。'
+  } else if (action === 'rebuild') void rebuildRig()
+}
+async function rebuildRig() {
+  let m: MountedRig
+  try {
+    m = await mountRig()
+  } catch (e) {
+    ;(report.errors as string[]).push(`読み直し: ${e instanceof Error ? e.message : String(e)}`)
+    rigGlEvent('failed')
+    return
+  }
+  const { next, action } = nextRigGl(rigGl, 'rebuilt', contextLost())
+  rigGl = next
+  if (action !== 'show') {
+    m.load.release()
+    return
+  }
+  report.contextRestored = ((report.contextRestored as number) ?? 0) + 1
+  showRig(m)
+}
+rigCanvas.addEventListener('webglcontextlost', (e) => {
+  // 既定の動作を止めると、ブラウザがコンテキストを戻した時に webglcontextrestored が届く。
+  e.preventDefault()
+  rigGlEvent('lost')
+})
+rigCanvas.addEventListener('webglcontextrestored', () => rigGlEvent('restored'))
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') rigGlEvent('visible')
+})
+window.addEventListener('pageshow', () => rigGlEvent('visible'))
 async function startRig() {
   if (!wantsRig(location.search)) {
     el('face-mode').textContent = '静止表情（?face=static）'
@@ -3271,37 +3385,21 @@ async function startRig() {
   }
   refreshArrival()
   try {
-    const loaded = await loadRig(rigCanvas, rigModel, './kohako/live2d/sample/')
-    rig = loaded.player
-    rig.start()
-    // 待機クリップは頭の角度（ParamAngleX/Y/Z）を毎フレーム上書きし、setParameter で足した追従は描画に出ない（BOXP-505 TD-01 で実測）。
-    // なでている間（と離して戻り切るまで）だけクリップを止め、戻ったら最後に指定されたクリップを再開する。
-    const clips = clipHold(rig.play.bind(rig))
-    rig.play = (id) => clips.play(id)
-    holdClipForPet = (on) => {
-      clips.hold(on)
-      report.petHeld = clips.held
-    }
-    const ids = (rig as Player & { meshIds?: string[] }).meshIds ?? []
-    headIdx = HEAD_MESHES.map((n) => ids.indexOf(n)).filter((i) => i >= 0)
-    handIdx = HAND_MESHES.map((n) => ids.indexOf(n)).filter((i) => i >= 0)
-    // stage は ?acting=0 でも作る（なで追従の ParamAngle と母音口形は stage の update フックで毎フレーム反映される）。
-    stage = createActingStage(rig, rigModel)
-    if (actingEnabled) acting = new ActingDirector(calmStage(stage))
-    face.hidden = true
-    rigCanvas.hidden = false
+    const m = await mountRig()
+    rigGlCtx = m.player.gl
+    rigGl = 'live'
+    showRig(m)
     rigLoading = false
     refreshArrival()
-    el('face-mode').textContent = `表示モデル: ${rigModel.name}（独自描画・公式 Live2D ではありません）`
     Object.assign(report, {
       loaded: true,
       model: rigModel.id,
-      totalMs: loaded.totalMs,
+      totalMs: m.load.totalMs,
       headMeshes: headIdx.length,
       handMeshes: handIdx.length,
     })
-    show(state)
-    requestAnimationFrame(rigTick)
+    // 読み込みの途中で失われていた時は、ここで静止画へ切り替える。
+    if (contextLost()) rigGlEvent('lost')
   } catch (e) {
     ;(report.errors as string[]).push(e instanceof Error ? e.message : String(e))
     el('face-mode').textContent =
