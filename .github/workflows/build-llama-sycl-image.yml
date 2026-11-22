@@ -15,7 +15,7 @@ on:
       llama_ref:
         description: 'llama.cpp source ref'
         required: true
-        default: '757cad021b357f417065ddbc41a6e8f87c1f8136'
+        default: 'fc0b8338a9ba02c04499e9bd291821648c97f7d3'
 
 jobs:
   build-and-push:
@@ -36,7 +36,7 @@ jobs:
           INPUT_LLAMA_REF: ${{ inputs.llama_ref }}
         run: |
           repo="${INPUT_LLAMA_REPO:-https://github.com/ggml-org/llama.cpp.git}"
-          ref="${INPUT_LLAMA_REF:-757cad021b357f417065ddbc41a6e8f87c1f8136}"
+          ref="${INPUT_LLAMA_REF:-fc0b8338a9ba02c04499e9bd291821648c97f7d3}"
           echo "repo=$repo" >> "$GITHUB_OUTPUT"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
