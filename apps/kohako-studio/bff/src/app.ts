@@ -211,11 +211,21 @@ export function createApp(opts: {
             },
             (requestId) => !!conv?.get(requestId),
             conv ? `kohako-web-${conv.sessionStartedAt.toString(36)}` : undefined,
+            () => !!conv?.busy(),
           )
           if (result.error)
-            return json(result.error === 'not_found' ? 404 : result.error === 'already_replied' ? 409 : 400, {
-              error: result.error,
-            })
+            return json(
+              result.error === 'not_found'
+                ? 404
+                : result.error === 'already_replied'
+                  ? 409
+                  : result.error === 'busy'
+                    ? 429
+                    : 400,
+              {
+                error: result.error,
+              },
+            )
           return json(result.existing ? 200 : 202, {
             requestId: result.requestId,
             status: result.status,

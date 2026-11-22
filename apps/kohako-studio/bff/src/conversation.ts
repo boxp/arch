@@ -332,6 +332,10 @@ export function createConversation({
       clean()
       return entries.get(id)
     },
+    /** BOXP-658: 進行中の run があるか（新しい submit が busy になるか）。通知返信は claim を保存する前にこれで判定する。 */
+    busy() {
+      return [...entries.values()].some((e) => e.status === 'pending')
+    },
     check(input: Input) {
       clean()
       const entry = entries.get(input.requestId)

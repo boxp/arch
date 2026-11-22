@@ -1,7 +1,7 @@
 import { must } from '../must'
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { MessageQueue, QUEUE_MAX_CHARS, QUEUE_MAX_ITEMS } from './queue'
+import { addErrorText, holdLabel, MessageQueue, noticeHold, QUEUE_MAX_CHARS, QUEUE_MAX_ITEMS } from './queue'
 
 describe('送信待ち（BOXP-508）', () => {
   it('FIFO で 1 件ずつ取り出し、同じ項目を 2 回取り出さない', () => {
@@ -64,5 +64,70 @@ describe('送信待ち（BOXP-508）', () => {
     expect(readFileSync(new URL('./queue.ts', import.meta.url), 'utf8')).not.toMatch(
       /(localStorage|sessionStorage)\.|console\./,
     )
+  })
+})
+
+describe('通知返信の送信待ち（BOXP-658）', () => {
+  const notice = (eventId = 'event-123456', value = 'A') => ({
+    eventId,
+    ticketId: 'BOXP-1',
+    source: 'task-board-report',
+    title: '題',
+    kind: 'choice' as const,
+    value,
+    replyId: 'reply-123456',
+  })
+  it('通常の発言と同じ FIFO・同じ上限に、返信先つきで積む', () => {
+    const q = new MessageQueue()
+    q.add('先の発言', 1)
+    const added = q.addNotice(notice(), 2)
+    q.add('後の発言', 3)
+    expect(added.ok).toBe(true)
+    expect(q.list().map((x) => x.text)).toEqual(['先の発言', '通知「題」（BOXP-1）への選択: A', '後の発言'])
+    expect(q.list()[1].notice).toMatchObject({ eventId: 'event-123456', replyId: 'reply-123456', value: 'A' })
+    expect(q.take()?.notice).toBeUndefined()
+    expect(q.take()?.notice?.eventId).toBe('event-123456')
+    for (let i = 0; i < QUEUE_MAX_ITEMS - 1; i++) q.add(`m${i}`, i)
+    expect(q.addNotice(notice('event-999999'), 9)).toEqual({ ok: false, error: 'full' })
+  })
+  it('同じ通知への返信は 1 件まで・空や長すぎは積まない', () => {
+    const q = new MessageQueue()
+    expect(q.addNotice(notice(), 1).ok).toBe(true)
+    expect(q.addNotice({ ...notice(), value: 'B' }, 2)).toEqual({ ok: false, error: 'duplicate' })
+    expect(q.addNotice({ ...notice('event-2222222'), kind: 'text', value: '  ' }, 3)).toEqual({
+      ok: false,
+      error: 'empty',
+    })
+    expect(
+      q.addNotice({ ...notice('event-2222222'), kind: 'text', value: 'あ'.repeat(QUEUE_MAX_CHARS + 1) }, 3),
+    ).toEqual({ ok: false, error: 'too_long' })
+    const text = q.addNotice(
+      { ...notice('event-2222222'), kind: 'text', value: '  了解です  ', ticketId: undefined },
+      4,
+    )
+    expect(text.ok && text.item.text).toBe('通知「題」への返信: 了解です')
+    expect(q.noticeFor('event-2222222')?.notice?.value).toBe('了解です')
+    expect(q.noticeFor('event-none')).toBeNull()
+  })
+  it('通知固有の保留は先頭の返信を取り消すと解け、他の保留は残る', () => {
+    const q = new MessageQueue()
+    const a = q.addNotice(notice(), 1)
+    q.add('次', 2)
+    q.hold('notice_replied')
+    expect(noticeHold(q.held)).toBe(true)
+    expect(q.take()).toBeNull()
+    q.remove(must(a.ok ? a.item : null).id)
+    expect(q.held).toBeNull()
+    expect(q.take()?.text).toBe('次')
+    const b = q.addNotice(notice(), 3)
+    q.add('次', 4)
+    q.hold('unknown')
+    q.remove(must(b.ok ? b.item : null).id)
+    expect(q.held).toBe('unknown')
+  })
+  it('保留理由の文言がすべてある', () => {
+    for (const r of ['busy', 'notice_replied', 'notice_gone', 'notice_invalid'] as const)
+      expect(holdLabel[r]).toBeTruthy()
+    expect(addErrorText.duplicate).toContain('送信待ち')
   })
 })

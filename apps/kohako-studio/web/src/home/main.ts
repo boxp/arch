@@ -20,7 +20,7 @@ import {
 import { chatEntries } from './chatlog'
 import { TouchBubble } from './touch-bubble'
 import { renderMarkdown, plainText } from './markdown'
-import { initInbox, noticeChoices } from './inbox'
+import { initInbox, noticeChoices, type Item as InboxItem } from './inbox'
 import { type Choice, choiceButtonText, choiceMessage, extractChoices } from './choices'
 // BOXP-500: コハコの家（kohako-home）。Studio と同じ BFF・認証・Web 専用会話を使う全画面 UI。
 // 会話の送信・重複防止・停止・承認・追跡は Studio（src/studio/main.ts）と同じ規則。人格・判断・記憶は Hermes だけが持つ。
@@ -97,7 +97,15 @@ import {
 } from './location'
 import { blendLook, followWeightFor, lookTarget, smoothLook, TouchLook, type Look } from './lookfollow'
 import { parseResume, parseUnconfirmed, pollVerdict, type Inflight } from './resume'
-import { addErrorText, holdLabel, MessageQueue, QUEUE_MAX_ITEMS, type HoldReason, type QueueItem } from './queue'
+import {
+  addErrorText,
+  holdLabel,
+  MessageQueue,
+  noticeHold,
+  QUEUE_MAX_ITEMS,
+  type HoldReason,
+  type QueueItem,
+} from './queue'
 import { createCharacterMorph, layoutKey } from './morph'
 
 // BOXP-510 TD-03: 家を開いた時点で SW を登録し、PWA としてインストール可能にする（Push と同じ SW・scope）。
@@ -338,6 +346,9 @@ const setUnconfirmed = (o: Outgoing | null) => {
 }
 // BOXP-508: 送信待ち（本文はメモリだけ）。pendingFromQueue は受理未確認の控えが送信待ちから送り出したものか（入力欄に戻さず送信待ち欄に出す）。
 const queue = new MessageQueue()
+// 受信箱の表示（BOXP-658: 送信待ちの通知返信を詳細へ反映する）。initInbox の後で設定する。
+let inboxView: ReturnType<typeof initInbox> | null = null,
+  inboxQueueKey = ''
 let pendingFromQueue = false,
   dispatching = false,
   dispatchTimer = 0
@@ -1298,7 +1309,9 @@ async function initialize() {
     if (!reauth) tab.set(REAUTH_KEY, null)
     if (reauth) {
       let restored = 0
-      for (const text of reauth.queue) if (queue.add(text, Date.now()).ok) restored++
+      for (const entry of reauth.queue)
+        if ((typeof entry === 'string' ? queue.add(entry, Date.now()) : queue.addNotice(entry, Date.now())).ok)
+          restored++
       let merged = false
       let draftRestored = false
       if (reauth.draft && !message.value) {
@@ -1352,7 +1365,7 @@ reconnect.addEventListener('click', () => {
   const now = Date.now(),
     previous = parseReauth(tab.get(REAUTH_KEY), now)
   // 認証できないまま再度押した場合は、前回退避した分を上書きせず今回の入力と合わせて退避する。
-  const texts = [...(previous?.queue ?? []), ...queue.list().map((x) => x.text)]
+  const texts = [...(previous?.queue ?? []), ...queue.list().map((x) => x.notice ?? x.text)]
   const typed = message.value,
     kept = previous?.draft ?? ''
   const draft = kept && typed && (typed !== kept || typedSinceLoad) ? `${kept}\n${typed}` : typed || kept
@@ -1777,7 +1790,7 @@ hush.addEventListener('click', () => hushNow(true))
 // ---- 送信待ち（BOXP-508） ----
 /** 入力欄からの送信を送信待ちへ積むか。応答待ち中・送信中・読み上げ中、または送信待ち（保留を含む）が残っている間は順序を守るため積む（読み上げを新しい発言で中断しない）。 */
 function queueing(): boolean {
-  return busy || state === 'speaking' || queue.size > 0 || pendingFromQueue
+  return busy || state === 'speaking' || queue.size > 0 || pendingFromQueue || dispatching
 }
 /** 自動送信を止める理由（なければ null）。正常終了（done）と待機（idle）以外では送らない。 */
 function holdFor(): HoldReason | null {
@@ -1811,32 +1824,32 @@ function renderQueue() {
     const li = document.createElement('li')
     const label = document.createElement('span')
     label.className = 'q-state'
-    label.textContent = `${i + 1}番目・待機中`
+    label.textContent = `${i + 1}番目・待機中${item.notice ? '（通知への返信）' : ''}`
     const text = document.createElement('span')
     text.className = 'q-text'
     text.textContent = item.text
+    if (item.notice) li.dataset.notice = item.notice.eventId
     const cancel = document.createElement('button')
     cancel.type = 'button'
     cancel.className = 'ghost'
     cancel.textContent = '取消'
     cancel.setAttribute('aria-label', `送信待ち ${i + 1}番目を取り消す`)
-    cancel.addEventListener('click', () => {
-      if (queue.remove(item.id)) {
-        queueNote.textContent = ''
-        addHistory('お知らせ', '送信待ちを 1 件取り消しました（送っていません）。')
-        show(state)
-      }
-    })
+    cancel.addEventListener('click', () => cancelQueued(item))
     li.append(label, text, cancel)
     queueList.append(li)
   })
   const held = queue.held ?? (pending && !busy ? 'unknown' : null)
+  const head = items[0]?.notice
   queueStatus.textContent = held
-    ? pending
-      ? `${holdLabel[held]}、送信待ちを一時停止しています。「確認して再開」で前回の送信状況を確かめてから送ります。`
-      : held === 'speech'
-        ? '読み上げが途中のため、送信待ちを一時停止しています。「続きから読む」で読み終えるか、「再開」で上から順に送ります。'
-        : `${holdLabel[held]}、送信待ちを一時停止しています。「再開」で上から順に送ります。`
+    ? head && noticeHold(held)
+      ? `${holdLabel[held]}、送信待ちを一時停止しています。先頭の返信（${items[0].text}）は送っていません。「取消」で外すと次から順に送ります。受信箱で通知を開くと最新の状態と「会話で続きを見る」を確認できます。`
+      : head && held === 'unknown' && !pending
+        ? `${holdLabel[held]}、送信待ちを一時停止しています。「再開」で同じ返信番号のまま確認・再送します（新しい返信は作りません）。`
+        : pending
+          ? `${holdLabel[held]}、送信待ちを一時停止しています。「確認して再開」で前回の送信状況を確かめてから送ります。`
+          : held === 'speech'
+            ? '読み上げが途中のため、送信待ちを一時停止しています。「続きから読む」で読み終えるか、「再開」で上から順に送ります。'
+            : `${holdLabel[held]}、送信待ちを一時停止しています。「再開」で上から順に送ります。`
     : items.length
       ? busy || state === 'speaking'
         ? `いまの返答が終わったら、上から順に1件ずつ送ります（${items.length}/${QUEUE_MAX_ITEMS}）。`
@@ -1846,6 +1859,25 @@ function renderQueue() {
   queueResume.hidden = !held
   queueResume.disabled = busy
   queueClear.hidden = !items.length
+  // 通知返信の待機・保留が変わったときだけ受信箱の詳細へ反映する（入力中の返信を毎回作り直さない）。
+  const key = JSON.stringify([items.filter((x) => x.notice).map((x) => x.id), queue.held])
+  if (key !== inboxQueueKey) {
+    inboxQueueKey = key
+    inboxView?.rerender()
+  }
+}
+/** 送信待ちの 1 件を取り消す（送っていない）。通知への自由文の返信は、その通知の下書きへ戻す。 */
+function cancelQueued(item: QueueItem) {
+  if (!queue.remove(item.id)) return
+  queueNote.textContent = ''
+  if (item.notice?.kind === 'text') inboxView?.restoreDraft(item.notice.eventId, item.notice.value)
+  addHistory(
+    'お知らせ',
+    item.notice
+      ? `送信待ちの${item.text} を取り消しました（送っていません）。`
+      : '送信待ちを 1 件取り消しました（送っていません）。',
+  )
+  show(state)
 }
 function scheduleDispatch() {
   if (!dispatchTimer)
@@ -1880,7 +1912,7 @@ function tryDispatch(force: boolean) {
   const item = queue.take()
   if (!item) return
   dispatching = true
-  void sendText(item.text, item).finally(() => {
+  void (item.notice ? sendNoticeReply(item) : sendText(item.text, item)).finally(() => {
     dispatching = false
     show(state)
   })
@@ -1900,6 +1932,68 @@ function enqueue(text: string, fromComposer = true): boolean {
   }
   show(state)
   return true
+}
+/**
+ * BOXP-658: 送信待ちの通知返信を、その通知の返信 API へ登録時の replyId で 1 回だけ送る（通常の発言・承認としては送らない）。
+ * 送る直前に通知の最新状態を確かめ、先に返信済み・消失・選択肢変更なら送らずに保留する（本文は送信待ちに残す）。
+ * 失敗・成否不明・認証切れ・通信切れでは先頭へ戻して保留し、明示の「再開」（同じ replyId で再送）か「取消」を待つ。
+ */
+async function sendNoticeReply(item: QueueItem): Promise<void> {
+  const n = must(item.notice),
+    path = `notifications/${encodeURIComponent(n.eventId)}`
+  const stop = (reason: HoldReason) => {
+    queue.putBack(item)
+    queue.hold(reason)
+    addHistory(
+      'お知らせ',
+      `${item.text} は送っていません。${holdLabel[reason]}、送信待ちを一時停止しました（本文は送信待ちに残っています）。`,
+    )
+  }
+  const auth = (status: number, data: Record<string, unknown> | null) => {
+    queue.putBack(item)
+    queue.hold('auth')
+    fail(status, data)
+  }
+  let latest: Awaited<ReturnType<typeof call>>
+  try {
+    latest = await call('notifications')
+  } catch {
+    return stop('offline')
+  }
+  if (classifyFailure({ status: latest.status }) === 'auth') return auth(latest.status, latest.data)
+  if (latest.status !== 200 || !Array.isArray(latest.data?.items)) return stop('failed')
+  const current = (latest.data.items as InboxItem[]).find((x) => x.eventId === n.eventId)
+  if (!current) return stop('notice_gone')
+  if (current.reply && current.reply.replyId !== n.replyId) return stop('notice_replied')
+  if (n.kind === 'choice' && !current.choices?.includes(n.value)) return stop('notice_invalid')
+  let result: Awaited<ReturnType<typeof call>>
+  try {
+    result = await call(`${path}/reply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ replyId: n.replyId, kind: n.kind, value: n.value }),
+    })
+  } catch {
+    return stop('unknown')
+  }
+  const requestId = typeof result.data?.requestId === 'string' ? result.data.requestId : ''
+  if ((result.status === 200 || result.status === 202) && result.data?.status === 'submitted' && requestId) {
+    void call(`${path}/read`, { method: 'POST' }).catch(() => {})
+    if (!followRequest(requestId, item.text))
+      addHistory('お知らせ', `${item.text} を送りました（受付番号: ${requestId}）。`)
+    void inboxView?.refresh()
+    return
+  }
+  if (classifyFailure({ status: result.status }) === 'auth') return auth(result.status, result.data)
+  if (result.status === 429 && result.data?.error === 'busy') {
+    void syncTranscript()
+    return stop('busy')
+  }
+  if (result.status === 409) return stop('notice_replied')
+  if (result.status === 404) return stop('notice_gone')
+  if (result.status === 400) return stop('notice_invalid')
+  // submit_failed（BFF は受け付けたが会話へ渡せなかった）は失敗、それ以外（5xx・不明な応答）は成否不明。どちらも同じ replyId でのみ再送する。
+  return stop(result.data?.status === 'submit_failed' ? 'failed' : 'unknown')
 }
 queueResume.addEventListener('click', () => {
   if (busy) return
@@ -3140,63 +3234,107 @@ function followRequest(id: string, text: string): boolean {
   void poll(requestId)
   return true
 }
-const inbox = initInbox(followRequest, {
-  canAnnounce: () =>
-    enabled &&
-    !busy &&
-    !unconfirmed &&
-    !queue.size &&
-    !netDown &&
-    !recording &&
-    !starting &&
-    !touchActive &&
-    !CONVERSING.includes(state),
-  announce: (item, actions, more) => {
-    const body = item.body.length > 300 ? `${item.body.slice(0, 300)}…（続きは受信箱でご覧いただけます）` : item.body
-    const text = `ご主人さま、お知らせが届いています。\n${item.title}\n${body}${more ? `\nほかにも ${more} 件、受信箱に届いています。` : ''}`
-    setBubble(text)
-    addHistory('お知らせ', text)
-    const box = el('notice-actions'),
-      status = el('notice-status')
-    box.replaceChildren()
-    status.textContent = ''
-    box.hidden = false
-    updateMessage()
-    const button = (label: string, fn: () => void) => {
-      const b = document.createElement('button')
-      b.type = 'button'
-      b.textContent = label
-      b.addEventListener('click', fn)
-      box.append(b)
-    }
-    const sendNotice = async (kind: 'choice' | 'text', value: string) => {
-      if (await actions.send(kind, value)) {
-        box.hidden = true
-        status.textContent = ''
-        updateMessage()
+const inbox = initInbox(
+  followRequest,
+  {
+    canAnnounce: () =>
+      enabled &&
+      !busy &&
+      !unconfirmed &&
+      !queue.size &&
+      !dispatching &&
+      !netDown &&
+      !recording &&
+      !starting &&
+      !touchActive &&
+      !CONVERSING.includes(state),
+    announce: (item, actions, more) => {
+      const body = item.body.length > 300 ? `${item.body.slice(0, 300)}…（続きは受信箱でご覧いただけます）` : item.body
+      const text = `ご主人さま、お知らせが届いています。\n${item.title}\n${body}${more ? `\nほかにも ${more} 件、受信箱に届いています。` : ''}`
+      setBubble(text)
+      addHistory('お知らせ', text)
+      const box = el('notice-actions'),
+        status = el('notice-status')
+      box.replaceChildren()
+      status.textContent = ''
+      box.hidden = false
+      updateMessage()
+      const button = (label: string, fn: () => void) => {
+        const b = document.createElement('button')
+        b.type = 'button'
+        b.textContent = label
+        b.addEventListener('click', fn)
+        box.append(b)
       }
-    }
-    // BOXP-646: 受信箱（BOXP-568）と同じく、選択肢ボタンと自由文の返信を並べて出す。
-    for (const choice of noticeChoices(item)) button(choice.text, () => void sendNotice('choice', choice.value))
-    const input = document.createElement('textarea')
-    input.maxLength = 500
-    input.placeholder = '返信を入力'
-    box.append(input)
-    button('返信する', () => {
-      if (input.value.trim()) void sendNotice('text', input.value)
-    })
-    button('受信箱で開く', () => {
-      box.hidden = true
-      updateMessage()
-      actions.open()
-    })
-    button('あとで見る', () => {
-      box.hidden = true
-      updateMessage()
-      actions.later()
-    })
+      const sendNotice = async (kind: 'choice' | 'text', value: string) => {
+        if (await actions.send(kind, value)) {
+          box.hidden = true
+          status.textContent = ''
+          updateMessage()
+        }
+      }
+      // BOXP-646: 受信箱（BOXP-568）と同じく、選択肢ボタンと自由文の返信を並べて出す。
+      for (const choice of noticeChoices(item)) button(choice.text, () => void sendNotice('choice', choice.value))
+      const input = document.createElement('textarea')
+      input.maxLength = 500
+      input.placeholder = '返信を入力'
+      box.append(input)
+      button('返信する', () => {
+        if (input.value.trim()) void sendNotice('text', input.value)
+      })
+      button('受信箱で開く', () => {
+        box.hidden = true
+        updateMessage()
+        actions.open()
+      })
+      button('あとで見る', () => {
+        box.hidden = true
+        updateMessage()
+        actions.later()
+      })
+    },
   },
-})
+  {
+    // BOXP-658: 応答待ち・読み上げ中・送信待ちがある間の通知返信は、通常の発言と同じ送信待ち（FIFO・上限共通）へ積む。
+    active: () => queueing() || !!unconfirmed,
+    add: (item, kind, value, replyId) => {
+      const added = queue.addNotice(
+        {
+          eventId: item.eventId,
+          ...(item.ticketId ? { ticketId: item.ticketId } : {}),
+          source: item.source,
+          title: item.title,
+          kind,
+          value,
+          replyId,
+        },
+        Date.now(),
+      )
+      if (!added.ok)
+        return { ok: false, message: addErrorText[added.error] || '返信を送信待ちに追加できませんでした。' }
+      queueNote.textContent = ''
+      addHistory('お知らせ', `${added.item.text} を送信待ちに追加しました（まだ送信していません）。`)
+      show(state)
+      return { ok: true }
+    },
+    pending: (eventId) => {
+      const item = queue.noticeFor(eventId)
+      if (!item) return null
+      return {
+        text: item.text,
+        held:
+          queue.peek() === item && queue.held
+            ? `${holdLabel[queue.held]}、送信待ちを一時停止しています（送信待ち欄の「再開」か「取消」を選んでください）。`
+            : '',
+      }
+    },
+    cancel: (eventId) => {
+      const item = queue.noticeFor(eventId)
+      if (item) cancelQueued(item)
+    },
+  },
+)
+inboxView = inbox
 window.setInterval(() => inbox.retry(), 2000)
 
 /**

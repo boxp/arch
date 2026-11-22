@@ -685,3 +685,91 @@ describe('choices from the body (BOXP-646)', () => {
     expect(await readFile(new URL('./choices.ts', import.meta.url), 'utf8')).toBe(await readFile(web, 'utf8'))
   })
 })
+it('returns busy without saving a claim while the conversation is running (BOXP-658)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'inbox-busy-'))
+  try {
+    const store = await createNotifications(dir, async () => ({}))
+    await store.ingest(payload)
+    const reply = { replyId: 'reply-123456', kind: 'choice', value: 'はい' },
+      submit = vi.fn(() => true)
+    // 無効な返信・存在しない通知は busy より先に従来どおり判定する。
+    expect(await store.reply('missing-123', reply, submit, undefined, undefined, () => true)).toEqual({
+      error: 'not_found',
+    })
+    expect(
+      await store.reply(payload.eventId, { ...reply, value: 'no' }, submit, undefined, undefined, () => true),
+    ).toEqual({ error: 'invalid' })
+    expect(await store.reply(payload.eventId, reply, submit, undefined, undefined, () => true)).toEqual({
+      error: 'busy',
+    })
+    expect(submit).not.toHaveBeenCalled()
+    expect(store.list().items[0].reply).toBeUndefined()
+    expect(store.status([payload.eventId])[payload.eventId]).toMatchObject({
+      replied: false,
+    })
+    const restart = await createNotifications(dir, async () => ({}))
+    expect(restart.list().items[0].reply).toBeUndefined()
+    // 会話が終わった後に同じ replyId で送ると受理され、以降は同じ受付番号（busy でも既存の追跡は返す）。
+    const first = await restart.reply(payload.eventId, reply, submit)
+    expect(first.status).toBe('submitted')
+    const again = await restart.reply(
+      payload.eventId,
+      reply,
+      submit,
+      () => true,
+      undefined,
+      () => true,
+    )
+    expect(again).toMatchObject({ requestId: first.requestId, existing: true })
+    expect(
+      (
+        await restart.reply(
+          payload.eventId,
+          { ...reply, replyId: 'other-123456' },
+          submit,
+          undefined,
+          undefined,
+          () => true,
+        )
+      ).error,
+    ).toBe('already_replied')
+    expect(submit).toHaveBeenCalledTimes(1)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+it('keeps a failed claim unchanged when re-sent while busy (BOXP-658)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'inbox-busy-'))
+  try {
+    const store = await createNotifications(dir, async () => ({}))
+    await store.ingest(payload)
+    const reply = { replyId: 'reply-123456', kind: 'choice', value: 'はい' }
+    const failed = await store.reply(payload.eventId, reply, () => false)
+    expect(failed.status).toBe('submit_failed')
+    const submit = vi.fn(() => true)
+    expect(
+      await store.reply(
+        payload.eventId,
+        reply,
+        submit,
+        () => false,
+        undefined,
+        () => true,
+      ),
+    ).toEqual({
+      error: 'busy',
+    })
+    expect(submit).not.toHaveBeenCalled()
+    expect(store.list().items[0].reply).toMatchObject({
+      requestId: failed.requestId,
+      status: 'submit_failed',
+    })
+    expect(await store.reply(payload.eventId, reply, submit)).toMatchObject({
+      requestId: failed.requestId,
+      status: 'submitted',
+    })
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

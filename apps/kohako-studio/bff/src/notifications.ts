@@ -185,6 +185,7 @@ export async function createNotifications(
       submit: (item: Item, reply: NonNullable<Item['reply']>) => boolean,
       tracked: (requestId: string) => boolean = () => true,
       sessionId?: string,
+      busy: () => boolean = () => false,
     ) =>
       mutate(async () => {
         const item = items.find((i) => i.eventId === id)
@@ -209,6 +210,10 @@ export async function createNotifications(
         // replay 保証期間を過ぎた未確認の返信は、claimed（受理直後に状態保存前で停止した可能性あり）も含め再送しない（Hermes が受理済みなら二重実行になりうるため）。
         if (item.reply && !item.reply.runId && now() - Date.parse(item.reply.claimedAt) > 23 * 3600_000)
           return { requestId: item.reply.requestId, status: item.reply.status, existing: true, expired: true }
+        // BOXP-658: 会話が進行中なら、未送信（未受理・run 未記録）の返信は claim を保存せず busy を返す。
+        // 画面はこれを「送信待ち」に戻して現 run の後で同じ replyId で送り直す（submit_failed を残さない）。
+        if (busy() && (!item.reply || (item.reply.status !== 'submitted' && !item.reply.runId)))
+          return { error: 'busy' as const }
         if (!item.reply) {
           item.reply = {
             replyId: x.replyId,
