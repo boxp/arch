@@ -3350,13 +3350,21 @@ function rigGlEvent(ev: GlEvent) {
       '画面の描画がいったん途切れたため、静止画で表示しています（描画が戻ると動く姿に戻ります）。'
   } else if (action === 'rebuild') void rebuildRig()
 }
+// 読み直しの世代。読み直し中にまた失われて戻ると読み直しが重なるため、最新の読み直しの結果だけを状態に反映し、古いものは捨てる。
+let rebuildSeq = 0
 async function rebuildRig() {
+  const seq = ++rebuildSeq
   let m: MountedRig
   try {
     m = await mountRig()
   } catch (e) {
+    if (seq !== rebuildSeq) return
     ;(report.errors as string[]).push(`読み直し: ${e instanceof Error ? e.message : String(e)}`)
     rigGlEvent('failed')
+    return
+  }
+  if (seq !== rebuildSeq) {
+    m.load.release()
     return
   }
   const { next, action } = nextRigGl(rigGl, 'rebuilt', contextLost())

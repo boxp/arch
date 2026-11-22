@@ -2,7 +2,7 @@
 // コハコが消えたまま・canvas が白く残ったままにならず、静止画で姿を保ち、コンテキストが戻れば動く姿に復帰することを確かめる。
 // BFF は完全にモック（token 不要）。コンテキストの喪失と復帰は WEBGL_lose_context で起こす（実機の喪失と同じ webglcontextlost / restored が届く）。
 // 実行: Playwright 1.56.1 で `node context663.mjs <build の dist> <出力先>`。`BASE=` で配備版の画面を開ける（API はモック）。
-// `ONLY=mobile,pc,norestore,hidden` で絞れる。`EXPECT=0` は判定せず測定だけ（修正前の build との比較用）。失敗があれば終了コード 1。
+// `ONLY=mobile,pc,norestore,hidden,again` で絞れる。`EXPECT=0` は判定せず測定だけ（修正前の build との比較用）。失敗があれば終了コード 1。
 import { chromium } from 'playwright'
 import http from 'node:http'; import fs from 'node:fs'; import path from 'node:path'
 const SITE = process.argv[2] ?? '/site', OUT = process.argv[3] ?? '/out'; fs.mkdirSync(OUT, { recursive: true })
@@ -33,7 +33,7 @@ const probe = () => {
 }
 const visible = p => (!p.rigHidden && p.lost === false && p.painted > 0) || (p.rigHidden && !p.faceHidden && p.faceLoaded)
 
-async function run(name, config, { restore = true, hidden = false } = {}) {
+async function run(name, config, { restore = true, hidden = false, again = false } = {}) {
   const ctx = await browser.newContext({ ...config, serviceWorkers: 'block' }), page = await ctx.newPage(), errors = []
   page.on('pageerror', e => errors.push(e.message))
   await ctx.route('**/*', r => { const u = new URL(r.request().url()); if (u.hostname !== HOST) return r.abort(); return r.fallback() })
@@ -59,6 +59,8 @@ async function run(name, config, { restore = true, hidden = false } = {}) {
   r.steps.lost = await page.evaluate(probe); await page.screenshot({ path: path.join(dir, '2-lost.png') })
   if (hidden) await page.evaluate(() => { delete document.hidden; delete document.visibilityState; document.dispatchEvent(new Event('visibilitychange')) })
   if (restore) { await page.evaluate(() => window.__lose.restoreContext()); await page.waitForTimeout(3000) } else await page.waitForTimeout(3000)
+  // again: 読み直しの途中でもう一度失われ、すぐ戻る（読み直しが重なる）。最後の読み直しの結果だけが出ること。
+  if (again) { await page.evaluate(async () => { const l = window.__lose; l.loseContext(); await new Promise(f => setTimeout(f, 30)); l.restoreContext(); await new Promise(f => setTimeout(f, 5)); l.loseContext(); await new Promise(f => setTimeout(f, 30)); l.restoreContext() }); await page.waitForTimeout(4000) }
   r.steps.after = await page.evaluate(probe); await page.screenshot({ path: path.join(dir, '3-after.png') })
   r.errors = errors
   result[name] = r
@@ -78,6 +80,7 @@ if (want('mobile')) await run('mobile', phone)
 if (want('pc')) await run('pc', { viewport: { width: 1200, height: 800 } })
 if (want('norestore')) await run('norestore', phone, { restore: false })
 if (want('hidden')) await run('hidden', phone, { hidden: true })
+if (want('again')) await run('again', phone, { again: true })
 fs.writeFileSync(path.join(OUT, 'result.json'), JSON.stringify({ result, failures }, null, 2))
 console.log(JSON.stringify({ failures }, null, 2))
 await browser.close(); srv.close()
