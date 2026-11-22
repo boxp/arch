@@ -7,7 +7,7 @@ import type { createPush } from './push.js'
 import { VIEW_INSTRUCTIONS } from './views.js'
 import type { StatusPayload } from './status.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { createConversation, type Input } from './conversation.js'
+import { createConversation, type Input, VIAS, type Via } from './conversation.js'
 import type { createHermes } from './hermes.js'
 import { type createTts, TtsError } from './tts.js'
 import { pcmToWav, STT_FINAL_FIELDS } from './stt.js'
@@ -42,9 +42,26 @@ export const navilogInstructions =
 export const ownerTaskInstructions =
   ' ご主人さまの依頼でこの会話から Task Board に起票・再依頼・担当への引き継ぎをした場合は、Telegram 経由の依頼と同じく /opt/data/kohako-task-supervision.md に既存の書式で report-only の監督登録（家経由の依頼と明記）を追加して読み戻し、返答で票 ID を伝えてください。登録が無いと、その票の完了・停止・本人判断待ちの通知が家にも Telegram にも届きません。起票や引き継ぎをしていない turn では登録しません。' +
   navilogInstructions
-type Principal = 'owner' | 'verifier' | 'notifier'
+/**
+ * BOXP-657: 眼鏡（Even G2）から来た発言 turn の指示文。家の画面向けの指示（図表・画像・ナビログ・監督登録）は付けない。
+ * 道具の範囲は Hermes plugin が入口句で G2 の表に狭める（ここは説明だけで、権限の判定には使わない）。
+ * 眼鏡は全文を頁送りで読むので、長さの上限は書かず「結論を先に」とだけ頼む（本文を削る指示ではない）。
+ */
+export const g2Instructions =
+  'この発言は、Access 認証された Owner が眼鏡（Even G2）から送ったものです。Telegram と同等の公式指示窓口で、家（kohako-home）の画面と同じ会話に続きます（家での発言と返答はこの会話の履歴にあり、この返答は家の画面にも全文で出ます）。開発作業は Obsidian Task Board skill に依頼し、Kohako 自身はコードを書きません。Task Board の操作は「bb /opt/data/skills/note-taking/obsidian-task-board/bin/task-board.bb」を使います（list・show・create・update・append-note・request-codex は、この発言での Owner の依頼どおりなら会話での確認も許可画面もなしで実行してよい。書式は create --title "…" / update BOXP-N --lane "In Progress" / append-note BOXP-N --note "…" / request-codex BOXP-N --lane Ready --note "…" で、--help で調べない。値は引用符で囲み、$・`・\\ は使わず、--*-file・workdir・background も使わない。delete とその他の操作は 1 操作ずつ短いコマンドで、眼鏡の許可画面に全文が出せない長いものは実行できません）。この発言の turn で使える道具は眼鏡の範囲（読み取りと Task Board 操作、短いコマンドは許可画面）だけで、家の画面の機能（図表・画像・位置・現場）は使えません。メール、merge 等その他の外部に影響する操作の前に具体的な操作を示し、Owner の明示的な返答を得てください。ツール承認は許可画面でのみ行います。Owner の「はい」「いいえ」や選択肢への返答は会話の返答であり、ツール承認ではありません。Owner に複数の案から選んでもらう時は、行頭に「A：案」「B：案」の形で 2〜6 個を短く並べると選択肢として表示されます。眼鏡では小さな画面を頁送りで読むので、結論を先に書いてください。日本語で答えてください。'
+type Principal = 'owner' | 'verifier' | 'notifier' | 'g2'
+/** BOXP-657: principal g2 が使える route（設計 shared-backend-redesign §4-1）。ここに無いものは 403。受信箱は段3 で足す。 */
+export function g2Route(method: string | undefined, route: string, mode: 'read' | 'write' | undefined): boolean {
+  if (!mode) return false
+  if (method === 'GET') return route === 'conversation/transcript' || /^requests\/[A-Za-z0-9-]{8,64}$/.test(route)
+  if (method !== 'POST' || mode !== 'write') return false
+  return route === 'messages' || route === 'approvals' || /^requests\/[A-Za-z0-9-]{8,64}\/cancel$/.test(route)
+}
+const G2_MESSAGE_KEYS = ['requestId', 'kind', 'text', 'expiresAt', 'via']
 export function createApp(opts: {
   authenticate: (headers: IncomingMessage['headers']) => Promise<Principal | null>
+  /** BOXP-657: principal g2 に開ける範囲。未設定なら g2 は全 route で 403（認証側でも無効）。 */
+  g2Mode?: 'read' | 'write'
   hermes?: ReturnType<typeof createHermes>
   notifications?: Awaited<ReturnType<typeof createNotifications>>
   push?: Awaited<ReturnType<typeof createPush>>
@@ -76,6 +93,8 @@ export function createApp(opts: {
       ...(activity ? { activity } : {}),
       ...(e.visit ? { visit: { place: e.visit.place, steps: e.visit.steps } } : {}),
       requestId: e.requestId,
+      origin: e.origin ?? 'home',
+      ...(e.via ? { via: e.via } : {}),
       status: awaitingApproval(e) ? 'approval' : e.status,
       ...(e.reply ? { reply: e.reply } : {}),
       ...(e.error ? { error: e.error } : {}),
@@ -85,6 +104,8 @@ export function createApp(opts: {
               approvalId: e.approval.approvalId,
               summary: e.approval.summary,
               expiresAt: e.approval.expiresAt,
+              // 全文を出せない操作は BFF が自動で拒否して表示しないので、表示中の許可は常に全文。
+              fullyShown: !e.approval.denyOnly,
             },
           }
         : {}),
@@ -101,10 +122,20 @@ export function createApp(opts: {
       if (path === '/healthz' && method === 'GET') return json(200, { ok: true })
       const principal = await opts.authenticate(req.headers)
       if (!principal) return json(401, { error: 'unauthenticated' })
-      const conv = principal === 'notifier' ? undefined : conversations?.[principal],
+      // 眼鏡の入口は本人の操作なので、家と同じ会話（owner）を使う。
+      const conv = principal === 'notifier' ? undefined : conversations?.[principal === 'g2' ? 'owner' : principal],
         base = '/kohako/api/v1/'
       if (!path.startsWith(base)) return json(404, { error: 'not_found' })
       const route = path.slice(base.length)
+      if (principal === 'g2') {
+        // どの依頼・項目かは残さず、route の形と可否だけを記録する（本文・id・資格は出さない）。
+        const allowed = g2Route(method, route, opts.g2Mode)
+        const shape = route.replace(/^(requests|notifications)\/[^/]+/, '$1/:id')
+        console.log(
+          `kohako_g2 ${/^[A-Z]{3,7}$/.test(method ?? '') ? method : 'other'} ${/^[a-z/:-]{1,60}$/.test(shape) ? shape : 'other'} ${allowed ? 'ok' : 'forbidden'}`,
+        )
+        if (!allowed) return json(403, { error: 'forbidden' })
+      }
       if (route === 'notifications' || route.startsWith('notifications/') || route.startsWith('push/')) {
         if (!opts.notifications || !opts.push) return json(503, { error: 'notifications_disabled' })
         const status = route === 'notifications/status',
@@ -421,6 +452,9 @@ export function createApp(opts: {
       if (route === 'approvals') {
         if (!conv.get(x.requestId)) return json(404, { error: 'unknown_request' })
         if (principal === 'verifier' && x.choice !== 'deny') return json(403, { error: 'forbidden' })
+        // BOXP-657: 眼鏡から許可できるのは眼鏡から出した依頼だけ。家発の依頼は、全文を出せない眼鏡では拒否しかできない。
+        if (principal === 'g2' && conv.get(x.requestId)?.origin !== 'g2' && x.choice !== 'deny')
+          return json(403, { error: 'forbidden' })
         if (
           (x.choice !== 'once' && x.choice !== 'deny') ||
           typeof x.approvalId !== 'string' ||
@@ -435,6 +469,14 @@ export function createApp(opts: {
             : json(result === 'approval_expired' ? 410 : 409, { error: result })
       }
       if (typeof x.expiresAt !== 'number' || !Number.isFinite(x.expiresAt) || x.expiresAt > now() + 600000)
+        return json(400, { error: 'invalid' })
+      // BOXP-657: 眼鏡の入口は確定した文字 1 件だけ（位置・図表・添付・現場・なでるは家の画面だけの機能）。
+      if (
+        principal === 'g2' &&
+        (x.kind !== 'text' ||
+          !Object.keys(x).every((k) => G2_MESSAGE_KEYS.includes(k)) ||
+          (x.via !== undefined && !VIAS.includes(x.via as Via)))
+      )
         return json(400, { error: 'invalid' })
       if (x.kind === 'visit' && principal !== 'owner') return json(403, { error: 'forbidden' })
       // BOXP-648: 家の画面が送信時に添えた現在地（本人の許可時のみ ok）。Input には入れず、この turn の instructions にだけ載せる。
@@ -489,6 +531,9 @@ export function createApp(opts: {
           ...(principal === 'owner' && !files.length && isVisitText(x.text) ? { visit: true as const } : {}),
           ...(files.length ? { attachments: files } : {}),
           ...(x.views === true ? { views: true } : {}),
+          ...(principal === 'g2'
+            ? { origin: 'g2' as const, ...(x.via === undefined ? {} : { via: x.via as Via }) }
+            : {}),
         }
       else if (
         x.kind === 'touch' &&
@@ -515,11 +560,13 @@ export function createApp(opts: {
       if (input.kind === 'text' && input.views && !input.visit)
         console.log(locationLogLine(principal, x.location !== undefined, location, now()))
       const turnInstructions =
-        input.kind === 'touch'
-          ? instructions
-          : input.views
-            ? instructions + locationInstructions(location, now())
-            : studioInstructions
+        input.origin === 'g2'
+          ? g2Instructions
+          : input.kind === 'touch'
+            ? instructions
+            : input.views
+              ? instructions + locationInstructions(location, now())
+              : studioInstructions
       const entry = conv.submit(
         input,
         principal === 'owner' && input.kind === 'text' ? turnInstructions + ownerTaskInstructions : turnInstructions,

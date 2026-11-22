@@ -22,6 +22,9 @@ const authenticate = createAuth({
   verifierUsername: config.verifierUsername,
   notifierEnabled: config.notifierEnabled,
   notifierUsername: config.notifierUsername,
+  g2Enabled: !!config.g2Mode,
+  g2Username: config.g2Username,
+  g2Audience: config.g2Audience,
   now: Date.now,
 })
 const hermes =
@@ -48,6 +51,7 @@ const server = createServer(
   createApp({
     attachments: createAttachments(config.dataDir),
     authenticate,
+    g2Mode: config.g2Mode,
     hermes,
     conversations,
     push,

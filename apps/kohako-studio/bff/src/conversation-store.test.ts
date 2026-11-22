@@ -186,7 +186,7 @@ it('会話履歴に本文と復元済みの古い返答を載せ、変更を rev
   conv.submit({ requestId: 'new', kind: 'text', text: '新しい発言', expiresAt: 500 }, '')
   expect(conv.rev).not.toBe(rev)
   expect(conv.transcript().items[1]).toMatchObject({ text: '新しい発言', current: true, status: 'pending' })
-  expect(conv.transcript().active).toEqual({ requestId: 'new', kind: 'text' })
+  expect(conv.transcript().active).toEqual({ requestId: 'new', kind: 'text', origin: 'home' })
   // 依頼の終了まで待ってから保存を確かめる（後続の保存が片付け中のディレクトリへ書かないように）。
   await vi.waitFor(() => expect(conv.get('new')?.status).not.toBe('pending'))
   await conv.flush()
