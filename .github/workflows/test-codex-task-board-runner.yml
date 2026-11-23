@@ -208,3 +208,5 @@ jobs:
           RESULT: ${{ needs.suites.result }}
         run: |
           test "$RESULT" = success
+
+# BOXP-675: baseline measurement before suite partition changes.
