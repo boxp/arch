@@ -12,7 +12,8 @@
 - 保存: PDF は本文だけを保存し原本は保存しない（容量・保持の上限は不変）。pdfjs には複製せずに渡す。抽出の時間上限は 20 秒（`pdf_timeout`）、パスワード付きは `pdf_encrypted`。
 - 結果: `read = full | partial | none` を返し、一部読取は「⚠ 一部のみ読取」と範囲（全 N ページ中先頭 30 ページ等）と次の手順を表示。Hermes への入力にも「読んだ範囲だけ、全文を読んだように答えない」を入れる。
 - 表示: 添付の失敗・注意は入力欄の上の注意欄（`#attachment-note`）に出し、履歴にも残す。理由ごとに次にすること（小さくする・形式を変える・パスワードを外す・待つ・再ログイン・通信確認）を書く。失敗チップは × で取り消し、下書きは残す。アップロードは 5 分で打ち切る。
-- メモリ: lolice で BFF の limit を 512Mi に上げる（requests は 64Mi のまま）。
+- メモリ: BFF の Deployment manifest は本リポジトリではなく boxp/lolice（`argoproj/kohako-studio/deployment-bff.yaml`）が管理するため、limit 256Mi→512Mi の変更は https://github.com/boxp/lolice/pull/1368 に入れる（requests は 64Mi のまま）。
+- merge 順序（チケット条件 CD-01）: 本 PR は lolice#1368 の merge と配備（稼働中 BFF Pod の limit が 512Mi になったこと）を確認した後にだけ merge する。256Mi のまま本 PR を配備すると 30 MiB PDF の連続処理で OOMKill の恐れがあるため、先行 merge はしない。
 - Lean: `bff/contract/attachment-model/AttachmentModel.lean` に上限と結果の規則を仕様から起こし、性質 5 件を証明。生成した境界表 729 件を BFF の `classifyUpload` と画面の `attachmentValidation` に照合する。CI は `.github/workflows/test-kohako-attachment-model.yml`（必須化は BOXP-673 の Lean 必須経路に合わせる）。
 
 ## 検証
