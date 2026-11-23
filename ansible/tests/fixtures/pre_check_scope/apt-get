@@ -1,0 +1,3 @@
+#!/bin/bash
+# Mock apt-get: the isolated preflight only needs `apt-get update` to succeed.
+exit 0
