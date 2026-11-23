@@ -1,21 +1,27 @@
 name: Test Task Board Lock Model
 
-# BOXP-650 / BOXP-652: check of the Lean model of the Task Board runner's ticket lock
-# and planned shutdown (tests/codex-workspace/lock-model/). It checks the proofs and
-# that the committed operation sequences are what the model generates, and fails when
-# either does not hold.
+# BOXP-650 / BOXP-652 / BOXP-673: checks of the Lean models of the Task Board runner
+# (tests/codex-workspace/lock-model/ and tests/codex-workspace/gate-budget-model/).
 #
-# Merge gate (BOXP-652): test.yaml (pull_request_target) calls this workflow as the job
-# `lock-model` when a PR changes the model, its generated file, this file or test.yaml,
-# and the required check `status-check` needs that job. That run uses this file as it is
-# on the base branch, so a PR cannot turn the check off for itself.
+# - job `lean`: checks the proofs of every model and that the committed operation
+#   sequences are what the model generates.
+# - job `replay`: replays the committed sequences against the runner's real functions
+#   and fails when the implementation disagrees with a model. Needs only bb.
+#
+# Merge gate: test.yaml (pull_request_target) calls this workflow as the job
+# `lock-model`, and the required check `status-check` needs that job. `lean` runs when a
+# PR changes a model, its generated file, this file or test.yaml; `replay` runs when a
+# PR changes one of those, a replay test or the runner (wc-path-filter.yaml: lock-model,
+# model-replay). That run uses this file as it is on the base branch, so a PR cannot turn
+# the checks off for itself, and the list of models below cannot be shortened by the PR
+# that is being checked.
 # The pull_request trigger below runs only when this file changes, to try the changed
 # definition before it is merged. It is not the required check.
 #
-# The Lean version and the archive checksum are read from the model directory
+# The Lean version and the archive checksum are read from the lock-model directory
 # (lean-toolchain, lean-linux.tar.zst.sha256), not pinned here: the gate runs the base
-# branch's copy of this file against the PR's model, so a pin here would reject every
-# PR that upgrades Lean.
+# branch's copy of this file against the PR's models, so a pin here would reject every
+# PR that upgrades Lean. Every model uses that one version.
 
 on:
   workflow_call:
@@ -24,6 +30,14 @@ on:
         description: The ref to checkout
         type: string
         default: ""
+      lean:
+        description: Check the proofs and the generated sequences
+        type: boolean
+        default: true
+      replay:
+        description: Replay the generated sequences against the runner
+        type: boolean
+        default: true
   pull_request:
     paths:
       - .github/workflows/test-task-board-lock-model.yml
@@ -34,6 +48,8 @@ permissions:
 
 jobs:
   lean:
+    # `inputs` is empty for the pull_request and workflow_dispatch triggers.
+    if: ${{ github.event_name != 'pull_request_target' || inputs.lean }}
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -74,28 +90,31 @@ jobs:
           echo "${tmp}/lean-${version}-linux/bin" >>"${GITHUB_PATH}"
       - name: Check proofs and generated sequences
         timeout-minutes: 15
-        working-directory: tests/codex-workspace/lock-model
+        working-directory: tests/codex-workspace
         run: |
           set -uo pipefail
-          proofs=0
-          drift=0
+          # directory, Lean module, generated file, depth of `cover`.
+          # A new model is added here (and to MODELS.md); this list is read from the base
+          # branch, so the PR that adds a model is checked for it from the next PR on.
+          models=(
+            "lock-model LockModel lock-traces.txt.gz 5"
+            "gate-budget-model GateBudgetModel gate-budget-traces.txt.gz 5"
+          )
           # Lean exits 0 for a theorem whose proof is `sorry` (a warning only) and for a
           # statement added as an `axiom`. So the compiled model is loaded again and every
           # declaration in it is required to depend on Lean's three standard axioms only.
           # This check is written here, not in the model directory, because the gate runs
           # the base branch's copy of this file: a PR cannot weaken it for itself.
-          out="${RUNNER_TEMP}/lock-model-olean"
-          mkdir -p "${out}"
-          cat >"${RUNNER_TEMP}/LockModelAxioms.lean" <<'LEAN'
+          cat >"${RUNNER_TEMP}/ModelAxioms.lean.in" <<'LEAN'
           import Lean
-          import LockModel
+          import MODULE
           open Lean
 
           #eval show CoreM Unit from do
             let allowed : List Name := [``propext, ``Classical.choice, ``Quot.sound]
             let env ← getEnv
-            let some idx := env.getModuleIdx? `LockModel
-              | throwError "module LockModel is not loaded"
+            let some idx := env.getModuleIdx? `MODULE
+              | throwError "module MODULE is not loaded"
             let mut theorems := 0
             let mut bad : Array String := #[]
             for (name, info) in env.constants.map₁.toList do
@@ -107,25 +126,98 @@ jobs:
             IO.println s!"theorems (with the ones Lean generates): {theorems}"
             unless bad.isEmpty do
               throwError "not proved from the standard axioms only:\n{"\n".intercalate bad.qsort.toList}"
-            if theorems == 0 then throwError "LockModel has no theorem"
+            if theorems == 0 then throwError "MODULE has no theorem"
           LEAN
-          time lean -o "${out}/LockModel.olean" LockModel.lean || proofs=$?
-          if [ "${proofs}" -eq 0 ]; then
-            time env LEAN_PATH="${out}" lean "${RUNNER_TEMP}/LockModelAxioms.lean" || proofs=$?
-          fi
-          time lean --run LockModel.lean cover 5 >"${RUNNER_TEMP}/lock-traces.txt" || drift=$?
-          gzip -dc lock-traces.txt.gz | cmp "${RUNNER_TEMP}/lock-traces.txt" - || drift=1
+          failed=0
           {
-            echo "### Lock model (BOXP-650 / BOXP-652, required)"
+            echo "### Task Board models (BOXP-650 / BOXP-652 / BOXP-673, required)"
             echo
-            echo "- proofs (no sorry, no added axiom): $([ "${proofs}" -eq 0 ] && echo ok || echo FAILED)"
-            echo "- lock-traces.txt.gz is what the model generates: $([ "${drift}" -eq 0 ] && echo yes || echo NO)"
-            echo "- sequences: $(gzip -dc lock-traces.txt.gz | wc -l)"
+            echo "| model | proofs (no sorry, no added axiom) | generated file is what the model generates | sequences |"
+            echo "|---|---|---|---|"
           } >>"${GITHUB_STEP_SUMMARY}"
-          if [ "${proofs}" -ne 0 ]; then
-            echo "::error::LockModel.lean does not check, or a declaration in it uses sorry or an added axiom"
-          fi
-          if [ "${drift}" -ne 0 ]; then
-            echo "::error::lock-traces.txt.gz differs from what LockModel.lean generates: regenerate it as in tests/codex-workspace/lock-model/README.md"
-          fi
-          [ "${proofs}" -eq 0 ] && [ "${drift}" -eq 0 ]
+          for entry in "${models[@]}"; do
+            read -r dir module traces depth <<<"${entry}"
+            proofs=0
+            drift=0
+            out="${RUNNER_TEMP}/olean-${module}"
+            mkdir -p "${out}"
+            sed "s/MODULE/${module}/g" "${RUNNER_TEMP}/ModelAxioms.lean.in" >"${RUNNER_TEMP}/${module}Axioms.lean"
+            echo "::group::${dir}"
+            pushd "${dir}" >/dev/null || { failed=1; echo "::error::${dir} is missing"; continue; }
+            time lean -o "${out}/${module}.olean" "${module}.lean" || proofs=$?
+            if [ "${proofs}" -eq 0 ]; then
+              time env LEAN_PATH="${out}" lean "${RUNNER_TEMP}/${module}Axioms.lean" || proofs=$?
+            fi
+            time lean --run "${module}.lean" cover "${depth}" >"${RUNNER_TEMP}/${module}-traces.txt" || drift=$?
+            gzip -dc "${traces}" | cmp "${RUNNER_TEMP}/${module}-traces.txt" - || drift=1
+            echo "| ${dir} | $([ "${proofs}" -eq 0 ] && echo ok || echo FAILED) | $([ "${drift}" -eq 0 ] && echo yes || echo NO) | $(gzip -dc "${traces}" | wc -l) |" >>"${GITHUB_STEP_SUMMARY}"
+            popd >/dev/null || exit 1
+            echo "::endgroup::"
+            if [ "${proofs}" -ne 0 ]; then
+              failed=1
+              echo "::error::${dir}/${module}.lean does not check, or a declaration in it uses sorry or an added axiom"
+            fi
+            if [ "${drift}" -ne 0 ]; then
+              failed=1
+              echo "::error::${dir}/${traces} differs from what ${module}.lean generates: regenerate it as in tests/codex-workspace/${dir}/README.md"
+            fi
+          done
+          [ "${failed}" -eq 0 ]
+
+  replay:
+    if: ${{ github.event_name != 'pull_request_target' || inputs.replay }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BABASHKA_VERSION: 1.12.218
+    steps:
+      # Step limits for the same reason as in the job `lean`.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 3
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Install Babashka
+        timeout-minutes: 5
+        run: |
+          set -eux
+          tmp="$(mktemp -d)"
+          curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 200 -fsSL \
+            "https://github.com/babashka/babashka/releases/download/v${BABASHKA_VERSION}/babashka-${BABASHKA_VERSION}-linux-amd64-static.tar.gz" \
+            -o "${tmp}/bb.tar.gz"
+          tar -xzf "${tmp}/bb.tar.gz" -C "${tmp}"
+          sudo install -m 0755 "$(find "${tmp}" -type f -name bb | head -n 1)" /usr/local/bin/bb
+      - name: Replay the generated sequences against the runner
+        timeout-minutes: 10
+        run: |
+          set -uo pipefail
+          # One replay test per model; the list is read from the base branch like `models` above.
+          tests=(
+            tests/codex-workspace/task-board-lock-trace-test.bb
+            tests/codex-workspace/task-board-gate-budget-trace-test.bb
+          )
+          failed=0
+          {
+            echo "### Replay of the model-generated sequences (BOXP-673, required)"
+            echo
+          } >>"${GITHUB_STEP_SUMMARY}"
+          for t in "${tests[@]}"; do
+            out="${RUNNER_TEMP}/$(basename "${t}").txt"
+            status=0
+            bb "${t}" --max-report 10 >"${out}" 2>&1 || status=$?
+            cat "${out}"
+            {
+              echo "- \`${t}\`: $([ "${status}" -eq 0 ] && echo ok || echo "FAILED (exit ${status})")"
+              echo
+              echo '```'
+              tail -n 12 "${out}"
+              echo '```'
+            } >>"${GITHUB_STEP_SUMMARY}"
+            if [ "${status}" -ne 0 ]; then
+              failed=1
+              echo "::error::${t}: the runner disagrees with the model (or the test could not run): see tests/codex-workspace/MODELS.md"
+            fi
+          done
+          [ "${failed}" -eq 0 ]

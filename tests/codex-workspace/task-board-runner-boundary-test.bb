@@ -305,5 +305,19 @@
                             [:used :limit :legacy-limit-reached?])))
         (is (= 2 (:used (gate-budget-status {:failures (merge (fail 1 "T" "p1") (fail 1 "U" "p1") (fail 1 "T" "p2"))} :pr "p1"))))))))
 
+;; ---------------------------------------------------------------------------
+;; BOXP-673: the standard order of work in the prompts
+
+(deftest spec-first-contract-states-the-order-and-the-exemption
+  (let [p (spec-first-contract-prompt)]
+    (is (< (str/index-of p "(1)") (str/index-of p "(2)") (str/index-of p "(3)") (str/index-of p "(4)"))
+        "spec, model, tests, implementation, in that order")
+    (is (str/includes? p spec-first-standard-note) "the details live in the vault note")
+    (is (str/includes? p (str spec-index-module-path " show")) "how to reach the current spec")
+    (is (str/includes? p "not from the implementation") "expected values are not copied from the implementation")
+    (is (re-find #"does not apply.*reason" p) "an exempt change states its reason")
+    (is (str/includes? p "Do not attach a Lean file for form"))
+    (is (str/includes? p "real concurrency is not covered") "the limits of the guarantee are recorded")))
+
 (let [{:keys [fail error]} (run-tests)]
   (System/exit (if (zero? (+ fail error)) 0 1)))
