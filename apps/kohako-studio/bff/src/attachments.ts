@@ -206,10 +206,12 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
       kind = 'pdf'
       detected = 'application/pdf'
     } else {
-      // 形式より先にサイズを判定する（5 MiB 超のテキストを復号しない）。
-      if (size > OTHER_MAX_BYTES) fail('too_large', 413)
-      if (!(mime.startsWith('text/') || /\.(txt|md|csv|json|log|yaml|yml|tsv)$/i.test(filename)) || data.includes(0))
+      // 未対応形式は PDF 上限 (30 MiB) 以下なら 415 を返す（モデルの limitOf unsupported = pdfMax）。
+      if (!(mime.startsWith('text/') || /\.(txt|md|csv|json|log|yaml|yml|tsv)$/i.test(filename)))
         fail('unsupported_type', 415)
+      // テキストは復号より先にサイズを判定する（5 MiB 超のテキストを復号しない）。
+      if (size > OTHER_MAX_BYTES) fail('too_large', 413)
+      if (data.includes(0)) fail('unsupported_type', 415)
       try {
         extractedText = new TextDecoder('utf-8', { fatal: true }).decode(data)
       } catch {
