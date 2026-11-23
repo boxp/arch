@@ -62,6 +62,21 @@
         mode: '0644'
       become: true
 
+    # BOXP-672: production nodes carry a held cri-o from kubernetes_components,
+    # so start from a held previous-minor package like they do.
+    - name: Install pre-upgrade CRI-O from the previous minor repository
+      ansible.builtin.apt:
+        name: cri-o
+        state: present
+        update_cache: true
+      become: true
+
+    - name: Hold pre-upgrade CRI-O package
+      ansible.builtin.dpkg_selections:
+        name: cri-o
+        selection: hold
+      become: true
+
     - name: Create mock etcd certificates directory
       ansible.builtin.file:
         path: /etc/kubernetes/pki/etcd

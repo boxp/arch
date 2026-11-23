@@ -1,0 +1,2 @@
+#!/bin/bash
+echo "Kubernetes v1.36.1"

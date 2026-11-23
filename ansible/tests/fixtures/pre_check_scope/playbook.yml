@@ -1,0 +1,14 @@
+---
+# Runs the whole pre_checks.yml on a mock three-control-plane + one-worker
+# topology. APT, gpg, kubelet and kubectl are mocks on PATH and the signing keys
+# come from a local file, so no network, cluster or sudo access is used.
+- name: Pre-check scope
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Run pre-upgrade checks
+      ansible.builtin.import_role:
+        name: kubernetes_upgrade
+        tasks_from: pre_checks.yml
+      vars:
+        node_role: "{{ 'worker' if inventory_hostname in groups['workers'] else 'control_plane' }}"

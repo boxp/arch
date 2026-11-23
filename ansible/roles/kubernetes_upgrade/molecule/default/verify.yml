@@ -62,6 +62,25 @@
           - "'v1.35' in (crio_apt_content.content | b64decode)"
         fail_msg: "CRI-O apt source does not contain the correct version (v1.35)"
 
+    # BOXP-672: the held previous-minor cri-o must be upgraded and held again
+    - name: Read CRI-O package selection and installed revision
+      ansible.builtin.command:
+        argv:
+          - dpkg-query
+          - -W
+          - "-f=${db:Status-Want} ${Version}"
+          - cri-o
+      register: crio_package_state
+      changed_when: false
+
+    - name: Assert held CRI-O was upgraded to the target revision and is held again
+      ansible.builtin.assert:
+        that:
+          - crio_package_state.stdout == "hold " ~ crio_upgrade_package
+        fail_msg: >-
+          Expected cri-o to be held at {{ crio_upgrade_package }},
+          got: {{ crio_package_state.stdout }}
+
     # Verify duplicate CRI-O version-specific apt source was removed
     - name: Check CRI-O version-specific apt source file exists
       ansible.builtin.stat:

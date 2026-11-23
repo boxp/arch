@@ -8,7 +8,8 @@ import yaml
 WORKFLOW = Path(__file__).resolve().parents[2] / '.github/workflows/upgrade-k8s.yml'
 SCRIPT = yaml.safe_load(WORKFLOW.read_text())['jobs']['pre-check']['steps'][0]['run']
 VALID = dict(K8S_VERSION='1.37.1', K8S_PACKAGE='1.37.1-1.1', CRIO_VERSION='1.37.1',
-             CRIO_PACKAGE='1.37.1-3.1', EXECUTION_ID='BOXP-191-20261001T000000Z', TARGET_NODE='shanghai-1')
+             CRIO_PACKAGE='1.37.1-3.1', EXECUTION_ID='BOXP-191-20261001T000000Z', TARGET_NODE='shanghai-1',
+             PRE_CHECK_SCOPE='target')
 
 
 class UpgradeInputTest(unittest.TestCase):
@@ -29,9 +30,15 @@ class UpgradeInputTest(unittest.TestCase):
                        dict(CRIO_PACKAGE='1.37.1*'), dict(CRIO_PACKAGE=''),
                        dict(CRIO_VERSION='1.36.1', CRIO_PACKAGE='1.36.1-3.1'),
                        dict(EXECUTION_ID=''), dict(EXECUTION_ID='$(exit 0)'),
-                       dict(TARGET_NODE='shanghai-1; exit 0')]:
+                       dict(TARGET_NODE='shanghai-1; exit 0'),
+                       dict(PRE_CHECK_SCOPE=''), dict(PRE_CHECK_SCOPE='none'),
+                       dict(PRE_CHECK_SCOPE='target; exit 0')]:
             with self.subTest(values=values):
                 self.assertNotEqual(self.gate(**values), 0)
+
+    def test_both_pre_check_scopes_are_valid(self):
+        for scope in ['target', 'all']:
+            self.assertEqual(self.gate(PRE_CHECK_SCOPE=scope), 0)
 
     def test_different_patch_same_minor_is_valid(self):
         self.assertEqual(self.gate(CRIO_VERSION='1.37.2', CRIO_PACKAGE='1.37.2-3.1'), 0)
