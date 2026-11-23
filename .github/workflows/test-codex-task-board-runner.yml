@@ -57,9 +57,9 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 6
       matrix:
-        group: [runner-0, runner-1, localllm, remaining]
+        group: [runner-0, runner-1, localllm-0, localllm-1, novel-board, remaining]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -85,9 +85,18 @@ jobs:
       - name: Runner shard 1
         if: matrix.group == 'runner-1'
         run: TASK_BOARD_TEST_SHARDS=2 TASK_BOARD_TEST_SHARD=1 tests/codex-workspace/task-board-runner-test.sh
-      - name: Local LLM documentation
-        if: matrix.group == 'localllm'
-        run: tests/codex-workspace/localllm-docs-test.sh
+      - name: Local LLM documentation shard 0
+        if: matrix.group == 'localllm-0'
+        run: LOCALLLM_TEST_SHARDS=2 LOCALLLM_TEST_SHARD=0 tests/codex-workspace/localllm-docs-test.sh
+      - name: Local LLM documentation shard 1
+        if: matrix.group == 'localllm-1'
+        run: LOCALLLM_TEST_SHARDS=2 LOCALLLM_TEST_SHARD=1 tests/codex-workspace/localllm-docs-test.sh
+      - name: Novel board
+        if: matrix.group == 'novel-board'
+        run: |
+          set -euo pipefail
+          time bb docker/codex-workspace/novel-board/novel_board_runner.bb test
+          time tests/codex-workspace/novel-board-runner-test.sh
       - name: Remaining suites
         if: matrix.group == 'remaining'
         run: |
@@ -105,8 +114,6 @@ jobs:
           time bb tests/harness-eval/test_harness_eval.bb
           time docs/project_docs/BOXP-360/tools/test.sh
           time tests/codex-workspace/localllm-source-check-test.sh
-          time bb docker/codex-workspace/novel-board/novel_board_runner.bb test
-          time tests/codex-workspace/novel-board-runner-test.sh
           time tests/codex-workspace/recurring-events-test.sh
           time bb tests/codex-workspace/infra-diagram-refresh-test.bb
           time bb tests/codex-workspace/site-refresh-test.bb
