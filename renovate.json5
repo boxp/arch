@@ -404,6 +404,17 @@
       automerge: false,
       addLabels: ["hermes-agent", "manual-review-required"],
     },
+    // BOXP-681: docker/hermes-agent の Babashka は tarball の SHA256 (ARG BABASHKA_SHA256) で
+    // 検証しているが、regex manager は BABASHKA_VERSION しか更新できない。版だけ上がった PR を
+    // automerge すると main の image build が checksum 不一致で失敗し続ける (arch#15540)。
+    // 公式 release の .sha256 で BABASHKA_SHA256 を同じ PR で更新し、image build 成功を見てから
+    // 手動 merge する。codex-workspace 側は checksum 固定が無いので従来どおり。
+    {
+      matchFileNames: ["docker/hermes-agent/Dockerfile"],
+      matchPackageNames: ["babashka/babashka"],
+      automerge: false,
+      addLabels: ["hermes-agent", "manual-review-required"],
+    },
     // 🚨 BOXP-207: apply.yaml / test.yaml（とそこから呼ぶ wc-*.yaml）が main で変わると、
     // GitHub の保護機能により、write 権限者が Web で承認するまで以後の run が実行されない。
     // automerge だと誰も見ていない時間に止まり始めるため、workflow の更新は週 1 回・
