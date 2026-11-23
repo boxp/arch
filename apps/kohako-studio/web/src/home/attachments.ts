@@ -124,5 +124,15 @@ export function remainingAttachmentNotice(chips: readonly { notice?: string | nu
   return chips
     .map((x) => x.notice)
     .filter((x): x is string => !!x)
-    .join(' ')
+    .join('\n')
+}
+
+/**
+ * 注意欄に出す文面。今回の通知（失敗理由や新しい一部読取の注意）に、残っている一部読取の添付すべての注意を重ねる。
+ * 複数の一部読取 PDF を続けて添付したり、別の添付が失敗したりしても、先の PDF の読取範囲と次の手順が消えないようにする。
+ */
+export function composeAttachmentNote(text: string, chips: readonly { notice?: string | null }[]): string {
+  const lines = text ? [text] : []
+  for (const notice of chips.map((x) => x.notice)) if (notice && !lines.includes(notice)) lines.push(notice)
+  return lines.join('\n')
 }

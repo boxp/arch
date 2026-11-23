@@ -7,6 +7,7 @@ import {
   formatFileSize,
   OTHER_MAX_BYTES,
   PDF_MAX_BYTES,
+  composeAttachmentNote,
   remainingAttachmentNotice,
   uploadContentType,
   uploadedState,
@@ -130,4 +131,17 @@ it('BOXP-677: 別の添付を取り消しても、残る一部読取の添付の
   expect(remainingAttachmentNotice(chips)).toBe(partial.notice)
   expect(remainingAttachmentNotice([{}])).toBe('')
   expect(remainingAttachmentNotice([])).toBe('')
+})
+
+it('BOXP-677: 一部読取の添付を続けて追加したり別の添付が失敗しても、先の PDF の注意は消えない', () => {
+  const a = uploadedState('a.pdf', { kind: 'pdf', read: 'partial', partialReason: 'pages', pages: 120, pagesRead: 30 })
+  const b = uploadedState('b.pdf', { kind: 'pdf', read: 'partial', partialReason: 'pages', pages: 80, pagesRead: 30 })
+  const chips = [{ notice: a.notice }, { notice: b.notice }]
+  const both = composeAttachmentNote(b.notice ?? '', chips)
+  expect(both).toContain(a.notice)
+  expect(both).toContain(b.notice)
+  expect(both.split('\n')).toHaveLength(2)
+  const withError = composeAttachmentNote('c.pdf を送れませんでした', [...chips, {}])
+  expect(withError.split('\n')).toEqual(['c.pdf を送れませんでした', a.notice, b.notice])
+  expect(composeAttachmentNote('', [])).toBe('')
 })

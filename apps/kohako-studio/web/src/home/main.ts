@@ -10,6 +10,7 @@ import {
   attachmentSubmitAction,
   attachmentValidation,
   formatFileSize,
+  composeAttachmentNote,
   remainingAttachmentNotice,
   uploadContentType,
   uploadedState,
@@ -2260,9 +2261,11 @@ const chips: Chip[] = [],
  * 履歴の「お知らせ」にも残す。空文字で消す。
  */
 function attachmentNote(text: string, tone: 'error' | 'warn' = 'error') {
-  attachmentNoteBox.textContent = text
+  // 残っている一部読取の添付の注意も重ねて出し、後の添付の通知で先の PDF の読取範囲が消えないようにする。
+  const shown = composeAttachmentNote(text, chips)
+  attachmentNoteBox.textContent = shown
   attachmentNoteBox.dataset.tone = tone
-  attachmentNoteBox.hidden = !text
+  attachmentNoteBox.hidden = !shown
   if (text) addHistory('お知らせ', text)
 }
 function renderChips() {
