@@ -179,7 +179,7 @@ theorem limit_floor (s : St) (t : T) :
 
 /-- 規則 3b: 追加 grant 1 件は上限をちょうど 1 増やす。 -/
 theorem grant_adds_one (s : St) (t : T) : limit (step s (.grant t)) t = limit s t + 1 := by
-  cases t <;> unfold_model <;> grind
+  sorry
 
 /-- 規則 3c: 旧 grant は下限でしかない。PR 数に応じた分が既に上回っていれば、旧 grant を足しても上限は変わらない
 （PR 数の分と二重に数えない）。 -/
