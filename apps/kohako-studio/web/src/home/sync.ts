@@ -5,6 +5,8 @@ type Item = {
   requestId: string
   at: number
   current: boolean
+  /** BOXP-657: 眼鏡（Even G2）から送った発言。BFF が入口で決めた値で、端末の自己申告ではない。 */
+  g2?: true
   text?: string
   attachments?: string[]
   status: 'pending' | 'done' | 'failed' | 'unknown'
@@ -54,6 +56,7 @@ export function validateTranscript(data: unknown): Transcript | null {
       requestId: v.requestId,
       at: v.at,
       current: v.current,
+      ...(v.origin === 'g2' ? { g2: true as const } : {}),
       status: v.status as Item['status'],
       ...(v.text === undefined ? {} : { text: v.text as string }),
       ...(v.attachments === undefined ? {} : { attachments: v.attachments as string[] }),
@@ -109,7 +112,7 @@ export class Shared {
   }
 }
 type Op =
-  | { op: 'user'; id: string; text: string; at: number }
+  | { op: 'user'; id: string; text: string; at: number; g2?: true }
   | { op: 'reply'; id: string; text: string; views: View[]; at: number; latest: boolean }
   | { op: 'ended'; id: string; stopped: boolean; at: number }
   | { op: 'divider'; id: string; at: number }
@@ -131,6 +134,7 @@ export function planSync(
         id,
         text: item.text + (item.attachments ?? []).map((x) => `\n📎 ${x}`).join(''),
         at: item.at,
+        ...(item.g2 ? { g2: true as const } : {}),
       })
     if (id === ctx.trackingId) return
     if (item.status === 'done' && item.reply && ctx.seen.markReply(id))

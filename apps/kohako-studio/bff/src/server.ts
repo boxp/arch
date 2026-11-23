@@ -11,6 +11,7 @@ import { createConversation } from './conversation.js'
 import { createAttachments } from './attachments.js'
 import { createTts } from './tts.js'
 import { createApp } from './app.js'
+import { createBoardSummary, createG2Reference, createSharedContext } from './g2-context.js'
 const config = readConfig(process.env)
 const jwks = createJwksProvider({ url: `${config.team}/cdn-cgi/access/certs`, fetch, now: Date.now })
 const authenticate = createAuth({
@@ -30,6 +31,18 @@ const authenticate = createAuth({
 const hermes =
   config.hermesUrl && config.hermesKey
     ? createHermes({ url: config.hermesUrl, key: config.hermesKey, fetch, allowedToolsets: config.allowedToolsets })
+    : undefined
+// BOXP-657 段2: 眼鏡発の turn の指示文にだけ添える参照。env で明示した時だけ作る（既定は付けない）。
+const g2Reference =
+  config.g2Mode && (config.g2BoardContext || config.g2SharedContext)
+    ? createG2Reference({
+        board: config.g2BoardContext ? createBoardSummary({ url: config.boardUrl, fetch, now: Date.now }) : undefined,
+        shared:
+          hermes && config.g2SharedContext && config.g2TelegramUserId
+            ? createSharedContext({ hermes, userId: config.g2TelegramUserId, now: Date.now })
+            : undefined,
+        now: Date.now,
+      })
     : undefined
 const push = config.dataDir
   ? await createPush(config.dataDir, {
@@ -52,6 +65,7 @@ const server = createServer(
     attachments: createAttachments(config.dataDir),
     authenticate,
     g2Mode: config.g2Mode,
+    g2Reference,
     hermes,
     conversations,
     push,
