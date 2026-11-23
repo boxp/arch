@@ -5,7 +5,8 @@ Task Board runner の **ticket lock（取得・heartbeat・解放・期限切れ
 
 - 試行の結果と採否の評価: [docs/project_docs/BOXP-650/plan.md](../../../docs/project_docs/BOXP-650/plan.md)
 - 定理の検査と「`lock-traces.txt.gz` がモデルから作り直したものと同じか」は **merge の必須条件**（BOXP-652。下の「merge の必須条件」）。
-- 手順の再生（`lock-trace`）は合否に影響しない CI のまま。普段のテストは Lean なしで動く（生成済みの手順 `lock-traces.txt.gz` を読むだけ）。
+- 手順の再生も **merge の必須条件**（BOXP-673。以前は合否に影響しない job `lock-trace` だった）。再生は Lean なしで動く（生成済みの手順 `lock-traces.txt.gz` を読むだけ）。
+- 標準の進め方、CI の全体、モデルの足し方: [../MODELS.md](../MODELS.md)
 
 | ファイル | 役割 | 要るもの |
 |---|---|---|
@@ -96,13 +97,14 @@ main の必須 check は `status-check`（`.github/workflows/test.yaml`、`pull_
 
 - `test.yaml` の job `lock-model` が `test-task-board-lock-model.yml` を呼び、`status-check` がその結果を待つ。
   検査が失敗すると `status-check` が失敗し、merge できない。Task Board runner の PR gate も失敗した check があると通さない。
-- 動く条件（`wc-path-filter.yaml` の `lock-model`）: `tests/codex-workspace/lock-model/**`、`test-task-board-lock-model.yml`、
-  `wc-path-filter.yaml`、`test.yaml` のどれかを PR が変えたとき。それ以外の PR では job は skip され、`status-check` に影響しない。
+- 動く条件（`wc-path-filter.yaml` の `lock-model`）: モデルのディレクトリ（`lock-model/**`、`gate-budget-model/**`）、`test-task-board-lock-model.yml`、
+  `wc-path-filter.yaml`、`test.yaml` のどれかを PR が変えたとき。それ以外の PR では Lean の検査は skip され、`status-check` に影響しない。
 - 必須の検査は **base（main）側の workflow** で PR のモデルを調べる。PR の中で workflow を書き換えても、その PR の必須の検査は変わらない。
   このため Lean の版と sha256 は workflow ではなく、このディレクトリの `lean-toolchain` と `lean-linux.tar.zst.sha256` から読む
   （Lean を上げる PR は 2 つのファイルを一緒に変える）。
 - `test-task-board-lock-model.yml` 自体を変える PR では、変更後の定義を merge 前に試すために同じ検査が `pull_request` でも 1 回動く（こちらは必須 check ではない）。
-- runner の実装だけを変えた PR では Lean の検査は動かない（モデルも生成物も変わらないため）。実装とモデルの食い違いを見るのは手順の再生で、これは必須にしていない。
+- runner の実装だけを変えた PR では Lean の検査は動かない（モデルも生成物も変わらないため）。実装とモデルの食い違いを見るのは手順の再生で、
+  同じ workflow の job `replay` が、モデル・再生テスト・runner（`docker/codex-workspace/task-board/**`）のどれかを変えた PR で動く。これも必須（BOXP-673）。
 - job が時間切れで cancel 扱いになると `status-check`（`if: failure()`）は失敗にならない。これを避けるため各 step に上限を置き、時間切れは step の失敗として数える。
 - Lean は証明を `sorry` に置き換えた定理も、`axiom` で足した主張も、終了コード 0 で通す（`sorry` は warning だけ）。このため検査は、
   コンパイルしたモデルを読み直し、モデル内の全ての宣言が Lean 標準の公理 3 つ（`propext`・`Classical.choice`・`Quot.sound`）以外に依存していないことも調べる。

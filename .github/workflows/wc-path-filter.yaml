@@ -24,6 +24,8 @@ on:
         value: ${{jobs.path-filter.outputs.test-ansible}}
       lock-model:
         value: ${{jobs.path-filter.outputs.lock-model}}
+      model-replay:
+        value: ${{jobs.path-filter.outputs.model-replay}}
 
 jobs:
   path-filter:
@@ -40,6 +42,7 @@ jobs:
       ghalint: ${{steps.changes.outputs.ghalint}}
       test-ansible: ${{steps.changes.outputs.test-ansible}}
       lock-model: ${{steps.changes.outputs.lock-model}}
+      model-replay: ${{steps.changes.outputs.model-replay}}
     steps:
       - name: Generate token
         id: token
@@ -96,8 +99,22 @@ jobs:
               - .github/workflows/test-ansible.yml
               - .github/workflows/test.yaml
 
+            # Lean models of the Task Board runner: proofs and generated sequences.
             lock-model:
               - tests/codex-workspace/lock-model/**
+              - tests/codex-workspace/gate-budget-model/**
+              - .github/workflows/test-task-board-lock-model.yml
+              - .github/workflows/wc-path-filter.yaml
+              - .github/workflows/test.yaml
+
+            # Replay of the generated sequences against the runner: also when the
+            # implementation or a replay test changes.
+            model-replay:
+              - tests/codex-workspace/lock-model/**
+              - tests/codex-workspace/gate-budget-model/**
+              - tests/codex-workspace/task-board-lock-trace-test.bb
+              - tests/codex-workspace/task-board-gate-budget-trace-test.bb
+              - docker/codex-workspace/task-board/**
               - .github/workflows/test-task-board-lock-model.yml
               - .github/workflows/wc-path-filter.yaml
               - .github/workflows/test.yaml

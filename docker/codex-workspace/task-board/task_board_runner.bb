@@ -2540,6 +2540,18 @@
          "append a note to this ticket's Notes by running:\n"
          "  bb " helper " append-note " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --source " agent " --note \"<milestone summary>\"\n")))
 
+(def spec-first-standard-note "Projects/lean-spec-driven-testing/standard.md")
+(def spec-index-module-path "/opt/codex-workspace/task-board/spec_index.bb")
+
+(defn spec-first-contract-prompt
+  "BOXP-673: the standard order of work for new behaviour and behaviour changes. It asks
+  for a stated reason when the order does not apply, never for a Lean file as a form."
+  []
+  (str "Spec-first development (standard for new behaviour and behaviour changes; details: $CODEX_TASK_BOARD_VAULT/" spec-first-standard-note "):\n"
+       "- Order: (1) a short Japanese spec with concrete examples in the feature's current-spec note in the Obsidian vault (find it with: bb " spec-index-module-path " show <feature> --vault \"$CODEX_TASK_BOARD_VAULT\", or list; a note marked proposal or history is not the current spec), with a state transition diagram plus conditions and exceptions when state and order matter; (2) for rules that must hold in every order over a small state machine, a Lean model and its properties; (3) tests whose expected results come from the spec or the model, not from the implementation, seen failing first; (4) the implementation, changed until they pass.\n"
+       "- Keep the three claims apart: the spec is right / the model's proofs hold / the implementation agreed with the model on the enumerated sequences only. Record what the model leaves out, the enumeration depth and that real concurrency is not covered.\n"
+       "- When this order or the Lean step does not apply (wording, configuration or documentation only, a plain input-output function already covered by direct tests, a flow decided by an external response, no rule that can be stated), say so in one line with the reason in the PR body or Notes. Do not attach a Lean file for form, and do not copy expected values from the implementation.\n"))
+
 (defn delegation-route? [agent]
   (and (not= localllm-coder-assignee agent)
        (or (contains? #{"fable" "claude-fable" "claude-opus"} agent)
@@ -2997,6 +3009,7 @@
            "Goal: address review feedback or requested changes for this ticket.\n"
            "First inspect the ticket Notes, relevant repos, current git state, PR state if referenced, and tests.\n"
            "Do the requested work end to end where possible.\n"
+           (spec-first-contract-prompt)
            (append-note-instruction agent ticket-id)
            (conflict-declare-instruction ticket-id)
            review-contract
@@ -3007,6 +3020,7 @@
            "Goal: retry or re-investigate the blocked work.\n"
            "First verify whether the blocker is actually cleared. If still blocked, update Notes with the concrete blocker.\n"
            "Do the work end to end where possible.\n"
+           (spec-first-contract-prompt)
            (append-note-instruction agent ticket-id)
            (conflict-declare-instruction ticket-id)
            review-contract
@@ -3017,6 +3031,7 @@
            "Goal: implement or complete this ticket.\n"
            "First inspect the ticket Notes, relevant repos, current git state, and existing project conventions.\n"
            "Do the work end to end where possible, including focused validation.\n"
+           (spec-first-contract-prompt)
            (append-note-instruction agent ticket-id)
            (conflict-declare-instruction ticket-id)
            review-contract
