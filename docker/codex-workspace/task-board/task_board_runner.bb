@@ -2235,7 +2235,7 @@
                               set)
            conflict (first (filter held-by-other pr-ids))
            exhausted? (gate-budget-exhausted-in? budget ticket-id pr-ids)
-           ok? (and (not exhausted?) (not conflict))]
+           ok? (not exhausted?)]
        (write-gate-failure-budget!
         (assoc budget :reservations
                (cond-> live
