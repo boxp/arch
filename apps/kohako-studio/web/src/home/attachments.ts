@@ -118,3 +118,11 @@ export function attachmentSubmitAction(
   if (unconfirmed) return 'confirm-pending'
   return queueing ? 'reject-queue' : 'send'
 }
+
+/** 添付を取り消した後も、残っている一部読取の添付の注意（読取範囲と次の手順）を出し続けるための文面。無ければ空文字。 */
+export function remainingAttachmentNotice(chips: readonly { notice?: string | null }[]): string {
+  return chips
+    .map((x) => x.notice)
+    .filter((x): x is string => !!x)
+    .join(' ')
+}

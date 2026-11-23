@@ -7,6 +7,7 @@ import {
   formatFileSize,
   OTHER_MAX_BYTES,
   PDF_MAX_BYTES,
+  remainingAttachmentNotice,
   uploadContentType,
   uploadedState,
 } from './attachments'
@@ -114,4 +115,19 @@ it('confirms an unconfirmed request before sending attachments instead of reject
   expect(attachmentSubmitAction(true, true, false)).toBe('reject-queue')
   expect(attachmentSubmitAction(true, false, false)).toBe('send')
   expect(attachmentSubmitAction(false, true, true)).toBe('send')
+})
+
+it('BOXP-677: 別の添付を取り消しても、残る一部読取の添付の注意は出し続ける', () => {
+  const partial = uploadedState('big.pdf', {
+    kind: 'pdf',
+    read: 'partial',
+    partialReason: 'pages',
+    pages: 120,
+    pagesRead: 30,
+  })
+  expect(partial.notice).toBeTruthy()
+  const chips = [{ notice: partial.notice }, {}]
+  expect(remainingAttachmentNotice(chips)).toBe(partial.notice)
+  expect(remainingAttachmentNotice([{}])).toBe('')
+  expect(remainingAttachmentNotice([])).toBe('')
 })

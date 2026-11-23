@@ -10,6 +10,7 @@ import {
   attachmentSubmitAction,
   attachmentValidation,
   formatFileSize,
+  remainingAttachmentNotice,
   uploadContentType,
   uploadedState,
 } from './attachments'
@@ -2248,7 +2249,7 @@ window.addEventListener('beforeunload', (e) => {
   }
 })
 
-type Chip = { name: string; size: number; type: string; state: string; id?: string }
+type Chip = { name: string; size: number; type: string; state: string; id?: string; notice?: string }
 const chips: Chip[] = [],
   chipBox = el('attachment-chips'),
   fileInput = el<HTMLInputElement>('attachment-file'),
@@ -2278,8 +2279,12 @@ function renderChips() {
     cancel.onclick = () => {
       const i = chips.indexOf(chip)
       if (i >= 0) chips.splice(i, 1)
-      // 取り消した添付についての注意は消す（残る一部読取の添付はチップの ⚠ で分かる）。
-      attachmentNote('')
+      // 取り消した添付についての注意は消し、残る一部読取の添付があればその読取範囲と次の手順を出し直す。
+      // 履歴には既に残しているので、注意欄だけを出し直す。
+      const remaining = remainingAttachmentNotice(chips)
+      attachmentNoteBox.textContent = remaining
+      attachmentNoteBox.dataset.tone = 'warn'
+      attachmentNoteBox.hidden = !remaining
       renderChips()
     }
     if (chip.state.startsWith('⚠')) span.title = '本文の一部だけを読み取りました。読んだ範囲だけで答えます'
@@ -2317,7 +2322,10 @@ async function addFiles(files: FileList | File[]) {
         chip.name = String(result.data.name)
         const shown = uploadedState(chip.name, result.data)
         chip.state = shown.chip
-        if (shown.notice) attachmentNote(shown.notice, 'warn')
+        if (shown.notice) {
+          chip.notice = shown.notice
+          attachmentNote(shown.notice, 'warn')
+        }
       }
     } catch {
       chip.state = '✕ 失敗（× で取り消し）'
