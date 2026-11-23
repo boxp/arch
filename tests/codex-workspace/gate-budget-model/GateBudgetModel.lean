@@ -362,12 +362,25 @@ def line (revPath : List Ev) : String :=
   let (_, os) := t.foldl (fun (s, os) e => (step s e, obs s e :: os)) (({} : St), [])
   ",".intercalate (t.map evs2s) ++ "|" ++ ",".intercalate os.reverse
 
-/-- 初期状態から `depth - 1` 手以内で届く全ての状態について、そこからの全操作を 1 回ずつ通る手順の集合
-（手順は最長 `depth` 手。`depth` 手目で初めて届く状態は、届くところまでで、そこからは伸ばさない）。
-同じ状態へは最短の手順 1 本だけを伸ばす。他の手順の先頭部分になる手順は出力しない。 -/
-def cover (depth : Nat) : IO Unit := do
-  let mut seen : Std.HashSet St := Std.HashSet.emptyWithCapacity.insert {}
-  let mut frontier : List (St × List Ev) := [({}, [])]
+/-- 途中の状態から始める手順の出発点。短い手順では届かない場面（PR の予約の衝突、上限到達後の grant、
+PR 2 件分の上限）を、決めた操作列で作ってから、そこからの全操作を通す。出発点も初期状態からの操作列なので、
+実装側も同じ操作を実行してその状態に入る（状態を直接書き込まない）。 -/
+def seeds : List (List Ev) :=
+  [ -- 両方の ticket が P1 で 1 回ずつ失敗している（次に P1 の予約が衝突しうる）
+    [.start .T1, .fail .T1 .P1, .finish .T1, .start .T2, .fail .T2 .P1, .finish .T2],
+    -- T1 が上限（PR 1 件 × unit 2）に達して止まっている
+    [.start .T1, .fail .T1 .P1, .finish .T1, .start .T1, .fail .T1 .P1, .finish .T1],
+    -- T1 が PR 2 件の持ち主で、上限 4 のうち 3 回失敗している
+    [.start .T1, .pass .T1 .P2, .fail .T1 .P1, .finish .T1, .start .T1, .fail .T1 .P2, .finish .T1,
+     .start .T1, .fail .T1 .P1, .finish .T1] ]
+
+/-- 出発点（操作列 `seed` の後の状態）から `depth - 1` 手以内で届く全ての状態について、そこからの全操作を
+1 回ずつ通る手順の集合（手順は `seed` の後に最長 `depth` 手。`depth` 手目で初めて届く状態は、届くところまでで、
+そこからは伸ばさない）。同じ状態へは最短の手順 1 本だけを伸ばす。他の手順の先頭部分になる手順は出力しない。 -/
+def coverFrom (seed : List Ev) (depth : Nat) : IO Unit := do
+  let root : St := seed.foldl step {}
+  let mut seen : Std.HashSet St := Std.HashSet.emptyWithCapacity.insert root
+  let mut frontier : List (St × List Ev) := [(root, seed.reverse)]
   for _ in [0:depth] do
     let mut next : List (St × List Ev) := []
     for (s, p) in frontier do
@@ -381,6 +394,15 @@ def cover (depth : Nat) : IO Unit := do
     frontier := next.reverse
   for (_, p) in frontier do
     IO.println (line p)
+
+/-- 途中の状態から始める手順の深さ。 -/
+def seedDepth : Nat := 3
+
+/-- 初期状態から深さ `depth`、各出発点から深さ `seedDepth` の手順。 -/
+def cover (depth : Nat) : IO Unit := do
+  coverFrom [] depth
+  for seed in seeds do
+    coverFrom seed seedDepth
 
 def main (args : List String) : IO Unit := do
   match args with

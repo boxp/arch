@@ -46,7 +46,7 @@ run の開始・終了（ticket ごと）、gate の合格・失敗（ticket × 
 
 | モデルの操作 | 記号 | 再生時に呼ぶ実装 |
 |---|---|---|
-| run の開始 | `s1` `s2` | `tick!` と同じ順: `gate-budget-exhausted-for-ticket?`（事前確認）→ `acquire-lock!` → `reserve-gate-budget-run!`。予約を断られたら `release-lock!` |
+| run の開始 | `s1` `s2` | `tick!` と同じ関数: `gate-budget-exhausted-for-ticket?`（事前確認）、`acquire-lock!`、`reserve-gate-budget-run!`。予約を断られたら `release-lock!`。`tick!` は事前確認で断ると予約まで進まないが、再生では予約側の判定も毎回通し、事前確認と食い違えば不一致として報告する |
 | run の終了 | `e1` `e2` | `release-lock!`（予約は lock が消えると無効になる） |
 | gate に合格 | `p1a` … `p2b` | `record-gate-pr-registrations!`（`:ok? true`、`:checked-pr-urls`） |
 | gate で失敗 | `f1a` … `f2b` | `record-gate-pr-registrations!` → `record-gate-failure-budget!`（run の終わりの順） |
@@ -72,21 +72,33 @@ run の開始・終了（ticket ごと）、gate の合格・失敗（ticket × 
 - **lock の期限切れによる予約の失効**。予約が無効になるのは run の終了（lock の解放）だけを扱う。期限切れ・計画停止での回収は `../lock-model/` の対象。
 - **停止の報告・Blocked への遷移・失敗の分類**、PR への grant、PR URL の表記ゆれ、unit の設定値の読み方（2 に固定）。
 - **自動継続の回数**（`consume-continuation!`）。別のカウンタで、今回は対象にしていない。
-- 手順の長さは **最長 5 手**。PR 2 件分の上限（unit × 2 = 4）まで失敗を積む並び（12 手以上）と、上限到達後に grant して再開する並び（7 手以上）は、生成した手順には入らない。これらは定理（規則 3・4・5・9）がモデルについて示すだけで、実装への照合はしていない。
+- 手順の長さは、初期状態から **最長 5 手**、下の 3 つの出発点から **最長 3 手**。それより長い並びでだけ出る違いは見つからない。
+  たとえば「3 つ目の PR」「上限到達 → grant → 再び上限 → もう一度 grant」「両方の ticket が上限に達した後の衝突」は入らない。
 
 ## 手順の生成（再現）
 
 ```sh
 cd tests/codex-workspace/gate-budget-model
 lean GateBudgetModel.lean                                   # 定理の検査（通れば何も出ない。2CPU で約 35 秒）
-lean --run GateBudgetModel.lean cover 5 | gzip -n -9 > gate-budget-traces.txt.gz   # 手順の生成（約 25 秒、22,535 本・106,370 操作。圧縮後 約 0.09MB）
-bb ../task-board-gate-budget-trace-test.bb                  # 再生（約 30 秒、Lean 不要）
+lean --run GateBudgetModel.lean cover 5 | gzip -n -9 > gate-budget-traces.txt.gz   # 手順の生成（約 25 秒、26,034 本・142,239 操作。圧縮後 約 0.11MB）
+bb ../task-board-gate-budget-trace-test.bb                  # 再生（約 40 秒、Lean 不要）
 ```
 
-`cover N` の意味は `../lock-model/README.md` と同じ（N-1 手以内で届く全ての状態から、全ての操作を 1 回ずつ）。出力は決定的。
+`cover N` は 2 種類の手順を出す。出力は決定的。
 
-深さを 5 にした理由: 深さ 6 は 72,581 本・再生 約 130 秒・圧縮後 約 0.29MB で、深さ 5 の 4 倍かかる。検出できた変異の差は
-[docs/project_docs/BOXP-673/plan.md](../../../docs/project_docs/BOXP-673/plan.md) に書いた。
+1. 初期状態から N-1 手以内で届く全ての状態について、そこからの 20 操作を 1 回ずつ（意味は `../lock-model/README.md` と同じ）。N = 5 で 22,535 本。
+2. **途中の状態から始める手順**（`seeds`）。短い手順では届かない場面を、決めた操作列で作ってから、そこから 2 手以内で届く全ての状態について 20 操作を 1 回ずつ（出発点の後に最長 3 手）。計 3,499 本。
+   出発点も初期状態からの操作列なので、再生では実装も同じ操作を実行してその状態に入る（状態を直接書き込まない）。
+
+| 出発点 | 操作列 | 届くようになる場面 |
+|---|---|---|
+| 両方の ticket が P1 で 1 回ずつ失敗 | `s1,f1a,e1,s2,f2a,e2` | PR の予約の衝突（規則 10）。T1 が P1 を予約して動いている間、T2 は始まらない |
+| T1 が上限 2 に達して停止 | `s1,f1a,e1,s1,f1a,e1` | 上限到達後は始まらない（規則 4）、grant・旧 grant の後に 1 回だけ始まり、落ちれば再び止まる（規則 3・5） |
+| T1 が PR 2 件の持ち主で 3/4 | `s1,p1b,f1a,e1,s1,f1b,e1,s1,f1a,e1` | PR 数に応じた上限の境界（3 回失敗した後も始まり、4 回目の失敗で上限 4 に達する）、除外で上限が 2 に下がると始まらない（規則 8・4） |
+
+出発点を足した理由: 初期状態から深さ 5 だけでは、PR の予約の衝突（最短 8 手）に届かず、衝突の判定を壊した変異を見逃した。
+深さを 6 に上げる案（72,581 本・再生 約 130 秒）でも届かないので、深さではなく出発点で補った。経緯と数字は
+[docs/project_docs/BOXP-673/plan.md](../../../docs/project_docs/BOXP-673/plan.md)。
 
 ## モデルや実装を変えるとき
 

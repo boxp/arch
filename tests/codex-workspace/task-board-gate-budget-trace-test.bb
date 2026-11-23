@@ -55,17 +55,27 @@
 (alter-var-root #'owner-id (constantly (fn [] "A")))
 
 (defn start!
-  "The start of a run as `tick!` does it: the cheap pre-check, the ticket lock, then the
-  reservation under the budget lock; a refused reservation gives the lock back."
+  "The start of a run with the calls of `tick!`: the cheap pre-check, the ticket lock, then
+  the reservation under the budget lock; a refused reservation gives the lock back.
+  `tick!` does not reach the reservation when the pre-check already refuses, which would
+  leave the reservation's own exhaustion check (the authoritative one) unexercised. So the
+  reservation is always attempted here, and the pre-check has to agree with it: a
+  pre-check that refuses while the reservation starts the run, or the reverse on an
+  exhausted ticket, is reported as a mismatch."
   [k]
-  (let [ticket (tickets k)]
-    (if (and (fs/exists? (gate-failure-budget-path)) (gate-budget-exhausted-for-ticket? ticket ""))
-      0
-      (if-let [lock (acquire-lock! ticket :implement "In Progress")]
-        (if (reserve-gate-budget-run! ticket (:run-id lock) "")
-          (do (swap! runs assoc k lock) 1)
-          (do (release-lock! ticket lock) 0))
-        0))))
+  (let [ticket (tickets k)
+        pre-refused? (boolean (and (fs/exists? (gate-failure-budget-path))
+                                   (gate-budget-exhausted-for-ticket? ticket "")))
+        exhausted? (:exhausted? (gate-budget-status (read-gate-failure-budget) :ticket ticket))]
+    (when (not= pre-refused? (boolean exhausted?))
+      (throw (ex-info "the pre-check disagrees with the ticket's status" {})))
+    (if-let [lock (acquire-lock! ticket :implement "In Progress")]
+      (if (reserve-gate-budget-run! ticket (:run-id lock) "")
+        (do (when pre-refused? (throw (ex-info "a run started although the pre-check refused it" {})))
+            (swap! runs assoc k lock)
+            1)
+        (do (release-lock! ticket lock) 0))
+      0)))
 
 (defn add-legacy-grant!
   "A ticket grant as the runner wrote it before BOXP-448: no :kind."
