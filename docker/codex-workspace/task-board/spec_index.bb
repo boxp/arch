@@ -122,6 +122,12 @@
       "show" (let [entry (first (filter #(= key (:feature %)) (read-index vault)))]
                (when-not entry
                  (fail! (str "no feature " (pr-str key) " in " index-rel "; run `list`. A feature without a current-spec note has none yet.")))
+               ;; The answer is read as "what applies now": refuse it when the index or the
+               ;; marks of this feature are inconsistent, instead of answering with a stale note.
+               (when-let [found (seq (filter #(or (str/includes? % (str "feature " key " "))
+                                                  (str/includes? % (str "marked current for " key ",")))
+                                             (problems vault)))]
+                 (apply fail! (str "the current spec of " key " cannot be determined:") (map #(str "\n  " %) found)))
                (println (str (fs/path vault (:rel entry))))
                (doseq [{:keys [rel feature status ticket]} (marked-notes vault)
                        :when (and (= key feature) (not= rel (:rel entry)))]

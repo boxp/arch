@@ -57,6 +57,30 @@
     (is (= 1 (:exit r)) "an unknown feature is an error, not an empty answer")
     (is (str/includes? (:err r) "nope"))))
 
+(deftest show-refuses-an-entry-that-is-not-the-current-spec
+  ;; The answer of `show` is read as "what applies now", so a broken entry must not be answered.
+  (testing "the indexed note was replaced and the index still points at it"
+    (let [vault (vault! "show-history")]
+      (note! vault "Projects/budget/spec.md"
+             {"spec_feature" "budget" "spec_status" "history" "superseded_by" "\"[[Projects/budget/proposal-9]]\""} "# 旧")
+      (let [r (cli vault "show" "budget")]
+        (is (= 1 (:exit r)))
+        (is (str/blank? (:out r)) "no path is printed")
+        (is (str/includes? (:err r) "Projects/budget/spec.md")))))
+  (testing "the indexed note is missing, or belongs to another feature"
+    (let [vault (vault! "show-missing")]
+      (fs/delete (fs/path vault "Projects/budget/spec.md"))
+      (is (= 1 (:exit (cli vault "show" "budget")))))
+    (let [vault (vault! "show-other")]
+      (note! vault "Projects/budget/spec.md" {"spec_feature" "lock" "spec_status" "current"} "# lock")
+      (is (= 1 (:exit (cli vault "show" "budget"))))))
+  (testing "two notes claim to be current: neither is answered"
+    (let [vault (vault! "show-two")]
+      (note! vault "Projects/BOXP-2/spec.md" {"spec_feature" "budget" "spec_status" "current"} "# もう一つ")
+      (let [r (cli vault "show" "budget")]
+        (is (= 1 (:exit r)))
+        (is (str/blank? (:out r)))))))
+
 (deftest list-prints-every-indexed-feature
   (let [r (cli (vault! "list") "list")]
     (is (zero? (:exit r)))
