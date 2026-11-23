@@ -2,7 +2,9 @@
 
 Runs the whole roles/kubernetes_upgrade/tasks/pre_checks.yml over a local
 connection with mock apt-get/apt-cache/gpg/kubelet/kubectl; no cluster, APT
-repository or sudo access is used.
+repository or sudo access is used. One test runs the real
+playbooks/upgrade-k8s.yml with `--tags pre_checks`, exactly as the
+Pre-upgrade Validation job does, to cover the play and tag wiring.
 """
 import json
 import os
@@ -27,14 +29,13 @@ class PreCheckScopeTest(unittest.TestCase):
         self.state_dir = Path(tempfile.mkdtemp(prefix='pre-check-scope-'))
         self.addCleanup(shutil.rmtree, self.state_dir, True)
 
-    def run_pre_checks(self, target_hosts=None, **overrides):
+    def run_pre_checks(self, target_hosts=None, real_playbook=False, **overrides):
         env = {
             **os.environ,
             'PATH': f"{FIXTURE_DIR}:{READY_FIXTURE_DIR}:{os.environ['PATH']}",
             'PRE_CHECK_MOCK_MODE': 'ready',
             'PRE_CHECK_MOCK_STATE_DIR': str(self.state_dir),
             'ANSIBLE_STDOUT_CALLBACK': 'json',
-            'ANSIBLE_GATHERING': 'explicit',
             'ANSIBLE_LOCALHOST_WARNING': 'false',
             'ANSIBLE_DEPRECATION_WARNINGS': 'false',
         }
@@ -55,13 +56,15 @@ class PreCheckScopeTest(unittest.TestCase):
         extra.update(overrides)
         if target_hosts is not None:
             extra['kubernetes_upgrade_pre_check_target_hosts'] = target_hosts
+        playbook = ([str(ANSIBLE_DIR / 'playbooks/upgrade-k8s.yml'), '--tags', 'pre_checks']
+                    if real_playbook else [str(FIXTURE_DIR / 'playbook.yml')])
         proc = subprocess.run(
             ['ansible-playbook', '-i', str(READY_FIXTURE_DIR / 'inventory.yml'),
-             str(FIXTURE_DIR / 'playbook.yml'), '-e', json.dumps(extra)],
+             *playbook, '-e', json.dumps(extra)],
             cwd=ANSIBLE_DIR, env=env, capture_output=True, text=True)
         # profile_tasks (ansible.cfg) prints timing after the JSON document; parse only the first object.
         output, _ = json.JSONDecoder().raw_decode(proc.stdout[proc.stdout.index('{'):])
-        return proc, output['plays'][0]['tasks']
+        return proc, [task for play in output['plays'] for task in play['tasks']]
 
     @staticmethod
     def ran(tasks, name):
@@ -99,6 +102,14 @@ class PreCheckScopeTest(unittest.TestCase):
         proc, tasks = self.run_pre_checks(['cp-b'])
         self.assertEqual(proc.returncode, 0, proc.stdout)
         self.assertEqual(self.ran(tasks, APT_TASK), {'cp-b'})
+        self.assert_cluster_wide_gates(tasks)
+
+    def test_real_upgrade_playbook_scopes_apt_preflight_to_the_target(self):
+        # The workflow runs this playbook with --tags pre_checks and no --limit:
+        # the role's pre-checks run from the upgrade plays on every host.
+        proc, tasks = self.run_pre_checks(['worker-a'], real_playbook=True)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(self.ran(tasks, APT_TASK), {'worker-a'})
         self.assert_cluster_wide_gates(tasks)
 
     def test_target_still_rejects_an_unavailable_revision(self):
