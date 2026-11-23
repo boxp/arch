@@ -3,12 +3,23 @@ import { randomBytes } from 'node:crypto'
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { atomic } from './storage.js'
+import {
+  type AttachmentKind as Kind,
+  classifyUpload,
+  OTHER_MAX_BYTES,
+  PDF_MAX_BYTES,
+  PDF_MAX_PAGES,
+  type PartialReason,
+  type PdfFacts,
+  type ReadState,
+  TEXT_MAX_BYTES,
+} from './attachment-limits.js'
 /** 1 メッセージの画像合計（生バイト）。base64 化後も Hermes の要求上限 10MB に収まる値。 */
 export const ATTACHMENT_IMAGE_TOTAL = 5.5 * 1024 * 1024
 /** 1 メッセージの抽出テキスト合計（UTF-8 バイト）。枠・本文込みで Hermes の正規化テキスト上限 64KB に収まる値。1 件の上限も同じ。 */
-export const ATTACHMENT_TEXT_TOTAL = 48000
-
-type Kind = 'image' | 'pdf' | 'text'
+export const ATTACHMENT_TEXT_TOTAL = TEXT_MAX_BYTES
+/** PDF を開いて本文を読む時間の上限。30 MiB の PDF でも通常 1 秒未満（BOXP-677 実測）。nginx の応答待ち 60s より十分短くする。 */
+export const PDF_TIMEOUT_MS = 20000
 export type Attachment = {
   id: string
   principal: string
@@ -19,6 +30,14 @@ export type Attachment = {
   displayName: string
   createdAt: number
   truncated: boolean
+  /** 本文の読取状態。BOXP-677 より前の保存分には無い（truncated から読む）。 */
+  read?: ReadState
+  partialReason?: PartialReason
+  /** PDF の総ページ数と、本文を読んだページ数。 */
+  pages?: number
+  pagesRead?: number
+  /** 保存領域で使うバイト数。PDF は本文だけを使うため原本を保存せず 0。古い保存分には無い（size と同じ）。 */
+  stored?: number
   extractedText?: string
 }
 export class AttachmentError extends Error {
@@ -32,6 +51,61 @@ export class AttachmentError extends Error {
 const fail = (code: string, status: number): never => {
   throw new AttachmentError(code, status)
 }
+/**
+ * PDF の本文を先頭 PDF_MAX_PAGES ページ、TEXT_MAX_BYTES を超えるまで読む。スクリプト・フォント読込・外部取得はしない。
+ * data の中身は pdfjs に渡したあと使わない（複製せずに渡し、30 MiB の PDF でメモリを二重に使わない）。
+ */
+async function readPdf(data: Buffer): Promise<{ facts: PdfFacts; text: string; pagesRead: number }> {
+  let text = '',
+    pagesRead = 0
+  try {
+    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
+    // pdfjs-dist 6 no longer compiles fonts with eval/new Function, so the former isEvalSupported:false option was removed.
+    const task = pdfjs.getDocument({
+      data: new Uint8Array(data.buffer, data.byteOffset, data.length),
+      disableFontFace: true,
+      useSystemFonts: false,
+      useWorkerFetch: false,
+      stopAtErrors: true,
+    })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const pages = await Promise.race([
+        (async () => {
+          const pdf = await task.promise
+          for (let i = 1; i <= Math.min(pdf.numPages, PDF_MAX_PAGES); i++) {
+            const page = await pdf.getPage(i),
+              content = await page.getTextContent()
+            text += `${content.items.map((x) => ('str' in x ? x.str : '')).join(' ')}\n`
+            pagesRead = i
+            if (Buffer.byteLength(text) > TEXT_MAX_BYTES) break
+          }
+          return pdf.numPages
+        })(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new PdfTimeout()), PDF_TIMEOUT_MS)
+        }),
+      ])
+      return {
+        facts: { status: 'ok', pages, textBytes: Buffer.byteLength(text), hasText: !!text.trim() },
+        text,
+        pagesRead,
+      }
+    } finally {
+      clearTimeout(timer)
+      await task.destroy()
+    }
+  } catch (e) {
+    const status =
+      e instanceof PdfTimeout
+        ? 'timeout'
+        : e && typeof e === 'object' && 'name' in e && e.name === 'PasswordException'
+          ? 'encrypted'
+          : 'unreadable'
+    return { facts: { status }, text: '', pagesRead }
+  }
+}
+class PdfTimeout extends Error {}
 export function createAttachments(dir?: string, now = Date.now, quota = 200 * 1024 * 1024, maxCount = 200) {
   const folder = dir && join(dir, 'attachments'),
     memory = new Map<string, { meta: Attachment; data: Buffer }>()
@@ -63,13 +137,13 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
   }
   async function clean(extra = 0) {
     const items = (await list()).sort((a, b) => a.createdAt - b.createdAt)
-    let total = items.reduce((n, x) => n + x.size, 0),
+    let total = items.reduce((n, x) => n + (x.stored ?? x.size), 0),
       count = items.length
     const kept: Attachment[] = []
     for (const item of items)
       if (now() - item.createdAt >= 86400000 || total + extra > quota || count >= maxCount) {
         await remove(item.id)
-        total -= item.size
+        total -= item.stored ?? item.size
         count--
       } else kept.push(item)
     schedule(kept[0]?.createdAt)
@@ -108,12 +182,14 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
     }
   }
   async function upload(data: Buffer, claim: string, filename: string, principal: string, sessionKey: number) {
-    if (data.length > 5 * 1024 * 1024) fail('too_large', 413)
+    const size = data.length
+    if (size > PDF_MAX_BYTES) fail('too_large', 413)
     const mime = claim.split(';')[0].trim().toLowerCase()
     let kind: Kind,
       detected: string,
       extractedText: string | undefined,
-      truncated = false
+      pdfFacts: PdfFacts | undefined,
+      pagesRead = 0
     if (data.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) {
       kind = 'image'
       detected = 'image/png'
@@ -130,8 +206,12 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
       kind = 'pdf'
       detected = 'application/pdf'
     } else {
-      if (!(mime.startsWith('text/') || /\.(txt|md|csv|json|log|yaml|yml|tsv)$/i.test(filename)) || data.includes(0))
+      // 未対応形式は PDF 上限 (30 MiB) 以下なら 415 を返す（モデルの limitOf unsupported = pdfMax）。
+      if (!(mime.startsWith('text/') || /\.(txt|md|csv|json|log|yaml|yml|tsv)$/i.test(filename)))
         fail('unsupported_type', 415)
+      // テキストは復号より先にサイズを判定する（5 MiB 超のテキストを復号しない）。
+      if (size > OTHER_MAX_BYTES) fail('too_large', 413)
+      if (data.includes(0)) fail('unsupported_type', 415)
       try {
         extractedText = new TextDecoder('utf-8', { fatal: true }).decode(data)
       } catch {
@@ -140,6 +220,7 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
       kind = 'text'
       detected = mime || 'text/plain'
     }
+    if (kind !== 'pdf' && size > OTHER_MAX_BYTES) fail('too_large', 413)
     if (
       (kind !== 'text' && mime !== detected) ||
       (kind === 'text' &&
@@ -150,46 +231,19 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
     )
       fail('unsupported_type', 415)
     if (kind === 'pdf') {
-      try {
-        const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
-        // pdfjs-dist 6 no longer compiles fonts with eval/new Function, so the former isEvalSupported:false option was removed.
-        const task = pdfjs.getDocument({
-          data: new Uint8Array(data),
-          disableFontFace: true,
-          useSystemFonts: false,
-          useWorkerFetch: false,
-          stopAtErrors: true,
-        })
-        let timer: ReturnType<typeof setTimeout> | undefined
-        try {
-          const result = await Promise.race([
-            (async () => {
-              const pdf = await task.promise
-              let text = ''
-              for (let i = 1; i <= Math.min(pdf.numPages, 30); i++) {
-                const page = await pdf.getPage(i),
-                  content = await page.getTextContent()
-                text += `${content.items.map((x) => ('str' in x ? x.str : '')).join(' ')}\n`
-                if (Buffer.byteLength(text) > ATTACHMENT_TEXT_TOTAL) break
-              }
-              truncated = pdf.numPages > 30 || Buffer.byteLength(text) > ATTACHMENT_TEXT_TOTAL
-              return text
-            })(),
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(Error('timeout')), 10000)
-            }),
-          ])
-          extractedText = result
-          if (!result.trim()) fail('pdf_no_text', 422)
-        } finally {
-          clearTimeout(timer)
-          await task.destroy()
-        }
-      } catch (e) {
-        if (e instanceof AttachmentError) throw e
-        return fail('pdf_unreadable', 422)
-      }
+      const read = await readPdf(data)
+      pdfFacts = read.facts
+      extractedText = read.text
+      pagesRead = read.pagesRead
     }
+    const outcome = classifyUpload(
+      kind === 'pdf'
+        ? { kind, size, ...(pdfFacts ? { pdf: pdfFacts } : {}) }
+        : kind === 'text'
+          ? { kind, size, textBytes: Buffer.byteLength(extractedText ?? '') }
+          : { kind, size },
+    )
+    if (!outcome.ok) return fail(outcome.error, outcome.status)
     if (extractedText && Buffer.byteLength(extractedText) > ATTACHMENT_TEXT_TOTAL) {
       let low = 0,
         high = extractedText.length
@@ -199,7 +253,6 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
         else high = mid - 1
       }
       extractedText = extractedText.slice(0, low)
-      truncated = true
     }
     // biome-ignore lint/suspicious/noControlCharactersInRegex: 添付ファイル名の C0/C1 制御文字とパス区切りを置換して表示名を安全にする
     const displayName = filename.replace(/[\x00-\x1f\x7f-\x9f/\\]/g, '_').slice(0, 120) || 'file'
@@ -209,18 +262,24 @@ export function createAttachments(dir?: string, now = Date.now, quota = 200 * 10
       sessionKey,
       kind,
       mime: detected,
-      size: data.length,
+      size,
       displayName,
       createdAt: now(),
-      truncated,
+      truncated: outcome.read === 'partial',
+      read: outcome.read,
+      ...(outcome.reason ? { partialReason: outcome.reason } : {}),
+      ...(pdfFacts?.status === 'ok' ? { pages: pdfFacts.pages, pagesRead } : {}),
+      stored: kind === 'pdf' ? 0 : size,
       ...(extractedText !== undefined ? { extractedText } : {}),
     }
+    // PDF は抽出した本文だけを Hermes へ渡すため、原本は保存しない（30 MiB の PDF で保存領域を使い切らない）。
+    const kept = kind === 'pdf' ? Buffer.alloc(0) : data
     const work = lock.then(async () => {
-      await clean(data.length)
+      await clean(kept.length)
       if (folder) {
-        await writeFile(join(folder, `${meta.id}.bin`), data, { mode: 0o600, flag: 'wx' })
+        await writeFile(join(folder, `${meta.id}.bin`), kept, { mode: 0o600, flag: 'wx' })
         await atomic(join(folder, `${meta.id}.json`), meta)
-      } else memory.set(meta.id, { meta, data })
+      } else memory.set(meta.id, { meta, data: kept })
       if (!expiryTimer) schedule(meta.createdAt)
     })
     lock = work.catch(() => {})

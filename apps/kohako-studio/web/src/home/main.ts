@@ -5,7 +5,16 @@ import { must } from '../must'
 import './activity.css'
 import { validateActivity, renderActivity, tickActivity } from './activity'
 import { createDictation, supportsDictation, appendDictation } from './dictation'
-import { attachmentSubmitAction, attachmentValidation } from './attachments'
+import {
+  attachmentProblem,
+  attachmentSubmitAction,
+  attachmentValidation,
+  formatFileSize,
+  composeAttachmentNote,
+  remainingAttachmentNotice,
+  uploadContentType,
+  uploadedState,
+} from './attachments'
 import { shouldSubmit } from './keys'
 import { atBottom, createFollower } from './scroll'
 import {
@@ -2241,17 +2250,27 @@ window.addEventListener('beforeunload', (e) => {
   }
 })
 
-type Chip = { name: string; size: number; type: string; state: string; id?: string }
+type Chip = { name: string; size: number; type: string; state: string; id?: string; notice?: string }
 const chips: Chip[] = [],
   chipBox = el('attachment-chips'),
   fileInput = el<HTMLInputElement>('attachment-file'),
+  attachmentNoteBox = el('attachment-note'),
   form = el<HTMLFormElement>('form')
-function formatFileSize(bytes: number): string {
-  if (bytes < 1000) return `${bytes} B`
-  if (bytes < 1_000_000) return `${(bytes / 1000).toFixed(1)} KB`
-  return `${(bytes / 1_000_000).toFixed(1)} MB`
+/**
+ * BOXP-677: 添付の失敗・一部読取の理由は入力欄の上に出す（#error は接続障害時しか表示されず、通常時は画面に出ないため）。
+ * 履歴の「お知らせ」にも残す。空文字で消す。
+ */
+function attachmentNote(text: string, tone: 'error' | 'warn' = 'error') {
+  // 残っている一部読取の添付の注意も重ねて出し、後の添付の通知で先の PDF の読取範囲が消えないようにする。
+  const shown = composeAttachmentNote(text, chips)
+  attachmentNoteBox.textContent = shown
+  attachmentNoteBox.dataset.tone = tone
+  attachmentNoteBox.hidden = !shown
+  if (text) addHistory('お知らせ', text)
 }
 function renderChips() {
+  // 添付がすべて送られたか取り消されたら、添付の注意も消す。
+  if (!chips.length) attachmentNote('')
   chipBox.replaceChildren()
   for (const chip of chips) {
     const span = document.createElement('span'),
@@ -2263,9 +2282,15 @@ function renderChips() {
     cancel.onclick = () => {
       const i = chips.indexOf(chip)
       if (i >= 0) chips.splice(i, 1)
+      // 取り消した添付についての注意は消し、残る一部読取の添付があればその読取範囲と次の手順を出し直す。
+      // 履歴には既に残しているので、注意欄だけを出し直す。
+      const remaining = remainingAttachmentNotice(chips)
+      attachmentNoteBox.textContent = remaining
+      attachmentNoteBox.dataset.tone = 'warn'
+      attachmentNoteBox.hidden = !remaining
       renderChips()
     }
-    if (chip.state === '本文一部省略') span.title = '上限を超えた末尾を省略して送信します'
+    if (chip.state.startsWith('⚠')) span.title = '本文の一部だけを読み取りました。読んだ範囲だけで答えます'
     span.append(cancel)
     chipBox.append(span)
   }
@@ -2274,33 +2299,40 @@ async function addFiles(files: FileList | File[]) {
   for (const file of Array.from(files)) {
     const validation = attachmentValidation(file, chips)
     if (validation) {
-      setError(validation)
+      attachmentNote(validation)
       if (chips.length >= 3) break
       continue
     }
-    const chip: Chip = { name: file.name, size: file.size, type: file.type, state: 'アップロード中' }
+    const chip: Chip = { name: file.name, size: file.size, type: file.type, state: 'アップロード中…' }
     chips.push(chip)
     renderChips()
     try {
       const result = await call('attachments', {
         method: 'POST',
         headers: {
-          'Content-Type': file.type || 'application/octet-stream',
+          'Content-Type': uploadContentType(file),
           'X-Kohako-Filename': encodeURIComponent(file.name),
         },
         body: file,
+        // 30 MiB を遅い回線で送る場合も考え 5 分で打ち切り、無言で「アップロード中」のまま残さない。
+        signal: AbortSignal.timeout(300000),
       })
       if (result.status !== 201 || typeof result.data?.attachmentId !== 'string') {
-        chip.state = '失敗'
-        setError(problem(result.status, result.data))
+        chip.state = '✕ 失敗（× で取り消し）'
+        attachmentNote(attachmentProblem(result.status, result.data, file.name))
       } else {
         chip.id = result.data.attachmentId
         chip.name = String(result.data.name)
-        chip.state = result.data.truncated ? '本文一部省略' : ''
+        const shown = uploadedState(chip.name, result.data)
+        chip.state = shown.chip
+        if (shown.notice) {
+          chip.notice = shown.notice
+          attachmentNote(shown.notice, 'warn')
+        }
       }
     } catch {
-      chip.state = '失敗'
-      setError('アップロードに失敗しました。取り消して再度追加してください。')
+      chip.state = '✕ 失敗（× で取り消し）'
+      attachmentNote(attachmentProblem(0, null, file.name))
     }
     renderChips()
   }
@@ -2324,12 +2356,14 @@ el<HTMLFormElement>('form').addEventListener('submit', (event) => {
   const text = message.value.trim() || (chips.length ? '添付ファイルを見てください' : '')
   if (!text || touchActive || !enabled || recording || starting) return
   if (chips.length && chips.some((x) => !x.id)) {
-    setError('添付のアップロード完了を待つか、失敗した添付を取り消してください。')
+    attachmentNote('添付のアップロード完了を待つか、失敗した添付を × で取り消してから送信してください。')
     return
   }
   const attachAction = attachmentSubmitAction(chips.length > 0, queueing(), !!unconfirmed)
   if (attachAction === 'reject-queue') {
-    setError('ファイル付きのメッセージは送信待ちに入れられません。いまの返答が終わってから送信してください。')
+    attachmentNote(
+      'ファイル付きのメッセージは送信待ちに入れられません。いまの返答が終わってから送信してください（添付と入力はそのまま残しています）。',
+    )
     return
   }
   if (attachAction === 'confirm-pending' && unconfirmed) {
