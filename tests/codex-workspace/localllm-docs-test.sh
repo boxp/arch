@@ -14,8 +14,14 @@ unset CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SO
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb"
 DOCS_MODULE="${ROOT_DIR}/docker/codex-workspace/task-board/localllm_docs.bb"
+shard="${LOCALLLM_TEST_SHARD-0}"
+shards="${LOCALLLM_TEST_SHARDS-1}"
+if ! [[ "${shards}" =~ ^[1-9][0-9]*$ && "${shard}" =~ ^(0|[1-9][0-9]*)$ ]] ||
+  ((${#shards} > 6 || ${#shard} > 6)) || ((shard >= shards)); then
+  echo 'invalid shard' >&2
+  exit 1
+fi
 TMP="$(mktemp -d)"
-PORT="$((20000 + RANDOM % 20000))"
 MODE_FILE="${TMP}/mode"
 REQ_LOG="${TMP}/requests.log"
 CONFLICT_FILE="${TMP}/conflict-target"
@@ -38,7 +44,7 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 cat >"${TMP}/fake-llm.bb" <<'EOF'
 (require '[org.httpkit.server :as srv] '[cheshire.core :as json] '[clojure.string :as str])
-(def port (Long/parseLong (System/getenv "FAKE_LLM_PORT")))
+(def port-file (System/getenv "FAKE_LLM_PORT_FILE"))
 (def mode-file (System/getenv "FAKE_LLM_MODE_FILE"))
 (def req-log (System/getenv "FAKE_LLM_REQ_LOG"))
 (def conflict-file (System/getenv "FAKE_LLM_CONFLICT_FILE"))
@@ -315,18 +321,31 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (= mode "conflict") (do (spit (str/trim (slurp conflict-file)) "---\ntitle: edited by human\n---\n\n# runbook\n\n## 現状\n\n人間が同時に編集した。\n")
                               (respond (proposal) "stop"))
       :else (respond (proposal) "stop"))))
-(srv/run-server handler {:port port})
-(println "fake llm listening" port)
+(def server (srv/run-server handler {:ip "127.0.0.1" :port 0}))
+(spit port-file (str (:local-port (meta server))))
 @(promise)
 EOF
 
-FAKE_LLM_PORT="${PORT}" FAKE_LLM_MODE_FILE="${MODE_FILE}" FAKE_LLM_REQ_LOG="${REQ_LOG}" FAKE_LLM_CONFLICT_FILE="${CONFLICT_FILE}" \
+FAKE_LLM_PORT_FILE="${TMP}/port" FAKE_LLM_MODE_FILE="${MODE_FILE}" FAKE_LLM_REQ_LOG="${REQ_LOG}" FAKE_LLM_CONFLICT_FILE="${CONFLICT_FILE}" \
   bb "${TMP}/fake-llm.bb" >"${TMP}/fake-llm.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 50); do
-  if curl -s -o /dev/null "http://127.0.0.1:${PORT}/v1/models"; then break; fi
+  [[ -s "${TMP}/port" ]] && break
+  kill -0 "${SERVER_PID}" 2>/dev/null || fail "fake server failed to start"
   sleep 0.2
 done
+[[ -s "${TMP}/port" ]] || fail "fake server did not report a port"
+PORT="$(cat "${TMP}/port")"
+ready=0
+for _ in $(seq 1 50); do
+  if curl -s -o /dev/null "http://127.0.0.1:${PORT}/v1/models"; then
+    ready=1
+    break
+  fi
+  kill -0 "${SERVER_PID}" 2>/dev/null || fail "fake server failed to start"
+  sleep 0.2
+done
+((ready == 1)) || fail "fake server did not become ready"
 
 # ---------------------------------------------------------------------------
 # Fakes for cloud CLIs: any start is a failure of the "no cloud fallback" rule.
@@ -3774,92 +3793,11 @@ test_corpus_read_accepts_the_wikilink_form_of_a_corpus_note() {
   [[ "${out}" == *':full-ok? true'* && "${out}" == *':other-ok? false'* ]] || fail "the .md path still reads and a note outside the corpus stays refused: ${out}"
 }
 
-for t in \
-  test_corpus_read_accepts_the_wikilink_form_of_a_corpus_note \
-  test_legacy_markers_are_migrated_once_and_safely \
-  test_canon_select_grooms_by_content_then_amends_and_revises_in_place \
-  test_canon_amend_replace_text_accepts_a_line_id_and_refuses_headings \
-  test_canon_amend_line_listing_shares_one_budget_across_targets \
-  test_canon_amend_line_id_replaces_one_of_two_identical_lines \
-  test_canon_amend_correction_round_refits_the_line_listing_to_the_cap \
-  test_canon_amend_card_back_in_backlog_is_regroomed_by_content_search \
-  test_canon_select_multi_target_replace_is_plain_text_read_by_other_tickets \
-  test_canon_select_asks_or_refuses_without_writing \
-  test_canon_select_new_note_goes_to_the_chosen_folder_as_a_plain_note \
-  test_canon_amend_stops_when_the_plan_is_stale_or_missing \
-  test_canon_amend_rejects_changes_outside_the_planned_section_and_needs_human \
-  test_credential_additions_are_blocked_by_the_executor \
-  test_create_makes_an_unapproved_note_and_revises_it \
-  test_create_kind_comes_from_docs_kind_or_wording_or_is_asked_without_a_request \
-  test_create_name_and_slug_collisions_get_one_correction_then_block \
-  test_create_needs_human_and_result_markers_block_without_writing \
-  test_create_refuses_raw_credential_values_and_redacts_wikilinked_references \
-  test_natural_language_backlog_card_is_groomed_then_runs_revises_and_refuses_an_unchanged_review \
-  test_natural_language_ready_card_infers_create_without_groom_and_explicit_sources_still_win \
-  test_natural_language_propose_target_comes_from_one_wikilink_inside_the_write_roots \
-  test_natural_language_unclear_requests_stop_with_one_question_and_no_model_call \
-  test_vault_wide_read_root_excludes_tickets_hidden_dirs_and_proposals_and_redacts_secret_lines \
-  test_runaway_output_is_cut_and_blocks_without_retry \
-  test_research_collects_evidence_then_applies_with_sources \
-  test_research_sources_must_be_notes_the_model_read \
-  test_research_sources_hit_only_by_search_are_rejected \
-  test_research_total_time_limit_caps_each_model_call \
-  test_model_supplied_sources_outside_the_runner_reads_are_not_recorded \
-  test_write_is_deferred_until_the_lifecycle_commit \
-  test_failed_transition_after_the_write_is_rolled_back \
-  test_partial_write_failure_keeps_a_file_edited_in_between \
-  test_stale_lock_recovery_restores_an_unfinished_write \
-  test_stale_lock_recovery_is_decided_by_the_run_commit_record \
-  test_two_tickets_on_the_same_target_do_not_overwrite_each_other \
-  test_prompt_over_the_cap_blocks_without_a_request \
-  test_symlink_swap_between_snapshot_and_write_is_rejected \
-  test_ticket_brief_drops_runner_notes_and_marks_the_ticket_as_non_source \
-  test_absolute_paths_in_the_ticket_are_rejected \
-  test_crash_right_after_the_write_is_recovered_from_the_journal \
-  test_edit_on_a_later_target_during_the_write_is_detected \
-  test_correction_round_over_the_prompt_cap_blocks \
-  test_research_finish_without_reads_auto_reads_the_hits \
-  test_research_without_progress_stops_and_unsourced_apply_blocks \
-  test_research_sources_outside_read_roots_block_without_request \
-  test_corpus_notes_over_the_byte_caps_block_before_any_read \
-  test_oversized_target_and_reference_are_refused_before_reading \
-  test_propose_appends_an_unapproved_section_and_keeps_canon \
-  test_propose_without_declared_sources_uses_the_default_corpus \
-  test_propose_facts_must_cite_read_notes_then_one_correction \
-  test_propose_needs_human_and_invalid_mode_block_without_writing \
-  test_propose_rejects_result_markers_in_the_proposal \
-  test_propose_heading_only_answer_is_rejected_and_titles_stay_inside_the_section \
-  test_propose_without_a_corpus_cites_the_target_and_verifies_against_it \
-  test_apply_moves_to_review_without_cloud \
-  test_docs_model_selects_a_served_model \
-  test_unknown_docs_model_blocks_without_a_model_call \
-  test_revision_keeps_the_notes_model_or_blocks \
-  test_docs_model_outside_the_allowlist_blocks_before_any_request \
-  test_stream_response_is_applied \
-  test_todo_contract_does_not_hold_a_docs_run \
-  test_missing_opt_in_blocks_without_request \
-  test_backlog_legacy_transcribe_ticket_is_groomed_without_a_model_call \
-  test_backlog_groom_validates_explicit_targets_before_ready \
-  test_target_outside_allowlist_blocks \
-  test_traversal_and_symlink_targets_block \
-  test_needs_human_blocks_with_reason \
-  test_invalid_outputs_block_and_leave_file \
-  test_section_rewrite_keeps_links_outside_the_section \
-  test_rejected_proposal_gets_one_correction_round \
-  test_heading_without_hashes_is_matched_by_text \
-  test_append_section_on_a_duplicated_heading_is_rejected \
-  test_noop_proposal_is_not_applied \
-  test_crash_right_after_the_review_note_completes_the_transition \
-  test_committing_recovery_blocks_when_the_note_changed_after_the_write \
-  test_http_errors_block_after_bounded_retries \
-  test_unreachable_model_blocks_without_cloud_fallback \
-  test_idle_timeout_blocks \
-  test_stream_cut_blocks \
-  test_concurrent_edit_is_detected_and_not_overwritten \
-  test_review_lane_reruns_as_revision \
-  test_frontmatter_keys_missing_from_the_map_are_taken_from_the_ticket_text \
-  test_tick_ticket_filter_claims_only_one_card \
-  test_parallel_ticks_run_once_per_card; do
+mapfile -t cases <"${ROOT_DIR}/tests/codex-workspace/localllm-docs-cases.txt"
+for i in "${!cases[@]}"; do
+  ((i % shards == shard)) || continue
+  t="${cases[$i]}"
+  declare -F "${t}" >/dev/null || fail "unknown case: ${t}"
   if [[ -n "${LOCALLLM_TEST_ONLY:-}" && "${t}" != *"${LOCALLLM_TEST_ONLY}"* ]]; then continue; fi
   echo "== ${t}"
   "${t}"
