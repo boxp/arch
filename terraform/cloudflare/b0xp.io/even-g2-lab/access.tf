@@ -34,11 +34,20 @@ locals {
   zero_trust_team_name = trimsuffix(data.cloudflare_zero_trust_organization.current.auth_domain, ".cloudflareaccess.com")
 }
 
+# BOXP-328: request came through this organization's Gateway from an enrolled
+# Cloudflare One Client.
+#
+# BOXP-670: description は設定しない。type = "gateway" の posture rule は API が
+# 書き込み時に description を受け付けるが GET では返さないため、cloudflare
+# provider 5.29.0 までは refresh のたびに state が null に戻り、毎回
+# 「+ description / enabled (known after apply)」の 1 change が出ていた
+# (cloudflare/terraform-provider-cloudflare#7461、修正は 5.29.0 より後のリリース)。
+# description は判定に使われない表示用の値で、Cloudflare 側に保存済みの値は
+# この変更では消えない（Optional+Computed のため null 設定は「変更なし」になる）。
 resource "cloudflare_zero_trust_device_posture_rule" "require_gateway" {
-  account_id  = var.account_id
-  name        = "Require Gateway"
-  description = "BOXP-328: request came through this organization's Gateway from an enrolled Cloudflare One Client"
-  type        = "gateway"
+  account_id = var.account_id
+  name       = "Require Gateway"
+  type       = "gateway"
 }
 
 resource "cloudflare_zero_trust_access_policy" "kohako_g2_owner" {
