@@ -6,7 +6,7 @@
 FROM docker.io/nousresearch/hermes-agent:v0.23.1@sha256:276d44685c65c0cb2a25f190b63c65c8906f9dc76486fb1c05ae71b5826bda08
 
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.14
-ARG BABASHKA_VERSION=1.13.229
+ARG BABASHKA_VERSION=1.13.230
 ARG BABASHKA_SHA256=64fb984991c6e68f44e8a9391176a9bb411f9b9ae9959a6bca5307c75a7414da
 
 # Keep the upstream PATH order (hermes shim, venv, then the pm-managed node/python

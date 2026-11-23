@@ -19,7 +19,10 @@ export interface Player {
   width: number
   height: number
   start(): void
+  stop(): void
   draw(): void
+  /** rig と GPU のオブジェクトを解放する（以後は使えない）。 */
+  dispose(): void
 }
 interface PlayerModule {
   P2LPlayer: { fromBytes(canvas: HTMLCanvasElement, runtime: WebAssembly.Exports, bytes: Uint8Array): Promise<Player> }
@@ -33,6 +36,11 @@ export type RigLoad = {
   totalMs: number
   wasmBytes: number
   rigBytes: number
+  /**
+   * BOXP-663: この読み込みで付けた監視（枠の切替・大きさの変化）を外し、プレイヤーを止めて解放する。
+   * WebGL のコンテキストが失われた後に同じ canvas へ読み直す時、古いプレイヤーが描き続けないようにする。
+   */
+  release(): void
 }
 
 export function frameFor(model: RigModel, search: string): 'full' | 'upper' {
@@ -90,6 +98,7 @@ export async function loadRig(canvas: HTMLCanvasElement, model: RigModel, runtim
   const { instance } = await WebAssembly.instantiate(wasm, {})
   const t2 = performance.now()
   const player = await mod.P2LPlayer.fromBytes(canvas, instance.exports, new Uint8Array(rig))
+  const cleanups: (() => void)[] = []
   if (model.id.startsWith('kohako-full-')) {
     const updateFrame = () => {
       const upper = frameFor(model, location.search) === 'upper'
@@ -110,7 +119,12 @@ export async function loadRig(canvas: HTMLCanvasElement, model: RigModel, runtim
       player.draw()
     }
     window.addEventListener('kohako-frame-change', updateFrame)
-    new ResizeObserver(updateFrame).observe(canvas)
+    const resize = new ResizeObserver(updateFrame)
+    resize.observe(canvas)
+    cleanups.push(() => {
+      window.removeEventListener('kohako-frame-change', updateFrame)
+      resize.disconnect()
+    })
     updateFrame()
   }
   const t3 = performance.now()
@@ -122,6 +136,11 @@ export async function loadRig(canvas: HTMLCanvasElement, model: RigModel, runtim
     totalMs: t3 - t0,
     wasmBytes: wasm.byteLength,
     rigBytes: rig.byteLength,
+    release: () => {
+      for (const c of cleanups.splice(0)) c()
+      player.stop()
+      player.dispose()
+    },
   }
 }
 

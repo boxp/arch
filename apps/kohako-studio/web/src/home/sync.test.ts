@@ -255,3 +255,52 @@ test('以前の会話の最後の依頼が替わるたびに stale を知らせ�
   const pending = item('d', { current: false, status: 'pending', reply: undefined })
   expect(planSync([pending], null, ctx(seen)).map((x) => x.op)).not.toContain('stale')
 })
+
+test('眼鏡から送った発言には印が付き、家の発言・印の無い古い応答・未知の値には付かない (BOXP-657)', () => {
+  const data = validateTranscript({
+    rev: 'r',
+    sessionStartedAt: 1,
+    items: [
+      {
+        requestId: 'home-1',
+        at: 1,
+        current: true,
+        origin: 'home',
+        status: 'done',
+        text: '家',
+        reply: { text: 'a', at: 2 },
+      },
+      {
+        requestId: 'g2-1',
+        at: 3,
+        current: true,
+        origin: 'g2',
+        via: 'text',
+        status: 'done',
+        text: '眼鏡',
+        reply: { text: 'b', at: 4 },
+      },
+      { requestId: 'old-1', at: 5, current: true, status: 'done', text: '古い', reply: { text: 'c', at: 6 } },
+      {
+        requestId: 'odd-1',
+        at: 7,
+        current: true,
+        origin: 'other',
+        status: 'done',
+        text: '未知',
+        reply: { text: 'd', at: 8 },
+      },
+    ],
+    active: null,
+  })
+  if (!data || 'unchanged' in data) throw new Error('検証失敗')
+  const users = planSync(data.items, data.active, { seen: new Seen(), trackingId: '', canFollow: true }).filter(
+    (x) => x.op === 'user',
+  )
+  expect(users).toEqual([
+    { op: 'user', id: 'home-1', text: '家', at: 1 },
+    { op: 'user', id: 'g2-1', text: '眼鏡', at: 3, g2: true },
+    { op: 'user', id: 'old-1', text: '古い', at: 5 },
+    { op: 'user', id: 'odd-1', text: '未知', at: 7 },
+  ])
+})

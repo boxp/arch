@@ -1578,3 +1578,85 @@ it('BOXP-581: asks the home conversation for BOXP-vault Obsidian note links only
   expect(instructions).toContain('作成・編集・公開したり')
   expect(studioInstructions).not.toContain('obsidian://')
 })
+it('returns 429 busy for a notification reply while a run is in progress without saving a claim (BOXP-658)', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises'),
+    { tmpdir } = await import('node:os'),
+    { join } = await import('node:path'),
+    { createPush } = await import('./push.js'),
+    { createNotifications } = await import('./notifications.js')
+  let settle: (v: unknown) => void = () => {}
+  const texts: string[] = []
+  const hermes = {
+    run: (_id: string, text: string) => {
+      texts.push(text)
+      return new Promise((r) => {
+        settle = r
+      })
+    },
+    approve: async () => 'ok',
+    stop: async () => 'ok',
+  } as unknown as ReturnType<typeof createHermes>
+  const dir = await mkdtemp(join(tmpdir(), 'busy-')),
+    push = await createPush(dir, {
+      subject: 'https://example.com',
+      quietHours: '2-9',
+    }),
+    notifications = await createNotifications(dir, push.send)
+  const server = createServer(
+    createApp({
+      authenticate: async () => 'owner',
+      notifications,
+      push,
+      hermes,
+    }),
+  )
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+  try {
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
+    const post = (path: string, body: object) =>
+      fetch(base + path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    await notifications.ingest({
+      ...{
+        eventId: 'event-123456',
+        source: 'task-board-report',
+        eventType: 'ready',
+      },
+      ticketId: 'BOXP-1',
+      title: 't',
+      body: 'b',
+      choices: ['A', 'B'],
+      createdAt: '2026-01-01T00:00:00Z',
+    })
+    expect(
+      (
+        await post('messages', {
+          requestId: 'owner-123',
+          kind: 'text',
+          text: 'hello',
+          expiresAt: Date.now() + 60000,
+        })
+      ).status,
+    ).toBe(202)
+    const reply = { replyId: 'reply-123456', kind: 'choice', value: 'A' }
+    const busy = await post('notifications/event-123456/reply', reply)
+    expect(busy.status).toBe(429)
+    expect(await busy.json()).toEqual({ error: 'busy' })
+    expect(notifications.list().items[0].reply).toBeUndefined()
+    expect(texts).toHaveLength(1)
+    settle({ status: 'completed', output: 'ok' })
+    await new Promise((r) => setTimeout(r, 20))
+    const ok = await post('notifications/event-123456/reply', reply)
+    expect(ok.status).toBe(202)
+    expect(await ok.json()).toMatchObject({ status: 'submitted' })
+    expect(texts).toHaveLength(2)
+    expect(texts[1]).toContain('event=event-123456 ticket=BOXP-1')
+  } finally {
+    server.closeAllConnections()
+    await new Promise<void>((r) => server.close(() => r()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})

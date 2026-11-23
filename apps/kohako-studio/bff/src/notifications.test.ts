@@ -685,3 +685,172 @@ describe('choices from the body (BOXP-646)', () => {
     expect(await readFile(new URL('./choices.ts', import.meta.url), 'utf8')).toBe(await readFile(web, 'utf8'))
   })
 })
+it('returns busy without saving a claim while the conversation is running (BOXP-658)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'inbox-busy-'))
+  try {
+    const store = await createNotifications(dir, async () => ({}))
+    await store.ingest(payload)
+    const reply = { replyId: 'reply-123456', kind: 'choice', value: 'はい' },
+      submit = vi.fn(() => true)
+    // 無効な返信・存在しない通知は busy より先に従来どおり判定する。
+    expect(await store.reply('missing-123', reply, submit, undefined, undefined, () => true)).toEqual({
+      error: 'not_found',
+    })
+    expect(
+      await store.reply(payload.eventId, { ...reply, value: 'no' }, submit, undefined, undefined, () => true),
+    ).toEqual({ error: 'invalid' })
+    expect(await store.reply(payload.eventId, reply, submit, undefined, undefined, () => true)).toEqual({
+      error: 'busy',
+    })
+    expect(submit).not.toHaveBeenCalled()
+    expect(store.list().items[0].reply).toBeUndefined()
+    expect(store.status([payload.eventId])[payload.eventId]).toMatchObject({
+      replied: false,
+    })
+    const restart = await createNotifications(dir, async () => ({}))
+    expect(restart.list().items[0].reply).toBeUndefined()
+    // 会話が終わった後に同じ replyId で送ると受理され、以降は同じ受付番号（busy でも既存の追跡は返す）。
+    const first = await restart.reply(payload.eventId, reply, submit)
+    expect(first.status).toBe('submitted')
+    const again = await restart.reply(
+      payload.eventId,
+      reply,
+      submit,
+      () => true,
+      undefined,
+      () => true,
+    )
+    expect(again).toMatchObject({ requestId: first.requestId, existing: true })
+    expect(
+      (
+        await restart.reply(
+          payload.eventId,
+          { ...reply, replyId: 'other-123456' },
+          submit,
+          undefined,
+          undefined,
+          () => true,
+        )
+      ).error,
+    ).toBe('already_replied')
+    expect(submit).toHaveBeenCalledTimes(1)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+it('keeps a failed claim unchanged when re-sent while busy (BOXP-658)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'inbox-busy-'))
+  try {
+    const store = await createNotifications(dir, async () => ({}))
+    await store.ingest(payload)
+    const reply = { replyId: 'reply-123456', kind: 'choice', value: 'はい' }
+    const failed = await store.reply(payload.eventId, reply, () => false)
+    expect(failed.status).toBe('submit_failed')
+    const submit = vi.fn(() => true)
+    expect(
+      await store.reply(
+        payload.eventId,
+        reply,
+        submit,
+        () => false,
+        undefined,
+        () => true,
+      ),
+    ).toEqual({
+      error: 'busy_claimed',
+    })
+    expect(submit).not.toHaveBeenCalled()
+    expect(store.list().items[0].reply).toMatchObject({
+      requestId: failed.requestId,
+      status: 'submit_failed',
+    })
+    expect(await store.reply(payload.eventId, reply, submit)).toMatchObject({
+      requestId: failed.requestId,
+      status: 'submitted',
+    })
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+it('returns busy and drops its own claim when a run starts while the claim is being saved (BOXP-658)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'inbox-busy-'))
+  try {
+    const store = await createNotifications(dir, async () => ({}))
+    await store.ingest(payload)
+    const reply = { replyId: 'reply-123456', kind: 'choice', value: 'はい' },
+      submit = vi.fn(() => true)
+    // 1 回目の判定（claim 保存前）は空き、claim 保存後の再判定では別の発言が始まっている。
+    let calls = 0
+    const busy = () => ++calls > 1
+    expect(await store.reply(payload.eventId, reply, submit, undefined, undefined, busy)).toEqual({ error: 'busy' })
+    expect(submit).not.toHaveBeenCalled()
+    expect(store.list().items[0].reply).toBeUndefined()
+    const restart = await createNotifications(dir, async () => ({}))
+    expect(restart.list().items[0].reply).toBeUndefined()
+    expect(await restart.reply(payload.eventId, reply, submit)).toMatchObject({ status: 'submitted' })
+    expect(submit).toHaveBeenCalledTimes(1)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+it('never reports an existing claim as unsent busy or invalid (BOXP-658)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'inbox-claimed-'))
+  try {
+    const store = await createNotifications(dir, async () => ({}))
+    await store.ingest(payload)
+    const reply = { replyId: 'reply-123456', kind: 'choice', value: 'はい' }
+    // 既存の claim（Hermes へ渡した可能性がある返信）を作ってから再起動する。
+    let claimed: unknown
+    await store.reply(payload.eventId, reply, (_i, r) => {
+      claimed = { ...r }
+      throw new Error('stop')
+    })
+    const restart = await createNotifications(dir, async () => ({}))
+    const item = restart.list().items[0]
+    expect(item.reply?.replyId).toBe('reply-123456')
+    const submit = vi.fn(() => true)
+    // 会話が進行中でも、既存の claim は busy（未送信の確定）ではなく busy_claimed を返し、状態を変えない。
+    expect(
+      await restart.reply(
+        payload.eventId,
+        reply,
+        submit,
+        () => false,
+        undefined,
+        () => true,
+      ),
+    ).toEqual({
+      error: 'busy_claimed',
+    })
+    expect(submit).not.toHaveBeenCalled()
+    expect(restart.list().items[0].reply?.status).toBe(item.reply?.status)
+    expect(claimed).toBeTruthy()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+it('answers the existing reply with the same replyId even if the choices have changed (BOXP-658)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'inbox-choice-'))
+  try {
+    const store = await createNotifications(dir, async () => ({}))
+    await store.ingest(payload)
+    const reply = { replyId: 'reply-123456', kind: 'choice', value: 'はい' }
+    const first = await store.reply(payload.eventId, reply, () => true)
+    expect(first.status).toBe('submitted')
+    // 同じ replyId は、今の選択肢に無い値で問い合わせても既存の返信として返す（invalid で未送信と誤認させない）。
+    expect(await store.reply(payload.eventId, { ...reply, value: '今は無い選択肢' }, () => true)).toMatchObject({
+      requestId: first.requestId,
+      status: 'submitted',
+    })
+    // 新しい replyId は従来どおり 1 項目 1 回で断る。
+    expect(await store.reply(payload.eventId, { ...reply, replyId: 'reply-999999' }, () => true)).toEqual({
+      error: 'already_replied',
+    })
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
