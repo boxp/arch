@@ -30,7 +30,8 @@ async function open(config, prefs = {}, media) {
   await page.clock.install({ time: new Date(process.env.AT ?? '2026-11-12T12:00:00+09:00') })
   await page.goto(`http://localhost:${PORT}/kohako/home.html`)
   for (let i = 0; i < 600 && !(await page.evaluate(() => window.__kohakoHome?.report.loaded && window.__kohakoHome.state !== 'offline')); i++) await page.clock.runFor(100)
-  await page.clock.pauseAt(await page.evaluate(() => Date.now()) + 200)
+  // 止める時刻を読んでから止めるまでに実時間が 200ms 以上過ぎると「過去へは進めない」で失敗するので、読み直してやり直す。
+  for (let i = 0; ; i++) { try { await page.clock.pauseAt(await page.evaluate(() => Date.now()) + 200); break } catch (e) { if (i >= 20) throw e } }
   // 帰還の演出（着地 1 秒）が終わるまで進める。
   await page.clock.runFor(2500)
   return { context, page, errors }
