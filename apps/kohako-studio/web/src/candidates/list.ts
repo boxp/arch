@@ -10,6 +10,8 @@ export type Candidate = {
   pr?: string
   actions?: string[]
   problems?: string[]
+  /** 見る画面。home は家の画面（待機中の動きなど、家でしか出ない試作）。指定なしは動作ボタン・会話連動の 2 つ。 */
+  page?: string
   built: boolean
 }
 
@@ -34,6 +36,19 @@ export function parseIndex(data: unknown): Candidate[] {
 /** 候補の固定リンク。版ごとに別パスなので JS と素材は候補間で混ざらない。live2d は動作ボタン、studio は会話連動。 */
 export const candidateURL = (c: Candidate, page: 'live2d' | 'studio' = 'live2d') =>
   `./candidates/${c.id}/${page}.html?acting=1`
+/** 家の画面で見る候補（page: home）の固定リンク。query は候補が読む確認用の指定（例: ?seat=now）。 */
+export const candidateHomeURL = (c: Candidate, query = '') => `./candidates/${c.id}/home.html${query}`
+/** 候補のカードに出すリンク（文言と行き先）。 */
+export const candidateLinks = (c: Candidate): { text: string; href: string }[] =>
+  c.page === 'home'
+    ? [
+        { text: '家の画面で見る', href: candidateHomeURL(c) },
+        { text: 'すぐ座るところから見る', href: candidateHomeURL(c, '?seat=now') },
+      ]
+    : [
+        { text: '動作ボタンで操作する', href: candidateURL(c) },
+        { text: '会話と連動して見る', href: candidateURL(c, 'studio') },
+      ]
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, cls?: string) => {
   const e = document.createElement(tag)
@@ -82,11 +97,11 @@ export function renderCandidates(root: HTMLElement, candidates: Candidate[]) {
     }
     const links = el('p', undefined, 'links')
     if (c.built) {
-      const a = el('a', '動作ボタンで操作する', 'card-link')
-      a.href = candidateURL(c)
-      const b = el('a', '会話と連動して見る', 'card-link')
-      b.href = candidateURL(c, 'studio')
-      links.append(a, document.createTextNode(' '), b)
+      candidateLinks(c).forEach((link, i) => {
+        const a = el('a', link.text, 'card-link')
+        a.href = link.href
+        links.append(...(i ? [document.createTextNode(' ')] : []), a)
+      })
     } else links.append(el('span', 'この配備にはビルドされていません', 'missing'))
     if (c.pr?.startsWith('https://github.com/boxp/arch/pull/')) {
       const a = el('a', 'PR')
