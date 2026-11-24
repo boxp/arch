@@ -15,6 +15,7 @@ import {
   haltArmAngle,
   haltArmPoint,
   SHY_ARM,
+  SHY_SPEAK,
   shyArmMotion,
   shyArmPoint,
   backOpacity,
@@ -562,6 +563,46 @@ describe("制止の腕セットの切替（BOXP-476 TD-06 Y')", () => {
     run(SWITCH_SECONDS + 0.05)
     expect(stage.report()).toMatchObject({ armBlend: 0, armSwitch: null, switched: false })
   })
+  it('A6: フェードインの途中の解除は、その時点の濃さから消え、濃く戻らない', () => {
+    const { stage, run } = setup()
+    stage.playGesture('halt')
+    run(0.1)
+    const before = stage.report().armSwitch as { phase: string; posedAlpha: number }
+    expect(before.phase).toBe('in')
+    expect(before.posedAlpha).toBeGreaterThan(0.2)
+    expect(before.posedAlpha).toBeLessThan(0.5)
+    stage.reset()
+    let prev = before.posedAlpha
+    for (let i = 0; i < 14; i++) {
+      run(1 / 60)
+      const now = stage.report().armSwitch as { phase: string; posedAlpha: number } | null
+      if (!now) break
+      expect(now.phase).toBe('out')
+      expect(now.posedAlpha).toBeLessThanOrEqual(prev + 1e-9)
+      prev = now.posedAlpha
+    }
+    run(SWITCH_SECONDS)
+    expect(stage.report()).toMatchObject({ armBlend: 0, armSwitch: null, switched: false })
+  })
+  it('A6: フェードインの途中に別の 1 枚腕（照れ）が来ても、今の腕は濃く戻らずに消える', () => {
+    const { stage, run } = setup()
+    stage.playGesture('halt')
+    run(0.1)
+    const before = (stage.report().armSwitch as { posedAlpha: number }).posedAlpha
+    stage.playGesture('shyHand')
+    run(1 / 60)
+    const now = stage.report().armSwitch as { phase: string; posedAlpha: number }
+    expect(now.phase).toBe('out')
+    expect(now.posedAlpha).toBeLessThanOrEqual(before)
+  })
+  it('A3: フェードインが済んでからの解除は、濃さ 1 から消える', () => {
+    const { stage, run } = setup()
+    stage.playGesture('halt')
+    run(1)
+    stage.reset()
+    run(1 / 60)
+    expect((stage.report().armSwitch as { posedAlpha: number }).posedAlpha).toBeGreaterThan(0.95)
+  })
   it('動作の終わりも同じくフェードアウトで戻る', () => {
     const { stage, run } = setup()
     stage.playGesture('halt')
@@ -610,6 +651,58 @@ describe("制止の腕セットの切替（BOXP-476 TD-06 Y')", () => {
     expect(stage.report()).toMatchObject({ armSwitch: null, gesture: 'greet' })
     run(clips.greet.duration)
     expect(stage.report()).toMatchObject({ gesture: 'none', switched: false })
+  })
+})
+
+describe('話している間の照れの手（BOXP-694、仕様 E）', () => {
+  const MOUTH_Y = 352,
+    FIST_RADIUS = 30
+  const fistTop = (speak: number) => shyArmPoint(SHY_ARM.fistPx, shyArmMotion(1.5, 0, speak))[1] - FIST_RADIUS
+  it('E1: 話していない間（待機の「口元に手」）は、拳が口に掛かる（従来どおり）', () => {
+    expect(fistTop(0)).toBeLessThan(MOUTH_Y + 10)
+  })
+  it('E1: 話している間は、拳の上端が口より 30 以上下（あごの下）へ下がり、口が見える', () => {
+    expect(fistTop(1)).toBeGreaterThanOrEqual(MOUTH_Y + 30)
+    // 下げすぎて胸まで落とさない。
+    expect(fistTop(1)).toBeLessThan(MOUTH_Y + 80)
+  })
+  it('E2: 下げ・戻しは 0.3 秒で、途中は滑らかに動く', () => {
+    expect(SHY_SPEAK.seconds).toBeCloseTo(0.3, 6)
+    let prev = fistTop(0)
+    for (let s = 0.05; s <= 1.0001; s += 0.05) {
+      const y = fistTop(s)
+      expect(y).toBeGreaterThanOrEqual(prev)
+      expect(y - prev).toBeLessThan(12)
+      prev = y
+    }
+  })
+  it('E2: 口形が来ている間だけ下げ、話し終えたら口元へ戻す', () => {
+    const memory = new WebAssembly.Memory({ initial: 1 })
+    const player = {
+      rig: 0,
+      expressions: [],
+      meshes: Array.from({ length: 33 }, () => ({ vertices: 0 })),
+      expression() {},
+      setParameter() {},
+      update(_dt: number) {},
+      rt: { memory, p2l_render_commands: () => 0, p2l_mesh_vertices: () => 0 },
+    }
+    const stage = createActingStage(player as unknown as Player, { id: 'kohako-full-v11r' } as RigModel)
+    const run = (s: number) => {
+      for (let i = 0; i < Math.round(s * 60); i++) player.update(1 / 60)
+    }
+    stage.playGesture('shyHand')
+    run(1)
+    expect(stage.report().shySpeak).toBe(0)
+    stage.setViseme?.({ open: 0.6, width: 1 })
+    run(0.15)
+    expect(stage.report().shySpeak).toBeGreaterThan(0.3)
+    expect(stage.report().shySpeak).toBeLessThan(0.7)
+    run(0.2)
+    expect(stage.report().shySpeak).toBe(1)
+    stage.setViseme?.(null)
+    run(0.35)
+    expect(stage.report().shySpeak).toBe(0)
   })
 })
 

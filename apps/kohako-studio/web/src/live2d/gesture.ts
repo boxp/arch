@@ -579,6 +579,12 @@ export function placeBentFore(bone: Pick<Bone, 'S' | 'E' | 'W' | 'mirror'>, pose
 /**
  * 腕セットの切替（BOXP-476 TD-06 Y'）。一般的な Live2D の「腕 A/B」と同じく、待機の腕を変形で制止の形まで曲げず、
  * 動作の始まりに短いフェードで制止の腕へ差し替える。ここでは制止の腕に既存の比較版の保持姿勢（HALT）の絵を使う。
+ *
+ * BOXP-694 TD-01（Owner 本人の判断）: #15578 で「変形の腕を 1 枚腕の位置まで動かしてから重ねて替える」方式に替えたところ、
+ * 配備版を見た本人が「片手を振る動きが不自然で気持ち悪くなった」「両手の動きも全部フェードアウト式の方が全然良かった」と評価した。
+ * そのためこのフェード式へ戻している。フェードの 0.25 秒の間、垂らした腕と上げた腕が半透明で同時に見えること
+ * （BOXP-693 の動画レビューの指摘）は、本人がこちらを選んだうえで残す既知の見え方で、直す対象ではない。
+ * 重ねてから替える方式へ戻さないこと（仕様: vault の Projects/kohako-home/arm-switch-spec.md）。
  */
 export const SWITCH_SECONDS = 0.25
 export const SWITCHED: Partial<Record<Exclude<Gesture, 'none'>, ArmPose>> = {
@@ -713,12 +719,22 @@ export const SHY_ARM = {
   scale: 0.28,
   angle: 0.15,
 }
+/**
+ * 話している間の照れの手（BOXP-694）。口元の拳と口パクが重なると、開く口の上で拳が動かず、口が拳に食い込んで見える。
+ * 声を出している間だけ拳をあごの下まで下げ、口が見えるようにする（話し終えたら口元へ戻す）。seconds は下げ・戻しの時間。
+ * 腕の差し替え方（フェード式）とは別の調整なので、フェード式へ戻したあとも残す。
+ */
+export const SHY_SPEAK = { drop: 50, angle: -0.05, seconds: 0.3 }
 /** 照れの 1 枚腕の回転と沈み。入りは拳を胸の高さから口元へ持ち上げ、保持は小さく揺らし、戻りは下げながら消す。 */
-export function shyArmMotion(t: number, out = 0): { angle: number; drop: number } {
+export function shyArmMotion(t: number, out = 0, speak = 0): { angle: number; drop: number } {
   const rise = 1 - ease(Math.min(1, Math.max(0, t / 0.5))),
     hold = smooth(0.4, 0.9, t),
-    o = ease(out)
-  return { angle: SHY_ARM.angle - 0.22 * rise + 0.01 * Math.sin(t * 2.1) * hold - 0.18 * o, drop: 55 * rise + 45 * o }
+    o = ease(out),
+    s = ease(Math.min(1, Math.max(0, speak)))
+  return {
+    angle: SHY_ARM.angle - 0.22 * rise + 0.01 * Math.sin(t * 2.1) * hold - 0.18 * o + SHY_SPEAK.angle * s,
+    drop: 55 * rise + 45 * o + SHY_SPEAK.drop * s,
+  }
 }
 export function shyArmPoint(px: Vec, m: { angle: number; drop: number }): Vec {
   const H = SHY_ARM
@@ -1040,7 +1056,8 @@ export function createActingStage(
     partsStatus: Record<string, unknown> = { ready: false }
   const armOf = (b: Bone) => (b === RIGHT ? pose.right : pose.left)
   // 腕セットの切替の状態。out は今の腕を待機の腕へ、in は待機の腕から切替先の腕へフェードする。
-  let sw: { phase: 'in' | 'out'; t: number; after?: () => void } | null = null,
+  // from は out を始めた時点の濃さ。フェードインの途中で out へ変わっても、濃く戻さずその濃さから消す（仕様 A6）。
+  let sw: { phase: 'in' | 'out'; t: number; from?: number; after?: () => void } | null = null,
     posedAlpha = 1,
     switched = false,
     frozen: ReturnType<typeof sample> | null = null
@@ -1056,6 +1073,7 @@ export function createActingStage(
     haltLoaded = false,
     haltTime = 0,
     haltOut = 0,
+    shySpeak = 0,
     shySet = false,
     shyLoaded = false,
     guideSet = false,
@@ -1426,7 +1444,7 @@ export function createActingStage(
           opacity: () => (shyOn() ? 1 : 0),
           write(out) {
             const [dx, dy] = swayOf(RIGHT.arm),
-              m = shyArmMotion(haltTime, haltOut)
+              m = shyArmMotion(haltTime, haltOut, shySpeak)
             corners.forEach((c, i) => {
               const q = shyArmPoint(c, m)
               out[2 * i] = q[0] + dx
@@ -1830,6 +1848,7 @@ export function createActingStage(
   }
   p.update = (dt: number) => {
     generation++
+    shySpeak = Math.max(0, Math.min(1, shySpeak + (speaking ? dt : -dt) / SHY_SPEAK.seconds))
     if (greetSet) greetTime += dt
     else waveDecay += dt
     if (haltSet || shySet || guideSet) {
@@ -1839,7 +1858,7 @@ export function createActingStage(
     if (sw) {
       sw.t += dt
       const x = Math.min(1, sw.t / SWITCH_SECONDS)
-      posedAlpha = sw.phase === 'in' ? ease(x) : 1 - ease(x)
+      posedAlpha = sw.phase === 'in' ? ease(x) : (sw.from ?? 1) * (1 - ease(x))
       if (x >= 1) {
         const ended = sw
         sw = null
@@ -2032,7 +2051,7 @@ export function createActingStage(
     clip = null
     clipName = 'none'
     fadeFrom = null
-    sw = { phase: 'out', t: 0, after }
+    sw = { phase: 'out', t: 0, from: sw?.phase === 'in' ? posedAlpha : 1, after }
   }
   // 待機の腕から、切替先の腕セットへフェードで差し替える。
   function switchIn(next: Exclude<Gesture, 'none'>) {
@@ -2190,6 +2209,7 @@ export function createActingStage(
       greetSet: greetSet && haltOn(),
       guideSet: guideOn(),
       shySet: shyOn(),
+      shySpeak,
       clipTime,
       face: { browY: face.browY, browInner: face.browInner, eyeSY: face.eyeSY, mouthCorner: face.mouthCorner },
     }),
