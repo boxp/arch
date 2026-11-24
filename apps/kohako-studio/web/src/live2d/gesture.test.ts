@@ -713,12 +713,17 @@ describe('1 枚腕への差し替え: 変形の腕を重ねてから差し替え
 
 describe('外回りの振り上げは真横へ突っ張った形（T 字）を通らない（BOXP-694、仕様 B）', () => {
   const length = Math.hypot(bone.W[0] - bone.E[0], bone.W[1] - bone.E[1])
-  it('B1: 休止と、-1.7 より上げた保持（喜び・制止・挨拶）では短縮しない。内回りも短縮しない', () => {
-    for (const fo of [0, -1.7, -1.85, -2.05, -2.15, 0.5, 1.28, 2.1]) expect(swingShorten(fo)).toBe(0)
+  it('B1: 休止（0〜-0.1）と、-1.75 以上に上げた保持（挨拶の振り・喜び・制止）では短縮しない。内回りも短縮しない', () => {
+    for (const fo of [0, -0.05, -0.1, -1.75, -1.85, -2.05, -2.15, 0.5, 1.28, 2.1]) expect(swingShorten(fo)).toBe(0)
+  })
+  it('B1: 振り上げ・戻りの途中（-0.6〜-1.3）は、ずっと 0.45 倍以下に短く描く（腕を伸ばしたまま外へ開く形を通らない）', () => {
+    for (let fo = -0.6; fo >= -1.3; fo -= 0.05) expect(foreScale({ ...rest, fo })).toBeLessThanOrEqual(0.45)
+    // 縮めすぎて前腕が消えない。
+    for (let fo = 0; fo >= -2.2; fo -= 0.05) expect(foreScale({ ...rest, fo })).toBeGreaterThanOrEqual(0.4)
   })
   it('B1: 前腕が水平付近（-1.1 前後）を通る間は、半分ほどまで短く描く。変化は滑らか', () => {
-    expect(swingShorten(-1.1)).toBeGreaterThan(0.45)
-    expect(swingShorten(-1.1)).toBeLessThanOrEqual(0.6)
+    expect(swingShorten(-1.16)).toBeGreaterThan(0.45)
+    expect(swingShorten(-1.16)).toBeLessThanOrEqual(0.6)
     for (let fo = 0; fo > -2.2; fo -= 0.01)
       expect(Math.abs(swingShorten(fo) - swingShorten(fo - 0.01))).toBeLessThan(0.03)
   })

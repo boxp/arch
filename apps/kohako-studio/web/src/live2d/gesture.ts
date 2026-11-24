@@ -439,15 +439,15 @@ export function interruptPlan(
 }
 /**
  * 外回りで前腕が水平付近を通る間の短縮の割合（BOXP-694）。腕を横へ伸ばしたまま回すと、上げる途中と戻る途中で毎回
- * 両腕が真横へ突っ張った形（T 字）を通る。水平を通る間だけ前腕を手前へ振り出した短縮で描き、休止と保持（-1.7 より上げた姿勢）では 0。
+ * 腕を伸ばしたまま外へ大きく開き、両腕が真横へ突っ張った形（T 字）を通る。振り上げの途中（-0.6〜-1.3。水平は -1.16）は前腕を手前へ
+ * 振り出した短縮で描き、休止の近く（-0.1 まで）と保持（-1.75 以上に上げた姿勢）では 0。
  */
-const SWING_AT = -1.16,
-  SWING_WIDTH = 0.45,
-  SWING_DEPTH = 0.55
+const SWING_DEPTH = 0.58,
+  SWING_IN: Vec = [0.1, 0.6],
+  SWING_OUT: Vec = [1.3, 1.75]
 export function swingShorten(fo: number): number {
   if (!(fo < 0) || fo <= -Math.PI) return 0
-  const off = (fo - SWING_AT) / SWING_WIDTH
-  return SWING_DEPTH * smooth(0, 0.45, -fo) * (1 - smooth(1.45, 1.7, -fo)) * Math.exp(-off * off)
+  return SWING_DEPTH * smooth(SWING_IN[0], SWING_IN[1], -fo) * (1 - smooth(SWING_OUT[0], SWING_OUT[1], -fo))
 }
 /** 体の前を通る動作で前腕が水平付近にあるときの長さ。前腕が手前を向く短縮で描き、手が腹の前を横切らないようにする。 */
 export function foreScale(pose: Pick<ArmPose, 'fo' | 'foS' | 'front' | 'flipped' | 'swing'>): number {

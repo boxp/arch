@@ -71,7 +71,8 @@ const browser = await chromium.connect(process.env.PW_WS ?? 'ws://127.0.0.1:3969
 const meta = { url, startedAt: new Date().toISOString(), viewport: [1280, 800], clips: {} }
 
 async function open({ fromLoad = false, prefs = null } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rec694-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rec694-')),
+    start = Date.now()
   const context = await browser.newContext({
     viewport: { width: 1280, height: 800 },
     deviceScaleFactor: 1,
@@ -127,10 +128,9 @@ async function open({ fromLoad = false, prefs = null } = {}) {
       json: p === 'me' ? { user: 'verify' } : p === 'conversation' ? { enabled: true, stt: false } : {},
     })
   })
-  const start = Date.now(),
-    events = []
+  const events = []
   const mark = async (label) => {
-    events.push({ t: Math.round((Date.now() - start) / 100) / 10, label })
+    events.push({ t: Math.round((Date.now() - start) / 100) / 10, label, badge: await page.evaluate(() => Math.round((performance.now() - window.__recT0) / 100) / 10).catch(() => null) })
     await page.evaluate((l) => (window.__recLabel = l), label).catch(() => {})
   }
   await page.goto(url)
@@ -153,7 +153,8 @@ async function finish(name, { context, page, errors, start, events }) {
     return { cx: a.x + a.w / 2, top: a.y, w: a.w, h: a.h }
   })
   const raw = path.join(RAW, `${name}.webm`),
-    video = page.video()
+    video = page.video(),
+    closedAt = Date.now()
   await page.close()
   await video.saveAs(raw)
   await context.close()
@@ -162,10 +163,21 @@ async function finish(name, { context, page, errors, start, events }) {
     x = Math.max(0, Math.min(1280 - w, Math.round(rect.cx - w / 2))),
     crop = `crop=${w}:720:${x}:40`
   const out = path.join(OUT, `${name}.webm`)
-  execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-i', raw, '-vf', crop, '-c:v', 'libvpx', '-b:v', '2M', out])
+  // Playwright の録画は、コマの届き方によって実時間より長くなる（ソフトウェア描画で約 1.1 倍）。録画した実時間（画面を作ってから閉じるまで）に
+  // 合わせて時刻の刻みを縮め、動画の 1 秒が実際の 1 秒になるようにする。コマは作り直さない。札の経過秒で確かめられる。
+  const seconds = Math.round((closedAt - start) / 100) / 10,
+    recorded = duration(raw),
+    scale = seconds / recorded
+  execFileSync(FFMPEG, [
+    '-y', '-loglevel', 'error', '-itsscale', scale.toFixed(5), '-i', raw,
+    '-vf', crop, '-r', '25', '-c:v', 'libvpx', '-b:v', '2M', out,
+  ]) // biome-ignore format: 引数の並び
+  for (const e of events) e.video = e.t
   meta.clips[name] = {
     file: out,
-    seconds: Math.round((Date.now() - start) / 100) / 10,
+    seconds,
+    recordedSeconds: recorded,
+    timeScale: Math.round(scale * 1000) / 1000,
     crop,
     errors,
     events,
@@ -173,7 +185,19 @@ async function finish(name, { context, page, errors, start, events }) {
   }
   console.log(`CLIP ${name}: ${meta.clips[name].seconds}s errors=${errors.length}`)
 }
-/** 録った動画の [from, to] 秒を、時刻の刻みだけ 4 倍にして書き出す（コマは作り直さない）。 */
+/** 動画の長さ（秒）。 */
+function duration(file) {
+  let text = ''
+  try {
+    execFileSync(FFMPEG, ['-hide_banner', '-i', file], { stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch (e) {
+    text = String(e.stderr ?? '')
+  }
+  const m = text.match(/Duration: (\d+):(\d+):([\d.]+)/)
+  if (!m) throw new Error(`動画の長さを読めません: ${file}`)
+  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3])
+}
+/** 録った動画の [from, to] 秒（動画の時刻）を、時刻の刻みだけ 4 倍にして書き出す（コマは作り直さない）。 */
 function slow(name, slowName, from, to) {
   const clip = meta.clips[name]
   if (!clip) return
@@ -187,7 +211,8 @@ function slow(name, slowName, from, to) {
   execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-itsscale', '4', '-i', cut, '-c', 'copy', out])
   clip.slow.push({ file: out, from: a, to })
 }
-const at = (name, label) => meta.clips[name]?.events.find((e) => e.label === label)?.t
+/** 出来事の、動画の中での時刻（秒）。 */
+const at = (name, label) => meta.clips[name]?.events.find((e) => e.label === label)?.video
 const idleAct = (page) => page.evaluate(() => window.__kohakoHome?.report?.idle?.act ?? null)
 async function waitAct(page, ok, ms = 30000) {
   const end = Date.now() + ms

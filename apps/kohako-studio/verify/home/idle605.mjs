@@ -75,11 +75,11 @@ const EXPECT = {
   wave: r => r.some(x => x.gesture === 'greet' && x.greet && x.armBlend === 1) && r.some(x => x.emotion === 'smile'),
   mouth: r => r.some(x => x.gesture === 'shyHand' && x.shy && x.armBlend === 1) && r.some(x => x.emotion === 'smileClosed'),
   // 作り直し（Owner 指摘「不自然でかわいくない」）: 伸び＝目を閉じ、あごを上げ、抜いた後にほほえむ（目を閉じる → ほほえむの順）。
-  // BOXP-694: 伸びの腕は、肘を曲げずに体へ引き寄せてぴんと下へ伸ばす（両手の間隔は 20〜60px だけ縮む。以前の「両手を体の前へ下ろす」形は肘に切れ目が出た）。
+  // BOXP-694: 伸びの腕は、肘を曲げずに体へ引き寄せてぴんと下へ伸ばす（両手の間隔は 8〜30% だけ縮む。画面の大きさで変わるので割合で見る。以前の「両手を体の前へ下ろす」形は肘に切れ目が出た）。
   // 手を前でそろえる＝両手が体の中央に並ぶまで寄る（以前は太ももの横まで＝間隔 -57px）。
   stretch: r => { const shut = r.map((x, i) => x.v[IDS.indexOf('ParamEyeLOpen')] < 0.1 ? i : -1).filter(i => i >= 0), smile = r.findIndex(x => x.emotion === 'smile')
-    const closer = span(r[0]) - Math.min(...nums(r.map(span)))
-    return closer > 20 && closer < 60 && Math.max(...col(r, 'ParamAngleY')) > 3 && shut.length * STEP / 1000 > 1 && smile > shut[0] },
+    const closer = (span(r[0]) - Math.min(...nums(r.map(span)))) / span(r[0])
+    return closer > 0.08 && closer < 0.3 && Math.max(...col(r, 'ParamAngleY')) > 3 && shut.length * STEP / 1000 > 1 && smile > shut[0] },
   tidy: r => span(r[0]) - Math.min(...nums(r.map(span))) > 100 && r.some(x => x.emotion === 'smile'),
   // かわいく（Owner 要望）: はにかむ＝照れ→ほほえみの順に替わり、両手が寄る。くすっと笑う＝目を細めて頭が小さく弾む。
   shy: r => { const a = r.findIndex(x => x.emotion === 'shy'), b = r.findIndex(x => x.emotion === 'smile'); return a >= 0 && b > a && span(r[0]) - Math.min(...nums(r.map(span))) > 8 },
