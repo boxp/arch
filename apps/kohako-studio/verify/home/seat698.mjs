@@ -200,8 +200,8 @@ if (!ONLY || ONLY === 'check' || ONLY === 'base') {
     await o.context.close()
   }
   // 4. 出ない設定
-  for (const [name, prefs, media, query] of [['待機中のしぐさ OFF', { idleActs: false }], ['動きを減らす', { reducedMotion: true }], ['OS の動きを減らす', {}, 'reduce'], ['?seat=off', {}, undefined, '?seat=off']]) {
-    const o = await open({ prefs, media, query }); await paused(o)
+  for (const [name, prefs, media, query, viewport] of [['待機中のしぐさ OFF', { idleActs: false }], ['動きを減らす', { reducedMotion: true }], ['OS の動きを減らす', {}, 'reduce'], ['?seat=off', {}, undefined, '?seat=off'], ['縦長の画面（上半身だけの枠）', {}, undefined, '', { width: 390, height: 844 }]]) {
+    const o = await open({ prefs, media, query, ...(viewport ? { viewport } : {}) }); await paused(o)
     await o.page.evaluate(() => window.__kohakoHome.playSeat('sit'))
     const rows = await run(o.page, 20000, 500)
     check(rows.every((r) => r.level === 0 && r.chair === 0 && (r.stage?.level ?? 0) === 0), `S1: ${name} で座った`)
