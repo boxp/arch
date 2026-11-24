@@ -606,6 +606,95 @@ describe("制止の腕セットの切替（BOXP-476 TD-06 Y')", () => {
       expect(stage.report()).toMatchObject({ armSwitch: null, gesture: 'joy', switched: true })
     })
   })
+  describe('D: 待機しぐさの姿勢もフェードで入れ替える（BOXP-694 TD-01）', () => {
+    const far = (a: readonly [number, number], b: readonly [number, number]) => Math.hypot(a[0] - b[0], a[1] - b[1])
+    const TIDY = { right: { up: -0.12, fo: 1.5, ha: 0 }, left: { up: -0.12, fo: 1.42, ha: -0.1 } }
+    const alpha = (stage: { report(): Record<string, unknown> }) =>
+      (stage.report().armSwitch as { posedAlpha: number }).posedAlpha
+    it('G1: 最初のコマから保持の形に置き、0.25 秒でフェードインする（腕を動かして運ばない）', () => {
+      const { stage, frame, run } = setup()
+      stage.setIdleArmSet?.(TIDY)
+      const first = frame()
+      expect(far(first, bone.W)).toBeGreaterThan(150)
+      expect(stage.report()).toMatchObject({ armSwitch: { phase: 'in' }, idleArmSet: true, gesture: 'none' })
+      expect(alpha(stage)).toBeLessThan(0.05)
+      near(run(0.1), first)
+      run(SWITCH_SECONDS)
+      expect(stage.report().armSwitch).toBeNull()
+      near(run(2), first) // 保持の間、腕は動かさない
+    })
+    it('D3: 手放すと、その形のまま 0.25 秒でフェードアウトし、待機の腕へ戻る', () => {
+      const { stage, frame, run } = setup()
+      stage.setIdleArmSet?.(TIDY)
+      const held = frame()
+      run(1)
+      stage.setIdleArmSet?.(null)
+      near(run(0.1), held)
+      expect(stage.report().armSwitch).toMatchObject({ phase: 'out' })
+      near(run(0.1), held)
+      run(0.1)
+      expect(stage.report()).toMatchObject({ armBlend: 0, armSwitch: null, switched: false, idleArmSet: false })
+      near(frame(), bone.W)
+    })
+    it('D4: フェードインの途中で手放すと、その時点の濃さから消える（濃く戻らない）', () => {
+      const { stage, run } = setup()
+      stage.setIdleArmSet?.(TIDY)
+      run(0.1)
+      const before = alpha(stage)
+      expect(before).toBeGreaterThan(0.2)
+      expect(before).toBeLessThan(0.5)
+      stage.setIdleArmSet?.(null)
+      run(1 / 60)
+      expect(stage.report().armSwitch).toMatchObject({ phase: 'out' })
+      expect(alpha(stage)).toBeLessThanOrEqual(before)
+    })
+    it('D4: 姿勢が出ている間に身振りが来たら、消えてから始める。身振りの後も、いったん手放すまで出し直さない', () => {
+      for (const next of ['greet', 'joy', 'nod'] as const) {
+        const { stage, frame, run } = setup()
+        stage.setIdleArmSet?.(TIDY)
+        const held = frame()
+        run(1)
+        stage.playGesture(next)
+        near(run(0.1), held)
+        expect(stage.report()).toMatchObject({ armSwitch: { phase: 'out' } })
+        run(SWITCH_SECONDS)
+        expect(stage.report()).toMatchObject({ gesture: next, idleArmSet: false })
+        run(6)
+        expect(stage.report()).toMatchObject({ gesture: 'none', armSwitch: null, idleArmSet: false })
+        stage.setIdleArmSet?.(null)
+        stage.setIdleArmSet?.(TIDY)
+        run(0.1)
+        expect(stage.report()).toMatchObject({ armSwitch: { phase: 'in' }, idleArmSet: true })
+      }
+    })
+    it('D4: 身振りの途中に求められても、身振りが終わって待機の腕へ戻るまで出さない', () => {
+      const { stage, run } = setup()
+      stage.playGesture('greet')
+      run(0.5)
+      stage.setIdleArmSet?.(TIDY)
+      run(0.5)
+      expect(stage.report()).toMatchObject({ gesture: 'greet', idleArmSet: false })
+      run(3)
+      expect(stage.report()).toMatchObject({ gesture: 'none', idleArmSet: true })
+    })
+    it('解除（reset）でも、その形のまま消える', () => {
+      const { stage, frame, run } = setup()
+      stage.setIdleArmSet?.(TIDY)
+      const held = frame()
+      run(1)
+      stage.reset()
+      near(run(0.1), held)
+      expect(stage.report().armSwitch).toMatchObject({ phase: 'out' })
+    })
+    it('G3: 腕を使う身振りは、すべてフェードで差し替える（腕を動かして運ぶ身振りは無い）', () => {
+      for (const [name, clip] of Object.entries(clips)) {
+        const arms = clip.keys.some((k) =>
+          [k.right, k.left].some((a) => a && (a.up !== 0 || a.fo !== 0 || a.ha !== 0 || a.elbowTo)),
+        )
+        expect(!!SWITCHED[name as keyof typeof SWITCHED], name).toBe(arms)
+      }
+    })
+  })
   it('裏に残す腕は、背景が透ける割合を 0.15 以下に抑える', () => {
     expect(backOpacity(0)).toBe(1)
     expect(backOpacity(1)).toBe(0)
