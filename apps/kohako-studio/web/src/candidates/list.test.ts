@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { candidateURL, parseIndex, sortNewestFirst, statusClass } from './list'
+import { candidateHomeURL, candidateLinks, candidateURL, parseIndex, sortNewestFirst, statusClass } from './list'
 
 const ok = {
   id: 'arm-4980edd',
@@ -25,6 +25,18 @@ describe('試作候補の一覧', () => {
   it('候補ごとの固定パスへ acting 付きでリンクする', () => {
     expect(candidateURL(ok)).toBe('./candidates/arm-4980edd/live2d.html?acting=1')
     expect(candidateURL(ok, 'studio')).toBe('./candidates/arm-4980edd/studio.html?acting=1')
+  })
+  it('家の画面で見る候補（page: home）は、家の画面へリンクする', () => {
+    const home = { ...ok, id: 'seat-0123abc', page: 'home' }
+    expect(candidateHomeURL(home)).toBe('./candidates/seat-0123abc/home.html')
+    expect(candidateLinks(home)).toEqual([
+      { text: '家の画面で見る', href: './candidates/seat-0123abc/home.html' },
+      { text: 'すぐ座るところから見る', href: './candidates/seat-0123abc/home.html?seat=now' },
+    ])
+    expect(candidateLinks(ok).map((l) => l.href)).toEqual([
+      './candidates/arm-4980edd/live2d.html?acting=1',
+      './candidates/arm-4980edd/studio.html?acting=1',
+    ])
   })
   it('Studio の固定入口から候補一覧へ行ける', () => {
     expect(readFileSync(new URL('../../studio.html', import.meta.url), 'utf8')).toContain('href="./candidates.html"')
