@@ -3,6 +3,8 @@
 // 新しい絵は使わず、既存の頭・体の角度、視線、表情、閉眼だけで作る。ここは「いつ・どれを・どの強さで」を決める純粋な係で、描画は gesture.ts の stage が行う。
 // 顔と頭だけでなく、腕と体のしぐさも混ぜる（Owner 要望）。腕は肩・肘・手首を小さく回すだけのもの（arms / sway）と、
 // 会話で使っている身振りのクリップをそのまま借りるもの（gesture: 小さく手を振る・口元に手を添える）がある。どちらも新しい絵は使わない。
+// BOXP-694 TD-01（Owner 本人の判断「腕を大きく動かす動きは全部フェードアウト表現に」）: 腕を連続して動かすのは肩・肘 ARM_SWAY_MAX 未満の小さな揺れだけ。
+// それ以上の姿勢（手そろえ・伸び）は腕を動かして運ばず、armSet として stage へ渡し、待機の腕と 0.25 秒のフェードで入れ替える（仕様: vault の Projects/kohako-home/arm-switch-spec.md の「共通の決まり」と D）。
 // 表情（ほほえみ・目を細める・はにかみ）を多くのしぐさに添え、小首をかしげる時は体を逆へ少し傾ける（Owner 要望「もう少し女の子らしくかわいく」）。
 // しぐさの間は待機クリップを止める（クリップ再生中は頭の角度を足しても描画に出ない。止めている間は揺れも小さく落ち着く）。
 import type { Emotion, Gesture } from '../live2d/acting'
@@ -40,7 +42,10 @@ type Def = {
   gaze?: boolean
   /** 見た目の変化がほとんど無い（揺れが落ち着くだけ）。次のしぐさまでの間を短くし、変化の無い時間が長く続かないようにする。 */
   quiet?: boolean
-  /** 腕（ラジアン。right は画面の右側の腕。角度は右腕の向きで書き、左腕は鏡映される: up 負=外へ開く、fo 正=肘から先を体へ寄せる）。 */
+  /**
+   * 腕（ラジアン。right は画面の右側の腕。角度は右腕の向きで書き、左腕は鏡映される: up 負=外へ開く、fo 正=肘から先を体へ寄せる）。
+   * 肩か肘が ARM_SWAY_MAX 以上なら「姿勢」として扱い、入り・戻りで角度を補間せず、フェードで入れ替える（peak.arms も同じ）。
+   */
   arms?: Arms
   /**
    * ゆっくり左右へ揺れる。pose と swing（両腕を同じ向きへ振る角度）に sin を掛けて足す。period は 1 往復の秒。
@@ -147,19 +152,17 @@ export const idleActs: Record<IdleAct, Def> = {
     weight: 0.5,
     dayparts: { night: 1.4 },
   },
-  // 軽く伸びをする。両手を体の前で合わせて下へ押し伸ばし、目を閉じてあごを上げ（んーっ）、ふっと力を抜いて、ほほえむ。
-  // 以前は腕を棒のまま外へ 0.17 開いて止めるだけで、力を入れて抜く流れも表情も無く、伸びに見えなかった（Owner 指摘「不自然でかわいくない」）。
-  // 腕を外へ開く・手首を外へ返す形は、どの角度でも翼を広げたように見えた（実描画で比較）。腕は伸ばしたまま体の前へ下ろし、
-  // 伸びらしさは「ゆっくり力む → ふっと抜けて少し行き過ぎる → ほほえむ」の時間の流れで出す。
-  // BOXP-694 TD-01（Owner 本人の判断）: #15578 で肘を曲げず腕を下へ伸ばす形（up 0.1 / ha 0.45）に替えたが、配備版を見た本人が
-  // 「両手の動きも全部、前の方が全然良かった」と評価したので、この形（肘 0.72）へ戻している。肘に V 字の切れ目が見えること
-  // （BOXP-693 の動画レビューの指摘）は、本人がこちらを選んだうえで残す既知の見え方で、直す対象ではない。手そろえ（tidy）・喜びも同じ。
+  // 軽く伸びをする。両手を下腹の前で重ね、目を閉じてあごを上げ（んーっ）、ふっと力を抜いて、ほほえむ。
+  // 伸びらしさは「ゆっくり力む → ふっと抜けて少し行き過ぎる → ほほえむ」の頭と体の時間の流れで出す（腕を外へ開く形は、どの角度でも翼を広げたように見えた）。
+  // BOXP-694 TD-01: 以前の腕（肘 0.72 で両手を太ももの内側へ下ろす）は、肘に V 字の切れ目が見え、手を内股へ寄せる動きを本人が「不自然」と評価した。
+  // 腕は動かして運ばず、力んでいる間（目を閉じている間）だけ、両手を下腹の前で重ねた姿勢をフェードで出す（仕様 D2・D3）。
+  // 肘 0.3〜0.94 は切れ目が見えるので、姿勢は曲げた小手の絵が出きる 0.96 以上にする。動かして運ぶ形へ戻さないこと。
   stretch: {
     seconds: [3.2, 4],
     pose: { headZ: 2.5, lean: 0.5 },
     peak: {
       pose: { headY: 7, headZ: 1.5, lean: -3.5, bodyZ: 1.5 },
-      arms: { right: { up: 0.2, fo: 0.72, ha: -0.1 }, left: { up: 0.2, fo: 0.72, ha: -0.1 } },
+      arms: { right: { up: -0.12, fo: 1.46, ha: -0.05 }, left: { up: -0.12, fo: 1.46, ha: -0.05 } },
       eyes: true,
       in: 1.3,
       until: 0.5,
@@ -170,14 +173,14 @@ export const idleActs: Record<IdleAct, Def> = {
     later: { at: 0.56, emotion: 'smile' },
     weight: 0.6,
   },
-  // 両手を体の前で重ねてそろえ、小首をかしげてほほえむ。
-  // 以前は肘の曲げを 0.28 に留めていたので手が太ももの横で止まり、「前でそろえる」にならず腕を固めて立っているように見えた
-  // （Owner 指摘「不自然でかわいくない」）。肘を 1 前後まで曲げると両手が体の中央で重なる。左右を少し変えて、片手をもう片方へ添える形にする。
+  // 両手を体の前で重ねてそろえ、小首をかしげてほほえむ。左右を少し変えて、片手をもう片方へ添える形にする。
+  // BOXP-694 TD-01: 以前の腕（肘 1.05 / 0.98 を 1.2 秒かけて曲げる）は、両手が股の前まで下がり、寄せていく動きを本人が「不自然」と評価した。
+  // 両手を下腹の前で重ねる形（肘 1.5 / 1.42、肩を少し外へ）にし、腕は動かして運ばず、ほほえんでいる間だけフェードで出す（仕様 D1・D3）。
   tidy: {
     seconds: [3, 4.4],
     in: 1.2,
     pose: { headZ: 5, headY: -2, bodyZ: -1.5, lean: 1 },
-    arms: { right: { up: 0.08, fo: 1.05, ha: -0.15 }, left: { up: 0.07, fo: 0.98, ha: -0.25 } },
+    arms: { right: { up: -0.12, fo: 1.5, ha: 0 }, left: { up: -0.12, fo: 1.42, ha: -0.1 } },
     mirror: false,
     emotion: 'smile',
     weight: 0.9,
@@ -268,8 +271,10 @@ export type IdleFrame = {
   hold: boolean
   /** カーソル追従を退かせる。 */
   gaze: boolean
-  /** 腕の角度（動かさない間は null）。 */
+  /** 連続して動かす腕の角度（小さな揺れだけ。肩・肘は ARM_SWAY_MAX 未満。動かさない間は null）。 */
   arms: { right: IdleArm; left: IdleArm } | null
+  /** フェードで出す腕の姿勢（出ている間は同じ形のまま。出さない間は null）。stage が待機の腕と 0.25 秒で入れ替える。 */
+  armSet: { right: IdleArm; left: IdleArm } | null
   /** 再生しておく身振りのクリップ（null になったら、まだ続いていれば止める）。 */
   gesture: Exclude<Gesture, 'none'> | null
 }
@@ -281,9 +286,14 @@ const NONE: IdleFrame = {
   hold: false,
   gaze: false,
   arms: null,
+  armSet: null,
   gesture: null,
 }
 const ARM_KEYS = ['up', 'fo', 'ha'] as const
+/** 連続して動かしてよい腕の上限（ラジアン。肩・肘）。これ以上は姿勢としてフェードで入れ替える（肘の切れ目が見え始める 0.3 より手前だけを動かす）。 */
+export const ARM_SWAY_MAX = 0.3
+const isPosture = (a: Arms | undefined) =>
+  [a?.right, a?.left].some((x) => Math.abs(x?.up ?? 0) >= ARM_SWAY_MAX || Math.abs(x?.fo ?? 0) >= ARM_SWAY_MAX)
 /** t0 は揺れの位相の起点。中断で start を書き換えても動かさない（位相が跳ぶと体の角度が跳ぶ）。 */
 type Running = {
   act: IdleAct
@@ -423,11 +433,14 @@ export class IdleDirector {
       for (const key of Object.keys(def.sway.pose) as (keyof BodyPose)[])
         pose[key] += (def.sway.pose[key] ?? 0) * beat(HEAD_KEYS.includes(key) ? def.sway.lag?.head : 0)
     // 腕。左右のあるしぐさは腕ごと入れ替える（角度は鏡映の書き方なので値はそのまま）。揺れは両腕を画面の同じ向きへ振る。
+    // 大きな姿勢（isPosture）はここで補間しない。下の armSet で、形を変えずに出す。
+    const sided = (a: Arms | undefined) => (run.side === 1 ? a : { right: a?.left, left: a?.right }),
+      swayArms = isPosture(def.arms) ? undefined : def.arms,
+      swayPeak = isPosture(def.peak?.arms) ? undefined : def.peak?.arms
     let arms: IdleFrame['arms'] = null
-    if (def.arms || def.sway || def.peak?.arms) {
-      const sided = (a: Arms | undefined) => (run.side === 1 ? a : { right: a?.left, left: a?.right }),
-        from = sided(def.arms),
-        tense = sided(def.peak?.arms),
+    if (swayArms || def.sway || swayPeak) {
+      const from = sided(swayArms),
+        tense = sided(swayPeak),
         arm = (a: IdleArm | undefined, b: IdleArm | undefined, sign: number): IdleArm => ({
           up: (a?.up ?? 0) * level + (b?.up ?? 0) * peakArm + sign * (def.sway?.swing ?? 0) * swing,
           fo: (a?.fo ?? 0) * level + (b?.fo ?? 0) * peakArm,
@@ -442,6 +455,15 @@ export class IdleDirector {
       held = run.t0 + run.in,
       tensed = !!def.peak?.eyes && run.frozen === null && now >= run.t0 + def.peak.in * 0.45 && now < run.release,
       emotion = def.later && now >= held + (run.end - held) * def.later.at ? def.later.emotion : (def.emotion ?? null)
+    // 姿勢は表情・閉じた目と同じ時刻に替える: 保つ姿勢は表情の間、力む姿勢は力んでいる間（中断すればその場で手放す）。控えめでも形は縮めない。
+    const posture = isPosture(def.peak?.arms)
+        ? run.frozen === null && def.peak && now >= run.t0 + def.peak.in * 0.45 && now < run.release
+          ? sided(def.peak.arms)
+          : undefined
+        : isPosture(def.arms) && inner
+          ? sided(def.arms)
+          : undefined,
+      armSet = posture ? { right: { ...posture.right }, left: { ...posture.left } } : null
     return {
       act: run.act,
       pose,
@@ -450,6 +472,7 @@ export class IdleDirector {
       hold: true,
       gaze: !!def.gaze && now < run.end + run.out,
       arms,
+      armSet,
       // 中断で短く戻している間は出さない（main がクリップを止める）。
       gesture: def.gesture && now < run.end && run.out !== CANCEL_SECONDS ? def.gesture : null,
     }

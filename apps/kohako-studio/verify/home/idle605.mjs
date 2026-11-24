@@ -74,7 +74,7 @@ const EXPECT = {
   // 腕・体: 始まる前（最初の 3 行）からの手の動きで見る。1280x800 でキャラの高さは約 600px。
   wave: r => r.some(x => x.gesture === 'greet' && x.greet && x.armBlend === 1) && r.some(x => x.emotion === 'smile'),
   mouth: r => r.some(x => x.gesture === 'shyHand' && x.shy && x.armBlend === 1) && r.some(x => x.emotion === 'smileClosed'),
-  // 作り直し（Owner 指摘「不自然でかわいくない」）: 伸び＝両手を体の前へ下ろして目を閉じ、あごを上げ、抜いた後にほほえむ（目を閉じる → ほほえむの順）。
+  // 作り直し（Owner 指摘「不自然でかわいくない」）: 伸び＝両手を体の前で重ねて（BOXP-694: フェードで出す姿勢 idle.armSet）目を閉じ、あごを上げ、抜いた後にほほえむ（目を閉じる → ほほえむの順）。
   // 手を前でそろえる＝両手が体の中央で重なるまで寄る（以前は太ももの横まで＝間隔 -57px）。
   stretch: r => { const shut = r.map((x, i) => x.v[IDS.indexOf('ParamEyeLOpen')] < 0.1 ? i : -1).filter(i => i >= 0), smile = r.findIndex(x => x.emotion === 'smile')
     return span(r[0]) - Math.min(...nums(r.map(span))) > 60 && Math.max(...col(r, 'ParamAngleY')) > 3 && shut.length * STEP / 1000 > 1 && smile > shut[0] },
@@ -122,7 +122,7 @@ if (want('acts')) {
     // 50ms で 2.5° を超える跳びが無い（待機クリップ自体の最大は baseline）。
     // 腕は待機へ戻る（身振りなし・変形なし・手の間隔が始まる前と同じ）。手は 50ms で 20px を超えて跳ばない（絵を差し替える身振りの間は対象外。両手の間隔で見るので片手あたり 10px。両手を体の横から前まで約 185px 運ぶしぐさの速さは 1 秒強で 17px 前後）。
     const end = tail.at(-1), handStep = Math.max(0, ...rows.slice(1).map((x, i) => [x, rows[i]].every(y => span(y) !== null && y.gesture === 'none' && !y.sw && !y.greet && !y.shy) ? Math.max(Math.abs(span(x) - span(rows[i])), Math.abs(handsX(x) - handsX(rows[i]))) : 0))
-    check(end.gesture === 'none' && end.armBlend === 0 && !end.sw && !end.idle?.arms, `${act}: 腕が待機へ戻らない（${end.gesture} ${end.armBlend}）`)
+    check(end.gesture === 'none' && end.armBlend === 0 && !end.sw && !end.idle?.arms && !end.idle?.armSet, `${act}: 腕が待機へ戻らない（${end.gesture} ${end.armBlend}）`)
     check(span(end) !== null && Math.abs(span(end) - span(rows[0])) < 6, `${act}: 手の位置が戻らない（${r1(span(end) ?? -1)} / ${r1(span(rows[0]) ?? -1)}）`)
     check(handStep < 20, `${act}: 手が跳ぶ（50ms で ${r1(handStep)}px）`)
     check(Math.max(step.x, step.y, step.z) < 2.5, `${act}: 頭の角度が跳ぶ（50ms で ${r1(Math.max(step.x, step.y, step.z))}°）`)
@@ -254,7 +254,7 @@ if (want('interrupt')) {
     await page.mouse.move(1100, 200); await page.mouse.move(1150, 220)
     const after = await sample(page, 40)
     const armsGone = after.findIndex(x => x.gesture === 'none' && x.armBlend === 0 && !x.sw)
-    check(act === 'wave' ? mid.at(-1).greet : !!mid.at(-1).idle?.arms, `interrupt ${act}: 腕が出ていない`)
+    check(act === 'wave' ? mid.at(-1).greet : !!(mid.at(-1).idle?.arms || mid.at(-1).idle?.armSet), `interrupt ${act}: 腕が出ていない`)
     check(armsGone >= 0 && armsGone * STEP <= 1000, `interrupt ${act}: 腕が 1 秒以内に戻らない（${armsGone * STEP}ms）`)
     check(errors.length === 0, `interrupt ${act}: ページのエラー ${errors.join(' / ')}`)
     result.interrupt[`arms-${act}`] = { goneMs: armsGone * STEP }
