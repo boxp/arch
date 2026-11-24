@@ -49,6 +49,8 @@ export interface ActingStage {
   cancelGesture?(tag: string): void
   setPetOffset?(v: { headX: number; headY: number; headZ: number }): void
   setChestMotion?(enabled: boolean): void
+  /** BOXP-698: 浮く椅子へ腰かけた姿（脚の変形と椅子）。すべて 0 で立ち姿。椅子を描けない環境では false を返し、何も変えない。 */
+  setSeat?(v: { level: number; chair: number; swingRight: number; swingLeft: number }): boolean
 }
 export type OperationalState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'approval' | 'failed'
 

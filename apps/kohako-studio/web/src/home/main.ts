@@ -38,6 +38,7 @@ import './room.css'
 import './menus.css'
 import { buildRoomV1, type Daypart, daypartOf, roomOptions } from './room'
 import { IdleDirector, type IdleAct, idleActNames, settledHead } from './idle'
+import { SeatDirector, type SeatPhase, seatOffsetPx, seatOption } from './seat'
 import {
   states,
   formatPercent,
@@ -3141,6 +3142,8 @@ document.addEventListener('visibilitychange', () => {
     touchLook.clear()
     // BOXP-605: 非表示の間は描画が止まる。戻った時に途中のしぐさや過ぎた予定を出さず、間を数え直す。
     idleDirector.reset()
+    // BOXP-698: 座っていても、戻った時は立ち姿から。予定も数え直す。
+    seatDirector.reset()
   }
 })
 window.addEventListener('resize', () => {
@@ -3180,6 +3183,29 @@ function idleCalm(now: number, petBusy: boolean): boolean {
     now - pointerMovedAt > IDLE_POINTER_QUIET_MS
   )
 }
+// BOXP-698: 待機中、気分で宙に浮く椅子へ腰かける（決め方は seat.ts）。待機のしぐさとは別の層で、座っている間もしぐさや反応は上半身に出る。
+const seatConfig = seatOption(location.search),
+  seatDirector = new SeatDirector(Math.random, seatConfig.first)
+let seatMoving = false,
+  seatPhase: SeatPhase = 'standing',
+  seatViewWritten: number | null = null,
+  seatViewBase = 0
+/** 座ったままでよい。会話・確認待ち・失敗・現場・帰還の演出・録音・小さい表示・動きを減らす設定では偽（急いで立つ）。なでる・タップ・マウス移動では立たない。 */
+function seatKeep(): boolean {
+  return (
+    seatConfig.enabled &&
+    prefs.idleActs &&
+    !reduced() &&
+    !document.hidden &&
+    enabled &&
+    !busy &&
+    !netDown &&
+    rigStateOf[state] === 'idle' &&
+    character.dataset.arrival === 'home' &&
+    !character.classList.contains('mini') &&
+    !recording
+  )
+}
 function rigTick(now: number) {
   if (!rig) {
     rigTickId = 0
@@ -3198,7 +3224,7 @@ function rigTick(now: number) {
   // BOXP-605: 待機中のしぐさ。stage が無い（リグ非対応）・出せない状況では何もせず、出ている途中なら短く戻す。
   const player = rig,
     idle = idleDirector.step(now / 1000, {
-      calm: !!stage?.setIdlePose && idleCalm(now, petHold),
+      calm: !!stage?.setIdlePose && idleCalm(now, petHold) && !seatMoving,
       settled: () => {
         const head = player.parameterValues()
         return settledHead(
@@ -3226,6 +3252,27 @@ function rigTick(now: number) {
     idleEmotion = null
     // 会話やふれあいが表情を決めた後なら触らない（待機のまま終わった時だけ元の表情へ戻す）。
     if (rigStateOf[state] === 'idle' && !reacting && touchGesture === 'none') stage?.setEmotion('neutral')
+  }
+  if (stage?.setSeat) {
+    const seat = seatDirector.step(now / 1000, {
+      calm: idleCalm(now, petHold),
+      keep: seatKeep(),
+      free: idle.act === null,
+      subtle: prefs.intensity === 'subtle',
+    })
+    // 座り切ったら、まず両手をひざの上でそろえる（待機のしぐさ「手を前でそろえる」を次の機会に出す）。
+    if (seat.phase === 'seated' && seatPhase !== 'seated') idleDirector.force('tidy')
+    seatPhase = seat.phase
+    seatMoving = seat.moving
+    // 体と椅子を一緒に下げる（腰を下ろすぶんと浮遊の上下）。一度も座っていない間・椅子を描けない環境では view に触れない。
+    const offset = stage.setSeat(seat) ? seat.offset : 0
+    if (offset !== 0 || seatViewWritten !== null) {
+      if (seatViewWritten === null || player.view.y !== seatViewWritten) seatViewBase = player.view.y
+      const y = seatViewBase + seatOffsetPx(offset, rigCanvas.clientHeight, player.height, player.view.zoom)
+      player.view.y = y
+      seatViewWritten = seat.phase === 'standing' ? null : y
+    }
+    report.seat = { phase: seat.phase, level: seat.level, chair: seat.chair, offset: seat.offset }
   }
   stage?.setPetEyes?.(petEyes || idle.eyes)
   report.idle = {
@@ -3496,6 +3543,8 @@ Object.assign(window, {
     // 検証用: 次の機会に指定のしぐさを出す（出してよい条件は通常どおり判定する）。
     idleActs: idleActNames,
     playIdle: (act: IdleAct) => idleDirector.force(act),
+    // BOXP-698 検証用: 次の機会に座る／立つ（条件は通常どおり判定する）。
+    playSeat: (what: 'sit' | 'stand') => seatDirector.force(what),
     syncNow: () => syncTranscript(),
     debug: () => ({
       pointerDown,
