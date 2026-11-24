@@ -73,12 +73,15 @@ const EXPECT = {
   // 腕・体: 始まる前（最初の 3 行）からの手の動きで見る。1280x800 でキャラの高さは約 600px。
   wave: r => r.some(x => x.gesture === 'greet' && x.greet && x.armBlend === 1) && r.some(x => x.emotion === 'smile'),
   mouth: r => r.some(x => x.gesture === 'shyHand' && x.shy && x.armBlend === 1) && r.some(x => x.emotion === 'smileClosed'),
-  stretch: r => Math.max(...nums(r.map(span))) - span(r[0]) > 12 && Math.max(...col(r, 'ParamAngleY')) > 3,
-  tidy: r => span(r[0]) - Math.min(...nums(r.map(span))) > 12 && r.some(x => x.emotion === 'smile'),
+  // 作り直し（Owner 指摘「不自然でかわいくない」）: 伸び＝両手を体の前へ下ろして目を閉じ、あごを上げ、抜いた後にほほえむ（目を閉じる → ほほえむの順）。
+  // 手を前でそろえる＝両手が体の中央で重なるまで寄る（以前は太ももの横まで＝間隔 -57px）。
+  stretch: r => { const shut = r.map((x, i) => x.v[IDS.indexOf('ParamEyeLOpen')] < 0.1 ? i : -1).filter(i => i >= 0), smile = r.findIndex(x => x.emotion === 'smile')
+    return span(r[0]) - Math.min(...nums(r.map(span))) > 60 && Math.max(...col(r, 'ParamAngleY')) > 3 && shut.length * STEP / 1000 > 1 && smile > shut[0] },
+  tidy: r => span(r[0]) - Math.min(...nums(r.map(span))) > 100 && r.some(x => x.emotion === 'smile'),
   // かわいく（Owner 要望）: はにかむ＝照れ→ほほえみの順に替わり、両手が寄る。くすっと笑う＝目を細めて頭が小さく弾む。
   shy: r => { const a = r.findIndex(x => x.emotion === 'shy'), b = r.findIndex(x => x.emotion === 'smile'); return a >= 0 && b > a && span(r[0]) - Math.min(...nums(r.map(span))) > 8 },
   giggle: r => r.some(x => x.emotion === 'smileClosed') && Math.max(...col(r, 'ParamAngleY')) - Math.min(...col(r, 'ParamAngleY')) > 2,
-  sway: r => { const xs = nums(r.map(handsX)); return Math.max(...xs) - handsX(r[0]) > 5 && handsX(r[0]) - Math.min(...xs) > 5 && Math.max(...col(r, 'ParamBodyAngleZ')) - Math.min(...col(r, 'ParamBodyAngleZ')) > 7 },
+  sway: r => { const xs = nums(r.map(handsX)); return Math.max(...xs) - handsX(r[0]) > 3 && handsX(r[0]) - Math.min(...xs) > 3 && Math.max(...col(r, 'ParamBodyAngleZ')) - Math.min(...col(r, 'ParamBodyAngleZ')) > 5 && r.some(x => x.emotion === 'smile') },
   still: r => { const on = r.filter(x => x.idle?.act === 'still'); return on.length * STEP / 1000 > 5.5 && on.every(x => x.held) && Math.max(...col(on.slice(40), 'ParamAngleX').map(Math.abs)) < 8 },
 }
 
@@ -116,11 +119,11 @@ if (want('acts')) {
     check(tail.at(-1).emotion === 'neutral', `${act}: 表情が戻らない（${tail.at(-1).emotion}）`)
     check(Math.min(...col(tail.slice(20), 'ParamEyeLOpen')) >= 0 && Math.max(...col(tail, 'ParamEyeLOpen')) > 0.95, `${act}: 目が開かない`)
     // 50ms で 2.5° を超える跳びが無い（待機クリップ自体の最大は baseline）。
-    // 腕は待機へ戻る（身振りなし・変形なし・手の間隔が始まる前と同じ）。手は 50ms で 12px を超えて跳ばない（絵を差し替える身振りの間は対象外）。
+    // 腕は待機へ戻る（身振りなし・変形なし・手の間隔が始まる前と同じ）。手は 50ms で 20px を超えて跳ばない（絵を差し替える身振りの間は対象外。両手の間隔で見るので片手あたり 10px。両手を体の横から前まで約 185px 運ぶしぐさの速さは 1 秒強で 17px 前後）。
     const end = tail.at(-1), handStep = Math.max(0, ...rows.slice(1).map((x, i) => [x, rows[i]].every(y => span(y) !== null && y.gesture === 'none' && !y.sw && !y.greet && !y.shy) ? Math.max(Math.abs(span(x) - span(rows[i])), Math.abs(handsX(x) - handsX(rows[i]))) : 0))
     check(end.gesture === 'none' && end.armBlend === 0 && !end.sw && !end.idle?.arms, `${act}: 腕が待機へ戻らない（${end.gesture} ${end.armBlend}）`)
     check(span(end) !== null && Math.abs(span(end) - span(rows[0])) < 6, `${act}: 手の位置が戻らない（${r1(span(end) ?? -1)} / ${r1(span(rows[0]) ?? -1)}）`)
-    check(handStep < 12, `${act}: 手が跳ぶ（50ms で ${r1(handStep)}px）`)
+    check(handStep < 20, `${act}: 手が跳ぶ（50ms で ${r1(handStep)}px）`)
     check(Math.max(step.x, step.y, step.z) < 2.5, `${act}: 頭の角度が跳ぶ（50ms で ${r1(Math.max(step.x, step.y, step.z))}°）`)
     check(yawMax <= 15.01, `${act}: 顔の向きが上限を超えた（${r1(yawMax)}°）`)
     result.acts[act] = { started, seconds: r1(seconds), maxStepDeg: { x: r1(step.x), y: r1(step.y), z: r1(step.z) }, yawMax: r1(yawMax), handStepPx: r1(handStep),
