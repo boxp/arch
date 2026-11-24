@@ -1,7 +1,7 @@
 # arms694.mjs（BOXP-694）
 
 `arms694.mjs` は、腕の動き 1 回ぶんを、Playwright の時計を止めて等間隔のコマに切り出し、1 枚の画像に並べます。token 不要の完全な BFF モックです。
-1 枚腕への差し替え（0.12 秒）、曲げた小手の絵への替わり目、外回りの振り上げが水平を通る間など、実時間の動画では 1〜2 コマしか写らない所を、全部のコマで目で確かめるために使います（合否は出しません。規則は `web/src/live2d/arm-switch.test.ts` と `gesture.test.ts`、仕様は vault の `Projects/kohako-home/arm-switch-spec.md`）。
+1 枚腕への差し替え（0.25 秒のフェード）、曲げた小手の絵への替わり目、外回りの振り上げが水平を通る間など、実時間の動画では数コマしか写らない所を、全部のコマで目で確かめるために使います（合否は出しません。規則は `web/src/live2d/gesture.test.ts`、仕様は vault の `Projects/kohako-home/arm-switch-spec.md`）。
 
 実行: Playwright 1.56.1 で `PW_WS=ws://host:port/ node arms694.mjs <build の dist> <出力.png> '<JSON>'`。
 

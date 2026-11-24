@@ -56,8 +56,6 @@ type Def = {
   }
   /** 入りの長さ（秒）。指定が無ければ IN_SECONDS。 */
   in?: number
-  /** 戻りの長さ（秒）。指定が無ければ OUT_SECONDS。腕を大きく曲げるしぐさは、戻りも急がせない。 */
-  out?: number
   /**
    * 力を入れてから、ふっと抜く層（伸び）。in 秒かけて pose・arms へ入り、保つ長さの until（割合）の時点から out 秒で抜く。
    * 抜く時は overshoot（割合）だけ逆へ行き過ぎてから戻る（力が抜けて、少し沈んでから落ち着く）。腕の行き過ぎは ARM_OVERSHOOT 倍に抑える
@@ -149,18 +147,19 @@ export const idleActs: Record<IdleAct, Def> = {
     weight: 0.5,
     dayparts: { night: 1.4 },
   },
-  // 軽く伸びをする。腕をぴんと下へ伸ばし、目を閉じてあごを上げ（んーっ）、ふっと力を抜いて、ほほえむ。
+  // 軽く伸びをする。両手を体の前で合わせて下へ押し伸ばし、目を閉じてあごを上げ（んーっ）、ふっと力を抜いて、ほほえむ。
   // 以前は腕を棒のまま外へ 0.17 開いて止めるだけで、力を入れて抜く流れも表情も無く、伸びに見えなかった（Owner 指摘「不自然でかわいくない」）。
-  // 腕を外へ開く・手首を外へ返す形は、どの角度でも翼を広げたように見えた（実描画で比較）。
-  // BOXP-694: 肘を 0.72 曲げて両手を股の前へ下ろす形は、動画で見ると肘に V 字の切れ目が出て、関節が外れた人形のように見えた。
-  // 肘は曲げず（腕の絵の差し替えが起きない）、腕を体へ少し引き寄せ、手首を返して手を真下へ向け、腕をぴんと下へ伸ばす。
-  // 伸びらしさは「ゆっくり力む → ふっと抜けて少し行き過ぎる → ほほえむ」の時間の流れで出す（腕を上げる絵は無い）。
+  // 腕を外へ開く・手首を外へ返す形は、どの角度でも翼を広げたように見えた（実描画で比較）。腕は伸ばしたまま体の前へ下ろし、
+  // 伸びらしさは「ゆっくり力む → ふっと抜けて少し行き過ぎる → ほほえむ」の時間の流れで出す。
+  // BOXP-694 TD-01（Owner 本人の判断）: #15578 で肘を曲げず腕を下へ伸ばす形（up 0.1 / ha 0.45）に替えたが、配備版を見た本人が
+  // 「両手の動きも全部、前の方が全然良かった」と評価したので、この形（肘 0.72）へ戻している。肘に V 字の切れ目が見えること
+  // （BOXP-693 の動画レビューの指摘）は、本人がこちらを選んだうえで残す既知の見え方で、直す対象ではない。手そろえ（tidy）・喜びも同じ。
   stretch: {
     seconds: [3.2, 4],
     pose: { headZ: 2.5, lean: 0.5 },
     peak: {
       pose: { headY: 7, headZ: 1.5, lean: -3.5, bodyZ: 1.5 },
-      arms: { right: { up: 0.1, ha: 0.45 }, left: { up: 0.1, ha: 0.45 } },
+      arms: { right: { up: 0.2, fo: 0.72, ha: -0.1 }, left: { up: 0.2, fo: 0.72, ha: -0.1 } },
       eyes: true,
       in: 1.3,
       until: 0.5,
@@ -174,17 +173,11 @@ export const idleActs: Record<IdleAct, Def> = {
   // 両手を体の前で重ねてそろえ、小首をかしげてほほえむ。
   // 以前は肘の曲げを 0.28 に留めていたので手が太ももの横で止まり、「前でそろえる」にならず腕を固めて立っているように見えた
   // （Owner 指摘「不自然でかわいくない」）。肘を 1 前後まで曲げると両手が体の中央で重なる。左右を少し変えて、片手をもう片方へ添える形にする。
-  // BOXP-694: 肘 1.05 / 0.98・等倍では、待機用の平たい両手が股の前で板のように重なって見えた（動画レビュー）。
-  // 肘をもう少し曲げ、前腕を 0.74 倍に短縮（手前へ出す）して、両手を下腹の前に並べる。入りは角度が増えたぶん 1.4 秒かける。
   tidy: {
     seconds: [3, 4.4],
-    in: 1.4,
-    out: 1.3,
+    in: 1.2,
     pose: { headZ: 5, headY: -2, bodyZ: -1.5, lean: 1 },
-    arms: {
-      right: { up: 0.04, fo: 1.28, ha: -0.45, foS: 0.74 },
-      left: { up: 0.04, fo: 1.22, ha: -0.4, foS: 0.74 },
-    },
+    arms: { right: { up: 0.08, fo: 1.05, ha: -0.15 }, left: { up: 0.07, fo: 0.98, ha: -0.25 } },
     mirror: false,
     emotion: 'smile',
     weight: 0.9,
@@ -398,7 +391,7 @@ export class IdleDirector {
           t0: now,
           start: now,
           end: 0,
-          out: def.out ?? OUT_SECONDS,
+          out: OUT_SECONDS,
           scale: input.subtle ? SUBTLE_SCALE : 1,
           in: def.in ?? IN_SECONDS,
           release: 0,
@@ -439,9 +432,6 @@ export class IdleDirector {
           up: (a?.up ?? 0) * level + (b?.up ?? 0) * peakArm + sign * (def.sway?.swing ?? 0) * swing,
           fo: (a?.fo ?? 0) * level + (b?.fo ?? 0) * peakArm,
           ha: (a?.ha ?? 0) * level + (b?.ha ?? 0) * peakArm + sign * (def.sway?.hand ?? 0) * handSwing,
-          // 長さの倍率は 1 からの差に強さを掛ける（入り・戻りで 1 から滑らかに変わる）。
-          foS: 1 + ((a?.foS ?? 1) - 1) * level + ((b?.foS ?? 1) - 1) * peakArm,
-          haS: 1 + ((a?.haS ?? 1) - 1) * level + ((b?.haS ?? 1) - 1) * peakArm,
         })
       arms = { right: arm(from?.right, tense?.right, 1), left: arm(from?.left, tense?.left, -1) }
       if (![arms.right, arms.left].some((a) => ARM_KEYS.some((k) => Math.abs(a[k] ?? 0) > 1e-4))) arms = null
