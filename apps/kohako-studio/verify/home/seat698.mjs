@@ -59,8 +59,8 @@ async function open({ prefs = {}, media, query = '', p = port, video, viewport =
     return r.fulfill({ json: p === 'me' ? { user: 'verify' } : p === 'conversation' && q.method() === 'GET' ? { enabled: true, stt: false } : {} })
   })
   await context.addInitScript((v) => localStorage.setItem('kohako-home-prefs', JSON.stringify(v)), prefs)
-  // 変更前との画素比較では、まばたきなどの乱数を同じ列にする。
-  if (seed != null) await context.addInitScript((s) => { let x = s; Math.random = () => (x = (x * 1103515245 + 12345) % 2147483648) / 2147483648 }, seed)
+  // 変更前との画素比較では、乱数を定数にする（まばたきなどの時刻をそろえる。乱数の列にすると、椅子の係が予定を決めるために 1 つ使うぶん、以後の列がずれて比較にならない）。
+  if (seed != null) await context.addInitScript((s) => { Math.random = () => s }, seed)
   return { context, page, url: `http://127.0.0.1:${p}/kohako/home.html${query}` }
 }
 async function paused(o) {
@@ -77,9 +77,17 @@ async function frozen(o) {
   await page.clock.install({ time: new Date('2026-11-12T12:00:00+09:00') })
   await page.clock.pauseAt(new Date('2026-11-12T12:00:01+09:00'))
   await page.goto(o.url)
-  for (let i = 0; i < 300 && !(await page.evaluate(() => window.__kohakoHome?.report.loaded && window.__kohakoHome.state !== 'offline')); i++) await new Promise((r) => setTimeout(r, 100))
-  await new Promise((r) => setTimeout(r, 1500))
-  await page.clock.runFor(8000)
+  // 追加の腕の絵など、後から届く素材も読み終わるまで待つ（届く前後で描画が変わる）。
+  for (let i = 0; i < 300 && !(await page.evaluate(() => window.__kohakoHome?.report.loaded && window.__kohakoHome.state !== 'offline' && window.__kohakoHome.stage?.report().parts?.textures === 'loaded')); i++) await new Promise((r) => setTimeout(r, 100))
+  await new Promise((r) => setTimeout(r, 2500))
+  // 読み込みの間も performance.now() だけは実時間で進み、最初の 1 コマの経過時間が回ごとに変わる。モデルの更新を固定の刻み（1/60 秒）にそろえる。
+  // コマを取る時点も、時間ではなく更新の回数で決める（同じ 0.7 秒でも、描画の拍との位置で更新が 1 回多い・少ないがある）。
+  await page.evaluate(() => { const p = window.__kohakoHome.player, update = p.update; window.__updates = 0; p.update = () => { window.__updates++; return update.call(p, 1 / 60) } })
+}
+/** モデルの更新が n 回になるまで時計を進める。 */
+async function untilUpdates(page, n) {
+  for (let i = 0; i < 4000 && (await page.evaluate(() => window.__updates)) < n; i++) await page.clock.runFor(4)
+  return page.evaluate(() => window.__updates)
 }
 const seatOf = (page) => page.evaluate(() => {
   const h = window.__kohakoHome, p = h.player, bottom = (m) => { const v = new Float32Array(p.rt.memory.buffer, p.rt.p2l_mesh_vertices(p.rig, m), p.meshes[m].vertices * 2); let y = -1e9; for (let i = 1; i < v.length; i += 2) y = Math.max(y, v[i]); return y }
@@ -213,10 +221,11 @@ if (!ONLY || ONLY === 'check' || ONLY === 'base') {
   if (base) {
     // アバターの canvas だけを比べる（背景の花びらなどは DOM で、乱数で動く）。同じ build 同士が一致することも確かめ、比較そのものが成り立つことを見る。
     const shot = async (p) => {
-      const o = await open({ prefs: { idleActs: false }, p, seed: 698 }); await frozen(o)
+      const o = await open({ prefs: { idleActs: false }, p, seed: 0.37 }); await frozen(o)
       const hashes = []
       for (let i = 0; i < 6; i++) {
-        await o.page.clock.runFor(700)
+        const n = await untilUpdates(o.page, 480 + i * 40)
+        if (n !== 480 + i * 40) hashes.push(`updates=${n}`)
         hashes.push(await o.page.evaluate(async () => {
           const h = window.__kohakoHome, c = h.player.canvas; h.player.draw()
           const o = new OffscreenCanvas(c.width, c.height), g = o.getContext('2d'); g.drawImage(c, 0, 0)
