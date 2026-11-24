@@ -1,5 +1,7 @@
 # BOXP-450: ゲート失敗予算を ticket pool に統一
 
+> 票ごとの記録。いま適用されている仕様（規則・具体例・状態の移り変わり）は Obsidian vault の `Projects/task-board-gate-budget/spec.md`（BOXP-673 でまとめ直した）。
+
 - BOXP-448 の実 PR 登録・重複排除・他票所有と Owner 除外、旧 grant の下限および ticket の追加 grant を維持する。
 - precheck、予約時の再確認、失敗後、再起動後の停止、CLI と通知を ticket pool のみで判定する。同一 PR の別 ticket 同時実行排他は維持する。
 - PR の失敗数、旧上限、grant、イベントは監査に残す。CLI の PR `:exhausted?` は false、`:legacy-limit-reached?` は旧上限到達を示す。PR grant は ticket に加算しない。

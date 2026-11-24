@@ -16,8 +16,26 @@
   ansible.builtin.include_tasks: validate_controller_manager_feature_gates.yml
   tags: [pre_checks, upgrade]
 
+- name: Validate pre-check target hosts
+  ansible.builtin.assert:
+    that:
+      - kubernetes_upgrade_pre_check_target_hosts is sequence
+      - kubernetes_upgrade_pre_check_target_hosts is not string
+      - kubernetes_upgrade_pre_check_target_hosts | difference(groups["all"]) | length == 0
+    fail_msg: >-
+      kubernetes_upgrade_pre_check_target_hosts must be a list of inventory hosts;
+      an unknown name would silently skip the isolated APT preflight everywhere.
+  tags: [pre_checks]
+
+# BOXP-672: a per-node dispatch only changes packages on its target, and the
+# upgrade job repeats this preflight on that host. Scoping it to the target keeps
+# the cluster-wide gates below (etcd health on every control plane, all nodes
+# Ready) while dropping about five minutes of serial SSH work on the other hosts.
 - name: Verify exact target packages before drain or host APT changes
   ansible.builtin.include_tasks: apt_preflight.yml
+  when: >-
+    kubernetes_upgrade_pre_check_target_hosts | length == 0 or
+    inventory_hostname in kubernetes_upgrade_pre_check_target_hosts
   tags: [pre_checks]
 
 - name: Verify current kubernetes version

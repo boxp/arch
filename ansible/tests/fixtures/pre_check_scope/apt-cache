@@ -1,0 +1,4 @@
+#!/bin/bash
+# Mock `apt-cache madison <package>` listing the revisions the test asks for.
+printf ' %s | 1.37.1-1.1 | https://mock.invalid/deb  Packages\n' "$2"
+printf ' %s | 1.37.1-3.1 | https://mock.invalid/deb  Packages\n' "$2"

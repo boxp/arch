@@ -198,6 +198,8 @@ workflows:
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
     '.github/workflows/test-codex-task-board-runner.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+    '.github/workflows/test-kohako-attachment-model.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
     '.github/workflows/test-lolice-architecture.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'

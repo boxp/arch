@@ -17,9 +17,16 @@ import {
   SHY_ARM,
   shyArmMotion,
   shyArmPoint,
-  backOpacity,
   SWITCH_SECONDS,
   SWITCHED,
+  LEAD_SECONDS,
+  TRAIL_SECONDS,
+  trailSeconds,
+  SHY_SPEAK,
+  leadSeconds,
+  leadStart,
+  matchArm,
+  swingShorten,
   interruptPlan,
   bentSide,
   bentWeight,
@@ -445,15 +452,22 @@ describe('実行時の動作の割り込み', () => {
 })
 
 describe('曲げの絵（BOXP-476 TD-02）', () => {
-  it('前腕の曲げが小さいときは元の小手のまま、保持では差し替える', () => {
+  // BOXP-694（仕様 C1）: 以前は肘 0.94〜0.96 で替えていたので、腕が大きく動いている途中で小手の形と太さが急に変わり（肘のポップ）、
+  // 0.3〜0.94 で止めるしぐさ（伸び 0.72）では V 字の小手の切れ目がむき出しになった。
+  it('待機（曲げ 0）では元の小手のまま。曲げ始めのごく小さい角度（0.02〜0.045）で丸い小手へ替え、それより曲げた腕は常に丸い小手', () => {
     expect(bentWeight(0)).toBe(0)
-    expect(bentWeight(0.5)).toBe(0)
-    expect(bentWeight(-2.05)).toBe(1)
-    expect(bentWeight(3.41)).toBe(1)
+    expect(bentWeight(0.02)).toBe(0)
+    expect(bentWeight(-0.02)).toBe(0)
+    for (const fo of [0.045, 0.05, 0.2, 0.72, 0.93, 0.97, 1.28, -1.1, -2.05, 3.41]) expect(bentWeight(fo)).toBe(1)
   })
-  it('差し替えは半透明の二重を見せないよう、ごく狭い角度で切り替える', () => {
-    expect(bentWeight(0.97)).toBe(1)
-    expect(bentWeight(0.93)).toBe(0)
+  it('替わり目は単調で、腕がほとんど動いていない範囲（0.05 未満）に収まる', () => {
+    let prev = 0
+    for (let fo = 0; fo <= 0.06; fo += 0.001) {
+      const w = bentWeight(fo)
+      expect(w).toBeGreaterThanOrEqual(prev)
+      prev = w
+    }
+    expect(prev).toBe(1)
   })
   it('内回りと左腕では絵を裏返す', () => {
     expect(bentSide({ mirror: false }, { fo: -2 })).toBe(1)
@@ -481,9 +495,9 @@ describe('曲げの絵（BOXP-476 TD-02）', () => {
     expect(origin[0]).toBeCloseTo(elbow[0], 6)
     expect(origin[1]).toBeCloseTo(elbow[1], 6)
     const left = { ...bone, S: [1210, 533], E: [1160, 733], W: [1076, 928], mirror: true } as const // 左腕も同じ（中心 960 で反転）
-    const mirroredPose: ArmPose = { ...shortened, fo: -2.1 },
-      s = solveArm(left, shortened),
-      leftTip = placeBentFore(left, mirroredPose, [0, length])
+    // 姿勢は右腕の向きで書く（左腕は鏡映される）。短縮は鏡映前の向きで決まるので、左腕でも同じ 0.5 倍になる。
+    const s = solveArm(left, { ...shortened, fo: -2.1, flipped: true }),
+      leftTip = placeBentFore(left, shortened, [0, length])
     expect(Math.hypot(s.wrist[0] - s.elbow[0], s.wrist[1] - s.elbow[1])).toBeCloseTo(length * 0.5, 6)
     expect(Math.hypot(leftTip[0] - s.elbow[0], leftTip[1] - s.elbow[1])).toBeCloseTo(length * 0.5, 6)
   })
@@ -497,9 +511,12 @@ describe('曲げの絵（BOXP-476 TD-02）', () => {
   })
 })
 
-describe("制止の腕セットの切替（BOXP-476 TD-06 Y')", () => {
+// 期待値は仕様（vault Projects/kohako-home/arm-switch-spec.md）から。段取りそのもの（lead → in → hold → out）は arm-switch.test.ts。
+describe('1 枚腕への差し替え: 変形の腕を重ねてから差し替える（BOXP-694、仕様 A）', () => {
   const HAND = 20,
     ARM = 22
+  // この偽の実行環境では腕の追加パーツ（1 枚腕の絵）を作れないので、1 枚腕は「読めていない」扱い（A6）になり、
+  // 変形の腕が従来の保持姿勢まで動く。腕の経路（跳ばない・待機から始まる・待機へ戻る）はここで確かめる。
   function setup() {
     const memory = new WebAssembly.Memory({ initial: 1 }),
       points: Record<number, readonly number[]> = { [HAND]: bone.W, [ARM]: bone.E }
@@ -528,88 +545,278 @@ describe("制止の腕セットの切替（BOXP-476 TD-06 Y')", () => {
       const v = new Float32Array(memory.buffer, player.rt.p2l_mesh_vertices(0, HAND), 2)
       return [v[0] as number, v[1] as number] as const
     }
-    const run = (seconds: number) => {
-      let last = frame()
-      for (let i = 1; i < Math.round(seconds * 60); i++) last = frame()
-      return last
+    /** seconds 進め、最後の手首の位置と、1 コマでの最大の移動量を返す。 */
+    const run = (seconds: number, from?: readonly [number, number]) => {
+      let last = from ?? frame(),
+        max = 0
+      for (let i = from ? 0 : 1; i < Math.round(seconds * 60); i++) {
+        const next = frame()
+        max = Math.max(max, Math.hypot(next[0] - last[0], next[1] - last[1]))
+        last = next
+      }
+      return Object.assign(last, { max })
     }
     return { stage, frame, run }
   }
   const haltWrist = solveArm(bone, SWITCHED.halt as ArmPose).wrist
   const near = (a: readonly [number, number], b: readonly [number, number], d = 0.5) =>
     expect(Math.hypot(a[0] - b[0], a[1] - b[1])).toBeLessThan(d)
-  it('裏に残す腕は、背景が透ける割合を 0.15 以下に抑える', () => {
-    expect(backOpacity(0)).toBe(1)
-    expect(backOpacity(1)).toBe(0)
-    for (let a = 0; a <= 0.99; a += 0.01) expect((1 - backOpacity(a)) * (1 - a)).toBeLessThanOrEqual(0.1501)
-  })
-  it('休止からの制止は変形で上げず、最初のコマから制止の腕を置いて 0.25 秒でフェードインする', () => {
+  // 手首の 1 コマ（1/60 秒）の移動の上限は、腕の長さ（肩〜手首 約 410）の 1/6。
+  // 以前の差し替えは、最初のコマで手首が待機から制止の位置まで 370 ほど跳んだ。
+  const NO_JUMP = Math.hypot(bone.W[0] - bone.S[0], bone.W[1] - bone.S[1]) / 6
+  it('A1: 休止からの制止は、待機の位置から腕を動かして上げる（離れた位置にいきなり制止の腕を置かない）', () => {
     const { stage, frame, run } = setup()
     stage.playGesture('halt')
-    near(frame(), haltWrist)
-    expect(stage.report().armSwitch).toMatchObject({ phase: 'in' })
-    run(SWITCH_SECONDS)
+    const first = frame()
+    near(first, bone.W, 10)
+    expect(stage.report().armSwitch).toMatchObject({ phase: 'lead' })
+    const end = run(1, first)
+    expect(end.max).toBeLessThan(NO_JUMP)
+    near(end, haltWrist)
     expect(stage.report().armSwitch).toBeNull()
-    near(run(1), haltWrist)
   })
-  it('解除は制止の姿勢のままフェードアウトし、その後に休止へ戻る', () => {
+  it('A3: 待機から上げ切るまでは 0.32 秒（前腕を大きく回す照れは角度に比例して延ばす）', () => {
+    const { stage, run } = setup()
+    stage.playGesture('halt')
+    run(LEAD_SECONDS - 0.03)
+    expect(stage.report().armSwitch).toMatchObject({ phase: 'lead' })
+    run(0.06)
+    expect(stage.report().armSwitch).toBeNull()
+    expect(leadSeconds(rest, { ...rest, fo: -2.05 })).toBe(LEAD_SECONDS)
+    expect(leadSeconds(rest, { ...rest, fo: 3.14 })).toBeCloseTo((LEAD_SECONDS * 3.14) / 2.4, 6)
+    // 戻りも同じ（制止は 0.45 秒、照れは角度に比例）。
+    expect(trailSeconds({ ...rest, fo: -2.05 })).toBe(TRAIL_SECONDS)
+    expect(trailSeconds({ ...rest, fo: 3.14 })).toBeCloseTo((TRAIL_SECONDS * 3.14) / 2.4, 6)
+  })
+  it('A4: 解除すると、制止の位置から待機へ跳ばずに 0.45 秒で戻る', () => {
     const { stage, frame, run } = setup()
     stage.playGesture('halt')
     run(1)
     stage.reset()
-    near(frame(), haltWrist)
-    expect(stage.report().armSwitch).toMatchObject({ phase: 'out' })
-    run(SWITCH_SECONDS + 0.05)
+    const first = frame()
+    near(first, haltWrist, 6)
+    const end = run(TRAIL_SECONDS + 0.05, first)
+    expect(end.max).toBeLessThan(NO_JUMP)
+    near(end, bone.W)
     expect(stage.report()).toMatchObject({ armBlend: 0, armSwitch: null, switched: false })
   })
-  it('動作の終わりも同じくフェードアウトで戻る', () => {
+  it('A4: 動作の終わりも同じく待機へ戻る', () => {
     const { stage, run } = setup()
     stage.playGesture('halt')
     run(clips.halt.duration + 0.02)
-    expect(stage.report().armSwitch).toMatchObject({ phase: 'out' })
-    run(SWITCH_SECONDS + 0.05)
+    expect(stage.report()).toMatchObject({ gesture: 'none', switched: false })
+    const end = run(TRAIL_SECONDS + 0.05)
+    expect(end.max).toBeLessThan(NO_JUMP)
+    near(end, bone.W)
     expect(stage.report().armBlend).toBe(0)
   })
-  it('照れ→制止は照れの腕をフェードアウトしてから制止の腕をフェードインする（腕は経路を動かない）', () => {
-    const { stage, frame, run } = setup()
-    stage.playGesture('shyHand')
-    const shy = run(1.5)
-    stage.playGesture('halt')
-    near(frame(), shy, 1)
-    expect(stage.report().armSwitch).toMatchObject({ phase: 'out' })
-    run(SWITCH_SECONDS)
-    expect(stage.report()).toMatchObject({ armSwitch: { phase: 'in' }, gesture: 'halt' })
-    near(frame(), haltWrist)
+  it('A5: 照れ⇄制止は、上げたまま上を通って移る（跳ばず、手が腹の前まで下りない）', () => {
+    for (const [a, b] of [
+      ['shyHand', 'halt'],
+      ['halt', 'shyHand'],
+    ] as const) {
+      const { stage, frame, run } = setup()
+      stage.playGesture(a)
+      const from = run(1.5)
+      stage.playGesture(b)
+      let last: readonly [number, number] = from,
+        lowest = 0,
+        max = 0
+      for (let i = 0; i < 60; i++) {
+        const p = frame()
+        max = Math.max(max, Math.hypot(p[0] - last[0], p[1] - last[1]))
+        lowest = Math.max(lowest, p[1])
+        last = p
+      }
+      expect(max).toBeLessThan(NO_JUMP)
+      expect(lowest).toBeLessThan(bone.E[1]) // 手首は肘の高さより下へ行かない
+      expect(stage.report()).toMatchObject({ gesture: b, switched: true, armSwitch: null })
+      near(last, solveArm(bone, SWITCHED[b] as ArmPose).wrist)
+    }
   })
-  it('制止→照れは制止の腕をフェードアウトしてから照れの腕をフェードインする（腹の前を横切らない）', () => {
-    const { stage, frame, run } = setup()
-    stage.playGesture('halt')
-    run(1)
-    stage.playGesture('shyHand')
-    near(frame(), haltWrist)
-    run(SWITCH_SECONDS + 0.02)
-    expect(stage.report()).toMatchObject({ armSwitch: { phase: 'in' }, gesture: 'shyHand', switched: true })
-    run(SWITCH_SECONDS)
-    expect(stage.report()).toMatchObject({ armSwitch: null, gesture: 'shyHand', switched: true })
+  it('A5: 上げた腕から反対回りの上げ姿勢へ寄せる起点は、角度を 1 周ずらして短い経路にする', () => {
+    const shy = SWITCHED.shyHand as ArmPose,
+      halt = SWITCHED.halt as ArmPose
+    expect(leadStart(rest, halt)).toBe(rest)
+    expect(Math.abs(leadStart(shy, halt).fo - halt.fo)).toBeLessThan(Math.PI)
+    expect(Math.abs(leadStart(halt, shy).fo - shy.fo)).toBeLessThan(Math.PI)
+    // 1 周ずらしても同じ向き。
+    expect(Math.cos(leadStart(shy, halt).fo)).toBeCloseTo(Math.cos(shy.fo), 9)
   })
-  it('フェードアウト中に次の動作が来たら、フェード後にそれを始める（最後の要求が勝つ）', () => {
+  it('A5: 終える途中に次の動作が来たら、それを始める（最後の要求が勝つ）', () => {
     const { stage, run } = setup()
     stage.playGesture('halt')
     run(1)
     stage.reset()
-    run(0.1)
-    stage.playGesture('guide') // 案内も 1 枚腕なので、待機の腕へ戻り切ってから差し替える
-    run(2 * SWITCH_SECONDS)
+    run(0.05)
+    stage.playGesture('guide')
+    const end = run(1)
+    expect(end.max).toBeLessThan(NO_JUMP)
     expect(stage.report()).toMatchObject({ gesture: 'guide', armSwitch: null, switched: true })
   })
-  it('挨拶は制止と同じ 1 枚腕へフェードで差し替え、手振りが終われば待機の腕へ戻る', () => {
+  it('A5: 変形の腕で動く動作（喜び）の途中からでも、その時点の腕の位置から 1 枚腕の動作へ移る', () => {
+    const { stage, run } = setup()
+    stage.playGesture('joy')
+    const from = run(0.6)
+    stage.playGesture('halt')
+    const end = run(1, from)
+    expect(end.max).toBeLessThan(NO_JUMP)
+    near(end, haltWrist)
+  })
+  it('挨拶は制止と同じ 1 枚腕で、手振りが終われば待機の腕へ戻る', () => {
     const { stage, run } = setup()
     stage.playGesture('greet')
-    expect(stage.report()).toMatchObject({ armSwitch: { phase: 'in' }, gesture: 'greet', switched: true })
+    expect(stage.report()).toMatchObject({ armSwitch: { phase: 'lead' }, gesture: 'greet', switched: true })
     run(1)
     expect(stage.report()).toMatchObject({ armSwitch: null, gesture: 'greet' })
     run(clips.greet.duration)
     expect(stage.report()).toMatchObject({ gesture: 'none', switched: false })
+  })
+  it('A1: 変形の腕は 1 枚腕の肘・手首にぴったり重なる（入りの持ち上げの途中・保持・手振り・発話中の下げた位置のどこでも）', () => {
+    const pieces: [string, ArmPose, readonly [number, number], readonly [number, number]][] = []
+    for (const t of [0, 0.1, 0.2, 0.32, 0.45, 1, 2]) {
+      const a = haltArmAngle(t)
+      for (const wave of [0, 0.15, -0.15])
+        pieces.push([
+          `halt t=${t} wave=${wave}`,
+          SWITCHED.halt as ArmPose,
+          greetArmPoint(HALT_ARM.elbowPx, a, wave),
+          greetArmPoint(HALT_ARM.wristPx, a, wave),
+        ])
+      const g = guideArmMotion(t)
+      pieces.push([
+        `guide t=${t}`,
+        { ...rest, fo: -1.92, swing: 0 },
+        guideArmPoint(GUIDE_ARM.elbowPx, g),
+        guideArmPoint(GUIDE_ARM.wristPx, g),
+      ])
+      for (const speak of [0, 0.5, 1]) {
+        const m = shyArmMotion(t, 0, speak)
+        pieces.push([
+          `shy t=${t} speak=${speak}`,
+          SWITCHED.shyHand as ArmPose,
+          shyArmPoint(SHY_ARM.elbowPx, m),
+          shyArmPoint(SHY_ARM.wristPx, m),
+        ])
+      }
+    }
+    for (const [name, like, elbow, wrist] of pieces) {
+      const pose = matchArm(bone, elbow, wrist, like),
+        got = solveArm(bone, pose)
+      expect(Math.hypot(got.elbow[0] - elbow[0], got.elbow[1] - elbow[1]), name).toBeLessThan(1e-6)
+      expect(Math.hypot(got.wrist[0] - wrist[0], got.wrist[1] - wrist[1]), name).toBeLessThan(1e-6)
+      // 回り方は保持姿勢と同じ側（照れは内回り、制止・案内は外回り）。
+      expect(Math.abs(pose.fo - like.fo), name).toBeLessThan(Math.PI)
+    }
+  })
+})
+
+describe('外回りの振り上げは真横へ突っ張った形（T 字）を通らない（BOXP-694、仕様 B）', () => {
+  const length = Math.hypot(bone.W[0] - bone.E[0], bone.W[1] - bone.E[1])
+  it('B1: 休止（0〜-0.1）と、-1.75 以上に上げた保持（挨拶の振り・喜び・制止）では短縮しない。内回りも短縮しない', () => {
+    for (const fo of [0, -0.05, -0.1, -1.75, -1.85, -2.05, -2.15, 0.5, 1.28, 2.1]) expect(swingShorten(fo)).toBe(0)
+  })
+  it('B1: 振り上げ・戻りの途中（-0.6〜-1.3）は、ずっと 0.45 倍以下に短く描く（腕を伸ばしたまま外へ開く形を通らない）', () => {
+    for (let fo = -0.6; fo >= -1.3; fo -= 0.05) expect(foreScale({ ...rest, fo })).toBeLessThanOrEqual(0.45)
+    // 縮めすぎて前腕が消えない。
+    for (let fo = 0; fo >= -2.2; fo -= 0.05) expect(foreScale({ ...rest, fo })).toBeGreaterThanOrEqual(0.4)
+  })
+  it('B1: 前腕が水平付近（-1.1 前後）を通る間は、半分ほどまで短く描く。変化は滑らか', () => {
+    expect(swingShorten(-1.16)).toBeGreaterThan(0.45)
+    expect(swingShorten(-1.16)).toBeLessThanOrEqual(0.6)
+    for (let fo = 0; fo > -2.2; fo -= 0.01)
+      expect(Math.abs(swingShorten(fo) - swingShorten(fo - 0.01))).toBeLessThan(0.03)
+  })
+  it('B1: 喜びの入りから戻りまで、前腕が水平から ±0.2 ラジアン以内にある間は長さが 0.6 倍以下（左右とも）', () => {
+    const left = { ...bone, S: [434, 533], E: [384, 733], W: [300, 928], mirror: true } as const
+    let horizontal = 0
+    for (let t = 0; t <= clips.joy.duration; t += 1 / 120) {
+      const pose = sample(clips.joy, t)
+      for (const [b, p] of [
+        [bone, pose.right],
+        [left, { ...pose.left, fo: -pose.left.fo, ha: -pose.left.ha, flipped: true }],
+      ] as const) {
+        const { elbow, wrist } = solveArm(b, p),
+          dx = wrist[0] - elbow[0],
+          dy = wrist[1] - elbow[1]
+        if (Math.abs(Math.atan2(dy, Math.abs(dx))) < 0.2 && Math.hypot(dx, dy) > 1) {
+          horizontal++
+          expect(Math.hypot(dx, dy) / length).toBeLessThanOrEqual(0.6)
+        }
+      }
+    }
+    expect(horizontal).toBeGreaterThan(4) // 水平は実際に通っている（検査が空振りしていない）
+  })
+  it('B2: 水平を通る間は手首を先に返し、前腕と手が一直線に並ばない。保持と休止では返さない', () => {
+    const tip = [bone.W[0] + 30, bone.W[1] + 70] as const
+    const angle = (fo: number) => {
+      const pose = { ...rest, fo },
+        w = solveArm(bone, pose).wrist,
+        h = deformHand(bone, pose, tip[0], tip[1]),
+        r = deformHand(bone, { ...pose, swing: 0 }, tip[0], tip[1])
+      return Math.atan2(h[1] - w[1], h[0] - w[0]) - Math.atan2(r[1] - w[1], r[0] - w[0])
+    }
+    expect(Math.abs(angle(-1.1))).toBeGreaterThan(0.4)
+    expect(Math.abs(angle(-1.85))).toBeLessThan(1e-9)
+    expect(Math.abs(angle(0))).toBeLessThan(1e-9)
+  })
+  it('B3: 横へ差し出して止める姿勢（案内）は短縮しない', () => {
+    expect(foreScale({ ...rest, fo: -1.1, swing: 0 })).toBe(1)
+    expect(foreScale({ ...rest, fo: -1.1 })).toBeLessThan(0.6)
+    // 途中の割合は線形に掛かる。
+    expect(foreScale({ ...rest, fo: -1.1, swing: 0.5 })).toBeCloseTo(1 - swingShorten(-1.1) / 2, 9)
+  })
+})
+
+describe('話している間の照れの手（BOXP-694、仕様 E）', () => {
+  const MOUTH_Y = 352,
+    FIST_RADIUS = 30
+  const fistTop = (speak: number) => shyArmPoint(SHY_ARM.fistPx, shyArmMotion(1.5, 0, speak))[1] - FIST_RADIUS
+  it('E1: 話していない間（待機の「口元に手」）は、拳が口に掛かる（従来どおり）', () => {
+    expect(fistTop(0)).toBeLessThan(MOUTH_Y + 10)
+  })
+  it('E1: 話している間は、拳の上端が口より 30 以上下（あごの下）へ下がり、口が見える', () => {
+    expect(fistTop(1)).toBeGreaterThanOrEqual(MOUTH_Y + 30)
+    // 下げすぎて胸まで落とさない。
+    expect(fistTop(1)).toBeLessThan(MOUTH_Y + 80)
+  })
+  it('E2: 下げ・戻しは 0.3 秒で、途中は滑らかに動く', () => {
+    expect(SHY_SPEAK.seconds).toBeCloseTo(0.3, 6)
+    let prev = fistTop(0)
+    for (let s = 0.05; s <= 1.0001; s += 0.05) {
+      const y = fistTop(s)
+      expect(y).toBeGreaterThanOrEqual(prev)
+      expect(y - prev).toBeLessThan(12)
+      prev = y
+    }
+  })
+  it('E2: 口形が来ている間だけ下げ、話し終えたら口元へ戻す', () => {
+    const memory = new WebAssembly.Memory({ initial: 1 })
+    const player = {
+      rig: 0,
+      expressions: [],
+      meshes: Array.from({ length: 33 }, () => ({ vertices: 0 })),
+      expression() {},
+      setParameter() {},
+      update(_dt: number) {},
+      rt: { memory, p2l_render_commands: () => 0, p2l_mesh_vertices: () => 0 },
+    }
+    const stage = createActingStage(player as unknown as Player, { id: 'kohako-full-v11r' } as RigModel)
+    const run = (s: number) => {
+      for (let i = 0; i < Math.round(s * 60); i++) player.update(1 / 60)
+    }
+    stage.playGesture('shyHand')
+    run(1)
+    expect(stage.report().shySpeak).toBe(0)
+    stage.setViseme?.({ open: 0.6, width: 1 })
+    run(0.15)
+    expect(stage.report().shySpeak).toBeGreaterThan(0.3)
+    expect(stage.report().shySpeak).toBeLessThan(0.7)
+    run(0.2)
+    expect(stage.report().shySpeak).toBe(1)
+    stage.setViseme?.(null)
+    run(0.35)
+    expect(stage.report().shySpeak).toBe(0)
   })
 })
 
@@ -786,7 +993,7 @@ describe('案内の 1 枚腕（案内専用の生成絵、BOXP-476 TD-06）', ()
     }
     expect(max).toBeLessThan(25)
   })
-  it('制止→案内は制止の腕をフェードアウトしてから案内の腕をフェードインし、案内の終わりで待機の腕へ戻る', () => {
+  it('制止→案内は制止の腕を終えてから案内へ移り、案内の終わりで待機の腕へ戻る', () => {
     const memory = new WebAssembly.Memory({ initial: 1 })
     const player = {
       rig: 0,
@@ -804,9 +1011,8 @@ describe('案内の 1 枚腕（案内専用の生成絵、BOXP-476 TD-06）', ()
     stage.playGesture('halt')
     run(1.2)
     stage.playGesture('guide')
-    expect(stage.report().armSwitch).toMatchObject({ phase: 'out' })
     run(SWITCH_SECONDS + 0.02)
-    expect(stage.report()).toMatchObject({ armSwitch: { phase: 'in' }, gesture: 'guide', switched: true })
+    expect(stage.report()).toMatchObject({ gesture: 'guide', switched: true })
     run(clips.guide.duration + 0.5)
     expect(stage.report()).toMatchObject({ gesture: 'none', switched: false })
   })

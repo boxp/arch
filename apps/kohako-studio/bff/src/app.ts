@@ -1,6 +1,7 @@
 import { must } from './must.js'
 import { isVisitText } from './visit.js'
 import { createAttachments, AttachmentError, ATTACHMENT_IMAGE_TOTAL, ATTACHMENT_TEXT_TOTAL } from './attachments.js'
+import { OTHER_MAX_BYTES, PDF_MAX_BYTES } from './attachment-limits.js'
 import { createGeocoder } from './geocode.js'
 import type { createNotifications } from './notifications.js'
 import type { createPush } from './push.js'
@@ -78,6 +79,8 @@ export function createApp(opts: {
   const now = opts.now ?? Date.now,
     fetcher = opts.fetch ?? fetch
   const attachments = opts.attachments ?? createAttachments(undefined, now)
+  // BOXP-677: 5 MiB を超える添付（PDF は最大 30 MiB）の受信・抽出は同時に 1 件だけにして、BFF のメモリ上限 256Mi を超えない。
+  let largeUpload = false
   const geocode = createGeocoder({ fetcher })
   const conversations =
     opts.conversations ??
@@ -338,23 +341,43 @@ export function createApp(opts: {
       }
       if (method === 'POST' && route === 'attachments') {
         if (!conv) return json(503, { error: 'conversation_disabled' })
-        const chunks: Buffer[] = []
-        let size = 0
-        for await (const chunk of req) {
-          const b = Buffer.from(chunk)
-          size += b.length
-          if (size > 5 * 1024 * 1024) return json(413, { error: 'too_large' })
-          chunks.push(b)
-        }
-        let name: string
+        // 宣言サイズが上限を超えていれば本文を読まずに断る。宣言がなければ受信しながら上限で打ち切る。
+        const declared = Number(req.headers['content-length'] ?? Number.NaN)
+        if (declared > PDF_MAX_BYTES) return json(413, { error: 'too_large' })
+        const large = !(declared <= OTHER_MAX_BYTES)
+        if (large && largeUpload) return json(429, { error: 'attachment_busy' })
+        if (large) largeUpload = true
         try {
-          name = decodeURIComponent(String(req.headers['x-kohako-filename'] ?? 'file'))
-        } catch {
-          return json(400, { error: 'invalid' })
-        }
-        try {
+          let body: Buffer
+          if (Number.isSafeInteger(declared) && declared >= 0) {
+            body = Buffer.allocUnsafe(declared)
+            let size = 0
+            for await (const chunk of req) {
+              const b = Buffer.from(chunk)
+              if (size + b.length > declared) return json(400, { error: 'invalid' })
+              b.copy(body, size)
+              size += b.length
+            }
+            if (size !== declared) return json(400, { error: 'invalid' })
+          } else {
+            const chunks: Buffer[] = []
+            let size = 0
+            for await (const chunk of req) {
+              const b = Buffer.from(chunk)
+              size += b.length
+              if (size > PDF_MAX_BYTES) return json(413, { error: 'too_large' })
+              chunks.push(b)
+            }
+            body = Buffer.concat(chunks, size)
+          }
+          let name: string
+          try {
+            name = decodeURIComponent(String(req.headers['x-kohako-filename'] ?? 'file'))
+          } catch {
+            return json(400, { error: 'invalid' })
+          }
           const item = await attachments.upload(
-            Buffer.concat(chunks),
+            body,
             req.headers['content-type'] ?? '',
             name,
             principal,
@@ -366,10 +389,15 @@ export function createApp(opts: {
             name: item.displayName,
             size: item.size,
             truncated: item.truncated,
+            read: item.read,
+            ...(item.partialReason ? { partialReason: item.partialReason } : {}),
+            ...(item.pages !== undefined ? { pages: item.pages, pagesRead: item.pagesRead } : {}),
           })
         } catch (e) {
           if (e instanceof AttachmentError) return json(e.status, { error: e.code })
           throw e
+        } finally {
+          if (large) largeUpload = false
         }
       }
       if (method === 'GET' && route === 'status')

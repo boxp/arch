@@ -46,6 +46,13 @@ on:
         description: 'BOXP-213: post-upgrade readyz observation window in minutes, 0-60 (empty = CP/golyat-4 30, worker 15; 0 = skip)'
         type: string
         default: ''
+      pre_check_scope:
+        description: 'BOXP-672: target = isolated APT preflight on target_node only (etcd health and node readiness still cover every host); all = also on the other six hosts (first dry-run of a window)'
+        type: choice
+        default: target
+        options:
+          - target
+          - all
 
 # Serialize every production cluster mutation with normal Ansible apply. A queued
 # run must retain its own reviewed inputs, so do not cancel an in-flight run.
@@ -78,6 +85,7 @@ jobs:
       CRIO_PACKAGE: ${{ inputs.crio_package }}
       EXECUTION_ID: ${{ inputs.execution_id }}
       TARGET_NODE: ${{ inputs.target_node }}
+      PRE_CHECK_SCOPE: ${{ inputs.pre_check_scope }}
     steps:
       - name: Validate per-node execution
         run: |
@@ -85,6 +93,10 @@ jobs:
           case "$TARGET_NODE" in
             shanghai-1|shanghai-2|shanghai-3|golyat-1|golyat-2|golyat-3|golyat-4) ;;
             *) echo "::error::target_node must be one of the seven approved nodes"; exit 1 ;;
+          esac
+          case "$PRE_CHECK_SCOPE" in
+            target|all) ;;
+            *) echo "::error::pre_check_scope must be target or all"; exit 1 ;;
           esac
           [[ "$K8S_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "::error::kubernetes_version must be X.Y.Z"; exit 1;
@@ -118,7 +130,7 @@ jobs:
             echo "- execution_id: \`${EXECUTION_ID}\`"
             echo "- primary identity (run ID + attempt): \`${GITHUB_RUN_ID}\` attempt \`${GITHUB_RUN_ATTEMPT}\`"
             echo "- ref/SHA: \`${GITHUB_REF}\` / \`${GITHUB_SHA}\`"
-            echo "- target: \`${TARGET_NODE}\` (dry_run=${{ inputs.dry_run }})"
+            echo "- target: \`${TARGET_NODE}\` (dry_run=${{ inputs.dry_run }}, pre_check_scope=${PRE_CHECK_SCOPE})"
             echo "- Kubernetes: \`${K8S_VERSION}\` / \`${K8S_PACKAGE}\`"
             echo "- CRI-O: \`${CRIO_VERSION}\` / \`${CRIO_PACKAGE}\`"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -250,7 +262,14 @@ jobs:
           set -eo pipefail
           cd ansible
           source .venv/bin/activate
-          echo "Running pre-upgrade checks with K8S_VERSION=${K8S_VERSION}"
+          echo "Running pre-upgrade checks with K8S_VERSION=${K8S_VERSION} scope=${PRE_CHECK_SCOPE}"
+          # BOXP-672: with scope=target only target_node runs the isolated APT
+          # preflight; every host still runs the etcd and node readiness checks.
+          # An empty list keeps the preflight on all seven hosts.
+          PRE_CHECK_TARGET_HOSTS='[]'
+          if [ "$PRE_CHECK_SCOPE" = "target" ]; then
+            PRE_CHECK_TARGET_HOSTS="[\"${TARGET_NODE}\"]"
+          fi
           ansible-playbook \
             -i inventories/production/hosts.yml \
             playbooks/upgrade-k8s.yml \
@@ -260,6 +279,7 @@ jobs:
             -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
             -e "crio_upgrade_version=${CRIO_VERSION}" \
             -e "crio_upgrade_package=${CRIO_PACKAGE}" \
+            -e "{\"kubernetes_upgrade_pre_check_target_hosts\": ${PRE_CHECK_TARGET_HOSTS}}" \
             -vv 2>&1 | tee /tmp/pre-check-ansible.log
 
       - name: Take etcd snapshot

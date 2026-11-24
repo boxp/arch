@@ -3,11 +3,14 @@
 # The annotated tag v0.23.1 records this index digest as dockerManifestDigest.
 # Do NOT drop the tag (a bare digest cannot be version-looked-up: "Updates: undefined")
 # and do NOT move to :latest / :stable (an unpinned moving tag).
-FROM docker.io/nousresearch/hermes-agent:v0.23.1@sha256:276d44685c65c0cb2a25f190b63c65c8906f9dc76486fb1c05ae71b5826bda08
+FROM docker.io/nousresearch/hermes-agent:v0.23.3@sha256:3e9fe4c6ef36490f43aa0d0d80f9df64e9c92a576eee3042f1a97c8813c05355
 
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.14
+# BOXP-681: Renovate updates BABASHKA_VERSION only. Update BABASHKA_SHA256 in the same
+# PR from the release asset babashka-<ver>-linux-amd64-static.tar.gz.sha256; the build
+# fails closed on a mismatch (do NOT drop the checksum to make it pass).
 ARG BABASHKA_VERSION=1.13.230
-ARG BABASHKA_SHA256=64fb984991c6e68f44e8a9391176a9bb411f9b9ae9959a6bca5307c75a7414da
+ARG BABASHKA_SHA256=ffa98e905c75b6b13eb0b644b778219205180569bfe6004a3e35c3a9798a145d
 
 # Keep the upstream PATH order (hermes shim, venv, then the pm-managed node/python
 # symlinks under /usr/local/bin) and prepend only the obsidian-headless prefix.

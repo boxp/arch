@@ -42,8 +42,36 @@ type Def = {
   quiet?: boolean
   /** 腕（ラジアン。right は画面の右側の腕。角度は右腕の向きで書き、左腕は鏡映される: up 負=外へ開く、fo 正=肘から先を体へ寄せる）。 */
   arms?: Arms
-  /** ゆっくり左右へ揺れる。pose と swing（両腕を同じ向きへ振る角度）に sin を掛けて足す。period は 1 往復の秒。 */
-  sway?: { period: number; pose: Partial<BodyPose>; swing: number }
+  /**
+   * ゆっくり左右へ揺れる。pose と swing（両腕を同じ向きへ振る角度）に sin を掛けて足す。period は 1 往復の秒。
+   * hand は手首を同じ向きへ振る角度。lag は体に対する遅れ（1 往復に対する割合）: 体が先に動き、頭・腕・手先の順に遅れて付いてくる
+   * （全部が同じ拍で動くと、棒の人形を左右へ倒しているように見える）。
+   */
+  sway?: {
+    period: number
+    pose: Partial<BodyPose>
+    swing: number
+    hand?: number
+    lag?: { head?: number; arms?: number; hand?: number }
+  }
+  /** 入りの長さ（秒）。指定が無ければ IN_SECONDS。 */
+  in?: number
+  /** 戻りの長さ（秒）。指定が無ければ OUT_SECONDS。腕を大きく曲げるしぐさは、戻りも急がせない。 */
+  out?: number
+  /**
+   * 力を入れてから、ふっと抜く層（伸び）。in 秒かけて pose・arms へ入り、保つ長さの until（割合）の時点から out 秒で抜く。
+   * 抜く時は overshoot（割合）だけ逆へ行き過ぎてから戻る（力が抜けて、少し沈んでから落ち着く）。腕の行き過ぎは ARM_OVERSHOOT 倍に抑える
+   * （腕が待機の位置より外へ開くと、翼を広げたように見える）。eyes は力を入れている間だけ目を閉じる。
+   */
+  peak?: {
+    pose: Partial<BodyPose>
+    arms?: Arms
+    eyes?: boolean
+    in: number
+    until: number
+    out: number
+    overshoot: number
+  }
   /** 身振りのクリップを借りる（腕の絵の差し替えを含む）。seconds はクリップが終わるまでの長さにする。大きさは変えられないので「控えめ」では出さない。 */
   gesture?: Exclude<Gesture, 'none'>
   /** 出やすさ。時間帯で変える。 */
@@ -121,29 +149,60 @@ export const idleActs: Record<IdleAct, Def> = {
     weight: 0.5,
     dayparts: { night: 1.4 },
   },
-  // 両腕を少し外へ開いて、軽く伸びをする。
+  // 軽く伸びをする。腕をぴんと下へ伸ばし、目を閉じてあごを上げ（んーっ）、ふっと力を抜いて、ほほえむ。
+  // 以前は腕を棒のまま外へ 0.17 開いて止めるだけで、力を入れて抜く流れも表情も無く、伸びに見えなかった（Owner 指摘「不自然でかわいくない」）。
+  // 腕を外へ開く・手首を外へ返す形は、どの角度でも翼を広げたように見えた（実描画で比較）。
+  // BOXP-694: 肘を 0.72 曲げて両手を股の前へ下ろす形は、動画で見ると肘に V 字の切れ目が出て、関節が外れた人形のように見えた。
+  // 肘は曲げず（腕の絵の差し替えが起きない）、腕を体へ少し引き寄せ、手首を返して手を真下へ向け、腕をぴんと下へ伸ばす。
+  // 伸びらしさは「ゆっくり力む → ふっと抜けて少し行き過ぎる → ほほえむ」の時間の流れで出す（腕を上げる絵は無い）。
   stretch: {
-    seconds: [2.2, 3.4],
-    pose: { headY: 6, lean: -3 },
-    arms: { right: { up: -0.17, ha: -0.25 }, left: { up: -0.17, ha: -0.25 } },
-    mirror: false,
+    seconds: [3.2, 4],
+    pose: { headZ: 2.5, lean: 0.5 },
+    peak: {
+      pose: { headY: 7, headZ: 1.5, lean: -3.5, bodyZ: 1.5 },
+      arms: { right: { up: 0.1, ha: 0.45 }, left: { up: 0.1, ha: 0.45 } },
+      eyes: true,
+      in: 1.3,
+      until: 0.5,
+      out: 1.2,
+      overshoot: 0.22,
+    },
+    mirror: true,
+    later: { at: 0.56, emotion: 'smile' },
     weight: 0.6,
   },
-  // 両手を体の前へ寄せてそろえ、小首をかしげてほほえむ。肘の曲げは腕の絵が切り替わらない範囲（0.3 未満）に留める。
+  // 両手を体の前で重ねてそろえ、小首をかしげてほほえむ。
+  // 以前は肘の曲げを 0.28 に留めていたので手が太ももの横で止まり、「前でそろえる」にならず腕を固めて立っているように見えた
+  // （Owner 指摘「不自然でかわいくない」）。肘を 1 前後まで曲げると両手が体の中央で重なる。左右を少し変えて、片手をもう片方へ添える形にする。
+  // BOXP-694: 肘 1.05 / 0.98・等倍では、待機用の平たい両手が股の前で板のように重なって見えた（動画レビュー）。
+  // 肘をもう少し曲げ、前腕を 0.74 倍に短縮（手前へ出す）して、両手を下腹の前に並べる。入りは角度が増えたぶん 1.4 秒かける。
   tidy: {
-    seconds: [2.6, 4],
+    seconds: [3, 4.4],
+    in: 1.4,
+    out: 1.3,
     pose: { headZ: 5, headY: -2, bodyZ: -1.5, lean: 1 },
-    arms: { right: { up: 0.04, fo: 0.28 }, left: { up: 0.04, fo: 0.28 } },
+    arms: {
+      right: { up: 0.04, fo: 1.28, ha: -0.45, foS: 0.74 },
+      left: { up: 0.04, fo: 1.22, ha: -0.4, foS: 0.74 },
+    },
     mirror: false,
     emotion: 'smile',
     weight: 0.9,
   },
   // 鼻歌まじりに、体を左右へゆっくり揺らす（ほほえんで、頭は体と逆へ傾けて拍子を取る）。
   // 腕は体の傾きと同じ側へ振る（逆向きにすると体の傾きと打ち消し合って、手がほとんど動いて見えない）。
+  // 以前は両腕を体と同じ拍で 0.12 振っていて、棒の腕が左右へ倒れるように見えた（Owner 指摘「不自然でかわいくない」）。
+  // 腕の振りは小さくし、体 → 頭 → 腕 → 手先の順に遅れて付いてくるようにして、力の抜けた腕が体に引かれて揺れる形にする。
   sway: {
-    seconds: [5, 6.4],
+    seconds: [5.4, 6.8],
     pose: {},
-    sway: { period: 2.8, pose: { bodyZ: 6, bodyX: 3, headZ: -4 }, swing: -0.12 },
+    sway: {
+      period: 3.2,
+      pose: { bodyZ: 5, bodyX: 2.5, headZ: -3.5, headX: 2 },
+      swing: -0.05,
+      hand: -0.14,
+      lag: { head: 0.1, arms: 0.16, hand: 0.26 },
+    },
     mirror: true,
     emotion: 'smile',
     weight: 0.9,
@@ -233,7 +292,31 @@ const NONE: IdleFrame = {
 }
 const ARM_KEYS = ['up', 'fo', 'ha'] as const
 /** t0 は揺れの位相の起点。中断で start を書き換えても動かさない（位相が跳ぶと体の角度が跳ぶ）。 */
-type Running = { act: IdleAct; side: 1 | -1; t0: number; start: number; end: number; out: number; scale: number }
+type Running = {
+  act: IdleAct
+  side: 1 | -1
+  t0: number
+  start: number
+  end: number
+  out: number
+  scale: number
+  /** 入りの長さ（秒）。 */
+  in: number
+  /** 力を抜き始める時刻（peak のあるしぐさ）。 */
+  release: number
+  /** 中断した時点の peak の強さ（体・腕。中断後はここから短く戻す）。 */
+  frozen: readonly [number, number] | null
+}
+/** peak を抜く時の、腕の行き過ぎの割合（体の行き過ぎに対して）。 */
+export const ARM_OVERSHOOT = 0.3
+const HEAD_KEYS: readonly (keyof BodyPose)[] = ['headX', 'headY', 'headZ']
+/** 力を抜く曲線（x は抜き始めからの割合）。1 から 0 へ下り、途中で overshoot だけ逆へ行き過ぎてから 0 へ戻る。始めと終わりは滑らか。 */
+export const releaseCurve = (x: number, overshoot: number) => {
+  if (x <= 0) return 1
+  if (x >= 1) return 0
+  const s = Math.sin(Math.PI * Math.max(0, (x - 0.4) / 0.6))
+  return 1 - ease(x / 0.75) - overshoot * s * s
+}
 
 /** 時刻は秒（単調増加）。rng は [0, 1)。 */
 export class IdleDirector {
@@ -267,6 +350,14 @@ export class IdleDirector {
     }
     return pool[pool.length - 1]
   }
+  /** peak の層の強さ（part: 0=体、1=腕）。中断後は、中断した時点の強さから短く戻す。 */
+  private peak(run: Running, now: number, part: 0 | 1): number {
+    const p = idleActs[run.act].peak
+    if (!p) return 0
+    if (run.frozen !== null) return run.frozen[part] * (1 - ease((now - run.end) / run.out))
+    const overshoot = p.overshoot * (part ? ARM_OVERSHOOT : 1)
+    return ease((now - run.t0) / p.in) * releaseCurve((now - run.release) / p.out, overshoot) * run.scale
+  }
   step(now: number, input: IdleInput): IdleFrame {
     const gap = (range: readonly [number, number]) => between(range, this.rng()) * (input.subtle ? SUBTLE_GAP : 1)
     let run = this.running
@@ -280,9 +371,10 @@ export class IdleDirector {
       // 中断: いまの強さから短く戻す。予定は残し、落ち着いた後に短い間（RESUME_GAP）だけは必ずあける。
       // 入り・保ちの途中だけでなく、通常の戻りの途中でも短い戻りへ切り替える（一度切り替えたら繰り返さない）。
       if (run && run.out !== CANCEL_SECONDS && now < run.end + run.out) {
-        const level = ease((now - run.start) / IN_SECONDS) * (1 - ease((now - run.end) / run.out))
+        const level = ease((now - run.start) / run.in) * (1 - ease((now - run.end) / run.out))
+        run.frozen = [this.peak(run, now, 0), this.peak(run, now, 1)]
         run.scale *= level
-        run.start = now - IN_SECONDS
+        run.start = now - run.in
         run.end = now
         run.out = CANCEL_SECONDS
       }
@@ -305,51 +397,66 @@ export class IdleDirector {
           side: def.mirror && this.rng() < 0.5 ? -1 : 1,
           t0: now,
           start: now,
-          end: now + IN_SECONDS + between(def.seconds, this.rng()),
-          out: OUT_SECONDS,
+          end: 0,
+          out: def.out ?? OUT_SECONDS,
           scale: input.subtle ? SUBTLE_SCALE : 1,
+          in: def.in ?? IN_SECONDS,
+          release: 0,
+          frozen: null,
         }
+        const seconds = between(def.seconds, this.rng())
+        run.end = now + run.in + seconds
+        run.release = now + run.in + seconds * (def.peak?.until ?? 1)
       }
     }
     if (!run) return NONE
     const def = idleActs[run.act],
-      level = ease((now - run.start) / IN_SECONDS) * (1 - ease((now - run.end) / run.out)) * run.scale,
+      level = ease((now - run.start) / run.in) * (1 - ease((now - run.end) / run.out)) * run.scale,
+      peak = this.peak(run, now, 0),
+      peakArm = this.peak(run, now, 1),
       pose = { ...ZERO }
     for (const key of Object.keys(def.pose) as (keyof BodyPose)[])
       pose[key] = (def.pose[key] ?? 0) * level * (MIRRORED.includes(key) ? run.side : 1)
-    // 揺れは始まりを 0 にして、入り・戻りの強さをそのまま掛ける（始めと終わりで跳ばない）。位相は中断しても続ける。
-    const swing = def.sway ? Math.sin((2 * Math.PI * (now - run.t0)) / def.sway.period) * level * run.side : 0
+    if (def.peak)
+      for (const key of Object.keys(def.peak.pose) as (keyof BodyPose)[])
+        pose[key] += (def.peak.pose[key] ?? 0) * peak * (MIRRORED.includes(key) ? run.side : 1)
+    // 揺れは入り・戻りの強さをそのまま掛ける（始めと終わりで跳ばない）。位相は中断しても続ける。
+    // lag のぶんだけ遅らせた拍を、頭・腕・手先に使う（体が先に動き、遅れて付いてくる）。
+    const beat = (lag = 0) =>
+        def.sway ? Math.sin(2 * Math.PI * ((now - run.t0) / def.sway.period - lag)) * level * run.side : 0,
+      swing = beat(def.sway?.lag?.arms),
+      handSwing = beat(def.sway?.lag?.hand)
     if (def.sway)
-      for (const key of Object.keys(def.sway.pose) as (keyof BodyPose)[]) pose[key] += (def.sway.pose[key] ?? 0) * swing
+      for (const key of Object.keys(def.sway.pose) as (keyof BodyPose)[])
+        pose[key] += (def.sway.pose[key] ?? 0) * beat(HEAD_KEYS.includes(key) ? def.sway.lag?.head : 0)
     // 腕。左右のあるしぐさは腕ごと入れ替える（角度は鏡映の書き方なので値はそのまま）。揺れは両腕を画面の同じ向きへ振る。
     let arms: IdleFrame['arms'] = null
-    if (def.arms || def.sway) {
-      const from = run.side === 1 ? def.arms : { right: def.arms?.left, left: def.arms?.right },
-        arm = (a: IdleArm | undefined, s: number): IdleArm => ({
-          up: (a?.up ?? 0) * level + s,
-          fo: (a?.fo ?? 0) * level,
-          ha: (a?.ha ?? 0) * level,
+    if (def.arms || def.sway || def.peak?.arms) {
+      const sided = (a: Arms | undefined) => (run.side === 1 ? a : { right: a?.left, left: a?.right }),
+        from = sided(def.arms),
+        tense = sided(def.peak?.arms),
+        arm = (a: IdleArm | undefined, b: IdleArm | undefined, sign: number): IdleArm => ({
+          up: (a?.up ?? 0) * level + (b?.up ?? 0) * peakArm + sign * (def.sway?.swing ?? 0) * swing,
+          fo: (a?.fo ?? 0) * level + (b?.fo ?? 0) * peakArm,
+          ha: (a?.ha ?? 0) * level + (b?.ha ?? 0) * peakArm + sign * (def.sway?.hand ?? 0) * handSwing,
+          // 長さの倍率は 1 からの差に強さを掛ける（入り・戻りで 1 から滑らかに変わる）。
+          foS: 1 + ((a?.foS ?? 1) - 1) * level + ((b?.foS ?? 1) - 1) * peakArm,
+          haS: 1 + ((a?.haS ?? 1) - 1) * level + ((b?.haS ?? 1) - 1) * peakArm,
         })
-      arms = {
-        right: arm(from?.right, (def.sway?.swing ?? 0) * swing),
-        left: arm(from?.left, -(def.sway?.swing ?? 0) * swing),
-      }
+      arms = { right: arm(from?.right, tense?.right, 1), left: arm(from?.left, tense?.left, -1) }
       if (![arms.right, arms.left].some((a) => ARM_KEYS.some((k) => Math.abs(a[k] ?? 0) > 1e-4))) arms = null
     }
     // 目と表情は頭が動き出してから変え、頭が戻り始める時に戻す。
     // later の切り替えは保つ間の割合で決める（中断では run.end が今になるので inner が偽になり、ここは効かない）。
-    const inner = now >= run.start + IN_SECONDS * 0.45 && now < run.end,
-      held = run.t0 + IN_SECONDS
+    const inner = now >= run.start + run.in * 0.45 && now < run.end,
+      held = run.t0 + run.in,
+      tensed = !!def.peak?.eyes && run.frozen === null && now >= run.t0 + def.peak.in * 0.45 && now < run.release,
+      emotion = def.later && now >= held + (run.end - held) * def.later.at ? def.later.emotion : (def.emotion ?? null)
     return {
       act: run.act,
       pose,
-      eyes: !!def.eyes && inner,
-      emotion:
-        !def.emotion || !inner
-          ? null
-          : def.later && now >= held + (run.end - held) * def.later.at
-            ? def.later.emotion
-            : def.emotion,
+      eyes: (!!def.eyes && inner) || tensed,
+      emotion: inner ? emotion : null,
       hold: true,
       gaze: !!def.gaze && now < run.end + run.out,
       arms,

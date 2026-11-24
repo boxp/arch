@@ -33,14 +33,14 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
   const check = (v, m) => { if (!v) failures.push(`${device}: ${m}`) }
   const shot = async name => { await page.waitForTimeout(400); await page.screenshot({ path: `${out}/${device}-${name}.png` }) }
   const inside = id => page.evaluate(i => { const e = document.getElementById(i); if (!e || !e.checkVisibility()) return false; const b = e.getBoundingClientRect(); return b.left >= -1 && b.top >= -1 && b.right <= innerWidth + 1 && b.bottom <= innerHeight + 1 }, id)
-  const error = () => page.evaluate(() => document.getElementById('error')?.textContent || '')
+  const error = () => page.evaluate(() => document.getElementById('attachment-note')?.textContent || '') // BOXP-677: 添付の理由は入力欄の上の注意欄に出る
   try {
     await page.goto(`http://localhost:${port}/kohako/home.html?acting=0&face=static&daypart=day`)
     await page.waitForFunction(() => !document.querySelector('#send').disabled, null, { timeout: 30000 })
     check(await inside('attach'), 'attach button visible in viewport')
     // 未対応・超過は明示しチップを作らない
-    await page.setInputFiles('#attachment-file', [files.exe]); await page.waitForTimeout(300); r.unsupported = await error(); check(/未対応/.test(r.unsupported), `unsupported msg ${r.unsupported}`)
-    await page.setInputFiles('#attachment-file', [files.big]); await page.waitForTimeout(300); r.oversize = await error(); check(/サイズ超過/.test(r.oversize), `oversize msg ${r.oversize}`)
+    await page.setInputFiles('#attachment-file', [files.exe]); await page.waitForTimeout(300); r.unsupported = await error(); check(/対応していない/.test(r.unsupported), `unsupported msg ${r.unsupported}`)
+    await page.setInputFiles('#attachment-file', [files.big]); await page.waitForTimeout(300); r.oversize = await error(); check(/大きすぎます/.test(r.oversize), `oversize msg ${r.oversize}`)
     check(await page.locator('#attachment-chips > span').count() === 0, 'no chips for rejected files')
     // サーバ側で失敗（PDF 本文なし）は失敗チップ＋理由
     await page.setInputFiles('#attachment-file', [files.pdf]); await page.waitForTimeout(500); r.pdfError = await error(); check(/PDF/.test(r.pdfError), `pdf error ${r.pdfError}`)
@@ -48,7 +48,7 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     await page.locator('#attachment-chips button').first().click(); check(await page.locator('#attachment-chips > span').count() === 0, 'cancel removes chip')
     // 画像とテキストを選び、1 件取り消してから送る
     // 画像は1回の送信で合計5.5 MiBまで。超過分はチップを作らず理由を明示する
-    await page.setInputFiles('#attachment-file', [files.img3a, files.img3b]); await page.waitForTimeout(800); r.imageTotal = await error(); check(/合計5\.5 MiB/.test(r.imageTotal), `image total msg ${r.imageTotal}`)
+    await page.setInputFiles('#attachment-file', [files.img3a, files.img3b]); await page.waitForTimeout(800); r.imageTotal = await error(); check(/合計 ?5\.5 MiB/.test(r.imageTotal), `image total msg ${r.imageTotal}`)
     check(await page.locator('#attachment-chips > span').count() === 1, 'only first large image chip'); await page.locator('#attachment-chips button').first().click()
     await page.setInputFiles('#attachment-file', [files.img, files.txt]); await page.waitForTimeout(600)
     check(await page.locator('#attachment-chips > span').count() === 2, 'two chips'); await shot('chips')

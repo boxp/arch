@@ -196,18 +196,23 @@ jobs:
       ref: ${{needs.path-filter.outputs.merge_commit_sha}}
 
   lock-model:
-    # BOXP-652: proofs of the Task Board lock model and its generated operation
-    # sequences. status-check needs this job, so a failure blocks the merge. It is
-    # skipped (and status-check is not affected) when the PR changes none of the
-    # paths of the lock-model filter in wc-path-filter.yaml. No secret is passed.
+    # BOXP-652 / BOXP-673: the Lean models of the Task Board runner. `lean` checks the
+    # proofs and the generated operation sequences (filter lock-model: a model changed);
+    # `replay` runs the sequences against the runner's real functions (filter
+    # model-replay: a model, a replay test or the runner changed). status-check needs
+    # this job, so a failure of either blocks the merge. It is skipped (and status-check
+    # is not affected) when the PR changes none of those paths. No secret is passed.
     uses: ./.github/workflows/test-task-board-lock-model.yml
     needs: path-filter
     if: |
-      needs.path-filter.outputs.lock-model == 'true'
+      needs.path-filter.outputs.lock-model == 'true' ||
+      needs.path-filter.outputs.model-replay == 'true'
     permissions:
       contents: read
     with:
       ref: ${{needs.path-filter.outputs.merge_commit_sha}}
+      lean: ${{needs.path-filter.outputs.lock-model == 'true'}}
+      replay: ${{needs.path-filter.outputs.model-replay == 'true'}}
 
   update-aqua-checksums:
     uses: ./.github/workflows/wc-update-aqua-checksums.yaml

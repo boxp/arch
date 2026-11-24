@@ -46,6 +46,12 @@ kubernetes_upgrade_kubeadm_patches_arg: >-
   {{ ("--patches=" ~ kubernetes_upgrade_kubeadm_patches_dir)
      if (kubernetes_upgrade_controller_manager_feature_gates | length > 0) else "" }}
 
+# Hosts that run the isolated APT preflight during the pre-check job. Empty
+# (default) = every host, the behaviour before BOXP-672. The upgrade workflow
+# passes the single target node for pre_check_scope=target; etcd health and node
+# readiness are still checked on every host either way.
+kubernetes_upgrade_pre_check_target_hosts: []
+
 # Pre-check readiness retry: first attempt plus this many retries, with the
 # delay between them (12 x 15s = at least 3 minutes of waiting). Bounded so one
 # apiserver liveness restart is tolerated but a persistently NotReady node or

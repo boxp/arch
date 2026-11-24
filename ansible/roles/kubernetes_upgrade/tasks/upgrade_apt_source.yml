@@ -50,14 +50,55 @@
   become: true
   tags: [upgrade]
 
-- name: Upgrade CRI-O
-  ansible.builtin.apt:
-    name: "cri-o={{ crio_upgrade_package }}"
-    state: present
-    update_cache: false
+# BOXP-672: kubernetes_components holds cri-o, and apt refuses to change a held
+# package ("Held packages were changed and -y was used without
+# --allow-change-held-packages"). Release only the cri-o hold, only when the
+# installed revision differs from the target, and put it back even if the
+# install fails. Other held packages (kubeadm/kubelet/kubectl) stay protected.
+- name: Read CRI-O package selection and installed revision
+  ansible.builtin.command:
+    argv:
+      - dpkg-query
+      - -W
+      - "-f=${db:Status-Want} ${Version}"
+      - cri-o
+  register: crio_upgrade_package_state
   become: true
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  when: crio_upgrade_version is defined and crio_upgrade_version != ""
+  tags: [upgrade]
+
+- name: Upgrade CRI-O with its package hold released only for this install
   when:
     - crio_upgrade_version is defined and crio_upgrade_version != ""
     - not ansible_check_mode
-  notify: Restart crio
   tags: [upgrade]
+  vars:
+    crio_upgrade_release_hold: >-
+      {{ crio_upgrade_package_state.rc == 0
+         and (crio_upgrade_package_state.stdout.split() | first | default("")) == "hold"
+         and (crio_upgrade_package_state.stdout.split() | last | default("")) != crio_upgrade_package }}
+  block:
+    - name: Release CRI-O package hold for the upgrade
+      ansible.builtin.dpkg_selections:
+        name: cri-o
+        selection: install
+      become: true
+      when: crio_upgrade_release_hold | bool
+
+    - name: Upgrade CRI-O
+      ansible.builtin.apt:
+        name: "cri-o={{ crio_upgrade_package }}"
+        state: present
+        update_cache: false
+      become: true
+      notify: Restart crio
+  always:
+    - name: Restore CRI-O package hold
+      ansible.builtin.dpkg_selections:
+        name: cri-o
+        selection: hold
+      become: true
+      when: crio_upgrade_release_hold | bool

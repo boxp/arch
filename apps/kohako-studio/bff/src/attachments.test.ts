@@ -24,6 +24,15 @@ describe('attachments', () => {
       await expect(
         store.upload(Buffer.alloc(5 * 1024 * 1024 + 1), 'text/plain', 'a.txt', 'owner', 1),
       ).rejects.toMatchObject({ code: 'too_large', status: 413 })
+      // 5 MiB 超・30 MiB 以下の未対応形式はモデル通り 415（サイズ超過ではない）。30 MiB 超は 413。
+      for (const size of [5 * 1024 * 1024 + 1, 30 * 1024 * 1024]) {
+        await expect(store.upload(Buffer.alloc(size, 1), 'application/zip', 'a.zip', 'owner', 1)).rejects.toMatchObject(
+          { code: 'unsupported_type', status: 415 },
+        )
+      }
+      await expect(
+        store.upload(Buffer.alloc(30 * 1024 * 1024 + 1, 1), 'application/zip', 'a.zip', 'owner', 1),
+      ).rejects.toMatchObject({ code: 'too_large', status: 413 })
       await expect(store.upload(Buffer.from([0xff, 0]), 'text/plain', 'a.txt', 'owner', 1)).rejects.toMatchObject({
         code: 'unsupported_type',
       })

@@ -57,9 +57,9 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 6
       matrix:
-        group: [runner-0, runner-1, localllm, remaining]
+        group: [runner-0, runner-1, localllm-0, localllm-1, novel-board, remaining]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -85,9 +85,18 @@ jobs:
       - name: Runner shard 1
         if: matrix.group == 'runner-1'
         run: TASK_BOARD_TEST_SHARDS=2 TASK_BOARD_TEST_SHARD=1 tests/codex-workspace/task-board-runner-test.sh
-      - name: Local LLM documentation
-        if: matrix.group == 'localllm'
-        run: tests/codex-workspace/localllm-docs-test.sh
+      - name: Local LLM documentation shard 0
+        if: matrix.group == 'localllm-0'
+        run: LOCALLLM_TEST_SHARDS=2 LOCALLLM_TEST_SHARD=0 tests/codex-workspace/localllm-docs-test.sh
+      - name: Local LLM documentation shard 1
+        if: matrix.group == 'localllm-1'
+        run: LOCALLLM_TEST_SHARDS=2 LOCALLLM_TEST_SHARD=1 tests/codex-workspace/localllm-docs-test.sh
+      - name: Novel board
+        if: matrix.group == 'novel-board'
+        run: |
+          set -euo pipefail
+          time bb docker/codex-workspace/novel-board/novel_board_runner.bb test
+          time tests/codex-workspace/novel-board-runner-test.sh
       - name: Remaining suites
         if: matrix.group == 'remaining'
         run: |
@@ -105,8 +114,6 @@ jobs:
           time bb tests/harness-eval/test_harness_eval.bb
           time docs/project_docs/BOXP-360/tools/test.sh
           time tests/codex-workspace/localllm-source-check-test.sh
-          time bb docker/codex-workspace/novel-board/novel_board_runner.bb test
-          time tests/codex-workspace/novel-board-runner-test.sh
           time tests/codex-workspace/recurring-events-test.sh
           time bb tests/codex-workspace/infra-diagram-refresh-test.bb
           time bb tests/codex-workspace/site-refresh-test.bb
@@ -115,6 +122,7 @@ jobs:
           time bb tests/codex-workspace/vault-writer-test.bb
           time bb tests/codex-workspace/auth-gateway-test.bb
           time bb tests/codex-workspace/task-board-conflict-test.bb
+          time bb tests/codex-workspace/spec-index-test.bb
           time bb tests/codex-workspace/task-board-todos-test.bb
           time bb tests/codex-workspace/task-board-same-file-review-test.bb
           time bb tests/codex-workspace/task-board-runner-boundary-test.bb
@@ -151,49 +159,10 @@ jobs:
           time bb tests/codex-workspace/task-board-mutation.bb --group runner-gates --direct-only --jobs 4 --out "${out}"
           cat "${out}/summary.md" >>"${GITHUB_STEP_SUMMARY}"
 
-  # BOXP-650: report-only replay of the operation sequences generated from the lock
-  # model (tests/codex-workspace/lock-model/) against the runner's real lock functions.
-  # Needs only bb. A mismatch is shown in the job summary and as a warning; it does not
-  # fail the job and the job is not part of the required result below.
-  lock-trace:
-    permissions:
-      contents: read
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      BABASHKA_VERSION: 1.12.218
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install Babashka
-        run: |
-          set -eux
-          tmp="$(mktemp -d)"
-          curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 -fsSL \
-            "https://github.com/babashka/babashka/releases/download/v${BABASHKA_VERSION}/babashka-${BABASHKA_VERSION}-linux-amd64-static.tar.gz" \
-            -o "${tmp}/bb.tar.gz"
-          tar -xzf "${tmp}/bb.tar.gz" -C "${tmp}"
-          sudo install -m 0755 "$(find "${tmp}" -type f -name bb | head -n 1)" /usr/local/bin/bb
-      - name: Lock trace replay (report only)
-        run: |
-          set -uo pipefail
-          out="${RUNNER_TEMP}/lock-trace.txt"
-          status=0
-          bb tests/codex-workspace/task-board-lock-trace-test.bb --max-report 10 >"${out}" 2>&1 || status=$?
-          cat "${out}"
-          {
-            echo "### Lock trace replay (BOXP-650, report only)"
-            echo
-            echo "exit status: ${status}"
-            echo
-            echo '```'
-            tail -n 20 "${out}"
-            echo '```'
-          } >>"${GITHUB_STEP_SUMMARY}"
-          if [ "${status}" -ne 0 ]; then
-            echo "::warning::lock trace replay disagrees with the lock model (report only): see tests/codex-workspace/lock-model/README.md"
-          fi
+  # BOXP-673: the replay of the model-generated operation sequences against the runner's
+  # real functions used to be a report-only job here (lock-trace). It now runs as the job
+  # `replay` of test-task-board-lock-model.yml, which the required check `status-check`
+  # waits for (test.yaml), so it is not repeated in this workflow.
 
   test:
     timeout-minutes: 2
