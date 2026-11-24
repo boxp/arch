@@ -11,7 +11,7 @@ const out = process.argv[2] || '/out', site = process.env.SITE || '/site', port 
 fs.mkdirSync(out, { recursive: true })
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.json': 'application/json', '.wasm': 'application/wasm' }
 const server = http.createServer((req, res) => { const p = decodeURIComponent(new URL(req.url, 'http://localhost').pathname); fs.readFile(path.join(site, p), (err, data) => { if (err) { res.writeHead(404); res.end(); return } res.writeHead(200, { 'content-type': types[path.extname(p)] || 'application/octet-stream' }); res.end(data) }) }).listen(port)
-const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] })
+const browser = process.env.PW_WS ? await chromium.connect(process.env.PW_WS) : await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] })
 const results = {}, failures = [], external = []
 const GESTURES = ['joy', 'greet', 'guide', 'halt', 'shyHand', 'tilt', 'nod']
 const CASES = [
