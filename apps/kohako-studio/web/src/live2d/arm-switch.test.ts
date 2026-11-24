@@ -102,6 +102,26 @@ describe('1 枚腕への差し替えの段取り（BOXP-694）', () => {
     expect(s.leave(false)).toBe(true)
     expect(s.phase).toBe('off')
   })
+  it('A6b: hold の間に絵が読めたら、いきなり出さず 0.12 秒でフェードインする（不透明度は跳ばない）', () => {
+    const s = new ArmSwitch()
+    s.enter(0.2)
+    run(s, 1, false)
+    // 読めた最初のコマ: まだ 1 枚腕は出ておらず、変形の腕が描かれている。
+    expect(s.pieceShown(true)).toBe(false)
+    expect(s.rigShown(true)).toBe(true)
+    let last = s.alpha
+    expect(last).toBe(0)
+    for (let i = 0; i < Math.ceil(SWITCH_SECONDS / DT) + 2; i++) {
+      s.tick(DT, true)
+      expect(Math.abs(s.alpha - last)).toBeLessThan(0.35)
+      if (s.alpha < 1) expect(s.rigShown(true)).toBe(true)
+      last = s.alpha
+    }
+    expect(s.phase).toBe('hold')
+    expect(s.alpha).toBe(1)
+    expect(s.rigShown(true)).toBe(false)
+    expect(s.pieceShown(true)).toBe(true)
+  })
   it('どの順序でも: 1 枚腕は lead・off で出ず、不透明度は跳ばず、終了の要求から 0.12 秒以内に終わる（操作列の総当たり）', () => {
     // 操作: enter / leave / 1 コマ進める / 0.1 秒進める / 0.5 秒進める。長さ 7 の全ての並び（5^7 = 78,125 通り）を最初から再生する。
     // 不変条件は仕様の文から: A1（lead・off では出ない）、A2（腕が 1 本も描かれないコマは無い・保持は不透明）、

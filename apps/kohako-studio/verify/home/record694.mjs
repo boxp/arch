@@ -39,21 +39,37 @@ if (!/^https?:/.test(TARGET)) {
     '.json': 'application/json',
     '.webmanifest': 'application/manifest+json',
   }
+  // この PC の中（127.0.0.1）だけで待ち受け、dist の外を指すパス（%2f や .. を使ったもの）は読まずに 404 を返す。
+  const root = fs.realpathSync(TARGET)
+  const inside = (reqUrl) => {
+    try {
+      const p = decodeURIComponent(new URL(reqUrl, 'http://x').pathname).replace(/^\/kohako\//, '/')
+      if (p.includes('\0')) return null
+      const real = fs.realpathSync(path.resolve(root, '.' + path.posix.normalize('/' + p)))
+      return real === root || real.startsWith(root + path.sep) ? real : null
+    } catch {
+      return null
+    }
+  }
   server = http
     .createServer((q, r) => {
-      const p = decodeURIComponent(new URL(q.url, 'http://x').pathname).replace(/^\/kohako\//, '/')
-      fs.readFile(path.join(TARGET, p), (e, d) => {
+      const file = inside(q.url)
+      if (!file) {
+        r.writeHead(404)
+        return r.end()
+      }
+      fs.readFile(file, (e, d) => {
         if (e) {
           r.writeHead(404)
           return r.end()
         }
-        r.writeHead(200, { 'content-type': types[path.extname(p)] || 'application/octet-stream' })
+        r.writeHead(200, { 'content-type': types[path.extname(file)] || 'application/octet-stream' })
         r.end(d)
       })
     })
-    .listen(0)
+    .listen(0, '127.0.0.1')
   await new Promise((r) => server.on('listening', r))
-  url = `http://localhost:${server.address().port}/kohako/home.html`
+  url = `http://127.0.0.1:${server.address().port}/kohako/home.html`
 }
 
 const HIDE_CSS = `

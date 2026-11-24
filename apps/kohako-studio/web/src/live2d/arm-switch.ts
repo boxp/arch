@@ -39,17 +39,23 @@ export class ArmSwitch {
     this.alpha = 0
   }
   /**
-   * 時間を進める。ready は 1 枚腕の絵が読めているか（読めていなければ変形の腕のまま動かし、フェードを挟まない）。
+   * 時間を進める。ready は 1 枚腕の絵が読めているか（読めていなければ変形の腕のまま動かし、1 枚腕は出さない。
+   * 保持の途中で読めたら、そこから 0.12 秒でフェードインする）。
    * out が終わったら true（呼び出し側が変形の腕を待機へ戻し始める）。
    */
   tick(dt: number, ready: boolean): boolean {
-    if (this.phase === 'off' || this.phase === 'hold') return false
+    if (this.phase === 'off') return false
+    if (this.phase === 'hold') {
+      // 絵が読める前に hold へ入っていたら（不透明度 0 のまま）、読めた時点からフェードインする。いきなり出さない。
+      if (ready && this.alpha < 1) this.start('in', 0)
+      return false
+    }
     this.t += dt
     const done = this.t >= this.seconds
     if (this.phase === 'lead') {
       if (!done) return false
       if (ready) this.start('in', 0)
-      else this.rest('hold')
+      else this.rest('hold', 0)
       return false
     }
     const x = ease(this.t / this.seconds)
@@ -80,9 +86,9 @@ export class ArmSwitch {
   pieceShown(ready: boolean): boolean {
     return ready && this.on && this.alpha > 0.001
   }
-  /** 変形の腕（小手・手）を描くか。1 枚腕が出切っている間だけ描かない。 */
+  /** 変形の腕（小手・手）を描くか。1 枚腕が出切っている（hold で不透明度 1 の）間だけ描かない。 */
   rigShown(ready: boolean): boolean {
-    return !(ready && this.phase === 'hold')
+    return !(ready && this.phase === 'hold' && this.alpha >= 1)
   }
   private start(phase: 'in' | 'out', t: number): void {
     this.phase = phase
@@ -91,10 +97,10 @@ export class ArmSwitch {
     const x = ease(this.t / this.seconds)
     this.alpha = phase === 'in' ? x : 1 - x
   }
-  private rest(phase: 'hold' | 'off'): void {
+  private rest(phase: 'hold' | 'off', alpha = phase === 'hold' ? 1 : 0): void {
     this.phase = phase
     this.t = 0
     this.seconds = 0
-    this.alpha = phase === 'hold' ? 1 : 0
+    this.alpha = alpha
   }
 }

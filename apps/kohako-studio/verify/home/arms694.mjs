@@ -9,7 +9,10 @@ import { chromium } from 'playwright'
 import http from 'node:http'; import fs from 'node:fs'; import path from 'node:path'
 const SITE = process.argv[2], OUT = process.argv[3], C = JSON.parse(process.argv[4])
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.wasm': 'application/wasm', '.png': 'image/png', '.json': 'application/json', '.webmanifest': 'application/manifest+json' }
-const srv = http.createServer((q, r) => { const p = decodeURIComponent(new URL(q.url, 'http://x').pathname).replace(/^\/kohako\//, '/'); fs.readFile(path.join(SITE, p), (e, d) => { if (e) { r.writeHead(404); return r.end() } r.writeHead(200, { 'content-type': types[path.extname(p)] || 'application/octet-stream' }); r.end(d) }) }).listen(0)
+// この PC の中（127.0.0.1）だけで待ち受け、dist の外を指すパス（%2f や .. を使ったもの）は読まずに 404 を返す。
+const ROOT = fs.realpathSync(SITE)
+const inside = (url) => { try { const p = decodeURIComponent(new URL(url, 'http://x').pathname).replace(/^\/kohako\//, '/'); if (p.includes('\0')) return null; const f = path.resolve(ROOT, '.' + path.posix.normalize('/' + p)); const real = fs.realpathSync(f); return real === ROOT || real.startsWith(ROOT + path.sep) ? real : null } catch { return null } }
+const srv = http.createServer((q, r) => { const f = inside(q.url); if (!f) { r.writeHead(404); return r.end() } fs.readFile(f, (e, d) => { if (e) { r.writeHead(404); return r.end() } r.writeHead(200, { 'content-type': types[path.extname(f)] || 'application/octet-stream' }); r.end(d) }) }).listen(0, '127.0.0.1')
 await new Promise(r => srv.on('listening', r)); const PORT = srv.address().port
 const browser = await chromium.connect(process.env.PW_WS ?? 'ws://127.0.0.1:39694/')
 const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 }), page = await context.newPage()
@@ -17,7 +20,7 @@ page.on('pageerror', e => console.log('pageerror', e.message))
 await context.route('**/kohako/api/v1/**', r => { const p = new URL(r.request().url()).pathname.replace('/kohako/api/v1/', ''); return r.fulfill({ json: p === 'me' ? { user: 'verify' } : p === 'conversation' ? { enabled: true, stt: false } : {} }) })
 if (C.kind !== 'idle') await context.addInitScript(p => localStorage.setItem('kohako-home-prefs', JSON.stringify(p)), { idleActs: false })
 await page.clock.install({ time: new Date('2026-11-12T12:00:00+09:00') })
-await page.goto(`http://localhost:${PORT}/kohako/home.html`)
+await page.goto(`http://127.0.0.1:${PORT}/kohako/home.html`)
 for (let i = 0; i < 600 && !(await page.evaluate(() => window.__kohakoHome?.report.loaded && window.__kohakoHome.state !== 'offline')); i++) await page.clock.runFor(100)
 await page.clock.pauseAt(await page.evaluate(() => Date.now()) + 3000)
 await page.clock.runFor(8000)
