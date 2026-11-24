@@ -21,6 +21,7 @@ import {
   backOpacity,
   SWITCH_SECONDS,
   SWITCHED,
+  SWITCHED_LEFT,
   interruptPlan,
   bentSide,
   bentWeight,
@@ -101,7 +102,9 @@ describe('動作の定義', () => {
       const clip = clips[g]
       for (const time of [0, clip.duration]) {
         const s = sample(clip, time)
-        expect(Math.abs(s.right.fo) + Math.abs(s.left.fo)).toBeCloseTo(0)
+        // 喜びの両腕は最初から最後まで保持の形で、入りと戻りはフェードで入れ替える（仕様 B）。体は休止で始まり終わる。
+        if (SWITCHED_LEFT[g]) expect(s.right).toEqual(s.left)
+        else expect(Math.abs(s.right.fo) + Math.abs(s.left.fo)).toBeCloseTo(0)
         expect(s.body.headY).toBeCloseTo(0)
       }
     }
@@ -405,22 +408,20 @@ describe('実行時の動作の割り込み', () => {
   }
   const distance = (a: readonly [number, number], b: readonly [number, number]) => Math.hypot(a[0] - b[0], a[1] - b[1])
 
-  it('解除で戻る途中に次の動作が来ても手首が跳ばない', () => {
+  it('解除のフェードの途中に次の喜びが来たら、腕は保持か休止の位置にしか居ない（途中の位置を通らない。仕様 B・A4）', () => {
     for (const released of [0.05, 0.1, 0.2, 0.3, 0.4]) {
       const { stage, frame } = setup()
       stage.playGesture('joy')
-      run(frame, 1.5) // 照れは 1 枚腕の差し替え（フェード）になったので、変形で戻る動作で確かめる
+      const held = run(frame, 1)
+      const rest: readonly [number, number] = [bone.W[0], bone.W[1]]
       stage.reset()
-      let previous = run(frame, released)
-      stage.playGesture('joy') // 挨拶・案内も 1 枚腕の差し替えになったので、変形で上げる喜びで確かめる
-      const first = frame()
-      expect(distance(first, previous)).toBeLessThan(45)
-      previous = first
+      run(frame, released)
+      stage.playGesture('joy')
       for (let i = 0; i < 40; i++) {
         const current = frame()
-        expect(distance(current, previous)).toBeLessThan(45)
-        previous = current
+        expect(Math.min(distance(current, held), distance(current, rest))).toBeLessThan(0.5)
       }
+      expect(distance(frame(), held)).toBeLessThan(0.5)
     }
   })
   it('解除後は腕の変形が外れて休止位置へ戻る', () => {
@@ -539,6 +540,72 @@ describe("制止の腕セットの切替（BOXP-476 TD-06 Y')", () => {
   const haltWrist = solveArm(bone, SWITCHED.halt as ArmPose).wrist
   const near = (a: readonly [number, number], b: readonly [number, number], d = 0.5) =>
     expect(Math.hypot(a[0] - b[0], a[1] - b[1])).toBeLessThan(d)
+  describe('B: 両手を上げる喜びもフェードで入れ替える（BOXP-694 TD-01）', () => {
+    const far = (a: readonly [number, number], b: readonly [number, number]) => Math.hypot(a[0] - b[0], a[1] - b[1])
+    it('B2: 最初のコマから両腕を保持の形に置き、0.25 秒でフェードインする（腕を回して上げない）', () => {
+      const { stage, frame, run } = setup()
+      stage.playGesture('joy')
+      const first = frame()
+      expect(far(first, bone.W)).toBeGreaterThan(100)
+      expect(stage.report()).toMatchObject({ armSwitch: { phase: 'in' }, gesture: 'joy', switched: true })
+      expect((stage.report().armSwitch as { posedAlpha: number }).posedAlpha).toBeLessThan(0.05)
+      near(run(0.1), first)
+      run(SWITCH_SECONDS)
+      expect(stage.report().armSwitch).toBeNull()
+      near(run(0.5), first) // B3: 保持の間、腕は動かさない
+    })
+    it('B1: 左右とも保持の形へ差し替える', () => {
+      expect(SWITCHED.joy).toBeDefined()
+      expect(SWITCHED_LEFT.joy).toEqual(SWITCHED.joy)
+      expect(must(SWITCHED.joy).haS).toBe(JOY_HAND_SCALE)
+    })
+    it('B4: 1.5 秒で上げた形のままフェードアウトし、1.75 秒で待機の腕へ戻る', () => {
+      const { stage, frame, run } = setup()
+      stage.playGesture('joy')
+      const held = frame()
+      run(1.4)
+      expect(stage.report().armSwitch).toBeNull()
+      near(run(0.15), held)
+      expect(stage.report().armSwitch).toMatchObject({ phase: 'out' })
+      near(run(0.1), held)
+      run(0.2)
+      expect(stage.report()).toMatchObject({ armBlend: 0, armSwitch: null, switched: false, gesture: 'none' })
+    })
+    it('B5: フェードインの途中の解除は、その時点の濃さから消える', () => {
+      const { stage, run } = setup()
+      stage.playGesture('joy')
+      run(0.1)
+      const before = (stage.report().armSwitch as { posedAlpha: number }).posedAlpha
+      stage.reset()
+      run(1 / 60)
+      const now = stage.report().armSwitch as { phase: string; posedAlpha: number }
+      expect(now.phase).toBe('out')
+      expect(now.posedAlpha).toBeLessThanOrEqual(before)
+    })
+    it('B5: 喜びの途中の挨拶・挨拶の途中の喜びは、今の腕を消してから始める', () => {
+      for (const [a, b] of [
+        ['joy', 'greet'],
+        ['greet', 'joy'],
+      ] as const) {
+        const { stage, run } = setup()
+        stage.playGesture(a)
+        run(0.6)
+        stage.playGesture(b)
+        run(1 / 60)
+        expect(stage.report()).toMatchObject({ armSwitch: { phase: 'out' } })
+        run(SWITCH_SECONDS)
+        expect(stage.report()).toMatchObject({ armSwitch: { phase: 'in' }, gesture: b, switched: true })
+      }
+    })
+    it('B5: 喜びの再要求は保持を延ばすだけで、フェードし直さない', () => {
+      const { stage, run } = setup()
+      stage.playGesture('joy')
+      run(1.2)
+      stage.playGesture('joy')
+      run(1 / 60)
+      expect(stage.report()).toMatchObject({ armSwitch: null, gesture: 'joy', switched: true })
+    })
+  })
   it('裏に残す腕は、背景が透ける割合を 0.15 以下に抑える', () => {
     expect(backOpacity(0)).toBe(1)
     expect(backOpacity(1)).toBe(0)
@@ -915,9 +982,8 @@ describe('喜びの手の大きさ（BOXP-476 Owner 指摘）', () => {
       expect(must(k.right).haS).toBe(JOY_HAND_SCALE)
       expect(must(k.left).haS).toBe(JOY_HAND_SCALE)
     }
-    // 待機と始点・終点は等倍（入りと戻りで手の大きさが跳ばない）
-    expect(must(clips.joy.keys[0].right).haS).toBe(1)
-    expect(must(clips.joy.keys[clips.joy.keys.length - 1].right).haS).toBe(1)
+    // 入りと戻りはフェードで入れ替えるので、喜びの腕は全てのキーが保持の形（仕様 B）
+    expect(holds.length).toBe(clips.joy.keys.length)
   })
 })
 
