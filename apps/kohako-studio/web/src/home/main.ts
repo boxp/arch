@@ -3190,7 +3190,10 @@ let seatMoving = false,
   seatPhase: SeatPhase = 'standing',
   seatViewWritten: number | null = null,
   seatViewBase = 0
-/** 座ったままでよい。会話・確認待ち・失敗・現場・帰還の演出・録音・小さい表示・動きを減らす設定では偽（急いで立つ）。なでる・タップ・マウス移動では立たない。 */
+/**
+ * 座ったままでよい。会話・確認待ち・失敗・現場・帰還の演出・録音・小さい表示・動きを減らす設定では偽（急いで立つ）。なでる・タップ・マウス移動では立たない。
+ * 上半身だけの枠（スマホの縦長・横長、PC で資料や作業を見せている場面）でも偽: 脚が見えないまま体だけ沈んで見えるので、全身が見える時だけ座る。
+ */
 function seatKeep(): boolean {
   return (
     seatConfig.enabled &&
@@ -3203,6 +3206,7 @@ function seatKeep(): boolean {
     rigStateOf[state] === 'idle' &&
     character.dataset.arrival === 'home' &&
     !character.classList.contains('mini') &&
+    character.dataset.frame !== 'upper' &&
     !recording
   )
 }
