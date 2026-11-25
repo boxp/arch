@@ -38,6 +38,13 @@ export interface ActingStage {
       left?: { up?: number; fo?: number; ha?: number }
     } | null,
   ): void
+  /** BOXP-694: 待機のしぐさの大きな腕の姿勢。腕を動かして運ばず、待機の腕と 0.25 秒のフェードで入れ替える（null で同じ形のままフェードアウト）。 */
+  setIdleArmSet?(
+    v: {
+      right?: { up?: number; fo?: number; ha?: number }
+      left?: { up?: number; fo?: number; ha?: number }
+    } | null,
+  ): void
   /** BOXP-605: tag つきで始めた身振りがまだ続いていれば、腕を待機へ戻す（表情は変えない）。他の呼び出し元の身振りには触れない。 */
   cancelGesture?(tag: string): void
   setPetOffset?(v: { headX: number; headY: number; headZ: number }): void

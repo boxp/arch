@@ -3211,6 +3211,7 @@ function rigTick(now: number) {
     })
   stage?.setIdlePose?.(idle.pose)
   stage?.setIdleArms?.(idle.arms)
+  stage?.setIdleArmSet?.(idle.armSet)
   // 身振りを借りるしぐさ: 始まりに 1 回だけ再生し、中断されたら（まだ続いていれば）腕を待機へ戻す。
   if (idle.gesture !== idleGesture) {
     if (idle.gesture) stage?.playGesture(idle.gesture, IDLE_GESTURE_TAG)
@@ -3234,6 +3235,7 @@ function rigTick(now: number) {
     emotion: idle.emotion,
     gesture: idle.gesture,
     arms: idle.arms,
+    armSet: idle.armSet,
   }
   if (stage?.setPetOffset) {
     const hold = petHold || idle.hold

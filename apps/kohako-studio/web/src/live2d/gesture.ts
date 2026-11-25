@@ -280,14 +280,16 @@ export const clips: Record<Exclude<Gesture, 'none'>, Clip> = {
       { t: 1.5, body: {} },
     ],
   },
+  // 喜びの両腕は最初から最後まで保持の形（SWITCHED / SWITCHED_LEFT）。入りと戻りは腕を回さず、待機の腕とのフェードで入れ替える（仕様 B）。
+  // 1.5 秒で体の揺れを戻し終え、そこから 0.25 秒のフェードアウト（全体は従来の 1.8 秒とほぼ同じ）。
   joy: {
-    duration: 1.8,
+    duration: 1.5,
     keys: [
-      { t: 0, right: REST, left: REST, body: {} },
+      { t: 0, right: JOY, left: JOY, body: {} },
       { t: 0.4, right: JOY, left: JOY, body: { bodyZ: 5, headZ: 6, lean: 3, headY: 5 } },
       { t: 0.75, right: JOY, left: JOY, body: { bodyZ: -5, headZ: -6, lean: 3, headY: 5 } },
       { t: 1.1, right: JOY, left: JOY, body: { bodyZ: 5, headZ: 6, lean: 3, headY: 5 } },
-      { t: 1.8, right: REST, left: REST, body: {} },
+      { t: 1.5, right: JOY, left: JOY, body: {} },
     ],
   },
   greet: {
@@ -592,7 +594,14 @@ export const SWITCHED: Partial<Record<Exclude<Gesture, 'none'>, ArmPose>> = {
   shyHand: SHY,
   greet: HALT,
   guide: HALT,
+  joy: JOY,
 }
+/**
+ * 左腕も一緒にフェードで差し替える動作（BOXP-694 TD-01、Owner「両手を上げる動作もフェードアウトにしたほうがよさそう」）。
+ * 喜びは 1 枚腕の絵を持たないので、変形の腕を最初のコマから保持の形に置き、待機の腕（裏に残す写し）とフェードで入れ替える。
+ * 以前のように両腕を伸ばしたまま外へ回して上げ下げしない（仕様 B。回す方式へ戻さないこと）。
+ */
+export const SWITCHED_LEFT: Partial<Record<Exclude<Gesture, 'none'>, ArmPose>> = { joy: JOY }
 /** Cubism のポーズのフェードと同じ考え方で、裏に残す腕の不透明度を決める（背景が透ける割合を 0.15 以下に抑える）。 */
 export function backOpacity(front: number): number {
   const a = Math.min(1, Math.max(0, front))
@@ -740,7 +749,11 @@ export function shyArmPoint(px: Vec, m: { angle: number; drop: number }): Vec {
   const H = SHY_ARM
   return add(add(H.at, [0, m.drop]), scaleV(rot(sub(px, H.shoulderPx), m.angle), H.scale))
 }
-/** 待機のしぐさの腕の角度（ラジアン。右腕の向きで書き、左腕は鏡映される）。肩・肘・手首を小さく回すだけで、絵の差し替えはしない。 */
+/**
+ * 待機のしぐさの腕の角度（ラジアン。右腕の向きで書き、左腕は鏡映される）。
+ * setIdleArms は肩・肘・手首を小さく回す揺れ（そのまま連続して動かす）、setIdleArmSet は大きな姿勢（手そろえ・伸び）で、
+ * 腕を動かして運ばず、最初のコマからその形に置いて待機の腕とフェードで入れ替える（BOXP-694 TD-01、仕様の「共通の決まり」と D）。
+ */
 export type IdleArm = { up?: number; fo?: number; ha?: number }
 const IDLE_ARM_MIN = 1e-4
 /** 動きが無ければ null（腕の変形そのものを通さない）。 */
@@ -1062,6 +1075,14 @@ export function createActingStage(
     switched = false,
     frozen: ReturnType<typeof sample> | null = null
   let fadeSides = { right: false, left: false }
+  // 待機しぐさの姿勢（仕様 D）。want は求められている形、shown は今フェードで出している形。
+  // skip は、身振りや解除に押し出されて消えた後、待機しぐさ側がいったん手放す（null）まで同じ求めで出し直さない印。
+  let idleSetWant: { right: ArmPose; left: ArmPose } | null = null,
+    idleSetShown: { right: ArmPose; left: ArmPose } | null = null,
+    idleSetSkip = false
+  const sameArm = (a: ArmPose, b: ArmPose) => a.up === b.up && a.fo === b.fo && a.ha === b.ha
+  const sameSet = (a: { right: ArmPose; left: ArmPose } | null, b: { right: ArmPose; left: ArmPose } | null) =>
+    !!a && !!b && sameArm(a.right, b.right) && sameArm(a.left, b.left)
   const ghosts = new Map<number, { index: number; pointer: number; side: 'right' | 'left' }>()
   const sideOf = (m: number): 'right' | 'left' | null =>
     m === RIGHT.arm || m === RIGHT.hand ? 'right' : m === LEFT.arm || m === LEFT.hand ? 'left' : null
@@ -1855,6 +1876,11 @@ export function createActingStage(
       haltTime += dt
       if (sw?.phase === 'out') haltOut = Math.min(1, (sw.t + dt) / SWITCH_SECONDS)
     }
+    // 待機しぐさの姿勢: 求めが消えた・変わったら今の形のままフェードアウトし、待機の腕に戻っていて身振りも無ければフェードインする。
+    // フェードの進みより先に決める（フェードインの途中で手放したコマから、濃さが増えない。仕様 A6・D4）。
+    if (idleSetShown && !sameSet(idleSetShown, idleSetWant)) {
+      if (sw?.phase !== 'out') switchOut()
+    } else if (!idleSetShown && idleSetWant && !idleSetSkip && !clip && !switched && atRest()) idleSetIn(idleSetWant)
     if (sw) {
       sw.t += dt
       const x = Math.min(1, sw.t / SWITCH_SECONDS)
@@ -1873,6 +1899,8 @@ export function createActingStage(
           switched = false
           pose = { right: REST, left: REST, body: NO_BODY }
           armBlend = 0
+          if (idleSetShown && idleSetWant) idleSetSkip = true
+          idleSetShown = null
         }
         ended.after?.()
       }
@@ -1891,7 +1919,8 @@ export function createActingStage(
     }
     const raw = clip ? sample(clip, clipTime) : null
     const hold = clip && SWITCHED[clipName as Exclude<Gesture, 'none'>]
-    const sampled = raw && hold ? { ...raw, right: hold } : raw
+    const sampled =
+      raw && hold ? { ...raw, right: hold, left: SWITCHED_LEFT[clipName as Exclude<Gesture, 'none'>] ?? raw.left } : raw
     const goal =
       frozen ??
       sampled ??
@@ -2062,8 +2091,9 @@ export function createActingStage(
     frozen = null
     switched = true
     armBlend = 1
-    pose = { ...sample(clip, 0), right: SWITCHED[next] as ArmPose }
-    fadeSides = { right: true, left: false }
+    const left = SWITCHED_LEFT[next]
+    pose = { ...sample(clip, 0), right: SWITCHED[next] as ArmPose, ...(left ? { left } : {}) }
+    fadeSides = { right: true, left: !!left }
     sw = { phase: 'in', t: 0 }
     posedAlpha = 0
     haltSet = next === 'halt' || next === 'greet'
@@ -2076,7 +2106,29 @@ export function createActingStage(
     haltTime = 0
     haltOut = 0
   }
-  const atRest = () => !sw && !fadeFrom && (armBlend < 0.001 || (!posed(pose.right) && !posed(pose.left)))
+  // 待機しぐさの姿勢を、最初のコマからその形に置いてフェードインする（喜びと同じく両腕。腕は動かして運ばない）。
+  function idleSetIn(set: { right: ArmPose; left: ArmPose }) {
+    const held = { right: set.right, left: set.left, body: NO_BODY }
+    idleSetShown = set
+    clipTag = null
+    fadeFrom = null
+    frozen = held
+    pose = held
+    switched = true
+    armBlend = 1
+    fadeSides = { right: posed(set.right), left: posed(set.left) }
+    sw = { phase: 'in', t: 0 }
+    posedAlpha = 0
+    haltSet = false
+    greetSet = false
+    shySet = false
+    guideSet = false
+    haltTime = 0
+    haltOut = 0
+  }
+  function atRest() {
+    return !sw && !fadeFrom && (armBlend < 0.001 || (!posed(pose.right) && !posed(pose.left)))
+  }
   return {
     setViseme(v) {
       speaking = v !== null
@@ -2097,6 +2149,10 @@ export function createActingStage(
     },
     setIdleArms(v) {
       idleArms = idleArmPoses(v)
+    },
+    setIdleArmSet(v) {
+      idleSetWant = idleArmPoses(v)
+      if (!idleSetWant) idleSetSkip = false
     },
     cancelGesture(tag) {
       if (clipTag !== tag) return
@@ -2187,6 +2243,7 @@ export function createActingStage(
       petEyes: petClosed,
       idlePose: { ...idlePose },
       idleArms: idleArms && { right: { ...idleArms.right }, left: { ...idleArms.left } },
+      idleArmSet: !!idleSetShown,
       idleTail: tailGentle ? tailElapsed : null,
       yaw: shownYaw,
       chest: {

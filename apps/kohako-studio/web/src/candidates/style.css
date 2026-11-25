@@ -14,3 +14,6 @@ h2 { margin: 0 0 4px; font-size: 17px }
 .status-pass { background: #d6e6f6; color: #123d66 }
 .card-link { display: inline-block; padding: 8px 12px; border-radius: 6px; background: #5b3d8a; color: #fff; text-decoration: none }
 .missing { color: #7a1d10 }
+.video { margin: 10px 0 0 }
+.video figcaption { font-weight: 600; margin-bottom: 4px }
+.video video { display: block; width: 100%; max-width: 640px; border: 1px solid #ddd2c4; border-radius: 6px; background: #000 }
