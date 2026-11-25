@@ -68,6 +68,8 @@ async function paused(o) {
   await page.clock.install({ time: new Date('2026-11-12T12:00:00+09:00') })
   await page.goto(o.url)
   for (let i = 0; i < 600 && !(await page.evaluate(() => window.__kohakoHome?.report.loaded && window.__kohakoHome.state !== 'offline')); i++) await page.clock.runFor(100)
+  // 座り姿の絵（後から届く）が読めるまで待つ。読めない間は座らない決まり（S8.7）なので、待たないと座る確認が成り立たない。
+  for (let i = 0; i < 300 && (await page.evaluate(() => window.__kohakoHome.stage?.report().seat?.textures)) === 'loading'; i++) await new Promise((r) => setTimeout(r, 100))
   await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 3000)
   await page.clock.runFor(8000)
 }
@@ -129,9 +131,10 @@ if (!ONLY || ONLY === 'check' || ONLY === 'base') {
     check(rows.every((r, i) => i === 0 || r.level >= rows[i - 1].level - 1e-9), 'S2: 座る途中で座り具合が戻った')
     const took = (rows.length - started) * 50
     check(took >= 1000 && took <= 1500, `S2: 座る動きの長さが 1.25 秒前後でない（${took}ms）`)
-    // ひざから下は約 146 上がり、ひざを支点に 1.045 倍になるので、足の裏（ひざの 630 下）は 146 - 28 = 約 118 上がる。座り切った直後は腰を下ろした沈みが乗る前の頂点なので view とは別。
+    // S8.2: 立ち姿のひざから下は 213 上がる（拡大しない）。座り切った直後は腰を下ろした沈みが乗る前の頂点なので view とは別。
     const rise = before.foot - last.foot
-    check(rise > 112 && rise < 124, `S3: 足の裏が上がる長さが想定（約 118）と違う（${rise.toFixed(1)}）`)
+    check(rise > 211 && rise < 215, `S8: 足の裏が上がる長さが 213 と違う（${rise.toFixed(1)}）`)
+    check(last.stage.textures === 'loaded', `S8: 座り姿の絵が読めていない ${JSON.stringify(last.stage)}`)
     check(last.viewY > before.viewY, 'S2: 腰を下ろすぶん体が下がっていない')
     result.sit = { ms: took, footRise: +rise.toFixed(1), viewDrop: +(last.viewY - before.viewY).toFixed(2) }
     // 座っている間も待機のしぐさが出る
@@ -211,7 +214,8 @@ if (!ONLY || ONLY === 'check' || ONLY === 'base') {
   {
     const o = await open(); await paused(o)
     const rows = await run(o.page, 80000, 250, (s) => s.phase === 'sitting')
-    const at = 8 + rows.length * 0.25
+    // 読み込み完了からの秒: paused() が進める 3 + 8 秒を足す。
+    const at = 11 + rows.length * 0.25
     check(rows.at(-1)?.phase === 'sitting' && at >= 20 && at <= 60, `S1: 最初に座るのが 20〜40 秒（＋しぐさ待ち）でない（${at}s）`)
     result.firstSitSeconds = at
     await o.context.close()
@@ -299,6 +303,10 @@ if (!ONLY || ONLY === 'record') {
   const meta = {}
   for (const scene of ['01-sit-seated-stand', '02-sit-talk-stand']) {
     const o = await open({ query: '?seat=now', video: dir }), { page } = o, t0 = Date.now(), mark = (k) => { (meta[scene] ??= {})[k] = +((Date.now() - t0) / 1000).toFixed(2) }
+    // 録画では、送信に返事が返る模擬にする（受理 → 3 回目の照会で返事）。規則の確認（check）は進行中のままの模擬。
+    let polls = 0
+    await o.context.route('**/kohako/api/v1/messages', (r) => { polls = 0; return r.fulfill({ status: 202, json: { requestId: 'verify-1', status: 'pending' } }) })
+    await o.context.route('**/kohako/api/v1/requests/**', (r) => r.fulfill({ json: ++polls > 2 ? { requestId: 'verify-1', status: 'done', reply: { text: 'はい、こんにちは。椅子から立ってお話ししますね。' } } : { requestId: 'verify-1', status: 'pending' } }))
     await page.goto(o.url)
     check(await until(page, () => window.__kohakoHome?.report.seat?.phase === 'sitting'), `${scene}: 実時間で座り始めない`); mark('sit')
     check(await until(page, () => window.__kohakoHome?.report.seat?.phase === 'seated', 5000), `${scene}: 実時間で座り切らない`); mark('seated')
@@ -313,7 +321,8 @@ if (!ONLY || ONLY === 'record') {
       await wait(page, 5000); mark('talk')
       await talk(page)
       check(await until(page, () => window.__kohakoHome?.report.seat?.phase === 'standing', 3000), `${scene}: 実時間で急いで立たない`); mark('standing')
-      await wait(page, 3000)
+      check(await until(page, () => !!document.querySelector('#reply')?.dataset.reply, 30000), `${scene}: 模擬の返事が表示されない`); mark('reply')
+      await wait(page, 4000)
     }
     mark('end')
     const video = page.video()
