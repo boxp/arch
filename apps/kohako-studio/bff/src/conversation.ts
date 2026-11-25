@@ -336,10 +336,6 @@ export function createConversation({
       }
       clean()
       save()
-      // BOXP-706: 試行の記録に資格が残っているのに、ここで追跡を再開しない発言は、結果を確かめられないので失敗として数える。
-      await modelTrial?.reconcile(
-        [...entries.values()].filter((e) => e.status === 'pending' && e.runId).map((e) => e.requestId),
-      )
       for (const entry of entries.values())
         if (entry.status === 'pending' && entry.runId) {
           const input: Input =
@@ -414,19 +410,13 @@ export function createConversation({
       if (entry?.status !== 'pending') return 'not_pending'
       entry.cancelRequested = true
       save()
-      // BOXP-706: 本人が止めた発言は、この後の結果が成功でも失敗でも試行の失敗回数に数えない。
-      // 数える資格を外したことを保存し終えてから、拒否・停止を Hermes へ送る。
-      const dropped = modelTrial?.drop(requestId)
       // 停止前に未回答の承認を deny で消費する（Hermes は stop だけでは保留中の承認を解かず、停止後の once で実行されうるため）。
       const pending = entry.approval
       if (pending?.active && !pending.consumed) {
         pending.consumed = true
         pending.choice = 'deny'
-        const deny = () => hermes.approve(pending.runId, 'deny', pending.hermesRequestId, pending.generation)
-        pending.pendingResult = dropped ? dropped.then(deny) : deny()
+        pending.pendingResult = hermes.approve(pending.runId, 'deny', pending.hermesRequestId, pending.generation)
       }
-      // 保存できなかった時（試行はそこで終わる）も、停止は止めない。
-      if (dropped) await dropped
       // 並行する cancel・自動 deny・Owner の回答で承認が送信中なら、その完了を待ってから stop する（拒否より先に停止しない）。
       let denyResult: 'ok' | 'not_pending' | 'unknown' = 'ok'
       if (pending?.pendingResult) {
@@ -592,11 +582,10 @@ export function createConversation({
         }
         if (input.kind === 'touch') {
           touchApproval = true
-          // BOXP-706: 許可を断ったなでる反応は数えない。数える資格を外したことを保存し終えてから、拒否を Hermes へ送る。
-          const dropped = modelTrial?.drop(entry.requestId)
-          const deny = () => hermes.approve(runId, 'deny', approval.requestId, approval.generation)
           // 自動 deny も消費済み承認として記録する（並行する cancel が deny の完了を待ち、結果が unknown なら停止成功としない）。
-          const result = (dropped ? dropped.then(deny) : deny()).catch(() => 'unknown' as const)
+          const result = hermes
+            .approve(runId, 'deny', approval.requestId, approval.generation)
+            .catch(() => 'unknown' as const)
           entry.lateDenies ??= []
           entry.lateDenies.push(result)
           entry.approval = {
@@ -868,7 +857,7 @@ export function createConversation({
       void (async () => {
         if (store && !restored) await queue
         // BOXP-706: 家の会話の新しい発言にだけ付ける（現場・通知返信・再起動後の追跡には付けず、回数も増やさない）。
-        // 回数と数える資格を試行の記録へ保存し終えてから run を送る。保存できなければ指定は付かない。
+        // 回数 +1 と失敗 +1（先に足す分）を試行の記録へ書けた時だけ指定が付く。書き終えてから run を送る。
         // 試行が無い時は待ちを足さない（今までと同じ順序のまま）。
         const route =
           modelTrial && !restored && !resume && !isVisit ? await modelTrial.take(entry.requestId) : undefined
@@ -917,13 +906,13 @@ export function createConversation({
           if (result.status === 'failed' && result.error === 'unknown_execution')
             result = { status: 'failed', error: 'session_paused' }
         }
-        // BOXP-706: 数えるのは、試行の記録にこの発言の数える資格が残っている時だけ（再起動後に追跡した発言も同じ。判定は試行の側）。
-        // 資格を外すことと失敗の回数を 1 回の書き込みで保存し、終えてから会話の結果を確定する（落ちても 2 度数えない）。
+        // BOXP-706: 結果を試行の記録へ伝える。数えるかは試行の側が決める（記録の inflight がこの発言の時だけ）。
+        // 会話の結果の確定は、試行の記録の書き込みを待たない（書き込みの前に落ちても、送る前に足した 1 が失敗として残る）。
         if (modelTrial)
-          await modelTrial.settle(
+          void modelTrial.settle(
             entry.requestId,
-            // 本人が停止を頼んだことは会話の保存データにも残る。資格を外す保存が失われていても、再起動後の結果を数えない。
-            entry.cancelRequested
+            // 本人が停止を頼んだ（会話の保存データにも残る）・なでる反応で許可を断った発言は、成功でも失敗でも数えない。
+            entry.cancelRequested || touchApproval
               ? 'cancelled'
               : result.status === 'done'
                 ? 'done'

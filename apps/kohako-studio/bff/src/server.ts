@@ -56,7 +56,7 @@ const notifications = config.dataDir && push ? await createNotifications(config.
 const geocode = createGeocoder({ fetcher: fetch })
 // BOXP-706: 家の会話（owner）にだけ渡す。検証用の会話には渡さない。
 const modelTrial =
-  hermes && config.modelTrial
+  hermes && config.modelTrial && config.dataDir
     ? createModelTrial({ config: config.modelTrial, now: Date.now, store: config.dataDir })
     : undefined
 await modelTrial?.restore()

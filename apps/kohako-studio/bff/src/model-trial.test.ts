@@ -1,39 +1,35 @@
 // BOXP-706: 家の会話だけで別のモデルを期限つきで試す。
-// 期待値は仕様 Projects/kohako-home/model-trial-spec.md（設定・付ける発言・状態と終わり方・例 1〜6）から取る。
+// 期待値は仕様 Projects/kohako-home/model-trial-spec.md（設定・付ける発言・記録と決まり・例 1〜21）と、
+// Lean のモデル contract/model-trial-model/（cases.txt）から取る。実装を読んで写さない。
 import { readFileSync } from 'node:fs'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { readConfig } from './config.js'
 import { createConversation } from './conversation.js'
 import { createHermes } from './hermes.js'
 import {
   createModelTrial,
+  type ModelTrial,
   type Outcome,
   parseModelTrial,
-  settleTurn,
-  takeTurn,
-  type TrialState,
+  planSettle,
+  planTake,
 } from './model-trial.js'
 
 const at = (hhmm: string) => Date.parse(`2026-11-26T${hhmm}:00Z`)
 const config = { id: 't1', provider: 'openai-codex', model: 'gpt-6.2-sol', until: at('12:00'), maxTurns: 3 }
+const many = { ...config, maxTurns: 10 }
 const route = { provider: 'openai-codex', model: 'gpt-6.2-sol' }
-const fresh: TrialState = { id: 't1', turns: 0, failures: 0 }
 
-/** 仕様の例の書き方: 時刻と結果の並びを流し、発言ごとに指定が付いたかを返す。 */
-function play(steps: [string, Outcome?][], state = fresh) {
-  const routed: boolean[] = []
-  for (const [time, outcome] of steps) {
-    const taken = takeTurn(config, state, at(time))
-    state = taken.state
-    routed.push(!!taken.route)
-    if (taken.route) expect(taken.route).toEqual(route)
-    if (taken.route && outcome) state = settleTurn(state, outcome, at(time))
-  }
-  return { routed, state }
-}
+// 書き込みの失敗・読めない記録は console.error に出る。テストの出力を汚さない。
+beforeEach(() => {
+  vi.spyOn(console, 'error').mockImplementation(() => {})
+})
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 it('設定の例を読み取り、未設定・空は試行なしにする', () => {
   expect(
@@ -91,87 +87,448 @@ it('試行の設定があるのに保存先（KOHAKO_DATA_DIR）が無ければ�
   expect(readConfig({ KOHAKO_DATA_DIR: '/data' }).modelTrial).toBeUndefined()
 })
 
-it('例1: 上限の発言までは付け、その次から付けない（終了・回数）', () => {
-  const { routed, state } = play([
-    ['10:00', 'done'],
-    ['10:05', 'done'],
-    ['10:10', 'done'],
-    ['10:15', 'done'],
-  ])
-  expect(routed).toEqual([true, true, true, false])
-  expect(state).toMatchObject({ turns: 3, ended: 'turns' })
-})
-it('例2: 期限ちょうどの発言から付けない（終了・期限）。期限の直前は付ける', () => {
-  const { routed, state } = play([
-    ['10:00', 'done'],
-    ['12:00', 'done'],
-  ])
-  expect(routed).toEqual([true, false])
-  expect(state).toMatchObject({ turns: 1, ended: 'deadline' })
-  expect(takeTurn(config, fresh, at('12:00') - 1).route).toEqual(route)
-})
-it('例3: 指定を付けた発言が 2 回続けて失敗したら終了（終了・失敗）', () => {
-  const { routed, state } = play([
-    ['10:00', 'failed'],
-    ['10:05', 'failed'],
-    ['10:10', 'done'],
-  ])
-  expect(routed).toEqual([true, true, false])
-  expect(state).toMatchObject({ turns: 2, ended: 'failures' })
-})
-it('例4: 間に成功があれば失敗は数え直す。止めた・不明は失敗に数えず、数えた失敗も消さない', () => {
-  expect(
-    play([
-      ['10:00', 'failed'],
-      ['10:05', 'done'],
-      ['10:10', 'failed'],
-    ]).state,
-  ).toMatchObject({ turns: 3, failures: 1 })
-  const skipped = play([
-    ['10:00', 'failed'],
-    ['10:05', 'cancelled'],
-    ['10:06', 'unknown'],
-  ])
-  expect(skipped.state.failures).toBe(1)
-  expect(skipped.state.ended).toBe('turns')
-  expect(settleTurn(skipped.state, 'failed', at('10:07')).ended).toBe('turns')
-})
-it('終了は戻らない: 長さ 5 までの出来事の並びを全て試す', () => {
-  // 出来事 = 発言（時刻は期限の前か後）と、その結果 4 種。4×2 = 8 通りを 5 段まで（8^5 = 32768 列）。
-  const outcomes: Outcome[] = ['done', 'failed', 'cancelled', 'unknown']
-  const events = outcomes.flatMap((o) => [
-    { time: at('10:00'), o },
-    { time: at('13:00'), o },
-  ])
-  let sequences = 0
-  const walk = (state: TrialState, depth: number, routedSoFar: number, consecutive: number, ended: boolean) => {
-    if (depth === 5) {
-      sequences++
-      return
-    }
-    for (const e of events) {
-      const taken = takeTurn(config, state, e.time)
-      // 終了後は付けない。回数は上限を超えない。期限の後は付けない。
-      if (ended) expect(taken.route).toBeUndefined()
-      if (e.time >= config.until) expect(taken.route).toBeUndefined()
-      const routed = routedSoFar + (taken.route ? 1 : 0)
-      expect(routed).toBeLessThanOrEqual(config.maxTurns)
-      expect(taken.state.turns).toBe(routed)
-      let next = taken.state,
-        run = consecutive
-      if (taken.route) {
-        next = settleTurn(next, e.o, e.time)
-        run = e.o === 'failed' ? consecutive + 1 : e.o === 'done' ? 0 : consecutive
-        // 続けて 2 回失敗したら必ず終了している。
-        if (run >= 2) expect(next.ended).toBeDefined()
-      }
-      // 一度付いた終了の理由は変わらない。
-      if (state.ended) expect(next.ended).toBe(state.ended)
-      walk(next, depth + 1, routed, run, !!next.ended)
-    }
+/** メモリの上の保存先。書き込みの失敗・止まる書き込み・読めない記録を起こせる。 */
+function fakeDisk(initial?: unknown) {
+  const d = {
+    value: initial,
+    /** 次の n 回の書き込みを失敗させる。 */
+    failNext: 0,
+    /** 書き込みが終わらない。 */
+    hang: false,
+    /** 読み取りが失敗する（在るのに読めない）。 */
+    unreadable: false,
+    writes: 0,
   }
-  walk(fresh, 0, 0, 0, false)
-  expect(sequences).toBe(8 ** 5)
+  return {
+    d,
+    write: async (_path: string, value: unknown) => {
+      d.writes++
+      if (d.hang) return new Promise<void>(() => {})
+      if (d.failNext > 0) {
+        d.failNext--
+        throw Error('EIO')
+      }
+      d.value = JSON.parse(JSON.stringify(value))
+    },
+    read: async () => {
+      if (d.unreadable) throw new SyntaxError('bad json')
+      return d.value === undefined ? undefined : JSON.parse(JSON.stringify(d.value))
+    },
+  }
+}
+type Disk = ReturnType<typeof fakeDisk>
+const clock = { now: at('10:00') }
+beforeEach(() => {
+  clock.now = at('10:00')
+})
+/** BFF の起動（再起動も同じ）: 保存先から記録を読んで部品を作り直す。 */
+async function boot(disk: Disk, cfg = config, extra: { log?: (line: string) => void; writeTimeoutMs?: number } = {}) {
+  const trial = createModelTrial({
+    config: cfg,
+    now: () => clock.now,
+    store: '/data',
+    write: disk.write,
+    read: disk.read,
+    log: () => {},
+    ...extra,
+  })
+  await trial.restore()
+  return trial
+}
+type Trial = Awaited<ReturnType<typeof boot>>
+/** 発言を 1 つ送り、結果を伝える。指定が付いたかを返す。 */
+async function turn(trial: Trial, id: string, outcome?: Outcome) {
+  const taken = await trial.take(id)
+  if (taken) expect(taken).toEqual(route)
+  if (outcome) await trial.settle(id, outcome)
+  return !!taken
+}
+
+it('例1: 上限の発言までは付け、その次から付けない（終了・回数）', async () => {
+  const disk = fakeDisk(),
+    trial = await boot(disk)
+  const routed: boolean[] = []
+  for (const id of ['r1', 'r2', 'r3', 'r4']) {
+    routed.push(await turn(trial, id, 'done'))
+    clock.now += 5 * 60_000
+  }
+  expect(routed).toEqual([true, true, true, false])
+  expect(trial.state()).toEqual({ id: 't1', turns: 3, streak: 0, ended: 'turns' })
+  expect(disk.d.value).toEqual({ id: 't1', turns: 3, streak: 0, ended: 'turns' })
+})
+it('例2: 期限ちょうどの発言から付けない（終了・期限）。期限の直前は付ける', async () => {
+  const trial = await boot(fakeDisk())
+  expect(await turn(trial, 'r1', 'done')).toBe(true)
+  clock.now = at('12:00')
+  expect(await turn(trial, 'r2', 'done')).toBe(false)
+  expect(trial.state()).toMatchObject({ turns: 1, ended: 'deadline' })
+  const other = await boot(fakeDisk())
+  clock.now = at('12:00') - 1
+  expect(await turn(other, 'r1')).toBe(true)
+})
+it('例3: 指定を付けた発言が 2 回続けて失敗したら終了（終了・失敗）', async () => {
+  const trial = await boot(fakeDisk(), many)
+  expect(await turn(trial, 'r1', 'failed')).toBe(true)
+  expect(trial.state()).toEqual({ id: 't1', turns: 1, streak: 1 })
+  expect(await turn(trial, 'r2', 'failed')).toBe(true)
+  expect(trial.state()).toEqual({ id: 't1', turns: 2, streak: 2, ended: 'failures' })
+  expect(await turn(trial, 'r3', 'done')).toBe(false)
+})
+it('例4: 間に成功があれば失敗は数え直す。止めた・不明は失敗に数えず、数えた失敗も消さない', async () => {
+  const trial = await boot(fakeDisk(), many)
+  await turn(trial, 'r1', 'failed')
+  await turn(trial, 'r2', 'done')
+  expect(trial.state()).toEqual({ id: 't1', turns: 2, streak: 0 })
+  await turn(trial, 'r3', 'failed')
+  expect(trial.state()).toEqual({ id: 't1', turns: 3, streak: 1 })
+  await turn(trial, 'r4', 'cancelled')
+  await turn(trial, 'r5', 'unknown')
+  expect(trial.state()).toEqual({ id: 't1', turns: 5, streak: 1 })
+  expect(await turn(trial, 'r6', 'failed')).toBe(true)
+  expect(trial.state()).toMatchObject({ streak: 2, ended: 'failures' })
+})
+it('送る前に、回数 +1 と失敗 +1 と inflight を 1 回の書き込みで保存する（決まりの 1 文）', async () => {
+  const disk = fakeDisk(),
+    trial = await boot(disk, many)
+  expect(await trial.take('r1')).toEqual(route)
+  // take が解決した時点で書き込みは終わっている。結果を数える前は、失敗が 1 つ多い。
+  expect(disk.d.value).toEqual({ id: 't1', turns: 1, streak: 1, inflight: 'r1' })
+  expect(disk.d.writes).toBe(1)
+  await trial.settle('r1', 'done')
+  expect(disk.d.value).toEqual({ id: 't1', turns: 1, streak: 0 })
+  expect(disk.d.writes).toBe(2)
+})
+it('inflight と違う番号の結果では記録を変えず、書き込みもしない', async () => {
+  const disk = fakeDisk(),
+    trial = await boot(disk, many)
+  await turn(trial, 'r1', 'failed')
+  await trial.take('r2')
+  const writes = disk.d.writes
+  for (const o of ['done', 'failed', 'cancelled', 'unknown'] as const) await trial.settle('r1', o)
+  for (const o of ['done', 'failed', 'cancelled', 'unknown'] as const) await trial.settle('visit-1', o)
+  expect(disk.d.writes).toBe(writes)
+  expect(trial.state()).toEqual({ id: 't1', turns: 2, streak: 2, inflight: 'r2' })
+  // 同じ結果を 2 度伝えても、2 度は数えない。
+  await trial.settle('r2', 'cancelled')
+  await trial.settle('r2', 'failed')
+  expect(trial.state()).toEqual({ id: 't1', turns: 2, streak: 1 })
+})
+it('例6: 回数と終了を保存し、再起動後は続きから数える。名前を変えると 0 から数え直す', async () => {
+  const disk = fakeDisk()
+  const first = await boot(disk)
+  await turn(first, 'r1', 'done')
+  await turn(first, 'r2', 'done')
+  const second = await boot(disk)
+  expect(second.state()).toEqual({ id: 't1', turns: 2, streak: 0 })
+  expect(await turn(second, 'r3', 'done')).toBe(true)
+  expect(second.state()).toMatchObject({ turns: 3, ended: 'turns' })
+  const third = await boot(disk)
+  expect(await turn(third, 'r4')).toBe(false)
+  const renamed = await boot(disk, { ...config, id: 't2' })
+  expect(renamed.state()).toEqual({ id: 't2', turns: 0, streak: 0 })
+  expect(await turn(renamed, 'r5')).toBe(true)
+  expect(disk.d.value).toEqual({ id: 't2', turns: 1, streak: 1, inflight: 'r5' })
+})
+it('例7: 結果が出る前に再起動しても、再起動後に分かった失敗を数え、続けて 2 回で終了する', async () => {
+  const disk = fakeDisk()
+  const before = await boot(disk, many)
+  await turn(before, 'r1', 'failed')
+  await before.take('r2')
+  const after = await boot(disk, many)
+  await after.settle('r2', 'failed')
+  expect(after.state()).toEqual({ id: 't1', turns: 2, streak: 2, ended: 'failures' })
+  expect(await turn(after, 'r3')).toBe(false)
+})
+it.each([
+  ['例8・17: なでる反応で許可を断った後に再起動し、成功と分かる', 'done'],
+  ['例9: 本人が停止を頼み、再起動後に結果が出る', 'cancelled'],
+  ['例15: 結果が出る前に再起動し、成功と分かる', 'done'],
+] as const)('%s → 失敗の回数は 1 のまま。次の失敗で終了する', async (_name, outcome) => {
+  const disk = fakeDisk()
+  const before = await boot(disk, many)
+  await turn(before, 'r1', 'failed')
+  await before.take('r2')
+  const after = await boot(disk, many)
+  await after.settle('r2', outcome)
+  expect(after.state()).toEqual({ id: 't1', turns: 2, streak: 1 })
+  expect(await turn(after, 'r3', 'failed')).toBe(true)
+  expect(after.state()).toMatchObject({ streak: 2, ended: 'failures' })
+  expect(await turn(after, 'r4')).toBe(false)
+})
+it('例9: 本人が停止を頼んだ発言は、再起動が無くても、Hermes の結果に関係なく数えない', async () => {
+  const trial = await boot(fakeDisk(), many)
+  await turn(trial, 'r1', 'failed')
+  await turn(trial, 'r2', 'cancelled')
+  expect(trial.state()).toEqual({ id: 't1', turns: 2, streak: 1 })
+})
+it('例17: なでる反応で許可を断った後に落ち、再起動後に失敗と分かった時は数える（早く終わる側）', async () => {
+  const disk = fakeDisk()
+  const before = await boot(disk, many)
+  await turn(before, 'r1', 'failed')
+  await before.take('r2')
+  const after = await boot(disk, many)
+  await after.settle('r2', 'failed')
+  expect(after.state()).toMatchObject({ streak: 2, ended: 'failures' })
+})
+it('例10: 回数の保存の後・run を送る前に落ちても、指定を付けた run は上限を超えず、失敗の 1 が残る', async () => {
+  const disk = fakeDisk()
+  const before = await boot(disk)
+  await turn(before, 'r1', 'done')
+  await turn(before, 'r2', 'done')
+  // 3 回目: 記録を書いた直後に落ちる（run は送られない）。
+  await before.take('r3')
+  const after = await boot(disk)
+  expect(after.state()).toEqual({ id: 't1', turns: 3, streak: 1, inflight: 'r3', ended: 'turns' })
+  expect(await turn(after, 'r4')).toBe(false)
+})
+it('例11: 結果を試行の記録へ保存した後に落ち、再起動後に同じ結果が分かっても、2 度は数えない', async () => {
+  const disk = fakeDisk()
+  const before = await boot(disk, many)
+  await turn(before, 'r1', 'failed')
+  await turn(before, 'r2', 'failed')
+  const after = await boot(disk, many)
+  await after.settle('r2', 'failed')
+  expect(after.state()).toEqual({ id: 't1', turns: 2, streak: 2, ended: 'failures' })
+})
+it('例12: 結果を試行の記録へ保存する前に落ちたら、再起動後に 1 度だけ数える', async () => {
+  const disk = fakeDisk()
+  const before = await boot(disk, many)
+  await before.take('r1')
+  const after = await boot(disk, many)
+  await after.settle('r1', 'failed')
+  await after.settle('r1', 'failed')
+  expect(after.state()).toEqual({ id: 't1', turns: 1, streak: 1 })
+})
+it.each(['done', 'failed', 'cancelled', 'unknown'] as const)(
+  '例14: 結果（%s）の書き込みに失敗したら終了・保存にし、次の発言には付けず、書き込みをやり直す',
+  async (outcome) => {
+    const disk = fakeDisk(),
+      trial = await boot(disk, many)
+    await trial.take('r1')
+    disk.d.failNext = 1
+    expect(await trial.settle('r1', outcome)).toBe(false)
+    expect(trial.state()).toEqual({ id: 't1', turns: 1, streak: 1, inflight: 'r1', ended: 'storage' })
+    // 保存された記録は古いまま（失敗が 1 つ多い側）。
+    expect(disk.d.value).toEqual({ id: 't1', turns: 1, streak: 1, inflight: 'r1' })
+    expect(await turn(trial, 'r2')).toBe(false)
+    expect(disk.d.value).toEqual({ id: 't1', turns: 1, streak: 1, inflight: 'r1', ended: 'storage' })
+    // 終了が保存された後は、再起動しても付けない。
+    expect(await turn(await boot(disk, many), 'r3')).toBe(false)
+  },
+)
+it('回数の書き込みに失敗した発言には指定を付けず、保存された回数も増えない。以後も付けない', async () => {
+  const disk = fakeDisk(),
+    trial = await boot(disk, many)
+  await turn(trial, 'r1', 'done')
+  disk.d.failNext = 1
+  expect(await turn(trial, 'r2', 'failed')).toBe(false)
+  expect(disk.d.value).toMatchObject({ turns: 1, streak: 0 })
+  expect(trial.state()).toMatchObject({ turns: 1, ended: 'storage' })
+  expect(await turn(trial, 'r3')).toBe(false)
+  expect(disk.d.value).toEqual({ id: 't1', turns: 1, streak: 0, ended: 'storage' })
+})
+it('例16: 結果の書き込みに失敗して落ちても、送る前に足した 1 が残り、次の発言で終了・失敗になる', async () => {
+  const disk = fakeDisk()
+  const before = await boot(disk, many)
+  await turn(before, 'r1', 'failed')
+  await before.take('r2')
+  disk.d.failNext = 1
+  await before.settle('r2', 'failed')
+  // 会話の結果だけが確定して落ちる: 再起動後、会話は r2 を追跡しない（settle は呼ばれない）。
+  const after = await boot(disk, many)
+  expect(after.state()).toEqual({ id: 't1', turns: 2, streak: 2, inflight: 'r2' })
+  expect(await turn(after, 'r3')).toBe(false)
+  expect(after.state()).toMatchObject({ turns: 2, streak: 2, ended: 'failures' })
+})
+it('残った inflight: 結果を数えられなかった発言の 1 は、次の発言を送る時に失敗として残る', async () => {
+  const disk = fakeDisk()
+  const before = await boot(disk, many)
+  await before.take('r1')
+  const after = await boot(disk, many)
+  // r1 は追跡されない。次の発言は付くが、失敗は r1 の分と合わせて 2 から始まる。
+  expect(await after.take('r2')).toEqual(route)
+  expect(after.state()).toEqual({ id: 't1', turns: 2, streak: 2, inflight: 'r2' })
+  // r1 の結果が後から来ても数えない。
+  await after.settle('r1', 'done')
+  expect(after.state()).toMatchObject({ streak: 2, inflight: 'r2' })
+  await after.settle('r2', 'failed')
+  expect(after.state()).toMatchObject({ streak: 2, ended: 'failures' })
+})
+it('例18: 再起動をまたいだ発言の結果が不明なら失敗と同じに扱う。再起動が無ければ不明は数えない', async () => {
+  const disk = fakeDisk()
+  const before = await boot(disk, many)
+  await turn(before, 'r1', 'failed')
+  await turn(before, 'r2', 'unknown')
+  expect(before.state()).toEqual({ id: 't1', turns: 2, streak: 1 })
+  await before.take('r3')
+  const after = await boot(disk, many)
+  await after.settle('r3', 'unknown')
+  expect(after.state()).toEqual({ id: 't1', turns: 3, streak: 2, ended: 'failures' })
+})
+it.each([
+  ['JSON でない（読めない）', undefined, true],
+  ['turns が数でない', { id: 't1', turns: 'many', streak: 0 }, false],
+  ['streak が負', { id: 't1', turns: 1, streak: -1 }, false],
+  ['前の形の記録（streak が無い）', { id: 't1', turns: 1, failures: 0, open: [] }, false],
+  ['id が文字でない', { turns: 1, streak: 0 }, false],
+  ['配列', [], false],
+  ['null', null, false],
+  ['知らない終了の理由', { id: 't1', turns: 1, streak: 0, ended: 'later' }, false],
+  ['inflight が文字でない', { id: 't1', turns: 1, streak: 0, inflight: 7 }, false],
+])('例19: 記録が在るのに使えない（%s）なら終了・保存にし、0 から数え直さない', async (_name, value, unreadable) => {
+  const disk = fakeDisk(value)
+  disk.d.unreadable = unreadable
+  const trial = await boot(disk)
+  expect(trial.state()).toMatchObject({ ended: 'storage' })
+  expect(await turn(trial, 'r1')).toBe(false)
+  // 次の出来事で終了を書く。書けた後は、再起動しても終了のまま。
+  expect(disk.d.value).toEqual({ id: 't1', turns: 0, streak: 0, ended: 'storage' })
+  disk.d.unreadable = false
+  expect(await turn(await boot(disk), 'r2')).toBe(false)
+})
+it('例19: 実際のファイルでも、壊れた記録は終了・保存。ファイルが無い時と id が違う記録の時だけ 0 から数える', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
+  const real = async (cfg = config) => {
+    const trial = createModelTrial({ config: cfg, now: () => at('10:00'), store: dir, log: () => {} })
+    await trial.restore()
+    return trial
+  }
+  try {
+    const first = await real()
+    expect(first.state()).toEqual({ id: 't1', turns: 0, streak: 0 })
+    expect(await first.take('r1')).toEqual(route)
+    expect(JSON.parse(await readFile(join(dir, 'model-trial.json'), 'utf8'))).toEqual({
+      id: 't1',
+      turns: 1,
+      streak: 1,
+      inflight: 'r1',
+    })
+    expect((await real({ ...config, id: 't2' })).state()).toEqual({ id: 't2', turns: 0, streak: 0 })
+    await writeFile(join(dir, 'model-trial.json'), '{"id":"t1","turns":2,')
+    const broken = await real()
+    expect(broken.state()).toMatchObject({ ended: 'storage' })
+    expect(await broken.take('r2')).toBeUndefined()
+    expect(JSON.parse(await readFile(join(dir, 'model-trial.json'), 'utf8'))).toMatchObject({ ended: 'storage' })
+    expect(await (await real()).take('r3')).toBeUndefined()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+it('例20: 2 つの発言を同時に送り、1 回目の書き込みだけが失敗しても、どちらにも指定を付けない', async () => {
+  // BOXP-709 の再現: 前の作りは、1 回目の失敗による終了の後に 2 回目が指定を返した。
+  const disk = fakeDisk(),
+    trial = await boot(disk, many)
+  disk.d.failNext = 1
+  const [a, b] = await Promise.all([trial.take('a'), trial.take('b')])
+  expect([a, b]).toEqual([undefined, undefined])
+  expect(trial.state()).toEqual({ id: 't1', turns: 0, streak: 0, ended: 'storage' })
+  expect(disk.d.value).toEqual({ id: 't1', turns: 0, streak: 0, ended: 'storage' })
+})
+it('操作は 1 つずつ行う: 待たずに続けて呼んでも、前の書き込みが終わってから次の記録を計算する', async () => {
+  const disk = fakeDisk(),
+    trial = await boot(disk, many)
+  const results = await Promise.all([
+    trial.take('r1'),
+    trial.settle('r1', 'failed'),
+    trial.take('r2'),
+    trial.settle('r2', 'failed'),
+    trial.take('r3'),
+  ])
+  expect(results).toEqual([route, true, route, true, undefined])
+  expect(disk.d.value).toEqual({ id: 't1', turns: 2, streak: 2, ended: 'failures' })
+})
+it('書き込みが終わらない時は打ち切って失敗として扱い、発言を待たせ続けない', async () => {
+  const disk = fakeDisk(),
+    trial = await boot(disk, many, { writeTimeoutMs: 20 })
+  disk.d.hang = true
+  expect(await trial.take('r1')).toBeUndefined()
+  expect(trial.state()).toMatchObject({ turns: 0, ended: 'storage' })
+  disk.d.hang = false
+  expect(await trial.take('r2')).toBeUndefined()
+  expect(disk.d.value).toEqual({ id: 't1', turns: 0, streak: 0, ended: 'storage' })
+})
+it('発言ごとに名前・回数・上限だけを記録し、終了の理由も記録する（本文は出さない）', async () => {
+  const log = vi.fn()
+  const trial = await boot(fakeDisk(), { ...config, maxTurns: 1 }, { log })
+  await trial.take('r1')
+  await trial.take('r2')
+  expect(log.mock.calls).toEqual([
+    ['kohako_model_trial ended id=t1 reason=turns turns=1'],
+    ['kohako_model_trial turn id=t1 turn=1/1'],
+  ])
+  const failing = fakeDisk(),
+    stored = vi.fn()
+  failing.d.failNext = 1
+  await (await boot(failing, config, { log: stored })).take('r1')
+  expect(stored.mock.calls).toEqual([['kohako_model_trial ended id=t1 reason=storage turns=0']])
+})
+
+it('決まりの関数: 終了の理由は先に付いたものを変えない。順は 終了 → 期限 → 回数 → 失敗', () => {
+  const base = { id: 't1', turns: 0, streak: 0 }
+  expect(planTake(config, { ...base, ended: 'failures' }, 'r', at('13:00')).next.ended).toBe('failures')
+  expect(planTake(config, { ...base, turns: 3, streak: 2 }, 'r', at('13:00')).next.ended).toBe('deadline')
+  expect(planTake(config, { ...base, turns: 3, streak: 2 }, 'r', at('10:00')).next.ended).toBe('turns')
+  expect(planTake(config, { ...base, turns: 2, streak: 2 }, 'r', at('10:00'))).toEqual({
+    next: { ...base, turns: 2, streak: 2, ended: 'failures' },
+  })
+  expect(planSettle({ ...base, turns: 3, streak: 2, inflight: 'r', ended: 'turns' }, 'r', 'failed', false).ended).toBe(
+    'turns',
+  )
+  // 先に足した 1 が無い記録（外から書き換えられた）でも、負にしない。
+  expect(planSettle({ ...base, inflight: 'r' }, 'r', 'cancelled', false).streak).toBe(0)
+})
+
+/**
+ * モデルとの照合: Lean のモデルが出した出来事の並び（cases.txt）を実装に流し、並びの後の
+ * 「指定を付けたか・保存された記録・メモリの上の終了」がモデルと同じであることを確かめる。
+ * T=発言 Tx=発言（書き込み失敗） Tl=発言（期限の後） F/D/C/U=結果（失敗・成功・停止・不明） Fx/Dx=結果（書き込み失敗）
+ * R=再起動（最後の発言を追跡し直す） L=再起動（追跡しない）
+ */
+it('モデルの並び（上限 3 で長さ 5 まで、上限 1 で長さ 4 まで）と実装が一致する', async () => {
+  const lines = readFileSync(new URL('../contract/model-trial-model/cases.txt', import.meta.url), 'utf8')
+    .split('\n')
+    .filter(Boolean)
+  expect(lines.length).toBeGreaterThan(8000)
+  const outcomes: Record<string, Outcome> = { F: 'failed', D: 'done', C: 'cancelled', U: 'unknown' }
+  for (const line of lines) {
+    const [max, names, routed, turns, streak, inflight, diskEnded, memEnded] = line.split(' ')
+    const cfg = { ...config, maxTurns: Number(max) }
+    const disk = fakeDisk()
+    let trial = await boot(disk, cfg),
+      next = 0,
+      pending: string | undefined,
+      last = false
+    for (const name of names.split('.')) {
+      last = false
+      disk.d.failNext = name.endsWith('x') ? 1 : 0
+      if (name[0] === 'T') {
+        clock.now = name === 'Tl' ? at('13:00') : at('10:00')
+        pending = `r${next++}`
+        last = !!(await trial.take(pending))
+      } else if (name === 'R' || name === 'L') {
+        trial = await boot(disk, cfg)
+        pending = name === 'R' && next > 0 ? `r${next - 1}` : undefined
+      } else {
+        if (!pending) throw Error(`no pending request in ${names}`)
+        await trial.settle(pending, outcomes[name[0]])
+        pending = undefined
+      }
+      // 失敗させるつもりの書き込みが起きなかった時は、次の出来事へ持ち越さない。
+      disk.d.failNext = 0
+    }
+    const saved = (disk.d.value ?? { turns: 0, streak: 0 }) as Record<string, unknown>
+    expect(
+      [
+        last ? '1' : '0',
+        saved.turns,
+        saved.streak,
+        saved.inflight ? String(saved.inflight).slice(1) : '-',
+        saved.ended ? '1' : '0',
+        trial.state().ended ? '1' : '0',
+      ].join(' '),
+      line,
+    ).toBe([routed, turns, streak, inflight, diskEnded, memEnded].join(' '))
+  }
 })
 
 function hermesFake(results: ({ status: 'done'; text: string } | { status: 'failed'; error: string })[] = []) {
@@ -201,44 +558,63 @@ async function settled(conv: ReturnType<typeof createConversation>, input: Param
   return entry
 }
 
+it('指定があれば run に provider と model だけを足し、無ければ今までと同じ本文を送る', async () => {
+  const bodies: Record<string, unknown>[] = []
+  const fetcher = (async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/v1/toolsets')) return Response.json({ data: [] })
+    if (init?.method === 'POST') {
+      bodies.push(JSON.parse(String(init.body)))
+      return Response.json({ run_id: 'run1' }, { status: 202 })
+    }
+    return Response.json({ status: 'completed', output: 'ok' })
+  }) as unknown as typeof fetch
+  const hermes = createHermes({ url: 'http://hermes', key: 'k'.repeat(32), fetch: fetcher })
+  await hermes.run('r1', 'x', 's1', 'i', undefined, undefined, undefined, undefined, route)
+  await hermes.run('r2', 'x', 's1', 'i')
+  expect(bodies).toEqual([
+    { input: 'x', session_id: 's1', instructions: 'i', provider: 'openai-codex', model: 'gpt-6.2-sol' },
+    { input: 'x', session_id: 's1', instructions: 'i' },
+  ])
+})
+
+const touch = (requestId: string) => ({
+  requestId,
+  kind: 'touch' as const,
+  touch: { zone: 'head' as const, action: 'pat' as const, count: 1 },
+  expiresAt: 1e15,
+})
+/** 会話の結果の確定は試行の記録を待たないので、記録を見る前に待つ。 */
+async function recorded(trial: Trial) {
+  await trial.flush()
+  return trial.state()
+}
 it('例1・5: 家の会話にだけ付け、現場・通知返信・検証用の会話には付けず、回数も増やさない', async () => {
-  let now = at('10:00')
-  const trial = createModelTrial({ config, now: () => now })
+  const trial = await boot(fakeDisk())
   const f = hermesFake()
-  const owner = createConversation({ now: () => now, hermes: f.hermes, prefix: 'kohako-web', modelTrial: trial }),
-    verifier = createConversation({ now: () => now, hermes: f.hermes, prefix: 'kohako-verify' })
+  const owner = createConversation({ now: () => clock.now, hermes: f.hermes, prefix: 'kohako-web', modelTrial: trial }),
+    verifier = createConversation({ now: () => clock.now, hermes: f.hermes, prefix: 'kohako-verify' })
   await settled(owner, text('request-visit-1', { visit: true }))
   const reply = owner.submit(text('request-reply-1'), '', undefined, { sessionId: 'notif-1', idempotencyKey: 'k1' })
   if ('error' in reply) throw Error(reply.error)
   await reply.settled
   await settled(verifier, text('request-verify-1'))
   expect(f.runs.map((r) => r.route)).toEqual([undefined, undefined, undefined])
-  expect(trial.state()).toMatchObject({ turns: 0 })
+  expect(await recorded(trial)).toEqual({ id: 't1', turns: 0, streak: 0 })
   await settled(owner, text('request-home-1'))
   await settled(owner, text('request-home-2', { origin: 'g2' }))
-  await settled(owner, {
-    requestId: 'request-home-3',
-    kind: 'touch',
-    touch: { zone: 'head', action: 'pat', count: 1 },
-    expiresAt: 1e15,
-  })
-  now = at('10:15')
+  await settled(owner, touch('request-home-3'))
+  clock.now = at('10:15')
   await settled(owner, text('request-home-4'))
   expect(f.runs.slice(3).map((r) => r.route)).toEqual([route, route, route, undefined])
-  expect(trial.state()).toMatchObject({ turns: 3, ended: 'turns' })
+  expect(await recorded(trial)).toEqual({ id: 't1', turns: 3, streak: 0, ended: 'turns' })
 })
 it('同じ発言の受け直しでは回数を増やさず、別 session での送り直しは同じ指定のまま 1 回と数える', async () => {
-  const trial = createModelTrial({ config, now: () => at('10:00') })
+  const trial = await boot(fakeDisk())
   const f = hermesFake([
     { status: 'failed', error: 'unknown_execution' },
     { status: 'done', text: 'ok' },
   ])
-  const owner = createConversation({
-    now: () => at('10:00'),
-    hermes: f.hermes,
-    prefix: 'kohako-web',
-    modelTrial: trial,
-  })
+  const owner = createConversation({ now: () => clock.now, hermes: f.hermes, prefix: 'kohako-web', modelTrial: trial })
   await settled(owner, text('request-home-1'))
   expect(f.runs.map((r) => [r.route, r.attempt])).toEqual([
     [route, undefined],
@@ -247,11 +623,10 @@ it('同じ発言の受け直しでは回数を増やさず、別 session での�
   expect(f.runs[0].session).not.toBe(f.runs[1].session)
   owner.submit(text('request-home-1'), '')
   expect(f.runs).toHaveLength(2)
-  expect(trial.state()).toMatchObject({ turns: 1, failures: 0 })
+  expect(await recorded(trial)).toEqual({ id: 't1', turns: 1, streak: 0 })
 })
-it('例3: 家の会話で 2 回続けて失敗したら、次の発言から付けない。送る前の失敗と本人の停止は数えない', async () => {
-  const cfg = { ...config, maxTurns: 10 }
-  const trial = createModelTrial({ config: cfg, now: () => at('10:00') })
+it('例3: 家の会話で 2 回続けて失敗したら、次の発言から付けない。送る前の失敗は数えない', async () => {
+  const trial = await boot(fakeDisk(), many)
   const f = hermesFake([
     { status: 'failed', error: 'toolsets_open' },
     { status: 'failed', error: 'hermes_unavailable' },
@@ -260,24 +635,27 @@ it('例3: 家の会話で 2 回続けて失敗したら、次の発言から付�
     { status: 'failed', error: 'failed' },
     { status: 'failed', error: '400' },
   ])
-  const owner = createConversation({
-    now: () => at('10:00'),
-    hermes: f.hermes,
-    prefix: 'kohako-web',
-    modelTrial: trial,
-  })
-  for (let i = 1; i <= 4; i++) await settled(owner, text(`request-home-${i}`))
-  expect(trial.state()).toMatchObject({ turns: 4, failures: 0 })
+  const owner = createConversation({ now: () => clock.now, hermes: f.hermes, prefix: 'kohako-web', modelTrial: trial })
+  for (let i = 1; i <= 2; i++) await settled(owner, text(`request-home-${i}`))
+  expect(await recorded(trial)).toEqual({ id: 't1', turns: 2, streak: 0 })
+  await settled(owner, text('request-home-3'))
+  expect(await recorded(trial)).toEqual({ id: 't1', turns: 3, streak: 1 })
+  await settled(owner, text('request-home-4'))
+  expect(await recorded(trial)).toEqual({ id: 't1', turns: 4, streak: 0 })
   await settled(owner, text('request-home-5'))
-  expect(trial.state()).toMatchObject({ turns: 5, failures: 1 })
+  expect(await recorded(trial)).toEqual({ id: 't1', turns: 5, streak: 1 })
   await settled(owner, text('request-home-6'))
-  expect(trial.state()).toMatchObject({ turns: 6, ended: 'failures' })
+  expect(await recorded(trial)).toEqual({ id: 't1', turns: 6, streak: 2, ended: 'failures' })
   await settled(owner, text('request-home-7'))
   expect(f.runs.map((r) => !!r.route)).toEqual([true, true, true, true, true, true, false])
 })
-it('本人が止めた発言は失敗に数えない', async () => {
-  const trial = createModelTrial({ config: { ...config, maxTurns: 10 }, now: () => at('10:00') })
-  let finish: (r: { status: 'failed'; error: string }) => void = () => {}
+/** run の番号を返した後、止められるまで結果を返さない Hermes。止めた時の結果を選べる。 */
+function stoppableHermes(onStop: { status: 'failed'; error: string } | { status: 'done'; text: string }) {
+  let finish: (r: unknown) => void = () => {}
+  const stop = vi.fn(async () => {
+    finish(onStop)
+    return 'ok'
+  })
   const hermes = {
     run: (...args: unknown[]) => {
       ;(args[6] as (id: string) => void)('run1')
@@ -285,14 +663,20 @@ it('本人が止めた発言は失敗に数えない', async () => {
         finish = r
       })
     },
-    stop: async () => {
-      finish({ status: 'failed', error: 'cancelled' })
-      return 'ok'
-    },
+    stop,
     approve: async () => 'ok',
   } as unknown as ReturnType<typeof createHermes>
+  return { hermes, stop }
+}
+it.each([
+  ['失敗', { status: 'failed' as const, error: 'cancelled' }],
+  ['成功', { status: 'done' as const, text: 'ok' }],
+])('例9: 本人が止めた発言は、Hermes が%sを返しても数えない（前の失敗を消さず、足しもしない）', async (_n, onStop) => {
+  const trial = await boot(fakeDisk(), many)
+  await turn(trial, 'r1', 'failed')
+  const { hermes } = stoppableHermes(onStop)
   const owner = createConversation({
-    now: () => at('10:00'),
+    now: () => clock.now,
     hermes,
     prefix: 'kohako-web',
     modelTrial: trial,
@@ -301,16 +685,34 @@ it('本人が止めた発言は失敗に数えない', async () => {
   for (const id of ['request-home-1', 'request-home-2']) {
     const entry = owner.submit(text(id), '')
     if ('error' in entry) throw Error(entry.error)
-    // run が始まってから止める（始まる前の停止は例13 で確かめる）。
     await vi.waitFor(() => expect(entry.runId).toBe('run1'))
     await owner.cancel(id)
     await entry.settled
   }
-  expect(trial.state()).toMatchObject({ turns: 2, failures: 0 })
-  expect(trial.state().ended).toBeUndefined()
+  expect(await recorded(trial)).toEqual({ id: 't1', turns: 3, streak: 1 })
 })
-it('なでる反応で許可を断った発言は、Hermes が成功を返しても数えない（前の失敗を消さない）', async () => {
-  const trial = createModelTrial({ config: { ...config, maxTurns: 10 }, now: () => at('10:00') })
+it('例13: 発言を送る準備の間に本人が停止を頼んだ発言は、後から指定つきで送られて失敗しても数えない', async () => {
+  const trial = await boot(fakeDisk(), many)
+  await turn(trial, 'r1', 'failed')
+  const f = hermesFake([{ status: 'failed', error: '400' }])
+  const owner = createConversation({
+    now: () => clock.now,
+    hermes: f.hermes,
+    prefix: 'kohako-web',
+    modelTrial: trial,
+    cancelSettleMs: 20,
+  })
+  const entry = owner.submit(text('request-home-2'), '')
+  if ('error' in entry) throw Error(entry.error)
+  // まだ回数の書き込みも終わっていない。
+  expect(f.runs).toHaveLength(0)
+  void owner.cancel('request-home-2')
+  await entry.settled
+  expect(f.runs.map((r) => r.route)).toEqual([route])
+  expect(await recorded(trial)).toEqual({ id: 't1', turns: 2, streak: 1 })
+})
+it('なでる反応で許可を断った発言は、Hermes が成功を返しても失敗を返しても数えない（前の失敗を消さない）', async () => {
+  const trial = await boot(fakeDisk(), many)
   const results = [
     { status: 'failed', error: '400' },
     { status: 'done', text: 'ok', approval: true },
@@ -332,102 +734,54 @@ it('なでる反応で許可を断った発言は、Hermes が成功を返して
     stop: async () => 'ok',
     approve: async () => 'ok',
   } as unknown as ReturnType<typeof createHermes>
-  const owner = createConversation({ now: () => at('10:00'), hermes, prefix: 'kohako-web', modelTrial: trial })
-  const touch = (requestId: string) => ({
-    requestId,
-    kind: 'touch' as const,
-    touch: { zone: 'head' as const, action: 'pat' as const, count: 1 },
-    expiresAt: 1e15,
-  })
+  const owner = createConversation({ now: () => clock.now, hermes, prefix: 'kohako-web', modelTrial: trial })
   await settled(owner, text('request-home-1'))
-  expect(trial.state()).toMatchObject({ turns: 1, failures: 1 })
+  expect(await recorded(trial)).toEqual({ id: 't1', turns: 1, streak: 1 })
   await settled(owner, touch('request-home-2'))
+  // 成功でも 0 に戻さない。
+  expect(await recorded(trial)).toEqual({ id: 't1', turns: 2, streak: 1 })
   await settled(owner, touch('request-home-3'))
-  expect(trial.state()).toMatchObject({ turns: 3, failures: 1 })
-  expect(trial.state().ended).toBeUndefined()
+  expect(await recorded(trial)).toEqual({ id: 't1', turns: 3, streak: 1 })
   await settled(owner, text('request-home-4'))
-  expect(trial.state()).toMatchObject({ turns: 4, ended: 'failures' })
+  expect(await recorded(trial)).toEqual({ id: 't1', turns: 4, streak: 2, ended: 'failures' })
+})
+it('回数の書き込みに失敗したら、指定を付けずに送る（会話は止めない）。以後の発言にも付けない', async () => {
+  const disk = fakeDisk(),
+    trial = await boot(disk, many)
+  const f = hermesFake()
+  const owner = createConversation({ now: () => clock.now, hermes: f.hermes, prefix: 'kohako-web', modelTrial: trial })
+  disk.d.failNext = 1
+  const first = await settled(owner, text('request-home-1'))
+  expect(first.status).toBe('done')
+  await settled(owner, text('request-home-2'))
+  expect(f.runs.map((r) => r.route)).toEqual([undefined, undefined])
+  expect(await recorded(trial)).toEqual({ id: 't1', turns: 0, streak: 0, ended: 'storage' })
+  expect(disk.d.value).toEqual({ id: 't1', turns: 0, streak: 0, ended: 'storage' })
+})
+it('例21: 試行の記録の書き込みが止まっていても、会話の結果は確定し、本人の停止と拒否は Hermes へ送られる', async () => {
+  // 結果を伝える呼び出し（settle）が終わらない試行。発言を送る前の書き込み（take）だけは終わる。
+  const stuck: ModelTrial = { id: 't1', take: async () => route, settle: () => new Promise<boolean>(() => {}) }
+  const f = hermesFake()
+  const done = createConversation({ now: () => clock.now, hermes: f.hermes, prefix: 'kohako-web', modelTrial: stuck })
+  expect((await settled(done, text('request-home-1'))).status).toBe('done')
+  const { hermes, stop } = stoppableHermes({ status: 'failed', error: 'cancelled' })
+  const owner = createConversation({
+    now: () => clock.now,
+    hermes,
+    prefix: 'kohako-web',
+    modelTrial: stuck,
+    cancelSettleMs: 20,
+  })
+  const entry = owner.submit(text('request-home-2'), '')
+  if ('error' in entry) throw Error(entry.error)
+  await vi.waitFor(() => expect(entry.runId).toBe('run1'))
+  await owner.cancel('request-home-2')
+  expect(stop).toHaveBeenCalledWith('run1')
+  await entry.settled
+  expect(entry.status).not.toBe('pending')
 })
 
-it('例6: 回数と終了を保存し、再起動後は続きから数える。名前を変えると 0 から数え直す', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
-  try {
-    const first = createModelTrial({ config, now: () => at('10:00'), store: dir })
-    await first.restore()
-    expect(await first.take('r1')).toEqual(route)
-    expect(await first.take('r2')).toEqual(route)
-    // take が解決した時点で保存は終わっている（flush を待たない）。
-    expect(JSON.parse(await readFile(join(dir, 'model-trial.json'), 'utf8'))).toEqual({
-      id: 't1',
-      turns: 2,
-      failures: 0,
-      open: ['r1', 'r2'],
-    })
-    const second = createModelTrial({ config, now: () => at('10:30'), store: dir })
-    await second.restore()
-    expect(second.open()).toEqual(['r1', 'r2'])
-    expect(await second.take('r3')).toEqual(route)
-    expect(second.state()).toMatchObject({ turns: 3, ended: 'turns' })
-    expect(await second.take('r4')).toBeUndefined()
-    expect(second.open()).toEqual(['r1', 'r2', 'r3'])
-    const third = createModelTrial({ config, now: () => at('10:40'), store: dir })
-    await third.restore()
-    expect(await third.take('r5')).toBeUndefined()
-    const renamed = createModelTrial({ config: { ...config, id: 't2' }, now: () => at('10:50'), store: dir })
-    await renamed.restore()
-    expect(renamed.state()).toEqual({ id: 't2', turns: 0, failures: 0 })
-    // 名前を変えた試行は、前の試行の発言の資格を引き継がない。
-    expect(renamed.open()).toEqual([])
-    expect(await renamed.take('r6')).toEqual(route)
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-it('保存した内容が壊れている時は 0 から数え、付ける回数は上限を超えない', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
-  try {
-    await writeFile(join(dir, 'model-trial.json'), '{"id":"t1","turns":"many","failures":-1}')
-    const trial = createModelTrial({ config, now: () => at('10:00'), store: dir })
-    await trial.restore()
-    expect(trial.state()).toEqual({ id: 't1', turns: 0, failures: 0 })
-    const routed: boolean[] = []
-    for (const i of [1, 2, 3, 4]) routed.push(!!(await trial.take(`r${i}`)))
-    expect(routed).toEqual([true, true, true, false])
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-it('発言ごとに名前・回数・上限だけを記録し、終了の理由も記録する（本文は出さない）', async () => {
-  const log = vi.fn()
-  const trial = createModelTrial({ config: { ...config, maxTurns: 1 }, now: () => at('10:00'), log })
-  await trial.take('r1')
-  await trial.take('r2')
-  expect(log.mock.calls).toEqual([
-    ['kohako_model_trial turn id=t1 turn=1/1'],
-    ['kohako_model_trial ended id=t1 reason=turns turns=1'],
-  ])
-})
-
-it('指定があれば run に provider と model だけを足し、無ければ今までと同じ本文を送る', async () => {
-  const bodies: Record<string, unknown>[] = []
-  const fetcher = (async (url: string, init?: RequestInit) => {
-    if (url.endsWith('/v1/toolsets')) return Response.json({ data: [] })
-    if (init?.method === 'POST') {
-      bodies.push(JSON.parse(String(init.body)))
-      return Response.json({ run_id: 'run1' }, { status: 202 })
-    }
-    return Response.json({ status: 'completed', output: 'ok' })
-  }) as unknown as typeof fetch
-  const hermes = createHermes({ url: 'http://hermes', key: 'k'.repeat(32), fetch: fetcher })
-  await hermes.run('r1', 'x', 's1', 'i', undefined, undefined, undefined, undefined, route)
-  await hermes.run('r2', 'x', 's1', 'i')
-  expect(bodies).toEqual([
-    { input: 'x', session_id: 's1', instructions: 'i', provider: 'openai-codex', model: 'gpt-6.2-sol' },
-    { input: 'x', session_id: 's1', instructions: 'i' },
-  ])
-})
-
-/** run の番号を返した後、結果を返さないまま止まる Hermes（BFF が結果の前に落ちる場面）と、再起動後に結果を返す Hermes。 */
+/** run の番号を返した後、結果を返さないまま止まる Hermes（BFF が結果の前に落ちる場面）。 */
 function hangingHermes(runId: string) {
   return {
     run: (...args: unknown[]) => {
@@ -438,21 +792,16 @@ function hangingHermes(runId: string) {
     approve: async () => 'ok',
   } as unknown as ReturnType<typeof createHermes>
 }
-function watchingHermes(result: { status: 'done'; text: string } | { status: 'failed'; error: string }) {
-  const watch = vi.fn(async () => result)
-  return {
-    watch,
-    hermes: { run: vi.fn(), watch, stop: async () => 'ok', approve: async () => 'ok' } as unknown as ReturnType<
-      typeof createHermes
-    >,
-  }
-}
-/** 指定を付けた発言を 1 つ送り、結果が出る前に BFF が落ちた時の保存データを作る。 */
-async function crashMidRun(dir: string, cfg: typeof config, requestId: string, input: object = {}) {
-  const trial = createModelTrial({ config: cfg, now: () => at('10:05'), store: dir })
+const realTrial = async (dir: string, cfg: typeof config) => {
+  const trial = createModelTrial({ config: cfg, now: () => clock.now, store: dir, log: () => {} })
   await trial.restore()
+  return trial
+}
+/** 指定を付けた発言を 1 つ送り、結果が出る前に BFF が落ちた時の保存データ（会話と試行の両方）を作る。 */
+async function crashMidRun(dir: string, cfg: typeof config, requestId: string, input: object = {}) {
+  const trial = await realTrial(dir, cfg)
   const conv = createConversation({
-    now: () => at('10:05'),
+    now: () => clock.now,
     hermes: hangingHermes(`run-${requestId}`),
     prefix: 'kohako-web',
     store: dir,
@@ -464,20 +813,18 @@ async function crashMidRun(dir: string, cfg: typeof config, requestId: string, i
   if ('error' in entry) throw Error(entry.error)
   await vi.waitFor(() => expect(entry.runId).toBe(`run-${requestId}`))
   await conv.flush()
-  await trial.flush()
-  return trial.state()
+  return recorded(trial)
 }
-async function restart(
-  dir: string,
-  cfg: typeof config,
-  result: { status: 'done'; text: string } | { status: 'failed'; error: string },
-) {
-  const trial = createModelTrial({ config: cfg, now: () => at('10:06'), store: dir })
-  await trial.restore()
-  const w = watchingHermes(result)
+/** 再起動: 会話が追跡を再開し、Hermes が結果を返す。 */
+async function restart(dir: string, cfg: typeof config, result: object) {
+  const trial = await realTrial(dir, cfg)
+  const watch = vi.fn(async () => result)
+  const hermes = { run: vi.fn(), watch, stop: async () => 'ok', approve: async () => 'ok' } as unknown as ReturnType<
+    typeof createHermes
+  >
   const conv = createConversation({
-    now: () => at('10:06'),
-    hermes: w.hermes,
+    now: () => clock.now,
+    hermes,
     prefix: 'kohako-web',
     store: dir,
     modelTrial: trial,
@@ -488,25 +835,27 @@ async function restart(
   await vi.waitFor(() => expect(conv.transcript().active).toBeNull())
   await conv.flush()
   await trial.flush()
-  return { trial, conv, ...w }
+  return { trial, conv, watch, hermes }
 }
-it('例7: 結果が出る前に再起動しても、再起動後に分かった失敗を数え、続けて 2 回で終了する', async () => {
+it('例7（会話とのつなぎ）: 再起動後に追跡して分かった失敗を数え、指定は付け直さず、回数も増やさない', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
-  const cfg = { ...config, maxTurns: 10 }
   try {
-    expect(await crashMidRun(dir, cfg, 'request-home-1')).toMatchObject({ turns: 1, failures: 0 })
-    const first = await restart(dir, cfg, { status: 'failed', error: '400' })
+    expect(await crashMidRun(dir, many, 'request-home-1')).toEqual({
+      id: 't1',
+      turns: 1,
+      streak: 1,
+      inflight: 'request-home-1',
+    })
+    const first = await restart(dir, many, { status: 'failed', error: '400' })
     expect(first.watch).toHaveBeenCalledTimes(1)
-    // 指定は付け直さず、回数も増やさない。
     expect(first.hermes.run).not.toHaveBeenCalled()
-    expect(first.trial.state()).toMatchObject({ turns: 1, failures: 1 })
-    expect(first.trial.state().ended).toBeUndefined()
-    expect(await crashMidRun(dir, cfg, 'request-home-2')).toMatchObject({ turns: 2, failures: 1 })
-    const second = await restart(dir, cfg, { status: 'failed', error: '400' })
-    expect(second.trial.state()).toMatchObject({ turns: 2, failures: 2, ended: 'failures' })
+    expect(first.trial.state()).toEqual({ id: 't1', turns: 1, streak: 1 })
+    expect(await crashMidRun(dir, many, 'request-home-2')).toMatchObject({ turns: 2, streak: 2 })
+    const second = await restart(dir, many, { status: 'failed', error: '400' })
+    expect(second.trial.state()).toEqual({ id: 't1', turns: 2, streak: 2, ended: 'failures' })
     const f = hermesFake()
     const after = createConversation({
-      now: () => at('10:10'),
+      now: () => clock.now,
       hermes: f.hermes,
       prefix: 'kohako-web',
       modelTrial: second.trial,
@@ -518,610 +867,36 @@ it('例7: 結果が出る前に再起動しても、再起動後に分かった�
     await rm(dir, { recursive: true, force: true })
   }
 })
+it('例15・18（会話とのつなぎ）: 再起動後の成功は 0 に戻さず、確かめられない結果は失敗と同じに扱う', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
+  try {
+    await crashMidRun(dir, many, 'request-home-1')
+    await restart(dir, many, { status: 'failed', error: '400' })
+    await crashMidRun(dir, many, 'request-home-2')
+    const done = await restart(dir, many, { status: 'done', text: 'ok' })
+    expect(done.trial.state()).toEqual({ id: 't1', turns: 2, streak: 1 })
+    await crashMidRun(dir, many, 'request-home-3')
+    const lost = await restart(dir, many, { status: 'failed', error: 'hermes_unavailable' })
+    expect(lost.trial.state()).toEqual({ id: 't1', turns: 3, streak: 2, ended: 'failures' })
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
 it('再起動後、別の名前の試行の発言と、指定を付けていない発言（現場）の結果は数えない', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
-  const cfg = { ...config, maxTurns: 10 }
   try {
-    await crashMidRun(dir, cfg, 'request-home-1')
-    const renamed = await restart(dir, { ...cfg, id: 't2' }, { status: 'failed', error: '400' })
+    await crashMidRun(dir, many, 'request-home-1')
+    const renamed = await restart(dir, { ...many, id: 't2' }, { status: 'failed', error: '400' })
     expect(renamed.watch).toHaveBeenCalledTimes(1)
-    expect(renamed.trial.state()).toEqual({ id: 't2', turns: 0, failures: 0 })
-    expect(await crashMidRun(dir, { ...cfg, id: 't2' }, 'request-visit-1', { visit: true })).toMatchObject({ turns: 0 })
-    const visit = await restart(dir, { ...cfg, id: 't2' }, { status: 'failed', error: '400' })
-    expect(visit.watch).toHaveBeenCalledTimes(1)
-    expect(visit.trial.state()).toEqual({ id: 't2', turns: 0, failures: 0 })
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-
-// 仕様「数える資格（1 つの印で決める）」と例 8・9: 印を消す出来事（なでる反応の自動拒否・本人の停止依頼）が起きた発言は、
-// Hermes の結果が成功でも失敗でも、再起動の前でも後でも数えない。出来事 × 結果 × 再起動の有無を全て試す。
-const voidCases = (['touch-deny', 'cancel'] as const).flatMap((event) =>
-  (['done', 'failed'] as const).flatMap((status) =>
-    ([false, true] as const).map((restarted) => ({ event, status, restarted })),
-  ),
-)
-it.each(voidCases)(
-  '印を消した発言は数えない: $event, 結果 $status, 再起動 $restarted',
-  async ({ event, status, restarted }) => {
-    const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
-    const cfg = { ...config, maxTurns: 10 }
-    const outcome = status === 'done' ? { status, text: 'ok' } : { status, error: '400' }
-    const failed = { status: 'failed', error: '400' }
-    const approval = { description: 'd', command: 'c', requestId: 'a1', generation: 1 }
-    const second =
-      event === 'touch-deny'
-        ? {
-            requestId: 'request-home-2',
-            kind: 'touch' as const,
-            touch: { zone: 'head' as const, action: 'pat' as const, count: 1 },
-            expiresAt: 1e15,
-          }
-        : text('request-home-2')
-    try {
-      let calls = 0,
-        finish: (r: object) => void = () => {}
-      const trial = createModelTrial({ config: cfg, now: () => at('10:00'), store: dir })
-      const hermes = {
-        run: (...args: unknown[]) => {
-          if (++calls !== 2) return Promise.resolve(failed)
-          ;(args[6] as (id: string) => void)('run2')
-          if (event === 'touch-deny') (args[4] as (runId: string, a: object) => void)('run2', approval)
-          if (event === 'touch-deny' && !restarted) return Promise.resolve(outcome)
-          return new Promise((r) => {
-            finish = r
-          })
-        },
-        stop: async () => {
-          if (!restarted) finish(outcome)
-          return 'ok'
-        },
-        approve: async () => 'ok',
-      } as unknown as ReturnType<typeof createHermes>
-      let conv = createConversation({
-        now: () => at('10:00'),
-        hermes,
-        prefix: 'kohako-web',
-        store: dir,
-        modelTrial: trial,
-        sweepMs: 0,
-        activityDrainMs: 0,
-        cancelSettleMs: 20,
-      })
-      await settled(conv, text('request-home-1'))
-      expect(trial.state()).toMatchObject({ turns: 1, failures: 1 })
-      const entry = conv.submit(second, '')
-      if ('error' in entry) throw Error(entry.error)
-      await vi.waitFor(() => expect(entry.runId).toBe('run2'))
-      if (event === 'cancel') await conv.cancel('request-home-2')
-      if (!restarted) await entry.settled
-      await conv.flush()
-      await trial.flush()
-      let current = trial
-      if (restarted) {
-        current = createModelTrial({ config: cfg, now: () => at('10:06'), store: dir })
-        await current.restore()
-        conv = createConversation({
-          now: () => at('10:06'),
-          hermes: {
-            run: async () => failed,
-            watch: async () => outcome,
-            stop: async () => 'ok',
-            approve: async () => 'ok',
-          } as unknown as ReturnType<typeof createHermes>,
-          prefix: 'kohako-web',
-          store: dir,
-          modelTrial: current,
-          sweepMs: 0,
-          activityDrainMs: 0,
-        })
-        await conv.restore()
-        const restoredConv = conv
-        await vi.waitFor(() => expect(restoredConv.transcript().active).toBeNull())
-        // なでる反応は transcript の active に出ないので、発言そのものの確定を待つ。
-        await vi.waitFor(() => expect((restoredConv.check(second) as { status?: string })?.status).not.toBe('pending'))
-      }
-      expect(current.state()).toMatchObject({ turns: 2, failures: 1 })
-      expect(current.state().ended).toBeUndefined()
-      await settled(conv, text('request-home-3'))
-      expect(current.state()).toMatchObject({ turns: 3, failures: 2, ended: 'failures' })
-      await conv.flush()
-      await current.flush()
-    } finally {
-      await rm(dir, { recursive: true, force: true })
-    }
-  },
-)
-it('数える資格は試行の記録だけが持つ: 資格の無い発言は成功でも失敗でも数えず、1 度数えたら資格は消える', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
-  try {
-    const trial = createModelTrial({ config: { ...config, maxTurns: 10 }, now: () => at('10:00'), store: dir })
-    const f = hermesFake([{ status: 'failed', error: '400' }])
-    const conv = createConversation({
-      now: () => at('10:00'),
-      hermes: f.hermes,
-      prefix: 'kohako-web',
-      store: dir,
-      modelTrial: trial,
-      sweepMs: 0,
+    expect(renamed.trial.state()).toEqual({ id: 't2', turns: 0, streak: 0 })
+    expect(await crashMidRun(dir, { ...many, id: 't2' }, 'request-visit-1', { visit: true })).toEqual({
+      id: 't2',
+      turns: 0,
+      streak: 0,
     })
-    await settled(conv, text('request-home-1'))
-    await conv.flush()
-    expect(trial.state()).toMatchObject({ turns: 1, failures: 1 })
-    expect(trial.open()).toEqual([])
-    // 会話の保存データは試行の印を持たない。
-    const saved = JSON.parse(await readFile(join(dir, 'conversations-kohako-web.json'), 'utf8'))
-    expect(saved.entries.map((e: { trial?: string }) => e.trial)).toEqual([undefined])
-    // 資格の無い番号（数えた後・外した後・知らない番号）は、成功でも失敗でも状態を変えない。
-    await trial.settle('request-home-1', 'failed')
-    await trial.settle('request-unknown', 'done')
-    expect(trial.state()).toMatchObject({ turns: 1, failures: 1 })
-    expect(await trial.take('request-x')).toEqual(route)
-    await trial.drop('request-x')
-    await trial.settle('request-x', 'failed')
-    await trial.settle('request-x', 'done')
-    expect(trial.state()).toMatchObject({ turns: 2, failures: 1 })
-    expect(trialFile(dir)).toEqual({ id: 't1', turns: 2, failures: 1, open: [] })
+    const visit = await restart(dir, { ...many, id: 't2' }, { status: 'failed', error: '400' })
+    expect(visit.trial.state()).toEqual({ id: 't2', turns: 0, streak: 0 })
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
-})
-
-// 仕様「保存と順序」と例 10〜12: 試行の記録は 1 つのファイルで、保存が終わってから外へ作用する。
-// 期待値は仕様から取る（落ちる時点ごとの保存データを作り、そこから起動し直して確かめる）。
-const trialFile = (dir: string) => {
-  try {
-    return JSON.parse(readFileSync(join(dir, 'model-trial.json'), 'utf8')) as TrialState & { open?: string[] }
-  } catch {
-    return undefined
-  }
-}
-it.each([true, false])(
-  '例10: 回数と資格を保存し終えてから指定つきの run を送る（会話の保存あり: %s）',
-  async (convStore) => {
-    const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
-    try {
-      const trial = createModelTrial({ config, now: () => at('10:00'), store: dir })
-      await trial.restore()
-      const seen: unknown[] = []
-      const hermes = {
-        run: async (...args: unknown[]) => {
-          const saved = trialFile(dir)
-          seen.push([!!args[8], saved?.turns, saved?.open?.includes(args[0] as string)])
-          return { status: 'done', text: 'ok' }
-        },
-        stop: async () => 'ok',
-        approve: async () => 'ok',
-      } as unknown as ReturnType<typeof createHermes>
-      const conv = createConversation({
-        now: () => at('10:00'),
-        hermes,
-        prefix: 'kohako-web',
-        ...(convStore ? { store: dir } : {}),
-        modelTrial: trial,
-        sweepMs: 0,
-      })
-      for (let i = 1; i <= 4; i++) await settled(conv, text(`request-home-${i}`))
-      // 送る時点で、保存された回数はその発言を含み、その発言は数える資格の一覧に入っている。4 回目は指定なし。
-      expect(seen).toEqual([
-        [true, 1, true],
-        [true, 2, true],
-        [true, 3, true],
-        [false, 3, false],
-      ])
-      await conv.flush()
-      await trial.flush()
-      // 例10: 3 回目の保存の後・送る前に落ちた形（回数 3 の記録だけがある）から起動すると、次の発言は指定なし。
-      const again = createModelTrial({ config, now: () => at('10:20'), store: dir })
-      await again.restore()
-      expect(again.state()).toMatchObject({ turns: 3, ended: 'turns' })
-    } finally {
-      await rm(dir, { recursive: true, force: true })
-    }
-  },
-)
-it('回数の保存に失敗したら指定を付けずに送る（保存された回数より多く指定つきの run を送らない）', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
-  const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
-  try {
-    // 保存先がファイルで、その下に記録を作れない。
-    await writeFile(join(dir, 'not-a-dir'), '')
-    const trial = createModelTrial({ config, now: () => at('10:00'), store: join(dir, 'not-a-dir') })
-    await trial.restore().catch(() => {})
-    const f = hermesFake()
-    const conv = createConversation({
-      now: () => at('10:00'),
-      hermes: f.hermes,
-      prefix: 'kohako-web',
-      modelTrial: trial,
-    })
-    await settled(conv, text('request-home-1'))
-    expect(f.runs.map((r) => r.route)).toEqual([undefined])
-  } finally {
-    quiet.mockRestore()
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-it.each(['failed', 'done'] as const)(
-  '例11: 結果を試行の記録へ保存した後・会話の保存の前に落ちても、再起動後に同じ結果を 2 度数えない（%s）',
-  async (status) => {
-    const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
-    const cfg = { ...config, maxTurns: 10 }
-    const convFile = join(dir, 'conversations-kohako-web.json')
-    const failed = { status: 'failed' as const, error: '400' }
-    try {
-      const f = hermesFake([failed])
-      const trial = createModelTrial({ config: cfg, now: () => at('10:00'), store: dir })
-      const conv = createConversation({
-        now: () => at('10:00'),
-        hermes: f.hermes,
-        prefix: 'kohako-web',
-        store: dir,
-        modelTrial: trial,
-        sweepMs: 0,
-      })
-      await settled(conv, text('request-home-1'))
-      await conv.flush()
-      await trial.flush()
-      // 2 つ目の発言が追跡中のまま落ちた時の会話の保存データを取っておく。
-      expect(await crashMidRun(dir, cfg, 'request-home-2')).toMatchObject({ turns: 2, failures: 1 })
-      const pendingConversation = await readFile(convFile, 'utf8')
-      const outcome = status === 'done' ? { status, text: 'ok' } : failed
-      const first = await restart(dir, cfg, outcome)
-      // 再起動をまたいだ発言の成功は 0 に戻さない（仕様「倒す向き」3）。
-      expect(first.trial.state()).toMatchObject({ turns: 2, failures: status === 'done' ? 1 : 2 })
-      // 試行の記録は保存済み、会話の保存データは「追跡中」のまま、という落ち方を作って起動し直す。
-      await writeFile(convFile, pendingConversation)
-      const second = await restart(dir, cfg, outcome)
-      expect(second.watch).toHaveBeenCalledTimes(1)
-      expect(second.trial.state()).toMatchObject(
-        status === 'done' ? { turns: 2, failures: 1 } : { turns: 2, failures: 2, ended: 'failures' },
-      )
-    } finally {
-      await rm(dir, { recursive: true, force: true })
-    }
-  },
-)
-it('例12: 結果を試行の記録へ保存する前に落ちたら、再起動後に 1 度だけ数える', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
-  const cfg = { ...config, maxTurns: 10 }
-  try {
-    expect(await crashMidRun(dir, cfg, 'request-home-1')).toMatchObject({ turns: 1, failures: 0 })
-    expect(trialFile(dir)).toMatchObject({ turns: 1, failures: 0, open: ['request-home-1'] })
-    const first = await restart(dir, cfg, { status: 'failed', error: '400' })
-    expect(first.trial.state()).toMatchObject({ turns: 1, failures: 1 })
-    expect(trialFile(dir)).toMatchObject({ turns: 1, failures: 1, open: [] })
-    // 会話の保存データも確定しているので、もう一度起動しても追跡も計上もしない。
-    const second = await restart(dir, cfg, { status: 'failed', error: '400' })
-    expect(second.watch).not.toHaveBeenCalled()
-    expect(second.trial.state()).toMatchObject({ turns: 1, failures: 1 })
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-it.each(['touch-deny', 'cancel'] as const)(
-  '資格を外したことを保存し終えてから、拒否・停止を Hermes へ送る（%s）',
-  async (event) => {
-    const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
-    const approval = { description: 'd', command: 'c', requestId: 'a1', generation: 1 }
-    try {
-      const trial = createModelTrial({ config: { ...config, maxTurns: 10 }, now: () => at('10:00'), store: dir })
-      const openAt: Record<string, unknown> = {}
-      let finish: (r: object) => void = () => {}
-      const hermes = {
-        run: (...args: unknown[]) => {
-          openAt.run = trialFile(dir)?.open
-          ;(args[6] as (id: string) => void)('run1')
-          if (event === 'touch-deny') (args[4] as (runId: string, a: object) => void)('run1', approval)
-          return new Promise((r) => {
-            finish = r
-          })
-        },
-        stop: async () => {
-          openAt.stop = trialFile(dir)?.open
-          finish({ status: 'failed', error: 'cancelled' })
-          return 'ok'
-        },
-        approve: async () => {
-          openAt.approve = trialFile(dir)?.open
-          finish({ status: 'done', text: 'ok' })
-          return 'ok'
-        },
-      } as unknown as ReturnType<typeof createHermes>
-      const conv = createConversation({
-        now: () => at('10:00'),
-        hermes,
-        prefix: 'kohako-web',
-        store: dir,
-        modelTrial: trial,
-        sweepMs: 0,
-        activityDrainMs: 0,
-        cancelSettleMs: 20,
-      })
-      const entry = conv.submit(
-        event === 'cancel'
-          ? text('request-home-1')
-          : {
-              requestId: 'request-home-1',
-              kind: 'touch',
-              touch: { zone: 'head', action: 'pat', count: 1 },
-              expiresAt: 1e15,
-            },
-        '',
-      )
-      if ('error' in entry) throw Error(entry.error)
-      if (event === 'cancel') {
-        await vi.waitFor(() => expect(entry.runId).toBe('run1'))
-        await conv.cancel('request-home-1')
-      }
-      await entry.settled
-      await conv.flush()
-      await trial.flush()
-      expect(openAt).toEqual(
-        event === 'cancel' ? { run: ['request-home-1'], stop: [] } : { run: ['request-home-1'], approve: [] },
-      )
-      expect(trial.state()).toMatchObject({ turns: 1, failures: 0 })
-    } finally {
-      await rm(dir, { recursive: true, force: true })
-    }
-  },
-)
-it('結果を試行の記録へ保存し終えるまで、会話の結果を確定しない', async () => {
-  const real = createModelTrial({ config: { ...config, maxTurns: 10 }, now: () => at('10:00') })
-  let saved = false
-  const order: string[] = []
-  // 保存に時間がかかる試行（結果の保存が終わるまで 30ms）。
-  const slow = {
-    id: real.id,
-    take: (id: string) => real.take(id),
-    drop: (id: string) => real.drop(id),
-    reconcile: (tracked: string[]) => real.reconcile(tracked),
-    settle: async (id: string, outcome: Outcome) => {
-      const ok = await real.settle(id, outcome)
-      await new Promise((r) => setTimeout(r, 30))
-      saved = true
-      order.push('trial-saved')
-      return ok
-    },
-  }
-  const f = hermesFake([{ status: 'failed', error: '400' }])
-  const conv = createConversation({ now: () => at('10:00'), hermes: f.hermes, prefix: 'kohako-web', modelTrial: slow })
-  const entry = conv.submit(text('request-home-1'), '', () => order.push(`conversation-settled saved=${saved}`))
-  if ('error' in entry) throw Error(entry.error)
-  await vi.waitFor(() => expect(f.runs).toHaveLength(1), { interval: 1 })
-  await new Promise((r) => setTimeout(r, 5))
-  expect(entry.status).toBe('pending')
-  await entry.settled
-  expect(entry.status).toBe('failed')
-  expect(order).toEqual(['trial-saved', 'conversation-settled saved=true'])
-})
-
-// 仕様「倒す向き」と例 13〜17: 落ちる・保存に失敗する・順番が入れ替わる場面では、試行を早く終える側・失敗を多めに数える側へ倒す。
-// 期待値は仕様から取る。保存の失敗は、試行に渡す書き込みの関数を差し替えて起こす。
-const failingWrites = () => {
-  const disk = { broken: false, value: undefined as unknown }
-  const write = async (_path: string, value: unknown) => {
-    if (disk.broken) throw Error('EIO')
-    disk.value = JSON.parse(JSON.stringify(value))
-  }
-  return { disk, write }
-}
-it('例13: 発言を送る準備の間に本人が停止を頼んだ発言は、後から指定つきで送られて失敗しても数えない', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
-  try {
-    const trial = createModelTrial({ config: { ...config, maxTurns: 10 }, now: () => at('10:00'), store: dir })
-    const failed = { status: 'failed' as const, error: '400' }
-    const f = hermesFake([failed, failed])
-    const conv = createConversation({
-      now: () => at('10:00'),
-      hermes: f.hermes,
-      prefix: 'kohako-web',
-      store: dir,
-      modelTrial: trial,
-      sweepMs: 0,
-      activityDrainMs: 0,
-      cancelSettleMs: 20,
-    })
-    await settled(conv, text('request-home-1'))
-    expect(trial.state()).toMatchObject({ turns: 1, failures: 1 })
-    // 会話の保存を待っている間（資格を入れる前）に停止を頼む。
-    const entry = conv.submit(text('request-home-2'), '')
-    if ('error' in entry) throw Error(entry.error)
-    expect(trial.open()).toEqual([])
-    void conv.cancel('request-home-2')
-    await entry.settled
-    await conv.flush()
-    await trial.flush()
-    expect(trial.state()).toMatchObject({ turns: 2, failures: 1 })
-    expect(trial.state().ended).toBeUndefined()
-    expect(trialFile(dir)).toMatchObject({ turns: 2, failures: 1, open: [] })
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-it.each(['settle-done', 'settle-failed', 'drop'] as const)(
-  '例14: 試行の記録の書き込みに失敗したら試行を終え、次の出来事で書き込みをやり直す（%s）',
-  async (event) => {
-    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
-    try {
-      const { disk, write } = failingWrites()
-      const trial = createModelTrial({
-        config: { ...config, maxTurns: 10 },
-        now: () => at('10:00'),
-        store: '/x',
-        write,
-      })
-      expect(await trial.take('r1')).toEqual(route)
-      disk.broken = true
-      const saved =
-        event === 'drop'
-          ? await trial.drop('r1')
-          : await trial.settle('r1', event === 'settle-done' ? 'done' : 'failed')
-      // 保存できなかったことは呼ぶ側へ伝わり、試行は終わる。
-      expect(saved).toBe(false)
-      expect(trial.state()).toMatchObject({ turns: 1, ended: 'storage' })
-      expect(await trial.take('r2')).toBeUndefined()
-      // 書き込みが直ると、次の出来事（指定なしの発言）で終了が保存される。資格も残らない。
-      disk.broken = false
-      expect(await trial.take('r3')).toBeUndefined()
-      expect(disk.value).toMatchObject({ turns: 1, ended: 'storage', open: [] })
-      // 起動し直しても終了のまま。
-      const again = createModelTrial({
-        config: { ...config, maxTurns: 10 },
-        now: () => at('10:10'),
-        store: '/x',
-        write,
-        load: async () => disk.value,
-      })
-      await again.restore()
-      expect(await again.take('r4')).toBeUndefined()
-    } finally {
-      quiet.mockRestore()
-    }
-  },
-)
-it('回数の書き込みに失敗した発言は指定を付けず、数える資格も入れない（結果は数えない）', async () => {
-  const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
-  try {
-    const { disk, write } = failingWrites()
-    const trial = createModelTrial({ config: { ...config, maxTurns: 10 }, now: () => at('10:00'), store: '/x', write })
-    disk.broken = true
-    expect(await trial.take('r1')).toBeUndefined()
-    expect(trial.open()).toEqual([])
-    expect(trial.state()).toMatchObject({ ended: 'storage' })
-    disk.broken = false
-    await trial.settle('r1', 'failed')
-    expect(trial.state()).toMatchObject({ failures: 0, ended: 'storage' })
-  } finally {
-    quiet.mockRestore()
-  }
-})
-// 例 15〜17 と同じ種類を全て試す: 古い記録（失敗 1・発言 x の資格あり）から起動する。
-// x を会話が追跡するか × 再起動後の結果。どの組でも失敗の回数は 1 より減らない。追跡しない・失敗なら 2 で終了する。
-it.each(
-  ([true, false] as const).flatMap((tracked) =>
-    (['done', 'failed', 'cancelled', 'unknown'] as const).map((outcome) => ({ tracked, outcome })),
-  ),
-)('再起動をまたいだ発言は失敗の回数を 0 に戻さない: 追跡 $tracked, 結果 $outcome', async ({ tracked, outcome }) => {
-  const { disk, write } = failingWrites()
-  const load = async () => ({ id: 't1', turns: 2, failures: 1, open: ['x'] })
-  const trial = createModelTrial({
-    config: { ...config, maxTurns: 10 },
-    now: () => at('10:06'),
-    store: '/x',
-    write,
-    load,
-  })
-  await trial.restore()
-  await trial.reconcile(tracked ? ['x'] : [])
-  if (tracked) await trial.settle('x', outcome)
-  // 追跡していない発言の結果が後から届いても、もう数えない。
-  else await trial.settle('x', 'failed')
-  const counted = !tracked || outcome === 'failed'
-  expect(trial.state()).toMatchObject(
-    counted ? { turns: 2, failures: 2, ended: 'failures' } : { turns: 2, failures: 1 },
-  )
-  if (!counted) expect(trial.state().ended).toBeUndefined()
-  expect(trial.open()).toEqual([])
-  expect(disk.value).toMatchObject({ failures: counted ? 2 : 1, open: [] })
-  // 再起動の後に送った発言の成功は、今までどおり 0 に戻す。
-  if (!counted) {
-    expect(await trial.take('y')).toEqual(route)
-    await trial.settle('y', 'done')
-    expect(trial.state()).toMatchObject({ turns: 3, failures: 0 })
-  }
-})
-it('例15: 再起動後に分かった成功は前の失敗を 0 に戻さず、次の失敗で終了する', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
-  const cfg = { ...config, maxTurns: 10 }
-  try {
-    await crashMidRun(dir, cfg, 'request-home-1')
-    expect((await restart(dir, cfg, { status: 'failed', error: '400' })).trial.state()).toMatchObject({ failures: 1 })
-    await crashMidRun(dir, cfg, 'request-home-2')
-    expect((await restart(dir, cfg, { status: 'done', text: 'ok' })).trial.state()).toMatchObject({
-      turns: 2,
-      failures: 1,
-    })
-    await crashMidRun(dir, cfg, 'request-home-3')
-    expect((await restart(dir, cfg, { status: 'failed', error: '400' })).trial.state()).toMatchObject({
-      turns: 3,
-      failures: 2,
-      ended: 'failures',
-    })
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-const editEntries = async (dir: string, edit: (entry: Record<string, unknown>) => void) => {
-  const file = join(dir, 'conversations-kohako-web.json')
-  const saved = JSON.parse(await readFile(file, 'utf8'))
-  for (const entry of saved.entries) edit(entry)
-  await writeFile(file, JSON.stringify(saved))
-}
-it('例16: 結果を数えた保存が失われ会話だけが確定していても、再起動の時に失敗として数える', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
-  const cfg = { ...config, maxTurns: 10 }
-  try {
-    await crashMidRun(dir, cfg, 'request-home-1')
-    await restart(dir, cfg, { status: 'failed', error: '400' })
-    await crashMidRun(dir, cfg, 'request-home-2')
-    // 古い記録（失敗 1・2 つ目の資格あり）を残し、会話は 2 つ目の結果を確定済みにする。
-    expect(trialFile(dir)).toMatchObject({ turns: 2, failures: 1, open: ['request-home-2'] })
-    await editEntries(dir, (entry) => {
-      if (entry.requestId === 'request-home-2') Object.assign(entry, { status: 'failed', error: '400' })
-    })
-    const after = await restart(dir, cfg, { status: 'failed', error: '400' })
-    expect(after.watch).not.toHaveBeenCalled()
-    expect(after.trial.state()).toMatchObject({ turns: 2, failures: 2, ended: 'failures' })
-    expect(trialFile(dir)).toMatchObject({ failures: 2, ended: 'failures', open: [] })
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-it('例10: 回数の保存の後・run の番号を保存する前に落ちた発言は、再起動の時に失敗として数える', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
-  const cfg = { ...config, maxTurns: 10 }
-  try {
-    await crashMidRun(dir, cfg, 'request-home-1')
-    await editEntries(dir, (entry) => {
-      delete entry.runId
-    })
-    const after = await restart(dir, cfg, { status: 'done', text: 'ok' })
-    expect(after.watch).not.toHaveBeenCalled()
-    expect(after.trial.state()).toMatchObject({ turns: 1, failures: 1 })
-    expect(trialFile(dir)).toMatchObject({ turns: 1, failures: 1, open: [] })
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-it.each(['done', 'failed'] as const)(
-  '資格を外す保存が失われても、本人が停止を頼んだ発言の再起動後の結果は数えない（%s）',
-  async (status) => {
-    const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
-    const cfg = { ...config, maxTurns: 10 }
-    try {
-      await crashMidRun(dir, cfg, 'request-home-1')
-      await restart(dir, cfg, { status: 'failed', error: '400' })
-      await crashMidRun(dir, cfg, 'request-home-2')
-      // 停止を頼んだことは会話の保存データに残り、試行の記録は古いまま（資格あり）。
-      await editEntries(dir, (entry) => {
-        if (entry.requestId === 'request-home-2') entry.cancelRequested = true
-      })
-      const after = await restart(dir, cfg, status === 'done' ? { status, text: 'ok' } : { status, error: 'cancelled' })
-      expect(after.trial.state()).toMatchObject({ turns: 2, failures: 1 })
-      expect(after.trial.state().ended).toBeUndefined()
-      expect(trialFile(dir)).toMatchObject({ failures: 1, open: [] })
-    } finally {
-      await rm(dir, { recursive: true, force: true })
-    }
-  },
-)
-it('先に資格を外された番号には、後から資格を入れない（指定は付き、回数は数える）', async () => {
-  const trial = createModelTrial({ config: { ...config, maxTurns: 10 }, now: () => at('10:00') })
-  expect(await trial.drop('r1')).toBe(true)
-  expect(await trial.take('r1')).toEqual(route)
-  expect(trial.open()).toEqual([])
-  await trial.settle('r1', 'failed')
-  expect(trial.state()).toMatchObject({ turns: 1, failures: 0 })
 })
