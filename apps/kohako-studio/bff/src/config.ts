@@ -1,4 +1,5 @@
 import { isAbsolute } from 'node:path'
+import { parseModelTrial } from './model-trial.js'
 export function readConfig(env: NodeJS.ProcessEnv) {
   const team = env.KOHAKO_ACCESS_TEAM_DOMAIN ?? '',
     audience = env.KOHAKO_ACCESS_AUD ?? '',
@@ -69,6 +70,8 @@ export function readConfig(env: NodeJS.ProcessEnv) {
     (g2SharedContext === 'telegram-dm' && (g2TelegramUserId === undefined || !hermesUrl))
   )
     throw Error('invalid G2 context configuration')
+  // BOXP-706: 家の会話だけで別のモデルを回数・期限つきで試す設定（JSON）。未設定なら試行なし。
+  const modelTrial = parseModelTrial(env.KOHAKO_MODEL_TRIAL)
   const port = Number(env.KOHAKO_BFF_PORT ?? '8787')
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('invalid port')
   return {
@@ -78,6 +81,7 @@ export function readConfig(env: NodeJS.ProcessEnv) {
     g2BoardContext: g2BoardContext === 'summary',
     g2SharedContext: g2SharedContext === 'telegram-dm',
     g2TelegramUserId,
+    modelTrial,
     dataDir,
     pushSubject,
     quietHours,

@@ -3,6 +3,7 @@ import { readConfig } from './config.js'
 import { createJwksProvider } from './jwks.js'
 import { createAuth } from './auth.js'
 import { createHermes } from './hermes.js'
+import { createModelTrial } from './model-trial.js'
 import { createStatus } from './status.js'
 import { createPush } from './push.js'
 import { createNotifications } from './notifications.js'
@@ -53,9 +54,22 @@ const push = config.dataDir
   : undefined
 const notifications = config.dataDir && push ? await createNotifications(config.dataDir, push.send) : undefined
 const geocode = createGeocoder({ fetcher: fetch })
+// BOXP-706: 家の会話（owner）にだけ渡す。検証用の会話には渡さない。
+const modelTrial =
+  hermes && config.modelTrial
+    ? createModelTrial({ config: config.modelTrial, now: Date.now, store: config.dataDir })
+    : undefined
+await modelTrial?.restore()
 const conversations = hermes
   ? {
-      owner: createConversation({ now: Date.now, hermes, prefix: 'kohako-web', store: config.dataDir, geocode }),
+      owner: createConversation({
+        now: Date.now,
+        hermes,
+        prefix: 'kohako-web',
+        store: config.dataDir,
+        geocode,
+        modelTrial,
+      }),
       verifier: createConversation({ now: Date.now, hermes, prefix: 'kohako-verify', store: config.dataDir, geocode }),
     }
   : undefined
