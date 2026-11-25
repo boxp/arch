@@ -64,7 +64,10 @@ type Entry = {
   views?: true
   attachments?: { id: string; name: string }[]
   resume?: boolean
-  /** BOXP-706: モデルの指定を付けて送った試行の名前。再起動後に分かった結果も同じ試行へ数えるために保存する。 */
+  /**
+   * BOXP-706: モデルの指定を付けて送った試行の名前。結果を試行の失敗回数に数える資格はこの印だけで決める（保存し、再起動をまたぐ）。
+   * 数えない出来事（本人の停止依頼・なでる反応の自動拒否・1 度数えた）が起きた時点で消す。印が無ければ数えない。
+   */
   trial?: string
   cancelRequested?: boolean
   /** 停止依頼後に届いた承認・なでるの自動 deny。cancel は全件の完了を待ち、unknown があれば停止を成功とはしない。 */
@@ -413,6 +416,8 @@ export function createConversation({
       const entry = entries.get(requestId)
       if (entry?.status !== 'pending') return 'not_pending'
       entry.cancelRequested = true
+      // BOXP-706: 本人が止めた発言は、この後の結果が成功でも失敗でも試行の失敗回数に数えない。
+      delete entry.trial
       save()
       // 停止前に未回答の承認を deny で消費する（Hermes は stop だけでは保留中の承認を解かず、停止後の once で実行されうるため）。
       const pending = entry.approval
@@ -491,8 +496,6 @@ export function createConversation({
       // BOXP-706: 家の会話の新しい発言にだけ付ける（現場・通知返信・再起動後の追跡には付けず、回数も増やさない）。
       const route = !restored && !resume && !isVisit ? modelTrial?.take() : undefined
       if (route && modelTrial) entry.trial = modelTrial.id
-      // 再起動後に追跡を再開した発言も、同じ名前の試行で指定を付けたものなら結果を数える。
-      const counted = !!route || (!!restored?.trial && restored.trial === modelTrial?.id)
       if (!restored) save()
       const text =
         input.kind === 'text'
@@ -591,6 +594,11 @@ export function createConversation({
         }
         if (input.kind === 'touch') {
           touchApproval = true
+          // BOXP-706: 許可を断ったなでる反応は数えない。再起動後にも分かるよう、印を消して保存する。
+          if (entry.trial) {
+            delete entry.trial
+            save()
+          }
           // 自動 deny も消費済み承認として記録する（並行する cancel が deny の完了を待ち、結果が unknown なら停止成功としない）。
           const result = hermes
             .approve(runId, 'deny', approval.requestId, approval.generation)
@@ -910,18 +918,17 @@ export function createConversation({
           if (result.status === 'failed' && result.error === 'unknown_execution')
             result = { status: 'failed', error: 'session_paused' }
         }
+        // BOXP-706: 数えるのは、結果が分かった今も印が残っていて今の試行の名前と同じ時だけ（再起動後に追跡した発言も同じ）。
+        // 印は 1 度で消す（applyResult が保存する）。印が無い発言は、成功でも失敗でも数えない。
+        const counted = !!modelTrial && entry.trial === modelTrial.id
+        delete entry.trial
         if (counted)
           modelTrial?.settle(
-            // なでる反応で許可を断った発言は、Hermes の結果が成功でも数えない（前の失敗を消さない）。
-            touchApproval
-              ? 'cancelled'
-              : result.status === 'done'
-                ? 'done'
-                : result.status === 'unknown' || PRE_RUN_ERRORS.has(result.error ?? '')
-                  ? 'unknown'
-                  : entry.cancelRequested
-                    ? 'cancelled'
-                    : 'failed',
+            result.status === 'done'
+              ? 'done'
+              : result.status === 'unknown' || PRE_RUN_ERRORS.has(result.error ?? '')
+                ? 'unknown'
+                : 'failed',
           )
         await releaseUpstream(result)
         await applyResult(result)

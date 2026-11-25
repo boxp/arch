@@ -356,6 +356,7 @@ it('例6: 回数と終了を保存し、再起動後は続きから数える。�
     await renamed.restore()
     expect(renamed.state()).toEqual({ id: 't2', turns: 0, failures: 0 })
     expect(renamed.take()).toEqual(route)
+    await renamed.flush()
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -368,6 +369,7 @@ it('保存した内容が壊れている時は 0 から数え、付ける回数�
     await trial.restore()
     expect(trial.state()).toEqual({ id: 't1', turns: 0, failures: 0 })
     expect([1, 2, 3, 4].map(() => !!trial.take())).toEqual([true, true, true, false])
+    await trial.flush()
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -520,6 +522,126 @@ it('再起動後、別の名前の試行の発言と、指定を付けていな�
     const visit = await restart(dir, { ...cfg, id: 't2' }, { status: 'failed', error: '400' })
     expect(visit.watch).toHaveBeenCalledTimes(1)
     expect(visit.trial.state()).toEqual({ id: 't2', turns: 0, failures: 0 })
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// 仕様「数える資格（1 つの印で決める）」と例 8・9: 印を消す出来事（なでる反応の自動拒否・本人の停止依頼）が起きた発言は、
+// Hermes の結果が成功でも失敗でも、再起動の前でも後でも数えない。出来事 × 結果 × 再起動の有無を全て試す。
+const voidCases = (['touch-deny', 'cancel'] as const).flatMap((event) =>
+  (['done', 'failed'] as const).flatMap((status) =>
+    ([false, true] as const).map((restarted) => ({ event, status, restarted })),
+  ),
+)
+it.each(voidCases)(
+  '印を消した発言は数えない: $event, 結果 $status, 再起動 $restarted',
+  async ({ event, status, restarted }) => {
+    const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
+    const cfg = { ...config, maxTurns: 10 }
+    const outcome = status === 'done' ? { status, text: 'ok' } : { status, error: '400' }
+    const failed = { status: 'failed', error: '400' }
+    const approval = { description: 'd', command: 'c', requestId: 'a1', generation: 1 }
+    const second =
+      event === 'touch-deny'
+        ? {
+            requestId: 'request-home-2',
+            kind: 'touch' as const,
+            touch: { zone: 'head' as const, action: 'pat' as const, count: 1 },
+            expiresAt: 1e15,
+          }
+        : text('request-home-2')
+    try {
+      let calls = 0,
+        finish: (r: object) => void = () => {}
+      const trial = createModelTrial({ config: cfg, now: () => at('10:00'), store: dir })
+      const hermes = {
+        run: (...args: unknown[]) => {
+          if (++calls !== 2) return Promise.resolve(failed)
+          ;(args[6] as (id: string) => void)('run2')
+          if (event === 'touch-deny') (args[4] as (runId: string, a: object) => void)('run2', approval)
+          if (event === 'touch-deny' && !restarted) return Promise.resolve(outcome)
+          return new Promise((r) => {
+            finish = r
+          })
+        },
+        stop: async () => {
+          if (!restarted) finish(outcome)
+          return 'ok'
+        },
+        approve: async () => 'ok',
+      } as unknown as ReturnType<typeof createHermes>
+      let conv = createConversation({
+        now: () => at('10:00'),
+        hermes,
+        prefix: 'kohako-web',
+        store: dir,
+        modelTrial: trial,
+        sweepMs: 0,
+        activityDrainMs: 0,
+        cancelSettleMs: 20,
+      })
+      await settled(conv, text('request-home-1'))
+      expect(trial.state()).toMatchObject({ turns: 1, failures: 1 })
+      const entry = conv.submit(second, '')
+      if ('error' in entry) throw Error(entry.error)
+      await vi.waitFor(() => expect(entry.runId).toBe('run2'))
+      if (event === 'cancel') await conv.cancel('request-home-2')
+      if (!restarted) await entry.settled
+      await conv.flush()
+      await trial.flush()
+      let current = trial
+      if (restarted) {
+        current = createModelTrial({ config: cfg, now: () => at('10:06'), store: dir })
+        await current.restore()
+        conv = createConversation({
+          now: () => at('10:06'),
+          hermes: {
+            run: async () => failed,
+            watch: async () => outcome,
+            stop: async () => 'ok',
+            approve: async () => 'ok',
+          } as unknown as ReturnType<typeof createHermes>,
+          prefix: 'kohako-web',
+          store: dir,
+          modelTrial: current,
+          sweepMs: 0,
+          activityDrainMs: 0,
+        })
+        await conv.restore()
+        const restoredConv = conv
+        await vi.waitFor(() => expect(restoredConv.transcript().active).toBeNull())
+      }
+      expect(current.state()).toMatchObject({ turns: 2, failures: 1 })
+      expect(current.state().ended).toBeUndefined()
+      await settled(conv, text('request-home-3'))
+      expect(current.state()).toMatchObject({ turns: 3, failures: 2, ended: 'failures' })
+      await conv.flush()
+      await current.flush()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  },
+)
+it('結果を 1 度数えた発言は印が消え、保存データにも残らない（同じ結果を 2 度数えない）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
+  try {
+    const trial = createModelTrial({ config: { ...config, maxTurns: 10 }, now: () => at('10:00'), store: dir })
+    const f = hermesFake([{ status: 'failed', error: '400' }])
+    const conv = createConversation({
+      now: () => at('10:00'),
+      hermes: f.hermes,
+      prefix: 'kohako-web',
+      store: dir,
+      modelTrial: trial,
+      sweepMs: 0,
+    })
+    const entry = await settled(conv, text('request-home-1'))
+    await conv.flush()
+    expect(trial.state()).toMatchObject({ turns: 1, failures: 1 })
+    expect((entry as { trial?: string }).trial).toBeUndefined()
+    const saved = JSON.parse(await readFile(join(dir, 'conversations-kohako-web.json'), 'utf8'))
+    expect(saved.entries.map((e: { trial?: string }) => e.trial)).toEqual([undefined])
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
