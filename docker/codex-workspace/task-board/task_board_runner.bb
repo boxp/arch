@@ -181,6 +181,15 @@
               (catch Exception e
                 (log! (str "provider quota module unavailable: " (.getMessage e))) false))))
 
+;; BOXP-708: re-observation of a held usage limit (ai_quota_reprobe.bb).
+(def quota-reprobe-module-path
+  (str (fs/path (fs/parent (fs/canonicalize *file*)) "ai_quota_reprobe.bb")))
+
+(def quota-reprobe-module-loaded?
+  (delay (try (load-file quota-reprobe-module-path) true
+              (catch Exception e
+                (log! (str "quota reprobe module unavailable: " (.getMessage e))) false))))
+
 ;; BOXP-204: non-secret auth expiry metadata of the agent CLIs (ai-ops/agent-auth.prom).
 (def agent-auth-module-path
   (str (fs/path (fs/parent (fs/canonicalize *file*)) "agent_auth_expiry.bb")))
@@ -5406,6 +5415,61 @@
 (defn provider-quota-hold-enabled? []
   (not= "off" (env "CODEX_TASK_BOARD_PROVIDER_QUOTA_HOLD" "on")))
 
+;; BOXP-708: while a route is held, no run produces the next rate_limit_event,
+;; so a limit restored before its reset (a reset ticket) was never seen. A held
+;; route gets one minimal official-CLI observation at a finite, backed-off rate
+;; (ai_quota_reprobe.bb decides, claims under a file lock and records through the
+;; same function as a run). It never starts a run itself: a cleared route starts
+;; on a later tick through the normal lock and budget path.
+(def quota-reprobe-sync? (atom false))
+(def quota-reprobe-running (atom #{}))
+(def quota-reprobe-noted (atom #{}))
+
+(defn quota-reprobe-model [route]
+  (if (= "fable" route)
+    (or (not-empty (System/getenv "CODEX_TASK_BOARD_FABLE_MODEL")) (:model (resolve-claude-model "claude-fable")))
+    (:model (resolve-claude-model route))))
+
+(defn quota-reprobe!
+  "One re-observation of a held route; force? is the Owner entry. Returns the
+  decision map, with :result and the route's decision afterwards (:after) when it
+  probed, or nil when a module is unavailable."
+  [route status force?]
+  (when (and @subscription-module-loaded? @provider-quota-module-loaded? @quota-reprobe-module-loaded?)
+    (let [out ((resolve 'ai-quota-reprobe/reprobe!)
+               {:root (root) :route route :model (quota-reprobe-model route) :status status
+                :now-s (quot (System/currentTimeMillis) 1000)
+                :config ((resolve 'ai-quota-reprobe/config-from-env))
+                :force? force? :bin (env "CODEX_TASK_BOARD_CLAUDE_BIN" "claude")
+                :scope ((resolve 'ai-subscription-usage/claude-account-scope))})]
+      (cond-> out (:result out) (assoc :after (:decision (provider-quota-status route)))))))
+
+(defn maybe-quota-reprobe!
+  "Called for every held start. In loop mode the probe runs in the background,
+  at most one per route per process; the one-shot tick waits for it."
+  [ticket-id status]
+  (let [route (:route status)
+        go (fn []
+             (try
+               (let [out (quota-reprobe! route status false)]
+                 (when (:result out)
+                   (log! (str "quota reprobe " route ": result=" (:result out) " attempt=" (:attempts out)
+                              " decision=" (some-> (:after out) name)))
+                   (when (and (= "allowed" (:result out)) (some? (:after out)) (not= :hold (:after out)))
+                     (let [marker (str "quota-reprobe-released=" (:hold-key out))]
+                       (when-not (contains? @quota-reprobe-noted marker)
+                         (swap! quota-reprobe-noted conj marker)
+                         (append-note! ticket-id (str "利用枠の再観測で上限解除を確認 (route=" route ", result=allowed, attempt="
+                                                      (:attempts out) "); " marker
+                                                      "; 次の tick から通常の経路で開始します。")))))))
+               (catch Exception e (log! (str "quota reprobe failed for " route ": " (.getMessage e))))))]
+    (when route
+      (if @quota-reprobe-sync?
+        (go)
+        (let [[old _] (swap-vals! quota-reprobe-running conj route)]
+          (when-not (contains? old route)
+            (future (try (go) (finally (swap! quota-reprobe-running disj route))))))))))
+
 (defn provider-quota-hold!
   "True when this agent's route has a rejected limit that has not reset, so a new
   run would stop at once. The card, assignee, claim and budgets stay as they are;
@@ -5427,6 +5491,7 @@
                                            "; the card, assignee and budgets are unchanged; it starts after the reset or a newer observation.")))
             (catch Exception e
               (log! (str "could not note quota hold for " ticket-id ": " (.getMessage e)))))))
+      (maybe-quota-reprobe! ticket-id status)
       true)))
 
 ;; BOXP-468: an original ticket does not start while its stagnation review is
@@ -8494,7 +8559,7 @@
                         :wait-reason (:wait-reason (read-edn-file (fs/path (run-dir ticket-id run-id) "summary.edn") {}))}))))) vec)))
 
 (defn usage []
-  (println "usage: task_board_runner.bb <recheck-list|recheck-reserve BOXP-N --at ISO --assignee AGENT --by NAME|recheck-cancel BOXP-N --by NAME|recheck-audit|tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|reclaim-generated [--dry-run]|workspace-metrics [--since-hours N]|localllm-migrate-markers [--apply]|gate-budget-status BOXP-N|gate-budget-exclude-pr BOXP-N owner/repo#N --by NAME|gate-budget-grant <BOXP-N|owner/repo#N> --amount N --by NAME>")
+  (println "usage: task_board_runner.bb <recheck-list|recheck-reserve BOXP-N --at ISO --assignee AGENT --by NAME|recheck-cancel BOXP-N --by NAME|recheck-audit|tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|reclaim-generated [--dry-run]|workspace-metrics [--since-hours N]|localllm-migrate-markers [--apply]|gate-budget-status BOXP-N|gate-budget-exclude-pr BOXP-N owner/repo#N --by NAME|gate-budget-grant <BOXP-N|owner/repo#N> --amount N --by NAME|quota-reprobe ROUTE>")
   (System/exit 2))
 
 (defn arg-value [args flag]
@@ -8513,7 +8578,10 @@
                 record-ai-ops-event! (fn [& _] nil)
                 record-ai-ops-gate! (fn [& _] nil)
                 ;; The live quota snapshot must not decide whether self-test cards start.
-                provider-quota-status (fn [_] nil)]
+                provider-quota-status (fn [_] nil)
+                ;; BOXP-708: self-tests never start the real CLI for a re-observation.
+                quota-reprobe! (fn [& _] nil)
+                quota-reprobe-sync? (atom true)]
     (run-tests*!)))
 
 (defn run-tests*! []
@@ -9674,6 +9742,38 @@
                              log! (fn [& _] nil) append-note! (fn [& _] nil) ticket-path (fn [_] "/nonexistent")]
                  @provider-quota-module-loaded?
                  (provider-quota-hold! "TEST-1" :groom "claude-fable")) true]
+              ;; BOXP-708: a held start asks for a re-observation; a clear one does not.
+              ["provider quota hold asks for a re-observation"
+               (let [calls (atom [])]
+                 (with-redefs [provider-quota-status (fn [_] {:decision :hold :route "claude-fable" :scope :model :limits ["fable_7d"] :resets-at 2})
+                               log! (fn [& _] nil) append-note! (fn [& _] nil) ticket-path (fn [_] "/nonexistent")
+                               maybe-quota-reprobe! (fn [t s] (swap! calls conj [t (:route s)]))]
+                   @provider-quota-module-loaded?
+                   [(provider-quota-hold! "TEST-1" :implement "claude-fable") @calls]))
+               [true [["TEST-1" "claude-fable"]]]]
+              ["provider quota clear route asks for no re-observation"
+               (let [calls (atom [])]
+                 (with-redefs [provider-quota-status (fn [_] {:decision :clear})
+                               maybe-quota-reprobe! (fn [t s] (swap! calls conj t))]
+                   [(provider-quota-hold! "TEST-1" :implement "claude-opus") @calls]))
+               [nil []]]
+              ["quota reprobe notes the release once per hold key"
+               (let [notes (atom [])]
+                 (with-redefs [quota-reprobe-sync? (atom true) quota-reprobe-noted (atom #{})
+                               quota-reprobe! (fn [& _] {:decision :probe :result "allowed" :attempts 3 :after :unknown :hold-key "claude-fable/x/9"})
+                               log! (fn [& _] nil) append-note! (fn [t n] (swap! notes conj t))]
+                   (maybe-quota-reprobe! "TEST-1" {:route "claude-fable"})
+                   (maybe-quota-reprobe! "TEST-2" {:route "claude-fable"})
+                   @notes))
+               ["TEST-1"]]
+              ["quota reprobe still held writes no release note"
+               (let [notes (atom [])]
+                 (with-redefs [quota-reprobe-sync? (atom true) quota-reprobe-noted (atom #{})
+                               quota-reprobe! (fn [& _] {:decision :probe :result "rejected" :attempts 1 :after :hold :hold-key "k"})
+                               log! (fn [& _] nil) append-note! (fn [t n] (swap! notes conj t))]
+                   (maybe-quota-reprobe! "TEST-1" {:route "claude-fable"})
+                   @notes))
+               []]
               ["provider quota hold can be turned off"
                (with-redefs [provider-quota-hold-enabled? (fn [] false) provider-quota-status (fn [_] {:decision :hold})] (provider-quota-hold! "TEST-1" :implement "claude-fable")) nil]
               ["provider quota hold passes a clear route"
@@ -10010,6 +10110,7 @@
            (when (= 2 (count args))
              (when-not (= "--ticket" (first args)) (usage))
              (reset! only-ticket (second args)))
+           (reset! quota-reprobe-sync? true)
            (recover-locks!) (tick!) (drain-in-flight!) (sync-all!)
            ;; One-shot ticks also refresh metrics.prom (loop! does it per poll),
            ;; waiting for the SLI refresh because the process exits next.
@@ -10097,5 +10198,20 @@
   "recheck-cancel" (let [[ticket flag by :as args] (vec (rest *command-line-args*))]
                        (when-not (and (= 3 (count args)) (re-matches #"BOXP-\d+" (or ticket "")) (= flag "--by") (not (str/blank? by))) (usage))
                        (prn (recheck-cancel! ticket by)))
+  ;; BOXP-708: Owner entry to re-observe a held route now. Skips the backoff,
+  ;; the attempt budget and the reset margin; still needs a hold, a 60s gap and
+  ;; no probe in flight. Never starts a run.
+  "quota-reprobe" (let [[route & more] (rest *command-line-args*)]
+                    (when-not (and (claude-assignee? route) (empty? more)) (usage))
+                    (let [status (provider-quota-status route)
+                          out (when status (quota-reprobe! route status true))]
+                      (println (str "quota-reprobe route=" route
+                                    " before=" (some-> status :decision name)
+                                    " decision=" (some-> out :decision name)
+                                    " reason=" (some-> out :reason name)
+                                    (when (:result out) (str " result=" (:result out) " attempt=" (:attempts out)))
+                                    (when (:after out) (str " after=" (name (:after out))))
+                                    (when-not out " (quota state unreadable)")))
+                      (System/exit (if (:result out) 0 1))))
   "test" (run-tests!)
   (usage)))
