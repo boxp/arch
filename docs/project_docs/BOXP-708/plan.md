@@ -12,7 +12,7 @@ BOXP-707 で、Fable の 7d 枠がリセット券で reset 前に戻っていた
 1. 新モジュール `docker/codex-workspace/task-board/ai_quota_reprobe.bb`
    - `decide`: 打つ/待つ/打たないを決める純粋関数。保留キー（route + limits + reset）ごとに、`min(base × 2^n, cap)`（既定 30 分 → 6 時間で頭打ち）の間隔、回数上限 40、reset 15 分前からは打たない、hold でない route には打たない、実行中は打たない。
    - `claim!`: ファイルロック下で判定し、打つときは CLI 起動前に試行を書く（複数プロセスでも 1 回）。
-   - `reprobe!`: 公式 `claude` CLI に最小 1 回（ツールなし・MCP なし・hooks 無効・session 保存なし・一時ディレクトリ・`ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` を外す）。`rate_limit_event` を run と同じ `record-claude-run-rate-limit!` で記録。snapshot の手書きはしない。
+   - `reprobe!`: 公式 `claude` CLI に最小 1 回（ツールなし・MCP なし・hooks 無効・session 保存なし・一時ディレクトリ・API キー/別 provider 切替の env（model canary と同じ一覧）を外す）。`rate_limit_event` を run と同じ `record-claude-run-rate-limit!` で記録。snapshot の手書きはしない。
 2. runner (`task_board_runner.bb`)
    - `provider-quota-hold!` が保留を出すたびに `maybe-quota-reprobe!`（loop では route ごと 1 本の background、`tick` では同期）。
    - allowed で保留が解けたら、保留された票の Notes に保留キーごと 1 行。run の開始はいつもの tick・lock・予算の経路のまま。

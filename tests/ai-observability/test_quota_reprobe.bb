@@ -100,6 +100,11 @@
     (is (= "" (second (drop-while #(not= "--tools" %) args))) "ツールなし")
     (is (not-any? #{"--dangerously-skip-permissions" "--bare"} args))))
 
+(deftest probe-env-stays-on-subscription
+  (let [e (r/probe-env {"PATH" "/usr/bin" "HOME" "/h" "ANTHROPIC_API_KEY" "k" "ANTHROPIC_AUTH_TOKEN" "t" "ANTHROPIC_BASE_URL" "u"
+                        "ANTHROPIC_CUSTOM_HEADERS" "h" "CLAUDE_CODE_USE_BEDROCK" "1" "CLAUDE_CODE_USE_VERTEX" "1" "CLAUDE_CODE_USE_FOUNDRY" "1"})]
+    (is (= {"PATH" "/usr/bin" "HOME" "/h"} e) "API キー・別 provider への切替変数を外す")))
+
 (defn- event-line [status limit]
   (json/generate-string {:type "rate_limit_event"
                          :rate_limit_info {:status status :rateLimitType limit :resetsAt reset

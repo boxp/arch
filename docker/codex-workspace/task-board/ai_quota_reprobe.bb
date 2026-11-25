@@ -30,8 +30,12 @@
 ;; A claim still marked running after this long belongs to a process that died.
 (def running-stale-seconds 600)
 (def result-enums #{"allowed" "rejected" "no_event" "failed" "timeout" "missing" "running"})
-;; Variables that could move the probe off the subscription login onto billing.
-(def stripped-env-keys ["ANTHROPIC_API_KEY" "ANTHROPIC_AUTH_TOKEN"])
+;; Variables that could move the probe off the subscription login onto an API
+;; key or another provider (same list as the model-update canary).
+(def stripped-env-keys ["ANTHROPIC_API_KEY" "ANTHROPIC_AUTH_TOKEN" "ANTHROPIC_BASE_URL" "ANTHROPIC_CUSTOM_HEADERS"
+                        "CLAUDE_CODE_USE_BEDROCK" "CLAUDE_CODE_USE_VERTEX" "CLAUDE_CODE_USE_FOUNDRY"])
+
+(defn probe-env [env] (apply dissoc (into {} env) stripped-env-keys))
 
 (defn- env-long [env k default floor]
   (let [v (some-> (get env k) str/trim parse-long)]
@@ -103,7 +107,7 @@
     (let [dir (fs/create-temp-dir {:prefix "quota-reprobe-"})]
       (try
         (let [proc (p/process args {:in probe-prompt :out :string :err :string :dir (str dir)
-                                    :env (apply dissoc (into {} (System/getenv)) stripped-env-keys)})
+                                    :env (probe-env (System/getenv))})
               done (deref proc probe-timeout-ms ::timeout)]
           (if (= ::timeout done)
             (do (p/destroy-tree proc) {:timeout true})
