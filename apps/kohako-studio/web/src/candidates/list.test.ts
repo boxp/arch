@@ -1,6 +1,15 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { candidateHomeURL, candidateLinks, candidateURL, parseIndex, sortNewestFirst, statusClass } from './list'
+import {
+  type Candidate,
+  candidateHomeURL,
+  candidateLinks,
+  candidateURL,
+  candidateVideos,
+  parseIndex,
+  sortNewestFirst,
+  statusClass,
+} from './list'
 
 const ok = {
   id: 'arm-4980edd',
@@ -46,5 +55,50 @@ describe('試作候補の一覧', () => {
       b = { ...ok, id: 'b', created: '2026-11-10T13:00:00Z' },
       c = { ...ok, id: 'c' }
     expect(sortNewestFirst([a, c, b]).map((x) => x.id)).toEqual(['b', 'a', 'c'])
+  })
+})
+
+// BOXP-698: 動く画面を開けない端末（スマホは上半身の枠で座らない 等）でも候補の動きを見られるよう、
+// 候補に実時間の録画を付けられる。録画は通常版の公開ファイル ./kohako/candidate-videos/<id>/<file> に置く。
+describe('試作候補の録画', () => {
+  const seat = { ...ok, id: 'seat-0123abc', page: 'home' }
+  it('録画は候補 ID ごとの固定パスの mp4 として並べる（題と補足つき、書いた順）', () => {
+    const c = {
+      ...seat,
+      videos: [
+        { file: '01-sit.mp4', title: '座る', note: '配備 sha-0000000 の録画' },
+        { file: '02-talk.mp4', title: '話しかけて立つ' },
+      ],
+    }
+    expect(candidateVideos(c)).toEqual([
+      { src: './kohako/candidate-videos/seat-0123abc/01-sit.mp4', title: '座る', note: '配備 sha-0000000 の録画' },
+      { src: './kohako/candidate-videos/seat-0123abc/02-talk.mp4', title: '話しかけて立つ', note: '' },
+    ])
+  })
+  it('録画の指定が無い候補は 0 本', () => {
+    expect(candidateVideos(seat)).toEqual([])
+  })
+  it('形の崩れた録画は捨てる（別のパスや別の種類のファイルへ誘導しない）', () => {
+    const bad = [
+      { file: '../x.mp4', title: 'a' },
+      { file: 'a/b.mp4', title: 'a' },
+      { file: 'https://example.com/a.mp4', title: 'a' },
+      { file: 'a.webm', title: 'a' },
+      { file: 'a.mp4' },
+      { file: 'a.mp4', title: '' },
+      null,
+      'a.mp4',
+    ]
+    expect(candidateVideos({ ...seat, videos: bad } as unknown as Candidate)).toEqual([])
+    expect(candidateVideos({ ...seat, videos: 'a.mp4' } as unknown as Candidate)).toEqual([])
+  })
+  it('一覧に載せた録画のファイルが公開ファイルに在る', () => {
+    const manifest = new URL('../../../candidates/candidates.json', import.meta.url)
+    if (!existsSync(manifest)) return // image の web だけの build では候補の一覧が無い
+    const list = parseIndex(JSON.parse(readFileSync(manifest, 'utf8')))
+    const videos = list.flatMap(candidateVideos)
+    for (const v of videos)
+      expect(existsSync(new URL(`../../public/${v.src.slice(2)}`, import.meta.url)), v.src).toBe(true)
+    expect(list.find((c) => c.id === 'seat-8abde00')?.videos).toHaveLength(2)
   })
 })
