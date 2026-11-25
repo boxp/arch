@@ -19,6 +19,21 @@ import { installMipmaps, textureSizes } from './mipmaps'
 import { ANCHORS, BACK_HAIR, bindBackHair, followAnchors, SHOULDER_NOTCH, type BackHairRig } from './back-hair'
 import { atBind, bindPoint, BUST, chestGrid, createChestSpring, stepChest, type Bind } from './chest'
 import {
+  artOpacity,
+  boxCorners,
+  chairCorners,
+  COATS,
+  coatPoint,
+  followPoint,
+  LEG_MESHES,
+  legOpacity,
+  ART as SEAT_ART,
+  SEAT as SEAT_POSE,
+  SEAT_MESHES,
+  seatPoint,
+  shinCorners,
+} from './seat'
+import {
   addGhost,
   addGrid,
   addQuad,
@@ -94,6 +109,8 @@ const mirrorX = (v: Vec): Vec => [2 * CX - v[0], v[1]]
 const LEFT: Bone = { S: mirrorX(RIGHT.S), E: mirrorX(RIGHT.E), W: mirrorX(RIGHT.W), arm: 23, hand: 21, mirror: true }
 const BROW = 1
 const BODY = 26
+/** 後ろ髪の層（座面の影はこのすぐ手前に描く）。 */
+const SEAT_BACK = 31
 const EYES = new Set([5, 6, 7, 8, 10, 11, 12, 13, 14, 15])
 const MOUTH = 4
 const MOUTH_C: Vec = [574, 352]
@@ -754,6 +771,8 @@ export function shyArmPoint(px: Vec, m: { angle: number; drop: number }): Vec {
  * setIdleArms は肩・肘・手首を小さく回す揺れ（そのまま連続して動かす）、setIdleArmSet は大きな姿勢（手そろえ・伸び）で、
  * 腕を動かして運ばず、最初のコマからその形に置いて待機の腕とフェードで入れ替える（BOXP-694 TD-01、仕様の「共通の決まり」と D）。
  */
+/** BOXP-698: 腰かけた姿（level 座り具合・chair 椅子の濃さ・swing 左右の足のぶらぶら -1〜1）。 */
+export type SeatPose = { level: number; chair: number; swingRight: number; swingLeft: number }
 export type IdleArm = { up?: number; fo?: number; ha?: number }
 const IDLE_ARM_MIN = 1e-4
 /** 動きが無ければ null（腕の変形そのものを通さない）。 */
@@ -1539,6 +1558,120 @@ export function createActingStage(
     parts = null
     partsStatus = { ready: false, error: e instanceof Error ? e.message : String(e) }
   }
+  // BOXP-698: 浮く椅子へ腰かけた姿。level は座り具合、chair は椅子の濃さ、swing は左右の足のぶらぶら。
+  // 腰から下は描いた絵（seat.ts の ART）に入れ替える。絵が全部読めるまでは出さない。
+  // どれも 0 の間は頂点にも描画順にも濃さにも触れない（立ち姿は従来と画素一致）。
+  let seat: SeatPose = { level: 0, chair: 0, swingRight: 0, swingLeft: 0 }
+  const seatRest = new Map<number, Float32Array>(),
+    seatOut = new Map<number, Float32Array>()
+  let seatQuads: { chair: number; shadow: number; thighs: number; shinLeft: number; shinRight: number } | null = null,
+    seatStatus: Record<string, unknown> = { ready: false }
+  try {
+    const pp = p as unknown as PartsPlayer
+    for (const m of SEAT_MESHES) {
+      const count = (p.meshes[m] as { vertices: number } | undefined)?.vertices
+      if (!count) throw new Error(`脚の層 ${m} がありません`)
+      seatRest.set(m, new Float32Array(rt.memory.buffer, rt.p2l_mesh_vertices(p.rig, m), count * 2).slice())
+    }
+    const body = p.meshes[BODY] as { vertices: number; indices: ArrayLike<number> },
+      bodyRest = new Float32Array(rt.memory.buffer, rt.p2l_mesh_vertices(p.rig, BODY), body.vertices * 2).slice(),
+      waist = SEAT_POSE.waist.map((q) => bindPoint([q[0], q[1]], bodyRest, body.indices))
+    const loads: Promise<void>[] = []
+    const later = (file: string) => {
+      const index = addTexture(pp)
+      loads.push(
+        loadTexture(gl, new URL(`kohako/live2d/seat/${file}`, location.href).href).then((t) => {
+          pp.textures[index] = t
+        }),
+      )
+      return index
+    }
+    const quadOf = (file: string, opacity: () => number, corners: () => readonly Vec[]) => {
+      const quad = addQuad(pp, new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), later(file))
+      synth.set(quad.index, {
+        base: BODY,
+        pointer: quad.pointer,
+        opacity,
+        write(out) {
+          corners().forEach((c, i) => {
+            out[2 * i] = c[0]
+            out[2 * i + 1] = c[1]
+          })
+        },
+      })
+      return quad.index
+    }
+    const art = () => artOpacity(seat.level)
+    const chair = quadOf(
+        SEAT_ART.chair.file,
+        () => ease(seat.chair),
+        () => chairCorners(seat.chair),
+      ),
+      shadowBox = boxCorners(SEAT_ART.shadow.box),
+      shadow = quadOf(SEAT_ART.shadow.file, art, () => shadowBox)
+    // 太ももの絵は格子にして、上のほうだけ体の層の腰の動きへ付いていかせる。
+    const grid = addGrid(pp, 8, 10, later(SEAT_ART.thighs.file)),
+      [gx, gy, gw, gh] = SEAT_ART.thighs.box,
+      points: Vec[] = grid.uv.map(([u, v]) => [gx + u * gw, gy + v * gh])
+    synth.set(grid.index, {
+      base: BODY,
+      pointer: grid.pointer,
+      count: points.length,
+      opacity: art,
+      write(out) {
+        const [wa, wb] = waist,
+          v = new Float32Array(rt.memory.buffer, rt.p2l_mesh_vertices(p.rig, BODY), body.vertices * 2),
+          [a, b] = SEAT_POSE.waist,
+          na: Vec = wa ? [atBind(wa, v, 0), atBind(wa, v, 1)] : a,
+          nb: Vec = wb ? [atBind(wb, v, 0), atBind(wb, v, 1)] : b
+        points.forEach((c, i) => {
+          const q = followPoint(c, a, b, na, nb)
+          out[2 * i] = q[0]
+          out[2 * i + 1] = q[1]
+        })
+      },
+    })
+    const shinLeft = quadOf(SEAT_ART.shinLeft.file, art, () => shinCorners('left', seat.level, seat.swingLeft)),
+      shinRight = quadOf(SEAT_ART.shinRight.file, art, () => shinCorners('right', seat.level, seat.swingRight))
+    const cp = p as unknown as { commandsPointer: number; commandCapacity: number },
+      alloc = rt as unknown as { p2l_alloc(n: number): number; p2l_dealloc(a: number, n: number): void }
+    if (cp.commandCapacity != null) {
+      alloc.p2l_dealloc(cp.commandsPointer, cp.commandCapacity * 4 + 4)
+      cp.commandCapacity += 6
+      cp.commandsPointer = alloc.p2l_alloc(cp.commandCapacity * 4 + 4)
+    }
+    seatQuads = { chair, shadow, thighs: grid.index, shinLeft, shinRight }
+    seatStatus = { ready: false, textures: 'loading' }
+    Promise.all(loads)
+      .then(() => {
+        seatStatus = { ready: true, textures: 'loaded' }
+      })
+      .catch((e) => {
+        seatStatus = { ready: false, textures: 'failed', error: e instanceof Error ? e.message : String(e) }
+      })
+  } catch (e) {
+    seatQuads = null
+    seatStatus = { ready: false, error: e instanceof Error ? e.message : String(e) }
+  }
+  const seatShown = () => seatStatus.ready === true && (seat.level > 0.001 || seat.chair > 0.001)
+  const applySeat = (mesh: number, pointer: number, count: number) => {
+    const rest = seatRest.get(mesh)
+    if (!rest || seatStatus.ready !== true || seat.level <= 0.001 || rest.length !== count * 2) return
+    const v = new Float32Array(rt.memory.buffer, pointer, count * 2),
+      last = seatOut.get(mesh)
+    // 実行環境が頂点を作り直さなかったフレームに二重に掛けない。
+    if (last && last.length === v.length && last.every((x, i) => x === v[i])) return
+    const coat = mesh === COATS.right || mesh === COATS.left
+    for (let i = 0; i < count; i++) {
+      const x = v[2 * i] as number,
+        y = v[2 * i + 1] as number,
+        ry = rest[2 * i + 1] as number,
+        q = coat ? coatPoint(x, y, ry, seat.level) : seatPoint(x, y, ry, seat.level)
+      v[2 * i] = q[0]
+      v[2 * i + 1] = q[1]
+    }
+    seatOut.set(mesh, v.slice())
+  }
   const applySeparate = (side: Side, armPose: ArmPose) => {
     const on = separatedPose(armPose)
     if (on === side.on) return
@@ -1631,6 +1764,10 @@ export function createActingStage(
       return extra.pointer
     }
     const pointer = rt.p2l_mesh_vertices(rig, mesh)
+    if (SEAT_MESHES.has(mesh) && done.get(mesh) !== generation) {
+      applySeat(mesh, pointer, (p.meshes[mesh] as { vertices: number }).vertices)
+      done.set(mesh, generation)
+    }
     if (
       (mesh === BROW ||
         mesh === MOUTH ||
@@ -1685,9 +1822,15 @@ export function createActingStage(
         ]
       if (parts && c === RIGHT.hand && artMesh != null) return [c, artMesh, parts.cuff]
       if (chest && c === BODY && chestShown()) return [c, chest.index]
+      // 座り姿の絵: 影は後ろ髪のすぐ手前、太もも・ひざから下は立ち姿の裾のすぐ手前（腕・手より奥）。
+      if (artOn && seatQuads && c === SEAT_BACK) return [c, seatQuads.shadow]
+      if (artOn && seatQuads && c === COATS.right) return [c, seatQuads.thighs, seatQuads.shinLeft, seatQuads.shinRight]
       return [c]
     }
-    if (!front.length && !parts?.right.on && !parts?.left.on && artMesh == null && !sw && !chestShown()) return count
+    const chairOn = seatQuads != null && seatShown() && seat.chair > 0.001,
+      artOn = seatQuads != null && seatShown() && artOpacity(seat.level) > 0.001
+    if (!front.length && !parts?.right.on && !parts?.left.on && artMesh == null && !sw && !chestShown() && !chairOn)
+      return count
     const list = Array.from(new Int32Array(rt.memory.buffer, pointer, Math.min(count, capacity)))
     // 切替中の待機の腕は元の位置（描画順）に置き、切替先の腕はその手前に重ねる。
     const ghostAt = (c: number): number[] => {
@@ -1695,6 +1838,8 @@ export function createActingStage(
       return g && ghostFor(g.side) > 0.001 ? [g.index] : []
     }
     const out = [
+      // 椅子はいちばん奥（後ろ髪より後ろ）。
+      ...(chairOn && seatQuads ? [seatQuads.chair] : []),
       ...list.flatMap((c) => [...ghostAt(c), ...(front.includes(c) ? [] : expand(c))]),
       ...front.filter((m) => list.includes(m)).flatMap(expand),
       ...(parts && shyOn() && parts.right.on ? [shyQuads.front as number] : []),
@@ -1845,6 +1990,7 @@ export function createActingStage(
     if (extra)
       return extra.opacity() * rt.p2l_mesh_opacity(rig, extra.base) * (extra.ghost ? 1 : posedFor(sideOf(extra.base)))
     const base = rt.p2l_mesh_opacity(rig, mesh) * posedFor(sideOf(mesh))
+    if (LEG_MESHES.has(mesh) && seatStatus.ready === true && seat.level > 0.001) return base * legOpacity(seat.level)
     return mesh === RIGHT.hand && parts ? base * (1 - smooth(0.35, 0.85, handArt().w)) : base
   }
   const hookColors = (rig: number, mesh: number, a: number, b: number) =>
@@ -2167,6 +2313,10 @@ export function createActingStage(
     setChestMotion(on) {
       chestEnabled = on
     },
+    setSeat(v) {
+      seat = v
+      return seatStatus.ready === true
+    },
     setEmotion(next) {
       emotion = next
       target = faces[next]
@@ -2254,6 +2404,7 @@ export function createActingStage(
         anchor: spring.anchor,
       },
       parts: partsStatus,
+      seat: { ...seatStatus, ...seat },
       facePatch,
       hairPatch,
       backHair: backHairStatus,
