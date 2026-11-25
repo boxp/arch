@@ -1,5 +1,5 @@
 // BOXP-698: 宙に浮く椅子へ腰かけた姿。腰から下は描いた座り姿の絵（素材は BOXP-702、public/kohako/live2d/seat/）に入れ替える。
-// 決まりは vault の Projects/kohako-home/seat-spec.md の S8。ここは絵を置く場所・濃さ・入れ替わる間の立ち姿の脚の寄せ方だけを持つ。
+// 決まりは vault の Projects/kohako-home/seat-spec.md の S8。ここは絵を置く場所・濃さ・入れ替わる間の立ち姿の脚の寄せ方・裾の板の動かし方だけを持つ。
 // いつ座るか・立つかは home/seat.ts が決める。座り具合 level が 0 の間は何も動かさない（立ち姿は従来と画素一致）。
 export type Vec = readonly [number, number]
 type Box = readonly [number, number, number, number]
@@ -9,7 +9,7 @@ export const LEGS = { right: { leg: 29, foot: 27 }, left: { leg: 30, foot: 28 } 
 /** 上着の裾（左右）。 */
 export const COATS = { right: 24, left: 25 } as const
 export const SEAT_MESHES: ReadonlySet<number> = new Set([29, 30, 27, 28, 24, 25])
-/** 絵と入れ替わって消える立ち姿の層（脚・足）。裾は消さずに絵の内側へ隠す。 */
+/** 絵と入れ替わって消える立ち姿の層（脚・足）。裾は消さず、硬い板として絵の手前で動かす（skirtPoint）。 */
 export const LEG_MESHES: ReadonlySet<number> = new Set([29, 30, 27, 28])
 
 /** 描いた絵（BOXP-702 の manifest.json の矩形とひざの位置。モデル座標）。 */
@@ -31,14 +31,6 @@ export const SEAT = {
   /** 絵が出始める・出切る座り具合、立ち姿の脚が消え始める座り具合。 */
   artFrom: 0.3,
   artFull: 0.8,
-  /** 立ち姿の裾: この高さから下を縦に縮めて絵の内側へ隠す。 */
-  coatTop: 875,
-  coatShrink: 0.78,
-  /** 絵がはっきり描かれている範囲（高さ coatEdgeY での左右の端と、下へ 1 行くごとの広がり）。寄せ方を効かせ始める幅。 */
-  coatEdgeY: 880,
-  coatEdge: [403, 741] as Vec,
-  coatSlope: 0.7,
-  coatEase: 40,
   /** 足のぶらぶら: ひざから下の伸び縮みの割合と、振れる角度（ラジアン）。 */
   dangle: 0.03,
   swing: 0.03,
@@ -82,15 +74,34 @@ export function seatPoint(x: number, y: number, ry: number, level: number): Vec 
   return level <= 0 ? [x, y] : [x, y - seatLift(ry, level)]
 }
 
-/** 立ち姿の裾の頂点 1 つを、絵の裾の内側へ隠す（縦に縮め、絵からはみ出る点は端へ寄せる）。 */
-export function coatPoint(x: number, y: number, ry: number, level: number): Vec {
+/**
+ * 上着の裾（左右）は硬い板（S8.4。BOXP-698 TD-04）。腰の付け根 hinge を支点に外へ回り、座面に押されて手前へ持ち上がるぶん、長さ方向だけ見かけで縮む。
+ * 板の上のどの点にも同じ 1 次変換を掛けるので、折れもたわみもしない。turn と fore は、絵に描き込まれた裾が座り切った板の下に隠れる値。
+ */
+export const SKIRT = {
+  hinge: { left: [458, 790] as Vec, right: [688, 790] as Vec },
+  /** 立ち姿で板の長さ方向が鉛直から外へ傾いている角度、座り切りまでに外へ回る角度（ラジアン）、長さ方向の見かけの倍率。 */
+  axis: 0.28,
+  turn: 0.2,
+  fore: 0.9,
+} as const
+/** 裾の板の動き（座り具合 level での 1 次変換）。板の上のどの点にも同じ変換を掛ける。 */
+export function skirtPoint(side: 'left' | 'right', x: number, y: number, level: number): Vec {
   const s = clamp01(level)
-  if (s <= 0 || ry <= SEAT.coatTop) return [x, y]
-  const dy = (ry - SEAT.coatTop) * SEAT.coatShrink,
-    // 座り切った時の高さでの、絵がはっきり描かれている範囲。
-    out = SEAT.coatSlope * (ry - dy - SEAT.coatEdgeY),
-    inside = Math.max(SEAT.coatEdge[0] - out, Math.min(SEAT.coatEdge[1] + out, x))
-  return [x + (inside - x) * s * clamp01((ry - SEAT.coatTop) / SEAT.coatEase), y - dy * s]
+  if (s <= 0) return [x, y]
+  const [hx, hy] = SKIRT.hinge[side],
+    out = side === 'left' ? -1 : 1,
+    dx = (x - hx) * out,
+    dy = y - hy,
+    a0 = SKIRT.axis,
+    a1 = SKIRT.axis + SKIRT.turn * s,
+    k = 1 - (1 - SKIRT.fore) * s,
+    // 板の座標（長さ方向 along・幅方向 across）
+    along = dx * Math.sin(a0) + dy * Math.cos(a0),
+    across = dx * Math.cos(a0) - dy * Math.sin(a0),
+    nx = along * k * Math.sin(a1) + across * Math.cos(a1),
+    ny = along * k * Math.cos(a1) - across * Math.sin(a1)
+  return [hx + nx * out, hy + ny]
 }
 
 /** 絵（太もも・ひざから下・影）の濃さ。 */

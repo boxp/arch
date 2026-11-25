@@ -5,7 +5,6 @@ import {
   artOpacity,
   CHAIR_RISE,
   chairCorners,
-  coatPoint,
   followPoint,
   followWeight,
   legOpacity,
@@ -13,13 +12,15 @@ import {
   seatLift,
   seatPoint,
   shinCorners,
+  skirtPoint,
 } from './seat'
 
 describe('S7 座っていない間は今までどおり', () => {
   it('座り具合 0 では、どの点も動かさず、絵は見えず、立ち姿の脚は濃さ 1', () => {
     for (const y of [900, 1012, 1150, 1302, 1368, 1700, 1990]) {
       expect(seatPoint(600, y, y, 0)).toEqual([600, y])
-      expect(coatPoint(700, y, y, 0)).toEqual([700, y])
+      expect(skirtPoint('right', 700, y, 0)).toEqual([700, y])
+      expect(skirtPoint('left', 300, y, 0)).toEqual([300, y])
       expect(seatLift(y, 0)).toBe(0)
     }
     expect(artOpacity(0)).toBe(0)
@@ -102,25 +103,110 @@ describe('S8.3 ひざから下の絵は、入れ替わる間 立ち姿のひざ�
   })
 })
 
-describe('S8.4 立ち姿の裾は絵の内側へ隠す', () => {
-  it('875 より上は動かず、下端 1250 は約 957 へ。絵の範囲の内側の点は横に動かない', () => {
-    expect(coatPoint(700, 875, 875, 1)).toEqual([700, 875])
-    expect(coatPoint(300, 800, 800, 1)).toEqual([300, 800])
-    const hem = coatPoint(500, 1250, 1250, 1)
-    expect(hem[0]).toBe(500)
-    expect(hem[1]).toBeCloseTo(875 + 375 * 0.22, 9)
-    expect(coatPoint(500, 1250, 1250, 0.5)[1]).toBeCloseTo(875 + 375 * 0.61, 9)
+describe('S8.4 上着の裾は硬い板として動かす（TD-04）', () => {
+  // 仕様の数字: 支点 左 [458, 790]・右 [688, 790]、立ち姿の長さ方向は鉛直から外へ 0.28、外へ 0.2 × 座り具合 回り、長さ方向だけ 1 − 0.1 × 座り具合 倍。
+  const HINGE = { left: [458, 790], right: [688, 790] } as const
+  /** 立ち姿の板の上の点（長さ方向 along、幅方向 across（外が正））。 */
+  const plate = (side: 'left' | 'right', along: number, across: number): [number, number] => {
+    const out = side === 'left' ? -1 : 1
+    return [
+      HINGE[side][0] + out * (along * Math.sin(0.28) + across * Math.cos(0.28)),
+      HINGE[side][1] + along * Math.cos(0.28) - across * Math.sin(0.28),
+    ]
+  }
+  const LEVELS = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 1]
+  const dist = (p: readonly [number, number], q: readonly [number, number]) => Math.hypot(p[0] - q[0], p[1] - q[1])
+
+  it('例の値（左・右、座り切りと座り具合 0.5）', () => {
+    const p = plate('left', 400, 0)
+    expect(p[0]).toBeCloseTo(347.46, 2)
+    expect(p[1]).toBeCloseTo(1174.42, 2)
+    const full = skirtPoint('left', p[0], p[1], 1)
+    expect(full[0]).toBeCloseTo(291.76, 2)
+    expect(full[1]).toBeCloseTo(1109.32, 2)
+    const half = skirtPoint('left', p[0], p[1], 0.5)
+    expect(half[0]).toBeCloseTo(317.05, 2)
+    expect(half[1]).toBeCloseTo(1142.89, 2)
+    const right = skirtPoint('right', 798.54, 1174.42, 1)
+    expect(right[0]).toBeCloseTo(854.24, 2)
+    expect(right[1]).toBeCloseTo(1109.32, 2)
   })
-  it('絵からはみ出る点は端へ寄せる（例の値。左右対称、座り具合に比例）', () => {
-    const left = coatPoint(300, 1250, 1250, 1),
-      right = coatPoint(844, 1250, 1250, 1)
-    expect(left[0]).toBeCloseTo(348.75, 9)
-    expect(left[1]).toBeCloseTo(957.5, 9)
-    expect(right[0]).toBeCloseTo(795.25, 9)
-    expect(coatPoint(300, 1250, 1250, 0.5)[0]).toBeGreaterThan(300)
-    expect(coatPoint(300, 1250, 1250, 0.5)[0]).toBeLessThan(348.75)
-    // 875 のすぐ下では、まだほとんど寄せない（段ができない）。
-    expect(Math.abs(coatPoint(380, 877, 877, 1)[0] - 380)).toBeLessThan(2)
+  it('① 支点は動かない', () => {
+    for (const side of ['left', 'right'] as const)
+      for (const level of LEVELS) {
+        const q = skirtPoint(side, HINGE[side][0], HINGE[side][1], level)
+        expect(q[0]).toBeCloseTo(HINGE[side][0], 9)
+        expect(q[1]).toBeCloseTo(HINGE[side][1], 9)
+      }
+  })
+  it('② 板の上で一直線に並ぶ点は一直線のまま、間隔の比も同じ（折れ・たわみが無い）', () => {
+    // 板の中の斜めの線分 3 本。中点は中点へ、1/4 の点は 1/4 の点へ移る。
+    const segments: [[number, number], [number, number]][] = [
+      [
+        [0, -40],
+        [460, 60],
+      ],
+      [
+        [50, 70],
+        [440, -70],
+      ],
+      [
+        [120, -60],
+        [130, 75],
+      ],
+    ]
+    for (const side of ['left', 'right'] as const)
+      for (const level of LEVELS)
+        for (const [[a0, c0], [a1, c1]] of segments) {
+          const move = (t: number) => {
+            const p = plate(side, a0 + (a1 - a0) * t, c0 + (c1 - c0) * t)
+            return skirtPoint(side, p[0], p[1], level)
+          }
+          const from = move(0),
+            to = move(1)
+          for (const t of [0.25, 0.5, 0.8]) {
+            const q = move(t)
+            expect(q[0]).toBeCloseTo(from[0] + (to[0] - from[0]) * t, 6)
+            expect(q[1]).toBeCloseTo(from[1] + (to[1] - from[1]) * t, 6)
+          }
+        }
+  })
+  it('③ 幅方向に並ぶ 2 点の距離は立ち姿と同じ。長さ方向は 1 − 0.1 × 座り具合 倍', () => {
+    for (const side of ['left', 'right'] as const)
+      for (const level of LEVELS)
+        for (const along of [0, 150, 300, 460]) {
+          const a = plate(side, along, -70),
+            b = plate(side, along, 70)
+          expect(dist(skirtPoint(side, a[0], a[1], level), skirtPoint(side, b[0], b[1], level))).toBeCloseTo(140, 6)
+          const c = plate(side, along, 20),
+            d = plate(side, along + 100, 20)
+          expect(dist(skirtPoint(side, c[0], c[1], level), skirtPoint(side, d[0], d[1], level))).toBeCloseTo(
+            100 * (1 - 0.1 * level),
+            6,
+          )
+        }
+  })
+  it('向き: 長さ方向は、鉛直から外へ 0.28 + 0.2 × 座り具合 ラジアン', () => {
+    for (const side of ['left', 'right'] as const)
+      for (const level of LEVELS) {
+        const p = plate(side, 300, 0),
+          q = skirtPoint(side, p[0], p[1], level),
+          out = side === 'left' ? -1 : 1
+        expect(Math.atan2((q[0] - HINGE[side][0]) * out, q[1] - HINGE[side][1])).toBeCloseTo(0.28 + 0.2 * level, 9)
+      }
+  })
+  it('④ 裾の先（長さ方向に 300 以上）の点は、座り具合が増えると必ず上がる', () => {
+    for (const side of ['left', 'right'] as const)
+      for (const along of [300, 380, 480])
+        for (const across of [-80, 0, 80]) {
+          const p = plate(side, along, across)
+          let last = p[1]
+          for (let i = 1; i <= 100; i++) {
+            const y = skirtPoint(side, p[0], p[1], i / 100)[1]
+            expect(y).toBeLessThan(last)
+            last = y
+          }
+        }
   })
 })
 
