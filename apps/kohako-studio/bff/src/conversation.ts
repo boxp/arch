@@ -336,6 +336,10 @@ export function createConversation({
       }
       clean()
       save()
+      // BOXP-706: 試行の記録に資格が残っているのに、ここで追跡を再開しない発言は、結果を確かめられないので失敗として数える。
+      await modelTrial?.reconcile(
+        [...entries.values()].filter((e) => e.status === 'pending' && e.runId).map((e) => e.requestId),
+      )
       for (const entry of entries.values())
         if (entry.status === 'pending' && entry.runId) {
           const input: Input =
@@ -421,6 +425,7 @@ export function createConversation({
         const deny = () => hermes.approve(pending.runId, 'deny', pending.hermesRequestId, pending.generation)
         pending.pendingResult = dropped ? dropped.then(deny) : deny()
       }
+      // 保存できなかった時（試行はそこで終わる）も、停止は止めない。
       if (dropped) await dropped
       // 並行する cancel・自動 deny・Owner の回答で承認が送信中なら、その完了を待ってから stop する（拒否より先に停止しない）。
       let denyResult: 'ok' | 'not_pending' | 'unknown' = 'ok'
@@ -917,11 +922,14 @@ export function createConversation({
         if (modelTrial)
           await modelTrial.settle(
             entry.requestId,
-            result.status === 'done'
-              ? 'done'
-              : result.status === 'unknown' || PRE_RUN_ERRORS.has(result.error ?? '')
-                ? 'unknown'
-                : 'failed',
+            // 本人が停止を頼んだことは会話の保存データにも残る。資格を外す保存が失われていても、再起動後の結果を数えない。
+            entry.cancelRequested
+              ? 'cancelled'
+              : result.status === 'done'
+                ? 'done'
+                : result.status === 'unknown' || PRE_RUN_ERRORS.has(result.error ?? '')
+                  ? 'unknown'
+                  : 'failed',
           )
         await releaseUpstream(result)
         await applyResult(result)
