@@ -1,6 +1,6 @@
 # seat698.mjs（BOXP-698）
 
-`seat698.mjs` は、試作候補「浮く椅子に腰かける」（`web/src/home/seat.ts`・`web/src/live2d/seat.ts` を含む版）を実ブラウザで確かめます。token 不要の完全な BFF モックです。通常版（main）の build には座る動きが無いので、候補の版の build（`candidates/src/<id>/web` を build したもの、または配備版の `/kohako/candidates/<id>/` を取り出したもの）に対して使います。仕様は vault の `Projects/kohako-home/seat-spec.md`。
+`seat698.mjs` は、家の「浮く椅子に腰かける」（`web/src/home/seat.ts`・`web/src/live2d/seat.ts`）を実ブラウザで確かめます。token 不要の完全な BFF モックです。2026-11-25 に通常版（main）へ入ったので、通常の build（`web/dist`）にも、候補の版の build（`candidates/src/<id>/web` を build したもの、または配備版の `/kohako/candidates/<id>/` を取り出したもの）にも使えます。`BASE` に渡す「変更前」は、座る動きが入る前の main（fdc697c41 以前）の build です。仕様は vault の `Projects/kohako-home/seat-spec.md`。
 
 実行: Playwright 1.56.1 で `PW_WS=ws://host:port/ node seat698.mjs <build の dist> <出力先> [check|sheets|record]`（指定なしは全部）。
 
