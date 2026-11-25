@@ -882,3 +882,30 @@ it.each(['touch-deny', 'cancel'] as const)(
     }
   },
 )
+it('結果を試行の記録へ保存し終えるまで、会話の結果を確定しない', async () => {
+  const real = createModelTrial({ config: { ...config, maxTurns: 10 }, now: () => at('10:00') })
+  let saved = false
+  const order: string[] = []
+  // 保存に時間がかかる試行（結果の保存が終わるまで 30ms）。
+  const slow = {
+    id: real.id,
+    take: (id: string) => real.take(id),
+    drop: (id: string) => real.drop(id),
+    settle: async (id: string, outcome: Outcome) => {
+      await real.settle(id, outcome)
+      await new Promise((r) => setTimeout(r, 30))
+      saved = true
+      order.push('trial-saved')
+    },
+  }
+  const f = hermesFake([{ status: 'failed', error: '400' }])
+  const conv = createConversation({ now: () => at('10:00'), hermes: f.hermes, prefix: 'kohako-web', modelTrial: slow })
+  const entry = conv.submit(text('request-home-1'), '', () => order.push(`conversation-settled saved=${saved}`))
+  if ('error' in entry) throw Error(entry.error)
+  await vi.waitFor(() => expect(f.runs).toHaveLength(1), { interval: 1 })
+  await new Promise((r) => setTimeout(r, 5))
+  expect(entry.status).toBe('pending')
+  await entry.settled
+  expect(entry.status).toBe('failed')
+  expect(order).toEqual(['trial-saved', 'conversation-settled saved=true'])
+})
