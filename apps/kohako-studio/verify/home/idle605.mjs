@@ -74,7 +74,7 @@ const EXPECT = {
   // 腕・体: 始まる前（最初の 3 行）からの手の動きで見る。1280x800 でキャラの高さは約 600px。
   wave: r => r.some(x => x.gesture === 'greet' && x.greet && x.armBlend === 1) && r.some(x => x.emotion === 'smile'),
   mouth: r => r.some(x => x.gesture === 'shyHand' && x.shy && x.armBlend === 1) && r.some(x => x.emotion === 'smileClosed'),
-  // 作り直し（Owner 指摘「不自然でかわいくない」）: 伸び＝両手を体の前で重ねて（BOXP-694: フェードで出す姿勢 idle.armSet）目を閉じ、あごを上げ、抜いた後にほほえむ（目を閉じる → ほほえむの順）。
+  // 作り直し（Owner 指摘「不自然でかわいくない」）: 伸び＝両手を体の前へ下ろして（BOXP-694: フェードで出す姿勢 idle.armSet）目を閉じ、あごを上げ、抜いた後にほほえむ（目を閉じる → ほほえむの順）。
   // 手を前でそろえる＝両手が体の中央で重なるまで寄る（以前は太ももの横まで＝間隔 -57px）。
   stretch: r => { const shut = r.map((x, i) => x.v[IDS.indexOf('ParamEyeLOpen')] < 0.1 ? i : -1).filter(i => i >= 0), smile = r.findIndex(x => x.emotion === 'smile')
     return span(r[0]) - Math.min(...nums(r.map(span))) > 60 && Math.max(...col(r, 'ParamAngleY')) > 3 && shut.length * STEP / 1000 > 1 && smile > shut[0] },

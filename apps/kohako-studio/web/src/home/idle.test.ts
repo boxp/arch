@@ -360,19 +360,25 @@ it('G1: フェードで出す姿勢（armSet）は出ている間 1 つの形の
   }
 })
 
-it('D1・D2: フェードで出す姿勢は、曲げた小手の絵がきれいに出る範囲（肘 0.96〜1.6・肩 0.2 まで）', () => {
-  for (const a of idleActNames.filter(big))
-    for (const arm of [setOf(a)?.right, setOf(a)?.left]) {
-      expect(arm?.fo ?? 0).toBeGreaterThanOrEqual(0.96)
-      expect(arm?.fo ?? 0).toBeLessThanOrEqual(1.6)
-      expect(Math.abs(arm?.up ?? 0)).toBeLessThanOrEqual(0.2)
-    }
-  // 仕様 D1・D2 の値そのもの（両手を下腹の前で重ねる）。
-  expect(idleActs.tidy.arms).toEqual({ right: { up: -0.12, fo: 1.5, ha: 0 }, left: { up: -0.12, fo: 1.42, ha: -0.1 } })
-  expect(idleActs.stretch.peak?.arms).toEqual({
-    right: { up: -0.12, fo: 1.46, ha: -0.05 },
-    left: { up: -0.12, fo: 1.46, ha: -0.05 },
+it('D1・D2: フェードで出す姿勢の形は #15607 より前の形と位置そのまま（下腹の前で重ねる形は本人が差し戻した）', () => {
+  // 仕様 D1・D2 の値そのもの。
+  expect(idleActs.tidy.arms).toEqual({
+    right: { up: 0.08, fo: 1.05, ha: -0.15 },
+    left: { up: 0.07, fo: 0.98, ha: -0.25 },
   })
+  expect(idleActs.stretch.peak?.arms).toEqual({
+    right: { up: 0.2, fo: 0.72, ha: -0.1 },
+    left: { up: 0.2, fo: 0.72, ha: -0.1 },
+  })
+  // D2a: 差し戻した形（肘 1.4 以上で両手を下腹の前へ上げる）を入れ直さない。出るコマでも同じ。
+  for (const a of idleActNames.filter(big)) {
+    const d = new IdleDirector(seq(0.5))
+    d.force(a)
+    const shown = run(d, 0, 10).filter((x) => x.f.armSet)
+    expect(shown.length).toBeGreaterThan(0)
+    for (const x of shown)
+      for (const arm of [x.f.armSet?.right, x.f.armSet?.left]) expect(Math.abs(arm?.fo ?? 0)).toBeLessThan(1.4)
+  }
 })
 
 it('D3: 手そろえの姿勢は入りの 45%（0.54 秒）で現れ始め、保つ時間の終わりに消え始める（表情と同じ時刻）', () => {
@@ -456,7 +462,7 @@ it('力を抜く曲線は 1 から 0 へ滑らかに下り、途中で指定の�
   expect(Math.min(...Array.from({ length: 201 }, (_, i) => releaseCurve(i / 200, 0)))).toBeGreaterThanOrEqual(0)
 })
 
-it('伸びは、ゆっくり力んで（目を閉じてあごを上げ、両手を前で重ねる）、ふっと抜いて少し沈み、ほほえんで終わる', () => {
+it('伸びは、ゆっくり力んで（目を閉じてあごを上げ、両手を体の前へ下ろす）、ふっと抜いて少し沈み、ほほえんで終わる', () => {
   const d = new IdleDirector(seq(0.5))
   d.force('stretch')
   const frames = run(d, 0, 9),
@@ -465,7 +471,7 @@ it('伸びは、ゆっくり力んで（目を閉じてあごを上げ、両手�
     top = y.indexOf(Math.max(...y)),
     closed = on.filter((x) => x.f.eyes),
     smile = on.filter((x) => x.f.emotion === 'smile')
-  // 力む: あごが 5° 以上上がり、両手は体の前で重ねた姿勢。入りは 1 秒以上かける。
+  // 力む: あごが 5° 以上上がり、両手は体の前へ下ろした姿勢。入りは 1 秒以上かける。
   expect(y[top]).toBeGreaterThan(5)
   expect(on[top].t - on[0].t).toBeGreaterThan(1)
   expect(on[top].f.armSet).toEqual(idleActs.stretch.peak?.arms)
