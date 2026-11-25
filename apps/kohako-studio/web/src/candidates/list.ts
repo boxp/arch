@@ -12,6 +12,8 @@ export type Candidate = {
   problems?: string[]
   /** 見る画面。home は家の画面（待機中の動きなど、家でしか出ない試作）。指定なしは動作ボタン・会話連動の 2 つ。 */
   page?: string
+  /** 実時間の録画（動く画面を開けない端末でも動きを見られるように）。file は ./kohako/candidate-videos/<id>/ の中の mp4。 */
+  videos?: { file: string; title: string; note?: string }[]
   built: boolean
 }
 
@@ -49,6 +51,28 @@ export const candidateLinks = (c: Candidate): { text: string; href: string }[] =
         { text: '動作ボタンで操作する', href: candidateURL(c) },
         { text: '会話と連動して見る', href: candidateURL(c, 'studio') },
       ]
+
+const VIDEO = /^[a-z0-9][a-z0-9-]{0,59}\.mp4$/
+/** 候補の録画（題・補足・固定パス）。形の崩れたものは捨てる（別のパスや別の種類のファイルへ誘導しない）。 */
+export function candidateVideos(c: Candidate): { src: string; title: string; note: string }[] {
+  const list: unknown = c.videos
+  if (!Array.isArray(list)) return []
+  return list
+    .filter(
+      (v): v is { file: string; title: string; note?: string } =>
+        !!v &&
+        typeof v === 'object' &&
+        typeof v.file === 'string' &&
+        VIDEO.test(v.file) &&
+        typeof v.title === 'string' &&
+        v.title !== '',
+    )
+    .map((v) => ({
+      src: `./kohako/candidate-videos/${c.id}/${v.file}`,
+      title: v.title,
+      note: typeof v.note === 'string' ? v.note : '',
+    }))
+}
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, cls?: string) => {
   const e = document.createElement(tag)
@@ -110,6 +134,19 @@ export function renderCandidates(root: HTMLElement, candidates: Candidate[]) {
       links.append(document.createTextNode(' '), a)
     }
     card.append(links)
+    // 録画は押すまで本体を読まない（一覧を開いただけで全部の動画を落とさない）。音は無い。
+    for (const v of candidateVideos(c)) {
+      const fig = el('figure', undefined, 'video'),
+        video = el('video')
+      video.controls = true
+      video.preload = 'metadata'
+      video.playsInline = true
+      video.muted = true
+      video.src = v.src
+      fig.append(el('figcaption', `録画: ${v.title}`), video)
+      if (v.note) fig.append(el('p', v.note, 'meta'))
+      card.append(fig)
+    }
     root.append(card)
   }
 }
