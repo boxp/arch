@@ -18,6 +18,7 @@ export function partialNote(meta: Attachment): string {
   return ` 【注意: 本文は${where}を読みました。残りは読んでいません。全文を読んだようには答えず、読んだ範囲を伝えてください】`
 }
 import type { createHermes } from './hermes.js'
+import type { ModelTrial } from './model-trial.js'
 import { type Choice, extractChoices } from './choices.js'
 /**
  * BOXP-657: 眼鏡（Even G2）から来た発言を Hermes へ渡す時に、発言の先頭へ付ける 1 行（入口句）。
@@ -134,6 +135,8 @@ export function approvalSummary(approval: { description: string; command: string
   )
   return { summary: lines.join('\n'), fullyShown }
 }
+/** Hermes へ run を送る前の失敗。モデルの試行（BOXP-706）の失敗には数えない。 */
+const PRE_RUN_ERRORS = new Set(['toolsets_open', 'hermes_unavailable'])
 export function createConversation({
   now,
   hermes,
@@ -144,6 +147,7 @@ export function createConversation({
   activityDrainMs = 2000,
   argsIntervalMs = 1500,
   sweepMs = 60_000,
+  modelTrial,
 }: {
   now: () => number
   hermes: ReturnType<typeof createHermes>
@@ -155,6 +159,8 @@ export function createConversation({
   argsIntervalMs?: number
   /** 保持期限（24 時間）を過ぎた会話を消す見回りの間隔。0 で無効。 */
   sweepMs?: number
+  /** BOXP-706: 家の会話の run にだけ別のモデルを回数・期限つきで指定する試行。無ければ今までと同じ。 */
+  modelTrial?: ModelTrial
 }) {
   const entries = new Map<string, Entry>()
   let sessionStartedAt = now(),
@@ -850,6 +856,11 @@ export function createConversation({
       })
       void (async () => {
         if (store && !restored) await queue
+        // BOXP-706: 家の会話の新しい発言にだけ付ける（現場・通知返信・再起動後の追跡には付けず、回数も増やさない）。
+        // 回数 +1 と失敗 +1（先に足す分）を試行の記録へ書けた時だけ指定が付く。書き終えてから run を送る。
+        // 試行が無い時は待ちを足さない（今までと同じ順序のまま）。
+        const route =
+          modelTrial && !restored && !resume && !isVisit ? await modelTrial.take(entry.requestId) : undefined
         let result =
           restored?.runId || resume?.runId
             ? await hermes.watch(must(restored?.runId ?? must(resume).runId), onApproval)
@@ -862,6 +873,7 @@ export function createConversation({
                 undefined,
                 onRun,
                 resume?.idempotencyKey,
+                route,
               )
         // 通知返信は本文・session を変えると別 run として再実行されうるので、別 session での自動再送はしない。
         if (
@@ -888,10 +900,26 @@ export function createConversation({
             onApproval,
             1,
             onRun,
+            undefined,
+            route,
           )
           if (result.status === 'failed' && result.error === 'unknown_execution')
             result = { status: 'failed', error: 'session_paused' }
         }
+        // BOXP-706: 結果を試行の記録へ伝える。数えるかは試行の側が決める（記録の inflight がこの発言の時だけ）。
+        // 会話の結果の確定は、試行の記録の書き込みを待たない（書き込みの前に落ちても、送る前に足した 1 が失敗として残る）。
+        if (modelTrial)
+          void modelTrial.settle(
+            entry.requestId,
+            // 本人が停止を頼んだ（会話の保存データにも残る）・なでる反応で許可を断った発言は、成功でも失敗でも数えない。
+            entry.cancelRequested || touchApproval
+              ? 'cancelled'
+              : result.status === 'done'
+                ? 'done'
+                : result.status === 'unknown' || PRE_RUN_ERRORS.has(result.error ?? '')
+                  ? 'unknown'
+                  : 'failed',
+          )
         await releaseUpstream(result)
         await applyResult(result)
       })().catch(async (e) => {

@@ -26,6 +26,8 @@ BFF は Owner 認証用に `KOHAKO_ACCESS_TEAM_DOMAIN`、`KOHAKO_ACCESS_AUD`、`
 
 コハコの家 `/kohako/home.html` は日常利用のメイン画面で、Studio は開発用プロトタイプです。同じ BFF・認証を使い、ふれあいの反応はローカルのみ、会話は Web 専用セッションです。
 
+`KOHAKO_MODEL_TRIAL` に JSON（例: `{"id":"BOXP-706-m1","provider":"openai-codex","model":"gpt-6.2-sol","until":"2026-11-28T00:00:00Z","maxTurns":30}`）を設定すると、本人の家の会話の run にだけ、その provider と model を指定します（BOXP-706）。指定した回数（`maxTurns`、1〜100）に達するか、期限（`until`、UTC）を過ぎるか、指定を付けた発言が 2 回続けて失敗すると、指定を付けるのをやめ、Hermes の既定のモデルへ戻ります。現場・通知返信・検証用の会話には付けません。回数と続けて失敗した回数は `KOHAKO_DATA_DIR/model-trial.json` に保存し（送る前に書く）、`id` を変えると数え直します。この記録を書けない・在るのに読めない時は試行を終えます（続けるには `id` を変えた設定）。決まりのモデルは `bff/contract/model-trial-model/`。`KOHAKO_DATA_DIR` が未設定のまま `KOHAKO_MODEL_TRIAL` を設定すると起動しません。未設定なら何も指定しません。形が正しくない設定では起動しません（期限切れは起動し、終了扱い）。
+
 ホームの利用枠と進行中件数は認証済みの `GET /kohako/api/v1/status` から取得します。利用枠は共有プール単位で表示し、未観測・古い情報や取得失敗を区別します。進行中はボードの In Progress を一意 ID で数え、切り詰められた場合は下限を表示します。60 秒ごとに更新し、非表示中は停止、失敗時は最大 10 分まで間隔を延ばします。上流 URL は `KOHAKO_STATUS_QUOTA_URL` と `KOHAKO_STATUS_BOARD_URL` で設定でき、空文字で各上流を無効にできます。
 
 ## 通知の受信箱
