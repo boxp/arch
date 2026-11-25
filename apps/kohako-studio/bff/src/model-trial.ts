@@ -14,7 +14,7 @@ export type TrialState = {
 }
 /** 指定を付けた発言の結果。cancelled（本人の停止など）と unknown（未確認・送る前の失敗）は失敗に数えない。 */
 export type Outcome = 'done' | 'failed' | 'cancelled' | 'unknown'
-export type ModelTrial = { take(): ModelRoute | undefined; settle(outcome: Outcome): void }
+export type ModelTrial = { id: string; take(): ModelRoute | undefined; settle(outcome: Outcome): void }
 
 const MAX_FAILURES = 2
 
@@ -93,6 +93,7 @@ export function createModelTrial({
   }
   const count = (x: unknown): x is number => typeof x === 'number' && Number.isInteger(x) && x >= 0
   return {
+    id: config.id,
     async restore() {
       if (!path) return
       const saved = await load<Partial<TrialState> | null>(path, null)

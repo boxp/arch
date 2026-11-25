@@ -401,3 +401,126 @@ it('指定があれば run に provider と model だけを足し、無ければ
     { input: 'x', session_id: 's1', instructions: 'i' },
   ])
 })
+
+/** run の番号を返した後、結果を返さないまま止まる Hermes（BFF が結果の前に落ちる場面）と、再起動後に結果を返す Hermes。 */
+function hangingHermes(runId: string) {
+  return {
+    run: (...args: unknown[]) => {
+      ;(args[6] as (id: string) => void)(runId)
+      return new Promise(() => {})
+    },
+    stop: async () => 'ok',
+    approve: async () => 'ok',
+  } as unknown as ReturnType<typeof createHermes>
+}
+function watchingHermes(result: { status: 'done'; text: string } | { status: 'failed'; error: string }) {
+  const watch = vi.fn(async () => result)
+  return {
+    watch,
+    hermes: { run: vi.fn(), watch, stop: async () => 'ok', approve: async () => 'ok' } as unknown as ReturnType<
+      typeof createHermes
+    >,
+  }
+}
+/** 指定を付けた発言を 1 つ送り、結果が出る前に BFF が落ちた時の保存データを作る。 */
+async function crashMidRun(dir: string, cfg: typeof config, requestId: string, input: object = {}) {
+  const trial = createModelTrial({ config: cfg, now: () => at('10:05'), store: dir })
+  await trial.restore()
+  const conv = createConversation({
+    now: () => at('10:05'),
+    hermes: hangingHermes(`run-${requestId}`),
+    prefix: 'kohako-web',
+    store: dir,
+    modelTrial: trial,
+    sweepMs: 0,
+  })
+  await conv.restore()
+  const entry = conv.submit(text(requestId, input), '')
+  if ('error' in entry) throw Error(entry.error)
+  await vi.waitFor(() => expect(entry.runId).toBe(`run-${requestId}`))
+  await conv.flush()
+  await trial.flush()
+  return trial.state()
+}
+async function restart(
+  dir: string,
+  cfg: typeof config,
+  result: { status: 'done'; text: string } | { status: 'failed'; error: string },
+) {
+  const trial = createModelTrial({ config: cfg, now: () => at('10:06'), store: dir })
+  await trial.restore()
+  const w = watchingHermes(result)
+  const conv = createConversation({
+    now: () => at('10:06'),
+    hermes: w.hermes,
+    prefix: 'kohako-web',
+    store: dir,
+    modelTrial: trial,
+    sweepMs: 0,
+    activityDrainMs: 0,
+  })
+  await conv.restore()
+  await vi.waitFor(() => expect(conv.transcript().active).toBeNull())
+  await conv.flush()
+  await trial.flush()
+  return { trial, conv, ...w }
+}
+it('例7: 結果が出る前に再起動しても、再起動後に分かった失敗を数え、続けて 2 回で終了する', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
+  const cfg = { ...config, maxTurns: 10 }
+  try {
+    expect(await crashMidRun(dir, cfg, 'request-home-1')).toMatchObject({ turns: 1, failures: 0 })
+    const first = await restart(dir, cfg, { status: 'failed', error: '400' })
+    expect(first.watch).toHaveBeenCalledTimes(1)
+    // 指定は付け直さず、回数も増やさない。
+    expect(first.hermes.run).not.toHaveBeenCalled()
+    expect(first.trial.state()).toMatchObject({ turns: 1, failures: 1 })
+    expect(first.trial.state().ended).toBeUndefined()
+    expect(await crashMidRun(dir, cfg, 'request-home-2')).toMatchObject({ turns: 2, failures: 1 })
+    const second = await restart(dir, cfg, { status: 'failed', error: '400' })
+    expect(second.trial.state()).toMatchObject({ turns: 2, failures: 2, ended: 'failures' })
+    const f = hermesFake()
+    const after = createConversation({
+      now: () => at('10:10'),
+      hermes: f.hermes,
+      prefix: 'kohako-web',
+      modelTrial: second.trial,
+      sweepMs: 0,
+    })
+    await settled(after, text('request-home-3'))
+    expect(f.runs.map((r) => r.route)).toEqual([undefined])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+it('再起動後に分かった成功は、前の失敗を 0 に戻す', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
+  const cfg = { ...config, maxTurns: 10 }
+  try {
+    await crashMidRun(dir, cfg, 'request-home-1')
+    expect((await restart(dir, cfg, { status: 'failed', error: '400' })).trial.state()).toMatchObject({ failures: 1 })
+    await crashMidRun(dir, cfg, 'request-home-2')
+    expect((await restart(dir, cfg, { status: 'done', text: 'ok' })).trial.state()).toMatchObject({
+      turns: 2,
+      failures: 0,
+    })
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+it('再起動後、別の名前の試行の発言と、指定を付けていない発言（現場）の結果は数えない', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))
+  const cfg = { ...config, maxTurns: 10 }
+  try {
+    await crashMidRun(dir, cfg, 'request-home-1')
+    const renamed = await restart(dir, { ...cfg, id: 't2' }, { status: 'failed', error: '400' })
+    expect(renamed.watch).toHaveBeenCalledTimes(1)
+    expect(renamed.trial.state()).toEqual({ id: 't2', turns: 0, failures: 0 })
+    expect(await crashMidRun(dir, { ...cfg, id: 't2' }, 'request-visit-1', { visit: true })).toMatchObject({ turns: 0 })
+    const visit = await restart(dir, { ...cfg, id: 't2' }, { status: 'failed', error: '400' })
+    expect(visit.watch).toHaveBeenCalledTimes(1)
+    expect(visit.trial.state()).toEqual({ id: 't2', turns: 0, failures: 0 })
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

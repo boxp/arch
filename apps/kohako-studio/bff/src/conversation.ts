@@ -64,6 +64,8 @@ type Entry = {
   views?: true
   attachments?: { id: string; name: string }[]
   resume?: boolean
+  /** BOXP-706: モデルの指定を付けて送った試行の名前。再起動後に分かった結果も同じ試行へ数えるために保存する。 */
+  trial?: string
   cancelRequested?: boolean
   /** 停止依頼後に届いた承認・なでるの自動 deny。cancel は全件の完了を待ち、unknown があれば停止を成功とはしない。 */
   lateDenies?: Promise<'ok' | 'not_pending' | 'unknown'>[]
@@ -199,6 +201,7 @@ export function createConversation({
             visit,
             origin,
             via,
+            trial,
           }) => ({
             requestId,
             payloadHash,
@@ -215,6 +218,7 @@ export function createConversation({
             visit,
             ...(origin ? { origin } : {}),
             ...(via ? { via } : {}),
+            ...(trial ? { trial } : {}),
             ...(cancelRequested ? { cancelRequested: true as const } : {}),
           }),
         ),
@@ -484,9 +488,12 @@ export function createConversation({
         resume: !!resume && !isVisit,
       }
       entries.set(input.requestId, entry)
-      if (!restored) save()
       // BOXP-706: 家の会話の新しい発言にだけ付ける（現場・通知返信・再起動後の追跡には付けず、回数も増やさない）。
       const route = !restored && !resume && !isVisit ? modelTrial?.take() : undefined
+      if (route && modelTrial) entry.trial = modelTrial.id
+      // 再起動後に追跡を再開した発言も、同じ名前の試行で指定を付けたものなら結果を数える。
+      const counted = !!route || (!!restored?.trial && restored.trial === modelTrial?.id)
+      if (!restored) save()
       const text =
         input.kind === 'text'
           ? input.text
@@ -903,7 +910,7 @@ export function createConversation({
           if (result.status === 'failed' && result.error === 'unknown_execution')
             result = { status: 'failed', error: 'session_paused' }
         }
-        if (route)
+        if (counted)
           modelTrial?.settle(
             // なでる反応で許可を断った発言は、Hermes の結果が成功でも数えない（前の失敗を消さない）。
             touchApproval
