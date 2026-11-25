@@ -16,7 +16,7 @@ export type TrialRecord = {
   streak: number
   /** 指定を付けて送り、まだ結果を数えていない発言の番号（1 つだけ）。 */
   inflight?: string
-  /** storage: 試行の記録を書けなかった・読めなかった。 */
+  /** storage: 起動の時、試行の記録が在るのに読めなかった（書き込みの失敗では終了しない）。 */
   ended?: 'turns' | 'deadline' | 'failures' | 'storage'
 }
 /** 指定を付けた発言の結果。cancelled（本人の停止・なでる反応で許可を断った）と unknown（未確認・送る前の失敗）は失敗に数えない。 */
@@ -146,9 +146,11 @@ export function createModelTrial({
   writeTimeoutMs?: number
 }) {
   const path = join(store, 'model-trial.json')
-  // メモリの記録は、保存済みの記録と同じか、それに終了を足したもの（unsaved）だけ。
+  // メモリの記録は、いつも保存済みの記録と同じ（書けた時だけ反映する）。だから再起動しても、しなかった時と同じ記録から続く。
+  // 例外は、起動の時に記録を読めなかった時の終了・保存だけ（再起動しても同じく読めず、同じ終了になる）。
   let state: TrialRecord = { id: config.id, turns: 0, streak: 0 },
-    unsaved = false,
+    // 記録のファイルがメモリと違うかもしれない（読めなかった・打ち切った書き込みが後から届いた）。次の書き込みで必ず書き直す。
+    dirty = false,
     // 起動の時に記録に残っていた inflight（再起動をまたいだ発言）。
     carried: string | undefined,
     queue: Promise<unknown> = Promise.resolve(),
@@ -161,14 +163,14 @@ export function createModelTrial({
   }
   /**
    * 記録を書く。書き込みは同時に 1 つだけ。時間で打ち切った書き込みは捨てる（keep が false になり、既定の書き込みはファイルを置き換えない）。
-   * それでも終わるまでは stale のままにし、終わったら今のメモリの記録を書き直す（古い内容が後から届いて、終了を消したままにしない）。
+   * それでも終わるまでは stale のままにし、終わったら今のメモリの記録を書き直す（打ち切った内容が後から届いても、ファイルをメモリと同じに戻す）。
    */
   const save = (next: TrialRecord) =>
     new Promise<void>((resolve, reject) => {
       if (stale) return reject(Error('earlier write still running'))
       let abandoned = false
       const timer = setTimeout(() => {
-        abandoned = stale = true
+        abandoned = stale = dirty = true
         reject(Error('write timeout'))
       }, writeTimeoutMs)
       Promise.resolve()
@@ -181,20 +183,21 @@ export function createModelTrial({
           void serial(() => commit(state))
         })
     })
-  /** 次の記録を書き、書けた時だけメモリへ反映する。書けなければメモリの上で終了する（次の操作で書き直す）。 */
+  /**
+   * 次の記録を書き、書けた時だけメモリへ反映する。書けなければ、メモリの記録も前のまま（その出来事は記録の上で起きなかった）。
+   * 試行は終了しない: メモリだけの終了を作ると、それを書けないまま再起動した時に動きが変わってしまう。
+   */
   const commit = async (next: TrialRecord): Promise<boolean> => {
-    if (same(next, state) && !unsaved) return true
+    if (same(next, state) && !dirty) return true
     try {
       await save(next)
     } catch (e) {
       console.error('model trial save failed', e instanceof Error ? e.message : 'unknown')
-      unsaved = true
-      end('storage')
       return false
     }
     const endedNow = next.ended && !state.ended
     state = next
-    unsaved = false
+    dirty = false
     if (endedNow) log(`kohako_model_trial ended id=${state.id} reason=${state.ended} turns=${state.turns}`)
     return true
   }
@@ -213,7 +216,7 @@ export function createModelTrial({
         value = await read(path)
       } catch (e) {
         console.error('model trial load failed', e instanceof Error ? e.message : 'unknown')
-        unsaved = true
+        dirty = true
         end('storage')
         return
       }
@@ -221,7 +224,7 @@ export function createModelTrial({
       const saved = parseRecord(value)
       if (!saved) {
         console.error('model trial load failed', 'invalid record')
-        unsaved = true
+        dirty = true
         end('storage')
         return
       }

@@ -301,32 +301,69 @@ it('例12: 結果を試行の記録へ保存する前に落ちたら、再起動
   expect(after.state()).toEqual({ id: 't1', turns: 1, streak: 1 })
 })
 it.each(['done', 'failed', 'cancelled', 'unknown'] as const)(
-  '例14: 結果（%s）の書き込みに失敗したら終了・保存にし、次の発言には付けず、書き込みをやり直す',
+  '例14: 結果（%s）の書き込みに失敗しても試行は終了せず、記録はメモリの上でも前のまま（失敗が多い側）',
   async (outcome) => {
     const disk = fakeDisk(),
       trial = await boot(disk, many)
     await trial.take('r1')
     disk.d.failNext = 1
     expect(await trial.settle('r1', outcome)).toBe(false)
-    expect(trial.state()).toEqual({ id: 't1', turns: 1, streak: 1, inflight: 'r1', ended: 'storage' })
-    // 保存された記録は古いまま（失敗が 1 つ多い側）。
+    // メモリの記録は保存された記録と同じ（送る前に足した 1 と inflight が残る）。
+    expect(trial.state()).toEqual({ id: 't1', turns: 1, streak: 1, inflight: 'r1' })
     expect(disk.d.value).toEqual({ id: 't1', turns: 1, streak: 1, inflight: 'r1' })
-    expect(await turn(trial, 'r2')).toBe(false)
-    expect(disk.d.value).toEqual({ id: 't1', turns: 1, streak: 1, inflight: 'r1', ended: 'storage' })
-    // 終了が保存された後は、再起動しても付けない。
-    expect(await turn(await boot(disk, many), 'r3')).toBe(false)
+    // 次の発言は、書ければ指定あり。r1 の 1 は失敗として残る。
+    expect(await turn(trial, 'r2')).toBe(true)
+    expect(disk.d.value).toEqual({ id: 't1', turns: 2, streak: 2, inflight: 'r2' })
+    await trial.settle('r2', 'failed')
+    expect(disk.d.value).toEqual({ id: 't1', turns: 2, streak: 2, ended: 'failures' })
   },
 )
-it('回数の書き込みに失敗した発言には指定を付けず、保存された回数も増えない。以後も付けない', async () => {
+it.each([
+  ['発言を送る時', false],
+  ['結果が分かった時', true],
+])('例23: %sの書き込みに失敗した後は、再起動してもしなくても、記録と次の発言の指定が同じ', async (_name, atSettle) => {
+  // 書き込みの失敗で止まり、再起動で再開する、という違いが無いこと（PR gate の指摘の再現）。
+  const run = async (restart: boolean) => {
+    const disk = fakeDisk()
+    let trial = await boot(disk, many)
+    await turn(trial, 'r1', 'failed')
+    if (atSettle) {
+      await trial.take('r2')
+      disk.d.failNext = 1
+      expect(await trial.settle('r2', 'done')).toBe(false)
+    } else {
+      disk.d.failNext = 1
+      expect(await trial.take('r2')).toBeUndefined()
+    }
+    expect(trial.state()).toEqual(disk.d.value)
+    expect(trial.state().ended).toBeUndefined()
+    if (restart) trial = await boot(disk, many)
+    const before = trial.state()
+    const routed = await turn(trial, 'r3')
+    return { before, routed, after: trial.state(), saved: disk.d.value }
+  }
+  const stayed = await run(false),
+    restarted = await run(true)
+  expect(restarted).toEqual(stayed)
+  expect(stayed.saved).toEqual(stayed.after)
+  // 発言の時の失敗: 回数は増えておらず、次は 2 回目として付く。結果の時の失敗: 失敗が 2 のまま残り、次は終了・失敗。
+  expect(stayed.routed).toBe(!atSettle)
+  expect(stayed.after).toEqual(
+    atSettle
+      ? { id: 't1', turns: 2, streak: 2, inflight: 'r2', ended: 'failures' }
+      : { id: 't1', turns: 2, streak: 2, inflight: 'r3' },
+  )
+})
+it('回数の書き込みに失敗した発言には指定を付けず、保存された回数も増えない。試行は終了せず、書ければ次は付く', async () => {
   const disk = fakeDisk(),
     trial = await boot(disk, many)
   await turn(trial, 'r1', 'done')
   disk.d.failNext = 1
   expect(await turn(trial, 'r2', 'failed')).toBe(false)
   expect(disk.d.value).toMatchObject({ turns: 1, streak: 0 })
-  expect(trial.state()).toMatchObject({ turns: 1, ended: 'storage' })
-  expect(await turn(trial, 'r3')).toBe(false)
-  expect(disk.d.value).toEqual({ id: 't1', turns: 1, streak: 0, ended: 'storage' })
+  expect(trial.state()).toEqual({ id: 't1', turns: 1, streak: 0 })
+  expect(await turn(trial, 'r3')).toBe(true)
+  expect(disk.d.value).toEqual({ id: 't1', turns: 2, streak: 1, inflight: 'r3' })
 })
 it('例16: 結果の書き込みに失敗して落ちても、送る前に足した 1 が残り、次の発言で終了・失敗になる', async () => {
   const disk = fakeDisk()
@@ -415,15 +452,15 @@ it('例19: 実際のファイルでも、壊れた記録は終了・保存。フ
     await rm(dir, { recursive: true, force: true })
   }
 })
-it('例20: 2 つの発言を同時に送り、1 回目の書き込みだけが失敗しても、どちらにも指定を付けない', async () => {
-  // BOXP-709 の再現: 前の作りは、1 回目の失敗による終了の後に 2 回目が指定を返した。
+it('例20: 2 つの発言を同時に送り、1 回目の書き込みだけが失敗したら、2 回目は保存済みの記録から計算して付ける', async () => {
+  // 書き込みの失敗は試行を終了しない。2 回目は 1 回目が終わってから記録を見るので、保存された回数と指定の数が合う。
   const disk = fakeDisk(),
     trial = await boot(disk, many)
   disk.d.failNext = 1
   const [a, b] = await Promise.all([trial.take('a'), trial.take('b')])
-  expect([a, b]).toEqual([undefined, undefined])
-  expect(trial.state()).toEqual({ id: 't1', turns: 0, streak: 0, ended: 'storage' })
-  expect(disk.d.value).toEqual({ id: 't1', turns: 0, streak: 0, ended: 'storage' })
+  expect([a, b]).toEqual([undefined, route])
+  expect(trial.state()).toEqual({ id: 't1', turns: 1, streak: 1, inflight: 'b' })
+  expect(disk.d.value).toEqual({ id: 't1', turns: 1, streak: 1, inflight: 'b' })
 })
 it('操作は 1 つずつ行う: 待たずに続けて呼んでも、前の書き込みが終わってから次の記録を計算する', async () => {
   const disk = fakeDisk(),
@@ -443,14 +480,14 @@ it('書き込みが終わらない時は打ち切って失敗として扱い、�
     trial = await boot(disk, many, { writeTimeoutMs: 20 })
   disk.d.hang = true
   expect(await trial.take('r1')).toBeUndefined()
-  expect(trial.state()).toMatchObject({ turns: 0, ended: 'storage' })
+  expect(trial.state()).toEqual({ id: 't1', turns: 0, streak: 0 })
   // 打ち切った書き込みが終わらない間は、次の書き込みを始めない（例 22）。発言は待たせず、指定も付けない。
   disk.d.hang = false
   expect(await trial.take('r2')).toBeUndefined()
   expect(disk.d.writes).toBe(1)
   expect(disk.d.value).toBeUndefined()
 })
-it('例 22: 打ち切った書き込みが終わるまで次の書き込みを始めず、後から届いても終了・保存を書き直す', async () => {
+it('例 22: 打ち切った書き込みが終わるまで次の書き込みを始めず、後から届いてもメモリの記録を書き直す', async () => {
   // 1 回目の書き込みだけが止まり、後から（release で）古い内容のまま届く保存先。
   let value: unknown,
     writes = 0,
@@ -473,18 +510,21 @@ it('例 22: 打ち切った書き込みが終わるまで次の書き込みを�
   })
   await trial.restore()
   expect(await trial.take('r1')).toBeUndefined()
-  expect(trial.state()).toMatchObject({ turns: 0, ended: 'storage' })
+  expect(trial.state()).toEqual({ id: 't1', turns: 0, streak: 0 })
   // 打ち切った書き込みには「捨てた」と伝わる（既定の書き込みはファイルを置き換えない）。
   expect(kept?.()).toBe(false)
   // 古い書き込みがまだ終わっていない間は、新しい書き込みを始めない（指定も付けない）。
   expect(await trial.take('r2')).toBeUndefined()
   expect(writes).toBe(1)
-  // 古い書き込みが届く（終了なしの内容）→ すぐに終了・保存が書き直される。
+  // 古い書き込みが届く（回数 1・失敗 1 の内容）→ すぐにメモリの記録（回数 0）が書き直される。
   release()
-  await vi.waitFor(() => expect(value).toEqual({ id: 't1', turns: 0, streak: 0, ended: 'storage' }))
+  await vi.waitFor(() => expect(writes).toBe(2))
   await trial.flush()
-  expect(value).toEqual({ id: 't1', turns: 0, streak: 0, ended: 'storage' })
-  // 再起動しても試行は再開しない。
+  expect(value).toEqual({ id: 't1', turns: 0, streak: 0 })
+  expect(trial.state()).toEqual({ id: 't1', turns: 0, streak: 0 })
+  // 再起動しても、しなくても、次の発言は 1 回目として付く。
+  expect(await trial.take('r3')).toEqual(route)
+  expect(value).toEqual({ id: 't1', turns: 1, streak: 1, inflight: 'r3' })
   const again = createModelTrial({
     config: many,
     now: () => clock.now,
@@ -494,7 +534,7 @@ it('例 22: 打ち切った書き込みが終わるまで次の書き込みを�
     log: () => {},
   })
   await again.restore()
-  expect(await again.take('r3')).toBeUndefined()
+  expect(again.state()).toEqual(trial.state())
 })
 it('例 22: 捨てた書き込みは、記録のファイルを置き換えない（一時ファイルも残さない）', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'model-trial-'))
@@ -523,7 +563,13 @@ it('発言ごとに名前・回数・上限だけを記録し、終了の理由�
     stored = vi.fn()
   failing.d.failNext = 1
   await (await boot(failing, config, { log: stored })).take('r1')
-  expect(stored.mock.calls).toEqual([['kohako_model_trial ended id=t1 reason=storage turns=0']])
+  // 書き込みの失敗は終了ではない（終了の記録を出さない）。
+  expect(stored.mock.calls).toEqual([])
+  const unreadable = fakeDisk(),
+    refused = vi.fn()
+  unreadable.d.unreadable = true
+  await boot(unreadable, config, { log: refused })
+  expect(refused.mock.calls).toEqual([['kohako_model_trial ended id=t1 reason=storage turns=0']])
 })
 
 it('決まりの関数: 終了の理由は先に付いたものを変えない。順は 終了 → 期限 → 回数 → 失敗', () => {
@@ -543,7 +589,7 @@ it('決まりの関数: 終了の理由は先に付いたものを変えない�
 
 /**
  * モデルとの照合: Lean のモデルが出した出来事の並び（cases.txt）を実装に流し、並びの後の
- * 「指定を付けたか・保存された記録・メモリの上の終了」がモデルと同じであることを確かめる。
+ * 「指定を付けたか・保存された記録」がモデルと同じで、メモリの記録が保存された記録と同じであることを確かめる。
  * T=発言 Tx=発言（書き込み失敗） Tl=発言（期限の後） F/D/C/U=結果（失敗・成功・停止・不明） Fx/Dx=結果（書き込み失敗）
  * R=再起動（最後の発言を追跡し直す） L=再起動（追跡しない）
  */
@@ -554,7 +600,7 @@ it('モデルの並び（上限 3 で長さ 5 まで、上限 1 で長さ 4 ま�
   expect(lines.length).toBeGreaterThan(8000)
   const outcomes: Record<string, Outcome> = { F: 'failed', D: 'done', C: 'cancelled', U: 'unknown' }
   for (const line of lines) {
-    const [max, names, routed, turns, streak, inflight, diskEnded, memEnded] = line.split(' ')
+    const [max, names, routed, turns, streak, inflight, diskEnded] = line.split(' ')
     const cfg = { ...config, maxTurns: Number(max) }
     const disk = fakeDisk()
     let trial = await boot(disk, cfg),
@@ -587,10 +633,11 @@ it('モデルの並び（上限 3 で長さ 5 まで、上限 1 で長さ 4 ま�
         saved.streak,
         saved.inflight ? String(saved.inflight).slice(1) : '-',
         saved.ended ? '1' : '0',
-        trial.state().ended ? '1' : '0',
       ].join(' '),
       line,
-    ).toBe([routed, turns, streak, inflight, diskEnded, memEnded].join(' '))
+    ).toBe([routed, turns, streak, inflight, diskEnded].join(' '))
+    // メモリの記録は、いつも保存された記録と同じ（メモリだけにある終了は無い）。
+    expect(trial.state(), line).toEqual(disk.d.value ?? { id: 't1', turns: 0, streak: 0 })
   }
 })
 
@@ -808,7 +855,7 @@ it('なでる反応で許可を断った発言は、Hermes が成功を返して
   await settled(owner, text('request-home-4'))
   expect(await recorded(trial)).toEqual({ id: 't1', turns: 4, streak: 2, ended: 'failures' })
 })
-it('回数の書き込みに失敗したら、指定を付けずに送る（会話は止めない）。以後の発言にも付けない', async () => {
+it('回数の書き込みに失敗したら、その発言は指定を付けずに送る（会話は止めない）。試行は終了しない', async () => {
   const disk = fakeDisk(),
     trial = await boot(disk, many)
   const f = hermesFake()
@@ -817,9 +864,9 @@ it('回数の書き込みに失敗したら、指定を付けずに送る（会�
   const first = await settled(owner, text('request-home-1'))
   expect(first.status).toBe('done')
   await settled(owner, text('request-home-2'))
-  expect(f.runs.map((r) => r.route)).toEqual([undefined, undefined])
-  expect(await recorded(trial)).toEqual({ id: 't1', turns: 0, streak: 0, ended: 'storage' })
-  expect(disk.d.value).toEqual({ id: 't1', turns: 0, streak: 0, ended: 'storage' })
+  expect(f.runs.map((r) => r.route)).toEqual([undefined, route])
+  expect(await recorded(trial)).toEqual({ id: 't1', turns: 1, streak: 0 })
+  expect(disk.d.value).toEqual({ id: 't1', turns: 1, streak: 0 })
 })
 it('例21: 試行の記録の書き込みが止まっていても、会話の結果は確定し、本人の停止と拒否は Hermes へ送られる', async () => {
   // 結果を伝える呼び出し（settle）が終わらない試行。発言を送る前の書き込み（take）だけは終わる。

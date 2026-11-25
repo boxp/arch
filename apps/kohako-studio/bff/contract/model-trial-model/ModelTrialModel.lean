@@ -45,13 +45,11 @@ def planSettle (carried : Bool) (r : Rec) (id : Nat) (o : Outcome) : Rec :=
     | _, _ => { r with infl := none, streak := r.streak - 1 }
 
 /--
-全体の状態。`disk` が保存された記録。メモリは `disk` か、それに終了を足したもの（`unsaved`）。
+全体の状態。`disk` が保存された記録。メモリの記録は、いつも `disk` と同じ（書けた時だけ反映する）。
 `routed`・`real`・`known` は実際に起きたことの記録で、決まりは見ない（性質を述べるためだけに持つ）。
 -/
 structure World where
   disk : Rec
-  /-- 書き込みに失敗し、メモリの上だけで終了している。 -/
-  unsaved : Bool
   /-- `disk.infl` の発言は再起動をまたいだ。 -/
   carried : Bool
   /-- 会話が結果を待っている発言。 -/
@@ -68,7 +66,7 @@ structure World where
 
 def init : World :=
   { disk := { turns := 0, streak := 0, infl := none, ended := false },
-    unsaved := false, carried := false, pending := none, next := 0, routed := 0, real := 0, known := none }
+    carried := false, pending := none, next := 0, routed := 0, real := 0, known := none }
 
 inductive Event
   /-- 発言を送る。`late`: 期限を過ぎている。`ok`: 書き込みが成功する。 -/
@@ -79,18 +77,13 @@ inductive Event
   | restart (tracked : Bool)
   deriving Repr
 
-/-- メモリの記録。 -/
-def mem (w : World) : Rec := { w.disk with ended := w.disk.ended || w.unsaved }
-
-/-- 計算した次の記録を書く。変わらず、やり直す書き込みも無ければ書かない。失敗したらメモリの上だけで終了する。 -/
-def commit (w : World) (n : Rec) (ok : Bool) : Rec × Bool :=
-  if n = mem w ∧ w.unsaved = false then (w.disk, false)
-  else if ok then (n, false)
-  else (w.disk, true)
+/-- 計算した次の記録を書く。書けなければ、記録は（メモリの上でも）前のまま。 -/
+def commit (w : World) (n : Rec) (ok : Bool) : Rec :=
+  if ok then n else w.disk
 
 /-- この出来事で指定を付けるか。 -/
 def routes (max : Nat) (w : World) : Event → Bool
-  | .take late ok => ok && (planTake max late (mem w) w.next).2
+  | .take late ok => ok && (planTake max late w.disk w.next).2
   | _ => false
 
 /-- 分かった結果を、実際に続けて失敗した回数へ反映する。 -/
@@ -101,10 +94,9 @@ def reveal (real : Nat) : Outcome → Nat
 
 def step (max : Nat) (w : World) : Event → World
   | .take late ok =>
-    let p := planTake max late (mem w) w.next
-    let c := commit w p.1 ok
+    let p := planTake max late w.disk w.next
     let sent := ok && p.2
-    { w with disk := c.1, unsaved := c.2, pending := some w.next, next := w.next + 1,
+    { w with disk := commit w p.1 ok, pending := some w.next, next := w.next + 1,
              carried := if sent then false else w.carried,
              routed := if sent then w.routed + 1 else w.routed,
              known := if sent then none else w.known }
@@ -112,14 +104,13 @@ def step (max : Nat) (w : World) : Event → World
     match w.pending with
     | none => w
     | some id =>
-      let c := commit w (planSettle w.carried (mem w) id o) ok
       -- 結果は、この発言が `disk.infl` で、まだ分かっていない時にだけ「分かる」。
       let fresh := decide (w.disk.infl = some id) && w.known.isNone
-      { w with disk := c.1, unsaved := c.2, pending := none,
+      { w with disk := commit w (planSettle w.carried w.disk id o) ok, pending := none,
                real := if fresh then reveal w.real o else w.real,
                known := if fresh then some o else w.known }
   | .restart tracked =>
-    { w with unsaved := false, carried := w.disk.infl.isSome,
+    { w with carried := w.disk.infl.isSome,
              pending := if tracked then (if w.next = 0 then none else some (w.next - 1)) else none }
 
 /--
@@ -152,18 +143,18 @@ theorem safe_init (max : Nat) : Safe max init := by
 
 /-! ## 性質 -/
 
-/-- 規則 1: 指定を付けるのは、メモリの上でも終了しておらず、回数が残り、書き込みが成功した時だけ。 -/
+/-- 規則 1: 指定を付けるのは、終了しておらず、回数が残り、書き込みが成功した時だけ。 -/
 theorem route_needs (max : Nat) (w : World) (e : Event) (h : routes max w e = true) :
-    w.disk.ended = false ∧ w.unsaved = false ∧ w.disk.turns < max ∧ w.disk.streak < limit ∧
+    w.disk.ended = false ∧ w.disk.turns < max ∧ w.disk.streak < limit ∧
       ∃ late, e = .take late true := by
   cases e with
   | take late ok =>
-    simp only [routes, planTake, mem] at h
-    cases hd : w.disk.ended <;> cases hu : w.unsaved <;> cases late <;> cases ok <;>
-      simp [hd, hu] at h
+    simp only [routes, planTake] at h
+    cases hd : w.disk.ended <;> cases late <;> cases ok <;>
+      simp [hd] at h
     by_cases h1 : w.disk.turns ≥ max <;> simp [h1] at h
     by_cases h2 : w.disk.streak ≥ limit <;> simp [h2] at h
-    exact ⟨rfl, rfl, by omega, by omega, false, rfl⟩
+    exact ⟨rfl, by omega, by omega, false, rfl⟩
   | settle o ok => simp [routes] at h
   | restart t => simp [routes] at h
 
@@ -179,31 +170,28 @@ theorem planSettle_ended (c : Bool) (r : Rec) (id : Nat) (o : Outcome) (h : r.en
   · split <;> simp [h]
 
 theorem commit_ended (w : World) (n : Rec) (ok : Bool) (h : w.disk.ended = true)
-    (hn : n.ended = true) : (commit w n ok).1.ended = true := by
+    (hn : n.ended = true) : (commit w n ok).ended = true := by
   unfold commit
   split
+  · exact hn
   · exact h
-  · split
-    · exact hn
-    · exact h
 
 /-- 規則 2: 保存された終了は戻らない。 -/
 theorem ended_stays (max : Nat) (w : World) (e : Event) (h : w.disk.ended = true) :
     (step max w e).disk.ended = true := by
-  have hm : (mem w).ended = true := by simp [mem, h]
   cases e with
-  | take late ok => exact commit_ended w _ ok h (planTake_ended max late _ _ hm)
+  | take late ok => exact commit_ended w _ ok h (planTake_ended max late _ _ h)
   | settle o ok =>
     simp only [step]
     split
     · exact h
-    · exact commit_ended w _ ok h (planSettle_ended _ _ _ _ hm)
+    · exact commit_ended w _ ok h (planSettle_ended _ _ _ _ h)
   | restart t => simpa [step] using h
 
 /-- 規則 4: 指定を付ける時、実際に続けて失敗した回数は上限（2）未満。 -/
 theorem route_real_lt (max : Nat) (w : World) (e : Event) (hi : Safe max w)
     (h : routes max w e = true) : w.real < limit := by
-  have := (route_needs max w e h).2.2.2.1
+  have := (route_needs max w e h).2.2.1
   have := hi.streak_ge
   omega
 
@@ -215,13 +203,13 @@ theorem routed_le_max (max : Nat) (w : World) (hi : Safe max w) : w.routed ≤ m
 theorem safe_step (max : Nat) (w : World) (e : Event) (hl : legal w e) (hi : Safe max w) :
     Safe max (step max w e) := by
   obtain ⟨h1, h2, h3, h4⟩ := hi
-  obtain ⟨⟨turns, streak, infl, ended⟩, unsaved, carried, pending, next, routed, real, known⟩ := w
+  obtain ⟨⟨turns, streak, infl, ended⟩, carried, pending, next, routed, real, known⟩ := w
   simp only at h1 h2 h3 h4
   cases e with
   | restart t => exact ⟨h1, h2, h3, h4⟩
   | take late ok =>
-    simp only [step, planTake, commit, mem]
-    cases ok <;> cases late <;> cases ended <;> cases unsaved <;>
+    simp only [step, planTake, commit]
+    cases ok <;> cases late <;> cases ended <;>
       simp only [Bool.or_false, Bool.or_true, Bool.false_or, Bool.true_or, Bool.false_and,
         Bool.true_and, Bool.and_false, Bool.and_true, ite_true, ite_false] <;>
       (try (by_cases ht : turns ≥ max <;> by_cases hs : streak ≥ limit <;> simp only [ht, hs, ite_true, ite_false])) <;>
@@ -231,20 +219,37 @@ theorem safe_step (max : Nat) (w : World) (e : Event) (hl : legal w e) (hi : Saf
     cases pending with
     | none => exact ⟨h1, h2, h3, h4⟩
     | some id =>
-      simp only [planSettle, commit, mem]
+      simp only [planSettle, commit]
       by_cases hin : infl = some id
       · subst hin
         cases known with
         | none =>
-          cases o <;> cases ok <;> cases carried <;> cases ended <;> cases unsaved <;>
+          cases o <;> cases ok <;> cases carried <;> cases ended <;>
             (constructor <;> simp_all [credit, reveal] <;> (try split) <;> (try simp_all) <;> omega)
         | some t =>
           have hk := hl id t rfl rfl rfl
-          cases o <;> cases t <;> cases ok <;> cases carried <;> cases ended <;> cases unsaved <;>
+          cases o <;> cases t <;> cases ok <;> cases carried <;> cases ended <;>
             simp at hk <;>
             (constructor <;> simp_all [credit, reveal] <;> (try split) <;> (try simp_all) <;> omega)
-      · cases ok <;> cases ended <;> cases unsaved <;>
+      · cases ok <;> cases ended <;>
           (constructor <;> simp_all [credit, reveal])
+
+/--
+規則 6: 再起動は、保存された記録も、次の発言に指定を付けるかも変えない。
+（書き込みの失敗の後に落ちても、落ちなかった時と同じ。メモリだけにある終了は無い。）
+-/
+theorem restart_same (max : Nat) (w : World) (t late ok : Bool) :
+    (step max w (.restart t)).disk = w.disk ∧
+      routes max (step max w (.restart t)) (.take late ok) = routes max w (.take late ok) := by
+  simp [step, routes]
+
+/-- 規則 7: 書き込みに失敗した出来事は、保存された記録を変えず、指定も付けない。 -/
+theorem failed_write_same (max : Nat) (w : World) :
+    (∀ late, (step max w (.take late false)).disk = w.disk ∧ routes max w (.take late false) = false) ∧
+      (∀ o, (step max w (.settle o false)).disk = w.disk) := by
+  refine ⟨fun late => by simp [step, routes, commit], fun o => ?_⟩
+  simp only [step]
+  split <;> simp [commit]
 
 /-! ## 出来事の並び（実装照合用）: 上限 3 回で長さ 5 まで、上限 1 回で長さ 4 までの並びを全て出す -/
 
@@ -268,10 +273,10 @@ def allowed (w : World) : Event → Bool
 
 def bit (b : Bool) : String := if b then "1" else "0"
 
-/-- 1 行: 上限、並び、最後の出来事で指定を付けたか、保存された turns・streak・inflight・終了、メモリの上の終了。 -/
+/-- 1 行: 上限、並び、最後の出来事で指定を付けたか、保存された turns・streak・inflight・終了。 -/
 def line (max : Nat) (name : String) (routed : Bool) (w : World) : String :=
   let infl := match w.disk.infl with | some id => toString id | none => "-"
-  s!"{max} {name} {bit routed} {w.disk.turns} {w.disk.streak} {infl} {bit w.disk.ended} {bit (mem w).ended}"
+  s!"{max} {name} {bit routed} {w.disk.turns} {w.disk.streak} {infl} {bit w.disk.ended}"
 
 partial def walk (max depth : Nat) (name : String) (w : World) : IO Unit := do
   if depth = 0 then return
