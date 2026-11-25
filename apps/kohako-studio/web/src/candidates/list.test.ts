@@ -99,6 +99,6 @@ describe('試作候補の録画', () => {
     const videos = list.flatMap(candidateVideos)
     for (const v of videos)
       expect(existsSync(new URL(`../../public/${v.src.slice(2)}`, import.meta.url)), v.src).toBe(true)
-    expect(list.find((c) => c.id === 'seat-8abde00')?.videos).toHaveLength(2)
+    expect(list.find((c) => c.id === 'seat-8abde00')?.videos).toHaveLength(3)
   })
 })
