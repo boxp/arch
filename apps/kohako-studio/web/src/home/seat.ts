@@ -1,14 +1,17 @@
 // BOXP-698: 待機中、気分で宙に浮く椅子へ腰かける。ここは「いつ座り・いつ立ち・いまどれだけ座っているか」を決める純粋な係で、
 // 描画（脚の変形と椅子）は live2d/gesture.ts の stage.setSeat、体の上下は main が行う。仕様は vault の Projects/kohako-home/seat-spec.md。
 // 待機のしぐさ（idle.ts）とは別の層: 座っている間も、しぐさ・視線追従・なでる・タップの反応は従来どおり上半身に出る。
-// 会話などが始まったら、応答を待たせずに並行して短く立つ（この係は入力を読むだけで、会話や操作の進行には関わらない）。
+// 話しかけられても立たない（Owner 要望 2026-11-25「座りたい時は座ったまま会話してよい」）。急いで立つのは、家を出る・小さい表示・設定の変更の時だけ。
+// この係は入力を読むだけで、会話や操作の進行には関わらない。
 
 export type SeatPhase = 'standing' | 'sitting' | 'seated' | 'rising'
 export type SeatInput = {
   /** 座り始めてよい（待機のしぐさを始めてよい条件と同じ）。 */
   calm: boolean
-  /** 座ったままでよい（待機中・家にいる・動きを減らす設定でない）。偽になったら急いで立つ。 */
+  /** 座ったままでよい（家にいる・小さい表示でない・動きを減らす設定でない）。会話中も真。偽になったら急いで立つ。 */
   keep: boolean
+  /** 静かな待機（keep に加えて、待機中・全身が見える枠・送信中や録音中でない）。座り始める・自分から立つのは、この時だけ。 */
+  quiet: boolean
   /** 待機のしぐさが出ていない（座る・立つの動きは、しぐさの切れ目で始める）。 */
   free: boolean
   /** 反応を控えめにする。 */
@@ -81,7 +84,7 @@ export class SeatDirector {
   private urgent = false
   private nextAt: number | null = null
   private until = 0
-  private wasKeep = true
+  private wasQuiet = true
   constructor(
     private rng: () => number = Math.random,
     private first: readonly [number, number] = FIRST_SIT,
@@ -92,7 +95,7 @@ export class SeatDirector {
     this.from = { level: 0, chair: 0 }
     this.urgent = false
     this.nextAt = null
-    this.wasKeep = true
+    this.wasQuiet = true
   }
   /** 検証用: 次の機会に座る／立つ（座ってよい・立ってよい条件は変えない）。 */
   force(what: 'sit' | 'stand') {
@@ -148,15 +151,19 @@ export class SeatDirector {
       }
       cur = this.at(now)
     }
+    const quiet = input.keep && input.quiet
     if (!input.keep) {
       // 急いで立つ: いまの座り具合・椅子の濃さから、短く戻す（自分から立っている途中でも短い戻りへ切り替える）。
       if (this.phase === 'sitting' || this.phase === 'seated' || (this.phase === 'rising' && !this.urgent))
         this.enter('rising', now, { level: cur.level, chair: cur.chair }, true)
-      this.wasKeep = false
+    }
+    if (!quiet) {
+      // 会話中・上半身だけの枠など: 座っていれば座ったまま（座る途中は座り切り、立つ途中は立ち切る）。新しく座り始めず、自分から立ち始めもしない。
+      this.wasQuiet = false
     } else {
       // 会話などが済んで落ち着いた直後には座らない（短い間をあける）。
-      if (!this.wasKeep) this.nextAt = Math.max(this.nextAt, now + gap(RESUME_SIT))
-      this.wasKeep = true
+      if (!this.wasQuiet) this.nextAt = Math.max(this.nextAt, now + gap(RESUME_SIT))
+      this.wasQuiet = true
       if (this.phase === 'standing') {
         if (input.calm && input.free && now >= this.nextAt) this.enter('sitting', now)
       } else if (this.phase === 'seated' && input.free && now >= this.until) {
