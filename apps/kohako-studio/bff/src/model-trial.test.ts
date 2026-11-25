@@ -1,8 +1,8 @@
 // BOXP-706: 家の会話だけで別のモデルを期限つきで試す。
-// 期待値は仕様 Projects/kohako-home/model-trial-spec.md（設定・付ける発言・記録と決まり・例 1〜21）と、
+// 期待値は仕様 Projects/kohako-home/model-trial-spec.md（設定・付ける発言・記録と決まり・例 1〜22）と、
 // Lean のモデル contract/model-trial-model/（cases.txt）から取る。実装を読んで写さない。
 import { readFileSync } from 'node:fs'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -17,6 +17,7 @@ import {
   planSettle,
   planTake,
 } from './model-trial.js'
+import { atomic } from './storage.js'
 
 const at = (hhmm: string) => Date.parse(`2026-11-26T${hhmm}:00Z`)
 const config = { id: 't1', provider: 'openai-codex', model: 'gpt-6.2-sol', until: at('12:00'), maxTurns: 3 }
@@ -443,9 +444,71 @@ it('書き込みが終わらない時は打ち切って失敗として扱い、�
   disk.d.hang = true
   expect(await trial.take('r1')).toBeUndefined()
   expect(trial.state()).toMatchObject({ turns: 0, ended: 'storage' })
+  // 打ち切った書き込みが終わらない間は、次の書き込みを始めない（例 22）。発言は待たせず、指定も付けない。
   disk.d.hang = false
   expect(await trial.take('r2')).toBeUndefined()
-  expect(disk.d.value).toEqual({ id: 't1', turns: 0, streak: 0, ended: 'storage' })
+  expect(disk.d.writes).toBe(1)
+  expect(disk.d.value).toBeUndefined()
+})
+it('例 22: 打ち切った書き込みが終わるまで次の書き込みを始めず、後から届いても終了・保存を書き直す', async () => {
+  // 1 回目の書き込みだけが止まり、後から（release で）古い内容のまま届く保存先。
+  let value: unknown,
+    writes = 0,
+    release = () => {},
+    kept: (() => boolean) | undefined
+  const write = async (_path: string, next: unknown, keep?: () => boolean) => {
+    writes++
+    if (writes === 1) kept = keep
+    if (writes === 1) await new Promise<void>((resolve) => (release = resolve))
+    value = JSON.parse(JSON.stringify(next))
+  }
+  const trial = createModelTrial({
+    config: many,
+    now: () => clock.now,
+    store: '/data',
+    write,
+    read: async () => value,
+    log: () => {},
+    writeTimeoutMs: 20,
+  })
+  await trial.restore()
+  expect(await trial.take('r1')).toBeUndefined()
+  expect(trial.state()).toMatchObject({ turns: 0, ended: 'storage' })
+  // 打ち切った書き込みには「捨てた」と伝わる（既定の書き込みはファイルを置き換えない）。
+  expect(kept?.()).toBe(false)
+  // 古い書き込みがまだ終わっていない間は、新しい書き込みを始めない（指定も付けない）。
+  expect(await trial.take('r2')).toBeUndefined()
+  expect(writes).toBe(1)
+  // 古い書き込みが届く（終了なしの内容）→ すぐに終了・保存が書き直される。
+  release()
+  await vi.waitFor(() => expect(value).toEqual({ id: 't1', turns: 0, streak: 0, ended: 'storage' }))
+  await trial.flush()
+  expect(value).toEqual({ id: 't1', turns: 0, streak: 0, ended: 'storage' })
+  // 再起動しても試行は再開しない。
+  const again = createModelTrial({
+    config: many,
+    now: () => clock.now,
+    store: '/data',
+    write,
+    read: async () => value,
+    log: () => {},
+  })
+  await again.restore()
+  expect(await again.take('r3')).toBeUndefined()
+})
+it('例 22: 捨てた書き込みは、記録のファイルを置き換えない（一時ファイルも残さない）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'model-trial-'))
+  try {
+    const path = join(dir, 'model-trial.json')
+    await atomic(path, { a: 1 })
+    await expect(atomic(path, { a: 2 }, () => false)).rejects.toThrow('abandoned')
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ a: 1 })
+    expect(await readdir(dir)).toEqual(['model-trial.json'])
+    await atomic(path, { a: 3 }, () => true)
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ a: 3 })
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 it('発言ごとに名前・回数・上限だけを記録し、終了の理由も記録する（本文は出さない）', async () => {
   const log = vi.fn()

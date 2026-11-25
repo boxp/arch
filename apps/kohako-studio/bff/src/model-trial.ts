@@ -139,7 +139,8 @@ export function createModelTrial({
   store: string
   log?: (line: string) => void
   /** 記録の書き込みと読み取り（テストで保存の失敗を起こすために差し替える）。read は、無ければ undefined、読めなければ投げる。 */
-  write?: (path: string, value: unknown) => Promise<void>
+  /** keep: 置き換える直前に呼び、false なら置き換えない（打ち切った書き込みを捨てる）。 */
+  write?: (path: string, value: unknown, keep?: () => boolean) => Promise<void>
   read?: (path: string) => Promise<unknown>
   /** 書き込みをこの時間で打ち切り、失敗として扱う（発言を送るのを、止まった書き込みで待たせ続けない）。 */
   writeTimeoutMs?: number
@@ -150,22 +151,41 @@ export function createModelTrial({
     unsaved = false,
     // 起動の時に記録に残っていた inflight（再起動をまたいだ発言）。
     carried: string | undefined,
-    queue: Promise<unknown> = Promise.resolve()
+    queue: Promise<unknown> = Promise.resolve(),
+    // 打ち切ったのに、まだ終わっていない書き込みがある（その間は次の書き込みを始めない）。
+    stale = false
   const end = (reason: NonNullable<TrialRecord['ended']>) => {
     if (state.ended) return
     state = { ...state, ended: reason }
     log(`kohako_model_trial ended id=${state.id} reason=${reason} turns=${state.turns}`)
   }
-  const timed = (work: Promise<void>) =>
+  /**
+   * 記録を書く。書き込みは同時に 1 つだけ。時間で打ち切った書き込みは捨てる（keep が false になり、既定の書き込みはファイルを置き換えない）。
+   * それでも終わるまでは stale のままにし、終わったら今のメモリの記録を書き直す（古い内容が後から届いて、終了を消したままにしない）。
+   */
+  const save = (next: TrialRecord) =>
     new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(Error('write timeout')), writeTimeoutMs)
-      work.then(resolve, reject).finally(() => clearTimeout(timer))
+      if (stale) return reject(Error('earlier write still running'))
+      let abandoned = false
+      const timer = setTimeout(() => {
+        abandoned = stale = true
+        reject(Error('write timeout'))
+      }, writeTimeoutMs)
+      Promise.resolve()
+        .then(() => write(path, next, () => !abandoned))
+        .then(resolve, reject)
+        .finally(() => {
+          clearTimeout(timer)
+          if (!abandoned) return
+          stale = false
+          void serial(() => commit(state))
+        })
     })
   /** 次の記録を書き、書けた時だけメモリへ反映する。書けなければメモリの上で終了する（次の操作で書き直す）。 */
   const commit = async (next: TrialRecord): Promise<boolean> => {
     if (same(next, state) && !unsaved) return true
     try {
-      await timed(Promise.resolve().then(() => write(path, next)))
+      await save(next)
     } catch (e) {
       console.error('model trial save failed', e instanceof Error ? e.message : 'unknown')
       unsaved = true
