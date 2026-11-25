@@ -100,5 +100,6 @@ describe('試作候補の録画', () => {
     for (const v of videos)
       expect(existsSync(new URL(`../../public/${v.src.slice(2)}`, import.meta.url)), v.src).toBe(true)
     expect(list.find((c) => c.id === 'seat-8abde00')?.videos).toHaveLength(3)
+    expect(list.find((c) => c.id === 'seat-art-21b252f')?.videos).toHaveLength(4)
   })
 })
