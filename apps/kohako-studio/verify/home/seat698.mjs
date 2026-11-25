@@ -1,8 +1,8 @@
 // BOXP-698: 浮く椅子へ腰かける試作の実ブラウザ検証。BFF は完全にモック（token 不要）。
 // 実行: Playwright 1.56.1 で `PW_WS=ws://host:port/ node seat698.mjs <build の dist> <出力先> [check|sheets|record]`（既定は全部）
 //   check : 時計を止めて規則を確かめる（仕様は vault の Projects/kohako-home/seat-spec.md）。失敗があれば終了コード 1。
-//   sheets: 座る・座っている間・自分から立つ・会話で急いで立つ を、等間隔のコマに並べた画像にする（目で見るため。合否は出さない）。
-//   record: 実時間の動画（時計は止めない）。座る → 座っている間 → マウス → 立つ、座る → 話しかけて立つ。
+//   sheets: 座る・座っている間・自分から立つ・座ったままの会話 を、等間隔のコマに並べた画像にする（目で見るため。合否は出さない）。
+//   record: 実時間の動画（時計は止めない）。座る → 座っている間 → マウス → 立つ、座る → 話しかけても座ったまま返事を聞く。
 // BASE=<変更前の dist> を渡すと、座っていない間の描画が変更前と画素一致することも確かめる。
 import { chromium } from 'playwright'
 import http from 'node:http'
@@ -94,7 +94,7 @@ async function untilUpdates(page, n) {
 const seatOf = (page) => page.evaluate(() => {
   const h = window.__kohakoHome, p = h.player, bottom = (m) => { const v = new Float32Array(p.rt.memory.buffer, p.rt.p2l_mesh_vertices(p.rig, m), p.meshes[m].vertices * 2); let y = -1e9; for (let i = 1; i < v.length; i += 2) y = Math.max(y, v[i]); return y }
   h.player.draw()
-  return { ...(h.report.seat ?? { phase: 'none', level: 0, chair: 0, offset: 0 }), state: h.state, idle: h.report.idle?.act ?? null, foot: bottom(27), viewY: p.view.y, stage: h.stage.report().seat }
+  return { ...(h.report.seat ?? { phase: 'none', level: 0, chair: 0, offset: 0 }), state: h.state, frame: document.querySelector('[data-frame]')?.dataset.frame ?? null, scene: document.body.dataset.scene, idle: h.report.idle?.act ?? null, foot: bottom(27), viewY: p.view.y, stage: h.stage.report().seat }
 })
 /** ms ずつ進めて毎回の状態を集める。until が真になったら止める。 */
 async function run(page, ms, step = 50, until) {
@@ -111,6 +111,11 @@ const sit = async (page) => {
   await page.evaluate(() => window.__kohakoHome.playSeat('sit'))
   const rows = await run(page, 40000, 50, (s) => s.phase === 'seated')
   return rows
+}
+/** 送信を受理して、返事を返さないままにする（聞いている → 考えている が続く）。これが無い模擬では送信が失敗の状態になる。 */
+const pending = async (context) => {
+  await context.route('**/kohako/api/v1/messages', (r) => r.fulfill({ status: 202, json: { requestId: 'verify-1', status: 'pending' } }))
+  await context.route('**/kohako/api/v1/requests/**', (r) => r.fulfill({ json: { requestId: 'verify-1', status: 'pending' } }))
 }
 const talk = async (page) => {
   await page.locator('#message').fill('こんにちは')
@@ -165,19 +170,31 @@ if (!ONLY || ONLY === 'check' || ONLY === 'base') {
     result.stand = { ms: rising.length * 50 }
     await o.context.close()
   }
-  // 2. 話しかけたら急いで立つ／非表示ではすぐ立ち姿
+  // 2. 話しかけても立たない（S3.7・S3.8。TD-03）／動きを減らすへ変えたら急いで立つ（S5）／非表示ではすぐ立ち姿
   {
     const o = await open(); await paused(o)
     const { page } = o
+    await pending(o.context)
     await sit(page); await page.clock.runFor(2000)
     await talk(page)
-    const rows = await run(page, 3000, 25), left = rows.findIndex((r) => r.state !== 'idle')
+    // 模擬は返事を返さないので、聞いている → 考えている → 考えが長引いて作業中の場面（上半身だけの枠）まで進む。
+    const rows = await run(page, 30000, 100), left = rows.findIndex((r) => r.state !== 'idle')
     check(left >= 0, `話しかけても状態が変わらない（${rows.at(-1)?.state}）`)
-    const stood = rows.findIndex((r) => r.level === 0), gone = rows.findIndex((r) => r.chair === 0)
-    check(stood >= 0 && (stood - left) * 25 <= 450, `S5: 会話が始まってから 0.45 秒以内に立ち姿へ戻らない（${(stood - left) * 25}ms）`)
-    check(gone >= 0 && (gone - left) * 25 <= 650, `S5: 椅子が 0.65 秒以内に消えない（${(gone - left) * 25}ms）`)
-    check(rows.every((r) => r.chair >= r.level - 1e-9), 'S5: 急いで立つ途中で椅子が先に消えた')
-    result.urgent = { stateChangedMs: (left + 1) * 25, standMs: (stood - left) * 25, chairGoneMs: (gone - left) * 25 }
+    check(rows.every((r) => r.phase === 'seated' && r.level === 1 && r.chair === 1), `S3.7: 話しかけたら立った ${JSON.stringify(rows.find((r) => r.phase !== 'seated'))}`)
+    check(rows.every((r) => r.stage.level === 1), 'S3.7: 会話中に描画の座り具合が 1 でない')
+    const upper = rows.filter((r) => r.frame === 'upper')
+    check(upper.length > 0, `S3.8: 上半身だけの枠まで進まなかった（確認が成り立たない。場面 ${[...new Set(rows.map((r) => r.scene))]}）`)
+    const offs = rows.slice(left).map((r) => r.offset)
+    check(Math.max(...offs) - Math.min(...offs) > 5, 'S3.7: 会話中に浮き沈みが止まった')
+    result.talkSeated = { stateChangedMs: (left + 1) * 100, states: [...new Set(rows.map((r) => r.state))], scenes: [...new Set(rows.map((r) => r.scene))], upperFrameMs: upper.length * 100 }
+    await page.screenshot({ path: path.join(OUT, 'check-talk-upper-frame.png') })
+    // S5: 座ったままの会話の途中で「動きを減らす」（OS）へ変えた → 0.4 秒で立ち姿・0.6 秒で椅子なし。
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    const up = await run(page, 2000, 25), stood = up.findIndex((r) => r.level === 0), gone = up.findIndex((r) => r.chair === 0)
+    check(stood >= 0 && (stood + 1) * 25 <= 450, `S5: 動きを減らすへ変えて 0.45 秒以内に立ち姿へ戻らない（${(stood + 1) * 25}ms）`)
+    check(gone >= 0 && (gone + 1) * 25 <= 650, `S5: 椅子が 0.65 秒以内に消えない（${(gone + 1) * 25}ms）`)
+    check(up.every((r) => r.chair >= r.level - 1e-9), 'S5: 急いで立つ途中で椅子が先に消えた')
+    result.urgent = { standMs: (stood + 1) * 25, chairGoneMs: (gone + 1) * 25 }
     await o.context.close()
   }
   {
@@ -197,9 +214,10 @@ if (!ONLY || ONLY === 'check' || ONLY === 'base') {
     await page.evaluate(() => window.__kohakoHome.playSeat('sit'))
     await run(page, 40000, 50, (s) => s.phase === 'sitting' && s.level > 0.3)
     await talk(page)
-    const rows = await run(page, 2000, 25), left = rows.findIndex((r) => r.state !== 'idle'), stood = rows.findIndex((r) => r.level === 0)
-    check(stood >= 0 && (stood - left) * 25 <= 450, `S5: 座る途中の会話で 0.45 秒以内に立ち姿へ戻らない（${(stood - left) * 25}ms）`)
-    check(rows.slice(left).every((r, i, a) => i === 0 || r.level <= a[i - 1].level + 1e-9), 'S5: 急いで立つ途中で座り具合が増えた')
+    const rows = await run(page, 3000, 25), left = rows.findIndex((r) => r.state !== 'idle')
+    check(left >= 0, '座る途中に話しかけても状態が変わらない')
+    check(rows.every((r, i) => i === 0 || r.level >= rows[i - 1].level - 1e-9), 'S3.9: 座る途中の会話で座り具合が戻った')
+    check(rows.at(-1)?.phase === 'seated' && rows.at(-1)?.level === 1, `S3.9: 座る途中の会話で座り切らない ${JSON.stringify(rows.at(-1))}`)
     await o.context.close()
   }
   // 4. 出ない設定
@@ -293,7 +311,7 @@ if (!ONLY || ONLY === 'sheets') {
   await sheet(page, 'stand', 24, 70)
   await sit(page); await page.clock.runFor(2000)
   await talk(page)
-  await sheet(page, 'urgent-stand', 16, 50)
+  await sheet(page, 'seated-talk', 16, 400)
   await o.context.close()
 }
 if (!ONLY || ONLY === 'record') {
@@ -301,12 +319,12 @@ if (!ONLY || ONLY === 'record') {
   const wait = (page, ms) => page.waitForTimeout(ms)
   const until = async (page, f, ms = 60000) => { const end = Date.now() + ms; while (Date.now() < end) { if (await page.evaluate(f)) return true; await wait(page, 100) } return false }
   const meta = {}
-  for (const scene of ['01-sit-seated-stand', '02-sit-talk-stand']) {
+  for (const scene of ['01-sit-seated-stand', '02-sit-talk-seated']) {
     const o = await open({ query: '?seat=now', video: dir }), { page } = o, t0 = Date.now(), mark = (k) => { (meta[scene] ??= {})[k] = +((Date.now() - t0) / 1000).toFixed(2) }
     // 録画では、送信に返事が返る模擬にする（受理 → 3 回目の照会で返事）。規則の確認（check）は進行中のままの模擬。
     let polls = 0
     await o.context.route('**/kohako/api/v1/messages', (r) => { polls = 0; return r.fulfill({ status: 202, json: { requestId: 'verify-1', status: 'pending' } }) })
-    await o.context.route('**/kohako/api/v1/requests/**', (r) => r.fulfill({ json: ++polls > 2 ? { requestId: 'verify-1', status: 'done', reply: { text: 'はい、こんにちは。椅子から立ってお話ししますね。' } } : { requestId: 'verify-1', status: 'pending' } }))
+    await o.context.route('**/kohako/api/v1/requests/**', (r) => r.fulfill({ json: ++polls > 2 ? { requestId: 'verify-1', status: 'done', reply: { text: 'はい、こんにちは。座ったままでお話ししますね。' } } : { requestId: 'verify-1', status: 'pending' } }))
     await page.goto(o.url)
     check(await until(page, () => window.__kohakoHome?.report.seat?.phase === 'sitting'), `${scene}: 実時間で座り始めない`); mark('sit')
     check(await until(page, () => window.__kohakoHome?.report.seat?.phase === 'seated', 5000), `${scene}: 実時間で座り切らない`); mark('seated')
@@ -320,9 +338,9 @@ if (!ONLY || ONLY === 'record') {
     } else {
       await wait(page, 5000); mark('talk')
       await talk(page)
-      check(await until(page, () => window.__kohakoHome?.report.seat?.phase === 'standing', 3000), `${scene}: 実時間で急いで立たない`); mark('standing')
       check(await until(page, () => !!document.querySelector('#reply')?.dataset.reply, 30000), `${scene}: 模擬の返事が表示されない`); mark('reply')
-      await wait(page, 4000)
+      await wait(page, 6000)
+      check(await page.evaluate(() => window.__kohakoHome?.report.seat?.phase === 'seated' && window.__kohakoHome.report.seat.level === 1), `${scene}: 返事の後に座ったままでない`); mark('still-seated')
     }
     mark('end')
     const video = page.video()

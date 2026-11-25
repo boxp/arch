@@ -3190,8 +3190,9 @@ let seatMoving = false,
   seatViewWritten: number | null = null,
   seatViewBase = 0
 /**
- * 座ったままでよい。会話・確認待ち・失敗・現場・帰還の演出・録音・小さい表示・動きを減らす設定では偽（急いで立つ）。なでる・タップ・マウス移動では立たない。
- * 上半身だけの枠（スマホの縦長・横長、PC で資料や作業を見せている場面）でも偽: 脚が見えないまま体だけ沈んで見えるので、全身が見える時だけ座る。
+ * 座ったままでよい。現場・帰還の演出・小さい表示・動きを減らす設定では偽（急いで立つ）。
+ * 会話（送信・聞いている・考えている・話している）・確認待ち・失敗・通信切れ・録音・上半身だけの枠への切替では立たない
+ * （Owner 要望 2026-11-25「話しかけられた時に椅子から立つ必要はなく、座りたい時は座ったまま会話してよい」）。なでる・タップ・マウス移動でも立たない。
  */
 function seatKeep(): boolean {
   return (
@@ -3200,13 +3201,17 @@ function seatKeep(): boolean {
     !reduced() &&
     !document.hidden &&
     enabled &&
-    !busy &&
-    !netDown &&
-    rigStateOf[state] === 'idle' &&
     character.dataset.arrival === 'home' &&
-    !character.classList.contains('mini') &&
-    character.dataset.frame !== 'upper' &&
-    !recording
+    !character.classList.contains('mini')
+  )
+}
+/**
+ * 静かな待機。座り始める・自分から立つのは、この時だけ（会話の途中で座り始めない・立ち上がらない）。
+ * 上半身だけの枠（スマホの縦長・横長、PC で資料や作業を見せている場面）では偽: 脚が見えないまま体だけ沈んで見えるので、全身が見える時だけ座り始める。
+ */
+function seatQuiet(): boolean {
+  return (
+    seatKeep() && !busy && !netDown && rigStateOf[state] === 'idle' && character.dataset.frame !== 'upper' && !recording
   )
 }
 function rigTick(now: number) {
@@ -3260,6 +3265,7 @@ function rigTick(now: number) {
     const seat = seatDirector.step(now / 1000, {
       calm: idleCalm(now, petHold),
       keep: seatKeep(),
+      quiet: seatQuiet(),
       free: idle.act === null,
       subtle: prefs.intensity === 'subtle',
     })
