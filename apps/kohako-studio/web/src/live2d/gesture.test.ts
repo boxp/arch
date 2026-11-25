@@ -608,7 +608,8 @@ describe("制止の腕セットの切替（BOXP-476 TD-06 Y')", () => {
   })
   describe('D: 待機しぐさの姿勢もフェードで入れ替える（BOXP-694 TD-01）', () => {
     const far = (a: readonly [number, number], b: readonly [number, number]) => Math.hypot(a[0] - b[0], a[1] - b[1])
-    const TIDY = { right: { up: -0.12, fo: 1.5, ha: 0 }, left: { up: -0.12, fo: 1.42, ha: -0.1 } }
+    // 仕様 D1 の形（#15607 より前の形と位置。下腹の前で重ねる形は本人が差し戻した）。
+    const TIDY = { right: { up: 0.08, fo: 1.05, ha: -0.15 }, left: { up: 0.07, fo: 0.98, ha: -0.25 } }
     const alpha = (stage: { report(): Record<string, unknown> }) =>
       (stage.report().armSwitch as { posedAlpha: number }).posedAlpha
     it('G1: 最初のコマから保持の形に置き、0.25 秒でフェードインする（腕を動かして運ばない）', () => {
