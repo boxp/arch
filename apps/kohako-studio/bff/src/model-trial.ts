@@ -14,7 +14,18 @@ export type TrialState = {
 }
 /** 指定を付けた発言の結果。cancelled（本人の停止など）と unknown（未確認・送る前の失敗）は失敗に数えない。 */
 export type Outcome = 'done' | 'failed' | 'cancelled' | 'unknown'
-export type ModelTrial = { id: string; take(): ModelRoute | undefined; settle(outcome: Outcome): void }
+/**
+ * 会話から見た試行。どの操作も、試行の記録の保存が終わってから解決する（呼ぶ側は、解決を待ってから外へ作用する）。
+ * take: 回数 +1 と数える資格の追加。保存に失敗したら指定を返さない。
+ * drop: 数える資格を外す（本人の停止依頼・なでる反応の自動拒否）。
+ * settle: 資格が残っている時だけ結果を数え、資格を外す。
+ */
+export type ModelTrial = {
+  id: string
+  take(requestId: string): Promise<ModelRoute | undefined>
+  drop(requestId: string): Promise<void>
+  settle(requestId: string, outcome: Outcome): Promise<void>
+}
 
 const MAX_FAILURES = 2
 
@@ -75,44 +86,64 @@ export function createModelTrial({
   log?: (line: string) => void
 }) {
   const fresh = (): TrialState => ({ id: config.id, turns: 0, failures: 0 })
+  // 回数・失敗の回数・終了と、数える資格のある発言の一覧（open）を 1 つの記録として、1 回の書き込みで保存する。
   let state = fresh(),
-    queue = Promise.resolve()
+    open: string[] = [],
+    queue: Promise<boolean> = Promise.resolve(true)
   const path = store ? join(store, 'model-trial.json') : undefined
-  const update = (next: TrialState) => {
-    if (next === state) return
+  /** メモリの状態はすぐに変え、その時点の全体を順番に保存する。返す Promise は、その保存が成功したかで解決する。 */
+  const update = (next: TrialState, nextOpen: string[]): Promise<boolean> => {
+    if (next === state && nextOpen === open) return queue
     const endedNow = next.ended && !state.ended
     state = next
+    open = nextOpen
     if (endedNow) log(`kohako_model_trial ended id=${state.id} reason=${state.ended} turns=${state.turns}`)
-    if (!path) return
-    const snapshot = { ...state }
-    queue = queue
-      .then(() => atomic(path, snapshot))
-      .catch((e) => {
-        console.error('model trial save failed', e instanceof Error ? e.message : 'unknown')
-      })
+    if (!path) return queue
+    const snapshot = { ...state, open: [...open] }
+    queue = queue.then(() =>
+      atomic(path, snapshot).then(
+        () => true,
+        (e) => {
+          console.error('model trial save failed', e instanceof Error ? e.message : 'unknown')
+          return false
+        },
+      ),
+    )
+    return queue
   }
+  const without = (requestId: string) => (open.includes(requestId) ? open.filter((x) => x !== requestId) : open)
   const count = (x: unknown): x is number => typeof x === 'number' && Number.isInteger(x) && x >= 0
   return {
     id: config.id,
     async restore() {
       if (!path) return
-      const saved = await load<Partial<TrialState> | null>(path, null)
-      // 別の名前の記録・壊れた記録は使わず 0 から数える。
+      const saved = await load<(Partial<TrialState> & { open?: unknown }) | null>(path, null)
+      // 別の名前の記録・壊れた記録は使わず 0 から数える（資格の一覧も引き継がない）。
       if (!saved || saved.id !== config.id || !count(saved.turns) || !count(saved.failures)) return
       const ended =
         saved.ended === 'turns' || saved.ended === 'deadline' || saved.ended === 'failures' ? saved.ended : undefined
       state = { id: config.id, turns: saved.turns, failures: saved.failures, ...(ended ? { ended } : {}) }
+      open = Array.isArray(saved.open) ? saved.open.filter((x): x is string => typeof x === 'string').slice(-100) : []
     },
-    take(): ModelRoute | undefined {
+    async take(requestId: string): Promise<ModelRoute | undefined> {
       const taken = takeTurn(config, state, now())
       if (taken.route) log(`kohako_model_trial turn id=${config.id} turn=${taken.state.turns}/${config.maxTurns}`)
-      update(taken.state)
-      return taken.route
+      const saved = await update(taken.state, taken.route ? [...without(requestId), requestId] : open)
+      // 保存できなければ指定を付けない（保存された回数より多く、指定を付けた run を送らない）。
+      return saved ? taken.route : undefined
     },
-    settle(outcome: Outcome) {
-      update(settleTurn(state, outcome, now()))
+    async drop(requestId: string) {
+      await update(state, without(requestId))
+    },
+    async settle(requestId: string, outcome: Outcome) {
+      // 資格が無ければ何もしない（+1 もしないし、0 にも戻さない）。
+      if (!open.includes(requestId)) return
+      await update(settleTurn(state, outcome, now()), without(requestId))
     },
     state: (): TrialState => ({ ...state }),
-    flush: () => queue,
+    open: (): string[] => [...open],
+    flush: async () => {
+      await queue
+    },
   }
 }
