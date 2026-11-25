@@ -38,7 +38,7 @@ import './room.css'
 import './menus.css'
 import { buildRoomV1, type Daypart, daypartOf, roomOptions } from './room'
 import { IdleDirector, type IdleAct, idleActNames, settledHead } from './idle'
-import { SeatDirector, type SeatPhase, seatOffsetPx, seatOption } from './seat'
+import { SeatDirector, seatOffsetPx, seatOption } from './seat'
 import {
   states,
   formatPercent,
@@ -3187,7 +3187,6 @@ function idleCalm(now: number, petBusy: boolean): boolean {
 const seatConfig = seatOption(location.search),
   seatDirector = new SeatDirector(Math.random, seatConfig.first)
 let seatMoving = false,
-  seatPhase: SeatPhase = 'standing',
   seatViewWritten: number | null = null,
   seatViewBase = 0
 /**
@@ -3264,9 +3263,6 @@ function rigTick(now: number) {
       free: idle.act === null,
       subtle: prefs.intensity === 'subtle',
     })
-    // 座り切ったら、まず両手をひざの上でそろえる（待機のしぐさ「手を前でそろえる」を次の機会に出す）。
-    if (seat.phase === 'seated' && seatPhase !== 'seated') idleDirector.force('tidy')
-    seatPhase = seat.phase
     seatMoving = seat.moving
     // 体と椅子を一緒に下げる（腰を下ろすぶんと浮遊の上下）。一度も座っていない間・椅子を描けない環境では view に触れない。
     const offset = stage.setSeat(seat) ? seat.offset : 0
