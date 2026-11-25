@@ -294,6 +294,45 @@ it('本人が止めた発言は失敗に数えない', async () => {
   expect(trial.state()).toMatchObject({ turns: 2, failures: 0 })
   expect(trial.state().ended).toBeUndefined()
 })
+it('なでる反応で許可を断った発言は、Hermes が成功を返しても数えない（前の失敗を消さない）', async () => {
+  const trial = createModelTrial({ config: { ...config, maxTurns: 10 }, now: () => at('10:00') })
+  const results = [
+    { status: 'failed', error: '400' },
+    { status: 'done', text: 'ok', approval: true },
+    { status: 'failed', error: 'touch', approval: true },
+    { status: 'failed', error: '400' },
+  ]
+  const hermes = {
+    run: async (...args: unknown[]) => {
+      const { approval, ...result } = results.shift() ?? { status: 'done', text: 'ok', approval: false }
+      if (approval)
+        (args[4] as (runId: string, a: object) => void)('run1', {
+          description: 'd',
+          command: 'c',
+          requestId: 'a1',
+          generation: 1,
+        })
+      return result
+    },
+    stop: async () => 'ok',
+    approve: async () => 'ok',
+  } as unknown as ReturnType<typeof createHermes>
+  const owner = createConversation({ now: () => at('10:00'), hermes, prefix: 'kohako-web', modelTrial: trial })
+  const touch = (requestId: string) => ({
+    requestId,
+    kind: 'touch' as const,
+    touch: { zone: 'head' as const, action: 'pat' as const, count: 1 },
+    expiresAt: 1e15,
+  })
+  await settled(owner, text('request-home-1'))
+  expect(trial.state()).toMatchObject({ turns: 1, failures: 1 })
+  await settled(owner, touch('request-home-2'))
+  await settled(owner, touch('request-home-3'))
+  expect(trial.state()).toMatchObject({ turns: 3, failures: 1 })
+  expect(trial.state().ended).toBeUndefined()
+  await settled(owner, text('request-home-4'))
+  expect(trial.state()).toMatchObject({ turns: 4, ended: 'failures' })
+})
 
 it('例6: 回数と終了を保存し、再起動後は続きから数える。名前を変えると 0 から数え直す', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'kohako-trial-'))

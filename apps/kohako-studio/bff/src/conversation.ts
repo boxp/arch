@@ -905,13 +905,16 @@ export function createConversation({
         }
         if (route)
           modelTrial?.settle(
-            result.status === 'done'
-              ? 'done'
-              : result.status === 'unknown' || PRE_RUN_ERRORS.has(result.error ?? '')
-                ? 'unknown'
-                : entry.cancelRequested || touchApproval
-                  ? 'cancelled'
-                  : 'failed',
+            // なでる反応で許可を断った発言は、Hermes の結果が成功でも数えない（前の失敗を消さない）。
+            touchApproval
+              ? 'cancelled'
+              : result.status === 'done'
+                ? 'done'
+                : result.status === 'unknown' || PRE_RUN_ERRORS.has(result.error ?? '')
+                  ? 'unknown'
+                  : entry.cancelRequested
+                    ? 'cancelled'
+                    : 'failed',
           )
         await releaseUpstream(result)
         await applyResult(result)
