@@ -75,8 +75,20 @@ it('上限 1 と 100 は受け付け、期限が過ぎているだけの設定�
     `{"id":"a","provider":"openai-codex","model":"m","until":"2020-01-01T00:00:00Z","maxTurns":${n}}`
   expect(parseModelTrial(raw(1))?.maxTurns).toBe(1)
   expect(parseModelTrial(raw(100))?.maxTurns).toBe(100)
-  expect(readConfig({ KOHAKO_MODEL_TRIAL: raw(30) }).modelTrial?.until).toBe(Date.parse('2020-01-01T00:00:00Z'))
+  expect(readConfig({ KOHAKO_MODEL_TRIAL: raw(30), KOHAKO_DATA_DIR: '/data' }).modelTrial?.until).toBe(
+    Date.parse('2020-01-01T00:00:00Z'),
+  )
   expect(readConfig({}).modelTrial).toBeUndefined()
+})
+it('試行の設定があるのに保存先（KOHAKO_DATA_DIR）が無ければ起動しない', () => {
+  // 仕様「設定」: メモリだけで数えると、再起動のたびに回数と失敗の回数が消え、上限を超えて指定が続く。
+  const raw = '{"id":"a","provider":"openai-codex","model":"m","until":"2026-11-28T00:00:00Z","maxTurns":30}'
+  expect(() => readConfig({ KOHAKO_MODEL_TRIAL: raw })).toThrow('invalid model trial configuration')
+  expect(() => readConfig({ KOHAKO_MODEL_TRIAL: raw, KOHAKO_DATA_DIR: '' })).toThrow(
+    'invalid model trial configuration',
+  )
+  expect(readConfig({ KOHAKO_MODEL_TRIAL: raw, KOHAKO_DATA_DIR: '/data' }).modelTrial?.maxTurns).toBe(30)
+  expect(readConfig({ KOHAKO_DATA_DIR: '/data' }).modelTrial).toBeUndefined()
 })
 
 it('例1: 上限の発言までは付け、その次から付けない（終了・回数）', () => {
