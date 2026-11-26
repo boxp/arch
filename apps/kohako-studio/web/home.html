@@ -40,11 +40,12 @@
     <label class="opt"><span class="opt-text"><b>反応を控えめにする</b><small>ふれあいや待機中の動き・視線の変化を穏やかにします。</small></span><input id="pref-subtle" type="checkbox" class="switch"></label>
   </section>
   <section class="group"><h3>読み上げ</h3>
-    <label class="opt"><span class="opt-text"><b>読み上げの声</b></span><select id="pref-voice"><option value="kohaku">コハク（ノーマル）</option><option value="browser">端末の声</option></select></label>
+    <label class="opt"><span class="opt-text"><b>読み上げの声</b></span><select id="pref-voice"><option value="kohaku">コハク（ノーマル）</option><option value="drama3">Drama-3（試用）</option><option value="browser">端末の声</option></select></label>
     <label class="opt"><span class="opt-text"><b>他アプリの音楽を止めない</b><small>コハクの声を音楽と重ねて再生します。OFFにすると再生時に他アプリの音楽が一時停止します。iPhone/iPadではマナーモード中に声が出ないことがあります。</small></span><input id="pref-mix" class="switch" type="checkbox"></label>
     <label class="opt"><span class="opt-text"><b>読み上げの音量</b><small>コハクの声・端末の声の両方に効きます。iPhone/iPad では端末の音量ボタンで調整してください。</small></span><span class="volume"><input id="pref-volume" type="range" min="0" max="100" step="5" value="100" aria-describedby="pref-volume-value"><output id="pref-volume-value" for="pref-volume">100%</output></span></label>
     <p id="voice-unavailable" class="note" hidden>コハクの声は現在利用できません（端末の声は使えます）。</p>
     <p class="note">声: AivisSpeech: コハク（ノーマル）／ACML 1.0。猫音コハク（©Oz Chat/Trippy）の公式とは関係ない非公式利用です。</p>
+    <p class="note">試用の声: Drama-3-Japanese（Built with Fish Audio／Fish Audio Community License 1.0、本人限定の試用。声はモデル自身の声設計で、実在の人の声ではありません）。家のサーバーの CPU で作るため、コハクより話し始めまで時間がかかります。</p>
   </section>
   <section class="group"><h3>位置情報</h3>
     <label class="opt"><span class="opt-text"><b>現在地をコハコに伝える</b><small>ONの間だけ、送信するたびにこの端末の位置を1回取得し、その発言の参考としてコハコに渡します（取得時刻と精度つき）。常時の追跡や移動履歴の記録はせず、会話履歴・記憶・この端末にも保存しません。初回はブラウザの許可が必要です。OFFにするとすぐ伝えなくなります。</small></span><input id="pref-location" type="checkbox" class="switch"></label>

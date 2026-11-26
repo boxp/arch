@@ -137,3 +137,99 @@ export function createTts({
   }
   return { resolveStyle: () => resolveStyle(), status, synthesize, styleIdFor: (audio: Buffer) => styles.get(audio) }
 }
+
+/** BOXP-715: 本人限定の試用声。speech.cpp の OpenAI 互換 API（Drama-3-Japanese、CPU）。既定の声はコハクのまま。 */
+export const DRAMA3 = {
+  label: 'Drama-3-Japanese（試用）',
+  credit: 'Built with Fish Audio',
+  voice: 'kohako',
+  seed: 715,
+} as const
+export function createDrama3Tts({
+  url,
+  fetcher,
+  now,
+  timeoutMs = 180000,
+}: {
+  url: string
+  fetcher: typeof fetch
+  now: () => number
+  timeoutMs?: number
+}) {
+  let active = 0
+  const waiting: (() => void)[] = []
+  const signalOf = (ms: number, cancel?: AbortSignal) =>
+    cancel ? AbortSignal.any([cancel, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms)
+  async function status() {
+    const info = { voice: DRAMA3.label, credit: DRAMA3.credit }
+    try {
+      const r = await fetcher(`${url}/health`, { signal: signalOf(10000), redirect: 'error' })
+      return r.ok ? { available: true, ...info } : { available: false, ...info, error: 'voice_unavailable' }
+    } catch {
+      return { available: false, ...info, error: 'voice_unavailable' }
+    }
+  }
+  async function synthesize(text: unknown, cancel?: AbortSignal): Promise<Buffer> {
+    if (typeof text !== 'string' || !text.trim() || text.length > 300) throw new TtsError('invalid')
+    if (cancel?.aborted) throw new TtsError('cancelled')
+    const queuedAt = now()
+    if (active >= 1) {
+      if (waiting.length >= 4) throw new TtsError('busy')
+      await new Promise<void>((resolve, reject) => {
+        const turn = () => {
+          cancel?.removeEventListener('abort', drop)
+          resolve()
+        }
+        const drop = () => {
+          const i = waiting.indexOf(turn)
+          if (i >= 0) waiting.splice(i, 1)
+          reject(new TtsError('cancelled'))
+        }
+        waiting.push(turn)
+        cancel?.addEventListener('abort', drop, { once: true })
+      })
+    } else active++
+    try {
+      if (cancel?.aborted) throw new TtsError('cancelled')
+      const startedAt = now()
+      let response: Response
+      try {
+        response = await fetcher(`${url}/v1/audio/speech`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ input: text.trim(), voice: DRAMA3.voice, response_format: 'wav', seed: DRAMA3.seed }),
+          signal: signalOf(timeoutMs, cancel),
+          redirect: 'error',
+        })
+      } catch {
+        // 接続できない(落ちている・退避された)ときは声が使えない扱いにし、端末で既定の声へ戻せるようにする。
+        throw new TtsError(cancel?.aborted ? 'cancelled' : 'voice_unavailable')
+      }
+      if (response.status === 503) throw new TtsError('voice_unavailable')
+      try {
+        if (!response.ok) throw Error()
+        const audio = Buffer.from(await response.arrayBuffer())
+        if (audio.subarray(0, 4).toString() !== 'RIFF') throw Error()
+        const byteRate = audio.length >= 44 ? audio.readUInt32LE(28) : 0
+        console.log(
+          JSON.stringify({
+            event: 'tts_synthesized',
+            voice: 'drama3',
+            chars: text.trim().length,
+            waitMs: startedAt - queuedAt,
+            synthMs: now() - startedAt,
+            audioMs: byteRate ? Math.round(((audio.length - 44) / byteRate) * 1000) : null,
+          }),
+        )
+        return audio
+      } catch {
+        throw new TtsError(cancel?.aborted ? 'cancelled' : 'tts_failed')
+      }
+    } finally {
+      const next = waiting.shift()
+      if (next) next()
+      else active--
+    }
+  }
+  return { status, synthesize }
+}

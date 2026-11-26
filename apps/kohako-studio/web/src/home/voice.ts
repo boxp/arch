@@ -32,6 +32,8 @@ export function createVoicePlayer(deps: {
   createUrl(blob: Blob): string
   revokeUrl(url: string): void
   retryDelay?(): Promise<void>
+  /** BOXP-715: 合成に使う声。drama3 のときだけ body に voice を付ける（未指定・kohaku は従来どおり）。 */
+  voice?(): 'kohaku' | 'drama3'
   mixer?: { enabled(): boolean; context(): Promise<AudioContext | null>; gain(): number }
 }) {
   let generation = 0,
@@ -104,7 +106,7 @@ export function createVoicePlayer(deps: {
         redirect: 'manual',
         cache: 'no-store',
         headers: { 'content-type': 'application/json', 'X-Kohako-Request': '1' },
-        body: JSON.stringify({ text: sentence }),
+        body: JSON.stringify(deps.voice?.() === 'drama3' ? { text: sentence, voice: 'drama3' } : { text: sentence }),
         signal,
       })
       if (!r.ok) throw Error('fetch_failed')

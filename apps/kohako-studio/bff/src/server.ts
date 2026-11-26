@@ -10,7 +10,7 @@ import { createNotifications } from './notifications.js'
 import { createGeocoder } from './geocode.js'
 import { createConversation } from './conversation.js'
 import { createAttachments } from './attachments.js'
-import { createTts } from './tts.js'
+import { createDrama3Tts, createTts } from './tts.js'
 import { createApp } from './app.js'
 import { createBoardSummary, createG2Reference, createSharedContext } from './g2-context.js'
 const config = readConfig(process.env)
@@ -89,6 +89,10 @@ const server = createServer(
     tts: config.ttsUrl
       ? createTts({ url: config.ttsUrl, fetcher: fetch, now: Date.now, concurrency: config.ttsConcurrency })
       : undefined,
+    ttsTrial:
+      config.ttsUrl && config.ttsDrama3Url
+        ? createDrama3Tts({ url: config.ttsDrama3Url, fetcher: fetch, now: Date.now })
+        : undefined,
   }),
 )
 server.listen(config.port, config.host)

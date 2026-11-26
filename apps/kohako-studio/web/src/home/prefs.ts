@@ -14,7 +14,8 @@ export const defaults = {
   location: false,
 } as const
 export type Prefs = {
-  voice: 'kohaku' | 'browser'
+  /** BOXP-715: drama3 は本人限定の試用声（Drama-3-Japanese）。既定はコハク。 */
+  voice: 'kohaku' | 'drama3' | 'browser'
   volume: number
   mix: boolean
   touch: boolean
@@ -40,7 +41,7 @@ export function parsePrefs(raw: string | null): Prefs {
     if (!p || typeof p !== 'object' || Array.isArray(p)) return { ...defaults }
     const v = p as Record<string, unknown>
     return {
-      voice: v.voice === 'browser' || v.voice === 'kohaku' ? v.voice : defaults.voice,
+      voice: v.voice === 'browser' || v.voice === 'kohaku' || v.voice === 'drama3' ? v.voice : defaults.voice,
       volume: parseVolume(v.volume),
       mix: typeof v.mix === 'boolean' ? v.mix : defaults.mix,
       touch: typeof v.touch === 'boolean' ? v.touch : defaults.touch,
