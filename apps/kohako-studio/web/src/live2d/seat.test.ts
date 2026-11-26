@@ -348,12 +348,12 @@ describe('S8.10 太ももの絵を切った境目は裾の層の下に入れる�
   it('例の値: 元のまま・塗り足し・透明の区分け（右は左右対称）', () => {
     expect(artZone(213, 103)).toBe('keep')
     expect(artZone(212, 103)).toBe('fill')
-    expect(artZone(173, 103)).toBe('fill')
-    expect(artZone(172, 103)).toBe('clear')
+    expect(artZone(157, 103)).toBe('fill')
+    expect(artZone(156, 103)).toBe('clear')
     expect(artZone(445, 103)).toBe('keep')
     expect(artZone(446, 103)).toBe('fill')
-    expect(artZone(485, 103)).toBe('fill')
-    expect(artZone(486, 103)).toBe('clear')
+    expect(artZone(501, 103)).toBe('fill')
+    expect(artZone(502, 103)).toBe('clear')
     expect(artZone(144, 232)).toBe('keep')
     expect(artZone(143, 232)).toBe('fill')
     expect(artZone(136, 300)).toBe('keep')
@@ -361,12 +361,12 @@ describe('S8.10 太ももの絵を切った境目は裾の層の下に入れる�
     expect(artZone(135, 238)).toBe('clear')
     expect(artZone(135, 237)).toBe('fill')
   })
-  it('どの行も、外から 透明 → 塗り足し（y < 238 だけ、幅 40）→ 元のまま の順に並び、絵に描き込まれた裾の側は元のまま残らない', () => {
+  it('どの行も、外から 透明 → 塗り足し（y < 238 だけ、幅 56）→ 元のまま の順に並び、絵に描き込まれた裾の側は元のまま残らない', () => {
     for (let y = 0; y < height; y++) {
       const row = Array.from({ length: 330 }, (_, x) => artZone(x, y)),
         fill = row.filter((z) => z === 'fill').length
       expect(row.join('').replace(/(clear)+(fill)*(keep)+/, ''), `y=${y}`).toBe('')
-      expect(fill, `y=${y}`).toBe(y < 238 ? 40 : 0)
+      expect(fill, `y=${y}`).toBe(y < 238 ? 56 : 0)
       for (let x = 0; x < 330; x++) {
         expect(artZone(658 - x, y)).toBe(row[x])
         if (paintedSkirt(x, y)) expect(row[x], `${x},${y}`).not.toBe('keep')
@@ -379,10 +379,10 @@ describe('S8.10 太ももの絵を切った境目は裾の層の下に入れる�
     expect(at(data, 213, 103)).toEqual([200, 200, 200, 200])
     expect(at(data, 300, 150)).toEqual([200, 200, 200, 200])
     expect(at(data, 212, 103)).toEqual([200, 200, 200, 200])
-    expect(at(data, 173, 103)).toEqual([200, 200, 200, 200])
-    expect(at(data, 485, 103)).toEqual([200, 200, 200, 200])
-    expect(at(data, 172, 103)).toEqual([0, 0, 0, 0])
-    expect(at(data, 486, 103)).toEqual([0, 0, 0, 0])
+    expect(at(data, 157, 103)).toEqual([200, 200, 200, 200])
+    expect(at(data, 501, 103)).toEqual([200, 200, 200, 200])
+    expect(at(data, 156, 103)).toEqual([0, 0, 0, 0])
+    expect(at(data, 502, 103)).toEqual([0, 0, 0, 0])
     expect(at(data, 100, 250)).toEqual([0, 0, 0, 0])
     expect(at(data, 135, 300)).toEqual([0, 0, 0, 0])
     expect(at(data, 136, 300)).toEqual([200, 200, 200, 200])
@@ -404,8 +404,8 @@ describe('S8.10 太ももの絵を切った境目は裾の層の下に入れる�
     for (const y of [20, 103, 180, 237]) {
       const first = Math.ceil(thighEdge(y))
       expect(at(data, first - 1, y), `y=${y}`).toEqual([40, 40, 60, 255])
-      expect(at(data, first - 40, y), `y=${y}`).toEqual([40, 40, 60, 255])
-      expect(at(data, 658 - (first - 40), y), `y=${y}`).toEqual([40, 40, 60, 255])
+      expect(at(data, first - 56, y), `y=${y}`).toEqual([40, 40, 60, 255])
+      expect(at(data, 658 - (first - 56), y), `y=${y}`).toEqual([40, 40, 60, 255])
       expect(at(data, first + 3, y), `y=${y}`).toEqual([80, 220, 230, 255])
     }
   })

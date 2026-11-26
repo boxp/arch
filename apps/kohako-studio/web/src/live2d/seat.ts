@@ -202,7 +202,7 @@ export const THIGH_MEND = {
   taperFrom: 226,
   end: 238,
   /** 塗り足す幅、色を選ぶ画素の数（線から内側へ。その中でいちばん暗い画素の色を使う）、色を平均する上下の行数。 */
-  fill: 40,
+  fill: 56,
   sample: 12,
   blur: 3,
 } as const

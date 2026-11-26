@@ -404,8 +404,8 @@ if (!ONLY || ONLY === 'check' || ONLY === 'skirt') {
     await g.context.close()
     save()
   }
-  // S8.10 (b)（TD-05 の再指摘）: 太ももの絵を切った境目は、いつも裾の板の下にある。残す線のすぐ内側 12 画素（塗り足しの色を選ぶ画素）を真緑にした絵へ差し替えると、塗り足し（幅 40）も緑になる。
-  // 画面の各行で緑が横に続く長さ（絵の画素に直す）が 12 + 30 以下 = 塗り足しの外の 10 画素以上は板の下に隠れている（板と太ももの間に隙間が無い）ことを、座る・座っている・視線の追従・待機のしぐさ・立つで見る。
+  // S8.10 (b)（TD-05 の再指摘）: 太ももの絵を切った境目は、いつも裾の板の下にある。残す線のすぐ内側 12 画素（塗り足しの色を選ぶ画素）を真緑にした絵へ差し替えると、塗り足し（幅 56）も緑になる。
+  // 画面の各行で緑が横に続く長さ（絵の画素に直す）が 12 + 46 以下 = 塗り足しの外の 10 画素以上は板の下に隠れている（板と太ももの間に隙間が無い）ことを、座る・座っている・視線の追従・待機のしぐさ・立つで見る。
   {
     const EDGE = [[0, 260], [58, 252], [68, 238], [103, 205], [124, 184], [150, 169], [190, 154], [226, 143], [238, 136], [352, 136]]
     const m = await open(), mp = await m.context.newPage()
@@ -458,8 +458,8 @@ if (!ONLY || ONLY === 'check' || ONLY === 'skirt') {
     for (let t = 0; t < 30000; t += 50) { await g.page.clock.runFor(50); const s = await seatOf(g.page); if (s.phase === 'rising' && s.level >= 0.8) await look(`stand ${s.level.toFixed(2)}`); if (s.phase === 'standing') break }
     check(seen.frames >= 100, `S8.10: 見たコマが足りない（${seen.frames}）`)
     check(seen.worst > 3, `S8.10: 緑がほとんど見えない（差し替えが効いていない。最大 ${seen.worst.toFixed(1)}）`)
-    check(seen.worst <= 42.5, `S8.10 (b): 塗り足しの外の端が裾の板の下から出かかっている（緑の続く長さ 最大 ${seen.worst.toFixed(1)} 画素 > 42、${seen.at}。見たコマ ${seen.frames}）`)
-    result.thighSeam = { frames: seen.frames, greenRunMax: +seen.worst.toFixed(1), greenRunMin: +seen.least.toFixed(1), at: seen.at, limit: 42 }
+    check(seen.worst <= 58.5, `S8.10 (b): 塗り足しの外の端が裾の板の下から出かかっている（緑の続く長さ 最大 ${seen.worst.toFixed(1)} 画素 > 58、${seen.at}。見たコマ ${seen.frames}）`)
+    result.thighSeam = { frames: seen.frames, greenRunMax: +seen.worst.toFixed(1), greenRunMin: +seen.least.toFixed(1), at: seen.at, limit: 58 }
     await g.context.close()
     save()
   }
