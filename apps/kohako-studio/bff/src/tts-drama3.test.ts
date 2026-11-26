@@ -1,7 +1,7 @@
 // BOXP-715: 期待値は vault の Projects/kohako-home/tts-trial-voice-spec.md の例から取る。
 import { expect, it, vi } from 'vitest'
 import { createServer } from 'node:http'
-import { createDrama3Tts, DRAMA3, createTts, KOHAKU } from './tts.js'
+import { createDrama3Tts, DRAMA3, DRAMA3_TIMEOUT_MS, createTts, KOHAKU } from './tts.js'
 import { createApp } from './app.js'
 
 const json = (x: unknown) => new Response(JSON.stringify(x), { headers: { 'content-type': 'application/json' } })
@@ -155,4 +155,9 @@ it('routes the voice field of /tts and keeps コハク as the default', async ()
     await b.stop()
   }
   expect(kohakuCalls.length).toBeGreaterThan(0)
+})
+
+// BOXP-715 TD-02: spec「遅い声でも返答を止めない」— nginx の 95 秒より先に BFF が答える。
+it('gives up the trial voice engine before the 95s nginx limit', () => {
+  expect(DRAMA3_TIMEOUT_MS).toBe(90000)
 })

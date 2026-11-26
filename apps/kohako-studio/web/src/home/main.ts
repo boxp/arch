@@ -91,7 +91,7 @@ import {
   type Rect,
   type Zone,
 } from './touch'
-import { createVoicePlayer, splitVoiceSentences } from './voice'
+import { createVoicePlayer, replyTextWaitMs, speechHoldsQueue, splitVoiceSentences } from './voice'
 import { parsePrefs, parseVolume, type Prefs } from './prefs'
 import {
   acquire,
@@ -1678,9 +1678,18 @@ function playReply() {
   readFollow.reset()
   readSpans = mapChunks(speechChunks, reply.textContent ?? '')
   readTimer = window.setInterval(updateReading, 120)
+  // BOXP-715 TD-02: 本文は読み上げを待たせない。試用声はすぐ、コハクも最初の音声が遅ければ一定時間で吹き出しを出す。
+  let audioStarted = false
+  const textWait = replyTextWaitMs(prefs.voice)
+  if (textWait === 0) retainReply()
+  else if (textWait !== null)
+    window.setTimeout(() => {
+      if (generation === speechGeneration && !audioStarted && state === 'speaking') retainReply()
+    }, textWait)
   const events = {
     onSentence: (index: number, sentence: string, duration = 0) => {
       if (generation !== speechGeneration) return
+      audioStarted = true
       let last = index,
         joined = speechChunks[index] ?? ''
       while (last + 1 < speechChunks.length && joined.length < sentence.length) joined += speechChunks[++last]
@@ -1846,7 +1855,15 @@ function holdFor(): HoldReason | null {
   if (state === 'stopped') return 'stopped'
   if (state === 'failed') return 'failed'
   // 読み上げ失敗・本人の停止で「続きから読む」を出している間は、次の送信で再開位置が消えないよう自動送信を止める。
-  if ((voiceTrouble || speechPaused) && speechChunks.length > 0 && speechNext < speechChunks.length) return 'speech'
+  if (
+    speechHoldsQueue({
+      voice: prefs.voice,
+      trouble: voiceTrouble,
+      paused: speechPaused,
+      remaining: speechChunks.length > 0 && speechNext < speechChunks.length,
+    })
+  )
+    return 'speech'
   return null
 }
 function renderQueue() {
