@@ -23,6 +23,7 @@ import {
   boxCorners,
   chairCorners,
   COATS,
+  eraseSkirt,
   followPoint,
   LEG_MESHES,
   legOpacity,
@@ -1577,10 +1578,10 @@ export function createActingStage(
       bodyRest = new Float32Array(rt.memory.buffer, rt.p2l_mesh_vertices(p.rig, BODY), body.vertices * 2).slice(),
       waist = SEAT_POSE.waist.map((q) => bindPoint([q[0], q[1]], bodyRest, body.indices))
     const loads: Promise<void>[] = []
-    const later = (file: string) => {
+    const later = (file: string, edit?: (data: Uint8ClampedArray, width: number) => void) => {
       const index = addTexture(pp)
       loads.push(
-        loadTexture(gl, new URL(`kohako/live2d/seat/${file}`, location.href).href).then((t) => {
+        loadTexture(gl, new URL(`kohako/live2d/seat/${file}`, location.href).href, edit).then((t) => {
           pp.textures[index] = t
         }),
       )
@@ -1610,7 +1611,8 @@ export function createActingStage(
       shadowBox = boxCorners(SEAT_ART.shadow.box),
       shadow = quadOf(SEAT_ART.shadow.file, art, () => shadowBox)
     // 太ももの絵は格子にして、上のほうだけ体の層の腰の動きへ付いていかせる。
-    const grid = addGrid(pp, 8, 10, later(SEAT_ART.thighs.file)),
+    // 絵に描き込まれた裾は透明にして読む（S8.9。裾は立ち姿の層が硬い板として動くので、絵の裾が残ると板の外や下からのぞく）。
+    const grid = addGrid(pp, 8, 10, later(SEAT_ART.thighs.file, eraseSkirt)),
       [gx, gy, gw, gh] = SEAT_ART.thighs.box,
       points: Vec[] = grid.uv.map(([u, v]) => [gx + u * gw, gy + v * gh])
     synth.set(grid.index, {
