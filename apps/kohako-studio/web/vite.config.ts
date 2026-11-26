@@ -10,6 +10,7 @@ export default defineConfig({
         studio: resolve('studio.html'),
         live2d: resolve('live2d.html'),
         candidates: resolve('candidates.html'),
+        keshin: resolve('keshin.html'),
       },
     },
   },

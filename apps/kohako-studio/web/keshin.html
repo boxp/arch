@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="robots" content="noindex"><title>コハコ（Keshin2D の試作）</title></head>
+<body data-scene="idle" data-shape="pc" data-daypart="day">
+<div class="room" aria-hidden="true"><div class="room-wall"></div><div class="room-orbit o2"><i></i></div><div class="room-orbit"><i></i></div><div class="room-window"><div class="sky"><i class="glow g1"></i><i class="glow g2"></i><i class="glow g3"></i><i class="stars"></i><i class="orb"></i></div><i class="lattice"></i><i class="rim"></i></div><div class="room-floor"><i class="grid"></i><i class="sheen"></i></div><div class="room-line"><i></i></div><div class="petals"><i class="petal p1"></i><i class="petal p2"></i><i class="petal p3"></i><i class="petal p4"></i><i class="petal p5"></i><i class="petal p6"></i><i class="petal p7"></i><i class="petal p8"></i><i class="petal p9"></i><i class="petal near p10"></i><i class="petal near p11"></i><i class="petal near p12"></i></div></div>
+<iframe id="k2d" title="コハコ（Keshin2D の試作。マウスの方を向きます）"></iframe>
+<div id="bar" role="group" aria-label="試作の操作">
+  <strong>Keshin2D の試作（BOXP-716）</strong>
+  <button id="run-a" type="button">台本A: 待機→話し始め</button>
+  <button id="run-b" type="button">台本B: 座ったまま視線</button>
+  <button id="sit" type="button">座る</button>
+  <button id="stand" type="button">立つ</button>
+  <button id="talk" type="button">話す</button>
+  <button id="free" type="button">マウスで向く</button>
+  <span id="status" role="status"></span>
+</div>
+<script type="module" src="/src/keshin/main.ts"></script>
+</body></html>
