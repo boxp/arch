@@ -10,7 +10,7 @@ import type { StatusPayload } from './status.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createConversation, type Input, VIAS, type Via } from './conversation.js'
 import type { createHermes } from './hermes.js'
-import { type createTts, TtsError } from './tts.js'
+import { type createDrama3Tts, type createTts, TtsError } from './tts.js'
 import { pcmToWav, STT_FINAL_FIELDS } from './stt.js'
 import { isRecord } from './untrusted.js'
 import { locationInstructions, locationLogLine, parseLocation, type TurnLocation } from './location.js'
@@ -70,6 +70,8 @@ export function createApp(opts: {
   push?: Awaited<ReturnType<typeof createPush>>
   sttUrl?: string
   tts?: ReturnType<typeof createTts>
+  /** BOXP-715: 本人限定の試用声（Drama-3-Japanese）。body の voice: 'drama3' のときだけ使う。 */
+  ttsTrial?: ReturnType<typeof createDrama3Tts>
   conversations?: { owner: ReturnType<typeof createConversation>; verifier: ReturnType<typeof createConversation> }
   status?: { get: () => Promise<StatusPayload> }
   now?: () => number
@@ -298,7 +300,13 @@ export function createApp(opts: {
         // BOXP-524 Owner承認: 自動E2E用に既存 verifier にも TTS を許可（notifier は上で拒否済み）。
         if (principal !== 'owner' && principal !== 'verifier') return json(403, { error: 'forbidden' })
         if (!opts.tts) return json(503, { error: 'tts_disabled' })
-        if (method === 'GET') return json(200, await opts.tts.status())
+        if (method === 'GET') {
+          if (new URL(req.url ?? '/', 'http://localhost').searchParams.get('voice') === 'drama3')
+            return opts.ttsTrial
+              ? json(200, await opts.ttsTrial.status())
+              : json(200, { available: false, error: 'voice_unavailable' })
+          return json(200, await opts.tts.status())
+        }
         if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] ?? ''))
           return json(415, { error: 'content_type' })
         const chunks: Buffer[] = []
@@ -322,12 +330,19 @@ export function createApp(opts: {
           }
         res.once('close', onClose)
         try {
-          const audio = await opts.tts.synthesize(isRecord(x) ? x.text : undefined, cancel.signal)
-          const styleId = opts.tts.styleIdFor(audio)
+          const voice = isRecord(x) && x.voice !== undefined ? x.voice : 'kohaku'
+          if (voice !== 'kohaku' && voice !== 'drama3') throw new TtsError('invalid')
+          if (voice === 'drama3' && !opts.ttsTrial) throw new TtsError('voice_unavailable')
+          const text = isRecord(x) ? x.text : undefined
+          const audio =
+            voice === 'drama3' && opts.ttsTrial
+              ? await opts.ttsTrial.synthesize(text, cancel.signal)
+              : await opts.tts.synthesize(text, cancel.signal)
           res.writeHead(200, {
             'content-type': 'audio/wav',
             'cache-control': 'no-store',
-            'x-kohako-tts-style-id': String(styleId),
+            'x-kohako-tts-voice': voice,
+            ...(voice === 'kohaku' ? { 'x-kohako-tts-style-id': String(opts.tts.styleIdFor(audio)) } : {}),
             'x-kohako-tts-ms': String(now() - start),
           })
           return res.end(audio)

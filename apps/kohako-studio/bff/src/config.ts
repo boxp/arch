@@ -11,6 +11,7 @@ export function readConfig(env: NodeJS.ProcessEnv) {
     hermesKey = env.KOHAKO_HERMES_KEY,
     sttUrl = env.KOHAKO_STT_URL,
     ttsUrl = env.KOHAKO_TTS_URL || undefined,
+    ttsDrama3Url = env.KOHAKO_TTS_DRAMA3_URL || undefined,
     ttsConcurrency = Number(env.KOHAKO_TTS_CONCURRENCY ?? '1')
   const origin = (x: string, https = false) => {
     try {
@@ -32,6 +33,7 @@ export function readConfig(env: NodeJS.ProcessEnv) {
   if ((hermesUrl || hermesKey) && (!hermesUrl || !origin(hermesUrl) || !hermesKey || hermesKey.length < 32))
     throw Error('invalid Hermes configuration')
   if (ttsUrl && !origin(ttsUrl)) throw Error('invalid TTS configuration')
+  if (ttsDrama3Url && (!ttsUrl || !origin(ttsDrama3Url))) throw Error('invalid TTS configuration')
   if (!Number.isInteger(ttsConcurrency) || ttsConcurrency < 1 || ttsConcurrency > 4)
     throw Error('invalid TTS concurrency')
   if (sttUrl && !origin(sttUrl)) throw Error('invalid STT configuration')
@@ -103,6 +105,7 @@ export function readConfig(env: NodeJS.ProcessEnv) {
     hermesKey,
     sttUrl,
     ttsUrl,
+    ttsDrama3Url,
     ttsConcurrency,
     port,
     host: env.KOHAKO_BFF_HOST ?? '0.0.0.0',
