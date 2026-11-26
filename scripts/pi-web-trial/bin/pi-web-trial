@@ -18,6 +18,11 @@ VAULT="${PI_WEB_TRIAL_VAULT:-$HOME/Documents/obsidian-headless/BOXP}"
 SANDBOX="$VAULT/Projects/pi-web-agent-trial/sandbox"
 PORT="${PI_WEB_TRIAL_PORT:-4317}"
 UPSTREAM_PORT="${PI_WEB_TRIAL_UPSTREAM_PORT:-4318}"
+# Cloudflare Access entrance (https://pi-web.b0xp.io via the k8s tunnel). Enabled only when
+# $ROOT/access.json exists ({"teamDomain","aud","ownerEmails","publicOrigin"}); the gate then
+# also listens on 0.0.0.0:$ACCESS_PORT and re-verifies the Access JWT on every request.
+ACCESS_PORT="${PI_WEB_TRIAL_ACCESS_PORT:-4319}"
+ACCESS_CONFIG="$ROOT/access.json"
 SESSION="pi-web-trial"
 # Dedicated tmux socket so the trial never shares a server with the Owner's own tmux.
 TMUX_CMD=(tmux -L pi-web-trial)
@@ -64,7 +69,11 @@ server_command() {
 }
 
 gate_command() {
-  printf '%q ' env -i "PATH=/usr/local/bin:/usr/bin:/bin" "$(command -v node)" "$ROOT/gate/gate.ts" --port "$PORT" --upstream-port "$UPSTREAM_PORT"
+  local access=()
+  if [[ -f "$ACCESS_CONFIG" ]]; then
+    access=(--access-port "$ACCESS_PORT" --access-config "$ACCESS_CONFIG")
+  fi
+  printf "%q " env -i "PATH=/usr/local/bin:/usr/bin:/bin" "$(command -v node)" "$ROOT/gate/gate.ts" --port "$PORT" --upstream-port "$UPSTREAM_PORT" "${access[@]}"
 }
 
 health() {
