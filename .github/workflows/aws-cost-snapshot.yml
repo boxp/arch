@@ -1,6 +1,6 @@
 # BOXP-594: 1 日 1 回 Cost Explorer の集計値を取得し SSM (/lolice/aws-cost/*) に置く。
 # arch は公開リポジトリなので、このログに金額を出さない（スクリプトは件数・成否・エラーコード名だけを出す）。
-# 1 回の Cost Explorer リクエストは最大 6、20h 以内に成功済み・24h で 3 回試行済みなら呼ばずに終わる。
+# 1 回の Cost Explorer リクエストは最大 7（BOXP-598 で S3 使用タイプ別 1 回を追加）、20h 以内に成功済み・24h で 3 回試行済みなら呼ばずに終わる。
 name: AWS cost snapshot
 on:
   schedule:
