@@ -1,7 +1,7 @@
 // BOXP-714: pure decision logic for the Pi Web trial guard extension.
 // Spec (current): Obsidian vault Projects/pi-web-agent-trial/spec.md
 // No Pi imports here so that `node --test` can load it directly.
-import { lstatSync, realpathSync } from "node:fs";
+import { lstatSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,6 +16,19 @@ export const ALLOWED_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
+/**
+ * Argument names each tool may receive (spec「道具の引数の決まり」). Any other name is refused: pi-web-ui's
+ * read takes `file_path` as an alias of `path`, so a check that looks only at `path` would be bypassed.
+ */
+export const TOOL_ARGUMENTS: Readonly<Record<string, ReadonlySet<string>>> = {
+	read: new Set(["path", "offset", "limit"]),
+	grep: new Set(["pattern", "path", "glob", "ignoreCase", "literal", "context", "limit"]),
+	find: new Set(["pattern", "path", "limit"]),
+	ls: new Set(["path", "limit"]),
+	write: new Set(["path", "content"]),
+	edit: new Set(["path", "edits", "oldText", "newText", "soft"]),
+	web_search: new Set(["query"]),
+};
 const WRITE_TOOLS = new Set(["write", "edit"]);
 export const MAX_QUERY_CHARS = 120;
 export const SHARED_RUN_CHARS = 16;
@@ -188,6 +201,9 @@ export function decideToolCall(toolName: string, input: Record<string, unknown>,
 	if (!ALLOWED_TOOLS.has(toolName)) {
 		return deny(`Tool "${toolName}" is disabled in the Pi Web trial (allowed: ${[...ALLOWED_TOOLS].join(", ")}).`);
 	}
+	const known = TOOL_ARGUMENTS[toolName];
+	const unknown = Object.keys(input).filter((key) => !known?.has(key));
+	if (unknown.length > 0) return deny(`Unknown argument(s) for ${toolName}: ${unknown.join(", ")}. Use only: ${[...(known ?? [])].join(", ")}.`);
 	const vault = realRoot(ctx.vaultRoot);
 
 	if (READ_TOOLS.has(toolName)) {
@@ -197,6 +213,8 @@ export function decideToolCall(toolName: string, input: Record<string, unknown>,
 		if (target === undefined) return deny(`Unsupported path: ${raw}`);
 		if (!inside(vault, target)) return deny(`Only the Obsidian vault can be read in this trial: ${raw}`);
 		if (hasHiddenSegment(vault, target)) return deny(`Hidden folders in the vault are not readable: ${raw}`);
+		// pi-web-ui's read lists a folder, and that listing would skip the output filter for listings.
+		if (toolName === "read" && isDirectory(target)) return deny(`read takes a file; use ls to list the folder ${raw}.`);
 		if (toolName === "grep") {
 			// Pi's grep recurses with --hidden; one exclude glob keeps .obsidian etc. out. A model-given
 			// glob would replace it (only one glob is accepted), so it is refused.
@@ -346,6 +364,14 @@ export function parseDuckDuckGoHtml(html: string, limit = 8): SearchResult[] {
 }
 
 /** True when the entry itself exists, including a symlink whose target is missing (unlike existsSync). */
+function isDirectory(path: string): boolean {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
 function entryExists(path: string): boolean {
 	try {
 		lstatSync(path);

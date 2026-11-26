@@ -190,3 +190,63 @@ test("Access gate refuses WebSocket upgrades", async () => {
 	}
 });
 
+
+test("pwu: Access 口の /ws は JWT・Origin 必須で、通った後も同じフレーム検査を通る。HTTP も許可リスト", async () => {
+	const pwu = { sessionsDir: "/s" };
+	const req = (headers: Record<string, string>, url = "/ws") => ({ method: "GET", url, headers });
+	const base = { host: "pi-web.b0xp.io", upgrade: "websocket", connection: "Upgrade", origin: "https://pi-web.b0xp.io" };
+	const check = (h: Record<string, string>, url?: string) => checkAccessRequest(req(h, url), cfg, keyFor, NOW, "pwu");
+	assert.equal((await check({ ...base, "cf-access-jwt-assertion": good() })).ok, true);
+	assert.equal((await check({ ...base })).ok, false); // JWT 無し
+	assert.equal((await check({ ...base, "cf-access-jwt-assertion": good({ email: "x@example.com" }) })).ok, false);
+	const { origin: _o, ...noOrigin } = base;
+	assert.equal((await check({ ...noOrigin, "cf-access-jwt-assertion": good() })).ok, false);
+	assert.equal((await check({ ...base, origin: "https://evil.example", "cf-access-jwt-assertion": good() })).ok, false);
+	assert.equal((await check({ ...base, "cf-access-jwt-assertion": good() }, "/ws?t=1")).ok, false);
+	assert.equal((await check({ host: "pi-web.b0xp.io", "cf-access-jwt-assertion": good() }, "/setup")).ok, false);
+	assert.equal((await check({ host: "pi-web.b0xp.io", "cf-access-jwt-assertion": good() }, "/")).ok, true);
+
+	// 実際の口: JWT 無しの Upgrade は本体へ届かない
+	let upgraded = 0;
+	const upstream = createServer((_q, r) => r.end("up"));
+	upstream.on("upgrade", (_q, s) => {
+		upgraded++;
+		s.destroy();
+	});
+	await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
+	const gate = await startAccessGate({
+		listenHost: "127.0.0.1",
+		listenPort: 0,
+		upstreamPort: (upstream.address() as AddressInfo).port,
+		config: cfg,
+		keyFor,
+		now: () => NOW,
+		profile: "pwu",
+		pwu,
+	});
+	try {
+		const status = await new Promise<number>((resolve) => {
+			const r = httpRequest({
+				host: "127.0.0.1",
+				port: (gate.address() as AddressInfo).port,
+				path: "/ws",
+				headers: { ...base, "sec-websocket-version": "13", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==" },
+			});
+			r.on("response", (res) => {
+				res.resume();
+				resolve(res.statusCode ?? 0);
+			});
+			r.on("upgrade", (_res, s) => {
+				s.destroy();
+				resolve(101);
+			});
+			r.end();
+		});
+		assert.equal(status, 403);
+		assert.equal(upgraded, 0);
+	} finally {
+		gate.closeAllConnections();
+		gate.close();
+		upstream.close();
+	}
+});
