@@ -199,3 +199,14 @@ test("門番(pwu): /ws を本体へつなぎ、許可したメッセージだけ
 		upstream.close();
 	}
 });
+
+test("WS: 会話一覧で動いている別の会話への切替(switch_conversation)は id だけ通す", () => {
+	assert.equal(ws({ type: "switch_conversation", id: "0b6f2c1e-9a4d-4f7e-8c2a-1d3e5f7a9b0c" }), true);
+	assert.equal(ws({ type: "switch_conversation", id: "exec-0b6f2c1e-9a4d-4f7e-8c2a-1d3e5f7a9b0c" }), true);
+	assert.equal(ws({ type: "switch_conversation" }), false);
+	assert.equal(ws({ type: "switch_conversation", id: 3 }), false);
+	assert.equal(ws({ type: "switch_conversation", id: "" }), false);
+	assert.equal(ws({ type: "switch_conversation", id: "../x" }), false);
+	assert.equal(ws({ type: "switch_conversation", id: "a".repeat(129) }), false);
+	assert.equal(ws({ type: "switch_conversation", id: "abc", cwd: "/" }), false);
+});

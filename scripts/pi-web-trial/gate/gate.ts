@@ -171,6 +171,8 @@ const WS_MESSAGES: Record<string, { fields: Record<string, FieldRule>; required?
 	},
 	dialog_response: { fields: { id: (v, p) => isString(v, p) || isNumber(v, p), value: anyValue }, required: ["id"] },
 	switch_session: { fields: { path: isSessionFile }, required: ["path"] },
+	// Picking another running conversation in the list; pi-web-ui only switches to a conversation it already holds.
+	switch_conversation: { fields: { id: (v) => typeof v === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(v) }, required: ["id"] },
 };
 
 /** Decide one browser -> pi-web-ui WebSocket message (the text of one frame). */
