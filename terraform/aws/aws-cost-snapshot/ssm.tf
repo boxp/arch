@@ -1,5 +1,5 @@
 resource "aws_ssm_parameter" "snapshot" {
-  for_each = toset(["summary", "services", "daily", "status"])
+  for_each = toset(["summary", "services", "daily", "status", "s3_usage"])
 
   name  = "/lolice/aws-cost/${each.key}"
   type  = "SecureString"

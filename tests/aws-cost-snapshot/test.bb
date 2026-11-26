@@ -60,4 +60,47 @@
   (is (= "1" (get (cli-env ["ce" "get-cost-and-usage"]) "AWS_MAX_ATTEMPTS")))
   (is (= "1" (get (cli-env ["ce" "get-cost-forecast"]) "AWS_MAX_ATTEMPTS")))
   (is (nil? (cli-env ["ssm" "put-parameter"]))))
+(deftest s3-usage-transform-spec
+  ;; 仕様例(BOXP-598): 直近14日(today-14〜today-1)の日別、使用タイプ別の費用と使用量。窓外の日は入れない。
+  (let [mk (fn [d groups] {:TimePeriod {:Start d} :Estimated true
+                           :Groups (for [[k cost qty] groups] {:Keys [k] :Metrics {:UnblendedCost {:Amount cost} :UsageQuantity {:Amount qty}}})})
+        page {:ResultsByTime [(mk "2024-03-01" [["A" "9" "90"]]) (mk "2024-03-02" [["A" "1" "10"]]) (mk "2024-03-15" [["B" "2" "5"]])]}
+        x (s3-usage-transform (date "2024-03-16") 1710547200 page)]
+    (is (= {:schema schema :snapshot_id 1710547200 :available true
+            :days ["2024-03-02" "2024-03-15"] :usage_types ["A" "B"]
+            :values [[1.0 0.0] [0.0 2.0]] :quantities [[10.0 0.0] [0.0 5.0]]} x)))
+  ;; 12 種あれば費用上位 10 種＋Other。Other の使用量は単位が混ざるので null。
+  (let [groups (for [i (range 12)] [(format "T%02d" i) (str (inc i)) "1"])
+        x (s3-usage-transform (date "2024-03-16") 1 {:ResultsByTime [{:TimePeriod {:Start "2024-03-15"} :Groups (for [[k c q] groups] {:Keys [k] :Metrics {:UnblendedCost {:Amount c} :UsageQuantity {:Amount q}}})}]})]
+    (is (= 11 (count (:usage_types x))))
+    (is (some #{"Other"} (:usage_types x)))
+    (is (not (some #{"T00" "T01"} (:usage_types x))))
+    (is (= [3.0] (nth (:values x) (.indexOf (:usage_types x) "Other"))))
+    (is (= [nil] (nth (:quantities x) (.indexOf (:usage_types x) "Other")))))
+  ;; 続きページがあれば取りこぼしなので使わない（追加リクエストはしない）。
+  (is (= "PageLimitExceeded" (:code (ex-data (try (s3-usage-transform (date "2024-03-16") 1 {:ResultsByTime [] :NextPageToken "t"}) (catch Exception e e)))))))
+(deftest s3-usage-fits-4kb
+  (let [types (map #(str "APN1-ExampleUsageType-WithLongName-" %) (range 30))
+        days (for [d (range 1 31)] {:TimePeriod {:Start (format "2024-03-%02d" d)}
+                                    :Groups (for [t types] {:Keys [t] :Metrics {:UnblendedCost {:Amount "12345.678901"} :UsageQuantity {:Amount "123456789.123456"}}})})
+        x (s3-usage-transform (date "2024-03-31") 1 {:ResultsByTime days})]
+    (is (fits? x))
+    (is (= 11 (count (:values x))))))
+(deftest s3-usage-failure-is-isolated
+  ;; S3 内訳の失敗は全体の取得を失敗させず、available=false と理由だけを保存する。
+  (is (= {:schema schema :snapshot_id 7 :available false :error_code "Throttling"}
+         (s3-usage-snapshot 7 (fn [] (throw (ex-info "x" {:code "Throttling"}))) (fn [_] (throw (ex-info "unreachable" {}))))))
+  (is (= {:schema schema :snapshot_id 7 :available false :error_code "PageLimitExceeded"}
+         (s3-usage-snapshot 7 (constantly {:NextPageToken "t"}) #(s3-usage-transform (date "2024-03-16") 7 %)))))
+(deftest s3-usage-request-args
+  (let [args (s3-usage-args (date "2024-03-16"))]
+    (is (= ["ce" "get-cost-and-usage"] (take 2 args)))
+    (is (some #{"Start=2024-03-02,End=2024-03-16"} args))
+    (is (some #{"Type=DIMENSION,Key=USAGE_TYPE"} args))
+    (is (some #(and (string? %) (str/includes? % "Amazon Simple Storage Service")) args))
+    (is (= "1" (get (cli-env args) "AWS_MAX_ATTEMPTS")))))
+(deftest write-order-includes-s3-usage
+  (let [order (atom [])]
+    (write-snapshot! (fn [n _] (swap! order conj n)) {} {:daily 1 :services 2 :s3_usage 3 :summary 4 :status 5})
+    (is (= ["daily" "services" "s3_usage" "summary" "status"] @order))))
 (let [result (run-tests)] (when (pos? (+ (:fail result) (:error result))) (System/exit 1)))
