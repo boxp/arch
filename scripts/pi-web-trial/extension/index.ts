@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { ALLOWED_TOOLS, decideToolCall, type GuardContext, filterToolOutput, parseDuckDuckGoHtml, ReadMemory, rememberSessionReads } from "./guard.ts";
+import { ALLOWED_TOOLS, decideToolCall, type GuardContext, filterToolOutput, parseDuckDuckGoHtml, rememberSessionReads, SessionReadMemories } from "./guard.ts";
 
 const SEARCH_URL = "https://html.duckduckgo.com/html/";
 const SEARCH_TIMEOUT_SECONDS = 15;
@@ -21,8 +21,10 @@ const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
 export default function piWebTrialGuard(pi: ExtensionAPI) {
 	const vaultRoot = process.env.PI_WEB_TRIAL_VAULT ?? join(homedir(), "Documents/obsidian-headless/BOXP");
 	const sandboxRoot = process.env.PI_WEB_TRIAL_SANDBOX ?? join(vaultRoot, "Projects/pi-web-agent-trial/sandbox");
-	const memory = new ReadMemory();
-	const context = (cwd: string): GuardContext => ({ cwd, home: homedir(), vaultRoot, sandboxRoot, memory });
+	// One process serves many chats: keep the read memory per chat (session id).
+	const memories = new SessionReadMemories();
+	const memoryOf = (ctx: { sessionManager: { getSessionId(): string } }) => memories.forSession(ctx.sessionManager.getSessionId());
+	const context = (cwd: string, memory: GuardContext["memory"]): GuardContext => ({ cwd, home: homedir(), vaultRoot, sandboxRoot, memory });
 
 	pi.registerTool({
 		name: "web_search",
@@ -65,8 +67,9 @@ export default function piWebTrialGuard(pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event, ctx) => {
 		// The in-process memory is empty after a restart: rebuild it from this chat's saved entries.
+		const memory = memoryOf(ctx);
 		if (event.toolName === "web_search") rememberSessionReads(memory, ctx.sessionManager.getEntries());
-		const decision = decideToolCall(event.toolName, event.input as Record<string, unknown>, context(ctx.cwd));
+		const decision = decideToolCall(event.toolName, event.input as Record<string, unknown>, context(ctx.cwd, memory));
 		if (decision.allow && decision.rewrite) Object.assign(event.input as Record<string, unknown>, decision.rewrite);
 		if (decision.allow && decision.confirmQuery === undefined) return undefined;
 		if (decision.allow) {
@@ -91,7 +94,7 @@ export default function piWebTrialGuard(pi: ExtensionAPI) {
 		return { block: true, reason: decision.reason };
 	});
 
-	pi.on("tool_result", (event) => {
+	pi.on("tool_result", (event, ctx) => {
 		// Fail-closed output filter: drop every listed entry with a hidden segment (grep/find/ls walk
 		// the tree themselves), and withhold output of tools whose output shape is unknown.
 		let changed = false;
@@ -103,7 +106,7 @@ export default function piWebTrialGuard(pi: ExtensionAPI) {
 		});
 		if (READ_TOOLS.has(event.toolName)) {
 			const text = content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
-			memory.add(text, event.toolCallId);
+			memoryOf(ctx).add(text, event.toolCallId);
 		}
 		return changed ? { content } : undefined;
 	});

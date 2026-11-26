@@ -87,6 +87,28 @@ export class ReadMemory {
 	}
 }
 
+/**
+ * Read memories kept per chat (session id): one Pi Web process serves many chats, so text read in
+ * one chat must not block searches in another, and a saturated chat must not stop new chats.
+ */
+export class SessionReadMemories {
+	private readonly bySession = new Map<string, ReadMemory>();
+	private readonly maxChars: number;
+
+	constructor(maxChars = MAX_MEMORY_CHARS) {
+		this.maxChars = maxChars;
+	}
+
+	forSession(sessionId: string): ReadMemory {
+		let memory = this.bySession.get(sessionId);
+		if (!memory) {
+			memory = new ReadMemory(this.maxChars);
+			this.bySession.set(sessionId, memory);
+		}
+		return memory;
+	}
+}
+
 const READ_RESULT_TOOLS = READ_TOOLS;
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 

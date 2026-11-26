@@ -11,6 +11,7 @@ import {
 	decideToolCall,
 	parseDuckDuckGoHtml,
 	ReadMemory,
+	SessionReadMemories,
 	rememberSessionReads,
 	filterToolOutput,
 } from "../extension/guard.ts";
@@ -233,4 +234,22 @@ test("出力: 形の分からない行は落とし（fail-closed）、道具の�
 test("出力: grep のパスに行番号に似た並びがあっても、隠し段が見える候補が一つでもあれば落とす", () => {
 	// パス "a-1- b/.x/c.md" か "a" か区別できない → 長い方の候補で判定して落とす
 	assert.equal(filterToolOutput("grep", "a-1- b/.x/c.md:3: 秘密\nok.md:2: x"), "ok.md:2: x");
+});
+
+test("web_search: 読んだ本文の記録と上限超過の印はチャット（セッション ID）ごとに分ける", () => {
+	const ctx = setup();
+	const memories = new SessionReadMemories(100);
+	const note = "チャットAで読んだ私的なノートの一文はこれです";
+	memories.forSession("A").add(note);
+	// A の中では止まる
+	blocked(decideToolCall("web_search", { query: note }, { ...ctx, memory: memories.forSession("A") }));
+	// 別チャット B では A の記録で止めない（本人確認へ進む）
+	allowed(decideToolCall("web_search", { query: note }, { ...ctx, memory: memories.forSession("B") }));
+	// A が上限を超えても新しいチャット C は止めない、A は引き続き止める
+	memories.forSession("A").add("x".repeat(120));
+	assert.equal(memories.forSession("A").saturated, true);
+	blocked(decideToolCall("web_search", { query: "llama.cpp router mode" }, { ...ctx, memory: memories.forSession("A") }));
+	allowed(decideToolCall("web_search", { query: "llama.cpp router mode" }, { ...ctx, memory: memories.forSession("C") }));
+	// 同じ ID は同じ記録を返す
+	assert.equal(memories.forSession("A"), memories.forSession("A"));
 });
