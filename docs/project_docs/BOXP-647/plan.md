@@ -1,5 +1,7 @@
 # BOXP-647 読み上げなし時の返答表示
 
+現行仕様: vault `Projects/kohako-home/reply-dismiss-spec.md`（`kohako-reply-dismiss`）。このファイルは票ごとの実施記録。
+
 ## 原因と方式
 
 返答後60秒で場面が `relax` に移り、PC・横向きの吹き出しはCSSで隠れる。縦スマホは会話ログ側の表示規則があり端末間で差があった。長文の黙読時間を文字数から決める方式では読み返しを保証できないため、実際に読み上げを開始しない返答は時間で隠さない。
@@ -88,3 +90,27 @@ Web 45ファイル490テスト・typecheck・build・Biome・check-docs・構文
 親の最終コード（無音/実音声判定を閉鎖反映にも適用）でPC・縦・横×短文/長文6条件144検査が全成功。無音speaking中を明示して即時dismiss/利用枠hit test、演技終了後閉鎖、新返答再表示、実時間67秒保持、内部リンク/本文選択/スクロール/選択肢、ふれあい復元、履歴/入力を確認。証跡 `/home/boxp/verification-artifacts/BOXP-647/dismiss-immediate-final/`（result.json・画像・verified-sha256.json）。親がPC/縦スマホの即時閉鎖画像を目視した。親引継ぎの初回実行も成功したが途中で再ビルドしたため最終コードで再実行した。
 
 さらに音声失敗の既存スクリプトを基に端末音声をモックし、PC/mobile各7検査で失敗後閉鎖→音声再試行時本文再表示→実音声読み上げ中の外側操作保護→次返答/遅延callback保護を確認。14検査全成功・外部通信0。証跡 `/home/boxp/verification-artifacts/BOXP-647/dismiss-immediate-voice/`（result.json、voice-retry.mjs、画像。スクリプト再実行時は元verify/home配下へ置き、共有helperを参照）。最終修正後のtypecheck/Biome/build/構文/差分検査も成功。TD-01は独立gate・merge・通常配備と配備版再確認が残るため未完了。
+
+## TD-02 メニュー・URLカード操作の分離
+
+現行仕様: vault `Projects/kohako-home/reply-dismiss-spec.md`（索引 `kohako-reply-dismiss`。操作分離節は未反映(BOXP-647)）。仕様の妥当性は人の確認、Lean 定理は抽象モデルの全状態に対する性質、実装照合は生成手順の再生範囲だけをそれぞれ保証する。少数の操作順で表示状態が変わるため Lean を適用した。`verify/home/overlay-model/` は長さ3の64列を生成し、うち実画面で実行可能な4列を照合する。音声、ネットワーク、同時入力はモデル外。
+
+修正前の Chromium モック実画面では PC・縦・横でメニューの開閉とURL結果カードの閉鎖が返答も消し、15項目失敗した（Escape等の後続検査も既に消えた状態で失敗）。原因は document のクリック dismiss が別の操作を外側として扱うこと。押下元とクリック先のメニュー・引き出し・カード・ビューアー・利用枠を除外し、押下の記録をクリックごとに消す。独立した外側操作、既存の選択・音声・通知保護と新返答の解除は維持する。
+
+修正後の PC・縦・横でメニュー開閉、URLカード閉鎖、内部、Escape、ふれあいトグル、外側、新返答の計24項目成功・外部通信0。証跡 `/home/boxp/verification-artifacts/BOXP-647/overlay-dismiss/old/` と `fixed/`。実画面は BFF・音声をモックし、publicDir 無効のため一部画像が表示されない。Web 49ファイル647テスト、typecheck、Biome、publicDir無効 build、check-docs、Lean定理検査、spec索引 check が成功。Biomeは初回に整形差を検出し修正後成功。配備webのイメージ `sha-80dc598`、HTTPで取得した現行 home のJSファイル名は修正前 build と一致。pod execは権限不足。実API・実機Safari・音声聴感・配備画面での操作は未確認。モデル手順・既存保持回帰の結果は後記。
+
+既存 `retention647-dismiss.mjs` を最終コードで実行し、短文・長文×PC・縦・横の6条件、実時間67秒保持と本文選択・リンク・外側操作・新返答など計144項目が成功、外部通信0。証跡 `overlay-dismiss/retention/`。画像付き再検証は追跡済み public 資産をローカル読み取り専用サーバーから参照する。
+
+Lean 4.36.0 の定理検査・生成物再生成一致が成功。生成64列から4列をPC・縦・横で実画面再生し12列すべて一致（`overlay-dismiss/model/result.json`）。この照合は残り60列、音声、同時入力を保証しない。
+
+画像は public 資産をローカルで参照して追加再検証し、3画面の基本24項目とモデル由来12列がすべて成功（`overlay-dismiss/with-assets/`、外部通信0）。PC画像を目視した。
+
+### 親の最終確認（2026-11-26）
+
+契約helperは親から停止していない状態で約9分後にexit143となり、delegate evidenceはfailed、verify不成立。再委譲や別API代替は行っていない。今回doneにはせず、次runで委譲検証を成立させる。上記の子の結果は保存物を親が確認した結果であり、正常終了した委譲として扱わない。
+
+親でテストを補強した。返答に連番を付けて新本文を待ち、無音演技が終わってから次の送信を行う。表示フラグに加え吹き出しの実可視性を確認する。メニュー表示中に新返答を受けてから閉じるケースは、開く際の消失と閉じる操作自体の影響を分離するために追加した。Lean生成列の途中状態も、残りを恒等操作overlayで埋めた列から取得して各操作直後を照合する。
+
+現Pod取得のHTML/JSを使った旧版はPC・縦横で単独のメニュー閉鎖とURLカード閉鎖を再現（後続検査を含む18失敗、外部通信/ページエラー0）。修正版は3画面78項目すべて成功（基本操作・単独閉鎖・新返答・モデル4列×各3操作と終端・ページエラー検査、外部通信0）。証跡 `overlay-dismiss/parent-deployed-old/` と `parent-final/`。親が3画面のURLカード閉鎖後の画像を目視し、本文が残ることを確認した。実機ではなくChromiumのPC/タッチ模擬、BFF/音声はモック、静止表情モード。実機Safari、実音声品質、修正版の通常配備は未確認。
+
+親で関連2テスト、typecheck、Biome、check-docs、node構文、diff検査、Lean4.36.0での定理検査/生成一致、spec索引check成功。trivyは実行ファイルなし。現行配備web2 PodのHTML/JS/CSS hash一致は `overlay-dismiss/parent-current-deployment.json` に記録。今回の実装は押下/クリックの操作分類だけで、保持時間・音声・ふれあい・履歴の既存規則を変えない。TD-02は通常ゲート、merge、配備と配備版確認まで未完了。
