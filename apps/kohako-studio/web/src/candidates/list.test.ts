@@ -47,6 +47,12 @@ describe('試作候補の一覧', () => {
       './candidates/arm-4980edd/studio.html?acting=1',
     ])
   })
+  it('Keshin2D の試作（page: keshin、BOXP-716）は、試作の画面へリンクする（家の画面ではない）', () => {
+    const k = { ...ok, id: 'keshin-0123abc', page: 'keshin' }
+    expect(candidateLinks(k)).toEqual([
+      { text: '試作を動かす（Keshin2D）', href: './candidates/keshin-0123abc/keshin.html' },
+    ])
+  })
   it('Studio の固定入口から候補一覧へ行ける', () => {
     expect(readFileSync(new URL('../../studio.html', import.meta.url), 'utf8')).toContain('href="./candidates.html"')
   })

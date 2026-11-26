@@ -138,6 +138,8 @@ export function createTts({
   return { resolveStyle: () => resolveStyle(), status, synthesize, styleIdFor: (audio: Buffer) => styles.get(audio) }
 }
 
+// BOXP-715 TD-02: nginx の TTS 応答待ち 95 秒より先に BFF が 503 で答える。
+export const DRAMA3_TIMEOUT_MS = 90000
 /** BOXP-715: 本人限定の試用声。speech.cpp の OpenAI 互換 API（Drama-3-Japanese、CPU）。既定の声はコハクのまま。 */
 export const DRAMA3 = {
   label: 'Drama-3-Japanese（試用）',
@@ -149,7 +151,7 @@ export function createDrama3Tts({
   url,
   fetcher,
   now,
-  timeoutMs = 180000,
+  timeoutMs = DRAMA3_TIMEOUT_MS,
 }: {
   url: string
   fetcher: typeof fetch

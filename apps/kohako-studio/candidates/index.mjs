@@ -21,10 +21,10 @@ const candidates = manifest.candidates.map(c => {
     if (!html.includes('<body>')) throw Error(`${file}: no <body>`)
     writeFileSync(file, html.replace('<body>', `<body>${banner}`))
   }
-  // 家の画面で見る候補（page: home）: 画面の配置を崩さないよう、上端の中央に小さな札だけを足す（下端は入力欄）。
-  if (built && c.page === 'home') {
-    const file = `${out}/${c.id}/home.html`
-    if (!existsSync(file)) throw Error(`${file}: page home but no home.html`)
+  // 家の画面で見る候補（page: home）と Keshin2D の試作（page: keshin、BOXP-716）: 画面の配置を崩さないよう、上端の中央に小さな札だけを足す（下端は入力欄・操作の帯）。
+  if (built && (c.page === 'home' || c.page === 'keshin')) {
+    const file = `${out}/${c.id}/${c.page}.html`
+    if (!existsSync(file)) throw Error(`${file}: page ${c.page} but no ${c.page}.html`)
     const html = readFileSync(file, 'utf8')
     const badge = `<meta name="kohako-candidate" content="${esc(c.id)}"><div class="candidate-banner" role="note" style="position:fixed;left:50%;top:2px;transform:translateX(-50%);white-space:nowrap;z-index:2147483000;background:#fff3cd;color:#3d2b00;border:1px solid #c9a227;border-radius:8px;padding:2px 8px;font:12px/1.5 sans-serif;opacity:.9">試作候補 <strong>${esc(c.id)}</strong> <a href="/kohako/home.html">通常版に戻る</a> ／ <a href="/kohako/candidates.html">一覧</a></div>`
     if (!html.includes('</body>')) throw Error(`${file}: no </body>`)

@@ -56,3 +56,14 @@
 - 修正: `cross-site` / `same-site` は「GET/HEAD・Mode navigate・Dest document・パスが /api 以外（%デコード・小文字化後、`//` 始まりは拒否）」のトップレベル画面遷移だけ通す。iframe・no-cors/cors 読取・/api への遷移・別 Origin / Origin 無しの POST は従来どおり 403。JWT 検証・Owner 限定・Host（DNS rebinding）・Origin・Upgrade・道具ガードは不変。
 - Lean: 適用外（状態を持たない要求ごとの判定関数。仕様の例から直接テスト）。
 - 検証: node test（新規ケースは実装前に失敗を確認）、HTTPS 前段＋ログイン画面代役＋実 Chromium で PC/スマホ幅の再現（修正前 403 → 修正後 200・会話 SSE 返答）と不正経路の 403。
+
+## 第 4 段: 画面を xing-shuyin/pi-web-ui（Keel 内蔵）へ置き換え（TD-03、Owner 承認 2026-11-26）
+
+- 本体: npm `pi-web-ui@0.122.0`（MIT、pi SDK 1.6.1 同梱）を `~/.local/share/pi-web-trial/pwu` に入れ、試用専用の HOME（`pwu-home`）・データ（`pwu-data`）・Pi 設定（`agent-pwu`、local-llm だけ・既存ガード拡張）で `127.0.0.1:4320` に起動。`PI_WEB_TABS=chat`・`PI_WEB_MANAGED=1`・`PI_WEB_ENGINE=pi`・`PI_WEB_LOCALE=ja`（日本語パックは GitHub のタグ v0.122.0 から取得）。
+- 門番: 既存の 127.0.0.1:4317 口と Access 用口 4319（JWT 検証・Host/Origin/Sec-Fetch-Site）はそのまま、`--profile pwu` で次を足す（fail-closed）。
+  - HTTP は GET/HEAD の画面資源と 5 つの API だけ（`/setup`・デバイスセンター・スクリーンショット・ファイル配信などは 403）。
+  - WebSocket は `/ws` だけ（Origin 必須、圧縮の申し出を外す）。ブラウザ→本体の各フレームを読み、チャットに要る 12 種の型と決めた項目だけ通す。`prompt` は `/`・`!` 始まりと添付を拒否、`switch_session` は試用の会話記録置き場の `.jsonl` だけ。分割・バイナリ・マスク無し・RSV・1 MiB 超は接続ごと切る。
+- 道具ガード: 新本体の read が `file_path` を `path` の別名に取るため、道具ごとの引数名の許可リストを追加。read のフォルダ指定（一覧を返す）も拒否。CD-01 の出力側フィルタは維持。
+- 切り戻し: 旧本体（tg-prplx/pi-web-agent、4318）と設定は残し、`pi-web-trial use legacy` で門番の後ろを戻す。
+- Lean: 適用外（WebSocket メッセージ・HTTP 要求・道具呼び出しのいずれも 1 件ごとの判定関数で状態を持たない。仕様の例から直接テスト）。
+- 検証: node test（新規ケースは実装前に失敗を確認）。試験用インスタンス＋新門番で、実 Chromium の PC 幅（127.0.0.1 口）とスマホ幅（HTTPS 前段＋JWT 付与の Access 模擬）で、ローカル Gemma の grep→read 要約・確認ダイアログ経由の web_search・sandbox 追記、禁止メッセージ（ファイル読取・ターミナル・コマンド・`!`/`/` 入力・不正なセッションパス）と禁止 HTTP の拒否、JWT 無し・他人・別 Origin の WS 拒否。配備後に実環境の 4317/4319 と外部 URL の未認証拒否を確認。本人の GitHub ログインでの利用は本人受入。

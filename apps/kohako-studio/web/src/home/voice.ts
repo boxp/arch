@@ -5,6 +5,23 @@ export const VOICE_CHUNK_MAX = 60
 // 同時に進める合成要求数と、再生中グループより先に用意するグループ数の上限。
 export const VOICE_PARALLEL = 2,
   VOICE_AHEAD = 3
+// BOXP-715 TD-02: 1 回の合成要求の待ち上限（nginx の 95 秒より短く）。超えたら再試行せず失敗にする。
+export const VOICE_REQUEST_TIMEOUT_MS = 90000
+/** BOXP-715 TD-02: 返答の本文を読み上げの開始を待たずに出すまでの時間。null は待ちのタイマーを使わない（端末の声）。 */
+/**
+ * BOXP-715 TD-02: 読み上げの続きを守るために次の発言の自動送信を止めるか。
+ * 本人の停止は従来どおり止める。読み上げ失敗も止めるが、試用声 Drama-3 の失敗では止めない（遅い試用声のせいで次の返答が届かなくならないように）。
+ */
+export function speechHoldsQueue(s: { voice: string; trouble: boolean; paused: boolean; remaining: boolean }): boolean {
+  if (!s.remaining) return false
+  if (s.paused) return true
+  return s.trouble && s.voice !== 'drama3'
+}
+export function replyTextWaitMs(voice: string): number | null {
+  if (voice === 'drama3') return 0
+  if (voice === 'browser') return null
+  return 8000
+}
 export function splitVoiceSentences(sentences: string[]): string[] {
   const result: string[] = []
   for (const sentence of sentences) {
@@ -80,12 +97,15 @@ export function createVoicePlayer(deps: {
     cancel()
     const current = generation,
       signal = controller.signal
+    // BOXP-715 TD-02: 試用声 Drama-3 は CPU 合成が音声長の数倍かかるため、区切りをまとめず同時 1 件で送る。
+    const slow = deps.voice?.() === 'drama3',
+      parallel = slow ? 1 : VOICE_PARALLEL
     const groups: { first: number; last: number; text: string }[] = []
     let previousChars = 0
     for (let i = start; i < input.length; ) {
       const first = i
       let text = input[i++]
-      if (first !== start) {
+      if (first !== start && !slow) {
         // 合成は音声長の約 0.7〜0.8 倍。先行再生で余裕を作るため 1.6 倍ずつ増やす。
         const limit = Math.min(120, Math.max(60, Math.round(previousChars * 1.6)))
         while (i < input.length) {
@@ -100,23 +120,42 @@ export function createVoicePlayer(deps: {
     }
     const fetchOnce = async (sentence: string) => {
       const fetcher = deps.fetcher
-      const r = await fetcher('/kohako/api/v1/tts', {
-        method: 'POST',
-        credentials: 'same-origin',
-        redirect: 'manual',
-        cache: 'no-store',
-        headers: { 'content-type': 'application/json', 'X-Kohako-Request': '1' },
-        body: JSON.stringify(deps.voice?.() === 'drama3' ? { text: sentence, voice: 'drama3' } : { text: sentence }),
-        signal,
-      })
-      if (!r.ok) throw Error('fetch_failed')
-      return r.blob()
+      // BOXP-715 TD-02: 1 要求ごとに待ち上限を設け、超えたら 'timeout' で失敗させる（音声を無期限に待たない）。
+      const request = new AbortController(),
+        stop = () => request.abort()
+      let timedOut = false
+      const timer = setTimeout(() => {
+        timedOut = true
+        request.abort()
+      }, VOICE_REQUEST_TIMEOUT_MS)
+      signal.addEventListener('abort', stop, { once: true })
+      try {
+        const r = await fetcher('/kohako/api/v1/tts', {
+          method: 'POST',
+          credentials: 'same-origin',
+          redirect: 'manual',
+          cache: 'no-store',
+          headers: { 'content-type': 'application/json', 'X-Kohako-Request': '1' },
+          body: JSON.stringify(deps.voice?.() === 'drama3' ? { text: sentence, voice: 'drama3' } : { text: sentence }),
+          signal: request.signal,
+        })
+        if (!r.ok) throw Error('fetch_failed')
+        return await r.blob()
+      } catch (e) {
+        if (timedOut && !signal.aborted) throw Error('timeout')
+        throw e
+      } finally {
+        clearTimeout(timer)
+        signal.removeEventListener('abort', stop)
+      }
     }
     const fetchSentence = async (sentence: string) => {
       try {
         return await fetchOnce(sentence)
       } catch (e) {
         if (signal.aborted || current !== generation || (e instanceof Error && e.name === 'AbortError')) throw e
+        // 待ち上限を超えた合成はもう一度送っても間に合わないため、再試行せず失敗にする。
+        if (e instanceof Error && e.message === 'timeout') throw e
         await (deps.retryDelay?.() ?? new Promise<void>((resolve) => setTimeout(resolve, 1000)))
         if (signal.aborted || current !== generation) throw e
         return fetchOnce(sentence)
@@ -137,7 +176,7 @@ export function createVoicePlayer(deps: {
         current === generation &&
         next < groups.length &&
         next - started < VOICE_AHEAD &&
-        fetching < VOICE_PARALLEL
+        fetching < parallel
       )
         fetchNext()
     }

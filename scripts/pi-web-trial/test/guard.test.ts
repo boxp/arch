@@ -265,3 +265,36 @@ test("write/edit/read: 壊れた symlink（リンク先が無い）は先を確�
 	blocked(decideToolCall("read", { path: "Projects/pi-web-agent-trial/sandbox/link.md" }, ctx));
 	allowed(decideToolCall("write", { path: "Projects/pi-web-agent-trial/sandbox/new-note.md", content: "x" }, ctx));
 });
+
+// ---- 道具の引数の決まり（spec「道具の引数の決まり（fail-closed）」, BOXP-714 TD-03） ----
+
+test("知らない引数が 1 つでもあれば止める（新本体の read は file_path を path の別名に使う）", () => {
+	const ctx = setup();
+	blocked(decideToolCall("read", { file_path: "/etc/passwd" }, ctx));
+	blocked(decideToolCall("read", { path: "Projects/kohako-home/README.md", file_path: "/etc/passwd" }, ctx));
+	blocked(decideToolCall("grep", { pattern: "x", path: "Projects", cwd: "/" }, ctx));
+	blocked(decideToolCall("find", { pattern: "*.md", path: "Projects", hidden: true }, ctx));
+	blocked(decideToolCall("ls", { path: "Projects", all: true }, ctx));
+	blocked(decideToolCall("write", { path: "Projects/pi-web-agent-trial/sandbox/a.md", content: "x", file_path: "/tmp/x.md" }, ctx));
+	blocked(decideToolCall("edit", { path: "Projects/pi-web-agent-trial/sandbox/a.md", edits: [], target: "/tmp/x.md" }, ctx));
+	blocked(decideToolCall("web_search", { query: "llama.cpp", engine: "google" }, ctx));
+});
+
+test("知っている引数だけなら従来どおり判定する", () => {
+	const ctx = setup();
+	allowed(decideToolCall("read", { path: "Projects/kohako-home/README.md", offset: 3, limit: 10 }, ctx));
+	allowed(decideToolCall("grep", { pattern: "x", path: "Projects", ignoreCase: true, literal: false, context: 1, limit: 5 }, ctx));
+	allowed(decideToolCall("find", { pattern: "*.md", path: "Projects", limit: 5 }, ctx));
+	allowed(decideToolCall("ls", { path: "Projects", limit: 5 }, ctx));
+	allowed(decideToolCall("write", { path: "Projects/pi-web-agent-trial/sandbox/a.md", content: "x" }, ctx));
+	allowed(decideToolCall("edit", { path: "Projects/pi-web-agent-trial/sandbox/a.md", edits: [{ oldText: "a", newText: "b" }], soft: true }, ctx));
+	allowed(decideToolCall("edit", { path: "Projects/pi-web-agent-trial/sandbox/a.md", oldText: "a", newText: "b" }, ctx));
+});
+
+test("read の対象がフォルダなら止める（一覧は ls を使う）", () => {
+	const ctx = setup();
+	blocked(decideToolCall("read", { path: "Projects" }, ctx));
+	blocked(decideToolCall("read", { path: "." }, ctx));
+	blocked(decideToolCall("read", {}, ctx));
+	allowed(decideToolCall("ls", { path: "Projects" }, ctx));
+});
