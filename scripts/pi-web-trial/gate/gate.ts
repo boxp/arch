@@ -25,12 +25,35 @@ import {
 
 export interface GateRequest {
 	method?: string;
+	/** request target as sent (path + query) */
+	url?: string;
 	headers: IncomingHttpHeaders | Record<string, string | undefined>;
 }
 
 function header(req: GateRequest, name: string): string | undefined {
 	const v = (req.headers as Record<string, unknown>)[name];
 	return Array.isArray(v) ? undefined : typeof v === "string" ? v : undefined;
+}
+
+/**
+ * A cross-site / same-site request may pass only as a top-level page navigation (e.g. returning from the
+ * Cloudflare Access / GitHub login, or a link in another app): GET/HEAD, Sec-Fetch-Mode navigate,
+ * Sec-Fetch-Dest document, and a path outside /api. The page is shown only in the Owner's own tab (never
+ * readable by the other site, never framed). Spec「入口の門番」4 (BOXP-714 TD-02).
+ */
+function isTopLevelPageNavigation(req: GateRequest, method: string): boolean {
+	if (method !== "GET" && method !== "HEAD") return false;
+	if (header(req, "sec-fetch-mode") !== "navigate" || header(req, "sec-fetch-dest") !== "document") return false;
+	const raw = req.url;
+	if (typeof raw !== "string" || !raw.startsWith("/") || raw.startsWith("//")) return false;
+	let path: string;
+	try {
+		path = decodeURIComponent(raw.split(/[?#]/, 1)[0]).toLowerCase();
+	} catch {
+		return false;
+	}
+	if (path.startsWith("//")) return false;
+	return path !== "/api" && !path.startsWith("/api/") && !path.startsWith("/api\\");
 }
 
 /** Host / Origin / Sec-Fetch-Site / Upgrade rules shared by both entrances. */
@@ -47,7 +70,8 @@ function checkHeaders(req: GateRequest, allowedHosts: string[], allowedOrigins: 
 	if (method !== "GET" && method !== "HEAD" && origin === undefined) return { ok: false, reason: "origin-required" };
 
 	const site = header(req, "sec-fetch-site");
-	if (site !== undefined && site !== "same-origin" && site !== "none") return { ok: false, reason: "sec-fetch-site" };
+	if (site !== undefined && site !== "same-origin" && site !== "none" && !isTopLevelPageNavigation(req, method))
+		return { ok: false, reason: "sec-fetch-site" };
 
 	return { ok: true };
 }

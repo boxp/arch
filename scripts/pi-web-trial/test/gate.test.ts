@@ -33,11 +33,48 @@ test("non-GET/HEAD requires Origin", () => {
 	assert.equal(ok({ host: "127.0.0.1:4317" }, "HEAD"), true);
 });
 
-test("Sec-Fetch-Site must be same-origin or none", () => {
+test("Sec-Fetch-Site must be same-origin or none (except top-level page navigation)", () => {
 	assert.equal(ok({ host: "127.0.0.1:4317", "sec-fetch-site": "same-origin" }), true);
 	assert.equal(ok({ host: "127.0.0.1:4317", "sec-fetch-site": "none" }), true);
 	assert.equal(ok({ host: "127.0.0.1:4317", "sec-fetch-site": "cross-site" }), false);
 	assert.equal(ok({ host: "127.0.0.1:4317", "sec-fetch-site": "same-site" }), false);
+});
+
+// spec「入口の門番」4 (BOXP-714 TD-02): cross-site / same-site pass only for a GET/HEAD top-level
+// navigation to a non-/api page (e.g. returning from the Access login).
+test("cross-site top-level navigation to a page passes, everything else cross-site is denied", () => {
+	const nav = { host: "127.0.0.1:4317", "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
+	const at = (url: string, h: Record<string, string> = nav, method = "GET") => checkRequest({ method, url, headers: h }, P).ok;
+	assert.equal(at("/"), true);
+	assert.equal(at("/?chat=abc"), true);
+	assert.equal(at("/index.html"), true);
+	assert.equal(at("/", { ...nav, "sec-fetch-site": "same-site" }), true);
+	assert.equal(at("/", nav, "HEAD"), true);
+	// embedded / non-navigation requests from another site
+	assert.equal(at("/", { ...nav, "sec-fetch-dest": "iframe" }), false);
+	assert.equal(at("/", { ...nav, "sec-fetch-dest": "frame" }), false);
+	assert.equal(at("/", { ...nav, "sec-fetch-dest": "object" }), false);
+	assert.equal(at("/", { ...nav, "sec-fetch-dest": "embed" }), false);
+	assert.equal(at("/", { ...nav, "sec-fetch-mode": "no-cors", "sec-fetch-dest": "empty" }), false);
+	assert.equal(at("/", { ...nav, "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" }), false);
+	assert.equal(at("/", { host: "127.0.0.1:4317", "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate" }), false); // no Dest
+	assert.equal(at("/", { host: "127.0.0.1:4317", "sec-fetch-site": "cross-site", "sec-fetch-dest": "document" }), false); // no Mode
+	// API is never a cross-site navigation target
+	assert.equal(at("/api/chats"), false);
+	assert.equal(at("/api"), false);
+	assert.equal(at("/API/chats"), false);
+	assert.equal(at("/%61pi/chats"), false);
+	assert.equal(at("/api%2Fchats"), false);
+	assert.equal(at("//api/chats"), false);
+	assert.equal(at("http://127.0.0.1:4317/api/chats"), false);
+	assert.equal(at(""), false);
+	assert.equal(at("/%zz"), false); // undecodable
+	// non-GET navigation (form POST) from another site
+	assert.equal(at("/", nav, "POST"), false);
+	assert.equal(at("/", { ...nav, origin: "http://127.0.0.1:4317" }, "POST"), false);
+	// Host / Origin rules still apply
+	assert.equal(at("/", { ...nav, host: "evil.example:4317" }), false);
+	assert.equal(at("/", { ...nav, origin: "https://evil.example" }), false);
 });
 
 test("Upgrade is never relayed", () => {

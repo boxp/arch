@@ -48,3 +48,11 @@
 - 変更: arch `terraform/cloudflare/b0xp.io/k8s/{pi_web_trial.tf,tunnel.tf}`、`scripts/pi-web-trial/{gate,bin,test,README.md}`。lolice `argoproj/codex-workspace/{service-pi-web-trial.yaml,networkpolicy.yaml,kustomization.yaml}`。
 - Lean: 適用外（要求 1 件ごとの判定関数で状態を持たない。直接テストで覆う）。
 - 検証: node test（期待値は仕様の例から、実装前に失敗を確認）、apply 後に未認証の要求が Access で止まること・偽 JWT が cloudflared / 門番で止まること・LAN から 4319 に届かないことを外から確認。Owner の GitHub ログインでの本人利用は本人受入。
+
+## 第 3 段: Access ログイン後の `forbidden (sec-fetch-site)`（TD-02）
+
+- 症状: Owner が `https://pi-web.b0xp.io` で Access（GitHub）ログイン後に `forbidden (sec-fetch-site)`。
+- 原因: ログイン画面（別サイト）での操作から 302 で戻るトップレベル遷移は、ブラウザが `Sec-Fetch-Site: cross-site`（`Sec-Fetch-Mode: navigate`、`Sec-Fetch-Dest: document`）を付ける。門番は `same-origin` / `none` 以外を一律拒否していた。再読込も cross-site のまま拒否。前段の模擬検証は http（非安全オリジン）で Chrome が Sec-Fetch-* を送らず見逃した。
+- 修正: `cross-site` / `same-site` は「GET/HEAD・Mode navigate・Dest document・パスが /api 以外（%デコード・小文字化後、`//` 始まりは拒否）」のトップレベル画面遷移だけ通す。iframe・no-cors/cors 読取・/api への遷移・別 Origin / Origin 無しの POST は従来どおり 403。JWT 検証・Owner 限定・Host（DNS rebinding）・Origin・Upgrade・道具ガードは不変。
+- Lean: 適用外（状態を持たない要求ごとの判定関数。仕様の例から直接テスト）。
+- 検証: node test（新規ケースは実装前に失敗を確認）、HTTPS 前段＋ログイン画面代役＋実 Chromium で PC/スマホ幅の再現（修正前 403 → 修正後 200・会話 SSE 返答）と不正経路の 403。
