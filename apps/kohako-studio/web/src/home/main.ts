@@ -627,11 +627,19 @@ function updateMessage() {
 }
 // 押し始めも吹き出しの外の場合だけ閉じる。内部からのドラッグ選択やスクロールは対象外。
 let outsideBubble = false
+// 画面上の別の操作を返答の閉鎖と兼ねない。押下時に記録し、クリック処理で要素が隠れても維持する。
+const overlayControl = '.top, #touch-menu, .drawer, #cards, #viewer, .status-anchor'
+function isOverlayControl(target: EventTarget | null) {
+  return target instanceof Element && Boolean(target.closest(overlayControl))
+}
 document.addEventListener('pointerdown', (event) => {
-  outsideBubble = event.target instanceof Node && !bubble.contains(event.target)
+  outsideBubble = event.target instanceof Node && !bubble.contains(event.target) && !isOverlayControl(event.target)
 })
 document.addEventListener('click', (event) => {
-  if (!outsideBubble || !(event.target instanceof Node) || bubble.contains(event.target)) return
+  const outside = outsideBubble
+  outsideBubble = false
+  if (!outside || !(event.target instanceof Node) || bubble.contains(event.target) || isOverlayControl(event.target))
+    return
   if (bubble.dataset.retained !== '1' || bubble.classList.contains('touch') || !canDismissReply(state, reading)) return
   if (!el('notice-actions').hidden || window.getSelection()?.toString()) return
   bubble.dataset.dismissed = '1'
