@@ -401,7 +401,7 @@ describe('S8.10 太ももの絵を切った境目は裾の層の下に入れる�
             : [80, 220, 230, 255]
     })
     mendThighs(data, width)
-    for (const y of [20, 103, 180, 237]) {
+    for (const y of [60, 103, 180, 237]) {
       const first = Math.ceil(thighEdge(y))
       expect(at(data, first - 1, y), `y=${y}`).toEqual([40, 40, 60, 255])
       expect(at(data, first - 56, y), `y=${y}`).toEqual([40, 40, 60, 255])
@@ -430,5 +430,17 @@ describe('S8.10 太ももの絵を切った境目は裾の層の下に入れる�
     // 20 行目: 17〜19 行が透明、20〜23 行が 255 → 濃さ 255×4÷7 = 146、色は 200 のまま
     expect(fillAt(20)).toEqual([200, 200, 200, 146])
     expect(fillAt(16)).toEqual([0, 0, 0, 0])
+  })
+  it('留め具の脇（y < 58）の塗り足しは、色は 58 行目のもの、濃さはその行のもの（水色の線の光を伸ばさない）', () => {
+    // 0〜57 行は水色がかった色で、濃さは 0〜29 行が 100、30 行目から 255。58 行目から下はスーツの地
+    const data = image((_, y) => (y < 58 ? [60, 140, 150, y < 30 ? 100 : 255] : [40, 40, 60, 255]))
+    mendThighs(data, width)
+    const fillAt = (y: number) => at(data, Math.ceil(thighEdge(y)) - 5, y)
+    expect(fillAt(40)).toEqual([40, 40, 60, 255])
+    expect(fillAt(57)).toEqual([40, 40, 60, 255])
+    expect(fillAt(10)).toEqual([40, 40, 60, 100])
+    expect(fillAt(100)).toEqual([40, 40, 60, 255])
+    // 残す画素は変えない
+    expect(at(data, 300, 40)).toEqual([60, 140, 150, 255])
   })
 })

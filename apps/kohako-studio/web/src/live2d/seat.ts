@@ -205,6 +205,8 @@ export const THIGH_MEND = {
   fill: 56,
   sample: 12,
   blur: 3,
+  /** これより上の行（腰の留め具の脇）は、水色の線が残す線のすぐ内側を通っていて光が混ざるので、色（赤・緑・青）はこの行のものを使う。濃さはその行のまま。 */
+  colorFrom: 58,
 } as const
 /** S8.9 の折れ線（左の裾の内側の縁）の、行 y での x。 */
 function skirtEdge(y: number): number {
@@ -249,8 +251,15 @@ export function mendThighs(data: Uint8ClampedArray, width: number): void {
         return Array.from(data.slice(best, best + 4))
       }),
     ),
+    // 留め具の脇の行は、色だけ colorFrom 行目のものにする（濃さはその行のまま）
+    toned = picked.map((side) =>
+      side.map((c, y) => {
+        const from = side[m.colorFrom]
+        return y < m.colorFrom && from ? [from[0], from[1], from[2], c[3]] : c
+      }),
+    ),
     // 上下 blur 行で平均（色は濃さで重み付け）
-    colors = picked.map((side) =>
+    colors = toned.map((side) =>
       side.map((_, y) => {
         let r = 0,
           g = 0,
