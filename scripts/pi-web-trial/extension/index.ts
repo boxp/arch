@@ -4,14 +4,15 @@
 // - adds a `web_search` tool (DuckDuckGo HTML, query only, no page fetch)
 // - blocks queries that copy note text read in this chat (also rebuilt from the saved session after a
 //   restart), and asks the Owner to confirm every query
-// - runs grep with an exclude glob for hidden entries
+// - runs grep with an exclude glob for hidden entries, and drops every grep/find/ls output line that
+//   names a hidden entry (fail-closed output filter)
 // Spec (current): Obsidian vault Projects/pi-web-agent-trial/spec.md
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { ALLOWED_TOOLS, decideToolCall, type GuardContext, parseDuckDuckGoHtml, ReadMemory, rememberSessionReads } from "./guard.ts";
+import { ALLOWED_TOOLS, decideToolCall, type GuardContext, filterToolOutput, parseDuckDuckGoHtml, ReadMemory, rememberSessionReads } from "./guard.ts";
 
 const SEARCH_URL = "https://html.duckduckgo.com/html/";
 const SEARCH_TIMEOUT_SECONDS = 15;
@@ -91,9 +92,19 @@ export default function piWebTrialGuard(pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_result", (event) => {
-		if (!READ_TOOLS.has(event.toolName)) return undefined;
-		const text = event.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
-		memory.add(text, event.toolCallId);
-		return undefined;
+		// Fail-closed output filter: drop every listed entry with a hidden segment (grep/find/ls walk
+		// the tree themselves), and withhold output of tools whose output shape is unknown.
+		let changed = false;
+		const content = event.content.map((part) => {
+			if (part.type !== "text") return part;
+			const filtered = filterToolOutput(event.toolName, part.text) ?? "(output withheld in this trial)";
+			if (filtered !== part.text) changed = true;
+			return { ...part, text: filtered };
+		});
+		if (READ_TOOLS.has(event.toolName)) {
+			const text = content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
+			memory.add(text, event.toolCallId);
+		}
+		return changed ? { content } : undefined;
 	});
 }

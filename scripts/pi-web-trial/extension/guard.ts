@@ -216,6 +216,64 @@ export function decideToolCall(toolName: string, input: Record<string, unknown>,
 	return { allow: true, confirmQuery: query };
 }
 
+
+// ---------------------------------------------------------------------------
+// Output filter (fail-closed). The path checks above only see where a tool starts; grep/find/ls then
+// walk the tree themselves (rg/fd run with --hidden). Every line of their output that names an entry
+// with a hidden segment is dropped here, whatever route the tool took to reach it. Lines whose shape is
+// not known are dropped too, and a traversing tool without a known output shape is withheld entirely.
+// ---------------------------------------------------------------------------
+
+/** Tools whose output is not a listing of the tree (their target path was fully checked before the call). */
+const UNFILTERED_OUTPUT_TOOLS = new Set(["read", "write", "edit", "web_search"]);
+/** Fixed messages the listing tools print instead of entries. */
+const FIXED_OUTPUT_LINES = new Set(["No matches found", "No files found matching pattern", "(empty directory)"]);
+export const NO_VISIBLE_ENTRIES = "(no visible entries; hidden entries are not shown in this trial)";
+/** grep match `path:N: text` and context `path-N- text`. */
+const GREP_MARKER = /(?::\d+:|-\d+-)(?= |$)/g;
+
+function pathHasHiddenSegment(path: string): boolean {
+	return path.split("/").some((segment) => segment.startsWith("."));
+}
+
+function entryPath(toolName: string, line: string): string | undefined {
+	if (toolName === "grep") {
+		// The path may itself contain something like "-1- ": judge the longest candidate prefix, so a
+		// hidden segment in any candidate drops the line (a hidden-looking body may be dropped too).
+		const ends = [...line.matchAll(GREP_MARKER)].map((m) => m.index);
+		return ends.length ? line.slice(0, ends[ends.length - 1]) : undefined;
+	}
+	return line; // find: relative path, ls: name (directories end with "/")
+}
+
+/**
+ * Filter the text output of a tool before the model (and the read memory) sees it.
+ * Returns undefined when the whole output must be withheld.
+ */
+export function filterToolOutput(toolName: string, text: string): string | undefined {
+	if (UNFILTERED_OUTPUT_TOOLS.has(toolName)) return text;
+	if (!READ_TOOLS.has(toolName)) return undefined;
+	// Entries come first; tools append notices as "\n\n[...]" at the end.
+	const noticeAt = text.search(/\n\n\[[^\n]*\]$/);
+	const body = noticeAt === -1 ? text : text.slice(0, noticeAt);
+	const notice = noticeAt === -1 ? "" : text.slice(noticeAt);
+	const kept: string[] = [];
+	let entries = 0;
+	for (const line of body.split("\n")) {
+		if (line === "") continue;
+		if (FIXED_OUTPUT_LINES.has(line)) {
+			kept.push(line);
+			continue;
+		}
+		entries++;
+		const path = entryPath(toolName, line);
+		if (path === undefined || pathHasHiddenSegment(path)) continue;
+		kept.push(line);
+	}
+	if (kept.length === 0 && entries > 0) return NO_VISIBLE_ENTRIES + notice;
+	return kept.join("\n") + notice;
+}
+
 export interface SearchResult {
 	title: string;
 	url: string;

@@ -12,6 +12,7 @@ import {
 	parseDuckDuckGoHtml,
 	ReadMemory,
 	rememberSessionReads,
+	filterToolOutput,
 } from "../extension/guard.ts";
 
 function setup(): GuardContext {
@@ -190,4 +191,46 @@ test("web_search: 再起動後も会話記録に残った読取結果から判�
 	rememberSessionReads(memory, entries);
 	rememberSessionReads(memory, entries);
 	assert.equal(memory.saturated, false);
+});
+
+test("出力: find/ls/grep の結果から隠し段（. で始まる名前）を含む行は道具の走査の仕方に依らず落とす", () => {
+	// find: 1 行 1 パス（検索開始地点からの相対）
+	assert.equal(
+		filterToolOutput("find", ".obsidian/workspace.json\nProjects/a.md\nProjects/.trash/b.md\n.git/\nnotes/.hidden\nc.md"),
+		"Projects/a.md\nc.md",
+	);
+	// ls: 1 行 1 名前（ディレクトリは末尾 /）
+	assert.equal(filterToolOutput("ls", ".obsidian/\n.DS_Store\nProjects/\nREADME.md"), "Projects/\nREADME.md");
+	// grep: 「パス:行番号: 本文」と前後行の「パス-行番号- 本文」
+	assert.equal(
+		filterToolOutput(
+			"grep",
+			".obsidian/plugins/x/data.json:3: token=abc\nProjects/a.md:1: コハコ\nProjects/a.md-2- 次の行\nProjects/.trash/b.md:4: 私的\nsub/.cfg-5- 秘密",
+		),
+		"Projects/a.md:1: コハコ\nProjects/a.md-2- 次の行",
+	);
+	// 本文側の .（例: 拡張子や「...」）は落とさない
+	assert.equal(filterToolOutput("grep", "a.md:1: see ./.obsidian later"), "a.md:1: see ./.obsidian later");
+});
+
+test("出力: 形の分からない行は落とし（fail-closed）、道具の決まった文言と末尾の [注記] は残す", () => {
+	assert.equal(filterToolOutput("grep", "no-line-number-here\nProjects/a.md:1: x"), "Projects/a.md:1: x");
+	assert.equal(filterToolOutput("grep", "No matches found"), "No matches found");
+	assert.equal(filterToolOutput("find", "No files found matching pattern"), "No files found matching pattern");
+	assert.equal(filterToolOutput("ls", "(empty directory)"), "(empty directory)");
+	assert.equal(
+		filterToolOutput("find", "a.md\n.x/b.md\n\n[1000 results limit reached. Use limit=2000 for more, or refine pattern]"),
+		"a.md\n\n[1000 results limit reached. Use limit=2000 for more, or refine pattern]",
+	);
+	// 全部落ちたら「隠し項目を除いた」旨だけ返す（名前は出さない）
+	assert.equal(filterToolOutput("ls", ".obsidian/\n.git/"), "(no visible entries; hidden entries are not shown in this trial)");
+	// read は開始地点の判定だけで足りる（走査しない）ので本文はそのまま
+	assert.equal(filterToolOutput("read", ".obsidian 本文\n.x"), ".obsidian 本文\n.x");
+	// 走査する道具で出力の形を知らないものは丸ごと伏せる
+	assert.equal(filterToolOutput("unknown_listing", "a\nb"), undefined);
+});
+
+test("出力: grep のパスに行番号に似た並びがあっても、隠し段が見える候補が一つでもあれば落とす", () => {
+	// パス "a-1- b/.x/c.md" か "a" か区別できない → 長い方の候補で判定して落とす
+	assert.equal(filterToolOutput("grep", "a-1- b/.x/c.md:3: 秘密\nok.md:2: x"), "ok.md:2: x");
 });
