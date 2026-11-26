@@ -186,19 +186,94 @@ export const ART_SKIRT = {
 } as const
 /** 絵の画素 (x, y) が、描き込まれた裾の側（透明にする側）か。 */
 export function paintedSkirt(x: number, y: number): boolean {
-  const e = ART_SKIRT.edge,
-    // 左右対称（画素の中心で折り返す）
-    lx = Math.min(x, ART_SKIRT.width - 1 - x)
+  // 左右対称（画素の中心で折り返す）
+  return Math.min(x, ART_SKIRT.width - 1 - x) < skirtEdge(y)
+}
+
+/**
+ * 太ももの絵を切った境目は、いつも裾の板の下に入れる（S8.10。BOXP-698 TD-05 の再指摘）。
+ * 裾の板は体の揺れ・視線の追従・しぐさで左右に動くが、絵の下のほうは座面に止まっている。板が開いた時に、
+ * 折れ線の内側に残った絵の裾（縁取りと紫）と、太ももを切った断面・その外の隙間がのぞかないよう、
+ * 残す線を内側へ寄せ、線の外へ太ももの色を塗り足す（絵のファイルは変えず、読む時に行う）。
+ */
+export const THIGH_MEND = {
+  /** 残す線を S8.9 の折れ線より内側へ寄せる幅。y が taperFrom から end へ進む間に 0 へ減らす。end から下は塗り足さない。 */
+  inset: 8,
+  taperFrom: 226,
+  end: 238,
+  /** 塗り足す幅、色を選ぶ画素の数（線から内側へ。その中でいちばん暗い画素の色を使う）、色を平均する上下の行数。 */
+  fill: 40,
+  sample: 12,
+  blur: 3,
+} as const
+/** S8.9 の折れ線（左の裾の内側の縁）の、行 y での x。 */
+function skirtEdge(y: number): number {
+  const e = ART_SKIRT.edge
   let i = 1
   while (i < e.length - 1 && y > (e[i] as Vec)[0]) i++
   const [y0, x0] = e[i - 1] as Vec,
-    [y1, x1] = e[i] as Vec,
-    t = clamp01((y - y0) / (y1 - y0))
-  return lx < x0 + (x1 - x0) * t
+    [y1, x1] = e[i] as Vec
+  return x0 + (x1 - x0) * clamp01((y - y0) / (y1 - y0))
 }
-/** 絵の画素（RGBA、width 列）から、描き込まれた裾を透明にする。 */
-export function eraseSkirt(data: Uint8ClampedArray, width: number): void {
-  const height = data.length / 4 / width
+/** 残す線（左）。x がこれ以上の画素は元の絵のまま。 */
+export function thighEdge(y: number): number {
+  const m = THIGH_MEND
+  return skirtEdge(y) + m.inset * clamp01((m.end - y) / (m.end - m.taperFrom))
+}
+/** 絵の画素 (x, y) の扱い: 元のまま keep・太ももの色で塗り足す fill・透明 clear。右は左右対称。 */
+export function artZone(x: number, y: number): 'keep' | 'fill' | 'clear' {
+  const lx = Math.min(x, ART_SKIRT.width - 1 - x),
+    edge = thighEdge(y)
+  return lx >= edge ? 'keep' : y < THIGH_MEND.end && lx >= edge - THIGH_MEND.fill ? 'fill' : 'clear'
+}
+/** 絵の画素（RGBA、width 列）を S8.9・S8.10 のとおりに直す: 描き込まれた裾を透明にし、残す線の外へ太ももの色を塗り足す。 */
+export function mendThighs(data: Uint8ClampedArray, width: number): void {
+  const height = data.length / 4 / width,
+    m = THIGH_MEND,
+    rows = Math.min(height, m.end),
+    first = (y: number) => Math.ceil(thighEdge(y)),
+    // 行ごと・左右ごとの色（線に近い sample 画素のうち、いちばん暗い画素。水色の線や明るい縁取りを横へ引き伸ばさない）
+    picked = [false, true].map((right) =>
+      Array.from({ length: rows }, (_, y) => {
+        let best = -1,
+          dark = Infinity
+        for (let k = 0; k < m.sample; k++) {
+          const lx = first(y) + k,
+            i = 4 * (y * width + (right ? width - 1 - lx : lx)),
+            sum = (data[i] as number) + (data[i + 1] as number) + (data[i + 2] as number)
+          if (sum < dark) {
+            dark = sum
+            best = i
+          }
+        }
+        return Array.from(data.slice(best, best + 4))
+      }),
+    ),
+    // 上下 blur 行で平均（色は濃さで重み付け）
+    colors = picked.map((side) =>
+      side.map((_, y) => {
+        let r = 0,
+          g = 0,
+          b = 0,
+          alpha = 0,
+          n = 0
+        for (let yy = Math.max(0, y - m.blur); yy <= Math.min(rows - 1, y + m.blur); yy++) {
+          const [cr, cg, cb, ca] = side[yy] as [number, number, number, number]
+          r += cr * ca
+          g += cg * ca
+          b += cb * ca
+          alpha += ca
+          n++
+        }
+        return alpha === 0 ? [0, 0, 0, 0] : [r / alpha, g / alpha, b / alpha, alpha / n].map(Math.round)
+      }),
+    )
   for (let y = 0; y < height; y++)
-    for (let x = 0; x < width; x++) if (paintedSkirt(x, y)) data.fill(0, 4 * (y * width + x), 4 * (y * width + x) + 4)
+    for (let x = 0; x < width; x++) {
+      const zone = artZone(x, y)
+      if (zone === 'keep') continue
+      const i = 4 * (y * width + x)
+      if (zone === 'clear') data.fill(0, i, i + 4)
+      else data.set((colors[x * 2 >= width ? 1 : 0] as number[][])[y] as number[], i)
+    }
 }

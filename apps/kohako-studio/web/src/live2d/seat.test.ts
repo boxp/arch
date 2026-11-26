@@ -3,15 +3,17 @@ import { describe, expect, it } from 'vitest'
 import {
   ART,
   artOpacity,
+  artZone,
   CHAIR_RISE,
   chairCorners,
-  eraseSkirt,
   followPoint,
   followWeight,
   legOpacity,
+  mendThighs,
   paintedSkirt,
   SEAT_RISE,
   seatLift,
+  thighEdge,
   seatPoint,
   shinCorners,
   skirtPoint,
@@ -323,16 +325,110 @@ describe('S8.9 太ももの絵に描き込まれた裾は描かない（TD-05）
       expect(paintedSkirt(329, y)).toBe(false)
     }
   })
-  it('絵の画素: 裾の側だけ 4 成分とも 0 になり、ほかの画素は変わらない', () => {
-    const width = 659,
-      height = 352,
-      data = new Uint8ClampedArray(width * height * 4).fill(200)
-    eraseSkirt(data, width)
-    const at = (x: number, y: number) => Array.from(data.slice(4 * (y * width + x), 4 * (y * width + x) + 4))
-    expect(at(100, 250)).toEqual([0, 0, 0, 0])
-    expect(at(558, 250)).toEqual([0, 0, 0, 0])
-    expect(at(300, 150)).toEqual([200, 200, 200, 200])
-    expect(at(205, 103)).toEqual([200, 200, 200, 200])
-    expect(at(204, 103)).toEqual([0, 0, 0, 0])
+})
+
+describe('S8.10 太ももの絵を切った境目は裾の層の下に入れる（TD-05）', () => {
+  const width = 659,
+    height = 352,
+    image = (color: (x: number, y: number) => readonly [number, number, number, number]) => {
+      const data = new Uint8ClampedArray(width * height * 4)
+      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) data.set(color(x, y), 4 * (y * width + x))
+      return data
+    },
+    at = (data: Uint8ClampedArray, x: number, y: number) =>
+      Array.from(data.slice(4 * (y * width + x), 4 * (y * width + x) + 4))
+  it('残す線: y ≤ 226 は S8.9 の折れ線より 8 内側、226〜238 で 0 へ、238 から下は 136', () => {
+    expect(thighEdge(103)).toBeCloseTo(213, 9)
+    expect(thighEdge(0)).toBeCloseTo(268, 9)
+    expect(thighEdge(226)).toBeCloseTo(151, 9)
+    expect(thighEdge(232)).toBeCloseTo(143.5, 9)
+    expect(thighEdge(238)).toBeCloseTo(136, 9)
+    expect(thighEdge(300)).toBeCloseTo(136, 9)
+  })
+  it('例の値: 元のまま・塗り足し・透明の区分け（右は左右対称）', () => {
+    expect(artZone(213, 103)).toBe('keep')
+    expect(artZone(212, 103)).toBe('fill')
+    expect(artZone(173, 103)).toBe('fill')
+    expect(artZone(172, 103)).toBe('clear')
+    expect(artZone(445, 103)).toBe('keep')
+    expect(artZone(446, 103)).toBe('fill')
+    expect(artZone(485, 103)).toBe('fill')
+    expect(artZone(486, 103)).toBe('clear')
+    expect(artZone(144, 232)).toBe('keep')
+    expect(artZone(143, 232)).toBe('fill')
+    expect(artZone(136, 300)).toBe('keep')
+    expect(artZone(135, 300)).toBe('clear')
+    expect(artZone(135, 238)).toBe('clear')
+    expect(artZone(135, 237)).toBe('fill')
+  })
+  it('どの行も、外から 透明 → 塗り足し（y < 238 だけ、幅 40）→ 元のまま の順に並び、絵に描き込まれた裾の側は元のまま残らない', () => {
+    for (let y = 0; y < height; y++) {
+      const row = Array.from({ length: 330 }, (_, x) => artZone(x, y)),
+        fill = row.filter((z) => z === 'fill').length
+      expect(row.join('').replace(/(clear)+(fill)*(keep)+/, ''), `y=${y}`).toBe('')
+      expect(fill, `y=${y}`).toBe(y < 238 ? 40 : 0)
+      for (let x = 0; x < 330; x++) {
+        expect(artZone(658 - x, y)).toBe(row[x])
+        if (paintedSkirt(x, y)) expect(row[x], `${x},${y}`).not.toBe('keep')
+      }
+    }
+  })
+  it('絵の画素: 元のままの画素は変わらず、透明の画素は 4 成分とも 0、塗り足しはその行の色', () => {
+    const data = image(() => [200, 200, 200, 200])
+    mendThighs(data, width)
+    expect(at(data, 213, 103)).toEqual([200, 200, 200, 200])
+    expect(at(data, 300, 150)).toEqual([200, 200, 200, 200])
+    expect(at(data, 212, 103)).toEqual([200, 200, 200, 200])
+    expect(at(data, 173, 103)).toEqual([200, 200, 200, 200])
+    expect(at(data, 485, 103)).toEqual([200, 200, 200, 200])
+    expect(at(data, 172, 103)).toEqual([0, 0, 0, 0])
+    expect(at(data, 486, 103)).toEqual([0, 0, 0, 0])
+    expect(at(data, 100, 250)).toEqual([0, 0, 0, 0])
+    expect(at(data, 135, 300)).toEqual([0, 0, 0, 0])
+    expect(at(data, 136, 300)).toEqual([200, 200, 200, 200])
+  })
+  it('塗り足しの色は、線に近い 12 画素のうちいちばん暗い画素（水色の線・明るい縁取りを引き伸ばさない）。外側の裾の色は使わない', () => {
+    // 残す画素は水色の線 (80, 220, 230)。線から 10 個目の画素だけスーツの地 (40, 40, 60)、13 個目はもっと暗い (0, 0, 0)（12 画素の外なので使わない）。線の外（絵の裾にあたる側）は紫。
+    const data = image((x, y) => {
+      const lx = Math.min(x, 658 - x),
+        first = Math.ceil(thighEdge(y))
+      return lx < first
+        ? [180, 120, 230, 255]
+        : lx === first + 9
+          ? [40, 40, 60, 255]
+          : lx === first + 12
+            ? [0, 0, 0, 255]
+            : [80, 220, 230, 255]
+    })
+    mendThighs(data, width)
+    for (const y of [20, 103, 180, 237]) {
+      const first = Math.ceil(thighEdge(y))
+      expect(at(data, first - 1, y), `y=${y}`).toEqual([40, 40, 60, 255])
+      expect(at(data, first - 40, y), `y=${y}`).toEqual([40, 40, 60, 255])
+      expect(at(data, 658 - (first - 40), y), `y=${y}`).toEqual([40, 40, 60, 255])
+      expect(at(data, first + 3, y), `y=${y}`).toEqual([80, 220, 230, 255])
+    }
+  })
+  it('塗り足しの色は上下 3 行で平均する（例: 120 行目を境に 100 → 200 なら、120 行目は 157）', () => {
+    const data = image((_, y) => (y < 120 ? [100, 100, 100, 255] : [200, 200, 200, 255]))
+    mendThighs(data, width)
+    const fillAt = (y: number) => at(data, Math.ceil(thighEdge(y)) - 5, y)
+    expect(fillAt(116)).toEqual([100, 100, 100, 255])
+    expect(fillAt(117)).toEqual([114, 114, 114, 255])
+    expect(fillAt(120)).toEqual([157, 157, 157, 255])
+    expect(fillAt(123)).toEqual([200, 200, 200, 255])
+    // 端の行は、0〜237 行の中だけで平均する（238 行目から下の色は混ぜない）
+    const edge = image((_, y) => (y < 238 ? [100, 100, 100, 255] : [0, 0, 0, 255]))
+    mendThighs(edge, width)
+    expect(at(edge, Math.ceil(thighEdge(237)) - 5, 237)).toEqual([100, 100, 100, 255])
+  })
+  it('濃さの違う行の平均: 色は濃さで重みを付け、透明な行の色（黒）を混ぜない', () => {
+    // 0〜19 行は透明（色は 0）、20 行目から下は濃さ 255 の 200
+    const data = image((_, y) => (y < 20 ? [0, 0, 0, 0] : [200, 200, 200, 255]))
+    mendThighs(data, width)
+    const fillAt = (y: number) => at(data, Math.ceil(thighEdge(y)) - 5, y)
+    // 20 行目: 17〜19 行が透明、20〜23 行が 255 → 濃さ 255×4÷7 = 146、色は 200 のまま
+    expect(fillAt(20)).toEqual([200, 200, 200, 146])
+    expect(fillAt(16)).toEqual([0, 0, 0, 0])
   })
 })
