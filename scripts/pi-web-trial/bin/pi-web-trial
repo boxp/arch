@@ -19,16 +19,21 @@ set -euo pipefail
 ROOT="${PI_WEB_TRIAL_ROOT:-$HOME/.local/share/pi-web-trial}"
 VAULT="${PI_WEB_TRIAL_VAULT:-$HOME/Documents/obsidian-headless/BOXP}"
 SANDBOX="$VAULT/Projects/pi-web-agent-trial/sandbox"
-PORT="${PI_WEB_TRIAL_PORT:-4317}"
-UPSTREAM_PORT="${PI_WEB_TRIAL_UPSTREAM_PORT:-4318}"
+# Port overrides must be plain numbers. Kubernetes injects PI_WEB_TRIAL_PORT=tcp://<ip>:4319 for the
+# Service "pi-web-trial" into this Pod, so that name is not used and non-numbers fall back to the default.
+port_or() {
+  if [[ "$1" =~ ^[0-9]+$ ]]; then echo "$1"; else echo "$2"; fi
+}
+PORT="$(port_or "${PI_WEB_TRIAL_GATE_PORT:-}" 4317)"
+UPSTREAM_PORT="$(port_or "${PI_WEB_TRIAL_UPSTREAM_PORT:-}" 4318)"
 # Cloudflare Access entrance (https://pi-web.b0xp.io via the k8s tunnel). Enabled only when
 # $ROOT/access.json exists ({"teamDomain","aud","ownerEmails","publicOrigin"}); the gate then
 # also listens on 0.0.0.0:$ACCESS_PORT and re-verifies the Access JWT on every request.
-ACCESS_PORT="${PI_WEB_TRIAL_ACCESS_PORT:-4319}"
+ACCESS_PORT="$(port_or "${PI_WEB_TRIAL_ACCESS_PORT:-}" 4319)"
 ACCESS_CONFIG="$ROOT/access.json"
 # xing-shuyin/pi-web-ui (Keel kernel). Pinned: the gate's allow lists follow this version's protocol.
 PWU_VERSION="0.122.0"
-PWU_PORT="${PI_WEB_TRIAL_PWU_PORT:-4320}"
+PWU_PORT="$(port_or "${PI_WEB_TRIAL_PWU_PORT:-}" 4320)"
 PWU_LOCALE_URL="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/v$PWU_VERSION/locales/ja.json"
 UI_FILE="$ROOT/ui"
 SESSION="pi-web-trial"
