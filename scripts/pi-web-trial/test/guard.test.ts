@@ -253,3 +253,15 @@ test("web_search: 読んだ本文の記録と上限超過の印はチャット�
 	// 同じ ID は同じ記録を返す
 	assert.equal(memories.forSession("A"), memories.forSession("A"));
 });
+
+test("write/edit/read: 壊れた symlink（リンク先が無い）は先を確かめられないので止める", () => {
+	const ctx = setup();
+	const outside = join(ctx.home, "outside-not-yet.md");
+	symlinkSync(outside, join(ctx.sandboxRoot, "link.md"));
+	symlinkSync(join(ctx.home, "no-such-dir"), join(ctx.sandboxRoot, "dirlink"));
+	blocked(decideToolCall("write", { path: "Projects/pi-web-agent-trial/sandbox/link.md", content: "x" }, ctx));
+	blocked(decideToolCall("edit", { path: "Projects/pi-web-agent-trial/sandbox/link.md" }, ctx));
+	blocked(decideToolCall("write", { path: "Projects/pi-web-agent-trial/sandbox/dirlink/a.md", content: "x" }, ctx));
+	blocked(decideToolCall("read", { path: "Projects/pi-web-agent-trial/sandbox/link.md" }, ctx));
+	allowed(decideToolCall("write", { path: "Projects/pi-web-agent-trial/sandbox/new-note.md", content: "x" }, ctx));
+});

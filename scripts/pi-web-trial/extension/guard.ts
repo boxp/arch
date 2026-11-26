@@ -1,7 +1,7 @@
 // BOXP-714: pure decision logic for the Pi Web trial guard extension.
 // Spec (current): Obsidian vault Projects/pi-web-agent-trial/spec.md
 // No Pi imports here so that `node --test` can load it directly.
-import { existsSync, realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -131,7 +131,8 @@ export function rememberSessionReads(memory: ReadMemory, entries: readonly unkno
 
 /**
  * Resolve like Pi's tools (unicode spaces, `@`, `~`, `file://` URLs, cwd), then follow symlinks
- * for the part that exists. Throws when a `file://` URL cannot be converted.
+ * for the part that exists. Throws when a `file://` URL cannot be converted, or when an existing
+ * entry cannot be resolved (a broken symlink, a loop): its target is unknown, so callers deny (fail-closed).
  */
 export function resolveGuardPath(raw: string, cwd: string, home: string): string {
 	let p = raw.replace(UNICODE_SPACES, " ");
@@ -142,18 +143,14 @@ export function resolveGuardPath(raw: string, cwd: string, home: string): string
 	const absolute = isAbsolute(p) ? resolve(p) : resolve(cwd, p);
 	let existing = absolute;
 	const rest: string[] = [];
-	while (!existsSync(existing)) {
+	while (!entryExists(existing)) {
 		const parent = dirname(existing);
 		if (parent === existing) break;
 		rest.unshift(basename(existing));
 		existing = parent;
 	}
-	let real = existing;
-	try {
-		real = realpathSync(existing);
-	} catch {
-		// keep the lexical path
-	}
+	// No fallback to the lexical path: a dangling link would let a write create its target anywhere.
+	const real = realpathSync(existing);
 	return rest.length ? join(real, ...rest) : real;
 }
 
@@ -346,4 +343,14 @@ export function parseDuckDuckGoHtml(html: string, limit = 8): SearchResult[] {
 		results.push({ title: stripTags(match[2]), url, snippet: snippet ? stripTags(snippet[1]) : "" });
 	}
 	return results;
+}
+
+/** True when the entry itself exists, including a symlink whose target is missing (unlike existsSync). */
+function entryExists(path: string): boolean {
+	try {
+		lstatSync(path);
+		return true;
+	} catch {
+		return false;
+	}
 }
