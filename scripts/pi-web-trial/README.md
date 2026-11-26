@@ -12,15 +12,16 @@
 ```bash
 # pi-web-agent をビルド（upstream の build:offline はモデルカタログの取得が壊れているため、
 # npm 公開版 @earendil-works/pi-ai@0.82.1 の providers/data を流用する）
-git clone https://github.com/tg-prplx/pi-web-agent && cd pi-web-agent
+ARCH=$PWD   # boxp/arch のチェックアウト（このコマンドはリポジトリのルートで始める）
+git clone https://github.com/tg-prplx/pi-web-agent /path/to/pi-web-agent && cd /path/to/pi-web-agent
 git checkout ae5e1c79c8d8314339e1c9a3cd252a1f014f03d2
 npm ci --ignore-scripts
 npm pack @earendil-works/pi-ai@0.82.1 && tar xzf earendil-works-pi-ai-0.82.1.tgz
 mkdir -p packages/ai/src/providers/data && cp -r package/dist/providers/data/. packages/ai/src/providers/data/
 npm run build:offline
 
-# 試用環境へ導入して起動
-scripts/pi-web-trial/bin/pi-web-trial install /path/to/pi-web-agent
+# 試用環境へ導入して起動（pi-web-agent に移動しているので arch 側は絶対パスで呼ぶ）
+"$ARCH/scripts/pi-web-trial/bin/pi-web-trial" install /path/to/pi-web-agent
 ~/.local/share/pi-web-trial/bin/pi-web-trial start     # stop / restart / status
 ```
 

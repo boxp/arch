@@ -3,6 +3,7 @@
 // No Pi imports here so that `node --test` can load it directly.
 import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const ALLOWED_TOOLS: ReadonlySet<string> = new Set([
 	"read",
@@ -24,7 +25,12 @@ const MAX_MEMORY_CHARS = 4 * 1024 * 1024;
  * `confirmQuery`: the exact text that will leave the machine. The caller must show it to the
  * Owner and send it only after an explicit confirmation (no UI or cancel -> block).
  */
-export type Decision = { allow: true; confirmQuery?: string } | { allow: false; reason: string };
+export type Decision =
+	| { allow: true; confirmQuery?: string; rewrite?: Record<string, unknown> }
+	| { allow: false; reason: string };
+
+/** Applied to grep input: rg runs with --hidden and recurses, so hidden entries must be excluded. */
+export const GREP_EXCLUDE_HIDDEN_GLOB = "!.*";
 
 export interface GuardContext {
 	cwd: string;
@@ -41,6 +47,7 @@ function normalizeText(text: string): string {
 /** Text returned by read-type tools in this chat process (normalized). */
 export class ReadMemory {
 	private chunks: string[] = [];
+	private readonly keys = new Set<string>();
 	private size = 0;
 	/** Set once the cap is exceeded; never cleared. web_search is refused from then on. */
 	saturated = false;
@@ -51,7 +58,12 @@ export class ReadMemory {
 		this.maxChars = maxChars;
 	}
 
-	add(text: string): void {
+	/** `key` (tool call id) makes repeated adds of the same tool result count once. */
+	add(text: string, key?: string): void {
+		if (key !== undefined) {
+			if (this.keys.has(key)) return;
+			this.keys.add(key);
+		}
 		const normalized = normalizeText(text);
 		if (!normalized) return;
 		// Never drop old text (that would let it pass the check later): stop searching instead.
@@ -75,11 +87,36 @@ export class ReadMemory {
 	}
 }
 
-/** Resolve like Pi's tools, then follow symlinks for the part that exists. */
+const READ_RESULT_TOOLS = READ_TOOLS;
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
+/**
+ * Rebuild the read memory from the chat's saved session entries (survives a server restart).
+ * Only read/grep/find/ls results are remembered; each tool call counts once.
+ */
+export function rememberSessionReads(memory: ReadMemory, entries: readonly unknown[]): void {
+	for (const entry of entries) {
+		const e = entry as { type?: string; message?: { role?: string; toolName?: string; toolCallId?: string; content?: unknown } };
+		const m = e?.type === "message" ? e.message : undefined;
+		if (!m || m.role !== "toolResult" || !READ_RESULT_TOOLS.has(m.toolName ?? "") || !Array.isArray(m.content)) continue;
+		const text = m.content
+			.filter((part: { type?: string; text?: unknown }) => part?.type === "text" && typeof part.text === "string")
+			.map((part: { text: string }) => part.text)
+			.join("\n");
+		memory.add(text, m.toolCallId);
+	}
+}
+
+/**
+ * Resolve like Pi's tools (unicode spaces, `@`, `~`, `file://` URLs, cwd), then follow symlinks
+ * for the part that exists. Throws when a `file://` URL cannot be converted.
+ */
 export function resolveGuardPath(raw: string, cwd: string, home: string): string {
-	let p = raw.startsWith("@") ? raw.slice(1) : raw;
+	let p = raw.replace(UNICODE_SPACES, " ");
+	if (p.startsWith("@")) p = p.slice(1);
 	if (p === "~") p = home;
 	else if (p.startsWith("~/")) p = join(home, p.slice(2));
+	else if (/^file:\/\//.test(p)) p = fileURLToPath(p);
 	const absolute = isAbsolute(p) ? resolve(p) : resolve(cwd, p);
 	let existing = absolute;
 	const rest: string[] = [];
@@ -116,6 +153,14 @@ function hasHiddenSegment(root: string, target: string): boolean {
 	return rel !== "" && rel.split(sep).some((segment) => segment.startsWith("."));
 }
 
+function safeResolve(raw: string, ctx: GuardContext): string | undefined {
+	try {
+		return resolveGuardPath(raw, ctx.cwd, ctx.home);
+	} catch {
+		return undefined;
+	}
+}
+
 function deny(reason: string): Decision {
 	return { allow: false, reason };
 }
@@ -129,9 +174,16 @@ export function decideToolCall(toolName: string, input: Record<string, unknown>,
 	if (READ_TOOLS.has(toolName)) {
 		const raw = input.path ?? ".";
 		if (typeof raw !== "string") return deny("path must be a string.");
-		const target = resolveGuardPath(raw, ctx.cwd, ctx.home);
+		const target = safeResolve(raw, ctx);
+		if (target === undefined) return deny(`Unsupported path: ${raw}`);
 		if (!inside(vault, target)) return deny(`Only the Obsidian vault can be read in this trial: ${raw}`);
 		if (hasHiddenSegment(vault, target)) return deny(`Hidden folders in the vault are not readable: ${raw}`);
+		if (toolName === "grep") {
+			// Pi's grep recurses with --hidden; one exclude glob keeps .obsidian etc. out. A model-given
+			// glob would replace it (only one glob is accepted), so it is refused.
+			if (input.glob !== undefined) return deny("grep with glob is not available in this trial; omit glob and filter by path or pattern instead.");
+			return { allow: true, rewrite: { glob: GREP_EXCLUDE_HIDDEN_GLOB } };
+		}
 		return { allow: true };
 	}
 
@@ -139,8 +191,8 @@ export function decideToolCall(toolName: string, input: Record<string, unknown>,
 		const raw = input.path;
 		if (typeof raw !== "string" || raw === "") return deny("path must be a non-empty string.");
 		const sandbox = realRoot(ctx.sandboxRoot);
-		const target = resolveGuardPath(raw, ctx.cwd, ctx.home);
-		if (target === sandbox || !inside(sandbox, target) || hasHiddenSegment(sandbox, target)) {
+		const target = safeResolve(raw, ctx);
+		if (target === undefined || target === sandbox || !inside(sandbox, target) || hasHiddenSegment(sandbox, target)) {
 			return deny(`Writing is limited to ${relative(vault, sandbox) || sandbox}/ in this trial: ${raw}`);
 		}
 		if (!target.endsWith(".md")) return deny(`Only Markdown (.md) files can be written: ${raw}`);

@@ -11,6 +11,7 @@ import {
 	decideToolCall,
 	parseDuckDuckGoHtml,
 	ReadMemory,
+	rememberSessionReads,
 } from "../extension/guard.ts";
 
 function setup(): GuardContext {
@@ -133,4 +134,60 @@ test("web_search: 記録が上限を超えたら古い本文を捨てず、以�
 	blocked(decideToolCall("web_search", { query: "llama.cpp router mode" }, ctx));
 	// 読み取り系は引き続き通す
 	allowed(decideToolCall("ls", {}, ctx));
+});
+
+test("read/grep/find/ls: file:// URL も Pi と同じくファイルパスに直して判定する", () => {
+	const ctx = setup();
+	blocked(decideToolCall("read", { path: "file:///etc/passwd" }, ctx));
+	blocked(decideToolCall("ls", { path: `file://${ctx.home}/.config/gh` }, ctx));
+	blocked(decideToolCall("read", { path: "file://remote-host/etc/passwd" }, ctx));
+	allowed(decideToolCall("read", { path: `file://${ctx.vaultRoot}/Projects/kohako-home/README.md` }, ctx));
+	blocked(decideToolCall("read", { path: `@file://${ctx.vaultRoot}/.obsidian/workspace.json` }, ctx));
+});
+
+test("grep: glob 無しなら隠し段を除く !.* を付けて通し、glob 付きは止める", () => {
+	const ctx = setup();
+	assert.deepEqual(decideToolCall("grep", { pattern: "token" }, ctx), { allow: true, rewrite: { glob: "!.*" } });
+	assert.deepEqual(decideToolCall("grep", { pattern: "x", path: "Projects" }, ctx), {
+		allow: true,
+		rewrite: { glob: "!.*" },
+	});
+	blocked(decideToolCall("grep", { pattern: "token", glob: "*.md" }, ctx));
+	blocked(decideToolCall("grep", { pattern: "token", glob: "!.*" }, ctx));
+	// read/find/ls は書き換えなし
+	assert.deepEqual(decideToolCall("find", { pattern: "*.md" }, ctx), { allow: true });
+});
+
+test("web_search: 再起動後も会話記録に残った読取結果から判定する（同じ呼び出しは 1 回だけ数える）", () => {
+	const ctx = setup();
+	const entries = [
+		{ type: "message", message: { role: "user", content: "家のコハコが待機中に浮く椅子へ腰かける" } },
+		{
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolCallId: "c1",
+				toolName: "read",
+				content: [{ type: "text", text: "家のコハコが待機中に浮く椅子へ腰かける・立つ決まり" }],
+			},
+		},
+		{
+			type: "message",
+			message: { role: "toolResult", toolCallId: "c2", toolName: "web_search", content: [{ type: "text", text: "llama.cpp router mode docs" }] },
+		},
+		{ type: "model_change" },
+	];
+	rememberSessionReads(ctx.memory, entries);
+	blocked(decideToolCall("web_search", { query: "家のコハコが待機中に浮く椅子へ腰かける 仕組み" }, ctx));
+	// read 以外（ユーザー発言・web_search 結果）は記録しない
+	assert.deepEqual(decideToolCall("web_search", { query: "llama.cpp router mode docs" }, ctx), {
+		allow: true,
+		confirmQuery: "llama.cpp router mode docs",
+	});
+	// 同じ toolCallId は二重に数えない（何度作り直しても上限に近づかない）
+	const memory = new ReadMemory(60);
+	memory.add("家のコハコが待機中に浮く椅子へ腰かける・立つ決まり", "c1");
+	rememberSessionReads(memory, entries);
+	rememberSessionReads(memory, entries);
+	assert.equal(memory.saturated, false);
 });
