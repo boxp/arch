@@ -83,7 +83,6 @@ const EXPECT = {
   // かわいく（Owner 要望）: はにかむ＝照れ→ほほえみの順に替わり、両手が寄る。くすっと笑う＝目を細めて頭が小さく弾む。
   shy: r => { const a = r.findIndex(x => x.emotion === 'shy'), b = r.findIndex(x => x.emotion === 'smile'); return a >= 0 && b > a && span(r[0]) - Math.min(...nums(r.map(span))) > 8 },
   giggle: r => r.some(x => x.emotion === 'smileClosed') && Math.max(...col(r, 'ParamAngleY')) - Math.min(...col(r, 'ParamAngleY')) > 2,
-  sway: r => { const xs = nums(r.map(handsX)); return Math.max(...xs) - handsX(r[0]) > 3 && handsX(r[0]) - Math.min(...xs) > 3 && Math.max(...col(r, 'ParamBodyAngleZ')) - Math.min(...col(r, 'ParamBodyAngleZ')) > 5 && r.some(x => x.emotion === 'smile') },
   still: r => { const on = r.filter(x => x.idle?.act === 'still'); return on.length * STEP / 1000 > 5.5 && on.every(x => x.held) && Math.max(...col(on.slice(40), 'ParamAngleX').map(Math.abs)) < 8 },
 }
 
@@ -169,7 +168,7 @@ if (want('natural')) {
   check(sorted.at(-1) <= 50, `natural: 目に見える変化が ${sorted.at(-1)} 秒あいた`)
   check(seen.every((s, i) => i === 0 || s.act !== seen[i - 1].act), 'natural: 同じしぐさが続いた')
   // Owner 要望（顔だけでなくジェスチャーも）: 腕・体を使うしぐさが 6 分に 3 回以上・2 種以上まじる。
-  const BODY = ['wave', 'mouth', 'stretch', 'tidy', 'sway', 'shy', 'giggle'], bodySeen = seen.filter(s => BODY.includes(s.act))
+  const BODY = ['wave', 'mouth', 'stretch', 'tidy', 'shy', 'giggle'], bodySeen = seen.filter(s => BODY.includes(s.act))
   result.natural.bodyActs = { count: bodySeen.length, kinds: [...new Set(bodySeen.map(s => s.act))] }
   check(bodySeen.length >= 3 && result.natural.bodyActs.kinds.length >= 2, `natural: 腕・体のしぐさが少ない（${bodySeen.map(s => s.act).join(',')}）`)
   check(new Set(seen.map(s => s.act)).size >= 4, `natural: 種類が少ない（${[...new Set(seen.map(s => s.act))].join(',')}）`)

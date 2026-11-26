@@ -217,7 +217,10 @@ for (const [key, box] of prefBoxes)
     refreshScene()
   })
 voiceSelect.addEventListener('change', () => {
-  prefs = { ...prefs, voice: voiceSelect.value === 'browser' ? 'browser' : 'kohaku' }
+  prefs = {
+    ...prefs,
+    voice: voiceSelect.value === 'browser' ? 'browser' : voiceSelect.value === 'drama3' ? 'drama3' : 'kohaku',
+  }
   applyPrefs()
 })
 // BOXP-534: 読み上げ音量。動かしている間も再生中のコハクの声へすぐ反映し（端末の声は次の文から）、離したときに保存する。
@@ -426,6 +429,7 @@ const voicePlayer = createVoicePlayer({
   createUrl: (blob) => URL.createObjectURL(blob),
   revokeUrl: (url) => URL.revokeObjectURL(url),
   mixer: { enabled: () => prefs.mix, context: runningMixContext, gain: () => prefs.volume / 100 },
+  voice: () => (prefs.voice === 'drama3' ? 'drama3' : 'kohaku'),
 })
 const syncVolume = () => {
   voiceAudio.volume = prefs.volume / 100
@@ -623,11 +627,19 @@ function updateMessage() {
 }
 // 押し始めも吹き出しの外の場合だけ閉じる。内部からのドラッグ選択やスクロールは対象外。
 let outsideBubble = false
+// 画面上の別の操作を返答の閉鎖と兼ねない。押下時に記録し、クリック処理で要素が隠れても維持する。
+const overlayControl = '.top, #touch-menu, .drawer, #cards, #viewer, .status-anchor'
+function isOverlayControl(target: EventTarget | null) {
+  return target instanceof Element && Boolean(target.closest(overlayControl))
+}
 document.addEventListener('pointerdown', (event) => {
-  outsideBubble = event.target instanceof Node && !bubble.contains(event.target)
+  outsideBubble = event.target instanceof Node && !bubble.contains(event.target) && !isOverlayControl(event.target)
 })
 document.addEventListener('click', (event) => {
-  if (!outsideBubble || !(event.target instanceof Node) || bubble.contains(event.target)) return
+  const outside = outsideBubble
+  outsideBubble = false
+  if (!outside || !(event.target instanceof Node) || bubble.contains(event.target) || isOverlayControl(event.target))
+    return
   if (bubble.dataset.retained !== '1' || bubble.classList.contains('touch') || !canDismissReply(state, reading)) return
   if (!el('notice-actions').hidden || window.getSelection()?.toString()) return
   bubble.dataset.dismissed = '1'
@@ -1652,7 +1664,9 @@ function playReply() {
     retainReply()
     return
   }
-  const kohaku = prefs.voice === 'kohaku'
+  // BOXP-715: コハクと試用声 Drama-3 はどちらも BFF の合成音声で、停止・追従・口パクは同じ経路。
+  const kohaku = prefs.voice !== 'browser',
+    voiceName = prefs.voice === 'drama3' ? 'Drama-3（試用）' : 'コハク'
   resumeSpeech.hidden = true
   voiceTrouble = false
   speechPaused = false
@@ -1700,7 +1714,7 @@ function playReply() {
       retainReply()
       voiceTrouble = true
       error.textContent = kohaku
-        ? 'コハクの声で読み上げられませんでした。「続きから読む」で再試行できるほか、設定の「読み上げの声」から端末の声へ切り替えられます。'
+        ? `${voiceName}の声で読み上げられませんでした。「続きから読む」で再試行できるほか、設定の「読み上げの声」から${prefs.voice === 'drama3' ? 'コハクの声・' : ''}端末の声へ切り替えられます。`
         : '読み上げが途中で止まりました。「続きから読む」で続きを読めます。'
       offerSpeechResume()
       show('done')
@@ -1733,7 +1747,7 @@ function deliver(text: string, views: View[] = [], id = '', quiet = false) {
   lastActivity = Date.now()
   reply.dataset.reply = '1'
   setBubble(text || '（返答の本文がありませんでした）')
-  const willSpeak = !quiet && speech.checked && !!text && (prefs.voice === 'kohaku' || !!speaker)
+  const willSpeak = !quiet && speech.checked && !!text && (prefs.voice !== 'browser' || !!speaker)
   if (!willSpeak) bubble.dataset.retained = '1'
   updateMessage()
   showReplyChoices(text, id)
@@ -3190,8 +3204,9 @@ let seatMoving = false,
   seatViewWritten: number | null = null,
   seatViewBase = 0
 /**
- * 座ったままでよい。会話・確認待ち・失敗・現場・帰還の演出・録音・小さい表示・動きを減らす設定では偽（急いで立つ）。なでる・タップ・マウス移動では立たない。
- * 上半身だけの枠（スマホの縦長・横長、PC で資料や作業を見せている場面）でも偽: 脚が見えないまま体だけ沈んで見えるので、全身が見える時だけ座る。
+ * 座ったままでよい。現場・帰還の演出・小さい表示・動きを減らす設定では偽（急いで立つ）。
+ * 会話（送信・聞いている・考えている・話している）・確認待ち・失敗・通信切れ・録音・上半身だけの枠への切替では立たない
+ * （Owner 要望 2026-11-25「話しかけられた時に椅子から立つ必要はなく、座りたい時は座ったまま会話してよい」）。なでる・タップ・マウス移動でも立たない。
  */
 function seatKeep(): boolean {
   return (
@@ -3200,13 +3215,17 @@ function seatKeep(): boolean {
     !reduced() &&
     !document.hidden &&
     enabled &&
-    !busy &&
-    !netDown &&
-    rigStateOf[state] === 'idle' &&
     character.dataset.arrival === 'home' &&
-    !character.classList.contains('mini') &&
-    character.dataset.frame !== 'upper' &&
-    !recording
+    !character.classList.contains('mini')
+  )
+}
+/**
+ * 静かな待機。座り始める・自分から立つのは、この時だけ（会話の途中で座り始めない・立ち上がらない）。
+ * 上半身だけの枠（スマホの縦長・横長、PC で資料や作業を見せている場面）では偽: 脚が見えないまま体だけ沈んで見えるので、全身が見える時だけ座り始める。
+ */
+function seatQuiet(): boolean {
+  return (
+    seatKeep() && !busy && !netDown && rigStateOf[state] === 'idle' && character.dataset.frame !== 'upper' && !recording
   )
 }
 function rigTick(now: number) {
@@ -3260,6 +3279,7 @@ function rigTick(now: number) {
     const seat = seatDirector.step(now / 1000, {
       calm: idleCalm(now, petHold),
       keep: seatKeep(),
+      quiet: seatQuiet(),
       free: idle.act === null,
       subtle: prefs.intensity === 'subtle',
     })

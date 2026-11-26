@@ -545,17 +545,35 @@ export function addTexture(p: PartsPlayer, texture?: WebGLTexture): number {
   p.textures.push(texture)
   return p.textures.length - 1
 }
-export async function loadTexture(gl: WebGLRenderingContext, url: string): Promise<WebGLTexture> {
+/** edit を渡すと、読んだ絵の画素（RGBA、乗算前）を描く前に書き換える（絵の一部を透明にする時に使う）。 */
+export async function loadTexture(
+  gl: WebGLRenderingContext,
+  url: string,
+  edit?: (data: Uint8ClampedArray, width: number) => void,
+): Promise<WebGLTexture> {
   const response = await fetch(url, { credentials: 'same-origin' })
   if (!response.ok) throw new Error(`素材の取得に失敗 (${response.status})`)
   const image = await createImageBitmap(await response.blob(), {
-      premultiplyAlpha: 'premultiply',
+      premultiplyAlpha: edit ? 'none' : 'premultiply',
       colorSpaceConversion: 'none',
     }),
     texture = gl.createTexture() as WebGLTexture
   gl.bindTexture(gl.TEXTURE_2D, texture)
-  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image)
+  if (edit) {
+    // OffscreenCanvas の 2D が無いブラウザでも読めるように、画面に出さない canvas 要素を使う。
+    const canvas = Object.assign(document.createElement('canvas'), { width: image.width, height: image.height }),
+      g = canvas.getContext('2d', { willReadFrequently: true })
+    if (!g) throw new Error('素材の書き換えに使う 2D の描画面がありません')
+    g.drawImage(image, 0, 0)
+    const pixels = g.getImageData(0, 0, image.width, image.height)
+    edit(pixels.data, image.width)
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
+  } else {
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image)
+  }
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)

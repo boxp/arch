@@ -155,13 +155,8 @@ export function createHermes({
             input: options.input,
             session_id: options.sessionId,
             instructions: options.instructions,
-            ...(options.route
-              ? {
-                  provider: options.route.provider,
-                  model: options.route.model,
-                  model_options: { reasoning_effort: 'low' },
-                }
-              : {}),
+            // BOXP-706: モデルの指定だけを足す。推論の強さなどは付けない（Hermes の既定のまま）。
+            ...(options.route ? { provider: options.route.provider, model: options.route.model } : {}),
           }),
         },
         65536,
@@ -489,6 +484,7 @@ export function createHermes({
       attempt?: number,
       onRun?: RunOptions['onRun'],
       stableKey?: string,
+      route?: RunOptions['route'],
     ): Promise<Result> {
       // stableKey は session を跨いで同じ返信を一度だけ受理させるための鍵（通知返信の再送用）。
       return execute({
@@ -499,6 +495,7 @@ export function createHermes({
         instructions,
         onApproval,
         onRun,
+        ...(route ? { route } : {}),
       })
     },
     execute,

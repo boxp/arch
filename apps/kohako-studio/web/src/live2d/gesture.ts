@@ -23,7 +23,7 @@ import {
   boxCorners,
   chairCorners,
   COATS,
-  coatPoint,
+  eraseSkirt,
   followPoint,
   LEG_MESHES,
   legOpacity,
@@ -32,6 +32,7 @@ import {
   SEAT_MESHES,
   seatPoint,
   shinCorners,
+  skirtPoint,
 } from './seat'
 import {
   addGhost,
@@ -1577,10 +1578,10 @@ export function createActingStage(
       bodyRest = new Float32Array(rt.memory.buffer, rt.p2l_mesh_vertices(p.rig, BODY), body.vertices * 2).slice(),
       waist = SEAT_POSE.waist.map((q) => bindPoint([q[0], q[1]], bodyRest, body.indices))
     const loads: Promise<void>[] = []
-    const later = (file: string) => {
+    const later = (file: string, edit?: (data: Uint8ClampedArray, width: number) => void) => {
       const index = addTexture(pp)
       loads.push(
-        loadTexture(gl, new URL(`kohako/live2d/seat/${file}`, location.href).href).then((t) => {
+        loadTexture(gl, new URL(`kohako/live2d/seat/${file}`, location.href).href, edit).then((t) => {
           pp.textures[index] = t
         }),
       )
@@ -1610,7 +1611,8 @@ export function createActingStage(
       shadowBox = boxCorners(SEAT_ART.shadow.box),
       shadow = quadOf(SEAT_ART.shadow.file, art, () => shadowBox)
     // 太ももの絵は格子にして、上のほうだけ体の層の腰の動きへ付いていかせる。
-    const grid = addGrid(pp, 8, 10, later(SEAT_ART.thighs.file)),
+    // 絵に描き込まれた裾は透明にして読む（S8.9。裾は立ち姿の層が硬い板として動くので、絵の裾が残ると板の外や下からのぞく）。
+    const grid = addGrid(pp, 8, 10, later(SEAT_ART.thighs.file, eraseSkirt)),
       [gx, gy, gw, gh] = SEAT_ART.thighs.box,
       points: Vec[] = grid.uv.map(([u, v]) => [gx + u * gw, gy + v * gh])
     synth.set(grid.index, {
@@ -1666,7 +1668,9 @@ export function createActingStage(
       const x = v[2 * i] as number,
         y = v[2 * i + 1] as number,
         ry = rest[2 * i + 1] as number,
-        q = coat ? coatPoint(x, y, ry, seat.level) : seatPoint(x, y, ry, seat.level)
+        q = coat
+          ? skirtPoint(mesh === COATS.left ? 'left' : 'right', x, y, seat.level)
+          : seatPoint(x, y, ry, seat.level)
       v[2 * i] = q[0]
       v[2 * i + 1] = q[1]
     }
@@ -1822,9 +1826,9 @@ export function createActingStage(
         ]
       if (parts && c === RIGHT.hand && artMesh != null) return [c, artMesh, parts.cuff]
       if (chest && c === BODY && chestShown()) return [c, chest.index]
-      // 座り姿の絵: 影は後ろ髪のすぐ手前、太もも・ひざから下は立ち姿の裾のすぐ手前（腕・手より奥）。
+      // 座り姿の絵: 影は後ろ髪のすぐ手前、太もも・ひざから下は立ち姿の裾のすぐ奥（裾は硬い板として絵の手前で動き、絵に描き込まれた裾を隠す）。
       if (artOn && seatQuads && c === SEAT_BACK) return [c, seatQuads.shadow]
-      if (artOn && seatQuads && c === COATS.right) return [c, seatQuads.thighs, seatQuads.shinLeft, seatQuads.shinRight]
+      if (artOn && seatQuads && c === COATS.left) return [seatQuads.thighs, seatQuads.shinLeft, seatQuads.shinRight, c]
       return [c]
     }
     const chairOn = seatQuads != null && seatShown() && seat.chair > 0.001,

@@ -1,8 +1,9 @@
 // BOXP-698: 浮く椅子へ腰かける試作の実ブラウザ検証。BFF は完全にモック（token 不要）。
 // 実行: Playwright 1.56.1 で `PW_WS=ws://host:port/ node seat698.mjs <build の dist> <出力先> [check|sheets|record]`（既定は全部）
 //   check : 時計を止めて規則を確かめる（仕様は vault の Projects/kohako-home/seat-spec.md）。失敗があれば終了コード 1。
-//   sheets: 座る・座っている間・自分から立つ・会話で急いで立つ を、等間隔のコマに並べた画像にする（目で見るため。合否は出さない）。
-//   record: 実時間の動画（時計は止めない）。座る → 座っている間 → マウス → 立つ、座る → 話しかけて立つ。
+//   skirt : 上着の裾が硬い板として動くこと（S8.4。check にも含む）を、座る・立つの全コマの頂点で確かめる。太ももの絵に描き込まれた裾が画面に出ないこと（S8.9）も見る。
+//   sheets: 座る・座っている間・自分から立つ・座ったままの会話 を、等間隔のコマに並べた画像にする（目で見るため。合否は出さない）。裾まわりの拡大（skirt-sit / skirt-stand）も出す。
+//   record: 実時間の動画（時計は止めない）。座る → 座っている間 → マウス → 立つ、座る → 話しかけても座ったまま返事を聞く。
 // BASE=<変更前の dist> を渡すと、座っていない間の描画が変更前と画素一致することも確かめる。
 import { chromium } from 'playwright'
 import http from 'node:http'
@@ -94,7 +95,7 @@ async function untilUpdates(page, n) {
 const seatOf = (page) => page.evaluate(() => {
   const h = window.__kohakoHome, p = h.player, bottom = (m) => { const v = new Float32Array(p.rt.memory.buffer, p.rt.p2l_mesh_vertices(p.rig, m), p.meshes[m].vertices * 2); let y = -1e9; for (let i = 1; i < v.length; i += 2) y = Math.max(y, v[i]); return y }
   h.player.draw()
-  return { ...(h.report.seat ?? { phase: 'none', level: 0, chair: 0, offset: 0 }), state: h.state, idle: h.report.idle?.act ?? null, foot: bottom(27), viewY: p.view.y, stage: h.stage.report().seat }
+  return { ...(h.report.seat ?? { phase: 'none', level: 0, chair: 0, offset: 0 }), state: h.state, frame: document.querySelector('[data-frame]')?.dataset.frame ?? null, scene: document.body.dataset.scene, idle: h.report.idle?.act ?? null, foot: bottom(27), viewY: p.view.y, stage: h.stage.report().seat }
 })
 /** ms ずつ進めて毎回の状態を集める。until が真になったら止める。 */
 async function run(page, ms, step = 50, until) {
@@ -111,6 +112,11 @@ const sit = async (page) => {
   await page.evaluate(() => window.__kohakoHome.playSeat('sit'))
   const rows = await run(page, 40000, 50, (s) => s.phase === 'seated')
   return rows
+}
+/** 送信を受理して、返事を返さないままにする（聞いている → 考えている が続く）。これが無い模擬では送信が失敗の状態になる。 */
+const pending = async (context) => {
+  await context.route('**/kohako/api/v1/messages', (r) => r.fulfill({ status: 202, json: { requestId: 'verify-1', status: 'pending' } }))
+  await context.route('**/kohako/api/v1/requests/**', (r) => r.fulfill({ json: { requestId: 'verify-1', status: 'pending' } }))
 }
 const talk = async (page) => {
   await page.locator('#message').fill('こんにちは')
@@ -165,19 +171,31 @@ if (!ONLY || ONLY === 'check' || ONLY === 'base') {
     result.stand = { ms: rising.length * 50 }
     await o.context.close()
   }
-  // 2. 話しかけたら急いで立つ／非表示ではすぐ立ち姿
+  // 2. 話しかけても立たない（S3.7・S3.8。TD-03）／動きを減らすへ変えたら急いで立つ（S5）／非表示ではすぐ立ち姿
   {
     const o = await open(); await paused(o)
     const { page } = o
+    await pending(o.context)
     await sit(page); await page.clock.runFor(2000)
     await talk(page)
-    const rows = await run(page, 3000, 25), left = rows.findIndex((r) => r.state !== 'idle')
+    // 模擬は返事を返さないので、聞いている → 考えている → 考えが長引いて作業中の場面（上半身だけの枠）まで進む。
+    const rows = await run(page, 30000, 100), left = rows.findIndex((r) => r.state !== 'idle')
     check(left >= 0, `話しかけても状態が変わらない（${rows.at(-1)?.state}）`)
-    const stood = rows.findIndex((r) => r.level === 0), gone = rows.findIndex((r) => r.chair === 0)
-    check(stood >= 0 && (stood - left) * 25 <= 450, `S5: 会話が始まってから 0.45 秒以内に立ち姿へ戻らない（${(stood - left) * 25}ms）`)
-    check(gone >= 0 && (gone - left) * 25 <= 650, `S5: 椅子が 0.65 秒以内に消えない（${(gone - left) * 25}ms）`)
-    check(rows.every((r) => r.chair >= r.level - 1e-9), 'S5: 急いで立つ途中で椅子が先に消えた')
-    result.urgent = { stateChangedMs: (left + 1) * 25, standMs: (stood - left) * 25, chairGoneMs: (gone - left) * 25 }
+    check(rows.every((r) => r.phase === 'seated' && r.level === 1 && r.chair === 1), `S3.7: 話しかけたら立った ${JSON.stringify(rows.find((r) => r.phase !== 'seated'))}`)
+    check(rows.every((r) => r.stage.level === 1), 'S3.7: 会話中に描画の座り具合が 1 でない')
+    const upper = rows.filter((r) => r.frame === 'upper')
+    check(upper.length > 0, `S3.8: 上半身だけの枠まで進まなかった（確認が成り立たない。場面 ${[...new Set(rows.map((r) => r.scene))]}）`)
+    const offs = rows.slice(left).map((r) => r.offset)
+    check(Math.max(...offs) - Math.min(...offs) > 5, 'S3.7: 会話中に浮き沈みが止まった')
+    result.talkSeated = { stateChangedMs: (left + 1) * 100, states: [...new Set(rows.map((r) => r.state))], scenes: [...new Set(rows.map((r) => r.scene))], upperFrameMs: upper.length * 100 }
+    await page.screenshot({ path: path.join(OUT, 'check-talk-upper-frame.png') })
+    // S5: 座ったままの会話の途中で「動きを減らす」（OS）へ変えた → 0.4 秒で立ち姿・0.6 秒で椅子なし。
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    const up = await run(page, 2000, 25), stood = up.findIndex((r) => r.level === 0), gone = up.findIndex((r) => r.chair === 0)
+    check(stood >= 0 && (stood + 1) * 25 <= 450, `S5: 動きを減らすへ変えて 0.45 秒以内に立ち姿へ戻らない（${(stood + 1) * 25}ms）`)
+    check(gone >= 0 && (gone + 1) * 25 <= 650, `S5: 椅子が 0.65 秒以内に消えない（${(gone + 1) * 25}ms）`)
+    check(up.every((r) => r.chair >= r.level - 1e-9), 'S5: 急いで立つ途中で椅子が先に消えた')
+    result.urgent = { standMs: (stood + 1) * 25, chairGoneMs: (gone + 1) * 25 }
     await o.context.close()
   }
   {
@@ -197,9 +215,10 @@ if (!ONLY || ONLY === 'check' || ONLY === 'base') {
     await page.evaluate(() => window.__kohakoHome.playSeat('sit'))
     await run(page, 40000, 50, (s) => s.phase === 'sitting' && s.level > 0.3)
     await talk(page)
-    const rows = await run(page, 2000, 25), left = rows.findIndex((r) => r.state !== 'idle'), stood = rows.findIndex((r) => r.level === 0)
-    check(stood >= 0 && (stood - left) * 25 <= 450, `S5: 座る途中の会話で 0.45 秒以内に立ち姿へ戻らない（${(stood - left) * 25}ms）`)
-    check(rows.slice(left).every((r, i, a) => i === 0 || r.level <= a[i - 1].level + 1e-9), 'S5: 急いで立つ途中で座り具合が増えた')
+    const rows = await run(page, 3000, 25), left = rows.findIndex((r) => r.state !== 'idle')
+    check(left >= 0, '座る途中に話しかけても状態が変わらない')
+    check(rows.every((r, i) => i === 0 || r.level >= rows[i - 1].level - 1e-9), 'S3.9: 座る途中の会話で座り具合が戻った')
+    check(rows.at(-1)?.phase === 'seated' && rows.at(-1)?.level === 1, `S3.9: 座る途中の会話で座り切らない ${JSON.stringify(rows.at(-1))}`)
     await o.context.close()
   }
   // 4. 出ない設定
@@ -249,17 +268,155 @@ if (!ONLY || ONLY === 'check' || ONLY === 'base') {
 const save = () => fs.writeFileSync(path.join(OUT, 'seat698.json'), JSON.stringify({ result, failures, errors }, null, 2))
 save()
 
+// 3. 上着の裾は硬い板として動く（S8.4。TD-04）。立ち姿の頂点 → いまの頂点が、板ごとに 1 つの 1 次変換で表せること（折れ・たわみが無い）を全コマで見る。
+if (!ONLY || ONLY === 'check' || ONLY === 'skirt') {
+  const o = await open(); await paused(o)
+  const { page } = o
+  const skirtOf = () => page.evaluate(() => {
+    const h = window.__kohakoHome, p = h.player
+    p.draw()
+    const v = {}
+    for (const m of [24, 25]) v[m] = Array.from(new Float32Array(p.rt.memory.buffer, p.rt.p2l_mesh_vertices(p.rig, m), p.meshes[m].vertices * 2))
+    const n = p.rt.p2l_render_commands(p.rig, p.commandsPointer, p.commandCapacity)
+    return { level: h.report.seat?.level ?? 0, phase: h.report.seat?.phase, v, order: Array.from(new Int32Array(p.rt.memory.buffer, p.commandsPointer, n)) }
+  })
+  /** 立ち姿の頂点 a → いまの頂点 b への最小二乗の 1 次変換と、そこからの外れの最大（モデル座標の長さ）。 */
+  const fit = (a, b) => {
+    const n = a.length / 2
+    let sx = 0, sy = 0
+    for (let i = 0; i < n; i++) { sx += a[2 * i]; sy += a[2 * i + 1] }
+    const mx = sx / n, my = sy / n
+    let xx = 0, xy = 0, yy = 0
+    const r = [[0, 0, 0], [0, 0, 0]]
+    for (let i = 0; i < n; i++) {
+      const x = a[2 * i] - mx, y = a[2 * i + 1] - my
+      xx += x * x; xy += x * y; yy += y * y
+      for (const k of [0, 1]) { r[k][0] += x * b[2 * i + k]; r[k][1] += y * b[2 * i + k]; r[k][2] += b[2 * i + k] }
+    }
+    const det = xx * yy - xy * xy, m = r.map(([px, py, pc]) => [(px * yy - py * xy) / det, (py * xx - px * xy) / det, pc / n])
+    let worst = 0
+    for (let i = 0; i < n; i++) {
+      const x = a[2 * i] - mx, y = a[2 * i + 1] - my
+      worst = Math.max(worst, Math.hypot(m[0][0] * x + m[0][1] * y + m[0][2] - b[2 * i], m[1][0] * x + m[1][1] * y + m[1][2] - b[2 * i + 1]))
+    }
+    const at = (x, y) => [m[0][0] * (x - mx) + m[0][1] * (y - my) + m[0][2], m[1][0] * (x - mx) + m[1][1] * (y - my) + m[1][2]]
+    return { worst, at }
+  }
+  const HINGE = { 24: [688, 790], 25: [458, 790] }
+  const stand = await skirtOf()
+  const seen = { worst: 0, hinge: 0, frames: 0 }, hems = []
+  const watch = async (what, done) => {
+    await page.evaluate((w) => window.__kohakoHome.playSeat(w), what)
+    for (let t = 0; t < 40000; t += 25) {
+      await page.clock.runFor(25)
+      const now = await skirtOf()
+      if (now.level > 0 && now.level < 1) {
+        seen.frames++
+        for (const m of [24, 25]) {
+          const q = fit(stand.v[m], now.v[m]), h = q.at(...HINGE[m])
+          seen.worst = Math.max(seen.worst, q.worst)
+          seen.hinge = Math.max(seen.hinge, Math.hypot(h[0] - HINGE[m][0], h[1] - HINGE[m][1]))
+        }
+        // 裾の下端（いちばん下の頂点の高さ）
+        hems.push({ what, level: now.level, y: Math.max(...now.v[25].filter((_, i) => i % 2 === 1)) })
+      }
+      if (now.phase === done) return now
+    }
+    return null
+  }
+  const seated = await watch('sit', 'seated')
+  check(seated?.level === 1, '裾: 座り切らない')
+  check(seen.frames >= 30, `裾: 座る途中のコマが足りない（${seen.frames}）`)
+  if (seated) {
+    for (const m of [24, 25]) {
+      const q = fit(stand.v[m], seated.v[m]), h = q.at(...HINGE[m])
+      seen.worst = Math.max(seen.worst, q.worst)
+      seen.hinge = Math.max(seen.hinge, Math.hypot(h[0] - HINGE[m][0], h[1] - HINGE[m][1]))
+    }
+    // 描く順: 太もも・ひざから下の絵（足した層）のすぐ手前に左の裾、その次が右の裾（裾は絵の手前）。
+    const i25 = seated.order.indexOf(25), i24 = seated.order.indexOf(24), added = (c) => c > 31 && !stand.order.includes(c)
+    check(i25 >= 3 && i24 === i25 + 1 && [1, 2, 3].every((k) => added(seated.order[i25 - k])), `S8.4: 座っている間の描く順で、裾が絵の手前にない ${JSON.stringify(seated.order.slice(Math.max(0, i25 - 4), i25 + 3))}`)
+  }
+  await page.clock.runFor(2000)
+  const stood = await watch('stand', 'standing')
+  check(stood?.level === 0, '裾: 立ち切らない')
+  if (stood) for (const m of [24, 25]) check(fit(stand.v[m], stood.v[m]).worst < 1.5, `S7: 立った後に裾の層 ${m} が立ち姿の形へ戻らない`)
+  // 線は 2.5: 頂点は体の動き（息・腰を下ろす時の揺れ）でも少し変形し、同じ build でも回によって 0.8〜1.9 になる（硬い板にする前は 38.1）。板そのものの決まりは単体テストで厳密に見る。
+  check(seen.worst < 2.5, `S8.4 ②: 裾の板が折れている・たわんでいる（1 つの 1 次変換からの外れ 最大 ${seen.worst.toFixed(2)}）`)
+  // 支点の写り先のずれは合否にしない: 頂点は体の動き（腰を下ろす時の体の揺れなど）ごと動くので、体が動いたぶんもここに入る。支点が動かないこと（S8.4 ①）は単体テストで見る。
+  const sitHems = hems.filter((r) => r.what === 'sit')
+  check(sitHems.every((r, i) => i === 0 || r.y <= sitHems[i - 1].y + 0.5), 'S8.4 ④: 座る途中で裾の下端が下がったコマがある')
+  result.skirt = { frames: seen.frames, affineResidualMax: +seen.worst.toFixed(3), hingeWithBodyMoveMax: +seen.hinge.toFixed(3), hemFrom: +(sitHems[0]?.y ?? 0).toFixed(1), hemTo: +(sitHems.at(-1)?.y ?? 0).toFixed(1) }
+  await o.context.close()
+  save()
+  // S8.9（TD-05）: 太ももの絵に描き込まれた裾は、どのコマでも画面に出ない。絵の「裾の側」（仕様の折れ線より外）の画素を真緑に塗った絵へ差し替えて開き、座る・座っている・立つの画面に緑が出ないことを見る。
+  {
+    const EDGE = [[0, 260], [58, 252], [68, 238], [103, 205], [124, 184], [150, 169], [190, 154], [226, 143], [238, 136], [352, 136]]
+    const m = await open(), mp = await m.context.newPage()
+    await mp.goto(m.url.replace('home.html', 'live2d/seat/seat-hips-thighs.png'))
+    const marked = await mp.evaluate(async (edge) => {
+      const img = new Image(); img.src = location.href; await img.decode()
+      const c = document.createElement('canvas'); c.width = img.width; c.height = img.height
+      const g = c.getContext('2d'); g.drawImage(img, 0, 0)
+      const d = g.getImageData(0, 0, c.width, c.height)
+      const limit = (y) => { let i = 1; while (i < edge.length - 1 && y > edge[i][0]) i++; const [y0, x0] = edge[i - 1], [y1, x1] = edge[i]; return x0 + (x1 - x0) * Math.max(0, Math.min(1, (y - y0) / (y1 - y0))) }
+      let n = 0
+      for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
+        const i = 4 * (y * c.width + x)
+        if (d.data[i + 3] > 0 && Math.min(x, c.width - 1 - x) < limit(y)) { d.data[i] = 0; d.data[i + 1] = 255; d.data[i + 2] = 0; d.data[i + 3] = 255; n++ }
+      }
+      g.putImageData(d, 0, 0)
+      return { png: c.toDataURL('image/png').split(',')[1], n, size: [c.width, c.height] }
+    }, EDGE)
+    await m.context.close()
+    check(marked.size[0] === 659 && marked.size[1] === 352 && marked.n > 30000, `S8.9: 絵の大きさ・裾の画素数が想定と違う ${JSON.stringify([marked.size, marked.n])}`)
+    const g = await open({ dsf: 2 })
+    await g.context.route('**/seat-hips-thighs.png', (r) => r.fulfill({ contentType: 'image/png', body: Buffer.from(marked.png, 'base64') }))
+    await paused(g)
+    const REMNANT_CLIP = { x: 120, y: 280, width: 520, height: 300 }
+    /** 画面の切り抜きの中の緑（半透明で混ざったものも含む）の画素数。 */
+    const greens = async () => {
+      const shot = (await g.page.screenshot({ clip: REMNANT_CLIP, type: 'png' })).toString('base64')
+      return g.page.evaluate(async (b64) => {
+        const img = new Image(); img.src = 'data:image/png;base64,' + b64; await img.decode()
+        const c = new OffscreenCanvas(img.width, img.height), x = c.getContext('2d'); x.drawImage(img, 0, 0)
+        const d = x.getImageData(0, 0, c.width, c.height).data
+        let n = 0
+        for (let i = 0; i < d.length; i += 4) if (d[i + 1] > d[i] + 60 && d[i + 1] > d[i + 2] + 60) n++
+        return n
+      }, shot)
+    }
+    const seen = { frames: 0, worst: 0, at: null }
+    const look = async (label) => { const n = await greens(); seen.frames++; if (n > seen.worst) { seen.worst = n; seen.at = label } }
+    check((await greens()) === 0, 'S8.9: 立ち姿の画面に緑がある（数え方の誤り）')
+    await g.page.evaluate(() => window.__kohakoHome.playSeat('sit'))
+    for (let t = 0; t < 60000; t += 50) { await g.page.clock.runFor(50); const s = await seatOf(g.page); if (s.phase === 'sitting') await look(`sit ${s.level.toFixed(2)}`); if (s.phase === 'seated') break }
+    check(seen.frames >= 15, `S8.9: 座る途中のコマが足りない（${seen.frames}）`)
+    // 座っている間（浮き沈み・足のぶらぶら・待機のしぐさで体が動く間も）
+    for (let i = 0; i < 12; i++) { await g.page.clock.runFor(500); await look(`seated ${i}`) }
+    await g.page.evaluate(() => window.__kohakoHome.playIdle('tilt'))
+    for (let i = 0; i < 12; i++) { await g.page.clock.runFor(250); await look(`tilt ${i}`) }
+    await g.page.clock.runFor(4000)
+    await g.page.evaluate(() => window.__kohakoHome.playSeat('stand'))
+    for (let t = 0; t < 30000; t += 50) { await g.page.clock.runFor(50); const s = await seatOf(g.page); if (s.phase === 'rising') await look(`stand ${s.level.toFixed(2)}`); if (s.phase === 'standing') break }
+    check(seen.worst === 0, `S8.9: 絵に描き込まれた裾が画面に出ている（最大 ${seen.worst} 画素、${seen.at}。見たコマ ${seen.frames}）`)
+    result.skirtRemnant = { frames: seen.frames, greenMax: seen.worst, at: seen.at, markedPixels: marked.n }
+    await g.context.close()
+    save()
+  }
+}
+
 /** コマを 1 枚に並べる（背景つきの画面の切り抜き）。 */
-async function sheet(page, name, n, every, cols = 8, before) {
+async function sheet(page, name, n, every, cols = 8, before, clip = CLIP, fw = 260) {
   const frames = []
   for (let i = 0; i < n; i++) {
     if (before) await before(i)
-    frames.push((await page.screenshot({ clip: CLIP, type: 'jpeg', quality: 88 })).toString('base64'))
+    frames.push((await page.screenshot({ clip, type: 'jpeg', quality: 88 })).toString('base64'))
     await page.clock.runFor(every)
   }
   const p2 = await page.context().newPage()
-  const b64 = await p2.evaluate(async ([frames, cols, every, w, h]) => {
-    const fw = 260, fh = Math.round((fw * h) / w), o = new OffscreenCanvas(cols * fw, Math.ceil(frames.length / cols) * fh), g = o.getContext('2d')
+  const b64 = await p2.evaluate(async ([frames, cols, every, w, h, fw]) => {
+    const fh = Math.round((fw * h) / w), o = new OffscreenCanvas(cols * fw, Math.ceil(frames.length / cols) * fh), g = o.getContext('2d')
     g.font = '14px sans-serif'
     for (let i = 0; i < frames.length; i++) {
       const img = await createImageBitmap(await (await fetch(`data:image/jpeg;base64,${frames[i]}`)).blob()), x = (i % cols) * fw, y = Math.floor(i / cols) * fh
@@ -268,7 +425,7 @@ async function sheet(page, name, n, every, cols = 8, before) {
     const b = new Uint8Array(await (await o.convertToBlob({ type: 'image/png' })).arrayBuffer()); let s = ''
     for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000))
     return btoa(s)
-  }, [frames, cols, every, CLIP.width, CLIP.height])
+  }, [frames, cols, every, clip.width, clip.height, fw])
   await p2.close()
   fs.writeFileSync(path.join(OUT, `${name}.png`), Buffer.from(b64, 'base64'))
 }
@@ -293,20 +450,33 @@ if (!ONLY || ONLY === 'sheets') {
   await sheet(page, 'stand', 24, 70)
   await sit(page); await page.clock.runFor(2000)
   await talk(page)
-  await sheet(page, 'urgent-stand', 16, 50)
+  await sheet(page, 'seated-talk', 16, 400)
   await o.context.close()
+  // 裾まわりの拡大（S8.4。TD-04）: 座る・立つを 0.06 秒刻みで。
+  {
+    const z = await open({ dsf: 2 }); await paused(z)
+    const SKIRT_CLIP = { x: 150, y: 310, width: 460, height: 230 }
+    await z.page.evaluate(() => window.__kohakoHome.playSeat('sit'))
+    await run(z.page, 40000, 20, (s) => s.phase === 'sitting')
+    await sheet(z.page, 'skirt-sit', 24, 60, 4, undefined, SKIRT_CLIP, 460)
+    await z.page.clock.runFor(1500)
+    await z.page.evaluate(() => window.__kohakoHome.playSeat('stand'))
+    await run(z.page, 20000, 20, (s) => s.phase === 'rising')
+    await sheet(z.page, 'skirt-stand', 24, 60, 4, undefined, SKIRT_CLIP, 460)
+    await z.context.close()
+  }
 }
 if (!ONLY || ONLY === 'record') {
   const dir = path.join(OUT, 'video-tmp')
   const wait = (page, ms) => page.waitForTimeout(ms)
   const until = async (page, f, ms = 60000) => { const end = Date.now() + ms; while (Date.now() < end) { if (await page.evaluate(f)) return true; await wait(page, 100) } return false }
   const meta = {}
-  for (const scene of ['01-sit-seated-stand', '02-sit-talk-stand']) {
+  for (const scene of ['01-sit-seated-stand', '02-sit-talk-seated']) {
     const o = await open({ query: '?seat=now', video: dir }), { page } = o, t0 = Date.now(), mark = (k) => { (meta[scene] ??= {})[k] = +((Date.now() - t0) / 1000).toFixed(2) }
     // 録画では、送信に返事が返る模擬にする（受理 → 3 回目の照会で返事）。規則の確認（check）は進行中のままの模擬。
     let polls = 0
     await o.context.route('**/kohako/api/v1/messages', (r) => { polls = 0; return r.fulfill({ status: 202, json: { requestId: 'verify-1', status: 'pending' } }) })
-    await o.context.route('**/kohako/api/v1/requests/**', (r) => r.fulfill({ json: ++polls > 2 ? { requestId: 'verify-1', status: 'done', reply: { text: 'はい、こんにちは。椅子から立ってお話ししますね。' } } : { requestId: 'verify-1', status: 'pending' } }))
+    await o.context.route('**/kohako/api/v1/requests/**', (r) => r.fulfill({ json: ++polls > 2 ? { requestId: 'verify-1', status: 'done', reply: { text: 'はい、こんにちは。座ったままでお話ししますね。' } } : { requestId: 'verify-1', status: 'pending' } }))
     await page.goto(o.url)
     check(await until(page, () => window.__kohakoHome?.report.seat?.phase === 'sitting'), `${scene}: 実時間で座り始めない`); mark('sit')
     check(await until(page, () => window.__kohakoHome?.report.seat?.phase === 'seated', 5000), `${scene}: 実時間で座り切らない`); mark('seated')
@@ -320,9 +490,9 @@ if (!ONLY || ONLY === 'record') {
     } else {
       await wait(page, 5000); mark('talk')
       await talk(page)
-      check(await until(page, () => window.__kohakoHome?.report.seat?.phase === 'standing', 3000), `${scene}: 実時間で急いで立たない`); mark('standing')
       check(await until(page, () => !!document.querySelector('#reply')?.dataset.reply, 30000), `${scene}: 模擬の返事が表示されない`); mark('reply')
-      await wait(page, 4000)
+      await wait(page, 6000)
+      check(await page.evaluate(() => window.__kohakoHome?.report.seat?.phase === 'seated' && window.__kohakoHome.report.seat.level === 1), `${scene}: 返事の後に座ったままでない`); mark('still-seated')
     }
     mark('end')
     const video = page.video()

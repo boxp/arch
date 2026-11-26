@@ -1,0 +1,113 @@
+// BOXP-714: Pi Web trial guard extension.
+// - keeps only the trial tools active (no bash)
+// - blocks file tools outside the Obsidian vault / writes outside the sandbox
+// - adds a `web_search` tool (DuckDuckGo HTML, query only, no page fetch)
+// - blocks queries that copy note text read in this chat (also rebuilt from the saved session after a
+//   restart), and asks the Owner to confirm every query
+// - runs grep with an exclude glob for hidden entries, and drops every grep/find/ls output line that
+//   names a hidden entry (fail-closed output filter)
+// Spec (current): Obsidian vault Projects/pi-web-agent-trial/spec.md
+import { execFile } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { ALLOWED_TOOLS, decideToolCall, type GuardContext, filterToolOutput, parseDuckDuckGoHtml, rememberSessionReads, SessionReadMemories } from "./guard.ts";
+
+const SEARCH_URL = "https://html.duckduckgo.com/html/";
+const SEARCH_TIMEOUT_SECONDS = 15;
+const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
+
+export default function piWebTrialGuard(pi: ExtensionAPI) {
+	const vaultRoot = process.env.PI_WEB_TRIAL_VAULT ?? join(homedir(), "Documents/obsidian-headless/BOXP");
+	const sandboxRoot = process.env.PI_WEB_TRIAL_SANDBOX ?? join(vaultRoot, "Projects/pi-web-agent-trial/sandbox");
+	// One process serves many chats: keep the read memory per chat (session id).
+	const memories = new SessionReadMemories();
+	const memoryOf = (ctx: { sessionManager: { getSessionId(): string } }) => memories.forSession(ctx.sessionManager.getSessionId());
+	const context = (cwd: string, memory: GuardContext["memory"]): GuardContext => ({ cwd, home: homedir(), vaultRoot, sandboxRoot, memory });
+
+	pi.registerTool({
+		name: "web_search",
+		label: "Web search",
+		description:
+			"Search the public web (DuckDuckGo) and return up to 8 results (title, URL, snippet). Send short general keywords only.",
+		promptSnippet: "Search the public web for short keyword queries",
+		promptGuidelines: [
+			"Use web_search only with short general keywords (max 120 characters).",
+			"Never put text from Obsidian notes or files into web_search queries; notes are private.",
+		],
+		parameters: Type.Object({
+			query: Type.String({ description: "Short search keywords (max 120 characters)" }),
+		}),
+		async execute(_toolCallId, params, signal) {
+			// curl instead of fetch: DuckDuckGo answers Node fetch with its bot check page.
+			// Arguments are passed as an array (no shell); "q=<query>" is the literal form of --data-urlencode.
+			const html = await new Promise<string>((resolve, reject) => {
+				execFile(
+					"curl",
+					["-q", "-sS", "--fail", "--proto", "=https", "--max-time", String(SEARCH_TIMEOUT_SECONDS), "-A", "Mozilla/5.0",
+					 "-X", "POST", "--data-urlencode", `q=${params.query.trim()}`, SEARCH_URL],
+					{ signal, maxBuffer: 4 * 1024 * 1024, env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } },
+					(error, stdout) => (error ? reject(new Error(`web_search failed: ${error.message}`)) : resolve(stdout)),
+				);
+			});
+			const results = parseDuckDuckGoHtml(html);
+			if (results.length === 0) throw new Error("web_search returned no results (or the search engine refused the request).");
+			const text = results
+				.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`)
+				.join("\n");
+			return { content: [{ type: "text", text }], details: { engine: "duckduckgo-html", count: results.length } };
+		},
+	});
+
+	pi.on("session_start", () => {
+		const available = new Set(pi.getAllTools().map((tool) => tool.name));
+		pi.setActiveTools([...ALLOWED_TOOLS].filter((name) => available.has(name)));
+	});
+
+	pi.on("tool_call", async (event, ctx) => {
+		// The in-process memory is empty after a restart: rebuild it from this chat's saved entries.
+		const memory = memoryOf(ctx);
+		if (event.toolName === "web_search") rememberSessionReads(memory, ctx.sessionManager.getEntries());
+		const decision = decideToolCall(event.toolName, event.input as Record<string, unknown>, context(ctx.cwd, memory));
+		if (decision.allow && decision.rewrite) Object.assign(event.input as Record<string, unknown>, decision.rewrite);
+		if (decision.allow && decision.confirmQuery === undefined) return undefined;
+		if (decision.allow) {
+			const query = decision.confirmQuery;
+			const ok = ctx.hasUI
+				? await ctx.ui.confirm(
+						"Web検索を送信しますか？",
+						`次の検索語だけを DuckDuckGo へ送ります。ノートの内容・人名など私的な語が入っていたらキャンセルしてください。\n\n${query}`,
+					)
+				: false;
+			if (ok) {
+				// Send exactly what the Owner saw.
+				(event.input as Record<string, unknown>).query = query;
+				return undefined;
+			}
+			const reason = ctx.hasUI
+				? "The Owner cancelled this web_search. Do not retry it; ask the Owner what to search instead."
+				: "web_search needs the Owner's confirmation and no UI is available.";
+			return { block: true, reason };
+		}
+		if (ctx.hasUI) ctx.ui.notify(`Blocked: ${decision.reason}`, "warning");
+		return { block: true, reason: decision.reason };
+	});
+
+	pi.on("tool_result", (event, ctx) => {
+		// Fail-closed output filter: drop every listed entry with a hidden segment (grep/find/ls walk
+		// the tree themselves), and withhold output of tools whose output shape is unknown.
+		let changed = false;
+		const content = event.content.map((part) => {
+			if (part.type !== "text") return part;
+			const filtered = filterToolOutput(event.toolName, part.text) ?? "(output withheld in this trial)";
+			if (filtered !== part.text) changed = true;
+			return { ...part, text: filtered };
+		});
+		if (READ_TOOLS.has(event.toolName)) {
+			const text = content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
+			memoryOf(ctx).add(text, event.toolCallId);
+		}
+		return changed ? { content } : undefined;
+	});
+}

@@ -301,7 +301,7 @@ if (want('01')) {
   await finish('01-arrival-and-base-idle', c)
 }
 if (want('02')) {
-  await idleSequence('02-idle-605-redo3', ['stretch', 'tidy', 'sway'])
+  await idleSequence('02-idle-605-redo3', ['stretch', 'tidy']) // sway（体を揺らす）は BOXP-698 TD-03 で廃止
   const n = '02-idle-605-redo3'
   slow(n, '02a-stretch', at(n, 'start:stretch') - 0.3, at(n, 'start:stretch') + 3.2)
   slow(n, '02b-tidy', at(n, 'start:tidy') - 0.3, at(n, 'end:tidy') + 0.4)

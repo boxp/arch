@@ -315,7 +315,7 @@ it('腕や体を使うしぐさが 3 割前後あり、顔だけのしぐさも�
     ),
     total = idleActNames.reduce((s, a) => s + idleActs[a].weight, 0),
     share = body.reduce((s, a) => s + idleActs[a].weight, 0) / total
-  expect(body.sort()).toEqual(['giggle', 'mouth', 'shy', 'stretch', 'sway', 'tidy', 'wave'])
+  expect(body.sort()).toEqual(['giggle', 'mouth', 'shy', 'stretch', 'tidy', 'wave'])
   expect(share).toBeGreaterThan(0.25)
   expect(share).toBeLessThan(0.45)
 })
@@ -435,7 +435,6 @@ it('D5: 控えめでも姿勢の形は変えない（頭・体は 6 割）', () 
 
 it('D6: 小さな揺れのしぐさは従来の大きさのまま（腕を外へ開く形は使わない）', () => {
   expect(idleActs.shy.arms).toEqual({ right: { up: 0.03, fo: 0.2 }, left: { up: 0.03, fo: 0.2 } })
-  expect(idleActs.sway.sway).toMatchObject({ swing: -0.05, hand: -0.14 })
   expect(idleActs.giggle.sway).toMatchObject({ swing: -0.015 })
 })
 
@@ -508,56 +507,27 @@ it('伸びの途中（力んでいる時・抜いている時）で中断して�
   }
 })
 
-it('体を揺らすしぐさは、体が先に動き、頭・腕・手先が順に遅れて付いてくる。腕の振りは小さい', () => {
-  const d = new IdleDirector(seq(0.9))
-  d.force('sway')
-  // 入り・戻りを除いた、揺れが保たれている間で比べる。
-  const frames = run(d, 0, 9).filter((x) => x.t > 1.2 && x.t < 5.2),
-    firstPeak = (v: (f: IdleFrame) => number) => {
-      for (let i = 1; i < frames.length - 1; i++)
-        if (v(frames[i].f) > v(frames[i - 1].f) && v(frames[i].f) >= v(frames[i + 1].f)) return frames[i].t
-      return Number.NaN
-    }
-  // 腕と手先は体の傾きと同じ側へ振れる（swing・hand は負）ので、同じ向きの山どうしを比べる。頭は体と逆へ傾く。
-  const body = firstPeak((f) => f.pose.bodyZ),
-    head = firstPeak((f) => -f.pose.headZ),
-    arm = firstPeak((f) => -(f.arms?.right.up ?? 0)),
-    hand = firstPeak((f) => -(f.arms?.right.ha ?? 0))
-  const later = (a: number, b: number) => (((b - a) % 3.2) + 3.2) % 3.2
-  expect(later(body, head)).toBeGreaterThan(0.2)
-  expect(later(body, head)).toBeLessThan(later(body, arm))
-  expect(later(body, arm)).toBeLessThan(later(body, hand))
-  expect(later(body, hand)).toBeLessThan(1.1)
-  // 以前の 0.12 は棒の腕が左右へ倒れるように見えた。
-  expect(Math.max(...frames.map((x) => Math.abs(x.f.arms?.right.up ?? 0)))).toBeLessThan(0.06)
+it('BOXP-698 TD-03: 体を左右へゆらゆら揺らすしぐさ（sway）は廃止（本人が「不自然」と評価）。一覧に無く、選ばれない', () => {
+  expect(idleActNames).not.toContain('sway')
+  expect(idleActNames).toHaveLength(13)
+  // 残したしぐさで、体を左右へ傾ける大きさ（体Z）は 2° 以下（くすっと笑う の小さな弾みまで）。ゆっくり大きく左右へ振るものは無い。
+  for (const a of idleActNames) {
+    const sway = idleActs[a].sway
+    if (sway) expect(sway.period).toBeLessThan(1)
+    expect(Math.abs(sway?.pose.bodyZ ?? 0) + Math.abs(idleActs[a].pose.bodyZ ?? 0)).toBeLessThanOrEqual(2)
+  }
+  const d = new IdleDirector(Math.random),
+    seen = new Set<string>()
+  for (const daypart of ['morning', 'day', 'evening', 'night'] as const)
+    for (let i = 0; i < 2000; i++) seen.add(d.pick(daypart, i % 2 === 0))
+  expect(seen.has('sway')).toBe(false)
 })
 
-it('体を揺らすしぐさは 0 から始まって左右へ振れ、両腕は画面の同じ向きへ振れる。向きは毎回選ぶ', () => {
-  const d = new IdleDirector(seq(0.9))
-  d.force('sway')
-  const frames = run(d, 0, 9),
-    z = frames.map((x) => x.f.pose.bodyZ)
-  expect(Math.abs(z[1])).toBeLessThan(0.2)
-  expect(Math.max(...z)).toBeGreaterThan(4.5)
-  expect(Math.min(...z)).toBeLessThan(-4.5)
-  for (let i = 1; i < z.length; i++) expect(Math.abs(z[i] - z[i - 1])).toBeLessThan(0.8)
-  // 右腕と左腕の up は逆符号（鏡映の書き方）＝画面では同じ向き。頭は体と逆へ少し残す。
-  const peak = frames.find((x) => x.f.pose.bodyZ > 4.5)
-  expect(peak?.f.arms?.left.up).toBeCloseTo(-(peak?.f.arms?.right.up ?? 0), 6)
-  expect(peak?.f.arms?.left.ha).toBeCloseTo(-(peak?.f.arms?.right.ha ?? 0), 6)
-  expect(peak?.f.pose.headZ).toBeLessThan(0)
-  expect(frames.at(-1)?.f.arms).toBeNull()
-  const other = new IdleDirector(seq(0.1))
-  other.force('sway')
-  const first = (fs: ReturnType<typeof run>) => fs.find((x) => Math.abs(x.f.pose.bodyZ) > 2)?.f.pose.bodyZ ?? 0
-  expect(Math.sign(first(run(other, 0, 9)))).toBe(-Math.sign(first(frames)))
-})
-
-it('体を揺らす途中で中断しても、体と腕の角度は跳ばずに短く戻る（揺れの位相は続ける）', () => {
+it('揺れのあるしぐさ（くすっと笑う）の途中で中断しても、体と腕の角度は跳ばずに短く戻る（揺れの位相は続ける）', () => {
   // 揺れの山・谷・0 付近のどこで中断しても同じ。
-  for (const cut of [0.6, 0.8, 1.6, 2.4, 3.3, 4.8]) {
+  for (const cut of [0.6, 0.8, 1.1, 1.6, 2.0, 2.4]) {
     const d = new IdleDirector(seq(0.9))
-    d.force('sway')
+    d.force('giggle')
     const frames = run(d, 0, cut + 2, (t) => ({ ...calm, calm: t < cut })),
       z = frames.map((x) => x.f.pose.bodyZ),
       up = frames.map((x) => x.f.arms?.right.up ?? 0)
@@ -612,7 +582,7 @@ it('控えめでは身振りを借りるしぐさを選ばず、小さな揺れ�
     d.reset()
   }
   expect(seen.has('wave') || seen.has('mouth')).toBe(false)
-  expect(seen.has('stretch') && seen.has('tidy') && seen.has('sway')).toBe(true)
+  expect(seen.has('stretch') && seen.has('tidy') && seen.has('giggle')).toBe(true)
   const s = new IdleDirector(seq(0))
   s.force('shy')
   expect(Math.max(...run(s, 0, 3, { ...calm, subtle: true }).map((x) => armSize(x.f)))).toBeCloseTo(

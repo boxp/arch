@@ -1,4 +1,5 @@
 import { isAbsolute } from 'node:path'
+import { parseModelTrial } from './model-trial.js'
 export function readConfig(env: NodeJS.ProcessEnv) {
   const team = env.KOHAKO_ACCESS_TEAM_DOMAIN ?? '',
     audience = env.KOHAKO_ACCESS_AUD ?? '',
@@ -10,6 +11,7 @@ export function readConfig(env: NodeJS.ProcessEnv) {
     hermesKey = env.KOHAKO_HERMES_KEY,
     sttUrl = env.KOHAKO_STT_URL,
     ttsUrl = env.KOHAKO_TTS_URL || undefined,
+    ttsDrama3Url = env.KOHAKO_TTS_DRAMA3_URL || undefined,
     ttsConcurrency = Number(env.KOHAKO_TTS_CONCURRENCY ?? '1')
   const origin = (x: string, https = false) => {
     try {
@@ -31,6 +33,7 @@ export function readConfig(env: NodeJS.ProcessEnv) {
   if ((hermesUrl || hermesKey) && (!hermesUrl || !origin(hermesUrl) || !hermesKey || hermesKey.length < 32))
     throw Error('invalid Hermes configuration')
   if (ttsUrl && !origin(ttsUrl)) throw Error('invalid TTS configuration')
+  if (ttsDrama3Url && (!ttsUrl || !origin(ttsDrama3Url))) throw Error('invalid TTS configuration')
   if (!Number.isInteger(ttsConcurrency) || ttsConcurrency < 1 || ttsConcurrency > 4)
     throw Error('invalid TTS concurrency')
   if (sttUrl && !origin(sttUrl)) throw Error('invalid STT configuration')
@@ -69,6 +72,10 @@ export function readConfig(env: NodeJS.ProcessEnv) {
     (g2SharedContext === 'telegram-dm' && (g2TelegramUserId === undefined || !hermesUrl))
   )
     throw Error('invalid G2 context configuration')
+  // BOXP-706: 家の会話だけで別のモデルを回数・期限つきで試す設定（JSON）。未設定なら試行なし。
+  const modelTrial = parseModelTrial(env.KOHAKO_MODEL_TRIAL)
+  // 保存先が無いと回数と失敗の回数が再起動で消え、上限を超えて指定が続くので、試行を始めない。
+  if (modelTrial && !dataDir) throw Error('invalid model trial configuration')
   const port = Number(env.KOHAKO_BFF_PORT ?? '8787')
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('invalid port')
   return {
@@ -78,6 +85,7 @@ export function readConfig(env: NodeJS.ProcessEnv) {
     g2BoardContext: g2BoardContext === 'summary',
     g2SharedContext: g2SharedContext === 'telegram-dm',
     g2TelegramUserId,
+    modelTrial,
     dataDir,
     pushSubject,
     quietHours,
@@ -97,6 +105,7 @@ export function readConfig(env: NodeJS.ProcessEnv) {
     hermesKey,
     sttUrl,
     ttsUrl,
+    ttsDrama3Url,
     ttsConcurrency,
     port,
     host: env.KOHAKO_BFF_HOST ?? '0.0.0.0',

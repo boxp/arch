@@ -2,7 +2,9 @@
 import { describe, expect, it } from 'vitest'
 import { SeatDirector, seatOffsetPx, seatOption, type SeatFrame, type SeatInput } from './seat'
 
-const OK: SeatInput = { calm: true, keep: true, free: true, subtle: false }
+const OK: SeatInput = { calm: true, keep: true, quiet: true, free: true, subtle: false }
+/** 会話中（送信・聞いている・考えている・話している）や上半身だけの枠: 座っていてよいが、静かな待機ではない。 */
+const TALK: SeatInput = { ...OK, quiet: false, calm: false }
 /** rng を固定（0.5）: 最初の予定 30 秒、座っている長さ 77.5 秒、次の予定 165 秒、落ち着いた後の間 11.5 秒。 */
 const director = () => new SeatDirector(() => 0.5)
 const STEP = 0.05
@@ -38,8 +40,8 @@ describe('S1 座り始める条件', () => {
       expect(rows.find((r) => r.phase === 'sitting')?.t).toBeCloseTo(35, 5)
     }
   })
-  it('座っていてよい が偽の間は座らず、真に戻ってから 8〜15 秒（rng 0.5 で 11.5 秒）はあける', () => {
-    const rows = run(director(), 0, 60, (t) => (t < 40 ? { ...OK, keep: false, calm: false } : OK))
+  it('静かな待機 が偽の間（会話中）は座り始めず、真に戻ってから 8〜15 秒（rng 0.5 で 11.5 秒）はあける', () => {
+    const rows = run(director(), 0, 60, (t) => (t < 40 ? TALK : OK))
     expect(rows.filter((r) => r.t < 51.5 - 1e-9).every((r) => r.phase === 'standing')).toBe(true)
     expect(rows.find((r) => r.phase === 'sitting')?.t).toBeCloseTo(51.5, 5)
   })
@@ -83,6 +85,21 @@ describe('S3 座っている間', () => {
   it('落ち着いていなくても（マウス・なでる・しぐさ）座ったまま', () => {
     const rows = run(seated(), 31.35, 60, { ...OK, calm: false, free: false })
     expect(rows.every((r) => r.phase === 'seated' && r.level === 1 && r.chair === 1 && !r.moving)).toBe(true)
+  })
+  it('S3.7 話しかけても立たない: 会話の間も座り具合 1・椅子 1 のまま、浮き沈みも続く', () => {
+    const rows = run(seated(), 31.35, 60, (t) => (t < 35 ? OK : TALK))
+    expect(rows.every((r) => r.phase === 'seated' && r.level === 1 && r.chair === 1 && !r.moving)).toBe(true)
+    const offs = rows.filter((r) => r.t > 36).map((r) => r.offset - 40)
+    expect(Math.max(...offs)).toBeGreaterThan(3.9)
+    expect(Math.min(...offs)).toBeLessThan(-3.9)
+  })
+  it('S3.9 座る途中に話しかけたら、そのまま座り切る（引き返さない）', () => {
+    const d = director()
+    run(d, 0, 30.75)
+    const rows = run(d, 30.8, 33, TALK)
+    for (let i = 1; i < rows.length; i++) expect(rows[i].level).toBeGreaterThanOrEqual(rows[i - 1].level)
+    expect(rows.find((r) => r.phase === 'seated')?.t).toBeCloseTo(31.25, 5)
+    expect(rows.at(-1)).toMatchObject({ phase: 'seated', level: 1, chair: 1 })
   })
   it('4.4 秒で 1 往復、±4 の浮き沈み', () => {
     const offs = run(seated(), 31.35, 60)
@@ -134,10 +151,26 @@ describe('S4 自分から立つ', () => {
     const rows = run(seated(), 31.35, 130, (t) => ({ ...OK, free: t >= 120 }))
     expect(rows.find((r) => r.phase === 'rising')?.t).toBeCloseTo(120, 5)
   })
+  it('会話中に座っている長さが過ぎても立たず、静かな待機へ戻ってから立つ', () => {
+    const rows = run(seated(), 31.35, 130, (t) => (t < 120 ? TALK : OK))
+    expect(rows.filter((r) => r.t < 120 - 1e-9).every((r) => r.phase === 'seated' && r.level === 1)).toBe(true)
+    expect(rows.find((r) => r.phase === 'rising')?.t).toBeCloseTo(120, 5)
+  })
+  it('S4.3 自分から立つ途中に話しかけたら、そのまま 1.3 秒で立ち切る（急がない・座り直さない）', () => {
+    const t0 = 31.25 + 77.5,
+      d = seated()
+    run(d, 31.35, t0 + 0.3)
+    const rows = run(d, t0 + 0.35, t0 + 2, TALK)
+    for (let i = 1; i < rows.length; i++) expect(rows[i].level).toBeLessThanOrEqual(rows[i - 1].level)
+    expect(rows.find((r) => Math.abs(r.t - t0 - 0.4) < 1e-6)?.level).toBeCloseTo(0.5, 5)
+    expect(rows.find((r) => Math.abs(r.t - t0 - 0.8) < 1e-6)?.chair).toBeCloseTo(1, 9)
+    expect(rows.find((r) => r.phase === 'standing')?.t).toBeCloseTo(t0 + 1.3, 5)
+  })
 })
 
 describe('S5 急いで立つ', () => {
-  const gone = { ...OK, keep: false, calm: false }
+  // 家を出る・小さい表示・設定の変更など（座っていてよい が偽）。会話では偽にならない。
+  const gone = { ...OK, keep: false, quiet: false, calm: false }
   it('座っている時: 0.4 秒で立ち姿、0.6 秒以内に椅子が消える', () => {
     const rows = run(seated(), 31.35, 45, (t) => (t < 40 ? OK : gone)).filter((r) => r.t >= 40 - 1e-9)
     const at = (dt: number) => rows.find((r) => Math.abs(r.t - 40 - dt) < 1e-6) as (typeof rows)[number]
@@ -178,7 +211,7 @@ describe('S6 非表示', () => {
 })
 
 describe('どの順でも守ること（乱数の操作列）', () => {
-  it('椅子の濃さ ≥ 座り具合、値は 0〜1、偽になって 0.4 秒で座り具合 0・0.6 秒で椅子 0、立ち姿では全部 0', () => {
+  it('椅子の濃さ ≥ 座り具合、値は 0〜1、偽になって 0.4 秒で座り具合 0・0.6 秒で椅子 0、立ち姿では全部 0、会話では立たない・座り始めない', () => {
     let seed = 12345
     const rand = () => {
       seed = (seed * 1103515245 + 12345) % 2147483648
@@ -189,13 +222,22 @@ describe('どの順でも守ること（乱数の操作列）', () => {
     for (let trial = 0; trial < 300; trial++) {
       const d = new SeatDirector(rand, [0, 3])
       let input = { ...OK },
-        falseSince: number | null = null
+        falseSince: number | null = null,
+        prev = 'standing'
       for (let i = 0; i < 2400; i++) {
         const t = i * STEP
         // ときどき入力を切り替える（座る・立つの途中にも当たる）。検証用の指定も混ぜる。
-        if (rand() < 0.03) input = { calm: rand() < 0.7, keep: rand() < 0.8, free: rand() < 0.7, subtle: rand() < 0.2 }
+        if (rand() < 0.03)
+          input = {
+            calm: rand() < 0.7,
+            keep: rand() < 0.8,
+            quiet: rand() < 0.6,
+            free: rand() < 0.7,
+            subtle: rand() < 0.2,
+          }
         if (rand() < 0.01) d.force(rand() < 0.5 ? 'sit' : 'stand')
         if (rand() < 0.002) {
+          prev = 'standing'
           d.reset()
           expect(d.step(t, { ...input, calm: false })).toMatchObject({ phase: 'standing', level: 0, chair: 0 })
         }
@@ -211,6 +253,14 @@ describe('どの順でも守ること（乱数の操作列）', () => {
         if (late(0.6) && f.chair !== 0) broken.push(`0.6 秒で椅子が 0 でない @${trial}/${t}`)
         if (!input.keep && f.phase !== 'standing' && f.phase !== 'rising')
           broken.push(`偽なのに座っている @${trial}/${t}`)
+        // 座っていてよい間は、静かな待機でなければ（会話中・上半身だけの枠）座り始めず、立ち始めもしない。座っていれば座ったまま。
+        const quiet = input.keep && input.quiet
+        if (prev === 'standing' && f.phase !== 'standing' && !(quiet && input.calm && input.free))
+          broken.push(`静かな待機でないのに座り始めた @${trial}/${t}`)
+        if (prev === 'seated' && f.phase !== 'seated' && input.keep && !(quiet && input.free))
+          broken.push(`会話中なのに立ち始めた @${trial}/${t}`)
+        if (prev === 'sitting' && f.phase === 'rising' && input.keep) broken.push(`座る途中で引き返した @${trial}/${t}`)
+        prev = f.phase
         seen.add(f.phase)
       }
     }
