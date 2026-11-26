@@ -4,7 +4,8 @@
 #   pi-web-trial install <built-pi-web-agent-dir>   copy the built app + trial Pi config
 #   pi-web-trial start | stop | restart | status
 #
-# The server binds to 127.0.0.1 only. Open it through an SSH local port forward:
+# pi-web-agent binds to 127.0.0.1:$UPSTREAM_PORT (internal) and a Host/Origin gate
+# (gate.ts, DNS-rebinding / CSRF protection) serves 127.0.0.1:$PORT. Forward only $PORT:
 #   ssh -L 4317:127.0.0.1:4317 <codex-workspace>  ->  http://127.0.0.1:4317
 #
 # Pi runs with a dedicated agent dir (local llama-server model only, guard
@@ -16,13 +17,14 @@ ROOT="${PI_WEB_TRIAL_ROOT:-$HOME/.local/share/pi-web-trial}"
 VAULT="${PI_WEB_TRIAL_VAULT:-$HOME/Documents/obsidian-headless/BOXP}"
 SANDBOX="$VAULT/Projects/pi-web-agent-trial/sandbox"
 PORT="${PI_WEB_TRIAL_PORT:-4317}"
+UPSTREAM_PORT="${PI_WEB_TRIAL_UPSTREAM_PORT:-4318}"
 SESSION="pi-web-trial"
 # Dedicated tmux socket so the trial never shares a server with the Owner's own tmux.
 TMUX_CMD=(tmux -L pi-web-trial)
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
-  sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 install_trial() {
@@ -31,13 +33,14 @@ install_trial() {
     echo "not a built pi-web-agent checkout: $built" >&2
     exit 1
   fi
-  mkdir -p "$ROOT/app" "$ROOT/agent/extensions/pi-web-trial" "$ROOT/web" "$ROOT/logs" "$ROOT/bin"
+  mkdir -p "$ROOT/app" "$ROOT/agent/extensions/pi-web-trial" "$ROOT/web" "$ROOT/logs" "$ROOT/bin" "$ROOT/gate"
   rm -rf "$ROOT/app"
   mkdir -p "$ROOT/app"
   (cd "$built" && tar --exclude=./.git -cf - .) | tar -C "$ROOT/app" -xf -
   install -m 0644 "$SRC_DIR/agent/models.json" "$SRC_DIR/agent/settings.json" "$SRC_DIR/agent/AGENTS.md" "$ROOT/agent/"
   install -m 0644 "$SRC_DIR/extension/index.ts" "$SRC_DIR/extension/guard.ts" "$ROOT/agent/extensions/pi-web-trial/"
   install -m 0755 "$SRC_DIR/bin/pi-web-trial" "$ROOT/bin/pi-web-trial"
+  install -m 0644 "$SRC_DIR/gate/gate.ts" "$ROOT/gate/gate.ts"
   # fd is used by the find tool; reuse the binary Pi already downloaded (offline mode cannot fetch it).
   if [[ -x "$HOME/.pi/agent/bin/fd" ]]; then
     mkdir -p "$ROOT/agent/bin"
@@ -57,7 +60,11 @@ server_command() {
     "PI_CODING_AGENT_DIR=$ROOT/agent" "PI_WEB_AGENT_DIR=$ROOT/web" \
     "PI_WEB_TRIAL_VAULT=$VAULT" "PI_WEB_TRIAL_SANDBOX=$SANDBOX" \
     "PI_SKIP_VERSION_CHECK=1" "PI_OFFLINE=1" \
-    "$node" "$ROOT/app/packages/web/dist/server/cli.js" --host 127.0.0.1 --port "$PORT" --cwd "$VAULT"
+    "$node" "$ROOT/app/packages/web/dist/server/cli.js" --host 127.0.0.1 --port "$UPSTREAM_PORT" --cwd "$VAULT"
+}
+
+gate_command() {
+  printf '%q ' env -i "PATH=/usr/local/bin:/usr/bin:/bin" "$(command -v node)" "$ROOT/gate/gate.ts" --port "$PORT" --upstream-port "$UPSTREAM_PORT"
 }
 
 health() {
@@ -69,13 +76,14 @@ start_trial() {
     echo "already running (tmux session $SESSION)"
     return 0
   fi
-  [[ -f "$ROOT/app/packages/web/dist/server/cli.js" ]] || {
+  [[ -f "$ROOT/app/packages/web/dist/server/cli.js" && -f "$ROOT/gate/gate.ts" ]] || {
     echo "not installed: run install first" >&2
     exit 1
   }
   local cmd
   cmd="$(server_command)"
   "${TMUX_CMD[@]}" new-session -d -s "$SESSION" "$cmd >> $(printf '%q' "$ROOT/logs/server.log") 2>&1"
+  "${TMUX_CMD[@]}" new-window -d -t "$SESSION" -n gate "$(gate_command) >> $(printf '%q' "$ROOT/logs/gate.log") 2>&1"
   for _ in $(seq 1 20); do
     if health >/dev/null 2>&1; then
       echo "running: http://127.0.0.1:$PORT (tmux session $SESSION)"

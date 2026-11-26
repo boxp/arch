@@ -5,7 +5,7 @@
 - モデル: lolice の local-llm（llama-server）の `gemma4-26b` だけ。クラウドのモデルは選べない（起動時にクラウドの API キー環境変数を渡さない）。
 - Pi の設定: 試用専用の `~/.local/share/pi-web-trial/agent`。既存 Pi の `~/.pi/agent` は読まない・書かない。
 - 道具: `read` `grep` `find` `ls` `write` `edit` `web_search`。`bash` は無効。`web_search` は毎回本人の確認ダイアログを経てから送る。決まりの正本は Obsidian の `Projects/pi-web-agent-trial/spec.md`。
-- 入口: `127.0.0.1:4317` のみで待ち受け。SSH のポート転送で開く（認証なしで外に公開しない）。
+- 入口: 本体は内部用の `127.0.0.1:4318`、本人が開く `127.0.0.1:4317` には Host / Origin を確かめる門番（`gate/gate.ts`）を置く。pi-web-agent の API には認証も Host 確認もないため、127.0.0.1 待ち受けだけだと SSH 転送中に悪意あるサイトが DNS rebinding で会話やノートを読めてしまう。門番は `Host` が `127.0.0.1:4317`/`localhost:4317` で、`Origin` が同じ場所（POST 等は必須）の要求だけを中継する。SSH のポート転送は 4317 だけにする（4318 は転送しない。認証なしで外に公開しない）。
 
 ## 導入と起動
 
