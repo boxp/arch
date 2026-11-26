@@ -23,7 +23,7 @@ import {
   boxCorners,
   chairCorners,
   COATS,
-  eraseSkirt,
+  mendThighs,
   followPoint,
   LEG_MESHES,
   legOpacity,
@@ -1611,8 +1611,8 @@ export function createActingStage(
       shadowBox = boxCorners(SEAT_ART.shadow.box),
       shadow = quadOf(SEAT_ART.shadow.file, art, () => shadowBox)
     // 太ももの絵は格子にして、上のほうだけ体の層の腰の動きへ付いていかせる。
-    // 絵に描き込まれた裾は透明にして読む（S8.9。裾は立ち姿の層が硬い板として動くので、絵の裾が残ると板の外や下からのぞく）。
-    const grid = addGrid(pp, 8, 10, later(SEAT_ART.thighs.file, eraseSkirt)),
+    // 絵に描き込まれた裾は透明にし、切った境目の外へ太ももの色を塗り足して読む（S8.9・S8.10。裾は立ち姿の層が硬い板として動くので、絵の裾や切った断面が残ると板の外や下からのぞく）。
+    const grid = addGrid(pp, 8, 10, later(SEAT_ART.thighs.file, mendThighs)),
       [gx, gy, gw, gh] = SEAT_ART.thighs.box,
       points: Vec[] = grid.uv.map(([u, v]) => [gx + u * gw, gy + v * gh])
     synth.set(grid.index, {
