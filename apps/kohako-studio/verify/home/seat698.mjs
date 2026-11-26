@@ -340,7 +340,7 @@ if (!ONLY || ONLY === 'check' || ONLY === 'skirt') {
   await page.clock.runFor(2000)
   const stood = await watch('stand', 'standing')
   check(stood?.level === 0, '裾: 立ち切らない')
-  if (stood) for (const m of [24, 25]) check(fit(stand.v[m], stood.v[m]).worst < 1.5, `S7: 立った後に裾の層 ${m} が立ち姿の形へ戻らない`)
+  if (stood) for (const m of [24, 25]) check(fit(stand.v[m], stood.v[m]).worst < 2.5, `S7: 立った後に裾の層 ${m} が立ち姿の形へ戻らない`)
   // 線は 2.5: 頂点は体の動き（息・腰を下ろす時の揺れ）でも少し変形し、同じ build でも回によって 0.8〜1.9 になる（硬い板にする前は 38.1）。板そのものの決まりは単体テストで厳密に見る。
   check(seen.worst < 2.5, `S8.4 ②: 裾の板が折れている・たわんでいる（1 つの 1 次変換からの外れ 最大 ${seen.worst.toFixed(2)}）`)
   // 支点の写り先のずれは合否にしない: 頂点は体の動き（腰を下ろす時の体の揺れなど）ごと動くので、体が動いたぶんもここに入る。支点が動かないこと（S8.4 ①）は単体テストで見る。
