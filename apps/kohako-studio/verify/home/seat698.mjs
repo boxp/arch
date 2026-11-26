@@ -1,7 +1,7 @@
 // BOXP-698: 浮く椅子へ腰かける試作の実ブラウザ検証。BFF は完全にモック（token 不要）。
 // 実行: Playwright 1.56.1 で `PW_WS=ws://host:port/ node seat698.mjs <build の dist> <出力先> [check|sheets|record]`（既定は全部）
 //   check : 時計を止めて規則を確かめる（仕様は vault の Projects/kohako-home/seat-spec.md）。失敗があれば終了コード 1。
-//   skirt : 上着の裾が硬い板として動くこと（S8.4。check にも含む）を、座る・立つの全コマの頂点で確かめる。
+//   skirt : 上着の裾が硬い板として動くこと（S8.4。check にも含む）を、座る・立つの全コマの頂点で確かめる。太ももの絵に描き込まれた裾が画面に出ないこと（S8.9）も見る。
 //   sheets: 座る・座っている間・自分から立つ・座ったままの会話 を、等間隔のコマに並べた画像にする（目で見るため。合否は出さない）。裾まわりの拡大（skirt-sit / skirt-stand）も出す。
 //   record: 実時間の動画（時計は止めない）。座る → 座っている間 → マウス → 立つ、座る → 話しかけても座ったまま返事を聞く。
 // BASE=<変更前の dist> を渡すと、座っていない間の描画が変更前と画素一致することも確かめる。
@@ -336,38 +336,74 @@ if (!ONLY || ONLY === 'check' || ONLY === 'skirt') {
     // 描く順: 太もも・ひざから下の絵（足した層）のすぐ手前に左の裾、その次が右の裾（裾は絵の手前）。
     const i25 = seated.order.indexOf(25), i24 = seated.order.indexOf(24), added = (c) => c > 31 && !stand.order.includes(c)
     check(i25 >= 3 && i24 === i25 + 1 && [1, 2, 3].every((k) => added(seated.order[i25 - k])), `S8.4: 座っている間の描く順で、裾が絵の手前にない ${JSON.stringify(seated.order.slice(Math.max(0, i25 - 4), i25 + 3))}`)
-    // 絵に描き込まれた裾（紫・金・桃の画素。紺の太ももと水色の線は除く）が、座り切った裾の層の三角形の中に入っている割合。
-    const cover = await page.evaluate(async () => {
-      const p = window.__kohakoHome.player
-      const img = new Image(); img.src = new URL('kohako/live2d/seat/seat-hips-thighs.png', location.href).href; await img.decode()
-      const c = new OffscreenCanvas(img.width, img.height), g = c.getContext('2d'); g.drawImage(img, 0, 0)
-      const d = g.getImageData(0, 0, c.width, c.height).data
-      const painted = (x, y) => { const i = 4 * (y * c.width + x), r = d[i], gg = d[i + 1], bl = d[i + 2]; return d[i + 3] >= 128 && (r + gg + bl) / 3 > 95 && r > gg * 0.95 && !(bl > r * 1.25 && gg > r * 1.1) }
-      const out = {}
-      // 太ももの照りと紛れる内側（絵の x 200〜459）は数えない。
-      for (const [m, x0, x1] of [[25, 0, 200], [24, 459, 659]]) {
-        const mesh = p.meshes[m], v = new Float32Array(p.rt.memory.buffer, p.rt.p2l_mesh_vertices(p.rig, m), mesh.vertices * 2), idx = mesh.indices
-        const inside = (px, py) => { for (let t = 0; t < idx.length; t += 3) { const ax = v[2 * idx[t]], ay = v[2 * idx[t] + 1], bx = v[2 * idx[t + 1]], by = v[2 * idx[t + 1] + 1], cx = v[2 * idx[t + 2]], cy = v[2 * idx[t + 2] + 1], den = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy); if (!den) continue; const w1 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / den, w2 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / den; if (w1 >= 0 && w2 >= 0 && w1 + w2 <= 1) return true } return false }
-        let total = 0, miss = 0
-        for (let y = 60; y < c.height; y += 3) for (let x = x0; x < x1; x += 3) if (painted(x, y)) { total++; if (!inside(243 + x, 820 + y)) miss++ }
-        out[m] = { total, miss }
-      }
-      return out
-    })
-    for (const m of [24, 25]) check(cover[m].total > 1500 && cover[m].miss / cover[m].total < 0.03, `S8.4: 絵に描き込まれた裾が、裾の層の下からはみ出している（層 ${m}: ${cover[m].miss}/${cover[m].total}）`)
-    result.skirtCover = cover
   }
   await page.clock.runFor(2000)
   const stood = await watch('stand', 'standing')
   check(stood?.level === 0, '裾: 立ち切らない')
   if (stood) for (const m of [24, 25]) check(fit(stand.v[m], stood.v[m]).worst < 1.5, `S7: 立った後に裾の層 ${m} が立ち姿の形へ戻らない`)
-  check(seen.worst < 1.5, `S8.4 ②: 裾の板が折れている・たわんでいる（1 つの 1 次変換からの外れ 最大 ${seen.worst.toFixed(2)}）`)
+  // 線は 2.5: 頂点は体の動き（息・腰を下ろす時の揺れ）でも少し変形し、同じ build でも回によって 0.8〜1.9 になる（硬い板にする前は 38.1）。板そのものの決まりは単体テストで厳密に見る。
+  check(seen.worst < 2.5, `S8.4 ②: 裾の板が折れている・たわんでいる（1 つの 1 次変換からの外れ 最大 ${seen.worst.toFixed(2)}）`)
   // 支点の写り先のずれは合否にしない: 頂点は体の動き（腰を下ろす時の体の揺れなど）ごと動くので、体が動いたぶんもここに入る。支点が動かないこと（S8.4 ①）は単体テストで見る。
   const sitHems = hems.filter((r) => r.what === 'sit')
   check(sitHems.every((r, i) => i === 0 || r.y <= sitHems[i - 1].y + 0.5), 'S8.4 ④: 座る途中で裾の下端が下がったコマがある')
   result.skirt = { frames: seen.frames, affineResidualMax: +seen.worst.toFixed(3), hingeWithBodyMoveMax: +seen.hinge.toFixed(3), hemFrom: +(sitHems[0]?.y ?? 0).toFixed(1), hemTo: +(sitHems.at(-1)?.y ?? 0).toFixed(1) }
   await o.context.close()
   save()
+  // S8.9（TD-05）: 太ももの絵に描き込まれた裾は、どのコマでも画面に出ない。絵の「裾の側」（仕様の折れ線より外）の画素を真緑に塗った絵へ差し替えて開き、座る・座っている・立つの画面に緑が出ないことを見る。
+  {
+    const EDGE = [[0, 260], [58, 252], [68, 238], [103, 205], [124, 184], [150, 169], [190, 154], [226, 143], [238, 136], [352, 136]]
+    const m = await open(), mp = await m.context.newPage()
+    await mp.goto(m.url.replace('home.html', 'live2d/seat/seat-hips-thighs.png'))
+    const marked = await mp.evaluate(async (edge) => {
+      const img = new Image(); img.src = location.href; await img.decode()
+      const c = document.createElement('canvas'); c.width = img.width; c.height = img.height
+      const g = c.getContext('2d'); g.drawImage(img, 0, 0)
+      const d = g.getImageData(0, 0, c.width, c.height)
+      const limit = (y) => { let i = 1; while (i < edge.length - 1 && y > edge[i][0]) i++; const [y0, x0] = edge[i - 1], [y1, x1] = edge[i]; return x0 + (x1 - x0) * Math.max(0, Math.min(1, (y - y0) / (y1 - y0))) }
+      let n = 0
+      for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
+        const i = 4 * (y * c.width + x)
+        if (d.data[i + 3] > 0 && Math.min(x, c.width - 1 - x) < limit(y)) { d.data[i] = 0; d.data[i + 1] = 255; d.data[i + 2] = 0; d.data[i + 3] = 255; n++ }
+      }
+      g.putImageData(d, 0, 0)
+      return { png: c.toDataURL('image/png').split(',')[1], n, size: [c.width, c.height] }
+    }, EDGE)
+    await m.context.close()
+    check(marked.size[0] === 659 && marked.size[1] === 352 && marked.n > 30000, `S8.9: 絵の大きさ・裾の画素数が想定と違う ${JSON.stringify([marked.size, marked.n])}`)
+    const g = await open({ dsf: 2 })
+    await g.context.route('**/seat-hips-thighs.png', (r) => r.fulfill({ contentType: 'image/png', body: Buffer.from(marked.png, 'base64') }))
+    await paused(g)
+    const REMNANT_CLIP = { x: 120, y: 280, width: 520, height: 300 }
+    /** 画面の切り抜きの中の緑（半透明で混ざったものも含む）の画素数。 */
+    const greens = async () => {
+      const shot = (await g.page.screenshot({ clip: REMNANT_CLIP, type: 'png' })).toString('base64')
+      return g.page.evaluate(async (b64) => {
+        const img = new Image(); img.src = 'data:image/png;base64,' + b64; await img.decode()
+        const c = new OffscreenCanvas(img.width, img.height), x = c.getContext('2d'); x.drawImage(img, 0, 0)
+        const d = x.getImageData(0, 0, c.width, c.height).data
+        let n = 0
+        for (let i = 0; i < d.length; i += 4) if (d[i + 1] > d[i] + 60 && d[i + 1] > d[i + 2] + 60) n++
+        return n
+      }, shot)
+    }
+    const seen = { frames: 0, worst: 0, at: null }
+    const look = async (label) => { const n = await greens(); seen.frames++; if (n > seen.worst) { seen.worst = n; seen.at = label } }
+    check((await greens()) === 0, 'S8.9: 立ち姿の画面に緑がある（数え方の誤り）')
+    await g.page.evaluate(() => window.__kohakoHome.playSeat('sit'))
+    for (let t = 0; t < 60000; t += 50) { await g.page.clock.runFor(50); const s = await seatOf(g.page); if (s.phase === 'sitting') await look(`sit ${s.level.toFixed(2)}`); if (s.phase === 'seated') break }
+    check(seen.frames >= 15, `S8.9: 座る途中のコマが足りない（${seen.frames}）`)
+    // 座っている間（浮き沈み・足のぶらぶら・待機のしぐさで体が動く間も）
+    for (let i = 0; i < 12; i++) { await g.page.clock.runFor(500); await look(`seated ${i}`) }
+    await g.page.evaluate(() => window.__kohakoHome.playIdle('tilt'))
+    for (let i = 0; i < 12; i++) { await g.page.clock.runFor(250); await look(`tilt ${i}`) }
+    await g.page.clock.runFor(4000)
+    await g.page.evaluate(() => window.__kohakoHome.playSeat('stand'))
+    for (let t = 0; t < 30000; t += 50) { await g.page.clock.runFor(50); const s = await seatOf(g.page); if (s.phase === 'rising') await look(`stand ${s.level.toFixed(2)}`); if (s.phase === 'standing') break }
+    check(seen.worst === 0, `S8.9: 絵に描き込まれた裾が画面に出ている（最大 ${seen.worst} 画素、${seen.at}。見たコマ ${seen.frames}）`)
+    result.skirtRemnant = { frames: seen.frames, greenMax: seen.worst, at: seen.at, markedPixels: marked.n }
+    await g.context.close()
+    save()
+  }
 }
 
 /** コマを 1 枚に並べる（背景つきの画面の切り抜き）。 */

@@ -5,9 +5,11 @@ import {
   artOpacity,
   CHAIR_RISE,
   chairCorners,
+  eraseSkirt,
   followPoint,
   followWeight,
   legOpacity,
+  paintedSkirt,
   SEAT_RISE,
   seatLift,
   seatPoint,
@@ -270,5 +272,67 @@ describe('S2.1 椅子は下から上がって現れる', () => {
       expect(c[0]).toBe(shown[i][0])
       expect(c[1] - shown[i][1]).toBeCloseTo(46, 9)
     })
+  })
+})
+
+describe('S8.9 太ももの絵に描き込まれた裾は描かない（TD-05）', () => {
+  it('例の値: 桜・金の縁・留め具は透明、太もも・水色の線・太ももの外の縁は残る', () => {
+    for (const [x, y] of [
+      [100, 250],
+      [30, 280],
+      [230, 30],
+      [204, 103],
+      [558, 250],
+    ] as const)
+      expect(paintedSkirt(x, y), `${x},${y}`).toBe(true)
+    for (const [x, y] of [
+      [300, 150],
+      [200, 150],
+      [140, 245],
+      [205, 103],
+      [358, 150],
+    ] as const)
+      expect(paintedSkirt(x, y), `${x},${y}`).toBe(false)
+  })
+  it('折れ線の角: 縁の点そのものは残り、1 つ外側は透明', () => {
+    for (const [y, x] of [
+      [0, 260],
+      [58, 252],
+      [68, 238],
+      [103, 205],
+      [124, 184],
+      [150, 169],
+      [190, 154],
+      [226, 143],
+      [238, 136],
+      [351, 136],
+    ] as const) {
+      expect(paintedSkirt(x, y), `${x},${y}`).toBe(false)
+      expect(paintedSkirt(x - 1, y), `${x - 1},${y}`).toBe(true)
+    }
+  })
+  it('右は左右対称（x → 658 − x）。どの行も、透明なのは左右の端から続く 1 区間ずつで、真ん中は残る', () => {
+    for (let y = 0; y < 352; y++) {
+      let changes = 0
+      for (let x = 0; x < 659; x++) {
+        expect(paintedSkirt(658 - x, y)).toBe(paintedSkirt(x, y))
+        if (x > 0 && paintedSkirt(x, y) !== paintedSkirt(x - 1, y)) changes++
+      }
+      expect(changes, `y=${y}`).toBe(2)
+      expect(paintedSkirt(0, y)).toBe(true)
+      expect(paintedSkirt(329, y)).toBe(false)
+    }
+  })
+  it('絵の画素: 裾の側だけ 4 成分とも 0 になり、ほかの画素は変わらない', () => {
+    const width = 659,
+      height = 352,
+      data = new Uint8ClampedArray(width * height * 4).fill(200)
+    eraseSkirt(data, width)
+    const at = (x: number, y: number) => Array.from(data.slice(4 * (y * width + x), 4 * (y * width + x) + 4))
+    expect(at(100, 250)).toEqual([0, 0, 0, 0])
+    expect(at(558, 250)).toEqual([0, 0, 0, 0])
+    expect(at(300, 150)).toEqual([200, 200, 200, 200])
+    expect(at(205, 103)).toEqual([200, 200, 200, 200])
+    expect(at(204, 103)).toEqual([0, 0, 0, 0])
   })
 })

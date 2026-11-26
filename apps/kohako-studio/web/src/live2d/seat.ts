@@ -163,3 +163,42 @@ export function chairCorners(shown: number): Vec[] {
   const dy = CHAIR_RISE * (1 - ease(shown))
   return boxCorners(ART.chair.box).map(([x, y]) => [x, y + dy])
 }
+
+/**
+ * 太ももの絵（seat-hips-thighs.png、659x352）に描き込まれた上着の裾は描かない（S8.9。BOXP-698 TD-05）。
+ * 裾は立ち姿の層が硬い板として動くので、絵の裾が残ると、板の外や下からのぞいて「裾の下の残骸」に見える。
+ * edge は左の裾の内側の縁（絵の画素の [y, x]。y の間は直線でつなぐ）。その外側（左は x が小さい側）を透明にする。右は左右対称。
+ */
+export const ART_SKIRT = {
+  width: 659,
+  edge: [
+    [0, 260],
+    [58, 252],
+    [68, 238],
+    [103, 205],
+    [124, 184],
+    [150, 169],
+    [190, 154],
+    [226, 143],
+    [238, 136],
+    [352, 136],
+  ] as readonly Vec[],
+} as const
+/** 絵の画素 (x, y) が、描き込まれた裾の側（透明にする側）か。 */
+export function paintedSkirt(x: number, y: number): boolean {
+  const e = ART_SKIRT.edge,
+    // 左右対称（画素の中心で折り返す）
+    lx = Math.min(x, ART_SKIRT.width - 1 - x)
+  let i = 1
+  while (i < e.length - 1 && y > (e[i] as Vec)[0]) i++
+  const [y0, x0] = e[i - 1] as Vec,
+    [y1, x1] = e[i] as Vec,
+    t = clamp01((y - y0) / (y1 - y0))
+  return lx < x0 + (x1 - x0) * t
+}
+/** 絵の画素（RGBA、width 列）から、描き込まれた裾を透明にする。 */
+export function eraseSkirt(data: Uint8ClampedArray, width: number): void {
+  const height = data.length / 4 / width
+  for (let y = 0; y < height; y++)
+    for (let x = 0; x < width; x++) if (paintedSkirt(x, y)) data.fill(0, 4 * (y * width + x), 4 * (y * width + x) + 4)
+}
