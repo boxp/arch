@@ -2,7 +2,7 @@
 // - keeps only the trial tools active (no bash)
 // - blocks file tools outside the Obsidian vault / writes outside the sandbox
 // - adds a `web_search` tool (DuckDuckGo HTML, query only, no page fetch)
-// - blocks queries that copy note text read in this chat
+// - blocks queries that copy note text read in this chat, and asks the Owner to confirm every query
 // Spec (current): Obsidian vault Projects/pi-web-agent-trial/spec.md
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
@@ -60,9 +60,27 @@ export default function piWebTrialGuard(pi: ExtensionAPI) {
 		pi.setActiveTools([...ALLOWED_TOOLS].filter((name) => available.has(name)));
 	});
 
-	pi.on("tool_call", (event, ctx) => {
+	pi.on("tool_call", async (event, ctx) => {
 		const decision = decideToolCall(event.toolName, event.input as Record<string, unknown>, context(ctx.cwd));
-		if (decision.allow) return undefined;
+		if (decision.allow && decision.confirmQuery === undefined) return undefined;
+		if (decision.allow) {
+			const query = decision.confirmQuery;
+			const ok = ctx.hasUI
+				? await ctx.ui.confirm(
+						"Web検索を送信しますか？",
+						`次の検索語だけを DuckDuckGo へ送ります。ノートの内容・人名など私的な語が入っていたらキャンセルしてください。\n\n${query}`,
+					)
+				: false;
+			if (ok) {
+				// Send exactly what the Owner saw.
+				(event.input as Record<string, unknown>).query = query;
+				return undefined;
+			}
+			const reason = ctx.hasUI
+				? "The Owner cancelled this web_search. Do not retry it; ask the Owner what to search instead."
+				: "web_search needs the Owner's confirmation and no UI is available.";
+			return { block: true, reason };
+		}
 		if (ctx.hasUI) ctx.ui.notify(`Blocked: ${decision.reason}`, "warning");
 		return { block: true, reason: decision.reason };
 	});

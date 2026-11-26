@@ -20,7 +20,11 @@ export const MAX_QUERY_CHARS = 120;
 export const SHARED_RUN_CHARS = 16;
 const MAX_MEMORY_CHARS = 4 * 1024 * 1024;
 
-export type Decision = { allow: true } | { allow: false; reason: string };
+/**
+ * `confirmQuery`: the exact text that will leave the machine. The caller must show it to the
+ * Owner and send it only after an explicit confirmation (no UI or cancel -> block).
+ */
+export type Decision = { allow: true; confirmQuery?: string } | { allow: false; reason: string };
 
 export interface GuardContext {
 	cwd: string;
@@ -38,16 +42,25 @@ function normalizeText(text: string): string {
 export class ReadMemory {
 	private chunks: string[] = [];
 	private size = 0;
+	/** Set once the cap is exceeded; never cleared. web_search is refused from then on. */
+	saturated = false;
+
+	private readonly maxChars: number;
+
+	constructor(maxChars = MAX_MEMORY_CHARS) {
+		this.maxChars = maxChars;
+	}
 
 	add(text: string): void {
 		const normalized = normalizeText(text);
 		if (!normalized) return;
+		// Never drop old text (that would let it pass the check later): stop searching instead.
+		if (this.saturated || this.size + normalized.length > this.maxChars) {
+			this.saturated = true;
+			return;
+		}
 		this.chunks.push(normalized);
 		this.size += normalized.length;
-		// Keep the newest text when the cap is exceeded.
-		while (this.size > MAX_MEMORY_CHARS && this.chunks.length > 1) {
-			this.size -= this.chunks.shift()?.length ?? 0;
-		}
 	}
 
 	/** True when `query` shares a run of at least `n` characters with remembered text. */
@@ -139,12 +152,16 @@ export function decideToolCall(toolName: string, input: Record<string, unknown>,
 	const length = Array.from(query).length;
 	if (length === 0) return deny("query must not be empty.");
 	if (length > MAX_QUERY_CHARS) return deny(`query must be at most ${MAX_QUERY_CHARS} characters (got ${length}).`);
+	if (ctx.memory.saturated) {
+		return deny("Too much note text was read in this chat to check web_search queries. Start a new chat to search the web.");
+	}
 	if (ctx.memory.sharesRun(query)) {
 		return deny(
 			`The query repeats ${SHARED_RUN_CHARS}+ characters of note text read in this chat. Do not send note contents to the web; use short general keywords instead.`,
 		);
 	}
-	return { allow: true };
+	// Short private phrases cannot be told apart automatically: the Owner confirms every query.
+	return { allow: true, confirmQuery: query };
 }
 
 export interface SearchResult {

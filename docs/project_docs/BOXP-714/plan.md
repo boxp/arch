@@ -20,7 +20,7 @@
 
 - Pi の設定は試用専用の `PI_CODING_AGENT_DIR`（local-llm の gemma4-26b だけ）。起動は `env -i` で、クラウドの API キー環境変数を渡さない。
 - 既に読み込まれている gemma4-26b だけを出す（router の別モデルへ切り替えて他の利用者を待たせない）。
-- ガード拡張（`scripts/pi-web-trial/extension/`）: bash を外す、ファイル系の道具を vault 内（隠しフォルダ除く）に限定、書き込みは `Projects/pi-web-agent-trial/sandbox/` の `.md` に限定、`web_search`（DuckDuckGo HTML、検索語だけ送信）を追加し、このチャットで読んだ本文と 16 文字以上同じ並びを含む検索語は止める。
+- ガード拡張（`scripts/pi-web-trial/extension/`）: bash を外す、ファイル系の道具を vault 内（隠しフォルダ除く）に限定、書き込みは `Projects/pi-web-agent-trial/sandbox/` の `.md` に限定、`web_search`（DuckDuckGo HTML、検索語だけ送信）を追加し、このチャットで読んだ本文と 16 文字以上同じ並びを含む検索語・読んだ本文の記録が上限を超えたチャットの検索は止め、それ以外の検索語も毎回本人の確認ダイアログ（検索語をそのまま表示）で「送信」された時だけ送る。
 - 現行仕様: Obsidian `Projects/pi-web-agent-trial/spec.md`（spec-index: `pi-web-trial-guard`）。
 
 ## Lean 形式モデル

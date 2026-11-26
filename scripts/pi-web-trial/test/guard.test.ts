@@ -109,3 +109,28 @@ test("DuckDuckGo HTML から上位 8 件の題名・URL・抜粋を取り出す"
 	assert.match(results[1].snippet, /^Llama\.cpp \(LLaMA C\+\+\)/);
 	assert.deepEqual(parseDuckDuckGoHtml("<html>anomaly</html>"), []);
 });
+
+test("web_search: 通る検索語は必ず本人確認つき（検索語をそのまま見せる）", () => {
+	const ctx = setup();
+	const before = decideToolCall("web_search", { query: "  llama.cpp router mode " }, ctx);
+	assert.deepEqual(before, { allow: true, confirmQuery: "llama.cpp router mode" });
+	// 読んだ後の 16 文字未満の私的な語句も自動では通さず確認に回る
+	ctx.memory.add("相談相手は山田花子さん");
+	const after = decideToolCall("web_search", { query: "山田花子" }, ctx);
+	assert.deepEqual(after, { allow: true, confirmQuery: "山田花子" });
+	// 読み書き系は確認なし
+	assert.deepEqual(decideToolCall("ls", {}, ctx), { allow: true });
+});
+
+test("web_search: 記録が上限を超えたら古い本文を捨てず、以後の検索を止める", () => {
+	const ctx = setup();
+	const memory = new ReadMemory(100);
+	ctx.memory = memory;
+	memory.add("最初に読んだ私的な本文はここにあります abcdefg");
+	memory.add("x".repeat(120));
+	assert.equal(memory.saturated, true);
+	blocked(decideToolCall("web_search", { query: "最初に読んだ私的な本文はここにあります" }, ctx));
+	blocked(decideToolCall("web_search", { query: "llama.cpp router mode" }, ctx));
+	// 読み取り系は引き続き通す
+	allowed(decideToolCall("ls", {}, ctx));
+});
