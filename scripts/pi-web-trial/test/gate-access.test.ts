@@ -91,6 +91,18 @@ test("Host, Origin, Sec-Fetch-Site and Upgrade rules apply on the Access port to
 	assert.equal(await check({ host: "pi-web.b0xp.io", origin: "http://pi-web.b0xp.io" }, "POST"), false);
 	assert.equal(await check({ host: "pi-web.b0xp.io" }, "POST"), false); // Origin required
 	assert.equal(await check({ host: "pi-web.b0xp.io", "sec-fetch-site": "cross-site" }), false);
+	// returning from the Access login (GitHub) is a cross-site top-level navigation: allowed for pages, not /api (TD-02)
+	const back = { host: "pi-web.b0xp.io", "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
+	const at = async (url: string, h: Record<string, string>, method = "GET", token: string | null = good()) =>
+		(await checkAccessRequest({ method, url, headers: token ? { "cf-access-jwt-assertion": token, ...h } : h }, cfg, keyFor, NOW)).ok;
+	assert.equal(await at("/", back), true);
+	assert.equal(await at("/", back, "GET", null), false); // still needs the Owner's JWT
+	assert.equal(await at("/", back, "GET", good({ email: "someone@example.com" })), false);
+	assert.equal(await at("/", { ...back, host: "evil.example" }), false);
+	assert.equal(await at("/api/chats", back), false);
+	assert.equal(await at("/", { ...back, "sec-fetch-dest": "iframe" }), false);
+	assert.equal(await at("/api/chats", { ...back, "sec-fetch-mode": "no-cors", "sec-fetch-dest": "empty" }), false);
+	assert.equal(await at("/api/chats", { ...back, origin: "https://evil.example" }, "POST"), false);
 	assert.equal(await check({ host: "pi-web.b0xp.io", upgrade: "websocket" }), false);
 	// JWT missing even though everything else is right
 	const noJwt = await checkAccessRequest({ method: "GET", headers: { host: "pi-web.b0xp.io" } }, cfg, keyFor, NOW);
