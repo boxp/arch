@@ -1,0 +1,7 @@
+{
+  "defaultProvider": "local-llm",
+  "defaultModel": "gemma4-26b",
+  "enabledModels": ["local-llm/gemma4-26b"],
+  "enableInstallTelemetry": false,
+  "quietStartup": true
+}
