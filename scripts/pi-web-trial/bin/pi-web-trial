@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# BOXP-714: Pi Web (tg-prplx/pi-web-agent) trial launcher for codex-workspace.
+# BOXP-714: Pi Web trial launcher for codex-workspace.
 #
-#   pi-web-trial install <built-pi-web-agent-dir>   copy the built app + trial Pi config
+#   pi-web-trial install-pwu                        npm-install xing-shuyin/pi-web-ui (pinned) + trial Pi config
+#   pi-web-trial install <built-pi-web-agent-dir>   copy the built legacy app (tg-prplx/pi-web-agent) + config
+#   pi-web-trial use pwu|legacy                     choose the UI behind the gate and restart (rollback: use legacy)
 #   pi-web-trial start | stop | restart | status
 #
-# pi-web-agent binds to 127.0.0.1:$UPSTREAM_PORT (internal) and a Host/Origin gate
-# (gate.ts, DNS-rebinding / CSRF protection) serves 127.0.0.1:$PORT. Forward only $PORT:
+# The UI binds to 127.0.0.1 on an internal port (pi-web-ui: $PWU_PORT, legacy: $UPSTREAM_PORT) and
+# the gate (gate.ts: Host/Origin/Access checks; for pi-web-ui also the HTTP / WebSocket allow lists)
+# serves 127.0.0.1:$PORT. Forward only $PORT:
 #   ssh -L 4317:127.0.0.1:4317 <codex-workspace>  ->  http://127.0.0.1:4317
 #
 # Pi runs with a dedicated agent dir (local llama-server model only, guard
@@ -16,20 +19,73 @@ set -euo pipefail
 ROOT="${PI_WEB_TRIAL_ROOT:-$HOME/.local/share/pi-web-trial}"
 VAULT="${PI_WEB_TRIAL_VAULT:-$HOME/Documents/obsidian-headless/BOXP}"
 SANDBOX="$VAULT/Projects/pi-web-agent-trial/sandbox"
-PORT="${PI_WEB_TRIAL_PORT:-4317}"
-UPSTREAM_PORT="${PI_WEB_TRIAL_UPSTREAM_PORT:-4318}"
+# Port overrides must be plain numbers. Kubernetes injects PI_WEB_TRIAL_PORT=tcp://<ip>:4319 for the
+# Service "pi-web-trial" into this Pod, so that name is not used and non-numbers fall back to the default.
+port_or() {
+  if [[ "$1" =~ ^[0-9]+$ ]]; then echo "$1"; else echo "$2"; fi
+}
+PORT="$(port_or "${PI_WEB_TRIAL_GATE_PORT:-}" 4317)"
+UPSTREAM_PORT="$(port_or "${PI_WEB_TRIAL_UPSTREAM_PORT:-}" 4318)"
 # Cloudflare Access entrance (https://pi-web.b0xp.io via the k8s tunnel). Enabled only when
 # $ROOT/access.json exists ({"teamDomain","aud","ownerEmails","publicOrigin"}); the gate then
 # also listens on 0.0.0.0:$ACCESS_PORT and re-verifies the Access JWT on every request.
-ACCESS_PORT="${PI_WEB_TRIAL_ACCESS_PORT:-4319}"
+ACCESS_PORT="$(port_or "${PI_WEB_TRIAL_ACCESS_PORT:-}" 4319)"
 ACCESS_CONFIG="$ROOT/access.json"
+# xing-shuyin/pi-web-ui (Keel kernel). Pinned: the gate's allow lists follow this version's protocol.
+PWU_VERSION="0.122.0"
+PWU_PORT="$(port_or "${PI_WEB_TRIAL_PWU_PORT:-}" 4320)"
+PWU_LOCALE_URL="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/v$PWU_VERSION/locales/ja.json"
+UI_FILE="$ROOT/ui"
 SESSION="pi-web-trial"
 # Dedicated tmux socket so the trial never shares a server with the Owner's own tmux.
 TMUX_CMD=(tmux -L pi-web-trial)
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
-  sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+current_ui() {
+  local ui=legacy
+  [[ -f "$UI_FILE" ]] && ui="$(tr -d '[:space:]' <"$UI_FILE")"
+  case "$ui" in
+    pwu | legacy) echo "$ui" ;;
+    *)
+      echo "unknown UI in $UI_FILE: $ui" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# Trial Pi config (local model only + guard extension) into an agent dir.
+install_agent_dir() {
+  local dir="$1"
+  mkdir -p "$dir/extensions/pi-web-trial" "$dir/bin"
+  install -m 0644 "$SRC_DIR/agent/models.json" "$SRC_DIR/agent/settings.json" "$SRC_DIR/agent/AGENTS.md" "$dir/"
+  install -m 0644 "$SRC_DIR/extension/index.ts" "$SRC_DIR/extension/guard.ts" "$dir/extensions/pi-web-trial/"
+  # fd is used by the find tool; reuse the binary Pi already downloaded (offline mode cannot fetch it).
+  if [[ -x "$HOME/.pi/agent/bin/fd" ]]; then
+    install -m 0755 "$HOME/.pi/agent/bin/fd" "$dir/bin/fd"
+  fi
+}
+
+install_common() {
+  mkdir -p "$ROOT/logs" "$ROOT/bin" "$ROOT/gate"
+  install -m 0755 "$SRC_DIR/bin/pi-web-trial" "$ROOT/bin/pi-web-trial"
+  install -m 0644 "$SRC_DIR/gate/gate.ts" "$ROOT/gate/gate.ts"
+  mkdir -p "$SANDBOX"
+}
+
+install_pwu() {
+  install_common
+  mkdir -p "$ROOT/pwu" "$ROOT/pwu-home" "$ROOT/pwu-data/locales"
+  [[ -f "$ROOT/pwu/package.json" ]] || printf '{"name":"pi-web-trial-pwu","private":true}\n' >"$ROOT/pwu/package.json"
+  npm install --prefix "$ROOT/pwu" --no-audit --no-fund --save-exact "pi-web-ui@$PWU_VERSION"
+  install_agent_dir "$ROOT/agent-pwu"
+  # Japanese UI: the language pack is not in the npm package; pi-web-ui would fetch it from GitHub.
+  curl -fsSL --proto '=https' -o "$ROOT/pwu-data/locales/ja.json.tmp" "$PWU_LOCALE_URL"
+  mv "$ROOT/pwu-data/locales/ja.json.tmp" "$ROOT/pwu-data/locales/ja.json"
+  echo "installed pi-web-ui $PWU_VERSION to $ROOT/pwu (select it with: pi-web-trial use pwu)"
 }
 
 install_trial() {
@@ -38,24 +94,38 @@ install_trial() {
     echo "not a built pi-web-agent checkout: $built" >&2
     exit 1
   fi
-  mkdir -p "$ROOT/app" "$ROOT/agent/extensions/pi-web-trial" "$ROOT/web" "$ROOT/logs" "$ROOT/bin" "$ROOT/gate"
+  install_common
+  mkdir -p "$ROOT/web"
   rm -rf "$ROOT/app"
   mkdir -p "$ROOT/app"
   (cd "$built" && tar --exclude=./.git -cf - .) | tar -C "$ROOT/app" -xf -
-  install -m 0644 "$SRC_DIR/agent/models.json" "$SRC_DIR/agent/settings.json" "$SRC_DIR/agent/AGENTS.md" "$ROOT/agent/"
-  install -m 0644 "$SRC_DIR/extension/index.ts" "$SRC_DIR/extension/guard.ts" "$ROOT/agent/extensions/pi-web-trial/"
-  install -m 0755 "$SRC_DIR/bin/pi-web-trial" "$ROOT/bin/pi-web-trial"
-  install -m 0644 "$SRC_DIR/gate/gate.ts" "$ROOT/gate/gate.ts"
-  # fd is used by the find tool; reuse the binary Pi already downloaded (offline mode cannot fetch it).
-  if [[ -x "$HOME/.pi/agent/bin/fd" ]]; then
-    mkdir -p "$ROOT/agent/bin"
-    install -m 0755 "$HOME/.pi/agent/bin/fd" "$ROOT/agent/bin/fd"
-  fi
-  mkdir -p "$SANDBOX"
+  install_agent_dir "$ROOT/agent"
   echo "installed to $ROOT"
 }
 
+pwu_command() {
+  local node pkg
+  node="$(command -v node)"
+  pkg="$ROOT/pwu/node_modules/pi-web-ui"
+  # Own HOME (no Claude / Codex / Pi credentials of the Owner), chat tab only, managed (no in-UI
+  # updates / plugin installs), Pi engine with the bundled SDK, Japanese UI. Only non-secret variables.
+  printf '%q ' env -i \
+    "HOME=$ROOT/pwu-home" "USER=${USER:-boxp}" "PATH=$ROOT/agent-pwu/bin:/usr/local/bin:/usr/bin:/bin" \
+    "LANG=${LANG:-C.UTF-8}" "TERM=xterm-256color" "TZ=${TZ:-Asia/Tokyo}" \
+    "PI_CODING_AGENT_DIR=$ROOT/agent-pwu" "PI_WEB_DATA_DIR=$ROOT/pwu-data" "PI_WEB_CWD=$VAULT" \
+    "PI_WEB_HOST=127.0.0.1" "PI_WEB_PORT=$PWU_PORT" \
+    "PI_WEB_TRIAL_VAULT=$VAULT" "PI_WEB_TRIAL_SANDBOX=$SANDBOX" \
+    "PI_WEB_SDK=bundled" "PI_WEB_MANAGED=1" "PI_WEB_TABS=chat" "PI_WEB_LOCALE=ja" "PI_WEB_ENGINE=pi" \
+    "PI_WEB_PATH_CAPTURE=off" "PI_DEVICE_P2P=0" "PI_SKIP_VERSION_CHECK=1" "PI_OFFLINE=1" \
+    "$node" --import "$pkg/dist/server/resolve-global-sdk.js" "$pkg/dist/server/index.js"
+}
+
 server_command() {
+  if [[ "$(current_ui)" == pwu ]]; then
+    printf 'cd %q && ' "$VAULT"
+    pwu_command
+    return
+  fi
   local node
   node="$(command -v node)"
   # Only non-secret variables are passed; cloud API keys and tokens are dropped.
@@ -69,11 +139,14 @@ server_command() {
 }
 
 gate_command() {
-  local access=()
+  local access=() profile=(--upstream-port "$UPSTREAM_PORT")
   if [[ -f "$ACCESS_CONFIG" ]]; then
     access=(--access-port "$ACCESS_PORT" --access-config "$ACCESS_CONFIG")
   fi
-  printf "%q " env -i "PATH=/usr/local/bin:/usr/bin:/bin" "$(command -v node)" "$ROOT/gate/gate.ts" --port "$PORT" --upstream-port "$UPSTREAM_PORT" "${access[@]}"
+  if [[ "$(current_ui)" == pwu ]]; then
+    profile=(--upstream-port "$PWU_PORT" --profile pwu --sessions-dir "$ROOT/agent-pwu/sessions")
+  fi
+  printf "%q " env -i "PATH=/usr/local/bin:/usr/bin:/bin" "$(command -v node)" "$ROOT/gate/gate.ts" --port "$PORT" "${profile[@]}" "${access[@]}"
 }
 
 health() {
@@ -85,17 +158,19 @@ start_trial() {
     echo "already running (tmux session $SESSION)"
     return 0
   fi
-  [[ -f "$ROOT/app/packages/web/dist/server/cli.js" && -f "$ROOT/gate/gate.ts" ]] || {
-    echo "not installed: run install first" >&2
+  local app="$ROOT/app/packages/web/dist/server/cli.js"
+  [[ "$(current_ui)" == pwu ]] && app="$ROOT/pwu/node_modules/pi-web-ui/dist/server/index.js"
+  [[ -f "$app" && -f "$ROOT/gate/gate.ts" ]] || {
+    echo "not installed ($(current_ui)): run install / install-pwu first" >&2
     exit 1
   }
   local cmd
   cmd="$(server_command)"
   "${TMUX_CMD[@]}" new-session -d -s "$SESSION" "$cmd >> $(printf '%q' "$ROOT/logs/server.log") 2>&1"
   "${TMUX_CMD[@]}" new-window -d -t "$SESSION" -n gate "$(gate_command) >> $(printf '%q' "$ROOT/logs/gate.log") 2>&1"
-  for _ in $(seq 1 20); do
+  for _ in $(seq 1 60); do
     if health >/dev/null 2>&1; then
-      echo "running: http://127.0.0.1:$PORT (tmux session $SESSION)"
+      echo "running $(current_ui): http://127.0.0.1:$PORT (tmux session $SESSION)"
       return 0
     fi
     sleep 0.5
@@ -118,6 +193,19 @@ case "${1:-}" in
     shift
     install_trial "$@"
     ;;
+  install-pwu) install_pwu ;;
+  use)
+    case "${2:-}" in
+      pwu | legacy) ;;
+      *)
+        usage
+        exit 2
+        ;;
+    esac
+    echo "$2" >"$UI_FILE"
+    stop_trial
+    start_trial
+    ;;
   start) start_trial ;;
   stop) stop_trial ;;
   restart)
@@ -125,6 +213,7 @@ case "${1:-}" in
     start_trial
     ;;
   status)
+    echo "ui: $(current_ui)"
     if health; then echo; else
       echo "not running"
       exit 1
