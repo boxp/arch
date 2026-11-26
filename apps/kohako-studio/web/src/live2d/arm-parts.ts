@@ -560,7 +560,8 @@ export async function loadTexture(
     texture = gl.createTexture() as WebGLTexture
   gl.bindTexture(gl.TEXTURE_2D, texture)
   if (edit) {
-    const canvas = new OffscreenCanvas(image.width, image.height),
+    // OffscreenCanvas の 2D が無いブラウザでも読めるように、画面に出さない canvas 要素を使う。
+    const canvas = Object.assign(document.createElement('canvas'), { width: image.width, height: image.height }),
       g = canvas.getContext('2d', { willReadFrequently: true })
     if (!g) throw new Error('素材の書き換えに使う 2D の描画面がありません')
     g.drawImage(image, 0, 0)
