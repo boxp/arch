@@ -36,6 +36,19 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "k8s_tunnel" {
         }
       },
       {
+        # BOXP-714 (pi_web_trial.tf): Pi Web trial gate (Access port 4319 in the
+        # codex-workspace Pod). cloudflared requires this application's Access JWT.
+        hostname = local.pi_web_trial_hostname
+        service  = "http://pi-web-trial.codex-workspace.svc.cluster.local:4319"
+        origin_request = {
+          access = {
+            required  = true
+            team_name = local.zero_trust_team_name
+            aud_tag   = [cloudflare_zero_trust_access_application.pi_web_trial.aud]
+          }
+        }
+      },
+      {
         service = "http_status:404"
       },
     ]

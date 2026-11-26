@@ -6,6 +6,7 @@
 - Pi の設定: 試用専用の `~/.local/share/pi-web-trial/agent`。既存 Pi の `~/.pi/agent` は読まない・書かない。
 - 道具: `read` `grep` `find` `ls` `write` `edit` `web_search`。`bash` は無効。`web_search` は毎回本人の確認ダイアログを経てから送る。決まりの正本は Obsidian の `Projects/pi-web-agent-trial/spec.md`。
 - 入口: 本体は内部用の `127.0.0.1:4318`、本人が開く `127.0.0.1:4317` には Host / Origin を確かめる門番（`gate/gate.ts`）を置く。pi-web-agent の API には認証も Host 確認もないため、127.0.0.1 待ち受けだけだと SSH 転送中に悪意あるサイトが DNS rebinding で会話やノートを読めてしまう。門番は `Host` が `127.0.0.1:4317`/`localhost:4317` で、`Origin` が同じ場所（POST 等は必須）の要求だけを中継する。SSH のポート転送は 4317 だけにする（4318 は転送しない。認証なしで外に公開しない）。
+- Cloudflare Access 入口（`https://pi-web.b0xp.io`）: 門番は `~/.local/share/pi-web-trial/access.json` があるときだけ `0.0.0.0:4319` でも待ち受け、Access JWT（署名・iss・aud・期限・Owner email）と Host / Origin を確かめてから本体へ中継する（JWT と Access の Cookie は本体へ渡さない。設定が欠けたら全部 403）。前段は Access（Owner email＋GitHub ログイン）、既存 k8s トンネルの cloudflared（JWT 必須）、lolice の Calico（4319 に入れるのは cloudflared だけ）。Terraform は `terraform/cloudflare/b0xp.io/k8s/pi_web_trial.tf`。
 
 ## 導入と起動
 
@@ -30,6 +31,16 @@ npm run build:offline
 ```bash
 ssh -L 4317:127.0.0.1:4317 <codex-workspace>
 # ブラウザで http://127.0.0.1:4317
+```
+
+Cloudflare Access 入口を使うときは、AUD（`terraform output pi_web_trial_access_aud`、または未認証で開いたときのログイン画面 URL の `kid=`）を入れて置いてから再起動する:
+
+```bash
+cat > ~/.local/share/pi-web-trial/access.json <<'JSON'
+{"teamDomain": "https://<team>.cloudflareaccess.com", "aud": "<AUD>", "ownerEmails": ["<Owner の email>"], "publicOrigin": "https://pi-web.b0xp.io"}
+JSON
+~/.local/share/pi-web-trial/bin/pi-web-trial restart
+# PC / スマホのブラウザで https://pi-web.b0xp.io（初回は GitHub でログイン）
 ```
 
 ## 注意

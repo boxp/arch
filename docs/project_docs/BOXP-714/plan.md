@@ -36,3 +36,15 @@
 ## 次の段（同チケット内）
 
 - スマホから開きやすい Cloudflare Access 付き URL（lean-reading と同じ「本人 email＋GitHub」方式、tunnel 側 JWT 検証）を検討。
+
+## 第 2 段: Cloudflare Access 入口（TD-01、Owner 承認 2026-11-26）
+
+- URL: `https://pi-web.b0xp.io`。codex-auth.b0xp.io（BOXP-634）と同じ形で、独立した 4 段がそれぞれ止める。
+  1. Access: Owner email かつ既存 GitHub IdP ログインの policy 1 本（他は拒否）。24h、App Launcher 非表示。
+  2. cloudflared（既存 k8s トンネル）: ingress でこのアプリの AUD の Access JWT を必須にする。DNS はアプリと ingress の後に作る。
+  3. lolice Calico: codex-workspace Pod の 4319 は k8s 名前空間の cloudflared だけ。Service `pi-web-trial`（ClusterIP、targetPort 数値なので Pod 再起動なし）。
+  4. 門番 `gate.ts` の Access 用口（0.0.0.0:4319）: JWT の署名・iss・aud・期限・Owner email と Host/Origin を再検証し、JWT と Access Cookie は本体へ渡さない。設定（`~/.local/share/pi-web-trial/access.json`）が欠ければ全部 403。
+- 既存の 127.0.0.1:4317 口、ローカルモデル限定、道具の判定、書込み範囲、web_search の本人確認は変えない。
+- 変更: arch `terraform/cloudflare/b0xp.io/k8s/{pi_web_trial.tf,tunnel.tf}`、`scripts/pi-web-trial/{gate,bin,test,README.md}`。lolice `argoproj/codex-workspace/{service-pi-web-trial.yaml,networkpolicy.yaml,kustomization.yaml}`。
+- Lean: 適用外（要求 1 件ごとの判定関数で状態を持たない。直接テストで覆う）。
+- 検証: node test（期待値は仕様の例から、実装前に失敗を確認）、apply 後に未認証の要求が Access で止まること・偽 JWT が cloudflared / 門番で止まること・LAN から 4319 に届かないことを外から確認。Owner の GitHub ログインでの本人利用は本人受入。
