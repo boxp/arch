@@ -9406,6 +9406,9 @@
                                           (request-shutdown!))
                                         lock)
                         heartbeat! (fn [& _] (future nil))
+                        ;; The fake lock has no file; ownership is not what
+                        ;; this case is about (BOXP-737 has its own cases).
+                        lifecycle-commit-owner? (fn [& _] true)
                         move-card! (fn [& args]
                                      (apply record! :move-card! args)
                                      (when (#{:during-start :during-commit} raise-at)
