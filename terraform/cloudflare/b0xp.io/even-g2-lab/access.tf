@@ -135,3 +135,51 @@ resource "cloudflare_zero_trust_access_application" "kohako_studio" {
   app_launcher_visible        = false
   policies                    = [{ id = cloudflare_zero_trust_access_policy.kohako_studio_owner.id }]
 }
+
+# BOXP-736: 個人 WARP 不要・本人限定の試験入口 kohako-g2-trial.b0xp.io。
+# 会社の Cloudflare One client を使っている間は個人組織の WARP に切り替えられず、
+# 現行入口（kohako_g2: Owner email AND Require Gateway）を開けない。現行入口は
+# 変えずに、別 hostname・別 Access application で「GitHub ログインだけで本人限定」
+# の入口を試す。
+# - include は Owner の email のみ、require は既存 GitHub IdP 経由のログイン
+#   （kohako_studio_owner と同じ型）。one-time PIN や One Client session の email
+#   一致だけでは通らない。allowed_idps も GitHub のみ。
+# - One Client 認証は使わない（allow_authenticate_via_warp = false）。
+# - AUD は現行アプリと別。tunnel ingress がこの hostname にこの AUD の JWT だけを
+#   要求するので、現行アプリの JWT を試験 hostname に持ち込んでも通らない（逆も同じ）。
+# - 試験をやめる時はこの block と tunnel.tf / dns.tf の試験分を消す（fail-closed）。
+locals {
+  kohako_g2_trial_hostname = "kohako-g2-trial.b0xp.io"
+}
+
+resource "cloudflare_zero_trust_access_policy" "kohako_g2_trial_owner" {
+  account_id = var.account_id
+  name       = "policy for ${local.kohako_g2_trial_hostname} (owner via GitHub, trial)"
+  decision   = "allow"
+  include = [
+    for email in local.kohako_g2_owner_emails : {
+      email = { email = email }
+    }
+  ]
+  require = [{
+    login_method = {
+      id = local.github_idp_id
+    }
+  }]
+}
+
+resource "cloudflare_zero_trust_access_application" "kohako_g2_trial" {
+  zone_id                     = var.zone_id
+  name                        = "Access application for ${local.kohako_g2_trial_hostname}"
+  domain                      = local.kohako_g2_trial_hostname
+  type                        = "self_hosted"
+  session_duration            = "24h"
+  allow_authenticate_via_warp = false
+  allowed_idps                = [local.github_idp_id]
+  auto_redirect_to_identity   = true
+  enable_binding_cookie       = false
+  http_only_cookie_attribute  = true
+  same_site_cookie_attribute  = "lax"
+  app_launcher_visible        = false
+  policies                    = [{ id = cloudflare_zero_trust_access_policy.kohako_g2_trial_owner.id }]
+}
