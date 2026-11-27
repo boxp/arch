@@ -14,22 +14,6 @@ resource "aws_ssm_parameter" "even_terminal_token" {
   }
 }
 
-resource "aws_ssm_parameter" "gemini_api_key" {
-  name        = "/lolice/codex-workspace/gemini-api-key"
-  description = "Gemini API key for image generation in the lolice Codex workspace"
-  type        = "SecureString"
-  value       = "dummy-value-to-be-updated-manually"
-
-  tags = {
-    Project = "lolice"
-    Purpose = "codex-workspace"
-  }
-
-  lifecycle {
-    ignore_changes = [value]
-  }
-}
-
 # BOXP-700: コハコ（hermes-agent）が Nature Remo 公式 Cloud API を呼ぶためのアクセストークン置き場。
 # 値は本人が https://home.nature.global で発行して直接入れる（terraform は値を管理しない）。
 # lolice argoproj/hermes-agent/external-secret-nature-remo.yaml が NATURE_REMO_TOKEN として渡し、
