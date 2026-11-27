@@ -8194,6 +8194,22 @@
                               :p50-bytes (pct 0.5) :p90-bytes (pct 0.9) :p99-bytes (pct 0.99) :max-bytes (when (pos? n) (peek sorted))
                               :fresh-total-bytes (reduce + 0 (map (comp :fresh-bytes second) rows))}}))
 
+(def default-ticket-budget-bytes 4294967296)
+(def default-workspaces-budget-bytes 60129542144)
+
+(defn workspace-budget-status
+  "BOXP-638 S3c: compares per-ticket and total workspace bytes against their
+  budgets (warning only; never stops a run). Budgets come from the week of S3b
+  records (2026-11-20..27): per-ticket 4GiB sits between the usual p99
+  (3.35-3.75GB) and the outliers; total 56GiB was crossed only in the
+  2026-11-27 surge (week range 38-69GB). A budget of 0 disables it."
+  [tickets total-bytes ticket-budget total-budget]
+  {:ticket-budget-bytes ticket-budget :total-budget-bytes total-budget :total-bytes total-bytes
+   :total-over? (boolean (and (pos? total-budget) (> total-bytes total-budget)))
+   :over-tickets (if (pos? ticket-budget)
+                   (into {} (keep (fn [[t v]] (let [b (:bytes v 0)] (when (> b ticket-budget) [t b])))) tickets)
+                   {})})
+
 (defn capacity-attribution! []
   (try
     (when (prune-setting "CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION" parse-prune-enabled)
@@ -8285,10 +8301,19 @@
                                (take 40 (sort-by (comp - :bytes val) (filter #(>= (:bytes (val %)) 536870912) (:subareas r)))))
                 area-deltas (if (and baseline complete) (into {} (keep (fn [area] (let [d (- (get-in r [:areas area :bytes] 0) (get-in baseline [:areas area :bytes] 0))] (when (>= (abs d) 268435456) [area d]))) (into (set (keys (:areas r))) (keys (:areas baseline))))) {})
                 ticket-budget (workspace-ticket-budget (:tickets r))
-                event (merge (dissoc r :tickets) ticket-budget {:event :capacity-attribution :root root-path :fs-total-bytes total :fs-free-bytes free :fs-used-bytes used
+                budget (workspace-budget-status (:tickets r) (get-in r [:workspaces :bytes] 0)
+                                                (prune-setting "CODEX_TASK_BOARD_TICKET_BUDGET_BYTES" #(parse-bounded-long % default-ticket-budget-bytes 0))
+                                                (prune-setting "CODEX_TASK_BOARD_WORKSPACES_BUDGET_BYTES" #(parse-bounded-long % default-workspaces-budget-bytes 0)))
+                event (merge (dissoc r :tickets) ticket-budget {:workspace-budget budget} {:event :capacity-attribution :root root-path :fs-total-bytes total :fs-free-bytes free :fs-used-bytes used
                                 :scan-ms (quot (- (System/nanoTime) started) 1000000) :scan-exit exit :scan-complete complete :fresh-window-hours 24 :subareas subareas
                                 :baseline-at (:at baseline) :baseline-hours hours :used-delta-bytes delta :used-bytes-per-day rate :area-delta-bytes area-deltas :days-to-guard days})]
             (workspace-metrics-write! event)
+            (when (or (:total-over? budget) (seq (:over-tickets budget)))
+              (log! (str "capacity-budget: warning over-tickets="
+                         (str/join "," (map (fn [[t v]] (str t ":" v)) (sort-by (fn [[t v]] [(- v) t]) (:over-tickets budget))))
+                         " ticket-budget=" (:ticket-budget-bytes budget)
+                         " workspaces=" (:total-bytes budget) " workspaces-budget=" (:total-budget-bytes budget)
+                         " total-over=" (:total-over? budget))))
             (log! (str "capacity-attribution: used=" used " free=" free " outside-workspaces=" (get-in r [:outside-workspaces :bytes])
                        " fresh24h=" (reduce + 0 (map :fresh-bytes (vals (:areas r)))) " days-to-guard=" days
                        " top-fresh=" (str/join "," (map (fn [[a v]] (str (one-line a) ":" (:fresh-bytes v))) (capacity-top-fresh (:areas r))))))))))
@@ -8382,6 +8407,8 @@
       (println "capacity-top-fresh=" (pr-str (capacity-top-fresh (:areas attribution))))
       (when-let [stats (:workspace-ticket-stats attribution)]
         (println "workspace-ticket-stats=" (pr-str stats))
+        (when-let [budget (:workspace-budget attribution)]
+          (println "workspace-budget=" (pr-str budget)))
         (println "workspace-top-tickets=" (pr-str (take 5 (sort-by (fn [[t v]] [(- (:bytes v)) t]) (:workspace-tickets attribution)))))))
     (println "prepare-by-mode=" (pr-str (frequencies (map :mode prepares))))
     (println "fallback-by-reason=" (pr-str (frequencies (keep :reason prepares))))

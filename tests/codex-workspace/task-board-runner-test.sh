@@ -7247,7 +7247,27 @@ test_capacity_attribution() {
       (assert (= 1 (get-in e [:workspace-ticket-stats :count])))
       (assert (= (get-in e [:workspaces :bytes]) (get-in e [:workspace-ticket-stats :total-bytes]) (get-in e [:workspace-ticket-stats :max-bytes])))
       (assert (not (contains? e :tickets)))
+      (assert (= {:ticket-budget-bytes 4294967296 :total-budget-bytes 60129542144 :total-bytes (get-in e [:workspaces :bytes]) :total-over? false :over-tickets {}}
+                 (:workspace-budget e)))
       (assert (nil? (:days-to-guard e))))'
+  # BOXP-638 S3c: a ticket or the workspaces total over its bytes budget is recorded and logged as a warning.
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 \
+    CODEX_TASK_BOARD_TICKET_BUDGET_BYTES=1 CODEX_TASK_BOARD_WORKSPACES_BUDGET_BYTES=1 run_prune "$vault" "$state" >"$tmp/out" 2>&1
+  grep -q 'capacity-budget: warning over-tickets=T-1:' "$tmp/out" || fail 'budget warning not logged'
+  TEST_METRICS="$metrics" bb -e '
+    (let [e (last (filter #(= :capacity-attribution (:event %)) (map clojure.edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))
+          b (:workspace-budget e)]
+      (assert (= 1 (:ticket-budget-bytes b) (:total-budget-bytes b)))
+      (assert (true? (:total-over? b)))
+      (assert (= {"T-1" (get-in e [:workspace-tickets "T-1" :bytes])} (:over-tickets b))))'
+  # 0 disables a budget (rollback without a code change).
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 \
+    CODEX_TASK_BOARD_TICKET_BUDGET_BYTES=0 CODEX_TASK_BOARD_WORKSPACES_BUDGET_BYTES=0 run_prune "$vault" "$state" >"$tmp/out" 2>&1
+  if grep -q 'capacity-budget: warning' "$tmp/out"; then fail 'disabled budget warned'; fi
+  TEST_METRICS="$metrics" bb -e '
+    (let [e (last (filter #(= :capacity-attribution (:event %)) (map clojure.edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))]
+      (assert (= {:ticket-budget-bytes 0 :total-budget-bytes 0 :total-bytes (get-in e [:workspaces :bytes]) :total-over? false :over-tickets {}}
+                 (:workspace-budget e))))'
   before="$(grep -c ':event :capacity-attribution' "$metrics")"
   CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 run_prune "$vault" "$state" --dry-run >"$tmp/out"
   [[ "$(grep -c ':event :capacity-attribution' "$metrics")" == "$before" ]] || fail 'dry run recorded attribution'
