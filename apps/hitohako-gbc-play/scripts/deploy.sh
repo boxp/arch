@@ -57,6 +57,12 @@ entrances=(
   "https://$domain/action-next/version.json"
   "https://$domain/action-next/rom/hitohako_action.gbc"
   "https://$project.pages.dev/action-next/rom/hitohako_action.gbc"
+  # 人物原画の小試験のページ（/action-trial/、BOXP-740 TD-01）。原画を見せるページと絵も Access の内側であること。
+  "https://$domain/action-trial/"
+  "https://$domain/action-trial/compare.html"
+  "https://$domain/action-trial/art/hito_serious_orig.jpg"
+  "https://$domain/action-trial/rom/hitohako_action.gbc"
+  "https://$project.pages.dev/action-trial/art/hito_serious_orig.jpg"
 )
 
 project_json=$(api "")
@@ -120,6 +126,7 @@ done
 echo "== after deploy: every entrance, and this deployment's own URL, must be behind Access"
 "$app_dir/scripts/access-check.sh" "${entrances[@]}" "$(jq -r .url <<<"$after")/" "$(jq -r .url <<<"$after")/rom/hitohako_gbc.gbc" \
   "$(jq -r .url <<<"$after")/action/" "$(jq -r .url <<<"$after")/action/rom/hitohako_action.gbc" \
-  "$(jq -r .url <<<"$after")/action-next/rom/hitohako_action.gbc"
+  "$(jq -r .url <<<"$after")/action-next/rom/hitohako_action.gbc" \
+  "$(jq -r .url <<<"$after")/action-trial/art/hito_serious_orig.jpg"
 echo "live: bundle $rev (deployment $(jq -r .id <<<"$after"))"
 echo "deployed=true" >>"$output"

@@ -3,7 +3,7 @@
 # 配布物だけを置く非公開リポジトリ boxp/hitohako-gbc-play を、読取り専用の deploy key で OUT_DIR へ取り出す。
 # ログは公開されるので、出すのは配布物のコミットと ROM の sha256 と大きさだけ。中身や commit message は出さない。
 # GITHUB_OUTPUT に ready (true/false)、rev、rom_sha256、action_rom_sha256（アクションのページが無ければ none）、
-# next_rom_sha256（候補のページ /action-next/ が無ければ none）を書く。
+# next_rom_sha256（候補のページ /action-next/ が無ければ none）、trial_rom_sha256（原画の小試験のページ /action-trial/ が無ければ none）を書く。
 set -euo pipefail
 
 out=${1:?usage: fetch-bundle.sh OUT_DIR}
@@ -11,7 +11,7 @@ out=${1:?usage: fetch-bundle.sh OUT_DIR}
 repo=${PLAY_SITE_REPO:-git@github.com:boxp/hitohako-gbc-play.git}
 output=${GITHUB_OUTPUT:-/dev/stdout}
 
-# 配布物のファイルの一覧。これ以外があれば配備しない（ソースや原画が紛れ込んだ時に止める）。
+# 配布物のファイルの一覧。これ以外があれば配備しない（ソースや原画が紛れ込んだ時に止める。原画の小試験の比べるページ用の絵 3 つだけは、下の trial_files に名前で載せる）。
 # 1 つでも欠けていても配備しない（欠けた配布物で、動いているページを壊さない）。
 allowed='
 NOTICE.txt
@@ -46,6 +46,20 @@ action-next/play.js
 action-next/rom/hitohako_action.gbc
 action-next/version.json
 '
+# 人物原画の小試験を本人が確かめるページ（/action-trial/、BOXP-740 TD-01）。/action/ と同じ 5 つと、原画と GBC の実寸を比べるページの 5 つ。
+# /action/ と /action-next/ の ROM は上書きしない。無ければ今までどおり。1 つでもあれば 10 個全部がそろっていることを求める。
+trial_files='
+action-trial/NOTICE.txt
+action-trial/art/hito_serious_48.png
+action-trial/art/hito_serious_gbc.png
+action-trial/art/hito_serious_orig.jpg
+action-trial/compare.css
+action-trial/compare.html
+action-trial/index.html
+action-trial/play.js
+action-trial/rom/hitohako_action.gbc
+action-trial/version.json
+'
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -68,7 +82,7 @@ if [ ! -f "$out/index.html" ]; then
   exit 0
 fi
 
-unexpected=$(cd "$out" && find . -type f -o -type l | sed 's|^\./||' | LC_ALL=C sort | grep -vxF -f <(printf '%s%s%s' "$allowed" "$action_files" "$next_files" | sed '/^$/d') || true)
+unexpected=$(cd "$out" && find . -type f -o -type l | sed 's|^\./||' | LC_ALL=C sort | grep -vxF -f <(printf '%s%s%s%s' "$allowed" "$action_files" "$next_files" "$trial_files" | sed '/^$/d') || true)
 if [ -n "$unexpected" ]; then
   echo "the bundle has $(wc -l <<<"$unexpected") file(s) outside the allowlist; refusing to deploy" >&2
   exit 1
@@ -111,7 +125,7 @@ got=$(sha256sum "$out/rom/hitohako_gbc.gbc" | cut -d' ' -f1)
   echo "version.json does not match the ROM" >&2
   exit 1
 }
-# アクションのページ（action/ と、候補の action-next/）: 5 つのうち 1 つでもあれば、全部そろって空でなく、
+# アクションのページ（action/ と、候補の action-next/、原画の小試験の action-trial/）: 5 つのうち 1 つでもあれば、全部そろって空でなく、
 # ページが自分の物を参照し、version.json と ROM が合うこと。
 check_action_dir() { # check_action_dir DIR FILES → ROM の sha256 を出す
   local d=$1 files=$2 f ref want sha
@@ -148,17 +162,22 @@ next_sha256=""
 if [ -e "$out/action-next" ]; then
   next_sha256=$(check_action_dir action-next "$next_files") || exit 1
 fi
+trial_sha256=""
+if [ -e "$out/action-trial" ]; then
+  trial_sha256=$(check_action_dir action-trial "$trial_files") || exit 1
+fi
 size=$(du -sb "$out" | cut -f1)
 [ "$size" -lt 8000000 ] || {
   echo "the bundle is unexpectedly large ($size bytes)" >&2
   exit 1
 }
 
-echo "bundle rev $rev, ROM sha256 $got, action ROM sha256 ${action_sha256:-none}, action-next ROM sha256 ${next_sha256:-none}, $size bytes"
+echo "bundle rev $rev, ROM sha256 $got, action ROM sha256 ${action_sha256:-none}, action-next ROM sha256 ${next_sha256:-none}, action-trial ROM sha256 ${trial_sha256:-none}, $size bytes"
 {
   echo "ready=true"
   echo "rev=$rev"
   echo "rom_sha256=$got"
   echo "action_rom_sha256=${action_sha256:-none}"
   echo "next_rom_sha256=${next_sha256:-none}"
+  echo "trial_rom_sha256=${trial_sha256:-none}"
 } >>"$output"
