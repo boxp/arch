@@ -7247,7 +7247,7 @@ test_capacity_attribution() {
       (assert (= 1 (get-in e [:workspace-ticket-stats :count])))
       (assert (= (get-in e [:workspaces :bytes]) (get-in e [:workspace-ticket-stats :total-bytes]) (get-in e [:workspace-ticket-stats :max-bytes])))
       (assert (not (contains? e :tickets)))
-      (assert (= {:ticket-budget-bytes 4294967296 :total-budget-bytes 60129542144 :total-bytes (get-in e [:workspaces :bytes]) :total-over? false :over-tickets {}}
+      (assert (= {:ticket-budget-bytes 4294967296 :total-budget-bytes 60129542144 :total-bytes (get-in e [:workspaces :bytes]) :total-over? false :over-tickets {} :complete? true}
                  (:workspace-budget e)))
       (assert (nil? (:days-to-guard e))))'
   # BOXP-638 S3c: a ticket or the workspaces total over its bytes budget is recorded and logged as a warning.
@@ -7266,7 +7266,7 @@ test_capacity_attribution() {
   if grep -q 'capacity-budget: warning' "$tmp/out"; then fail 'disabled budget warned'; fi
   TEST_METRICS="$metrics" bb -e '
     (let [e (last (filter #(= :capacity-attribution (:event %)) (map clojure.edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))]
-      (assert (= {:ticket-budget-bytes 0 :total-budget-bytes 0 :total-bytes (get-in e [:workspaces :bytes]) :total-over? false :over-tickets {}}
+      (assert (= {:ticket-budget-bytes 0 :total-budget-bytes 0 :total-bytes (get-in e [:workspaces :bytes]) :total-over? false :over-tickets {} :complete? true}
                  (:workspace-budget e))))'
   before="$(grep -c ':event :capacity-attribution' "$metrics")"
   CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 run_prune "$vault" "$state" --dry-run >"$tmp/out"
@@ -7311,7 +7311,9 @@ test_capacity_attribution() {
   before="$(grep -c ':event :capacity-attribution' "$metrics")"
   PATH="$tmp/slowbin:$PATH" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_TIMEOUT_SECONDS=1 CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 CODEX_TASK_BOARD_CAPACITY_GUARD_BYTES=0 run_prune "$vault" "$state" >"$tmp/out"
   [[ "$(grep -c ':event :capacity-attribution' "$metrics")" == "$((before + 1))" ]] || fail 'timed-out scan left no record'
-  TEST_METRICS="$metrics" bb -e '(require (quote [clojure.edn :as edn])) (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))] (assert (= -1 (:scan-exit e))) (assert (false? (:scan-complete e))) (assert (= {} (:area-delta-bytes e))))'
+  TEST_METRICS="$metrics" bb -e '(require (quote [clojure.edn :as edn])) (let [e (last (filter #(= :capacity-attribution (:event %)) (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))))] (assert (= -1 (:scan-exit e))) (assert (false? (:scan-complete e))) (assert (= {} (:area-delta-bytes e))) (assert (false? (get-in e [:workspace-budget :complete?]))) (assert (false? (get-in e [:workspace-budget :total-over?]))))'
+  # BOXP-638 S3c: a partial scan only gives lower bounds, so "within budget" is unknown and is logged as such.
+  grep -q 'capacity-budget: unknown scan-incomplete' "$tmp/out" || fail 'incomplete budget scan not reported'
   CODEX_TASK_BOARD_ROOT="$state" bb "$RUNNER" workspace-metrics >"$tmp/summary"
   assert_file_contains "$tmp/summary" 'capacity-used-bytes='
   assert_file_contains "$tmp/summary" 'capacity-days-to-guard='

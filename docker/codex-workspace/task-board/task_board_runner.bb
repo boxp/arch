@@ -8202,9 +8202,13 @@
   budgets (warning only; never stops a run). Budgets come from the week of S3b
   records (2026-11-20..27): per-ticket 4GiB sits between the usual p99
   (3.35-3.75GB) and the outliers; total 56GiB was crossed only in the
-  2026-11-27 surge (week range 38-69GB). A budget of 0 disables it."
-  [tickets total-bytes ticket-budget total-budget]
+  2026-11-27 surge (week range 38-69GB). A budget of 0 disables it.
+  A partial scan (timeout / non-zero find) gives lower bounds: an over-budget
+  finding still holds, but being within budget is unknown, so :complete? false
+  is recorded and the caller warns instead of staying silent."
+  [tickets total-bytes ticket-budget total-budget complete?]
   {:ticket-budget-bytes ticket-budget :total-budget-bytes total-budget :total-bytes total-bytes
+   :complete? (boolean complete?)
    :total-over? (boolean (and (pos? total-budget) (> total-bytes total-budget)))
    :over-tickets (if (pos? ticket-budget)
                    (into {} (keep (fn [[t v]] (let [b (:bytes v 0)] (when (> b ticket-budget) [t b])))) tickets)
@@ -8303,7 +8307,8 @@
                 ticket-budget (workspace-ticket-budget (:tickets r))
                 budget (workspace-budget-status (:tickets r) (get-in r [:workspaces :bytes] 0)
                                                 (prune-setting "CODEX_TASK_BOARD_TICKET_BUDGET_BYTES" #(parse-bounded-long % default-ticket-budget-bytes 0))
-                                                (prune-setting "CODEX_TASK_BOARD_WORKSPACES_BUDGET_BYTES" #(parse-bounded-long % default-workspaces-budget-bytes 0)))
+                                                (prune-setting "CODEX_TASK_BOARD_WORKSPACES_BUDGET_BYTES" #(parse-bounded-long % default-workspaces-budget-bytes 0))
+                                                complete)
                 event (merge (dissoc r :tickets) ticket-budget {:workspace-budget budget} {:event :capacity-attribution :root root-path :fs-total-bytes total :fs-free-bytes free :fs-used-bytes used
                                 :scan-ms (quot (- (System/nanoTime) started) 1000000) :scan-exit exit :scan-complete complete :fresh-window-hours 24 :subareas subareas
                                 :baseline-at (:at baseline) :baseline-hours hours :used-delta-bytes delta :used-bytes-per-day rate :area-delta-bytes area-deltas :days-to-guard days})]
@@ -8314,6 +8319,9 @@
                          " ticket-budget=" (:ticket-budget-bytes budget)
                          " workspaces=" (:total-bytes budget) " workspaces-budget=" (:total-budget-bytes budget)
                          " total-over=" (:total-over? budget))))
+            (when-not complete
+              (log! (str "capacity-budget: unknown scan-incomplete scan-exit=" exit " workspaces>=" (:total-bytes budget)
+                         " (sums are lower bounds; within-budget cannot be confirmed)")))
             (log! (str "capacity-attribution: used=" used " free=" free " outside-workspaces=" (get-in r [:outside-workspaces :bytes])
                        " fresh24h=" (reduce + 0 (map :fresh-bytes (vals (:areas r)))) " days-to-guard=" days
                        " top-fresh=" (str/join "," (map (fn [[a v]] (str (one-line a) ":" (:fresh-bytes v))) (capacity-top-fresh (:areas r))))))))))
