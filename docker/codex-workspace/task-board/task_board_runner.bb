@@ -1800,6 +1800,29 @@
   [ticket-id lock]
   (heartbeat-once! ticket-id lock))
 
+(defn call-as-lock-owner!
+  "BOXP-737 (spec R9): run `f` only while this run owns the ticket lock, inside
+  the ticket guard, so the ownership check and the write are one critical section
+  (a takeover by `acquire-lock!` takes the same guard and cannot interleave).
+  Returns true when `f` ran, false when the lock was taken over, removed or
+  released. Writes that run apart from the main commit (asynchronous observation
+  records) go through here instead of an earlier point-in-time check."
+  [ticket-id lock f]
+  (with-ticket-lock-guard
+   ticket-id
+   (fn []
+     (let [existing (try (read-edn-file (lock-path ticket-id) nil)
+                         (catch Exception _ nil))]
+       (if (same-ticket-lock? lock existing)
+         (do (f) true)
+         false)))))
+
+(def pr-observation-release-wait-ms
+  "BOXP-737 (spec R9): how long the lock release waits for a pending PR conflict
+  observation of an owner run. Past it the lock is released and the late record is
+  dropped by `call-as-lock-owner!` (fail closed; observation is record only)."
+  30000)
+
 (defn record-lock-lost-run!
   "BOXP-737 (spec R2-R4): a run that lost its lock only marks its own summary
   interrupted (matching what the new owner's recovery wrote) and logs. The ticket,
@@ -5601,6 +5624,9 @@
                 ;; not (lock lost, exception, shutdown). The asynchronous PR
                 ;; conflict observation writes its record only after a true.
                 commit-owned (promise)
+                ;; BOXP-737 (spec R9): the PR conflict observation future, so
+                ;; the lock release can wait for it (bounded) before releasing.
+                pr-observation (atom nil)
                 ;; Set once a localllm docs-edit wrote its target notes inside
                 ;; this commit; a later failure of the lane / frontmatter /
                 ;; Notes transition rolls that write back (Blocked == unapplied).
@@ -5674,18 +5700,21 @@
                                         {:type ::lock-lost})))
                     _ (when gate-result
                         (record-ai-ops-gate! ticket-id run-id assignee action gate-result)
-                        (try (future
+                        (try (reset! pr-observation (future
                                (try (doseq [url (:pr-urls gate-result)]
                                       (when (conflict-observe! 'task-board-conflict/enabled?)
                                         (if-let [pr (conflict-observe! 'task-board-conflict/fetch-pr url)]
-                                          (if-not (deref commit-owned)
-                                            (log! (str "conflict observation PR record skipped: run " run-id " did not commit as lock owner: " url))
-                                          (conflict-observe! 'task-board-conflict/record-pr! (env "CODEX_TASK_BOARD_ROOT" default-root)
-                                                               (merge pr {:ticket ticket-id :run run-id :pr url
-                                                                          :gate-ok (:ok? gate-result)
-                                                                          :gate (when-not (:ok? gate-result) (some-> (:gate gate-result) name))})))
+                                          (if-not (and (deref commit-owned)
+                                                       ;; R9: the check and the write share the ticket guard.
+                                                       (call-as-lock-owner!
+                                                        ticket-id lock
+                                                        #(conflict-observe! 'task-board-conflict/record-pr! (env "CODEX_TASK_BOARD_ROOT" default-root)
+                                                                            (merge pr {:ticket ticket-id :run run-id :pr url
+                                                                                       :gate-ok (:ok? gate-result)
+                                                                                       :gate (when-not (:ok? gate-result) (some-> (:gate gate-result) name))}))))
+                                            (log! (str "conflict observation PR record skipped: run " run-id " does not own the lock: " url)))
                                           (log! (str "conflict observation PR fetch failed or timed out: " url)))))
-                                    (catch Throwable e (log! (str "conflict observation PR failed: " (.getMessage e))))))
+                                    (catch Throwable e (log! (str "conflict observation PR failed: " (.getMessage e)))))))
                              (catch Throwable e (log! (str "conflict observation future failed: " (.getMessage e))))))
                     _ (do (begin-lifecycle-commit!)
                           (reset! committing? true))
@@ -5953,6 +5982,11 @@
               (finally
                 ;; No-op after a true; releases a pending PR observation otherwise.
                 (deliver commit-owned false)
+                ;; R9: an owner run lets its pending observation write while it
+                ;; still holds the lock; past the bound the record is dropped.
+                (when-let [obs @pr-observation]
+                  (when (= ::pending (deref obs pr-observation-release-wait-ms ::pending))
+                    (log! (str "conflict observation still pending at lock release: run " (:run-id lock) "; a late record is dropped"))))
                 (reset! stop? true)
                 @hb
                 (when-not @keep-lock?
@@ -9569,13 +9603,38 @@
               (println (str "FAIL: " label " committing=" @committing-cards " calls=" (pr-str @calls)))
               (swap! failures conj label))))))
 
+    ;; BOXP-737 (spec R9): `call-as-lock-owner!` runs its write only while the
+    ;; lock file still is this run's lock (checked under the ticket guard).
+    (let [dir (str (fs/create-temp-dir {:prefix "boxp737-owner-write"}))
+          mine {:ticket "TEST-OWNER-WRITE" :run-id "old-run" :owner-id "o1" :owner-instance-id "i1"}
+          theirs (assoc mine :run-id "new-run" :owner-instance-id "i2")
+          writes (atom [])]
+      (with-redefs [root (constantly dir)]
+        (fs/create-dirs (fs/parent (lock-path "TEST-OWNER-WRITE")))
+        (write-edn-file! (lock-path "TEST-OWNER-WRITE") mine)
+        (let [owned (call-as-lock-owner! "TEST-OWNER-WRITE" mine #(swap! writes conj :owned))
+              _ (write-edn-file! (lock-path "TEST-OWNER-WRITE") theirs)
+              taken (call-as-lock-owner! "TEST-OWNER-WRITE" mine #(swap! writes conj :taken))
+              _ (fs/delete-if-exists (lock-path "TEST-OWNER-WRITE"))
+              released (call-as-lock-owner! "TEST-OWNER-WRITE" mine #(swap! writes conj :released))
+              label "owner-guarded write runs only while the lock is this run's lock"]
+          (if (and (= [true false false] [owned taken released]) (= [:owned] @writes)
+                   (not (fs/exists? (lock-path "TEST-OWNER-WRITE"))))
+            (println (str "PASS: " label))
+            (do (println (str "FAIL: " label " results=" (pr-str [owned taken released]) " writes=" (pr-str @writes)))
+                (swap! failures conj label)))))
+      (fs/delete-tree dir))
+
     ;; BOXP-737 (spec R8): the PR conflict observation runs in a future after
     ;; the review gate. It may write its record only once this run passed the
     ;; ownership check of its lifecycle commit; a run whose lock was taken over
-    ;; between the gate check and the commit check records nothing.
-    (doseq [[label owner-answers expect-record?]
-            [["PR conflict observation is not recorded after the lock was lost before the commit" [true false] false]
-             ["PR conflict observation is recorded when the run committed as lock owner" [true true] true]]]
+    ;; between the gate check and the commit check records nothing. R9: also a
+    ;; run that committed as owner but lost the lock while the PR fetch ran
+    ;; records nothing, because the write itself is guarded by ownership.
+    (doseq [[label owner-answers owner-at-write? expect-record?]
+            [["PR conflict observation is not recorded after the lock was lost before the commit" [true false] true false]
+             ["PR conflict observation is not recorded when the lock was lost during the PR fetch" [true true] false false]
+             ["PR conflict observation is recorded when the run committed as lock owner" [true true] true true]]]
       (let [calls (atom [])
             answers (atom owner-answers)
             settled (promise)
@@ -9587,6 +9646,7 @@
                       lifecycle-commit-owner? (fn [& _] (let [[a & more] @answers]
                                                           (reset! answers (vec more))
                                                           (boolean a)))
+                      call-as-lock-owner! (fn [_ _ f] (if owner-at-write? (do (f) true) false))
                       move-card! (fn [& _] nil)
                       update-frontmatter! (fn [& _] nil)
                       append-note! (fn [& _] nil)
