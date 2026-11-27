@@ -25,6 +25,8 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 test "$(code /healthz)" = "200"
+# BOXP-735: the fixed Grok login command exists at its pinned path.
+docker run --rm --entrypoint /usr/bin/grok "${image}" --version >/dev/null
 # No team domain / AUD / Owner: fail closed.
 test "$(code /)" = "503"
 test "$(code /api/status)" = "503"

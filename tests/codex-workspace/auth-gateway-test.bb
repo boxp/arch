@@ -106,7 +106,25 @@
     (is (= #{"left" "up" "down" "right" "enter" "tab" "backtab" "space" "backspace" "esc" "ctrlc"} (set keys)))
     (doseq [k keys]
       (is (re-find (re-pattern (str "\\b" k ": '")) js) (str "key mapped: " k)))
-    (is (str/includes? js "applicationCursorKeysMode") "arrows follow DECCKM")))
+    (is (str/includes? js "applicationCursorKeysMode") "arrows follow DECCKM")
+    (is (= #{"antigravity" "claude" "codex" "grok"}
+           (set (map second (re-seq #"data-provider=\"([a-z]+)\"" html))))
+        "one button per fixed command")))
+
+(deftest grok-session-environment
+  ;; BOXP-735: Grok gets its own HOME/GROK_HOME and no telemetry, and none of the
+  ;; other CLIs' locations; the existing CLIs keep exactly the BOXP-634 environment.
+  (let [parent {"HOME" "/home/boxp" "PATH" "/usr/bin" "CODEX_HOME" "/home/boxp/.codex"
+                "XAI_API_KEY" "x" "GROK_HOME" "/elsewhere" "ANTHROPIC_API_KEY" "x"}
+        c (assoc cfg :home "/home/boxp")
+        g (ag/session-env (get production-commands "grok") c parent)
+        x (ag/session-env (get production-commands "codex") c parent)]
+    (is (= "/home/boxp/.grok-x-read" (get g "HOME") (get g "GROK_HOME")))
+    (is (= "false" (get g "GROK_TELEMETRY_ENABLED")))
+    (is (not-any? #(contains? g %) ["CODEX_HOME" "XAI_API_KEY" "ANTHROPIC_API_KEY"]))
+    (is (= "/home/boxp/.grok-x-read" (ag/session-dir (get production-commands "grok") c)))
+    (is (= (ag/child-env parent) x) "codex env unchanged")
+    (is (= "/home/boxp" (ag/session-dir (get production-commands "codex") c)))))
 
 (deftest child-environment
   (let [e (ag/child-env {"HOME" "/home/boxp" "PATH" "/usr/bin" "ANTHROPIC_API_KEY" "x" "OPENAI_API_KEY" "x"
@@ -115,7 +133,13 @@
     (is (= #{"HOME" "PATH" "TERM" "COLORTERM" "SHELL"} (set (keys e))))))
 
 (deftest fixed-commands
-  (is (= #{"antigravity" "claude" "codex"} (set (keys production-commands))))
+  (is (= #{"antigravity" "claude" "codex" "grok"} (set (keys production-commands))))
+  (is (= ["/usr/bin/grok" "login" "--device-auth"] (:argv (get production-commands "grok")))
+      "BOXP-735: official device-code login, no API key path")
+  (is (= ".grok-x-read" (:private-home (get production-commands "grok"))) "dedicated credential area")
+  (is (every? #(nil? (:private-home (get production-commands %))) ["antigravity" "claude" "codex"])
+      "existing CLIs unchanged")
+  (is (= ["/usr/local/bin/agy"] (:argv (get production-commands "antigravity"))))
   (is (= ["/usr/bin/claude" "auth" "login" "--claudeai"] (:argv (get production-commands "claude"))) "subscription login, not Console/API")
   (is (= ["/usr/bin/codex" "login" "--device-auth"] (:argv (get production-commands "codex"))))
   (let [argv (ag/pty-argv ["/bin/x" "a'b"] 9999 -5)]
@@ -157,6 +181,24 @@
       (ag/reap! (assoc cfg :max-seconds 0) (+ (System/currentTimeMillis) 5000))
       (is (wait-until #(nil? @ag/session) 5000) "max limit")
       (is @(:ended s)))))
+
+(deftest private-home-session
+  ;; The dedicated area is created 0700 and the CLI runs inside it with HOME there.
+  (let [home (fs/create-temp-dir {:prefix "ag-home-"})
+        probe (str (fs/path tmp "probe.sh"))]
+    (spit probe (str "#!/bin/bash\n"
+                     "echo \"home=$HOME grok=$GROK_HOME pwd=$(pwd) tel=$GROK_TELEMETRY_ENABLED codex=${CODEX_HOME:-none}\"\n"
+                     "sleep 1\n"))
+    (fs/set-posix-file-permissions probe "rwx------")
+    (reset! ag/commands {"grok" (assoc (get production-commands "grok") :argv [probe])})
+    (let [ph (str (fs/path home ".grok-x-read"))
+          s (ag/start-session! "grok" 80 24 (assoc cfg :home (str home)))]
+      (is (some? s))
+      (is (wait-until #(str/includes? (str (:buffer s)) "home=") 5000))
+      (is (str/includes? (str (:buffer s)) (str "home=" ph " grok=" ph " pwd=" ph " tel=false codex=none")))
+      (is (= "rwx------" (fs/posix->str (fs/posix-file-permissions ph))))
+      (is (wait-until #(nil? @ag/session) 5000)))
+    (fs/delete-tree home)))
 
 (deftest websocket-end-to-end
   (reset! ag/commands {"codex" {:label "fake" :argv [fake-cli]}})

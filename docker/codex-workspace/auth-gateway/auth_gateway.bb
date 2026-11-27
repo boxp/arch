@@ -4,9 +4,11 @@
 ;; 限定認証ページ (codex-auth.b0xp.io)。
 ;;
 ;; 守ること:
-;; - 起動できるのは固定のログインコマンド 3 つだけ（汎用シェルや任意コマンドは起動しない）。
+;; - 起動できるのは固定のログインコマンド 4 つだけ（汎用シェルや任意コマンドは起動しない）。
 ;;   Antigravity: 対話 `agy`（login 専用 subcommand が無いため）/ Claude: `claude auth login
-;;   --claudeai` / Codex: `codex login --device-auth`。
+;;   --claudeai` / Codex: `codex login --device-auth` / Grok (BOXP-735): `grok login --device-auth`。
+;; - Grok は専用の資格情報領域 ($HOME/.grok-x-read, 0700) を HOME/GROK_HOME として起動し、
+;;   他 CLI の資格情報の場所や既定の ~/.grok とは混ぜない。
 ;; - 全リクエスト (WebSocket upgrade を含む) で Cloudflare Access JWT の署名・aud・iss・期限と
 ;;   Owner の email を検証する。cloudflared 側の Access 検証に加えた二重の確認で、設定が欠けて
 ;;   いれば全拒否 (fail closed)。状態変更 (WebSocket / POST) は Origin も一致を要求する。
@@ -76,7 +78,12 @@
 (def commands
   (atom {"antigravity" {:label "Antigravity CLI (agy)" :argv ["/usr/local/bin/agy"]}
          "claude" {:label "Claude Code" :argv ["/usr/bin/claude" "auth" "login" "--claudeai"]}
-         "codex" {:label "Codex CLI" :argv ["/usr/bin/codex" "login" "--device-auth"]}}))
+         "codex" {:label "Codex CLI" :argv ["/usr/bin/codex" "login" "--device-auth"]}
+         ;; BOXP-735: official Grok Build CLI, device-code OAuth (no XAI_API_KEY path).
+         ;; :private-home (relative to HOME) becomes its HOME, GROK_HOME and cwd.
+         "grok" {:label "Grok CLI (X 読み取り用)" :argv ["/usr/bin/grok" "login" "--device-auth"]
+                 :private-home ".grok-x-read"
+                 :env {"GROK_TELEMETRY_ENABLED" "false"}}}))
 
 ;; Only these variables reach the CLI. API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY,
 ;; GEMINI_API_KEY, GOOGLE_API_KEY), ADC (GOOGLE_APPLICATION_CREDENTIALS), OAuth token
@@ -86,6 +93,32 @@
 (defn child-env [parent]
   (merge (select-keys parent child-env-allowlist)
          {"TERM" "xterm-256color" "COLORTERM" "truecolor" "SHELL" "/bin/bash"}))
+
+(defn private-home-path [{:keys [private-home]} {:keys [home]}]
+  (when private-home (str (fs/path home private-home))))
+
+(defn session-dir
+  "Working directory of the login: the dedicated area, or HOME."
+  [spec cfg]
+  (or (private-home-path spec cfg) (:home cfg)))
+
+(defn session-env
+  "Environment of the login. A command with a dedicated area sees only that area
+  as HOME/GROK_HOME and not where the other CLIs keep their credentials
+  (CODEX_HOME); every other command keeps the plain allowlist."
+  [spec cfg parent]
+  (if-let [ph (private-home-path spec cfg)]
+    (merge (dissoc (child-env parent) "CODEX_HOME")
+           {"HOME" ph "GROK_HOME" ph}
+           (:env spec))
+    (child-env parent)))
+
+(defn ensure-private-home!
+  "Create the dedicated area owner-only (0700), also tightening an existing one."
+  [spec cfg]
+  (when-let [ph (private-home-path spec cfg)]
+    (fs/create-dirs ph)
+    (fs/set-posix-file-permissions ph "rwx------")))
 
 (defn- shell-quote [s] (str "'" (str/replace s "'" "'\\''") "'"))
 
@@ -246,14 +279,15 @@
 
 (defn start-session!
   "nil when another login is running (the exclusive lock), else the session."
-  [provider cols rows {:keys [home]}]
-  (when-let [{:keys [argv]} (get @commands provider)]
+  [provider cols rows cfg]
+  (when-let [{:keys [argv] :as spec} (get @commands provider)]
     (let [placeholder {:provider provider :ended (atom false)}]
       (when (compare-and-set! session nil placeholder)
         (try
-          (let [proc (p/process {:cmd (pty-argv argv cols rows)
-                                 :dir home
-                                 :env (child-env (into {} (System/getenv)))
+          (let [_ (ensure-private-home! spec cfg)
+                proc (p/process {:cmd (pty-argv argv cols rows)
+                                 :dir (session-dir spec cfg)
+                                 :env (session-env spec cfg (into {} (System/getenv)))
                                  :err (java.io.File. "/dev/null")})
                 t (now-ms)
                 s {:id (str (random-uuid)) :provider provider :proc proc

@@ -3,6 +3,9 @@ FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b
 # Keep pinned versions here covered by renovate.json5 customManagers when adding new tools.
 ARG CODEX_VERSION=0.172.0
 ARG CLAUDE_CODE_VERSION=2.1.331
+# BOXP-735: official Grok Build CLI (xai-security). Used only for the Owner's device-code
+# login on codex-auth and the isolated X read check; never with XAI_API_KEY.
+ARG GROK_CLI_VERSION=1.0.92
 ARG EVEN_TERMINAL_VERSION=0.10.5
 ARG PI_AGENT_VERSION=1.6.0
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.14
@@ -99,6 +102,7 @@ RUN set -eux; \
 RUN npm install -g \
       "@openai/codex@${CODEX_VERSION}" \
       "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+      "@xai-official/grok@${GROK_CLI_VERSION}" \
       "@evenrealities/even-terminal@${EVEN_TERMINAL_VERSION}" \
       "@earendil-works/pi-coding-agent@${PI_AGENT_VERSION}" \
       "obsidian-headless@${OBSIDIAN_HEADLESS_VERSION}" \

@@ -133,6 +133,15 @@
       customType: "regex",
       managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
       matchStrings: [
+        "ARG GROK_CLI_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "@xai-official/grok",
+      datasourceTemplate: "npm"
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
         "ARG EVEN_TERMINAL_VERSION=(?<currentValue>[0-9.]+)"
       ],
       depNameTemplate: "@evenrealities/even-terminal",
