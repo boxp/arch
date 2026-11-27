@@ -3,6 +3,7 @@
 ひとはこGBC（制作途中のゲームボーイカラー用ゲーム）を、ROM を手で読み込まずにブラウザーで試遊するページの配備（BOXP-629）。**本人限定で、一般には公開しない。**
 
 - URL: `https://hitohako-gbc.b0xp.io/`。Cloudflare Access で、本人の GitHub アカウントでログインした時だけ開く。ページも ROM も同じ Pages project（`boxp-hitohako-gbc-play`）の中にあり、どちらもログインが要る。`pages.dev` 直 URL と配備ごとの URL にも同じ policy を付けてある（`terraform/cloudflare/b0xp.io/hitohako/gbc_play.tf`）。
+- 同じ置き場の `/action/` に、別の新作（横スクロールアクションの 1 面試作、BOXP-704）のページと ROM も載せる: `https://hitohako-gbc.b0xp.io/action/`。Access は置き場の全部の道に掛かっているので、こちらも同じ本人限定。配布物に `action/` の物が 1 つでもあれば 5 つ全部（ページ・スクリプト・`version.json`・権利表記・ROM）がそろっていて `action/version.json` と ROM の sha256 が合うことを求め、1 つも無ければ SRPG のページだけを配備する。
 - このディレクトリにあるのは配備のスクリプトだけ。ページ・エミュレーター・ROM はこのリポジトリに置かない。
 
 ## 流れ
@@ -23,7 +24,7 @@ gh workflow run deploy-hitohako-gbc-play.yml -R boxp/arch -f force=true   # 同�
 
 - このリポジトリは公開で、Actions のログも公開。配布物の中身・commit message・ROM をログや artifact に出さない（出すのは配布物のコミットと ROM の sha256 まで）。
 - Access を外さない。`scripts/access-check.sh` が失敗する状態では配備しない。
-- 配布物に入ってよいファイルの一覧（`scripts/fetch-bundle.sh` の `allowed`）を広げる時は、`boxp/hitohako-gbc` の README「ブラウザーで試遊」と合わせて直す。
+- 配布物に入ってよいファイルの一覧（`scripts/fetch-bundle.sh` の `allowed` と `action_files`）を広げる時は、`boxp/hitohako-gbc` の README「ブラウザーで試遊」と合わせて直す。
 
 ## 撤去
 
