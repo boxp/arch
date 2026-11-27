@@ -1,0 +1,16 @@
+# BOXP-737: Task Runner の終了処理をロック所有者に限定する
+
+BOXP-732（TLA+/TLC の限定検証）の知見 1 のフォローアップ。
+
+## 方針
+- 正本仕様: vault `Projects/codex-task-board-runner/spec.md`「終了処理は lock の持ち主だけが行う（BOXP-737）」R1〜R5。
+- `process-card!` の lifecycle commit 開始直後（他の状態を書く前）に `heartbeat-once!`（ticket guard 内の所有照合＋heartbeat 更新）で所有を確認する。
+- 所有を失っていれば lane / frontmatter / Notes / 予算 / event を書かず、自 run の summary を `:interrupted`（`lock ownership lost before lifecycle commit`）にするだけ。lock には触らない。
+- 例外経路（Blocked・lane 復元・superseded）も同じ確認をする。
+
+## 検証
+- 回帰テスト `test_lifecycle_commit_only_by_lock_owner`（取り直し・lock 削除・所有者の正常終了）、`test_lock_lost_failure_does_not_block`。修正前の実装で失敗することを確認済み。
+- `repro-stale-runner-commit.sh` が `observed: fenced` になることを確認。
+
+## 対象外
+- 旧 Runner の agent の作業重複そのもの、lock 全体の再設計、TLC の CI 導入・必須化。

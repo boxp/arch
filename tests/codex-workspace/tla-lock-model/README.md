@@ -32,8 +32,8 @@ Lean のモデルは操作を **1 つずつ順に・一瞬で** 行う。TLA+ �
 
 | 版 | heartbeat の所有確認 | 解放の所有確認 | 奪うのは期限切れだけ | 取得を guard 内 1 手 | heartbeat を guard 内 1 手 | commit 前の所有確認 |
 |---|---|---|---|---|---|---|
-| `impl`（実装どおり） | ○ | ○ | ○ | ○ | ○ | × |
-| `fenced`（正しい版の案） | ○ | ○ | ○ | ○ | ○ | ○ |
+| `impl`（BOXP-732 時点の実装） | ○ | ○ | ○ | ○ | ○ | × |
+| `fenced`（BOXP-737 以降の実装） | ○ | ○ | ○ | ○ | ○ | ○ |
 | `bad-hb-owner` | × | ○ | ○ | ○ | ○ | × |
 | `bad-release-owner` | ○ | × | ○ | ○ | ○ | × |
 | `bad-take-fresh` | ○ | ○ | × | ○ | ○ | × |
@@ -65,7 +65,8 @@ Lean のモデルは操作を **1 つずつ順に・一瞬で** 行う。TLA+ �
 | `bad-acquire-unguarded` | 違反 | ok | ok | 違反 | 違反 | 違反 |
 | `bad-hb-unguarded` | 違反 | ok | ok | 違反 | 違反 | 違反 |
 
-- `impl` の C1 違反は実装の挙動で、`repro-stale-runner-commit.sh` で再現した（`observed: unfenced`）。
+- `impl` の C1 違反は BOXP-732 時点の実装の挙動で、`repro-stale-runner-commit.sh` で再現した（`observed: unfenced`）。
+  BOXP-737 で終了処理の前に guard 内で所有を確かめるようにし、同じスクリプトは `observed: fenced` になった（下の「BOXP-737 での反映」）。
 - C2 は lease 方式の lock の限界で、commit の前に所有を確かめても、止まっていた旧 Runner の agent の作業は止まらない。
 - L3 はどの版でも ok。lock が 1 ファイルなので「正しく持っている」のは常に 1 台で、壊れた版の害は L1（他人の lock を消す・上書きする）として出る。
 
@@ -110,3 +111,22 @@ Java は 11 以上（試行では Eclipse Temurin 21.0.13.1 JRE）。反例の�
 2. **TLC を動かす前に** `expected.tsv` を直す（期待値は実装やTLCの出力から写さない）。
 3. `run-tlc.sh` と `run-tlc.sh large` が一致することを確かめる。S1 が ok になったらモデルが空回りしている。
 4. この README の表を直す。
+
+## BOXP-737 での反映
+
+`fenced` 版の `Commit`／`Abort` を runner に入れた（`lifecycle-commit-owner?`・`record-lock-lost-run!`）。
+規則の正本は vault の `Projects/codex-task-board-runner/spec.md`「終了処理は lock の持ち主だけが行う」（R1〜R5）。
+
+| モデル | 実装 |
+|---|---|
+| `Commit` の前提 `FenceCommit => Owns(r)` | `begin-lifecycle-commit!` の直後に `heartbeat-once!`（ticket guard 内で所有照合＋heartbeat 更新） |
+| `Abort` | 終了処理をせず、自分の run の summary を `:interrupted` にするだけ。lock は触らない |
+| （モデルにない）例外の経路 | Blocked・元の lane へ戻す・superseded の記録の前にも同じ確認 |
+
+モデルとのずれ（残る隙間）: モデルの `Commit` は 1 手だが、実装の終了処理は複数の書き込みで、guard で包んでいない。
+確認の後は heartbeat thread が lease を保つので、終了処理の途中で `CODEX_TASK_BOARD_LOCK_STALE_SECONDS` を超えて止まったときだけ
+奪われうる。TLC はこの隙間を見ていない（`.tla` は変えていないので `expected.tsv` も変えていない）。
+
+回帰テスト: `../task-board-runner-test.sh` の `test_lifecycle_commit_only_by_lock_owner`（取り直し・lock 削除・所有者の正常終了）と
+`test_lock_lost_failure_does_not_block`（所有を失った後の例外で Blocked にしない）。修正前の実装で両方とも落ちることを確かめてから直した。
+`repro-stale-runner-commit.sh` は観察用のまま（CI の case にはしない）。

@@ -14,7 +14,7 @@
 (*   Recover            cleanup-stale-locks!                               *)
 (*   Commit             run 終了時の lifecycle commit (lane/Notes/summary)  *)
 (*   Release            release-lock! (delete-lock-if-matches!)            *)
-(*   Abort              (実装になし) FenceCommit=TRUE のときだけ: 所有を失った *)
+(*   Abort              FenceCommit=TRUE のときだけ (BOXP-737 で実装): 所有を失った *)
 (*                      run は commit せずに終わる                          *)
 (* 下の BOOLEAN 定数を FALSE/TRUE にすると、意図的に壊した版になる。        *)
 (***************************************************************************)
@@ -31,7 +31,7 @@ CONSTANTS
     RequireStale,            \* 他 Runner の lock を奪う/消すのは期限切れのときだけ
     GuardedAcquire,          \* 取得の「確認→書き込み」を ticket guard 内で 1 手で行う
     GuardedHeartbeat,        \* heartbeat の「読む→書く」を ticket guard 内で 1 手で行う
-    FenceCommit              \* commit 直前に guard 内で所有を確かめる (実装は FALSE)
+    FenceCommit              \* commit 直前に guard 内で所有を確かめる (BOXP-732 時点の実装は FALSE、BOXP-737 以降は TRUE)
 
 VARIABLES
     now,      \* 現在時刻
@@ -139,7 +139,7 @@ Recover(r) ==
     /\ UNCHANGED <<now, grants, st, held, hbSt, commits>>
 
 \* run の終わりの lifecycle commit (lane 移動・Notes・summary)。
-\* 実装は所有を確かめずに行う。FenceCommit=TRUE なら所有しているときだけ。
+\* BOXP-732 時点の実装は所有を確かめずに行っていた。FenceCommit=TRUE (BOXP-737 以降の実装) なら所有しているときだけ。
 Commit(r) ==
     /\ st[r] = "work"
     /\ FenceCommit => Owns(r)

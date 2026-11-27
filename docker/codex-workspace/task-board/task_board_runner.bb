@@ -1790,6 +1790,28 @@
              true)
          false)))))
 
+(defn lifecycle-commit-owner?
+  "BOXP-737 (spec R1): the end-of-run lifecycle commit belongs to the lock owner
+  only. Under the ticket guard, check that the lock file still is this run's lock
+  and refresh its heartbeat (`heartbeat-once!`). A run whose lock was taken over or
+  removed while it was paused gets false and must not write lane / frontmatter /
+  Notes / budgets / events. After a true the heartbeat thread keeps the lease fresh
+  for the rest of the commit (the commit itself is not under the guard)."
+  [ticket-id lock]
+  (heartbeat-once! ticket-id lock))
+
+(defn record-lock-lost-run!
+  "BOXP-737 (spec R2-R4): a run that lost its lock only marks its own summary
+  interrupted (matching what the new owner's recovery wrote) and logs. The ticket,
+  the board and the new owner's lock are left alone."
+  [ticket-id run-id action agent lane]
+  (mark-run! ticket-id run-id :interrupted
+             {:action action :agent agent :lane lane
+              :reason "lock ownership lost before lifecycle commit"
+              :finished-at (now-str)})
+  (log! (str "lock ownership lost before lifecycle commit: " ticket-id
+             " run " run-id "; lane, frontmatter and Notes were left to the current owner")))
+
 (defn heartbeat! [ticket-id lock stop?]
   (future
     (while (not @stop?)
@@ -5654,6 +5676,11 @@
                              (catch Throwable e (log! (str "conflict observation future failed: " (.getMessage e))))))
                     _ (do (begin-lifecycle-commit!)
                           (reset! committing? true))
+                    ;; BOXP-737: before anything below persists state, make sure
+                    ;; this run still owns the ticket lock.
+                    _ (when-not (lifecycle-commit-owner? ticket-id lock)
+                        (throw (ex-info "ticket lock ownership lost before lifecycle commit"
+                                        {:type ::lock-lost})))
                     ;; localllm docs-edit: the document write was staged, not
                     ;; applied. Commit it here, inside the same lifecycle commit
                     ;; as Notes / lane / lock, so a planned shutdown either
@@ -5873,6 +5900,12 @@
                                           {:event_type "run.interrupted" :status "interrupted"})
                     (log! (str "run " (:run-id lock) " for " ticket-id
                                " interrupted by planned workspace shutdown; lock kept for the next owner")))
+                  ;; BOXP-737 (spec R5): the failure paths below (superseded,
+                  ;; Blocked, restoring the lane) are lifecycle commits as well.
+                  (if (or (= ::lock-lost (:type (ex-data e)))
+                          (not (try (lifecycle-commit-owner? ticket-id lock)
+                                    (catch Exception _ false))))
+                    (record-lock-lost-run! ticket-id (:run-id lock) action assignee effective-lane)
                   (if-let [revision (when-not @docs-applied? (superseded-revision ticket-id start-rev))]
                     (record-superseded! ticket-id (:run-id lock) action assignee effective-lane nil nil nil revision)
                     (do
@@ -5894,7 +5927,7 @@
                     (if (block-ticket! ticket-id (:run-id lock) action nil nil nil e nil)
                       (do (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
                           (record-ai-ops-finish! ticket-id (:run-id lock) assignee action (ai-ops-run-lane status) "blocked" "blocked" {}))
-                      (restore-card-state! ticket-id status assignee)))))
+                      (restore-card-state! ticket-id status assignee))))))
                 true)
               (finally
                 (reset! stop? true)
