@@ -100,3 +100,24 @@ S1（BOXP-494: 継続 run の引継ぎと計測）は 7 日観察まで完了済
   追加の走査はしない。停止・起動判定には使わない（予算超過票だけの新規 checkout 停止は 1 週間の記録から数値を決めてから別 PR）。
 - 着手時の参考値（2026-11-20 14:1xZ, du 実測）: 113 票・計 39.39GB、票あたり p50 52MB・p90 1.06GB・p99 2.34GB・最大 5.70GB（BOXP-603、rec dump などの唯一成果）。
 - 確認: `task_board_runner.bb workspace-metrics` 相当の出力に `workspace-ticket-stats=` / `workspace-top-tickets=` が出る。
+
+## S3c bytes 予算の警告（7 日間の記録から閾値を決定、警告のみ）
+
+- 記録（capacity-attribution, 2026-11-20 15:33Z〜11-27 15:12Z, 155 回）:
+  - workspaces 合計: 通常 38〜48GB。11-26 06:48Z に 55GB、11-27 00:54Z→10:24Z に 48.7→69.2GB（24h 内新規 21GB）。
+  - 票あたり p99: 2.33→3.35〜3.75GB（大半の期間）→ 5.0〜5.4GB（11-26 以降）。最大 5.0〜7.9GB。
+  - 11-27 の急増の内訳: BOXP-725（done）1 run 7.7GB（checkout 外の Hugging Face モデル cache 6.4GB + venv 1.1GB）、
+    BOXP-704（done）38 run 4.8GB、BOXP-740/727/738/733 が各 1.2〜1.8GB。いずれも保持期間内（3 日）で、prune の対象外。
+  - 空き: 68.1GB（11-20）→ 22.5GB（11-27 15:12Z）。soft guard（16GiB）まで約 5GB。
+- 仕様（例つき）:
+  - 票ごと予算 4GiB（`CODEX_TASK_BOARD_TICKET_BUDGET_BYTES`, 既定 4294967296）。票の workspace bytes が予算を **超えた** 票を `:over-tickets` に記録。
+    例: 7.88GB の BOXP-725・5.36GB の BOXP-714 は超過、4.29GB ちょうどは超過でない、1.9GB の BOXP-740 は超過でない。
+  - 全体予算 56GiB（`CODEX_TASK_BOARD_WORKSPACES_BUDGET_BYTES`, 既定 60129542144）。workspaces 合計が超えたら `:total-over? true`。
+    例: 11-27 の 68.1GB は超過、11-20〜26 の 38〜55GB は超過でない。
+  - どちらかが超過したら `capacity-budget: warning over-tickets=<票>:<bytes>,... ticket-budget=.. workspaces=.. workspaces-budget=.. total-over=..` を log し、
+    `:workspace-budget` を capacity-attribution に記録。`workspace-metrics` に `workspace-budget=` を表示。
+  - 0 を指定するとその予算は無効（rollback、再起動のみ）。起動・停止判定には使わない（停止は既存の段階 guard が担う）。
+- 根拠: 票ごと 4GiB は通常期の p99 を上回り外れ値（唯一成果や大きな cache を持つ票）だけを拾う。全体 56GiB は通常期の最大 48GB と急増時の 69GB の間で、
+  soft guard まで約 1 日分（24h 新規の上側 ~20GB を除いた余裕 ~14GB）の猶予がある時点で気付けるようにした。
+- Lean/状態機械: 対象外（閾値比較だけの純関数で、直接の試験で期待値を仕様の例から与えた）。
+- 未解決（別段）: checkout 外の再ダウンロード可能 cache（HF hub blobs は sha256 名で内容検証可能）の内容証明つき回収は未実装。保持期間内の増加は回収できないため、急増時は guard 頼み。
