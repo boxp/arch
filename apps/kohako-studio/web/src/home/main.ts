@@ -207,7 +207,6 @@ function applyPrefs() {
   subtleBox.checked = prefs.intensity === 'subtle'
   body.classList.toggle('reduce', reduced())
   body.classList.toggle('bg-still', !prefs.bgMotion || reduced())
-  el('touch-open').hidden = !prefs.touch
   local.set(PREFS_KEY, JSON.stringify(prefs))
 }
 for (const [key, box] of prefBoxes)
@@ -628,7 +627,7 @@ function updateMessage() {
 // 押し始めも吹き出しの外の場合だけ閉じる。内部からのドラッグ選択やスクロールは対象外。
 let outsideBubble = false
 // 画面上の別の操作を返答の閉鎖と兼ねない。押下時に記録し、クリック処理で要素が隠れても維持する。
-const overlayControl = '.top, #touch-menu, .drawer, #cards, #viewer, .status-anchor'
+const overlayControl = '.top, .drawer, #cards, #viewer, .status-anchor'
 function isOverlayControl(target: EventTarget | null) {
   return target instanceof Element && Boolean(target.closest(overlayControl))
 }
@@ -3064,16 +3063,6 @@ character.addEventListener('click', () => {
     refreshScene(true)
   }
 })
-const touchOpen = el<HTMLButtonElement>('touch-open'),
-  touchMenu = el('touch-menu')
-touchOpen.addEventListener('click', () => {
-  touchMenu.hidden = !touchMenu.hidden
-  touchOpen.setAttribute('aria-expanded', String(!touchMenu.hidden))
-  if (!touchMenu.hidden) el<HTMLButtonElement>('touch-pat').focus()
-})
-el('touch-pat').addEventListener('click', () => touchReact('head', 'pat', 'menu'))
-el('touch-hand').addEventListener('click', () => touchReact('hand', 'tap', 'menu'))
-
 // ---- 引き出し・Esc ----
 const drawers: [string, string][] = [
   ['history', 'history-open'],
@@ -3099,8 +3088,6 @@ for (const [id, opener] of drawers) {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     for (const [id] of drawers) el(id).hidden = true
-    touchMenu.hidden = true
-    touchOpen.setAttribute('aria-expanded', 'false')
   }
 })
 
@@ -3540,7 +3527,7 @@ async function startRig() {
   } catch (e) {
     ;(report.errors as string[]).push(e instanceof Error ? e.message : String(e))
     el('face-mode').textContent =
-      '動く姿を読み込めなかったため、静止画で表示しています（ふれあいは上部の「ふれあい」から行えます）。'
+      '動く姿を読み込めなかったため、静止画で表示しています（動く姿を読み込めない間はふれあいできません）。'
     rigLoading = false
     refreshArrival()
   }
