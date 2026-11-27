@@ -328,6 +328,48 @@
           ((resolve 'agent-auth-expiry/write-metrics!) (root)))
         (catch Exception _ (log! "agent auth metrics write failed")))))))
 
+;; BOXP-737 (spec R13): lock layers. Outer locks (gate budget, owner lock guard)
+;; -> ticket guard -> inner locks (recheck reservations, same-file review
+;; streaks, vault writer). A thread holding an inner lock may not newly take a
+;; ticket guard, and a thread holding a ticket guard or an inner lock may not
+;; newly take an outer lock: such a request throws instead of waiting (fail
+;; closed), so no inverse order can deadlock. Same-thread re-entry is allowed.
+(def ^:private inner-lock-holds
+  "Thread -> {lock-name hold-count} of the inner locks the thread holds."
+  (atom {}))
+
+(defn current-thread-inner-locks []
+  (set (keys (get @inner-lock-holds (Thread/currentThread)))))
+
+(defn with-inner-lock-hold
+  "Run f while recording that the current thread holds inner lock lock-name.
+  Call it inside the inner lock's critical section."
+  [lock-name f]
+  (let [t (Thread/currentThread)]
+    (swap! inner-lock-holds update-in [t lock-name] (fnil inc 0))
+    (try
+      (f)
+      (finally
+        (swap! inner-lock-holds
+               (fn [m]
+                 (let [n (dec (get-in m [t lock-name] 1))
+                       m (if (pos? n)
+                           (assoc-in m [t lock-name] n)
+                           (update m t dissoc lock-name))]
+                   (if (empty? (get m t)) (dissoc m t) m))))))))
+
+(defn lock-order-violation! [message]
+  (throw (ex-info (str "lock order violation: " message)
+                  {:type :user/lock-order-violation})))
+
+(declare current-thread-holds-ticket-guard?)
+
+(defn ensure-outer-lock-allowed! [lock-name]
+  (when (current-thread-holds-ticket-guard?)
+    (lock-order-violation! (str lock-name " requested while holding a ticket guard")))
+  (when-let [inner (seq (current-thread-inner-locks))]
+    (lock-order-violation! (str lock-name " requested while holding inner lock(s) " (str/join "," (map name (sort inner)))))))
+
 ;; BOXP-201 I3: opt-in lock shared with the helper and vault_writer.bb so that
 ;; Board/ticket read-modify-write cycles serialize across processes. Unset in
 ;; deployment, where writes behave exactly as before; every writer moves onto it
@@ -349,7 +391,7 @@
                     channel (.getChannel file)]
           (let [_file-lock (.lock channel)]
             (binding [*vault-writer-lock-held* true]
-              (f))))))))
+              (with-inner-lock-hold :vault-writer f))))))))
 
 (defn parse-codex-assignee [assignee]
   (cond
@@ -476,6 +518,7 @@
   ;; Planned-shutdown marker changes and every lock acquisition for an owner must
   ;; share one cross-process critical section. Ticket guards cannot close the gap
   ;; between a directory-wide rescan and deleting the owner marker.
+  (ensure-outer-lock-allowed! "owner lock guard")
   (let [guard-key (safe-owner-id value)]
     (locking (owner-mutex guard-key)
       (fs/create-dirs (owner-lock-guards-dir))
@@ -1339,17 +1382,71 @@
 (defn ticket-lock-guard-path [ticket-id]
   (fs/path (lock-guards-dir) (str (safe-owner-id ticket-id) ".lock")))
 
+(def ^:private ticket-guard-stripes
+  (vec (repeatedly 256 #(java.util.concurrent.locks.ReentrantLock.))))
+
+(def ^:private ticket-guard-holds
+  "BOXP-737 (spec R10): ticket id -> {:thread :count :file :channel} of the held
+  ticket guard. The thread holding it may re-enter guarded helpers (heartbeat, lock
+  release, ownership checks) without re-taking the FileLock, which would throw
+  OverlappingFileLockException. Other threads and processes block."
+  (atom {}))
+
+(defn- ticket-guard-stripe ^java.util.concurrent.locks.ReentrantLock [ticket-id]
+  (nth ticket-guard-stripes
+       (Math/floorMod (.hashCode (str ticket-id)) (count ticket-guard-stripes))))
+
+(defn acquire-ticket-guard!
+  "Enter the ticket guard (reentrant per thread). Pair with `release-ticket-guard!`
+  in a finally. The in-JVM lock serializes threads; the FileLock extends the same
+  critical section to helper commands and replacement runner JVMs sharing the PVC."
+  [ticket-id]
+  (when-not (identical? (Thread/currentThread) (:thread (get @ticket-guard-holds ticket-id)))
+    (when-let [inner (seq (current-thread-inner-locks))]
+      (lock-order-violation! (str "ticket guard requested while holding inner lock(s) "
+                                  (str/join "," (map name (sort inner)))))))
+  (let [stripe (ticket-guard-stripe ticket-id)]
+    (.lock stripe)
+    (try
+      (let [held (get @ticket-guard-holds ticket-id)]
+        (if (identical? (Thread/currentThread) (:thread held))
+          (swap! ticket-guard-holds update-in [ticket-id :count] inc)
+          (do
+            (fs/create-dirs (lock-guards-dir))
+            (let [file (java.io.RandomAccessFile. (str (ticket-lock-guard-path ticket-id)) "rw")]
+              (try
+                (let [channel (.getChannel file)]
+                  (.lock channel)
+                  (swap! ticket-guard-holds assoc ticket-id
+                         {:thread (Thread/currentThread) :count 1 :file file :channel channel}))
+                (catch Throwable t
+                  (.close file)
+                  (throw t)))))))
+      (catch Throwable t
+        (.unlock stripe)
+        (throw t)))
+    true))
+
+(defn release-ticket-guard! [ticket-id]
+  (let [stripe (ticket-guard-stripe ticket-id)
+        held (get @ticket-guard-holds ticket-id)]
+    (try
+      (if (> (:count held 0) 1)
+        (swap! ticket-guard-holds update-in [ticket-id :count] dec)
+        (do
+          (swap! ticket-guard-holds dissoc ticket-id)
+          ;; Closing the channel releases its FileLock; Babashka does not expose
+          ;; FileLock.release on the JDK's internal FileLock implementation.
+          (when-let [file (:file held)] (.close ^java.io.RandomAccessFile file))))
+      (finally
+        (.unlock stripe)))))
+
 (defn with-ticket-lock-guard [ticket-id f]
-  ;; `locking` serializes threads in this JVM. FileLock extends the same critical
-  ;; section to helper commands and replacement runner JVMs sharing the PVC.
-  (locking (ticket-mutex ticket-id)
-    (fs/create-dirs (lock-guards-dir))
-    (with-open [file (java.io.RandomAccessFile. (str (ticket-lock-guard-path ticket-id)) "rw")
-                channel (.getChannel file)]
-      (let [_file-lock (.lock channel)]
-        ;; Closing the channel releases all of its locks; Babashka does not expose
-        ;; FileLock.release on the JDK's internal FileLock implementation.
-        (f)))))
+  (acquire-ticket-guard! ticket-id)
+  (try
+    (f)
+    (finally
+      (release-ticket-guard! ticket-id))))
 
 (defn delete-lock-if-matches-under-guard! [ticket-id expected]
   (let [path (lock-path ticket-id)
@@ -1790,6 +1887,51 @@
              true)
          false)))))
 
+(defn lifecycle-commit-owner?
+  "BOXP-737 (spec R1): the end-of-run lifecycle commit belongs to the lock owner
+  only. Under the ticket guard, check that the lock file still is this run's lock
+  and refresh its heartbeat (`heartbeat-once!`). A run whose lock was taken over or
+  removed while it was paused gets false and must not write lane / frontmatter /
+  Notes / budgets / events. R10: the caller holds the ticket guard from this
+  check through the last write of the commit, so a takeover cannot interleave."
+  [ticket-id lock]
+  (heartbeat-once! ticket-id lock))
+
+(defn call-as-lock-owner!
+  "BOXP-737 (spec R9): run `f` only while this run owns the ticket lock, inside
+  the ticket guard, so the ownership check and the write are one critical section
+  (a takeover by `acquire-lock!` takes the same guard and cannot interleave).
+  Returns true when `f` ran, false when the lock was taken over, removed or
+  released. Writes that run apart from the main commit (asynchronous observation
+  records) go through here instead of an earlier point-in-time check."
+  [ticket-id lock f]
+  (with-ticket-lock-guard
+   ticket-id
+   (fn []
+     (let [existing (try (read-edn-file (lock-path ticket-id) nil)
+                         (catch Exception _ nil))]
+       (if (same-ticket-lock? lock existing)
+         (do (f) true)
+         false)))))
+
+(def pr-observation-release-wait-ms
+  "BOXP-737 (spec R9): how long the lock release waits for a pending PR conflict
+  observation of an owner run. Past it the lock is released and the late record is
+  dropped by `call-as-lock-owner!` (fail closed; observation is record only)."
+  30000)
+
+(defn record-lock-lost-run!
+  "BOXP-737 (spec R2-R4): a run that lost its lock only marks its own summary
+  interrupted (matching what the new owner's recovery wrote) and logs. The ticket,
+  the board and the new owner's lock are left alone."
+  [ticket-id run-id action agent lane]
+  (mark-run! ticket-id run-id :interrupted
+             {:action action :agent agent :lane lane
+              :reason "lock ownership lost before lifecycle commit"
+              :finished-at (now-str)})
+  (log! (str "lock ownership lost before lifecycle commit: " ticket-id
+             " run " run-id "; lane, frontmatter and Notes were left to the current owner")))
+
 (defn heartbeat! [ticket-id lock stop?]
   (future
     (while (not @stop?)
@@ -1953,17 +2095,74 @@
 (defn gate-failure-budget-lock-path []
   (fs/path (root) "locks" "gate-failure-budget.lock"))
 
-(def gate-failure-budget-mutex (Object.))
+(def ^:private gate-failure-budget-reentrant
+  (java.util.concurrent.locks.ReentrantLock.))
+
+(def ^:private gate-failure-budget-hold
+  "BOXP-737 (spec R11): {:thread :count :file} of the held budget lock, so the
+  holding thread may re-enter it (the lifecycle commit takes it before the ticket
+  guard, and budget helpers inside the commit take it again) without re-taking
+  the FileLock, which would throw OverlappingFileLockException."
+  (atom nil))
+
+(defn current-thread-holds-ticket-guard? []
+  (let [t (Thread/currentThread)]
+    (boolean (some #(identical? t (:thread %)) (vals @ticket-guard-holds)))))
+
+(defn acquire-gate-failure-budget-lock!
+  "BOXP-737 (spec R11): lock order is budget lock -> ticket guard everywhere.
+  A thread that holds a ticket guard but not the budget lock is refused (fail
+  closed) instead of waiting, so the inverse order can never deadlock with a
+  run that holds the budget lock and waits for the ticket guard."
+  []
+  (let [t (Thread/currentThread)]
+    (if (identical? t (:thread @gate-failure-budget-hold))
+      (swap! gate-failure-budget-hold update :count inc)
+      (do
+        (ensure-outer-lock-allowed! "budget lock")
+        (.lock gate-failure-budget-reentrant)
+        (try
+          (fs/create-dirs (fs/parent (gate-failure-budget-lock-path)))
+          (let [file (java.io.RandomAccessFile. (str (gate-failure-budget-lock-path)) "rw")]
+            (try
+              (.lock (.getChannel file))
+              (reset! gate-failure-budget-hold {:thread t :count 1 :file file})
+              (catch Throwable e
+                (.close file)
+                (throw e))))
+          (catch Throwable e
+            (.unlock gate-failure-budget-reentrant)
+            (throw e)))))
+    true))
+
+(defn release-gate-failure-budget-lock! []
+  (let [held @gate-failure-budget-hold]
+    (when (identical? (Thread/currentThread) (:thread held))
+      (if (> (:count held) 1)
+        (swap! gate-failure-budget-hold update :count dec)
+        (try
+          (reset! gate-failure-budget-hold nil)
+          (.close ^java.io.RandomAccessFile (:file held))
+          (finally
+            (.unlock gate-failure-budget-reentrant)))))))
 
 (defn with-gate-failure-budget-lock [f]
-  ;; Same pattern as with-ticket-lock-guard: `locking` for threads in this JVM,
+  ;; Same pattern as with-ticket-lock-guard: an in-JVM lock for threads, a
   ;; FileLock for helper commands and replacement runner JVMs on the PVC.
-  (locking gate-failure-budget-mutex
-    (fs/create-dirs (fs/parent (gate-failure-budget-lock-path)))
-    (with-open [file (java.io.RandomAccessFile. (str (gate-failure-budget-lock-path)) "rw")
-                channel (.getChannel file)]
-      (let [_file-lock (.lock channel)]
-        (f)))))
+  (acquire-gate-failure-budget-lock!)
+  (try
+    (f)
+    (finally
+      (release-gate-failure-budget-lock!))))
+
+(defn with-lifecycle-commit-locks
+  "BOXP-737 (spec R11): the lifecycle commit sections take the budget lock and
+  then the ticket guard, the same order as budget reservation and the gate
+  budget stop, so the ownership check and every write (budgets included) stay in
+  one critical section without a lock-order inversion."
+  [ticket-id f]
+  (with-gate-failure-budget-lock
+   #(with-ticket-lock-guard ticket-id f)))
 
 (defn read-gate-failure-budget []
   (merge {:format-version 1 :failures {} :grants [] :reservations {}
@@ -1997,7 +2196,7 @@
     (let [path (fs/path (root) "locks" "same-file-review-streaks.lock")]
       (fs/create-dirs (fs/parent path))
       (with-open [file (java.io.RandomAccessFile. (str path) "rw") channel (.getChannel file)]
-        (let [_lock (.lock channel)] (f))))))
+        (let [_lock (.lock channel)] (with-inner-lock-hold :same-file-review f))))))
 (defn read-same-file-review-streaks []
   (read-edn-file (same-file-review-path) {:format-version 1 :streaks {}}))
 (defn write-same-file-review-streaks! [state]
@@ -5095,7 +5294,7 @@
       (fs/create-dirs (fs/parent path))
       (with-open [file (java.io.RandomAccessFile. (str path) "rw")
                   channel (.getChannel file)]
-        (let [_lock (.lock channel)] (f))))))
+        (let [_lock (.lock channel)] (with-inner-lock-hold :recheck f))))))
 (defn read-rechecks [] (read-edn-file (recheck-path) {}))
 (defn write-rechecks! [db]
   (let [path (recheck-path) tmp (fs/path (fs/parent path) (str ".rechecks-" (random-uuid) ".tmp"))]
@@ -5161,17 +5360,26 @@
     (not= "blocked" status) nil
     (and (= "boxp" assignee) (= (:board-rev r) rev)) :original
     (and (:fired-rev r) (= (:resume-assignee r) assignee) (= (:fired-rev r) rev)) :fired))
+(defn recheck-due? [r]
+  (and (contains? #{:pending :firing} (:state r))
+       (try (not (.isAfter (java.time.Instant/parse (:due r)) (java.time.Instant/now)))
+            (catch Exception _ false))))
+
 (defn sweep-rechecks! []
-  (with-recheck-lock
-    (fn []
-      (doseq [[ticket r] (read-rechecks)
-              :when (and (contains? #{:pending :firing} (:state r))
-                         (or (nil? @only-ticket) (= @only-ticket ticket))
-                         (try (not (.isAfter (java.time.Instant/parse (:due r)) (java.time.Instant/now)))
-                              (catch Exception _ false)))]
-        (try
-        (with-ticket-lock-guard ticket
-          (fn []
+  ;; BOXP-737 (spec R13): the recheck lock is an inner lock. Read the due
+  ;; candidates, release it, then take ticket guard -> recheck lock per ticket
+  ;; (the lifecycle commit's order) and act only if the reservation is still
+  ;; the one that was read.
+  (doseq [[ticket r0] (with-recheck-lock read-rechecks)
+          :when (and (recheck-due? r0)
+                     (or (nil? @only-ticket) (= @only-ticket ticket)))]
+    (try
+      (with-ticket-lock-guard ticket
+        (fn []
+          (with-recheck-lock
+            (fn []
+              (let [r (get (read-rechecks) ticket)]
+                (when (and (= (:id r) (:id r0)) (recheck-due? r))
         (let [fm (when (fs/exists? (ticket-path ticket)) (ticket-frontmatter ticket))
               cards (filter #(= ticket (:ticket-id %)) (parse-board-cards (vec (read-lines (board-path)))))
               card (when (= 1 (count cards)) (first cards))
@@ -5202,10 +5410,10 @@
                     (append-note! ticket (str "再確認予約 " (:id r) " 期限到来 (期限=" (:due r) ", 超過=" minutes
                                               "分): Blocked のまま元担当 " (:resume-assignee r)
                                               " へ正規再投入 (blocked-retry、継続予算は維持)"))
-                    (write-rechecks! (assoc (read-rechecks) ticket (assoc r :state :fired :fired-at (now-str)))))))))
+                    (write-rechecks! (assoc (read-rechecks) ticket (assoc r :state :fired :fired-at (now-str)))))))))))))
           ;; One broken ticket must not stop the tick for every other card.
           (catch Exception e
-            (log! (str "recheck sweep failed for " ticket ": " (.getMessage e)))))))))
+            (log! (str "recheck sweep failed for " ticket ": " (.getMessage e)))))))
 
 (defn block-ticket! [ticket-id run-id action result exit review-gate exception last-message]
   (when (record-blocked-transition! ticket-id run-id action result exit review-gate exception)
@@ -5574,6 +5782,20 @@
                 ;; Set once `begin-lifecycle-commit!` succeeded, so the finally
                 ;; block releases the `committing-cards` slot exactly once.
                 committing? (atom false)
+                ;; BOXP-737 (spec R10): true while this thread holds the ticket guard
+                ;; of the lifecycle commit (released first in the finally below).
+                commit-guard-held? (atom false)
+                ;; BOXP-737 (spec R11): true while this thread holds the budget
+                ;; lock taken before that ticket guard (released after it).
+                commit-budget-held? (atom false)
+                ;; BOXP-737 (spec R8): delivered true once this run passed the
+                ;; ownership check of its lifecycle commit, false when it did
+                ;; not (lock lost, exception, shutdown). The asynchronous PR
+                ;; conflict observation writes its record only after a true.
+                commit-owned (promise)
+                ;; BOXP-737 (spec R9): the PR conflict observation future, so
+                ;; the lock release can wait for it (bounded) before releasing.
+                pr-observation (atom nil)
                 ;; Set once a localllm docs-edit wrote its target notes inside
                 ;; this commit; a later failure of the lane / frontmatter /
                 ;; Notes transition rolls that write back (Blocked == unapplied).
@@ -5640,20 +5862,50 @@
                     gate-result (when (= "continue" intended)
                                   (review-gate! dir last-message))
                     _ (when gate-result
-                        (record-ai-ops-gate! ticket-id run-id assignee action gate-result)
-                        (try (future
+                        (try (reset! pr-observation (future
                                (try (doseq [url (:pr-urls gate-result)]
                                       (when (conflict-observe! 'task-board-conflict/enabled?)
                                         (if-let [pr (conflict-observe! 'task-board-conflict/fetch-pr url)]
-                                          (conflict-observe! 'task-board-conflict/record-pr! (env "CODEX_TASK_BOARD_ROOT" default-root)
-                                                             (merge pr {:ticket ticket-id :run run-id :pr url
-                                                                        :gate-ok (:ok? gate-result)
-                                                                        :gate (when-not (:ok? gate-result) (some-> (:gate gate-result) name))}))
+                                          (if-not (and (deref commit-owned)
+                                                       ;; R9: the check and the write share the ticket guard.
+                                                       (call-as-lock-owner!
+                                                        ticket-id lock
+                                                        #(conflict-observe! 'task-board-conflict/record-pr! (env "CODEX_TASK_BOARD_ROOT" default-root)
+                                                                            (merge pr {:ticket ticket-id :run run-id :pr url
+                                                                                       :gate-ok (:ok? gate-result)
+                                                                                       :gate (when-not (:ok? gate-result) (some-> (:gate gate-result) name))}))))
+                                            (log! (str "conflict observation PR record skipped: run " run-id " does not own the lock: " url)))
                                           (log! (str "conflict observation PR fetch failed or timed out: " url)))))
-                                    (catch Throwable e (log! (str "conflict observation PR failed: " (.getMessage e))))))
+                                    (catch Throwable e (log! (str "conflict observation PR failed: " (.getMessage e)))))))
                              (catch Throwable e (log! (str "conflict observation future failed: " (.getMessage e))))))
                     _ (do (begin-lifecycle-commit!)
                           (reset! committing? true))
+                    ;; BOXP-737 (spec R10): the ownership check and every write of
+                    ;; the lifecycle commit (and of the exception path below) run
+                    ;; in one ticket-guard critical section, so a run paused after
+                    ;; the check cannot write after a takeover (`acquire-lock!`
+                    ;; and stale-lock recovery take the same guard). Released
+                    ;; first in the finally.
+                    ;; R11: budget lock first, then the ticket guard (the global
+                    ;; lock order), because the commit writes the gate and
+                    ;; continuation budgets under the budget lock.
+                    _ (do (acquire-gate-failure-budget-lock!)
+                          (reset! commit-budget-held? true)
+                          (acquire-ticket-guard! ticket-id)
+                          (reset! commit-guard-held? true))
+                    ;; BOXP-737: before anything below persists state, make sure
+                    ;; this run still owns the ticket lock.
+                    _ (when-not (lifecycle-commit-owner? ticket-id lock)
+                        (throw (ex-info "ticket lock ownership lost before lifecycle commit"
+                                        {:type ::lock-lost})))
+                    _ (deliver commit-owned true)
+                    ;; BOXP-737 (spec R6/R12): the gate counters and the failure
+                    ;; correction event are written in the commit's single
+                    ;; critical section, after its ownership check. A separate,
+                    ;; earlier section would let a takeover land between the two
+                    ;; checks and leave a record from a run that ends lock-lost.
+                    _ (when gate-result
+                        (record-ai-ops-gate! ticket-id run-id assignee action gate-result))
                     ;; localllm docs-edit: the document write was staged, not
                     ;; applied. Commit it here, inside the same lifecycle commit
                     ;; as Notes / lane / lock, so a planned shutdown either
@@ -5853,8 +6105,24 @@
                                            {:result (if (= "done" next-status) result (if (= "held" (get-in (read-edn-file (fs/path dir "summary.edn") {}) [:todo :gate])) "continue" result)) :exit_code exit :idle_timeout (boolean idle-timeout?)}))))))
                 true)
               (catch Exception e
-                (if (or (= ::planned-shutdown (:type (ex-data e)))
-                        @shutdown-requested?)
+                ;; BOXP-737 (spec R10): the ownership check and the writes of the
+                ;; exception path share one ticket-guard critical section as well.
+                (with-lifecycle-commit-locks
+                 ticket-id
+                 (fn []
+                (cond
+                  ;; BOXP-737 (spec R2-R5): a run that lost its lock writes only
+                  ;; its own summary and a log line, also when a shutdown was
+                  ;; requested meanwhile (no interrupted event, no lane change).
+                  ;; The lock now belongs to someone else: leave it alone.
+                  (or (= ::lock-lost (:type (ex-data e)))
+                      (not (try (lifecycle-commit-owner? ticket-id lock)
+                                (catch Exception _ false))))
+                  (do (reset! keep-lock? true)
+                      (record-lock-lost-run! ticket-id (:run-id lock) action assignee effective-lane))
+
+                  (or (= ::planned-shutdown (:type (ex-data e)))
+                      @shutdown-requested?)
                   (do
                     ;; Planned shutdown: keep the run attributable as interrupted and
                     ;; leave the card, frontmatter and lock untouched for the next owner.
@@ -5873,6 +6141,8 @@
                                           {:event_type "run.interrupted" :status "interrupted"})
                     (log! (str "run " (:run-id lock) " for " ticket-id
                                " interrupted by planned workspace shutdown; lock kept for the next owner")))
+
+                  :else
                   (if-let [revision (when-not @docs-applied? (superseded-revision ticket-id start-rev))]
                     (record-superseded! ticket-id (:run-id lock) action assignee effective-lane nil nil nil revision)
                     (do
@@ -5894,9 +6164,24 @@
                     (if (block-ticket! ticket-id (:run-id lock) action nil nil nil e nil)
                       (do (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
                           (record-ai-ops-finish! ticket-id (:run-id lock) assignee action (ai-ops-run-lane status) "blocked" "blocked" {}))
-                      (restore-card-state! ticket-id status assignee)))))
+                      (restore-card-state! ticket-id status assignee)))))))
                 true)
               (finally
+                ;; R10: leave the commit's critical section before waiting for the
+                ;; PR observation (which needs the guard) and releasing the lock.
+                (when @commit-guard-held?
+                  (reset! commit-guard-held? false)
+                  (release-ticket-guard! ticket-id))
+                (when @commit-budget-held?
+                  (reset! commit-budget-held? false)
+                  (release-gate-failure-budget-lock!))
+                ;; No-op after a true; releases a pending PR observation otherwise.
+                (deliver commit-owned false)
+                ;; R9: an owner run lets its pending observation write while it
+                ;; still holds the lock; past the bound the record is dropped.
+                (when-let [obs @pr-observation]
+                  (when (= ::pending (deref obs pr-observation-release-wait-ms ::pending))
+                    (log! (str "conflict observation still pending at lock release: run " (:run-id lock) "; a late record is dropped"))))
                 (reset! stop? true)
                 @hb
                 (when-not @keep-lock?
@@ -9373,6 +9658,9 @@
                                           (request-shutdown!))
                                         lock)
                         heartbeat! (fn [& _] (future nil))
+                        ;; The fake lock has no file; ownership is not what
+                        ;; this case is about (BOXP-737 has its own cases).
+                        lifecycle-commit-owner? (fn [& _] true)
                         move-card! (fn [& args]
                                      (apply record! :move-card! args)
                                      (when (#{:during-start :during-commit} raise-at)
@@ -9450,6 +9738,441 @@
             (do
               (println (str "FAIL: " label " committing=" @committing-cards " calls=" (pr-str @calls)))
               (swap! failures conj label))))))
+
+    ;; BOXP-737 (spec R1-R5): a run that lost its lock while the review gate ran
+    ;; writes only its own summary, also when the gate failed (no gate counters
+    ;; or correction event) and when a shutdown was requested meanwhile (no
+    ;; run.interrupted event). It neither moves the card nor touches the lock.
+    (doseq [[label shutdown? gate-ok?]
+            [["lock lost during a failed review gate records nothing but the summary" false false]
+             ["lock lost and shutdown requested during the review gate records nothing but the summary" true true]]]
+      (let [calls (atom [])
+            record! (fn [k & args] (swap! calls conj (into [k] args)) nil)
+            lock {:run-id "lock-lost-run" :owner-id "test-owner"}]
+        (try
+          (with-redefs [ticket-frontmatter (fn [_] {:assignee "claude-fable"})
+                        candidate-action (fn [& _] :implement)
+                        acquire-lock! (fn [& _] lock)
+                        heartbeat! (fn [& _] (future nil))
+                        lifecycle-commit-owner? (fn [& _] false)
+                        move-card! (partial record! :move-card!)
+                        update-frontmatter! (partial record! :update-frontmatter!)
+                        append-note! (partial record! :append-note!)
+                        mark-run! (fn [_ _ status m] (record! :mark-run! status (:reason m)))
+                        release-lock! (partial record! :release-lock!)
+                        block-ticket! (fn [& _] (record! :block-ticket!) true)
+                        restore-card-state! (partial record! :restore-card-state!)
+                        record-ai-ops-gate! (partial record! :record-ai-ops-gate!)
+                        record-ai-ops-event! (fn [_ _ _ _ word _]
+                                               (when-not (= "started" word)
+                                                 (record! :record-ai-ops-event! word)))
+                        record-ai-ops-finish! (partial record! :record-ai-ops-finish!)
+                        record-task-board-event! (partial record! :record-task-board-event!)
+                        persist-pr-gate-diagnostic! (fn [& _] (record! :persist-pr-gate-diagnostic!) nil)
+                        record-gate-pr-registrations! (fn [& _] (record! :record-gate-pr-registrations!))
+                        record-pr-gate-failure! (fn [& _] (record! :record-pr-gate-failure!) nil)
+                        clear-pr-gate-retries! (partial record! :clear-pr-gate-retries!)
+                        reserve-gate-budget-run! (fn [& _] true)
+                        log! (fn [& _] nil)
+                        run-agent! (fn [& _]
+                                     {:exit 0 :result "continue" :run-id (:run-id lock)
+                                      :dir "/nonexistent" :last-message "https://github.com/boxp/arch/pull/1"
+                                      :idle-timeout? false :shutdown? false})
+                        review-gate! (fn [& _]
+                                       (record! :review-gate!)
+                                       (when shutdown? (reset! shutdown-requested? true))
+                                       {:ok? gate-ok? :gate (when-not gate-ok? :ci) :failure-kind (when-not gate-ok? :check-failure)
+                                        :pr-urls ["https://github.com/boxp/arch/pull/1"]})
+                        consume-continuation! (fn [_ _ gate] gate)
+                        clear-continuation-budget! (fn [_] nil)]
+            (process-card! {:ticket-id "TEST-LOCK-LOST" :lane "In Progress" :status "in-progress"}))
+          (finally
+            (reset! shutdown-requested? false)))
+        (let [expected [[:append-note! "TEST-LOCK-LOST"
+                         "Codex task-board run lock-lost-run started from In Progress with action implement using claude-fable."]
+                        [:review-gate!]
+                        [:mark-run! :interrupted "lock ownership lost before lifecycle commit"]]]
+          (if (and (= expected @calls) (zero? @committing-cards))
+            (println (str "PASS: " label))
+            (do
+              (println (str "FAIL: " label " committing=" @committing-cards " calls=" (pr-str @calls)))
+              (swap! failures conj label))))))
+
+    ;; BOXP-737 (spec R12): a takeover may land before any ownership check of
+    ;; the run end. Whatever the point, a run that ends lock-lost has written
+    ;; nothing after the agent except its summary (no gate counters, correction
+    ;; event, diagnostic, lane or Notes), and a run that passed a check commits.
+    (doseq [takeover-at (range 0 4)]
+      (let [label (str "takeover before ownership check #" (inc takeover-at)
+                       " leaves either a full commit or only the summary")
+            calls (atom [])
+            checks (atom 0)
+            record! (fn [k & args] (swap! calls conj (into [k] args)) nil)
+            lock {:run-id "takeover-point-run" :owner-id "test-owner"}]
+        (with-redefs [ticket-frontmatter (fn [_] {:assignee "claude-fable"})
+                      candidate-action (fn [& _] :implement)
+                      acquire-lock! (fn [& _] lock)
+                      heartbeat! (fn [& _] (future nil))
+                      lifecycle-commit-owner? (fn [& _] (< (dec (swap! checks inc)) takeover-at))
+                      move-card! (partial record! :move-card!)
+                      update-frontmatter! (partial record! :update-frontmatter!)
+                      append-note! (fn [_ note] (when-not (str/starts-with? note "Codex task-board run takeover-point-run started")
+                                                  (record! :append-note!)))
+                      mark-run! (fn [_ _ status m] (record! :mark-run! status (:reason m)))
+                      release-lock! (partial record! :release-lock!)
+                      block-ticket! (fn [& _] (record! :block-ticket!) true)
+                      restore-card-state! (partial record! :restore-card-state!)
+                      record-ai-ops-gate! (partial record! :record-ai-ops-gate!)
+                      record-ai-ops-event! (fn [_ _ _ _ word _]
+                                             (when-not (= "started" word)
+                                               (record! :record-ai-ops-event! word)))
+                      record-ai-ops-finish! (partial record! :record-ai-ops-finish!)
+                      record-task-board-event! (partial record! :record-task-board-event!)
+                      persist-pr-gate-diagnostic! (fn [& _] (record! :persist-pr-gate-diagnostic!) nil)
+                      record-gate-pr-registrations! (fn [& _] (record! :record-gate-pr-registrations!))
+                      record-same-file-review-streak! (fn [& _] nil)
+                      record-pr-gate-failure! (fn [_ _ _ gate] (record! :record-pr-gate-failure!) gate)
+                      clear-pr-gate-retries! (partial record! :clear-pr-gate-retries!)
+                      reserve-gate-budget-run! (fn [& _] true)
+                      log! (fn [& _] nil)
+                      run-agent! (fn [& _]
+                                   {:exit 0 :result "continue" :run-id (:run-id lock)
+                                    :dir "/nonexistent" :last-message "https://github.com/boxp/arch/pull/1"
+                                    :idle-timeout? false :shutdown? false})
+                      review-gate! (fn [& _]
+                                     {:ok? false :gate :ci :failure-kind :check-failure :retryable? true
+                                      :pr-urls ["https://github.com/boxp/arch/pull/1"]})
+                      consume-continuation! (fn [_ _ gate] gate)
+                      clear-continuation-budget! (fn [_] nil)]
+          (process-card! {:ticket-id "TEST-TAKEOVER-POINT" :lane "In Progress" :status "in-progress"}))
+        (let [c @calls
+              lost? (some #{[:mark-run! :interrupted "lock ownership lost before lifecycle commit"]} c)
+              ok? (if lost?
+                    (= [[:mark-run! :interrupted "lock ownership lost before lifecycle commit"]] c)
+                    (and (some #(= :record-ai-ops-gate! (first %)) c)
+                         (some #(= :release-lock! (first %)) c)))]
+          (if (and ok? (zero? @committing-cards) (= (boolean lost?) (zero? takeover-at)))
+            (println (str "PASS: " label))
+            (do
+              (println (str "FAIL: " label " committing=" @committing-cards " calls=" (pr-str c)))
+              (swap! failures conj label))))))
+
+    ;; BOXP-737 (spec R9): `call-as-lock-owner!` runs its write only while the
+    ;; lock file still is this run's lock (checked under the ticket guard).
+    (let [dir (str (fs/create-temp-dir {:prefix "boxp737-owner-write"}))
+          mine {:ticket "TEST-OWNER-WRITE" :run-id "old-run" :owner-id "o1" :owner-instance-id "i1"}
+          theirs (assoc mine :run-id "new-run" :owner-instance-id "i2")
+          writes (atom [])]
+      (with-redefs [root (constantly dir)]
+        (fs/create-dirs (fs/parent (lock-path "TEST-OWNER-WRITE")))
+        (write-edn-file! (lock-path "TEST-OWNER-WRITE") mine)
+        (let [owned (call-as-lock-owner! "TEST-OWNER-WRITE" mine #(swap! writes conj :owned))
+              _ (write-edn-file! (lock-path "TEST-OWNER-WRITE") theirs)
+              taken (call-as-lock-owner! "TEST-OWNER-WRITE" mine #(swap! writes conj :taken))
+              _ (fs/delete-if-exists (lock-path "TEST-OWNER-WRITE"))
+              released (call-as-lock-owner! "TEST-OWNER-WRITE" mine #(swap! writes conj :released))
+              label "owner-guarded write runs only while the lock is this run's lock"]
+          (if (and (= [true false false] [owned taken released]) (= [:owned] @writes)
+                   (not (fs/exists? (lock-path "TEST-OWNER-WRITE"))))
+            (println (str "PASS: " label))
+            (do (println (str "FAIL: " label " results=" (pr-str [owned taken released]) " writes=" (pr-str @writes)))
+                (swap! failures conj label)))))
+      (fs/delete-tree dir))
+
+    ;; BOXP-737 (spec R10): the ownership check and the writes of the lifecycle
+    ;; commit form one ticket-guard critical section. A takeover attempted after
+    ;; the check (here: while the card moves) waits until every commit write of
+    ;; the old owner is done, on the normal path and on the exception path.
+    (doseq [[label fail-move?]
+            [["takeover during the lifecycle commit waits until the owner's writes are done" false]
+             ["takeover during the exception path waits until the owner's writes are done" true]]]
+      (let [dir (str (fs/create-temp-dir {:prefix "boxp737-commit-guard"}))
+            ticket "TEST-COMMIT-GUARD"
+            mine {:ticket ticket :run-id "old-run" :owner-id "o1" :owner-instance-id "i1"
+                  :heartbeat-at (now-str)}
+            theirs (assoc mine :run-id "new-run" :owner-instance-id "i2")
+            takeover (atom nil)
+            seen (atom [])
+            write! (fn [k & _]
+                     (when-let [t @takeover] (swap! seen conj [k (realized? t)]))
+                     nil)]
+        (with-redefs [root (constantly dir)
+                      ticket-frontmatter (fn [_] {:assignee "claude-fable"})
+                      candidate-action (fn [& _] :implement)
+                      acquire-lock! (fn [& _]
+                                      (fs/create-dirs (fs/parent (lock-path ticket)))
+                                      (write-edn-file! (lock-path ticket) mine)
+                                      mine)
+                      heartbeat! (fn [& _] (future nil))
+                      move-card! (fn [_ next-status & _]
+                                   (when (not= "in-progress" next-status)
+                                     (reset! takeover (future
+                                                        (with-ticket-lock-guard
+                                                         ticket
+                                                         #(do (write-edn-file! (lock-path ticket) theirs) :taken))))
+                                     (Thread/sleep 300)
+                                     (write! :move-card!)
+                                     (when fail-move? (throw (ex-info "forced move failure" {})))))
+                      update-frontmatter! (partial write! :update-frontmatter!)
+                      append-note! (partial write! :append-note!)
+                      mark-run! (partial write! :mark-run!)
+                      block-ticket! (fn [& _] (write! :block-ticket!) true)
+                      restore-card-state! (partial write! :restore-card-state!)
+                      record-ai-ops-gate! (fn [& _] nil)
+                      record-ai-ops-event! (fn [& _] nil)
+                      record-ai-ops-finish! (partial write! :record-ai-ops-finish!)
+                      record-task-board-event! (partial write! :record-task-board-event!)
+                      persist-pr-gate-diagnostic! (fn [& _] nil)
+                      record-gate-pr-registrations! (fn [& _] nil)
+                      record-same-file-review-streak! (fn [& _] nil)
+                      record-pr-gate-failure! (fn [_ _ _ gate] gate)
+                      clear-pr-gate-retries! (fn [& _] nil)
+                      reserve-gate-budget-run! (fn [& _] true)
+                      superseded-revision (fn [& _] nil)
+                      final-status (fn [& _] "ready")
+                      log! (fn [& _] nil)
+                      conflict-observe! (fn [& _] nil)
+                      run-agent! (fn [& _]
+                                   {:exit 0 :result "continue" :run-id (:run-id mine)
+                                    :dir "/nonexistent" :last-message "https://github.com/boxp/arch/pull/1"
+                                    :idle-timeout? false :shutdown? false})
+                      review-gate! (fn [& _] {:ok? true :pr-urls []})
+                      consume-continuation! (fn [_ _ gate] gate)
+                      clear-continuation-budget! (fn [_] nil)]
+          (process-card! {:ticket-id ticket :lane "In Progress" :status "in-progress"})
+          (let [taken (some-> @takeover (deref 5000 ::timeout))
+                final-lock (read-edn-file (lock-path ticket) nil)
+                ok? (and (= :taken taken)
+                         (seq @seen)
+                         (every? (comp false? second) @seen)
+                         (if fail-move?
+                           (some #{[:block-ticket! false]} @seen)
+                           (some #{[:append-note! false]} @seen))
+                         (same-ticket-lock? theirs final-lock)
+                         (zero? @committing-cards))]
+            (if ok?
+              (println (str "PASS: " label))
+              (do (println (str "FAIL: " label " taken=" (pr-str taken) " seen=" (pr-str @seen)
+                                " committing=" @committing-cards))
+                  (swap! failures conj label)))))
+        (fs/delete-tree dir)))
+
+    ;; BOXP-737 (spec R11): lock order is budget lock -> ticket guard. A run that
+    ;; holds the budget lock and waits for the ticket guard (budget reservation,
+    ;; gate budget stop) must not deadlock with a lifecycle commit that writes the
+    ;; gate / continuation budgets.
+    (let [dir (str (fs/create-temp-dir {:prefix "boxp737-lock-order"}))
+          ticket "TEST-LOCK-ORDER"
+          mine {:ticket ticket :run-id "old-run" :owner-id "o1" :owner-instance-id "i1"
+                :heartbeat-at (now-str)}
+          other (atom nil)
+          label "lifecycle commit and a budget-then-guard run do not deadlock"]
+      (with-redefs [root (constantly dir)
+                    ticket-frontmatter (fn [_] {:assignee "claude-fable"})
+                    candidate-action (fn [& _] :implement)
+                    acquire-lock! (fn [& _]
+                                    (fs/create-dirs (fs/parent (lock-path ticket)))
+                                    (write-edn-file! (lock-path ticket) mine)
+                                    mine)
+                    heartbeat! (fn [& _] (future nil))
+                    move-card! (fn [& _] nil)
+                    update-frontmatter! (fn [& _] nil)
+                    append-note! (fn [& _] nil)
+                    mark-run! (fn [& _] nil)
+                    block-ticket! (fn [& _] true)
+                    restore-card-state! (fn [& _] nil)
+                    record-ai-ops-gate! (fn [& _] nil)
+                    record-ai-ops-event! (fn [& _] nil)
+                    record-ai-ops-finish! (fn [& _] nil)
+                    record-task-board-event! (fn [& _] nil)
+                    persist-pr-gate-diagnostic! (fn [& _] nil)
+                    ;; The commit's budget write: another run first takes the
+                    ;; budget lock and then wants this ticket's guard.
+                    record-gate-pr-registrations! (fn [& _]
+                                                    (reset! other (future
+                                                                    (with-gate-failure-budget-lock
+                                                                     (fn []
+                                                                       (Thread/sleep 200)
+                                                                       (with-ticket-lock-guard ticket (constantly :reserved))))))
+                                                    (Thread/sleep 100)
+                                                    (with-gate-failure-budget-lock (constantly nil)))
+                    record-same-file-review-streak! (fn [& _] nil)
+                    record-pr-gate-failure! (fn [_ _ _ gate] gate)
+                    clear-pr-gate-retries! (fn [& _] nil)
+                    reserve-gate-budget-run! (fn [& _] true)
+                    superseded-revision (fn [& _] nil)
+                    final-status (fn [& _] "ready")
+                    log! (fn [& _] nil)
+                    conflict-observe! (fn [& _] nil)
+                    run-agent! (fn [& _]
+                                 {:exit 0 :result "continue" :run-id (:run-id mine)
+                                  :dir "/nonexistent" :last-message "https://github.com/boxp/arch/pull/1"
+                                  :idle-timeout? false :shutdown? false})
+                    review-gate! (fn [& _] {:ok? true :pr-urls []})
+                    consume-continuation! (fn [_ _ gate] gate)
+                    clear-continuation-budget! (fn [_] nil)]
+        (let [run (future (process-card! {:ticket-id ticket :lane "In Progress" :status "in-progress"}) :done)
+              finished (deref run 10000 ::deadlock)
+              reserved (some-> @other (deref 5000 ::deadlock))]
+          (if (and (= :done finished) (= :reserved reserved))
+            (println (str "PASS: " label))
+            (do (println (str "FAIL: " label " commit=" (pr-str finished) " other=" (pr-str reserved)))
+                (swap! failures conj label)))))
+      (fs/delete-tree dir))
+
+    ;; BOXP-737 (spec R11): the inverse order is refused instead of waiting; the
+    ;; budget lock re-enters on the same thread.
+    (let [dir (str (fs/create-temp-dir {:prefix "boxp737-lock-order-check"}))
+          label "budget lock under a ticket guard is refused; budget then guard and re-entry work"]
+      (with-redefs [root (constantly dir)]
+        (let [inverse (try (with-ticket-lock-guard "TEST-ORDER"
+                             #(with-gate-failure-budget-lock (constantly :entered)))
+                           (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))
+              forward (with-lifecycle-commit-locks "TEST-ORDER"
+                        #(with-gate-failure-budget-lock (constantly :entered)))
+              after (with-gate-failure-budget-lock (constantly :free))]
+          (if (and (= ::lock-order-violation inverse) (= :entered forward) (= :free after)
+                   (not (current-thread-holds-ticket-guard?)))
+            (println (str "PASS: " label))
+            (do (println (str "FAIL: " label " " (pr-str [inverse forward after])))
+                (swap! failures conj label)))))
+      (fs/delete-tree dir))
+
+    ;; BOXP-737 (spec R13): the lifecycle commit holds the ticket guard and then
+    ;; creates a recheck reservation (guard -> recheck lock) while the recheck
+    ;; sweep handles a due reservation of the same ticket. Neither may wait for
+    ;; the other forever.
+    (let [dir (str (fs/create-temp-dir {:prefix "boxp737-recheck-order"}))
+          ticket "TEST-RECHECK-ORDER"
+          label "lifecycle commit creating a recheck and the recheck sweep of the same ticket do not deadlock"
+          db (atom {ticket {:id "rc-1" :ticket ticket :state :pending :due "2020-01-01T00:00:00Z"}})]
+      (with-redefs [root (constantly dir)
+                    read-rechecks (fn [] @db)
+                    write-rechecks! (fn [v] (reset! db v))
+                    ticket-path (fn [_] (fs/path dir "no-such-ticket.md"))
+                    read-lines (fn [_] [])
+                    log! (fn [& _] nil)]
+        (let [commit (future (with-lifecycle-commit-locks ticket
+                               (fn []
+                                 (Thread/sleep 300)
+                                 (with-recheck-lock (constantly :created)))))
+              _ (Thread/sleep 100)
+              sweep (future (sweep-rechecks!) :swept)
+              c (deref commit 5000 ::deadlock)
+              s (deref sweep 5000 ::deadlock)]
+          (if (and (= :created c) (= :swept s) (= :superseded (get-in @db [ticket :state])))
+            (println (str "PASS: " label))
+            (do (println (str "FAIL: " label " commit=" (pr-str c) " sweep=" (pr-str s)))
+                (swap! failures conj label)))))
+      (fs/delete-tree dir))
+
+    ;; BOXP-737 (spec R13): outer locks -> ticket guard -> inner locks. Every
+    ;; inverse acquisition is refused instead of waiting; forward order and
+    ;; same-thread re-entry work.
+    (let [dir (str (fs/create-temp-dir {:prefix "boxp737-lock-layers"}))
+          label "lock layers: inverse acquisitions are refused, forward order and re-entry work"
+          refused (fn [f] (try (f) :entered
+                               (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))]
+      (with-redefs [root (constantly dir)]
+        (let [results
+              {:guard-under-recheck (refused #(with-recheck-lock
+                                                (fn [] (with-ticket-lock-guard "TEST-LAYER" (constantly nil)))))
+               :guard-under-same-file (refused #(with-same-file-review-lock
+                                                  (fn [] (with-ticket-lock-guard "TEST-LAYER" (constantly nil)))))
+               :owner-under-guard (refused #(with-ticket-lock-guard "TEST-LAYER"
+                                              (fn [] (with-owner-lock-guard "test-owner" (constantly nil)))))
+               :budget-under-recheck (refused #(with-recheck-lock
+                                                 (fn [] (with-gate-failure-budget-lock (constantly nil)))))
+               :owner-then-guard (refused #(with-owner-lock-guard "test-owner"
+                                             (fn [] (with-ticket-lock-guard "TEST-LAYER" (constantly nil)))))
+               :guard-then-inner (refused #(with-ticket-lock-guard "TEST-LAYER"
+                                             (fn [] (with-recheck-lock
+                                                      (fn [] (with-same-file-review-lock (constantly nil)))))))
+               :guard-reentry-under-inner (refused #(with-ticket-lock-guard "TEST-LAYER"
+                                                      (fn [] (with-recheck-lock
+                                                               (fn [] (with-ticket-lock-guard "TEST-LAYER" (constantly nil)))))))
+               :free-after (refused #(with-recheck-lock
+                                       (fn [] nil)))}
+              expected {:guard-under-recheck ::lock-order-violation
+                        :guard-under-same-file ::lock-order-violation
+                        :owner-under-guard ::lock-order-violation
+                        :budget-under-recheck ::lock-order-violation
+                        :owner-then-guard :entered
+                        :guard-then-inner :entered
+                        :guard-reentry-under-inner :entered
+                        :free-after :entered}]
+          (if (and (= expected results) (not (current-thread-holds-ticket-guard?)))
+            (println (str "PASS: " label))
+            (do (println (str "FAIL: " label " " (pr-str results)))
+                (swap! failures conj label)))))
+      (fs/delete-tree dir))
+
+    ;; BOXP-737 (spec R8): the PR conflict observation runs in a future after
+    ;; the review gate. It may write its record only once this run passed the
+    ;; ownership check of its lifecycle commit; a run whose lock was taken over
+    ;; before the commit check records nothing. R9: also a
+    ;; run that committed as owner but lost the lock while the PR fetch ran
+    ;; records nothing, because the write itself is guarded by ownership.
+    (doseq [[label owner-answers owner-at-write? expect-record?]
+            [["PR conflict observation is not recorded after the lock was lost before the commit" [false] true false]
+             ["PR conflict observation is not recorded when the lock was lost during the PR fetch" [true] false false]
+             ["PR conflict observation is recorded when the run committed as lock owner" [true] true true]]]
+      (let [calls (atom [])
+            answers (atom owner-answers)
+            settled (promise)
+            lock {:run-id "pr-observe-run" :owner-id "test-owner"}]
+        (with-redefs [ticket-frontmatter (fn [_] {:assignee "claude-fable"})
+                      candidate-action (fn [& _] :implement)
+                      acquire-lock! (fn [& _] lock)
+                      heartbeat! (fn [& _] (future nil))
+                      lifecycle-commit-owner? (fn [& _] (let [[a & more] @answers]
+                                                          (reset! answers (vec more))
+                                                          (boolean a)))
+                      call-as-lock-owner! (fn [_ _ f] (if owner-at-write? (do (f) true) false))
+                      move-card! (fn [& _] nil)
+                      update-frontmatter! (fn [& _] nil)
+                      append-note! (fn [& _] nil)
+                      mark-run! (fn [& _] nil)
+                      release-lock! (fn [& _] nil)
+                      block-ticket! (fn [& _] true)
+                      restore-card-state! (fn [& _] nil)
+                      record-ai-ops-gate! (fn [& _] nil)
+                      record-ai-ops-event! (fn [& _] nil)
+                      record-ai-ops-finish! (fn [& _] nil)
+                      record-task-board-event! (fn [& _] nil)
+                      persist-pr-gate-diagnostic! (fn [& _] nil)
+                      record-gate-pr-registrations! (fn [& _] nil)
+                      record-same-file-review-streak! (fn [& _] nil)
+                      record-pr-gate-failure! (fn [_ _ _ gate] gate)
+                      clear-pr-gate-retries! (fn [& _] nil)
+                      reserve-gate-budget-run! (fn [& _] true)
+                      final-status (fn [& _] "ready")
+                      log! (fn [msg]
+                             (when (str/includes? (str msg) "conflict observation PR record skipped")
+                               (swap! calls conj :skipped)
+                               (deliver settled true)))
+                      conflict-observe! (fn [f & _]
+                                          (case f
+                                            task-board-conflict/enabled? true
+                                            task-board-conflict/fetch-pr {:head "abc"}
+                                            task-board-conflict/record-pr! (do (swap! calls conj :record-pr!)
+                                                                               (deliver settled true))
+                                            nil))
+                      run-agent! (fn [& _]
+                                   {:exit 0 :result "continue" :run-id (:run-id lock)
+                                    :dir "/nonexistent" :last-message "https://github.com/boxp/arch/pull/1"
+                                    :idle-timeout? false :shutdown? false})
+                      review-gate! (fn [& _] {:ok? true :pr-urls ["https://github.com/boxp/arch/pull/1"]})
+                      consume-continuation! (fn [_ _ gate] gate)
+                      clear-continuation-budget! (fn [_] nil)]
+          (try (process-card! {:ticket-id "TEST-PR-OBSERVE" :lane "In Progress" :status "in-progress"})
+               (catch Throwable _ nil))
+          (deref settled 5000 nil))
+        (if (= (if expect-record? [:record-pr!] [:skipped]) @calls)
+          (println (str "PASS: " label))
+          (do
+            (println (str "FAIL: " label " calls=" (pr-str @calls)))
+            (swap! failures conj label)))))
 
     ;; The hook's finalize wait must cover a lifecycle commit that began before
     ;; the flag was raised, not only `in-flight-futures`. A commit is waited for

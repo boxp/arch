@@ -1324,6 +1324,123 @@ EOF
   assert_file_contains "${state}/runs/BOXP-205/${old_run}/summary.edn" ':status :interrupted'
 }
 
+# BOXP-737: only the current lock owner runs the end-of-run lifecycle commit.
+# The fake agent plays "runner B took the lock over while runner A was paused"
+# (lock replaced under the same ticket guard, or removed) before it returns
+# done; the expectations come from the runner spec (Projects/codex-task-board-runner
+# spec, R1-R5), not from the implementation.
+make_lock_takeover_codex() {
+  local bin_dir="$1"
+  cat >"${bin_dir}/codex" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+last=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in --output-last-message) last="$2"; shift 2 ;; *) shift ;; esac
+done
+prompt="$(cat)"
+ticket="$(printf '%s\n' "${prompt}" | sed -n 's/^Ticket: //p' | head -n 1)"
+mode="$(printf '%s' "${FAKE_TAKEOVER:-}" | tr ',' '\n' | sed -n "s/^${ticket}=//p")"
+if [[ -n "${mode}" ]]; then
+  content=""
+  [[ "${mode}" == replace ]] &&
+    content="{:ticket \"${ticket}\" :run-id \"runner-b-run\" :action :implement :lane \"In Progress\" :owner-id \"runner-b\" :owner-instance-id \"runner-b-1\" :heartbeat-at \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+  bb -e '
+    (let [[guard lock content] *command-line-args*
+          f (java.io.File. guard)]
+      (.mkdirs (.getParentFile f))
+      (with-open [raf (java.io.RandomAccessFile. f "rw") ch (.getChannel raf)]
+        (let [_l (.lock ch)]
+          (if (= "" content)
+            (.delete (java.io.File. lock))
+            (spit lock (str content "\n"))))))' \
+    "${FAKE_STATE}/lock-guards/${ticket}.lock" "${FAKE_STATE}/locks/${ticket}.edn" "${content}"
+fi
+mkdir -p "$(dirname "${last}")"
+printf '%s\n' "${CODEX_FAKE_MESSAGE:-TASK_BOARD_RESULT: done}" >"${last}"
+SH
+  chmod +x "${bin_dir}/codex"
+}
+
+assert_lock_lost_run_left_ticket_alone() {
+  local vault="$1" state="$2" ticket="$3"
+  local summary
+  assert_file_contains "${vault}/Boards/Task Board.md" "Tickets/${ticket}\|.*status::in-progress"
+  assert_file_contains "${vault}/Tickets/${ticket}.md" '^status: in-progress$'
+  assert_file_contains "${vault}/Tickets/${ticket}.md" '^assignee: codex$'
+  assert_file_contains "${vault}/Tickets/${ticket}.md" '^closed:$'
+  assert_file_contains "${vault}/Tickets/${ticket}.md" 'started from In Progress with action implement'
+  assert_file_not_contains "${vault}/Tickets/${ticket}.md" 'finished with result'
+  assert_file_not_contains "${vault}/Tickets/${ticket}.md" 'Blocked'
+  summary="$(find "${state}/runs/${ticket}" -name summary.edn -print | sort | tail -n 1)"
+  [[ -n "${summary}" ]] || fail "expected a summary for ${ticket}"
+  assert_file_contains "${summary}" ':status :interrupted'
+  assert_file_contains "${summary}" ':reason "lock ownership lost before lifecycle commit"'
+}
+
+test_lifecycle_commit_only_by_lock_owner() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}" "${state}"
+  make_lock_takeover_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-9101|BOXP-9101: taken over]] #ticket status::in-progress
+- [ ] [[Tickets/BOXP-9102|BOXP-9102: lock removed]] #ticket status::in-progress
+- [ ] [[Tickets/BOXP-9103|BOXP-9103: owner]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-9101 in-progress codex
+  write_ticket "${vault}" BOXP-9102 in-progress codex
+  write_ticket "${vault}" BOXP-9103 in-progress codex
+
+  PATH="${bin}:$PATH" FAKE_STATE="${state}" FAKE_TAKEOVER="BOXP-9101=replace,BOXP-9102=remove" \
+    CODEX_TASK_BOARD_OWNER_ID=runner-a CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=runner-a-1 \
+    run_tick "${vault}" "${state}" env >"${tmp}/tick.out" 2>&1 || {
+    cat "${tmp}/tick.out" >&2
+    fail "tick failed"
+  }
+
+  # R2-R4: the run that lost its lock neither completes nor touches the new owner's lock.
+  assert_lock_lost_run_left_ticket_alone "${vault}" "${state}" BOXP-9101
+  assert_file_contains "${state}/locks/BOXP-9101.edn" ':owner-id "runner-b"'
+  assert_file_contains "${state}/locks/BOXP-9101.edn" ':run-id "runner-b-run"'
+  assert_lock_lost_run_left_ticket_alone "${vault}" "${state}" BOXP-9102
+  [[ ! -e "${state}/locks/BOXP-9102.edn" ]] || fail "expected no lock to be re-created for BOXP-9102"
+  assert_file_contains "${tmp}/tick.out" 'lock ownership lost before lifecycle commit: BOXP-9101'
+  # R1: the owner finishes as before.
+  assert_file_contains "${vault}/Tickets/BOXP-9103.md" '^status: done$'
+  assert_file_contains "${vault}/Tickets/BOXP-9103.md" 'finished with result done'
+  assert_file_contains "${vault}/Boards/Task Board.md" 'Tickets/BOXP-9103\|.*status::done'
+  assert_run_summary_contains "${state}" BOXP-9103 ':status :succeeded'
+  [[ ! -e "${state}/locks/BOXP-9103.edn" ]] || fail "expected the owner to release its lock"
+  rm -rf "${tmp}"
+}
+
+# R5: a failure after losing the lock does not move the card to Blocked either.
+test_lock_lost_failure_does_not_block() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}" "${state}"
+  make_lock_takeover_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-9104|BOXP-9104: taken over then failed]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-9104 in-progress codex
+
+  PATH="${bin}:$PATH" FAKE_STATE="${state}" FAKE_TAKEOVER="BOXP-9104=replace" \
+    CODEX_TASK_BOARD_TEST_FORCE_RUNNER_EXCEPTION=true \
+    CODEX_TASK_BOARD_OWNER_ID=runner-a CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=runner-a-1 \
+    run_tick "${vault}" "${state}" env >"${tmp}/tick.out" 2>&1 || {
+    cat "${tmp}/tick.out" >&2
+    fail "tick failed"
+  }
+
+  assert_lock_lost_run_left_ticket_alone "${vault}" "${state}" BOXP-9104
+  assert_file_contains "${state}/locks/BOXP-9104.edn" ':owner-id "runner-b"'
+  rm -rf "${tmp}"
+}
+
 # Start `loop` in the background with the given owner / instance and wait until
 # the lock for the ticket exists. Sets LOOP_PID (the loop must be a child of the
 # calling shell so `wait` works; do not call this inside a subshell).
