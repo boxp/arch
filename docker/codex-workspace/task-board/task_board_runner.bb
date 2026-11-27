@@ -5596,6 +5596,11 @@
                 ;; Set once `begin-lifecycle-commit!` succeeded, so the finally
                 ;; block releases the `committing-cards` slot exactly once.
                 committing? (atom false)
+                ;; BOXP-737 (spec R8): delivered true once this run passed the
+                ;; ownership check of its lifecycle commit, false when it did
+                ;; not (lock lost, exception, shutdown). The asynchronous PR
+                ;; conflict observation writes its record only after a true.
+                commit-owned (promise)
                 ;; Set once a localllm docs-edit wrote its target notes inside
                 ;; this commit; a later failure of the lane / frontmatter /
                 ;; Notes transition rolls that write back (Blocked == unapplied).
@@ -5673,10 +5678,12 @@
                                (try (doseq [url (:pr-urls gate-result)]
                                       (when (conflict-observe! 'task-board-conflict/enabled?)
                                         (if-let [pr (conflict-observe! 'task-board-conflict/fetch-pr url)]
+                                          (if-not (deref commit-owned)
+                                            (log! (str "conflict observation PR record skipped: run " run-id " did not commit as lock owner: " url))
                                           (conflict-observe! 'task-board-conflict/record-pr! (env "CODEX_TASK_BOARD_ROOT" default-root)
-                                                             (merge pr {:ticket ticket-id :run run-id :pr url
-                                                                        :gate-ok (:ok? gate-result)
-                                                                        :gate (when-not (:ok? gate-result) (some-> (:gate gate-result) name))}))
+                                                               (merge pr {:ticket ticket-id :run run-id :pr url
+                                                                          :gate-ok (:ok? gate-result)
+                                                                          :gate (when-not (:ok? gate-result) (some-> (:gate gate-result) name))})))
                                           (log! (str "conflict observation PR fetch failed or timed out: " url)))))
                                     (catch Throwable e (log! (str "conflict observation PR failed: " (.getMessage e))))))
                              (catch Throwable e (log! (str "conflict observation future failed: " (.getMessage e))))))
@@ -5687,6 +5694,7 @@
                     _ (when-not (lifecycle-commit-owner? ticket-id lock)
                         (throw (ex-info "ticket lock ownership lost before lifecycle commit"
                                         {:type ::lock-lost})))
+                    _ (deliver commit-owned true)
                     ;; localllm docs-edit: the document write was staged, not
                     ;; applied. Commit it here, inside the same lifecycle commit
                     ;; as Notes / lane / lock, so a planned shutdown either
@@ -5943,6 +5951,8 @@
                       (restore-card-state! ticket-id status assignee)))))
                 true)
               (finally
+                ;; No-op after a true; releases a pending PR observation otherwise.
+                (deliver commit-owned false)
                 (reset! stop? true)
                 @hb
                 (when-not @keep-lock?
@@ -9558,6 +9568,69 @@
             (do
               (println (str "FAIL: " label " committing=" @committing-cards " calls=" (pr-str @calls)))
               (swap! failures conj label))))))
+
+    ;; BOXP-737 (spec R8): the PR conflict observation runs in a future after
+    ;; the review gate. It may write its record only once this run passed the
+    ;; ownership check of its lifecycle commit; a run whose lock was taken over
+    ;; between the gate check and the commit check records nothing.
+    (doseq [[label owner-answers expect-record?]
+            [["PR conflict observation is not recorded after the lock was lost before the commit" [true false] false]
+             ["PR conflict observation is recorded when the run committed as lock owner" [true true] true]]]
+      (let [calls (atom [])
+            answers (atom owner-answers)
+            settled (promise)
+            lock {:run-id "pr-observe-run" :owner-id "test-owner"}]
+        (with-redefs [ticket-frontmatter (fn [_] {:assignee "claude-fable"})
+                      candidate-action (fn [& _] :implement)
+                      acquire-lock! (fn [& _] lock)
+                      heartbeat! (fn [& _] (future nil))
+                      lifecycle-commit-owner? (fn [& _] (let [[a & more] @answers]
+                                                          (reset! answers (vec more))
+                                                          (boolean a)))
+                      move-card! (fn [& _] nil)
+                      update-frontmatter! (fn [& _] nil)
+                      append-note! (fn [& _] nil)
+                      mark-run! (fn [& _] nil)
+                      release-lock! (fn [& _] nil)
+                      block-ticket! (fn [& _] true)
+                      restore-card-state! (fn [& _] nil)
+                      record-ai-ops-gate! (fn [& _] nil)
+                      record-ai-ops-event! (fn [& _] nil)
+                      record-ai-ops-finish! (fn [& _] nil)
+                      record-task-board-event! (fn [& _] nil)
+                      persist-pr-gate-diagnostic! (fn [& _] nil)
+                      record-gate-pr-registrations! (fn [& _] nil)
+                      record-same-file-review-streak! (fn [& _] nil)
+                      record-pr-gate-failure! (fn [_ _ _ gate] gate)
+                      clear-pr-gate-retries! (fn [& _] nil)
+                      reserve-gate-budget-run! (fn [& _] true)
+                      final-status (fn [& _] "ready")
+                      log! (fn [msg]
+                             (when (str/includes? (str msg) "conflict observation PR record skipped")
+                               (swap! calls conj :skipped)
+                               (deliver settled true)))
+                      conflict-observe! (fn [f & _]
+                                          (case f
+                                            task-board-conflict/enabled? true
+                                            task-board-conflict/fetch-pr {:head "abc"}
+                                            task-board-conflict/record-pr! (do (swap! calls conj :record-pr!)
+                                                                               (deliver settled true))
+                                            nil))
+                      run-agent! (fn [& _]
+                                   {:exit 0 :result "continue" :run-id (:run-id lock)
+                                    :dir "/nonexistent" :last-message "https://github.com/boxp/arch/pull/1"
+                                    :idle-timeout? false :shutdown? false})
+                      review-gate! (fn [& _] {:ok? true :pr-urls ["https://github.com/boxp/arch/pull/1"]})
+                      consume-continuation! (fn [_ _ gate] gate)
+                      clear-continuation-budget! (fn [_] nil)]
+          (try (process-card! {:ticket-id "TEST-PR-OBSERVE" :lane "In Progress" :status "in-progress"})
+               (catch Throwable _ nil))
+          (deref settled 5000 nil))
+        (if (= (if expect-record? [:record-pr!] [:skipped]) @calls)
+          (println (str "PASS: " label))
+          (do
+            (println (str "FAIL: " label " calls=" (pr-str @calls)))
+            (swap! failures conj label)))))
 
     ;; The hook's finalize wait must cover a lifecycle commit that began before
     ;; the flag was raised, not only `in-flight-futures`. A commit is waited for
