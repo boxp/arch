@@ -5807,18 +5807,6 @@
                     ;; commit boundary below.
                     gate-result (when (= "continue" intended)
                                   (review-gate! dir last-message))
-                    ;; BOXP-737 (spec R1): the gate counters, the failure
-                    ;; correction event and the PR conflict record persist state
-                    ;; as well, so they wait for the same ownership check.
-                    ;; R10: the check and the gate record share one guard section.
-                    _ (when (and gate-result
-                                 (not (with-lifecycle-commit-locks
-                                       ticket-id
-                                       #(when (lifecycle-commit-owner? ticket-id lock)
-                                          (record-ai-ops-gate! ticket-id run-id assignee action gate-result)
-                                          true))))
-                        (throw (ex-info "ticket lock ownership lost before lifecycle commit"
-                                        {:type ::lock-lost})))
                     _ (when gate-result
                         (try (reset! pr-observation (future
                                (try (doseq [url (:pr-urls gate-result)]
@@ -5857,6 +5845,13 @@
                         (throw (ex-info "ticket lock ownership lost before lifecycle commit"
                                         {:type ::lock-lost})))
                     _ (deliver commit-owned true)
+                    ;; BOXP-737 (spec R6/R12): the gate counters and the failure
+                    ;; correction event are written in the commit's single
+                    ;; critical section, after its ownership check. A separate,
+                    ;; earlier section would let a takeover land between the two
+                    ;; checks and leave a record from a run that ends lock-lost.
+                    _ (when gate-result
+                        (record-ai-ops-gate! ticket-id run-id assignee action gate-result))
                     ;; localllm docs-edit: the document write was staged, not
                     ;; applied. Commit it here, inside the same lifecycle commit
                     ;; as Notes / lane / lock, so a planned shutdown either
@@ -9749,6 +9744,65 @@
               (println (str "FAIL: " label " committing=" @committing-cards " calls=" (pr-str @calls)))
               (swap! failures conj label))))))
 
+    ;; BOXP-737 (spec R12): a takeover may land before any ownership check of
+    ;; the run end. Whatever the point, a run that ends lock-lost has written
+    ;; nothing after the agent except its summary (no gate counters, correction
+    ;; event, diagnostic, lane or Notes), and a run that passed a check commits.
+    (doseq [takeover-at (range 0 4)]
+      (let [label (str "takeover before ownership check #" (inc takeover-at)
+                       " leaves either a full commit or only the summary")
+            calls (atom [])
+            checks (atom 0)
+            record! (fn [k & args] (swap! calls conj (into [k] args)) nil)
+            lock {:run-id "takeover-point-run" :owner-id "test-owner"}]
+        (with-redefs [ticket-frontmatter (fn [_] {:assignee "claude-fable"})
+                      candidate-action (fn [& _] :implement)
+                      acquire-lock! (fn [& _] lock)
+                      heartbeat! (fn [& _] (future nil))
+                      lifecycle-commit-owner? (fn [& _] (< (dec (swap! checks inc)) takeover-at))
+                      move-card! (partial record! :move-card!)
+                      update-frontmatter! (partial record! :update-frontmatter!)
+                      append-note! (fn [_ note] (when-not (str/starts-with? note "Codex task-board run takeover-point-run started")
+                                                  (record! :append-note!)))
+                      mark-run! (fn [_ _ status m] (record! :mark-run! status (:reason m)))
+                      release-lock! (partial record! :release-lock!)
+                      block-ticket! (fn [& _] (record! :block-ticket!) true)
+                      restore-card-state! (partial record! :restore-card-state!)
+                      record-ai-ops-gate! (partial record! :record-ai-ops-gate!)
+                      record-ai-ops-event! (fn [_ _ _ _ word _]
+                                             (when-not (= "started" word)
+                                               (record! :record-ai-ops-event! word)))
+                      record-ai-ops-finish! (partial record! :record-ai-ops-finish!)
+                      record-task-board-event! (partial record! :record-task-board-event!)
+                      persist-pr-gate-diagnostic! (fn [& _] (record! :persist-pr-gate-diagnostic!) nil)
+                      record-gate-pr-registrations! (fn [& _] (record! :record-gate-pr-registrations!))
+                      record-same-file-review-streak! (fn [& _] nil)
+                      record-pr-gate-failure! (fn [_ _ _ gate] (record! :record-pr-gate-failure!) gate)
+                      clear-pr-gate-retries! (partial record! :clear-pr-gate-retries!)
+                      reserve-gate-budget-run! (fn [& _] true)
+                      log! (fn [& _] nil)
+                      run-agent! (fn [& _]
+                                   {:exit 0 :result "continue" :run-id (:run-id lock)
+                                    :dir "/nonexistent" :last-message "https://github.com/boxp/arch/pull/1"
+                                    :idle-timeout? false :shutdown? false})
+                      review-gate! (fn [& _]
+                                     {:ok? false :gate :ci :failure-kind :check-failure :retryable? true
+                                      :pr-urls ["https://github.com/boxp/arch/pull/1"]})
+                      consume-continuation! (fn [_ _ gate] gate)
+                      clear-continuation-budget! (fn [_] nil)]
+          (process-card! {:ticket-id "TEST-TAKEOVER-POINT" :lane "In Progress" :status "in-progress"}))
+        (let [c @calls
+              lost? (some #{[:mark-run! :interrupted "lock ownership lost before lifecycle commit"]} c)
+              ok? (if lost?
+                    (= [[:mark-run! :interrupted "lock ownership lost before lifecycle commit"]] c)
+                    (and (some #(= :record-ai-ops-gate! (first %)) c)
+                         (some #(= :release-lock! (first %)) c)))]
+          (if (and ok? (zero? @committing-cards) (= (boolean lost?) (zero? takeover-at)))
+            (println (str "PASS: " label))
+            (do
+              (println (str "FAIL: " label " committing=" @committing-cards " calls=" (pr-str c)))
+              (swap! failures conj label))))))
+
     ;; BOXP-737 (spec R9): `call-as-lock-owner!` runs its write only while the
     ;; lock file still is this run's lock (checked under the ticket guard).
     (let [dir (str (fs/create-temp-dir {:prefix "boxp737-owner-write"}))
@@ -9933,13 +9987,13 @@
     ;; BOXP-737 (spec R8): the PR conflict observation runs in a future after
     ;; the review gate. It may write its record only once this run passed the
     ;; ownership check of its lifecycle commit; a run whose lock was taken over
-    ;; between the gate check and the commit check records nothing. R9: also a
+    ;; before the commit check records nothing. R9: also a
     ;; run that committed as owner but lost the lock while the PR fetch ran
     ;; records nothing, because the write itself is guarded by ownership.
     (doseq [[label owner-answers owner-at-write? expect-record?]
-            [["PR conflict observation is not recorded after the lock was lost before the commit" [true false] true false]
-             ["PR conflict observation is not recorded when the lock was lost during the PR fetch" [true true] false false]
-             ["PR conflict observation is recorded when the run committed as lock owner" [true true] true true]]]
+            [["PR conflict observation is not recorded after the lock was lost before the commit" [false] true false]
+             ["PR conflict observation is not recorded when the lock was lost during the PR fetch" [true] false false]
+             ["PR conflict observation is recorded when the run committed as lock owner" [true] true true]]]
       (let [calls (atom [])
             answers (atom owner-answers)
             settled (promise)

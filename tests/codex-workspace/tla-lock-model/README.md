@@ -123,9 +123,10 @@ Java は 11 以上（試行では Eclipse Temurin 21.0.13.1 JRE）。反例の�
 | `Abort` | 終了処理をせず、自分の run の summary を `:interrupted` にするだけ。lock は触らない |
 | （モデルにない）例外の経路 | Blocked・元の lane へ戻す・superseded の記録の前にも同じ確認 |
 
-モデルとのずれ（残る隙間）: モデルの `Commit` は 1 手だが、実装の終了処理は複数の書き込みで、guard で包んでいない。
-確認の後は heartbeat thread が lease を保つので、終了処理の途中で `CODEX_TASK_BOARD_LOCK_STALE_SECONDS` を超えて止まったときだけ
-奪われうる。TLC はこの隙間を見ていない（`.tla` は変えていないので `expected.tsv` も変えていない）。
+モデルとのずれ: モデルの `Commit` は 1 手。実装の終了処理は複数の書き込みだが、所有確認と全ての書き込み（gate 記録を含む）を
+一つの ticket guard 区間で行い（仕様 R10・R12）、取り直しも同じ guard を通るので、確認の後に取り直されることはない。
+残る隙間は、guard を持ったまま止まった run がその ticket の取り直しを待たせること（分裂はしない）。TLC はこの guard 区間を
+モデル化していない（`.tla` は変えていないので `expected.tsv` も変えていない）。
 
 回帰テスト: `../task-board-runner-test.sh` の `test_lifecycle_commit_only_by_lock_owner`（取り直し・lock 削除・所有者の正常終了）と
 `test_lock_lost_failure_does_not_block`（所有を失った後の例外で Blocked にしない）。修正前の実装で両方とも落ちることを確かめてから直した。
