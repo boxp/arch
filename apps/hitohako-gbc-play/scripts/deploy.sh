@@ -44,6 +44,14 @@ entrances=(
   "https://$project.pages.dev/"
   "https://$project.pages.dev/rom/hitohako_gbc.gbc"
   "https://main.$project.pages.dev/rom/hitohako_gbc.gbc"
+  # 横スクロールアクション 1 面試作のページ（/action/、BOXP-704）。Access は置き場の全部の道に掛かっているので、
+  # 配布物に action/ がまだ無い時も、未ログインではログインへ転送される（中身の有無に関わらず確かめられる）。
+  "https://$domain/action/"
+  "https://$domain/action/version.json"
+  "https://$domain/action/rom/hitohako_action.gbc"
+  "https://$project.pages.dev/action/"
+  "https://$project.pages.dev/action/rom/hitohako_action.gbc"
+  "https://main.$project.pages.dev/action/rom/hitohako_action.gbc"
 )
 
 project_json=$(api "")
@@ -105,6 +113,7 @@ done
 }
 
 echo "== after deploy: every entrance, and this deployment's own URL, must be behind Access"
-"$app_dir/scripts/access-check.sh" "${entrances[@]}" "$(jq -r .url <<<"$after")/" "$(jq -r .url <<<"$after")/rom/hitohako_gbc.gbc"
+"$app_dir/scripts/access-check.sh" "${entrances[@]}" "$(jq -r .url <<<"$after")/" "$(jq -r .url <<<"$after")/rom/hitohako_gbc.gbc" \
+  "$(jq -r .url <<<"$after")/action/" "$(jq -r .url <<<"$after")/action/rom/hitohako_action.gbc"
 echo "live: bundle $rev (deployment $(jq -r .id <<<"$after"))"
 echo "deployed=true" >>"$output"
