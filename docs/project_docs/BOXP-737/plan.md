@@ -14,3 +14,8 @@ BOXP-732（TLA+/TLC の限定検証）の知見 1 のフォローアップ。
 
 ## 対象外
 - 旧 Runner の agent の作業重複そのもの、lock 全体の再設計、TLC の CI 導入・必須化。
+
+## codex review 指摘への対応（P1 ×2）
+- review gate の結果記録（AI Ops gate 集計・correction event・PR 競合観測）より前に所有を確認する（仕様 R6）。
+- 例外経路では所有の確認を planned shutdown の判定より先に行い、所有を失った run は `run.interrupted` event を書かない（仕様 R7）。lock にも触らない。
+- runner 自己テストに「lock 喪失＋gate 失敗」「lock 喪失＋gate 中の shutdown」の 2 ケースを追加。修正前の実装で FAIL、修正後に PASS を確認。

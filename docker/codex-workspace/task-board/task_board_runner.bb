@@ -5661,6 +5661,12 @@
                     ;; commit boundary below.
                     gate-result (when (= "continue" intended)
                                   (review-gate! dir last-message))
+                    ;; BOXP-737 (spec R1): the gate counters, the failure
+                    ;; correction event and the PR conflict record persist state
+                    ;; as well, so they wait for the same ownership check.
+                    _ (when (and gate-result (not (lifecycle-commit-owner? ticket-id lock)))
+                        (throw (ex-info "ticket lock ownership lost before lifecycle commit"
+                                        {:type ::lock-lost})))
                     _ (when gate-result
                         (record-ai-ops-gate! ticket-id run-id assignee action gate-result)
                         (try (future
@@ -5880,8 +5886,19 @@
                                            {:result (if (= "done" next-status) result (if (= "held" (get-in (read-edn-file (fs/path dir "summary.edn") {}) [:todo :gate])) "continue" result)) :exit_code exit :idle_timeout (boolean idle-timeout?)}))))))
                 true)
               (catch Exception e
-                (if (or (= ::planned-shutdown (:type (ex-data e)))
-                        @shutdown-requested?)
+                (cond
+                  ;; BOXP-737 (spec R2-R5): a run that lost its lock writes only
+                  ;; its own summary and a log line, also when a shutdown was
+                  ;; requested meanwhile (no interrupted event, no lane change).
+                  ;; The lock now belongs to someone else: leave it alone.
+                  (or (= ::lock-lost (:type (ex-data e)))
+                      (not (try (lifecycle-commit-owner? ticket-id lock)
+                                (catch Exception _ false))))
+                  (do (reset! keep-lock? true)
+                      (record-lock-lost-run! ticket-id (:run-id lock) action assignee effective-lane))
+
+                  (or (= ::planned-shutdown (:type (ex-data e)))
+                      @shutdown-requested?)
                   (do
                     ;; Planned shutdown: keep the run attributable as interrupted and
                     ;; leave the card, frontmatter and lock untouched for the next owner.
@@ -5900,12 +5917,8 @@
                                           {:event_type "run.interrupted" :status "interrupted"})
                     (log! (str "run " (:run-id lock) " for " ticket-id
                                " interrupted by planned workspace shutdown; lock kept for the next owner")))
-                  ;; BOXP-737 (spec R5): the failure paths below (superseded,
-                  ;; Blocked, restoring the lane) are lifecycle commits as well.
-                  (if (or (= ::lock-lost (:type (ex-data e)))
-                          (not (try (lifecycle-commit-owner? ticket-id lock)
-                                    (catch Exception _ false))))
-                    (record-lock-lost-run! ticket-id (:run-id lock) action assignee effective-lane)
+
+                  :else
                   (if-let [revision (when-not @docs-applied? (superseded-revision ticket-id start-rev))]
                     (record-superseded! ticket-id (:run-id lock) action assignee effective-lane nil nil nil revision)
                     (do
@@ -5927,7 +5940,7 @@
                     (if (block-ticket! ticket-id (:run-id lock) action nil nil nil e nil)
                       (do (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
                           (record-ai-ops-finish! ticket-id (:run-id lock) assignee action (ai-ops-run-lane status) "blocked" "blocked" {}))
-                      (restore-card-state! ticket-id status assignee))))))
+                      (restore-card-state! ticket-id status assignee)))))
                 true)
               (finally
                 (reset! stop? true)
@@ -9483,6 +9496,65 @@
                             :during-commit " completes the commit and releases the lock"
                             :during-start " completes the start transition, skips the agent and keeps the lock"
                             " keeps the lock and records an interrupted run")))
+            (do
+              (println (str "FAIL: " label " committing=" @committing-cards " calls=" (pr-str @calls)))
+              (swap! failures conj label))))))
+
+    ;; BOXP-737 (spec R1-R5): a run that lost its lock while the review gate ran
+    ;; writes only its own summary, also when the gate failed (no gate counters
+    ;; or correction event) and when a shutdown was requested meanwhile (no
+    ;; run.interrupted event). It neither moves the card nor touches the lock.
+    (doseq [[label shutdown? gate-ok?]
+            [["lock lost during a failed review gate records nothing but the summary" false false]
+             ["lock lost and shutdown requested during the review gate records nothing but the summary" true true]]]
+      (let [calls (atom [])
+            record! (fn [k & args] (swap! calls conj (into [k] args)) nil)
+            lock {:run-id "lock-lost-run" :owner-id "test-owner"}]
+        (try
+          (with-redefs [ticket-frontmatter (fn [_] {:assignee "claude-fable"})
+                        candidate-action (fn [& _] :implement)
+                        acquire-lock! (fn [& _] lock)
+                        heartbeat! (fn [& _] (future nil))
+                        lifecycle-commit-owner? (fn [& _] false)
+                        move-card! (partial record! :move-card!)
+                        update-frontmatter! (partial record! :update-frontmatter!)
+                        append-note! (partial record! :append-note!)
+                        mark-run! (fn [_ _ status m] (record! :mark-run! status (:reason m)))
+                        release-lock! (partial record! :release-lock!)
+                        block-ticket! (fn [& _] (record! :block-ticket!) true)
+                        restore-card-state! (partial record! :restore-card-state!)
+                        record-ai-ops-gate! (partial record! :record-ai-ops-gate!)
+                        record-ai-ops-event! (fn [_ _ _ _ word _]
+                                               (when-not (= "started" word)
+                                                 (record! :record-ai-ops-event! word)))
+                        record-ai-ops-finish! (partial record! :record-ai-ops-finish!)
+                        record-task-board-event! (partial record! :record-task-board-event!)
+                        persist-pr-gate-diagnostic! (fn [& _] (record! :persist-pr-gate-diagnostic!) nil)
+                        record-gate-pr-registrations! (fn [& _] (record! :record-gate-pr-registrations!))
+                        record-pr-gate-failure! (fn [& _] (record! :record-pr-gate-failure!) nil)
+                        clear-pr-gate-retries! (partial record! :clear-pr-gate-retries!)
+                        reserve-gate-budget-run! (fn [& _] true)
+                        log! (fn [& _] nil)
+                        run-agent! (fn [& _]
+                                     {:exit 0 :result "continue" :run-id (:run-id lock)
+                                      :dir "/nonexistent" :last-message "https://github.com/boxp/arch/pull/1"
+                                      :idle-timeout? false :shutdown? false})
+                        review-gate! (fn [& _]
+                                       (record! :review-gate!)
+                                       (when shutdown? (reset! shutdown-requested? true))
+                                       {:ok? gate-ok? :gate (when-not gate-ok? :ci) :failure-kind (when-not gate-ok? :check-failure)
+                                        :pr-urls ["https://github.com/boxp/arch/pull/1"]})
+                        consume-continuation! (fn [_ _ gate] gate)
+                        clear-continuation-budget! (fn [_] nil)]
+            (process-card! {:ticket-id "TEST-LOCK-LOST" :lane "In Progress" :status "in-progress"}))
+          (finally
+            (reset! shutdown-requested? false)))
+        (let [expected [[:append-note! "TEST-LOCK-LOST"
+                         "Codex task-board run lock-lost-run started from In Progress with action implement using claude-fable."]
+                        [:review-gate!]
+                        [:mark-run! :interrupted "lock ownership lost before lifecycle commit"]]]
+          (if (and (= expected @calls) (zero? @committing-cards))
+            (println (str "PASS: " label))
             (do
               (println (str "FAIL: " label " committing=" @committing-cards " calls=" (pr-str @calls)))
               (swap! failures conj label))))))
