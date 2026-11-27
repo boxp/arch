@@ -20,6 +20,7 @@
     <button data-provider="antigravity">Antigravity (agy)</button>
     <button data-provider="claude">Claude Code</button>
     <button data-provider="codex">Codex</button>
+    <button data-provider="grok">Grok (X 読み取り用)</button>
   </div>
   <details class="howto">
     <summary>手順</summary>
@@ -27,6 +28,7 @@
       <li><b>Antigravity</b>: 「1. Google OAuth」で Enter → 下の「リンク」を開いて本人の Google アカウントでログイン → 表示された認可コードを「貼り付け欄」から送信して Enter。ログイン後に「Done」等の選択が出たら <b>→</b>/<b>↓</b> ボタンで選んで <b>Enter</b>。その後 <code>/config</code> で「Use AI Credits」が off であることを確認し、「セッション終了」。</li>
       <li><b>Claude Code</b>: 「リンク」を開いてサブスクリプションのアカウントでログイン → 表示されたコードを貼り付け欄から送信して Enter。完了すると自動で終了します。</li>
       <li><b>Codex</b>: 「リンク」を開き、画面に出たワンタイムコードを入力（ChatGPT 側でデバイスコード認証の許可が必要な場合があります）。完了すると自動で終了します。</li>
+      <li><b>Grok</b>: 「リンク」を開き、本人の grok.com（xAI）アカウントでログインして、画面に出たコードと同じか確認して承認します。完了すると自動で終了します。ログイン情報はコハコの X 読み取り専用の置き場に保存され、他の CLI とは分けられます。下の「状態を確認」には出ません（成否は次の確認実行で判断します）。</li>
     </ul>
   </details>
 </section>
