@@ -3,7 +3,8 @@
 # 配布物だけを置く非公開リポジトリ boxp/hitohako-gbc-play を、読取り専用の deploy key で OUT_DIR へ取り出す。
 # ログは公開されるので、出すのは配布物のコミットと ROM の sha256 と大きさだけ。中身や commit message は出さない。
 # GITHUB_OUTPUT に ready (true/false)、rev、rom_sha256、action_rom_sha256（アクションのページが無ければ none）、
-# next_rom_sha256（候補のページ /action-next/ が無ければ none）、trial_rom_sha256（原画の小試験のページ /action-trial/ が無ければ none）を書く。
+# next_rom_sha256（候補のページ /action-next/ が無ければ none）、trial_rom_sha256（原画の小試験のページ /action-trial/ が無ければ none）、
+# gpt_rom_sha256（ChatGPT の原画からの候補のページ /action-gpt/ が無ければ none）を書く。
 set -euo pipefail
 
 out=${1:?usage: fetch-bundle.sh OUT_DIR}
@@ -11,7 +12,7 @@ out=${1:?usage: fetch-bundle.sh OUT_DIR}
 repo=${PLAY_SITE_REPO:-git@github.com:boxp/hitohako-gbc-play.git}
 output=${GITHUB_OUTPUT:-/dev/stdout}
 
-# 配布物のファイルの一覧。これ以外があれば配備しない（ソースや原画が紛れ込んだ時に止める。原画の小試験の比べるページ用の絵 3 つだけは、下の trial_files に名前で載せる）。
+# 配布物のファイルの一覧。これ以外があれば配備しない（ソースや原画が紛れ込んだ時に止める。原画の小試験の比べるページ用の絵 3 つと、/action-gpt/ の比べるページ用の絵 30 個だけは、下の trial_files・gpt_files に名前で載せる）。
 # 1 つでも欠けていても配備しない（欠けた配布物で、動いているページを壊さない）。
 allowed='
 NOTICE.txt
@@ -61,6 +62,49 @@ action-trial/rom/hitohako_action.gbc
 action-trial/version.json
 '
 
+# ChatGPT の完成原画から変換した人物の絵の候補を本人が確かめるページ（/action-gpt/、BOXP-740 TD-01 rev 853aeec4）。/action/ と同じ 5 つと、
+# 15 枚の原画と GBC の実寸を比べるページ（compare.html・compare.css と art/ の絵 30 個）。/action/・/action-next/・/action-trial/ の ROM は上書きしない。
+# 無ければ今までどおり。1 つでもあれば 37 個全部がそろっていることを求める。
+gpt_files='
+action-gpt/NOTICE.txt
+action-gpt/art/demo_eyes_gbc.png
+action-gpt/art/demo_eyes_orig.jpg
+action-gpt/art/demo_friends_gbc.png
+action-gpt/art/demo_friends_orig.jpg
+action-gpt/art/demo_guard_gbc.png
+action-gpt/art/demo_guard_orig.jpg
+action-gpt/art/demo_hero_gbc.png
+action-gpt/art/demo_hero_orig.jpg
+action-gpt/art/face_hito_serious_gbc.png
+action-gpt/art/face_hito_serious_orig.jpg
+action-gpt/art/face_hito_shy_gbc.png
+action-gpt/art/face_hito_shy_orig.jpg
+action-gpt/art/face_hito_smile_gbc.png
+action-gpt/art/face_hito_smile_orig.jpg
+action-gpt/art/face_kid_joy_gbc.png
+action-gpt/art/face_kid_joy_orig.jpg
+action-gpt/art/face_kujo_gbc.png
+action-gpt/art/face_kujo_grave_gbc.png
+action-gpt/art/face_kujo_grave_orig.jpg
+action-gpt/art/face_kujo_orig.jpg
+action-gpt/art/face_oba_smile_gbc.png
+action-gpt/art/face_oba_smile_orig.jpg
+action-gpt/art/face_oba_worry_gbc.png
+action-gpt/art/face_oba_worry_orig.jpg
+action-gpt/art/face_rio_gbc.png
+action-gpt/art/face_rio_orig.jpg
+action-gpt/art/face_sana_gbc.png
+action-gpt/art/face_sana_orig.jpg
+action-gpt/art/face_town_gbc.png
+action-gpt/art/face_town_orig.jpg
+action-gpt/compare.css
+action-gpt/compare.html
+action-gpt/index.html
+action-gpt/play.js
+action-gpt/rom/hitohako_action.gbc
+action-gpt/version.json
+'
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 (
@@ -82,7 +126,7 @@ if [ ! -f "$out/index.html" ]; then
   exit 0
 fi
 
-unexpected=$(cd "$out" && find . -type f -o -type l | sed 's|^\./||' | LC_ALL=C sort | grep -vxF -f <(printf '%s%s%s%s' "$allowed" "$action_files" "$next_files" "$trial_files" | sed '/^$/d') || true)
+unexpected=$(cd "$out" && find . -type f -o -type l | sed 's|^\./||' | LC_ALL=C sort | grep -vxF -f <(printf '%s%s%s%s%s' "$allowed" "$action_files" "$next_files" "$trial_files" "$gpt_files" | sed '/^$/d') || true)
 if [ -n "$unexpected" ]; then
   echo "the bundle has $(wc -l <<<"$unexpected") file(s) outside the allowlist; refusing to deploy" >&2
   exit 1
@@ -166,13 +210,17 @@ trial_sha256=""
 if [ -e "$out/action-trial" ]; then
   trial_sha256=$(check_action_dir action-trial "$trial_files") || exit 1
 fi
+gpt_sha256=""
+if [ -e "$out/action-gpt" ]; then
+  gpt_sha256=$(check_action_dir action-gpt "$gpt_files") || exit 1
+fi
 size=$(du -sb "$out" | cut -f1)
 [ "$size" -lt 8000000 ] || {
   echo "the bundle is unexpectedly large ($size bytes)" >&2
   exit 1
 }
 
-echo "bundle rev $rev, ROM sha256 $got, action ROM sha256 ${action_sha256:-none}, action-next ROM sha256 ${next_sha256:-none}, action-trial ROM sha256 ${trial_sha256:-none}, $size bytes"
+echo "bundle rev $rev, ROM sha256 $got, action ROM sha256 ${action_sha256:-none}, action-next ROM sha256 ${next_sha256:-none}, action-trial ROM sha256 ${trial_sha256:-none}, action-gpt ROM sha256 ${gpt_sha256:-none}, $size bytes"
 {
   echo "ready=true"
   echo "rev=$rev"
@@ -180,4 +228,5 @@ echo "bundle rev $rev, ROM sha256 $got, action ROM sha256 ${action_sha256:-none}
   echo "action_rom_sha256=${action_sha256:-none}"
   echo "next_rom_sha256=${next_sha256:-none}"
   echo "trial_rom_sha256=${trial_sha256:-none}"
+  echo "gpt_rom_sha256=${gpt_sha256:-none}"
 } >>"$output"

@@ -81,6 +81,7 @@ jobs:
           ACTION_ROM_SHA256: ${{ steps.bundle.outputs.action_rom_sha256 }}
           NEXT_ROM_SHA256: ${{ steps.bundle.outputs.next_rom_sha256 }}
           TRIAL_ROM_SHA256: ${{ steps.bundle.outputs.trial_rom_sha256 }}
+          GPT_ROM_SHA256: ${{ steps.bundle.outputs.gpt_rom_sha256 }}
           DEPLOYED: ${{ steps.deploy.outputs.deployed }}
         run: |
           {
@@ -90,5 +91,6 @@ jobs:
             echo "- action ROM sha256: \`$ACTION_ROM_SHA256\`"
             echo "- action-next (candidate) ROM sha256: \`$NEXT_ROM_SHA256\`"
             echo "- action-trial (art trial) ROM sha256: \`$TRIAL_ROM_SHA256\`"
+            echo "- action-gpt (ChatGPT art candidate) ROM sha256: \`$GPT_ROM_SHA256\`"
             echo "- deployed in this run: \`$DEPLOYED\`"
           } >>"$GITHUB_STEP_SUMMARY"

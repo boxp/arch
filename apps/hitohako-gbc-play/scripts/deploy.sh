@@ -63,6 +63,12 @@ entrances=(
   "https://$domain/action-trial/art/hito_serious_orig.jpg"
   "https://$domain/action-trial/rom/hitohako_action.gbc"
   "https://$project.pages.dev/action-trial/art/hito_serious_orig.jpg"
+  # ChatGPT の原画からの人物の絵の候補のページ（/action-gpt/、BOXP-740 TD-01 rev 853aeec4）。原画を見せるページと絵も Access の内側であること。
+  "https://$domain/action-gpt/"
+  "https://$domain/action-gpt/compare.html"
+  "https://$domain/action-gpt/art/face_hito_serious_orig.jpg"
+  "https://$domain/action-gpt/rom/hitohako_action.gbc"
+  "https://$project.pages.dev/action-gpt/art/demo_hero_orig.jpg"
 )
 
 project_json=$(api "")
@@ -127,6 +133,7 @@ echo "== after deploy: every entrance, and this deployment's own URL, must be be
 "$app_dir/scripts/access-check.sh" "${entrances[@]}" "$(jq -r .url <<<"$after")/" "$(jq -r .url <<<"$after")/rom/hitohako_gbc.gbc" \
   "$(jq -r .url <<<"$after")/action/" "$(jq -r .url <<<"$after")/action/rom/hitohako_action.gbc" \
   "$(jq -r .url <<<"$after")/action-next/rom/hitohako_action.gbc" \
-  "$(jq -r .url <<<"$after")/action-trial/art/hito_serious_orig.jpg"
+  "$(jq -r .url <<<"$after")/action-trial/art/hito_serious_orig.jpg" \
+  "$(jq -r .url <<<"$after")/action-gpt/art/face_hito_serious_orig.jpg"
 echo "live: bundle $rev (deployment $(jq -r .id <<<"$after"))"
 echo "deployed=true" >>"$output"
