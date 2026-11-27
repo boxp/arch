@@ -14,7 +14,7 @@
     "fix": "biome check --write ."
   },
   "devDependencies": {
-    "@biomejs/biome": "2.6.8",
+    "@biomejs/biome": "2.6.9",
     "@mizchi/mutator": "0.5.5",
     "@types/node": "26.6.6",
     "typescript": "7.0.2",
