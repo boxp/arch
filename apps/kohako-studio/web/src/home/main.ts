@@ -127,6 +127,7 @@ import {
   type ServerReply,
 } from './noticeReply'
 import { createCharacterMorph, layoutKey } from './morph'
+import { capPlayerLoop, capWanted, frameCapOption } from './framecap'
 
 // BOXP-510 TD-03: 家を開いた時点で SW を登録し、PWA としてインストール可能にする（Push と同じ SW・scope）。
 if ('serviceWorker' in navigator)
@@ -3246,6 +3247,26 @@ function seatQuiet(): boolean {
     seatKeep() && !busy && !netDown && rigStateOf[state] === 'idle' && character.dataset.frame !== 'upper' && !recording
   )
 }
+// BOXP-738（試作候補のみ）: 静かな待機の間だけ、コハコ本体の描き直しを約 30 回/秒に抑える（?idlefps=off で間引かない）。
+const idleFps = frameCapOption(location.search)
+let capPetHold = false
+const capDraws = { full: 0, capped: 0 }
+function capNow(now: number): boolean {
+  return capWanted({
+    idle: enabled && !busy && rigStateOf[state] === 'idle',
+    home: character.dataset.arrival === 'home',
+    touching:
+      !!track ||
+      capPetHold ||
+      reacting ||
+      touchActive ||
+      touchGesture !== 'none' ||
+      (!!acting?.snapshot.gesture && acting.snapshot.gesture !== 'none') ||
+      !!touchLook.at(now),
+    recording: recording || holding(),
+    sinceMoveMs: now - pointerMovedAt,
+  })
+}
 function rigTick(now: number) {
   if (!rig) {
     rigTickId = 0
@@ -3261,6 +3282,7 @@ function rigTick(now: number) {
   report.petEyes = petEyes
   petOffset = petFollow(petOffset, petTrack, dt, petOptions)
   const petHold = isPetting(petTrack, petOptions) || petShown(petOffset)
+  capPetHold = petHold
   // BOXP-605: 待機中のしぐさ。stage が無い（リグ非対応）・出せない状況では何もせず、出ている途中なら短く戻す。
   const player = rig,
     idle = idleDirector.step(now / 1000, {
@@ -3408,6 +3430,10 @@ async function mountRig(): Promise<MountedRig> {
   const load = await loadRig(rigCanvas, rigModel, './kohako/live2d/sample/')
   try {
     const player = load.player
+    capPlayerLoop(player, idleFps, capNow, (capped) => {
+      capped ? capDraws.capped++ : capDraws.full++
+      report.frameCap = { fps: idleFps, capped, draws: { ...capDraws } }
+    })
     // 待機クリップは頭の角度（ParamAngleX/Y/Z）を毎フレーム上書きし、setParameter で足した追従は描画に出ない（BOXP-505 TD-01 で実測）。
     // なでている間（と離して戻り切るまで）だけクリップを止め、戻ったら最後に指定されたクリップを再開する。
     const clips = clipHold(player.play.bind(player))

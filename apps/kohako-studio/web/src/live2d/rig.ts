@@ -21,6 +21,8 @@ export interface Player {
   start(): void
   stop(): void
   draw(): void
+  /** 動き（クリップ・まばたき・呼吸・物理）を dt 秒進める。 */
+  update(dt: number): void
   /** rig と GPU のオブジェクトを解放する（以後は使えない）。 */
   dispose(): void
 }
