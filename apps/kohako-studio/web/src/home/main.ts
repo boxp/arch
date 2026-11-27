@@ -207,7 +207,6 @@ function applyPrefs() {
   subtleBox.checked = prefs.intensity === 'subtle'
   body.classList.toggle('reduce', reduced())
   body.classList.toggle('bg-still', !prefs.bgMotion || reduced())
-  el('touch-open').hidden = !prefs.touch
   local.set(PREFS_KEY, JSON.stringify(prefs))
 }
 for (const [key, box] of prefBoxes)
@@ -628,7 +627,7 @@ function updateMessage() {
 // 押し始めも吹き出しの外の場合だけ閉じる。内部からのドラッグ選択やスクロールは対象外。
 let outsideBubble = false
 // 画面上の別の操作を返答の閉鎖と兼ねない。押下時に記録し、クリック処理で要素が隠れても維持する。
-const overlayControl = '.top, #touch-menu, .drawer, #cards, #viewer, .status-anchor'
+const overlayControl = '.top, .drawer, #cards, #viewer, .status-anchor'
 function isOverlayControl(target: EventTarget | null) {
   return target instanceof Element && Boolean(target.closest(overlayControl))
 }
@@ -2836,6 +2835,10 @@ window.addEventListener('pagehide', () => {
 })
 
 // ---- ふれあい ----
+function announceTouch(message: string) {
+  el('touch-live').textContent = message
+  el('touch-status').textContent = message
+}
 const limiter = new TouchLimiter(),
   touchBatcher = new TouchBatcher()
 let touchActive = false,
@@ -2891,7 +2894,7 @@ async function sendTouch() {
     }
     throw new Error('timeout')
   } catch {
-    el('touch-live').textContent = '返事を受け取れませんでした。'
+    announceTouch('返事を受け取れませんでした。')
     try {
       await call(`requests/${id}/cancel`, { method: 'POST', signal: AbortSignal.timeout(10000) })
     } catch {
@@ -2939,7 +2942,7 @@ function touchBlocked(): string | null {
 function touchReact(zone: Zone, kind: 'tap' | 'pat', via: 'pointer' | 'menu') {
   const blocked = touchBlocked()
   if (blocked) {
-    if (via === 'menu') el('touch-live').textContent = blocked
+    if (via === 'menu') announceTouch(blocked)
     return
   }
   const now = Date.now(),
@@ -2972,13 +2975,23 @@ function touchReact(zone: Zone, kind: 'tap' | 'pat', via: 'pointer' | 'menu') {
     }
   }
   const words = zone === 'hand' ? 'ハイタッチしました' : kind === 'pat' ? '頭をなでました' : '頭にタッチしました'
-  el('touch-live').textContent = `${words}。`
+  announceTouch(`${words}。`)
   if (!touchActive && touchSendable()) {
     touchBatcher.add(zone, kind, now)
     clearTimeout(touchDebounce)
     touchDebounce = window.setTimeout(() => void sendTouch(), 1200)
   }
 }
+// 設定からの操作も、動く姿が家にいる間だけ既存の反応経路に渡す。
+function touchFromSettings(zone: Zone, kind: 'tap' | 'pat') {
+  if (!rig || rigCanvas.hidden || (character.dataset.arrival ?? 'home') !== 'home') {
+    announceTouch('いまはふれあいできません。')
+    return
+  }
+  touchReact(zone, kind, 'menu')
+}
+el('touch-pat').addEventListener('click', () => touchFromSettings('head', 'pat'))
+el('touch-high-five').addEventListener('click', () => touchFromSettings('hand', 'tap'))
 let track: { id: number; zone: Zone; points: Point[]; headRect: Rect | null; outside?: boolean } | null = null
 let petOffset = zeroPet(),
   petTick = 0
@@ -3064,16 +3077,6 @@ character.addEventListener('click', () => {
     refreshScene(true)
   }
 })
-const touchOpen = el<HTMLButtonElement>('touch-open'),
-  touchMenu = el('touch-menu')
-touchOpen.addEventListener('click', () => {
-  touchMenu.hidden = !touchMenu.hidden
-  touchOpen.setAttribute('aria-expanded', String(!touchMenu.hidden))
-  if (!touchMenu.hidden) el<HTMLButtonElement>('touch-pat').focus()
-})
-el('touch-pat').addEventListener('click', () => touchReact('head', 'pat', 'menu'))
-el('touch-hand').addEventListener('click', () => touchReact('hand', 'tap', 'menu'))
-
 // ---- 引き出し・Esc ----
 const drawers: [string, string][] = [
   ['history', 'history-open'],
@@ -3099,8 +3102,6 @@ for (const [id, opener] of drawers) {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     for (const [id] of drawers) el(id).hidden = true
-    touchMenu.hidden = true
-    touchOpen.setAttribute('aria-expanded', 'false')
   }
 })
 
@@ -3540,7 +3541,7 @@ async function startRig() {
   } catch (e) {
     ;(report.errors as string[]).push(e instanceof Error ? e.message : String(e))
     el('face-mode').textContent =
-      '動く姿を読み込めなかったため、静止画で表示しています（ふれあいは上部の「ふれあい」から行えます）。'
+      '動く姿を読み込めなかったため、静止画で表示しています（動く姿を読み込めない間はふれあいできません）。'
     rigLoading = false
     refreshArrival()
   }

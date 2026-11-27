@@ -242,7 +242,7 @@ describe('home.html', () => {
       'cards',
       'history',
       'settings',
-      'touch-open',
+      'visit',
       'reconnect',
       'clock',
       'state',
@@ -252,6 +252,18 @@ describe('home.html', () => {
       expect(html).toContain(`id="${id}"`)
     expect(html).not.toMatch(/<script(?![^>]*\bsrc=)[^>]*>/)
     expect(html).not.toContain('href="studio.html"')
+  })
+  it('おでかけは右上にあり、入力バーとふれあいメニューにはない (BOXP-733)', () => {
+    const html = readFileSync('home.html', 'utf8')
+    const nav = html.match(/<nav class="nav"[\s\S]*?<\/nav>/)?.[0] ?? ''
+    const form = html.match(/<form id="form"[\s\S]*?<\/form>/)?.[0] ?? ''
+    expect(nav).toMatch(/id="visit"[\s\S]*?おでかけ/)
+    expect(form).not.toContain('id="visit"')
+    expect(html).not.toContain('id="touch-open"')
+    expect(html).not.toContain('id="touch-menu"')
+    const settings = html.match(/<aside id="settings"[\s\S]*?<\/aside>/)?.[0] ?? ''
+    expect(settings).toMatch(/<button id="touch-pat" type="button"[^>]*>頭をなでる<\/button>/)
+    expect(settings).toMatch(/<button id="touch-high-five" type="button"[^>]*>ハイタッチ<\/button>/)
   })
   it('腕が枠外へ振れても切れないよう canvas に左右の余白を持たせ、上下だけ切る (BOXP-510 TD-02)', () => {
     expect(readFileSync('home.html', 'utf8')).toMatch(/<canvas id="rig" data-bleed/)
