@@ -37,6 +37,20 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "even_g2_lab" {
         }
       },
       {
+        # BOXP-736: 試験入口。現行 kohako-g2 と同じ Service・同じ path 制限で、
+        # JWT はこの hostname の試験 Access application の AUD だけを受け付ける。
+        hostname = local.kohako_g2_trial_hostname
+        path     = "^/kohako/"
+        service  = "http://kohako-g2-web.even-g2-lab.svc.cluster.local:80"
+        origin_request = {
+          access = {
+            required  = true
+            team_name = local.zero_trust_team_name
+            aud_tag   = [cloudflare_zero_trust_access_application.kohako_g2_trial.aud]
+          }
+        }
+      },
+      {
         # BOXP-441: Studio also requires its own Access JWT at the tunnel.
         hostname = local.kohako_studio_hostname
         path     = "^/(kohako/|healthz$)"
