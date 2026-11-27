@@ -2835,6 +2835,10 @@ window.addEventListener('pagehide', () => {
 })
 
 // ---- ふれあい ----
+function announceTouch(message: string) {
+  el('touch-live').textContent = message
+  el('touch-status').textContent = message
+}
 const limiter = new TouchLimiter(),
   touchBatcher = new TouchBatcher()
 let touchActive = false,
@@ -2890,7 +2894,7 @@ async function sendTouch() {
     }
     throw new Error('timeout')
   } catch {
-    el('touch-live').textContent = '返事を受け取れませんでした。'
+    announceTouch('返事を受け取れませんでした。')
     try {
       await call(`requests/${id}/cancel`, { method: 'POST', signal: AbortSignal.timeout(10000) })
     } catch {
@@ -2938,7 +2942,7 @@ function touchBlocked(): string | null {
 function touchReact(zone: Zone, kind: 'tap' | 'pat', via: 'pointer' | 'menu') {
   const blocked = touchBlocked()
   if (blocked) {
-    if (via === 'menu') el('touch-live').textContent = blocked
+    if (via === 'menu') announceTouch(blocked)
     return
   }
   const now = Date.now(),
@@ -2971,13 +2975,23 @@ function touchReact(zone: Zone, kind: 'tap' | 'pat', via: 'pointer' | 'menu') {
     }
   }
   const words = zone === 'hand' ? 'ハイタッチしました' : kind === 'pat' ? '頭をなでました' : '頭にタッチしました'
-  el('touch-live').textContent = `${words}。`
+  announceTouch(`${words}。`)
   if (!touchActive && touchSendable()) {
     touchBatcher.add(zone, kind, now)
     clearTimeout(touchDebounce)
     touchDebounce = window.setTimeout(() => void sendTouch(), 1200)
   }
 }
+// 設定からの操作も、動く姿が家にいる間だけ既存の反応経路に渡す。
+function touchFromSettings(zone: Zone, kind: 'tap' | 'pat') {
+  if (!rig || rigCanvas.hidden || (character.dataset.arrival ?? 'home') !== 'home') {
+    announceTouch('いまはふれあいできません。')
+    return
+  }
+  touchReact(zone, kind, 'menu')
+}
+el('touch-pat').addEventListener('click', () => touchFromSettings('head', 'pat'))
+el('touch-high-five').addEventListener('click', () => touchFromSettings('hand', 'tap'))
 let track: { id: number; zone: Zone; points: Point[]; headRect: Rect | null; outside?: boolean } | null = null
 let petOffset = zeroPet(),
   petTick = 0

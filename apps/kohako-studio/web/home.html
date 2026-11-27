@@ -33,6 +33,7 @@
 <aside id="history" class="drawer" aria-label="履歴" hidden><div class="drawer-head"><h2>会話履歴</h2><button id="history-close" type="button" class="ghost close">閉じる</button></div><p class="note">家での会話は過去24時間・最新50件まで、開いている他の端末とも共有されます（時間が空くと新しい会話に切り替わり、以前の履歴は表示だけ残ります）。</p><p class="note">※お知らせはこの端末のみに表示され、再読み込みやタブを閉じると消えます。Telegram とは会話・履歴・確認・停止が別ですが、コハコの人格や記憶は共通です。</p><ol id="history-list"></ol></aside>
 <aside id="settings" class="drawer" aria-label="設定" hidden><div class="drawer-head"><h2>設定</h2><button id="settings-close" type="button" class="ghost close">閉じる</button></div>
   <section class="group"><h3>ふれあい</h3>
+    <div class="actions"><button id="touch-pat" type="button">頭をなでる</button><button id="touch-high-five" type="button">ハイタッチ</button></div><p id="touch-status"></p>
     <label class="opt"><span class="opt-text"><b>ふれあい</b><small>頭をなでる・手にタッチ</small></span><input id="pref-touch" type="checkbox" class="switch"></label>
     <label class="opt"><span class="opt-text"><b>視線で追う</b><small>マウスや画面に触れた位置へ視線を向けます。</small></span><input id="pref-follow" type="checkbox" class="switch"></label>
     <label class="opt"><span class="opt-text"><b>ふれあいのひとこと</b><small>頭をなでたりタッチしたとき、会話の流れに合わせてコハコが一言返します。</small></span><input id="pref-lines" type="checkbox" class="switch"></label>
@@ -61,6 +62,7 @@
   <p class="note">※手のひらを合わせる動きなど、いまのモデルで表現できないしぐさは既存の動きの範囲で反応します。</p>
   <section class="group facts"><h3>いまの状態</h3><p id="features" class="muted">機能を確認中</p><p id="face-mode" class="muted"></p></section>
 </aside>
+
 <p id="touch-live" class="sr-only" aria-live="polite"></p>
 <script type="module" src="/src/home/main.ts"></script>
 </body></html>

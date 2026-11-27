@@ -261,6 +261,9 @@ describe('home.html', () => {
     expect(form).not.toContain('id="visit"')
     expect(html).not.toContain('id="touch-open"')
     expect(html).not.toContain('id="touch-menu"')
+    const settings = html.match(/<aside id="settings"[\s\S]*?<\/aside>/)?.[0] ?? ''
+    expect(settings).toMatch(/<button id="touch-pat" type="button"[^>]*>頭をなでる<\/button>/)
+    expect(settings).toMatch(/<button id="touch-high-five" type="button"[^>]*>ハイタッチ<\/button>/)
   })
   it('腕が枠外へ振れても切れないよう canvas に左右の余白を持たせ、上下だけ切る (BOXP-510 TD-02)', () => {
     expect(readFileSync('home.html', 'utf8')).toMatch(/<canvas id="rig" data-bleed/)
