@@ -121,3 +121,6 @@ S1（BOXP-494: 継続 run の引継ぎと計測）は 7 日観察まで完了済
   soft guard まで約 1 日分（24h 新規の上側 ~20GB を除いた余裕 ~14GB）の猶予がある時点で気付けるようにした。
 - Lean/状態機械: 対象外（閾値比較だけの純関数で、直接の試験で期待値を仕様の例から与えた）。
 - 未解決（別段）: checkout 外の再ダウンロード可能 cache（HF hub blobs は sha256 名で内容検証可能）の内容証明つき回収は未実装。保持期間内の増加は回収できないため、急増時は guard 頼み。
+- 追補（#15827 review P2）: 走査がタイムアウト・非0終了で部分結果のとき、合計は下限値になる。超過判定はそのまま正しいが「予算内」は断定できないため、
+  `:workspace-budget` に `:complete? false` を記録し `capacity-budget: unknown scan-incomplete ...` を log する（完全走査では `:complete? true`）。
+  例: timeout した走査 → `:complete? false`・`:total-over? false` かつ unknown 警告あり。完全走査で予算内 → 警告なし。
