@@ -2048,17 +2048,76 @@
 (defn gate-failure-budget-lock-path []
   (fs/path (root) "locks" "gate-failure-budget.lock"))
 
-(def gate-failure-budget-mutex (Object.))
+(def ^:private gate-failure-budget-reentrant
+  (java.util.concurrent.locks.ReentrantLock.))
+
+(def ^:private gate-failure-budget-hold
+  "BOXP-737 (spec R11): {:thread :count :file} of the held budget lock, so the
+  holding thread may re-enter it (the lifecycle commit takes it before the ticket
+  guard, and budget helpers inside the commit take it again) without re-taking
+  the FileLock, which would throw OverlappingFileLockException."
+  (atom nil))
+
+(defn current-thread-holds-ticket-guard? []
+  (let [t (Thread/currentThread)]
+    (boolean (some #(identical? t (:thread %)) (vals @ticket-guard-holds)))))
+
+(defn acquire-gate-failure-budget-lock!
+  "BOXP-737 (spec R11): lock order is budget lock -> ticket guard everywhere.
+  A thread that holds a ticket guard but not the budget lock is refused (fail
+  closed) instead of waiting, so the inverse order can never deadlock with a
+  run that holds the budget lock and waits for the ticket guard."
+  []
+  (let [t (Thread/currentThread)]
+    (if (identical? t (:thread @gate-failure-budget-hold))
+      (swap! gate-failure-budget-hold update :count inc)
+      (do
+        (when (current-thread-holds-ticket-guard?)
+          (throw (ex-info "lock order violation: budget lock requested while holding a ticket guard"
+                          {:type ::lock-order-violation})))
+        (.lock gate-failure-budget-reentrant)
+        (try
+          (fs/create-dirs (fs/parent (gate-failure-budget-lock-path)))
+          (let [file (java.io.RandomAccessFile. (str (gate-failure-budget-lock-path)) "rw")]
+            (try
+              (.lock (.getChannel file))
+              (reset! gate-failure-budget-hold {:thread t :count 1 :file file})
+              (catch Throwable e
+                (.close file)
+                (throw e))))
+          (catch Throwable e
+            (.unlock gate-failure-budget-reentrant)
+            (throw e)))))
+    true))
+
+(defn release-gate-failure-budget-lock! []
+  (let [held @gate-failure-budget-hold]
+    (when (identical? (Thread/currentThread) (:thread held))
+      (if (> (:count held) 1)
+        (swap! gate-failure-budget-hold update :count dec)
+        (try
+          (reset! gate-failure-budget-hold nil)
+          (.close ^java.io.RandomAccessFile (:file held))
+          (finally
+            (.unlock gate-failure-budget-reentrant)))))))
 
 (defn with-gate-failure-budget-lock [f]
-  ;; Same pattern as with-ticket-lock-guard: `locking` for threads in this JVM,
+  ;; Same pattern as with-ticket-lock-guard: an in-JVM lock for threads, a
   ;; FileLock for helper commands and replacement runner JVMs on the PVC.
-  (locking gate-failure-budget-mutex
-    (fs/create-dirs (fs/parent (gate-failure-budget-lock-path)))
-    (with-open [file (java.io.RandomAccessFile. (str (gate-failure-budget-lock-path)) "rw")
-                channel (.getChannel file)]
-      (let [_file-lock (.lock channel)]
-        (f)))))
+  (acquire-gate-failure-budget-lock!)
+  (try
+    (f)
+    (finally
+      (release-gate-failure-budget-lock!))))
+
+(defn with-lifecycle-commit-locks
+  "BOXP-737 (spec R11): the lifecycle commit sections take the budget lock and
+  then the ticket guard, the same order as budget reservation and the gate
+  budget stop, so the ownership check and every write (budgets included) stay in
+  one critical section without a lock-order inversion."
+  [ticket-id f]
+  (with-gate-failure-budget-lock
+   #(with-ticket-lock-guard ticket-id f)))
 
 (defn read-gate-failure-budget []
   (merge {:format-version 1 :failures {} :grants [] :reservations {}
@@ -5672,6 +5731,9 @@
                 ;; BOXP-737 (spec R10): true while this thread holds the ticket guard
                 ;; of the lifecycle commit (released first in the finally below).
                 commit-guard-held? (atom false)
+                ;; BOXP-737 (spec R11): true while this thread holds the budget
+                ;; lock taken before that ticket guard (released after it).
+                commit-budget-held? (atom false)
                 ;; BOXP-737 (spec R8): delivered true once this run passed the
                 ;; ownership check of its lifecycle commit, false when it did
                 ;; not (lock lost, exception, shutdown). The asynchronous PR
@@ -5750,7 +5812,7 @@
                     ;; as well, so they wait for the same ownership check.
                     ;; R10: the check and the gate record share one guard section.
                     _ (when (and gate-result
-                                 (not (with-ticket-lock-guard
+                                 (not (with-lifecycle-commit-locks
                                        ticket-id
                                        #(when (lifecycle-commit-owner? ticket-id lock)
                                           (record-ai-ops-gate! ticket-id run-id assignee action gate-result)
@@ -5782,7 +5844,12 @@
                     ;; the check cannot write after a takeover (`acquire-lock!`
                     ;; and stale-lock recovery take the same guard). Released
                     ;; first in the finally.
-                    _ (do (acquire-ticket-guard! ticket-id)
+                    ;; R11: budget lock first, then the ticket guard (the global
+                    ;; lock order), because the commit writes the gate and
+                    ;; continuation budgets under the budget lock.
+                    _ (do (acquire-gate-failure-budget-lock!)
+                          (reset! commit-budget-held? true)
+                          (acquire-ticket-guard! ticket-id)
                           (reset! commit-guard-held? true))
                     ;; BOXP-737: before anything below persists state, make sure
                     ;; this run still owns the ticket lock.
@@ -5991,7 +6058,7 @@
               (catch Exception e
                 ;; BOXP-737 (spec R10): the ownership check and the writes of the
                 ;; exception path share one ticket-guard critical section as well.
-                (with-ticket-lock-guard
+                (with-lifecycle-commit-locks
                  ticket-id
                  (fn []
                 (cond
@@ -6056,6 +6123,9 @@
                 (when @commit-guard-held?
                   (reset! commit-guard-held? false)
                   (release-ticket-guard! ticket-id))
+                (when @commit-budget-held?
+                  (reset! commit-budget-held? false)
+                  (release-gate-failure-budget-lock!))
                 ;; No-op after a true; releases a pending PR observation otherwise.
                 (deliver commit-owned false)
                 ;; R9: an owner run lets its pending observation write while it
@@ -9778,6 +9848,87 @@
                                 " committing=" @committing-cards))
                   (swap! failures conj label)))))
         (fs/delete-tree dir)))
+
+    ;; BOXP-737 (spec R11): lock order is budget lock -> ticket guard. A run that
+    ;; holds the budget lock and waits for the ticket guard (budget reservation,
+    ;; gate budget stop) must not deadlock with a lifecycle commit that writes the
+    ;; gate / continuation budgets.
+    (let [dir (str (fs/create-temp-dir {:prefix "boxp737-lock-order"}))
+          ticket "TEST-LOCK-ORDER"
+          mine {:ticket ticket :run-id "old-run" :owner-id "o1" :owner-instance-id "i1"
+                :heartbeat-at (now-str)}
+          other (atom nil)
+          label "lifecycle commit and a budget-then-guard run do not deadlock"]
+      (with-redefs [root (constantly dir)
+                    ticket-frontmatter (fn [_] {:assignee "claude-fable"})
+                    candidate-action (fn [& _] :implement)
+                    acquire-lock! (fn [& _]
+                                    (fs/create-dirs (fs/parent (lock-path ticket)))
+                                    (write-edn-file! (lock-path ticket) mine)
+                                    mine)
+                    heartbeat! (fn [& _] (future nil))
+                    move-card! (fn [& _] nil)
+                    update-frontmatter! (fn [& _] nil)
+                    append-note! (fn [& _] nil)
+                    mark-run! (fn [& _] nil)
+                    block-ticket! (fn [& _] true)
+                    restore-card-state! (fn [& _] nil)
+                    record-ai-ops-gate! (fn [& _] nil)
+                    record-ai-ops-event! (fn [& _] nil)
+                    record-ai-ops-finish! (fn [& _] nil)
+                    record-task-board-event! (fn [& _] nil)
+                    persist-pr-gate-diagnostic! (fn [& _] nil)
+                    ;; The commit's budget write: another run first takes the
+                    ;; budget lock and then wants this ticket's guard.
+                    record-gate-pr-registrations! (fn [& _]
+                                                    (reset! other (future
+                                                                    (with-gate-failure-budget-lock
+                                                                     (fn []
+                                                                       (Thread/sleep 200)
+                                                                       (with-ticket-lock-guard ticket (constantly :reserved))))))
+                                                    (Thread/sleep 100)
+                                                    (with-gate-failure-budget-lock (constantly nil)))
+                    record-same-file-review-streak! (fn [& _] nil)
+                    record-pr-gate-failure! (fn [_ _ _ gate] gate)
+                    clear-pr-gate-retries! (fn [& _] nil)
+                    reserve-gate-budget-run! (fn [& _] true)
+                    superseded-revision (fn [& _] nil)
+                    final-status (fn [& _] "ready")
+                    log! (fn [& _] nil)
+                    conflict-observe! (fn [& _] nil)
+                    run-agent! (fn [& _]
+                                 {:exit 0 :result "continue" :run-id (:run-id mine)
+                                  :dir "/nonexistent" :last-message "https://github.com/boxp/arch/pull/1"
+                                  :idle-timeout? false :shutdown? false})
+                    review-gate! (fn [& _] {:ok? true :pr-urls []})
+                    consume-continuation! (fn [_ _ gate] gate)
+                    clear-continuation-budget! (fn [_] nil)]
+        (let [run (future (process-card! {:ticket-id ticket :lane "In Progress" :status "in-progress"}) :done)
+              finished (deref run 10000 ::deadlock)
+              reserved (some-> @other (deref 5000 ::deadlock))]
+          (if (and (= :done finished) (= :reserved reserved))
+            (println (str "PASS: " label))
+            (do (println (str "FAIL: " label " commit=" (pr-str finished) " other=" (pr-str reserved)))
+                (swap! failures conj label)))))
+      (fs/delete-tree dir))
+
+    ;; BOXP-737 (spec R11): the inverse order is refused instead of waiting; the
+    ;; budget lock re-enters on the same thread.
+    (let [dir (str (fs/create-temp-dir {:prefix "boxp737-lock-order-check"}))
+          label "budget lock under a ticket guard is refused; budget then guard and re-entry work"]
+      (with-redefs [root (constantly dir)]
+        (let [inverse (try (with-ticket-lock-guard "TEST-ORDER"
+                             #(with-gate-failure-budget-lock (constantly :entered)))
+                           (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))
+              forward (with-lifecycle-commit-locks "TEST-ORDER"
+                        #(with-gate-failure-budget-lock (constantly :entered)))
+              after (with-gate-failure-budget-lock (constantly :free))]
+          (if (and (= ::lock-order-violation inverse) (= :entered forward) (= :free after)
+                   (not (current-thread-holds-ticket-guard?)))
+            (println (str "PASS: " label))
+            (do (println (str "FAIL: " label " " (pr-str [inverse forward after])))
+                (swap! failures conj label)))))
+      (fs/delete-tree dir))
 
     ;; BOXP-737 (spec R8): the PR conflict observation runs in a future after
     ;; the review gate. It may write its record only once this run passed the
