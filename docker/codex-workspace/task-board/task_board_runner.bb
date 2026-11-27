@@ -328,6 +328,48 @@
           ((resolve 'agent-auth-expiry/write-metrics!) (root)))
         (catch Exception _ (log! "agent auth metrics write failed")))))))
 
+;; BOXP-737 (spec R13): lock layers. Outer locks (gate budget, owner lock guard)
+;; -> ticket guard -> inner locks (recheck reservations, same-file review
+;; streaks, vault writer). A thread holding an inner lock may not newly take a
+;; ticket guard, and a thread holding a ticket guard or an inner lock may not
+;; newly take an outer lock: such a request throws instead of waiting (fail
+;; closed), so no inverse order can deadlock. Same-thread re-entry is allowed.
+(def ^:private inner-lock-holds
+  "Thread -> {lock-name hold-count} of the inner locks the thread holds."
+  (atom {}))
+
+(defn current-thread-inner-locks []
+  (set (keys (get @inner-lock-holds (Thread/currentThread)))))
+
+(defn with-inner-lock-hold
+  "Run f while recording that the current thread holds inner lock lock-name.
+  Call it inside the inner lock's critical section."
+  [lock-name f]
+  (let [t (Thread/currentThread)]
+    (swap! inner-lock-holds update-in [t lock-name] (fnil inc 0))
+    (try
+      (f)
+      (finally
+        (swap! inner-lock-holds
+               (fn [m]
+                 (let [n (dec (get-in m [t lock-name] 1))
+                       m (if (pos? n)
+                           (assoc-in m [t lock-name] n)
+                           (update m t dissoc lock-name))]
+                   (if (empty? (get m t)) (dissoc m t) m))))))))
+
+(defn lock-order-violation! [message]
+  (throw (ex-info (str "lock order violation: " message)
+                  {:type :user/lock-order-violation})))
+
+(declare current-thread-holds-ticket-guard?)
+
+(defn ensure-outer-lock-allowed! [lock-name]
+  (when (current-thread-holds-ticket-guard?)
+    (lock-order-violation! (str lock-name " requested while holding a ticket guard")))
+  (when-let [inner (seq (current-thread-inner-locks))]
+    (lock-order-violation! (str lock-name " requested while holding inner lock(s) " (str/join "," (map name (sort inner)))))))
+
 ;; BOXP-201 I3: opt-in lock shared with the helper and vault_writer.bb so that
 ;; Board/ticket read-modify-write cycles serialize across processes. Unset in
 ;; deployment, where writes behave exactly as before; every writer moves onto it
@@ -349,7 +391,7 @@
                     channel (.getChannel file)]
           (let [_file-lock (.lock channel)]
             (binding [*vault-writer-lock-held* true]
-              (f))))))))
+              (with-inner-lock-hold :vault-writer f))))))))
 
 (defn parse-codex-assignee [assignee]
   (cond
@@ -476,6 +518,7 @@
   ;; Planned-shutdown marker changes and every lock acquisition for an owner must
   ;; share one cross-process critical section. Ticket guards cannot close the gap
   ;; between a directory-wide rescan and deleting the owner marker.
+  (ensure-outer-lock-allowed! "owner lock guard")
   (let [guard-key (safe-owner-id value)]
     (locking (owner-mutex guard-key)
       (fs/create-dirs (owner-lock-guards-dir))
@@ -1358,6 +1401,10 @@
   in a finally. The in-JVM lock serializes threads; the FileLock extends the same
   critical section to helper commands and replacement runner JVMs sharing the PVC."
   [ticket-id]
+  (when-not (identical? (Thread/currentThread) (:thread (get @ticket-guard-holds ticket-id)))
+    (when-let [inner (seq (current-thread-inner-locks))]
+      (lock-order-violation! (str "ticket guard requested while holding inner lock(s) "
+                                  (str/join "," (map name (sort inner)))))))
   (let [stripe (ticket-guard-stripe ticket-id)]
     (.lock stripe)
     (try
@@ -2072,9 +2119,7 @@
     (if (identical? t (:thread @gate-failure-budget-hold))
       (swap! gate-failure-budget-hold update :count inc)
       (do
-        (when (current-thread-holds-ticket-guard?)
-          (throw (ex-info "lock order violation: budget lock requested while holding a ticket guard"
-                          {:type ::lock-order-violation})))
+        (ensure-outer-lock-allowed! "budget lock")
         (.lock gate-failure-budget-reentrant)
         (try
           (fs/create-dirs (fs/parent (gate-failure-budget-lock-path)))
@@ -2151,7 +2196,7 @@
     (let [path (fs/path (root) "locks" "same-file-review-streaks.lock")]
       (fs/create-dirs (fs/parent path))
       (with-open [file (java.io.RandomAccessFile. (str path) "rw") channel (.getChannel file)]
-        (let [_lock (.lock channel)] (f))))))
+        (let [_lock (.lock channel)] (with-inner-lock-hold :same-file-review f))))))
 (defn read-same-file-review-streaks []
   (read-edn-file (same-file-review-path) {:format-version 1 :streaks {}}))
 (defn write-same-file-review-streaks! [state]
@@ -5249,7 +5294,7 @@
       (fs/create-dirs (fs/parent path))
       (with-open [file (java.io.RandomAccessFile. (str path) "rw")
                   channel (.getChannel file)]
-        (let [_lock (.lock channel)] (f))))))
+        (let [_lock (.lock channel)] (with-inner-lock-hold :recheck f))))))
 (defn read-rechecks [] (read-edn-file (recheck-path) {}))
 (defn write-rechecks! [db]
   (let [path (recheck-path) tmp (fs/path (fs/parent path) (str ".rechecks-" (random-uuid) ".tmp"))]
@@ -5315,17 +5360,26 @@
     (not= "blocked" status) nil
     (and (= "boxp" assignee) (= (:board-rev r) rev)) :original
     (and (:fired-rev r) (= (:resume-assignee r) assignee) (= (:fired-rev r) rev)) :fired))
+(defn recheck-due? [r]
+  (and (contains? #{:pending :firing} (:state r))
+       (try (not (.isAfter (java.time.Instant/parse (:due r)) (java.time.Instant/now)))
+            (catch Exception _ false))))
+
 (defn sweep-rechecks! []
-  (with-recheck-lock
-    (fn []
-      (doseq [[ticket r] (read-rechecks)
-              :when (and (contains? #{:pending :firing} (:state r))
-                         (or (nil? @only-ticket) (= @only-ticket ticket))
-                         (try (not (.isAfter (java.time.Instant/parse (:due r)) (java.time.Instant/now)))
-                              (catch Exception _ false)))]
-        (try
-        (with-ticket-lock-guard ticket
-          (fn []
+  ;; BOXP-737 (spec R13): the recheck lock is an inner lock. Read the due
+  ;; candidates, release it, then take ticket guard -> recheck lock per ticket
+  ;; (the lifecycle commit's order) and act only if the reservation is still
+  ;; the one that was read.
+  (doseq [[ticket r0] (with-recheck-lock read-rechecks)
+          :when (and (recheck-due? r0)
+                     (or (nil? @only-ticket) (= @only-ticket ticket)))]
+    (try
+      (with-ticket-lock-guard ticket
+        (fn []
+          (with-recheck-lock
+            (fn []
+              (let [r (get (read-rechecks) ticket)]
+                (when (and (= (:id r) (:id r0)) (recheck-due? r))
         (let [fm (when (fs/exists? (ticket-path ticket)) (ticket-frontmatter ticket))
               cards (filter #(= ticket (:ticket-id %)) (parse-board-cards (vec (read-lines (board-path)))))
               card (when (= 1 (count cards)) (first cards))
@@ -5356,10 +5410,10 @@
                     (append-note! ticket (str "再確認予約 " (:id r) " 期限到来 (期限=" (:due r) ", 超過=" minutes
                                               "分): Blocked のまま元担当 " (:resume-assignee r)
                                               " へ正規再投入 (blocked-retry、継続予算は維持)"))
-                    (write-rechecks! (assoc (read-rechecks) ticket (assoc r :state :fired :fired-at (now-str)))))))))
+                    (write-rechecks! (assoc (read-rechecks) ticket (assoc r :state :fired :fired-at (now-str)))))))))))))
           ;; One broken ticket must not stop the tick for every other card.
           (catch Exception e
-            (log! (str "recheck sweep failed for " ticket ": " (.getMessage e)))))))))
+            (log! (str "recheck sweep failed for " ticket ": " (.getMessage e)))))))
 
 (defn block-ticket! [ticket-id run-id action result exit review-gate exception last-message]
   (when (record-blocked-transition! ticket-id run-id action result exit review-gate exception)
@@ -9981,6 +10035,75 @@
                    (not (current-thread-holds-ticket-guard?)))
             (println (str "PASS: " label))
             (do (println (str "FAIL: " label " " (pr-str [inverse forward after])))
+                (swap! failures conj label)))))
+      (fs/delete-tree dir))
+
+    ;; BOXP-737 (spec R13): the lifecycle commit holds the ticket guard and then
+    ;; creates a recheck reservation (guard -> recheck lock) while the recheck
+    ;; sweep handles a due reservation of the same ticket. Neither may wait for
+    ;; the other forever.
+    (let [dir (str (fs/create-temp-dir {:prefix "boxp737-recheck-order"}))
+          ticket "TEST-RECHECK-ORDER"
+          label "lifecycle commit creating a recheck and the recheck sweep of the same ticket do not deadlock"
+          db (atom {ticket {:id "rc-1" :ticket ticket :state :pending :due "2020-01-01T00:00:00Z"}})]
+      (with-redefs [root (constantly dir)
+                    read-rechecks (fn [] @db)
+                    write-rechecks! (fn [v] (reset! db v))
+                    ticket-path (fn [_] (fs/path dir "no-such-ticket.md"))
+                    read-lines (fn [_] [])
+                    log! (fn [& _] nil)]
+        (let [commit (future (with-lifecycle-commit-locks ticket
+                               (fn []
+                                 (Thread/sleep 300)
+                                 (with-recheck-lock (constantly :created)))))
+              _ (Thread/sleep 100)
+              sweep (future (sweep-rechecks!) :swept)
+              c (deref commit 5000 ::deadlock)
+              s (deref sweep 5000 ::deadlock)]
+          (if (and (= :created c) (= :swept s) (= :superseded (get-in @db [ticket :state])))
+            (println (str "PASS: " label))
+            (do (println (str "FAIL: " label " commit=" (pr-str c) " sweep=" (pr-str s)))
+                (swap! failures conj label)))))
+      (fs/delete-tree dir))
+
+    ;; BOXP-737 (spec R13): outer locks -> ticket guard -> inner locks. Every
+    ;; inverse acquisition is refused instead of waiting; forward order and
+    ;; same-thread re-entry work.
+    (let [dir (str (fs/create-temp-dir {:prefix "boxp737-lock-layers"}))
+          label "lock layers: inverse acquisitions are refused, forward order and re-entry work"
+          refused (fn [f] (try (f) :entered
+                               (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))]
+      (with-redefs [root (constantly dir)]
+        (let [results
+              {:guard-under-recheck (refused #(with-recheck-lock
+                                                (fn [] (with-ticket-lock-guard "TEST-LAYER" (constantly nil)))))
+               :guard-under-same-file (refused #(with-same-file-review-lock
+                                                  (fn [] (with-ticket-lock-guard "TEST-LAYER" (constantly nil)))))
+               :owner-under-guard (refused #(with-ticket-lock-guard "TEST-LAYER"
+                                              (fn [] (with-owner-lock-guard "test-owner" (constantly nil)))))
+               :budget-under-recheck (refused #(with-recheck-lock
+                                                 (fn [] (with-gate-failure-budget-lock (constantly nil)))))
+               :owner-then-guard (refused #(with-owner-lock-guard "test-owner"
+                                             (fn [] (with-ticket-lock-guard "TEST-LAYER" (constantly nil)))))
+               :guard-then-inner (refused #(with-ticket-lock-guard "TEST-LAYER"
+                                             (fn [] (with-recheck-lock
+                                                      (fn [] (with-same-file-review-lock (constantly nil)))))))
+               :guard-reentry-under-inner (refused #(with-ticket-lock-guard "TEST-LAYER"
+                                                      (fn [] (with-recheck-lock
+                                                               (fn [] (with-ticket-lock-guard "TEST-LAYER" (constantly nil)))))))
+               :free-after (refused #(with-recheck-lock
+                                       (fn [] nil)))}
+              expected {:guard-under-recheck ::lock-order-violation
+                        :guard-under-same-file ::lock-order-violation
+                        :owner-under-guard ::lock-order-violation
+                        :budget-under-recheck ::lock-order-violation
+                        :owner-then-guard :entered
+                        :guard-then-inner :entered
+                        :guard-reentry-under-inner :entered
+                        :free-after :entered}]
+          (if (and (= expected results) (not (current-thread-holds-ticket-guard?)))
+            (println (str "PASS: " label))
+            (do (println (str "FAIL: " label " " (pr-str results)))
                 (swap! failures conj label)))))
       (fs/delete-tree dir))
 
