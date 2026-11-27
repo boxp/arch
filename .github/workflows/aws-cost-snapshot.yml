@@ -32,7 +32,7 @@ jobs:
             -o "${tmp}/bb.tar.gz"
           tar -xzf "${tmp}/bb.tar.gz" -C "${tmp}"
           sudo install -m 0755 "$(find "${tmp}" -type f -name bb | head -n 1)" /usr/local/bin/bb
-      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::839695154978:role/aws-cost-snapshot-gha-role
           aws-region: ap-northeast-1
