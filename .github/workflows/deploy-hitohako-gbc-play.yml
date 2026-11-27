@@ -79,6 +79,7 @@ jobs:
           REV: ${{ steps.bundle.outputs.rev }}
           ROM_SHA256: ${{ steps.bundle.outputs.rom_sha256 }}
           ACTION_ROM_SHA256: ${{ steps.bundle.outputs.action_rom_sha256 }}
+          NEXT_ROM_SHA256: ${{ steps.bundle.outputs.next_rom_sha256 }}
           DEPLOYED: ${{ steps.deploy.outputs.deployed }}
         run: |
           {
@@ -86,5 +87,6 @@ jobs:
             echo "- bundle: \`$REV\`"
             echo "- ROM sha256: \`$ROM_SHA256\`"
             echo "- action ROM sha256: \`$ACTION_ROM_SHA256\`"
+            echo "- action-next (candidate) ROM sha256: \`$NEXT_ROM_SHA256\`"
             echo "- deployed in this run: \`$DEPLOYED\`"
           } >>"$GITHUB_STEP_SUMMARY"

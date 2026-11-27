@@ -52,6 +52,11 @@ entrances=(
   "https://$project.pages.dev/action/"
   "https://$project.pages.dev/action/rom/hitohako_action.gbc"
   "https://main.$project.pages.dev/action/rom/hitohako_action.gbc"
+  # 人物の絵の候補のページ（/action-next/、BOXP-740）。無い時も未ログインではログインへ転送されることを確かめる。
+  "https://$domain/action-next/"
+  "https://$domain/action-next/version.json"
+  "https://$domain/action-next/rom/hitohako_action.gbc"
+  "https://$project.pages.dev/action-next/rom/hitohako_action.gbc"
 )
 
 project_json=$(api "")
@@ -114,6 +119,7 @@ done
 
 echo "== after deploy: every entrance, and this deployment's own URL, must be behind Access"
 "$app_dir/scripts/access-check.sh" "${entrances[@]}" "$(jq -r .url <<<"$after")/" "$(jq -r .url <<<"$after")/rom/hitohako_gbc.gbc" \
-  "$(jq -r .url <<<"$after")/action/" "$(jq -r .url <<<"$after")/action/rom/hitohako_action.gbc"
+  "$(jq -r .url <<<"$after")/action/" "$(jq -r .url <<<"$after")/action/rom/hitohako_action.gbc" \
+  "$(jq -r .url <<<"$after")/action-next/rom/hitohako_action.gbc"
 echo "live: bundle $rev (deployment $(jq -r .id <<<"$after"))"
 echo "deployed=true" >>"$output"
