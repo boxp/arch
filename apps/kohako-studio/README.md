@@ -20,6 +20,10 @@ BFF は Owner 認証用に `KOHAKO_ACCESS_TEAM_DOMAIN`、`KOHAKO_ACCESS_AUD`、`
 
 家の画面でしか出ない試作（待機中の動きなど）は `"page": "home"` を付けます。一覧のリンクが `/kohako/candidates/<id>/home.html` になり、画面の上端に「試作候補」の小さな札が出ます。会話・通知・設定は通常の家の画面と同じ BFF・同じ保存先を使います（別の会話にはなりません）。
 
+### 待機中のコハコの描画を間引く試作（BOXP-738・本人の比較待ち）
+
+候補 `idlefps-22f3133`（`"page": "home"`）。静かな待機の間だけ、コハコ本体の描き直し（p2l.js の `update` + `draw`）を約 30 回/秒に抑える（通常は画面の更新ごと、上限なし）。会話（送信・聞いている・考えている・話している）・確認待ち・失敗・なでる・タップ・身振り・録音・マウスや指を動かしてから 4 秒・おでかけ中は毎フレーム描く。待機のしぐさ・椅子・まばたき・呼吸は 30 回/秒のまま動く。同じ候補の家で `?idlefps=off` にすると間引かない（同じ版で比べる用）、`?idlefps=10`〜`60` で上限を変えられる。背景の動き・すりガラス・通知の通信は変えていない。通常版の家は変えていない（コードは候補のタグにだけある）。候補のカードのリンクは `homeLinks`（文言と確認用の指定）で決める。計測の道具は `verify/home/idlefps738.mjs`。仕様は vault の `Projects/kohako-home/idle-framecap-738.md`。
+
 ### Keshin2D でコハコを動かす試作（BOXP-716・本人の比較待ち）
 
 別の描画の候補 `keshin-273db9f`（`"page": "keshin"`、一覧のリンクは `/kohako/candidates/<id>/keshin.html`）。[Keshin2D](https://github.com/rotejin/Keshin2D)（MIT、commit `028bd9a`）を候補の版の `web/public/kohako/keshin/` に同梱し、通常版のモデル v11r の層を画像生成なしで取り出して Keshin2D の顔の型へ写したモデルで動かす。座る決まりは通常版の `home/seat.ts`・`live2d/seat.ts` をそのまま使う。会話の API は呼ばず、台本で 聞いている → 考えている → 話している を再現する。通常版の家・会話は変えていない（コードは候補のタグにだけある）。通常版と同じ台本・同じ画面の大きさ・通常の速さで録る道具は `verify/home/keshin716.mjs`（録画）と `compose716.mjs`（左右に並べる）。仕様は vault の `Projects/kohako-home/keshin2d-trial-716.md`。

@@ -14,6 +14,8 @@ export type Candidate = {
   page?: string
   /** 実時間の録画（動く画面を開けない端末でも動きを見られるように）。file は ./kohako/candidate-videos/<id>/ の中の mp4。 */
   videos?: { file: string; title: string; note?: string }[]
+  /** 家の画面で見る候補（page: home）のリンク（文言と確認用の指定）。無い・全部崩れている時は既定の 2 つ（BOXP-738）。 */
+  homeLinks?: { text: string; query: string }[]
   built: boolean
 }
 
@@ -40,15 +42,34 @@ export const candidateURL = (c: Candidate, page: 'live2d' | 'studio' = 'live2d')
   `./candidates/${c.id}/${page}.html?acting=1`
 /** 家の画面で見る候補（page: home）の固定リンク。query は候補が読む確認用の指定（例: ?seat=now）。 */
 export const candidateHomeURL = (c: Candidate, query = '') => `./candidates/${c.id}/home.html${query}`
+/** 家のリンクに付けてよい指定: 空か、?名前=値 を & でつないだもの（英小文字・数字・- だけ。別のページ・外部・# へは誘導しない）。 */
+const HOME_QUERY = /^(\?[a-z0-9]+=[a-z0-9-]+(&[a-z0-9]+=[a-z0-9-]+)*)?$/
+function homeLinks(c: Candidate): { text: string; href: string }[] {
+  const list: unknown = c.homeLinks
+  const links = Array.isArray(list)
+    ? list.filter(
+        (l): l is { text: string; query: string } =>
+          !!l &&
+          typeof l === 'object' &&
+          typeof l.text === 'string' &&
+          l.text !== '' &&
+          typeof l.query === 'string' &&
+          HOME_QUERY.test(l.query),
+      )
+    : []
+  return links.length
+    ? links.map((l) => ({ text: l.text, href: candidateHomeURL(c, l.query) }))
+    : [
+        { text: '家の画面で見る', href: candidateHomeURL(c) },
+        { text: 'すぐ座るところから見る', href: candidateHomeURL(c, '?seat=now') },
+      ]
+}
 /** 候補のカードに出すリンク（文言と行き先）。 */
 export const candidateLinks = (c: Candidate): { text: string; href: string }[] =>
   c.page === 'keshin'
     ? [{ text: '試作を動かす（Keshin2D）', href: `./candidates/${c.id}/keshin.html` }]
     : c.page === 'home'
-      ? [
-          { text: '家の画面で見る', href: candidateHomeURL(c) },
-          { text: 'すぐ座るところから見る', href: candidateHomeURL(c, '?seat=now') },
-        ]
+      ? homeLinks(c)
       : [
           { text: '動作ボタンで操作する', href: candidateURL(c) },
           { text: '会話と連動して見る', href: candidateURL(c, 'studio') },
