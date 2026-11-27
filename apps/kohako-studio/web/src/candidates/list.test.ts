@@ -47,6 +47,44 @@ describe('試作候補の一覧', () => {
       './candidates/arm-4980edd/studio.html?acting=1',
     ])
   })
+  // BOXP-738: 同じ候補の家を、確認用の指定（例: 間引きあり / ?idlefps=off で間引きなし）を変えて並べて開けるよう、候補ごとにリンクを指定できる。
+  it('家の画面の候補は homeLinks でリンクの文言と指定を決められる', () => {
+    const c = {
+      ...ok,
+      id: 'idlefps-0123abc',
+      page: 'home',
+      homeLinks: [
+        { text: '家の画面で見る（待機中 30fps）', query: '' },
+        { text: '間引きなしで見る', query: '?idlefps=off' },
+      ],
+    }
+    expect(candidateLinks(c)).toEqual([
+      { text: '家の画面で見る（待機中 30fps）', href: './candidates/idlefps-0123abc/home.html' },
+      { text: '間引きなしで見る', href: './candidates/idlefps-0123abc/home.html?idlefps=off' },
+    ])
+  })
+  it('形の崩れた homeLinks は捨て、残らなければ既定のリンクにする（別のページ・外部へ誘導しない）', () => {
+    const base = { ...ok, id: 'idlefps-0123abc', page: 'home' }
+    const bad = [
+      { text: 'a', query: '../x' },
+      { text: 'b', query: '?a=1#x' },
+      { text: 'c', query: 'idlefps=off' },
+      { text: 'd', query: '?x=https://e.example' },
+      { text: '', query: '?idlefps=off' },
+      { query: '?idlefps=off' },
+      null,
+    ]
+    expect(candidateLinks({ ...base, homeLinks: bad } as unknown as Candidate).map((l) => l.href)).toEqual([
+      './candidates/idlefps-0123abc/home.html',
+      './candidates/idlefps-0123abc/home.html?seat=now',
+    ])
+    expect(
+      candidateLinks({
+        ...base,
+        homeLinks: [...bad, { text: 'ok', query: '?seat=off&idlefps=10' }],
+      } as unknown as Candidate),
+    ).toEqual([{ text: 'ok', href: './candidates/idlefps-0123abc/home.html?seat=off&idlefps=10' }])
+  })
   it('Keshin2D の試作（page: keshin、BOXP-716）は、試作の画面へリンクする（家の画面ではない）', () => {
     const k = { ...ok, id: 'keshin-0123abc', page: 'keshin' }
     expect(candidateLinks(k)).toEqual([
