@@ -25,12 +25,18 @@ size="${1:-small}"
 case "${size}" in
   small) consts=("StaleAfter = 2" "MaxTime = 7" "MaxGrants = 3") ;;
   large) consts=("StaleAfter = 3" "MaxTime = 10" "MaxGrants = 4") ;;
-  *) echo "unknown size: ${size}" >&2; exit 2 ;;
+  *)
+    echo "unknown size: ${size}" >&2
+    exit 2
+    ;;
 esac
 
 JAVA="${JAVA:-java}"
 : "${TLA2TOOLS_JAR:?set TLA2TOOLS_JAR (or run ./run-tlc.sh --fetch DIR)}"
-echo "${JAR_SHA256}  ${TLA2TOOLS_JAR}" | sha256sum -c --quiet - || { echo "tla2tools.jar sha256 mismatch" >&2; exit 2; }
+echo "${JAR_SHA256}  ${TLA2TOOLS_JAR}" | sha256sum -c --quiet - || {
+  echo "tla2tools.jar sha256 mismatch" >&2
+  exit 2
+}
 
 out="${TLC_OUT:-$(mktemp -d)}"
 mkdir -p "${out}/tmp"
@@ -67,7 +73,7 @@ for v in "${variants[@]}"; do
       echo "  FenceCommit = ${fence}"
       echo "INVARIANT TypeOK"
       case "${p}" in
-        NoForeignDisplace|HeartbeatOnlyOwn) echo "PROPERTY ${p}" ;;
+        NoForeignDisplace | HeartbeatOnlyOwn) echo "PROPERTY ${p}" ;;
         *) echo "INVARIANT ${p}" ;;
       esac
       echo "CHECK_DEADLOCK FALSE"
@@ -77,11 +83,14 @@ for v in "${variants[@]}"; do
       -workers 1 -metadir "${out}/meta/${name}.${p}" -config "${cfg}" TaskRunnerLock.tla >"${log}" 2>&1 || true
     states="$(sed -n 's/^\([0-9]*\) states generated.*/\1/p' "${log}" | tail -n 1)"
     if grep -q 'Model checking completed. No error has been found.' "${log}"; then
-      result=ok; detail="states=${states}"
+      result=ok
+      detail="states=${states}"
     elif grep -Eq "(Invariant|Action property) ${p} is violated" "${log}"; then
-      result=violated; detail="steps=$(grep -c '^State [0-9]*:' "${log}")"
+      result=violated
+      detail="steps=$(grep -c '^State [0-9]*:' "${log}")"
     else
-      result=error; detail="see ${log}"
+      result=error
+      detail="see ${log}"
     fi
     printf '%s\t%s\t%s\t%s\n' "${name}" "${p}" "${result}" "${detail}" | tee -a "${actual}"
   done

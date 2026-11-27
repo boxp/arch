@@ -89,10 +89,20 @@ PATH="${bin}:$PATH" \
   bb "${RUNNER}" tick >"${tmp}/tick.out" 2>&1 &
 tick_pid=$!
 
-for _ in $(seq 1 300); do [[ -e "${started}" ]] && break; sleep 0.1; done
-[[ -e "${started}" ]] || { cat "${tmp}/tick.out" >&2; echo "agent did not start" >&2; exit 1; }
+for _ in $(seq 1 300); do
+  [[ -e "${started}" ]] && break
+  sleep 0.1
+done
+[[ -e "${started}" ]] || {
+  cat "${tmp}/tick.out" >&2
+  echo "agent did not start" >&2
+  exit 1
+}
 lock="${state}/locks/BOXP-9001.edn"
-[[ -e "${lock}" ]] || { echo "runner A did not create the lock" >&2; exit 1; }
+[[ -e "${lock}" ]] || {
+  echo "runner A did not create the lock" >&2
+  exit 1
+}
 
 # Runner B の取り直し: 実装と同じ ticket guard (FileLock) を取ってから lock を書き換える。
 b_lock="{:ticket \"BOXP-9001\" :run-id \"runner-b-run\" :action :implement :lane \"In Progress\" :owner-id \"runner-b\" :owner-instance-id \"runner-b-1\" :heartbeat-at \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
@@ -114,21 +124,29 @@ if [[ "${tick_rc}" -ne 0 ]]; then
 fi
 
 summary="$(find "${state}/runs/BOXP-9001" -name summary.edn -print -quit)"
-echo "--- lock after tick"; cat "${lock}" 2>/dev/null || echo "(none)"
-echo "--- runner A summary"; grep -o ':status [^ ]*\|:result "[^"]*"' "${summary}" || true
-echo "--- board line"; grep 'BOXP-9001' "${vault}/Boards/Task Board.md"
-echo "--- ticket status"; grep '^status:' "${vault}/Tickets/BOXP-9001.md"
-echo "--- Notes (runner A)"; sed -n '/^## Notes/,$p' "${vault}/Tickets/BOXP-9001.md" | tail -n +2
-echo "--- runner log (lock)"; grep -i 'lock' "${tmp}/tick.out" || true
+echo "--- lock after tick"
+cat "${lock}" 2>/dev/null || echo "(none)"
+echo "--- runner A summary"
+grep -o ':status [^ ]*\|:result "[^"]*"' "${summary}" || true
+echo "--- board line"
+grep 'BOXP-9001' "${vault}/Boards/Task Board.md"
+echo "--- ticket status"
+grep '^status:' "${vault}/Tickets/BOXP-9001.md"
+echo "--- Notes (runner A)"
+sed -n '/^## Notes/,$p' "${vault}/Tickets/BOXP-9001.md" | tail -n +2
+echo "--- runner log (lock)"
+grep -i 'lock' "${tmp}/tick.out" || true
 
-b_kept=false; a_committed=false; a_held=false
+b_kept=false
+a_committed=false
+a_held=false
 grep -q "runner-b" "${lock}" 2>/dev/null && b_kept=true
-if [[ -n "${summary}" ]] && grep -q ":status :succeeded" "${summary}" \
-  && ! grep -q "status::in-progress" "${vault}/Boards/Task Board.md"; then
+if [[ -n "${summary}" ]] && grep -q ":status :succeeded" "${summary}" &&
+  ! grep -q "status::in-progress" "${vault}/Boards/Task Board.md"; then
   a_committed=true
 fi
-if grep -q "status::in-progress" "${vault}/Boards/Task Board.md" \
-  && grep -q "^status: in-progress$" "${vault}/Tickets/BOXP-9001.md"; then
+if grep -q "status::in-progress" "${vault}/Boards/Task Board.md" &&
+  grep -q "^status: in-progress$" "${vault}/Tickets/BOXP-9001.md"; then
   a_held=true
 fi
 if ${b_kept} && ${a_committed}; then
