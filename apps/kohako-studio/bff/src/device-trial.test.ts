@@ -308,3 +308,42 @@ it('HTTP: 本人だけが作る・開く・止める。検証用・通知用・�
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+it('送信が応答しない間も、停止と取消は待たずに効く（送信は操作の順番を占有しない）', async () => {
+  const { store } = memory()
+  let n = 0
+  const t = await createDeviceTrial({
+    store,
+    now: () => T0,
+    id: () => `req-${String(n++).padStart(4, '0')}-0000`,
+    send: () => new Promise(() => {}),
+  })
+  void t.create({ place: 'tocho' })
+  const within = <T>(p: Promise<T>) =>
+    Promise.race([p, new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 200))])
+  const v = await within(t.view())
+  if (v === 'timeout') throw Error('view blocked by send')
+  expect(v.requests[0].state).toBe('pending')
+  expect(await within(t.cancel(v.requests[0].id))).toEqual({ status: 200 })
+  expect(await within(t.setStopped(true))).toEqual({ status: 200 })
+})
+
+it('送信が期限内に終わらなければ、失敗として記録して 201 を返す', async () => {
+  const { store } = memory()
+  const t = await createDeviceTrial({
+    store,
+    now: () => T0,
+    id: () => 'req-9999-0000',
+    send: () => new Promise(() => {}),
+    sendTimeoutMs: 50,
+  })
+  const r = await t.create({ place: 'tocho' })
+  expect(r.status).toBe(201)
+  if (r.status !== 201) return
+  expect(r.request.push).toEqual({ sent: 0, errors: 1, skipped: 'error' })
+  expect((await t.view()).requests[0].push).toEqual({
+    sent: 0,
+    errors: 1,
+    skipped: 'error',
+  })
+})
