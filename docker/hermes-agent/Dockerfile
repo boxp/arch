@@ -3,7 +3,7 @@
 # The annotated tag v0.23.1 records this index digest as dockerManifestDigest.
 # Do NOT drop the tag (a bare digest cannot be version-looked-up: "Updates: undefined")
 # and do NOT move to :latest / :stable (an unpinned moving tag).
-FROM docker.io/nousresearch/hermes-agent:v0.23.3@sha256:3e9fe4c6ef36490f43aa0d0d80f9df64e9c92a576eee3042f1a97c8813c05355
+FROM docker.io/nousresearch/hermes-agent:v0.23.4@sha256:ef0650d523ee1b5ab32c779acabc446d9936869a9932591553688a62bcf0c42f
 
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.14
 # BOXP-681: Renovate updates BABASHKA_VERSION only. Update BABASHKA_SHA256 in the same
