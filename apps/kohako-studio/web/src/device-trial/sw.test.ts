@@ -9,7 +9,11 @@ function boot(respond: (url: string, init: RequestInit) => Promise<Response> | R
     opened: string[] = [],
     fetched: { url: string; init: RequestInit }[] = [],
     shown: { title: string; options: { data: unknown } }[] = []
+  let skipped = false
   const self = {
+    skipWaiting: async () => {
+      skipped = true
+    },
     location: { origin: 'https://kohako-home.example' },
     addEventListener: (name: string, fn: Handler) => {
       handlers[name] = fn
@@ -39,7 +43,7 @@ function boot(respond: (url: string, init: RequestInit) => Promise<Response> | R
     await wait
   }
   const tap = (data: unknown) => fire('notificationclick', { notification: { data, close() {} } })
-  return { fire, tap, opened, fetched, shown }
+  return { fire, tap, opened, fetched, shown, skipped: () => skipped }
 }
 const reply = (status: number, body: unknown) =>
   ({ ok: status >= 200 && status < 300, status, type: 'basic', json: async () => body }) as unknown as Response
@@ -116,4 +120,17 @@ it('既存の家の通知のタップは今までどおり家のページを開�
   await sw.tap({ url: '/kohako/home.html?notification=event-123456' })
   expect(sw.fetched).toHaveLength(0)
   expect(sw.opened).toEqual(['https://kohako-home.example/kohako/home.html?notification=event-123456'])
+})
+
+// trial-spec.md 決まり 13: 新しい版は待たずに切り替わり、版を問い合わせると答える。
+it('導入時に待たずに切り替わる（skipWaiting）', async () => {
+  const sw = boot(() => ok({}))
+  await sw.fire('install', {})
+  expect(sw.skipped()).toBe(true)
+})
+it('版を問い合わせると device-trial-v1 を返す', async () => {
+  const sw = boot(() => ok({}))
+  const replies: unknown[] = []
+  await sw.fire('message', { data: { type: 'sw-version' }, ports: [{ postMessage: (m: unknown) => replies.push(m) }] })
+  expect(replies).toEqual([{ type: 'sw-version', version: 'device-trial-v1' }])
 })

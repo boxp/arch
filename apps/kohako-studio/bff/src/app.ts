@@ -178,7 +178,11 @@ export function createApp(opts: {
             : json(404, { error: 'not_found' })
         if (
           !(
-            (method === 'POST' && (ingest || match?.[2] === 'reply' || route === 'push/subscriptions')) ||
+            (method === 'POST' &&
+              (ingest ||
+                match?.[2] === 'reply' ||
+                route === 'push/subscriptions' ||
+                route === 'push/subscriptions/check')) ||
             (method === 'DELETE' && route === 'push/subscriptions')
           )
         )
@@ -202,6 +206,11 @@ export function createApp(opts: {
         if (ingest) {
           const result = await opts.notifications.ingest(x)
           return result.status === 'invalid' ? json(400, { error: 'invalid' }) : json(200, result)
+        }
+        if (route === 'push/subscriptions/check') {
+          if (!isRecord(x) || typeof x.endpoint !== 'string' || x.endpoint.length > 1000)
+            return json(400, { error: 'invalid' })
+          return json(200, { registered: opts.push.has(x.endpoint) })
         }
         if (route === 'push/subscriptions') {
           if (method === 'DELETE') {
