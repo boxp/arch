@@ -130,8 +130,12 @@
 (defn run-card [gate-result & {:keys [owner? throw-after-gate?] :or {owner? true}}]
   (let [calls (atom [])
         record! (fn [k & _] (swap! calls conj k) nil)
-        lock {:run-id "rf-run" :owner-id "test-owner"}]
-    (with-redefs [ticket-frontmatter (fn [_] {:assignee "claude-opus"})
+        lock {:run-id "rf-run" :owner-id "test-owner"}
+        ;; Never touch the live runner root: its locks would be taken for real.
+        tmp-root (str (fs/create-temp-dir))]
+    (with-redefs [root (fn [] tmp-root)
+                  vault (fn [] (str (fs/path tmp-root "vault")))
+                  ticket-frontmatter (fn [_] {:assignee "claude-opus"})
                   candidate-action (fn [& _] :implement)
                   acquire-lock! (fn [& _] lock)
                   heartbeat! (fn [& _] (future nil))
@@ -162,7 +166,8 @@
                   consume-continuation! (fn [_ _ gate] gate)
                   clear-continuation-budget! (fn [_] nil)
                   conflict-observe! (fn [& _] nil)]
-      (process-card! {:ticket-id "TEST-RF" :lane "In Progress" :status "in-progress"}))
+      (try (process-card! {:ticket-id "TEST-RF" :lane "In Progress" :status "in-progress"})
+           (finally (fs/delete-tree tmp-root))))
     @calls))
 
 (deftest lifecycle-order
