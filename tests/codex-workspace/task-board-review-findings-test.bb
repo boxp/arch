@@ -255,13 +255,13 @@
                 (record-review-findings! "BOXP-1" "r1" (blocking-gate)))]
         (is (= [:failed] (mapv :status r)))
         (is (empty? (finding-lines ticket)))
-        (is (empty? (ticket-state)) "state not advanced"))
+        (is (= :blocking (:kind (get (ticket-state) url))) "memory record is part of the queue"))
       (testing "the record is still re-sent, and only then is it unresolved"
         (flush-all-pending-review-findings!)
         (is (= 1 (count (finding-lines ticket))))
         (is (= :blocking (:kind (get (ticket-state) url))))
         (is (empty? @review-findings-memory-pending)))
-      (testing "a pass before the re-send would not report a resolution"
+      (testing "after a restart lost the memory record, a pass does not report a resolution"
         (reset! review-findings-memory-pending {})
         (with-env
           (fn [{:keys [ticket]}]
@@ -504,5 +504,39 @@
         (append-note! "BOXP-1" (str "メモ: review-findings:abcdefabcdef レビュー未解決所見 PR " url " head 0e01838 を参照"))
         (record-review-findings! "BOXP-1" "r2" pass-gate)
         (is (empty? (resolution-lines ticket)) (pr-str (finding-lines ticket)))))))
+
+
+;; --- PR gate retry (codex review P1: memory record + pass) -------------------
+(deftest memory-record-resolution-is-queued-behind-it
+  (testing "spec: blocking only in memory → pass before the re-send → resolved queued behind it → re-send writes blocking, resolved"
+    (with-env
+      (fn [{:keys [ticket]}]
+        (restart!)
+        (with-redefs [append-note-once! (fn [& _] (throw (ex-info "vault down (synthetic)" {})))
+                      write-edn-atomically! (fn [& _] (throw (ex-info "root down (synthetic)" {})))]
+          (record-review-findings! "BOXP-1" "r1" (blocking-gate))
+          (record-review-findings! "BOXP-1" "r2" pass-gate))
+        (is (empty? (finding-lines ticket)))
+        (flush-all-pending-review-findings!)
+        (let [ls (finding-lines ticket)]
+          (is (= 2 (count ls)) (pr-str ls))
+          (is (str/includes? (first ls) "レビュー未解決所見"))
+          (is (str/includes? (second ls) "レビュー所見解消")))
+        (is (= :resolved (:kind (get (ticket-state) url)))))))
+  (testing "spec: blocking in memory → pass with the pending file writable → both kept in the file in order → survive a restart"
+    (with-env
+      (fn [{:keys [ticket]}]
+        (restart!)
+        (with-redefs [append-note-once! (fn [& _] (throw (ex-info "vault down (synthetic)" {})))
+                      write-edn-atomically! (fn [& _] (throw (ex-info "root down (synthetic)" {})))]
+          (record-review-findings! "BOXP-1" "r1" (blocking-gate)))
+        (with-redefs [append-note-once! (fn [& _] (throw (ex-info "vault down (synthetic)" {})))]
+          (record-review-findings! "BOXP-1" "r2" pass-gate))
+        (restart!)
+        (flush-all-pending-review-findings!)
+        (let [ls (finding-lines ticket)]
+          (is (= 2 (count ls)) (pr-str ls))
+          (is (str/includes? (first ls) "レビュー未解決所見"))
+          (is (str/includes? (second ls) "レビュー所見解消")))))))
 
 (let [result (run-tests 'user)] (when (pos? (+ (:fail result) (:error result))) (System/exit 1)))

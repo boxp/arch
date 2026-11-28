@@ -5483,9 +5483,10 @@
     (vec (concat resolved (keep identity [failed]) low))))
 
 ;; Records whose Notes write and pending-file write both failed. Kept for the
-;; life of the process and retried by every flush; they enter the
-;; unresolved-state only once actually written (so a later pass
-;; never reports the resolution of a record that is not in the Notes).
+;; life of the process and retried by every flush. They are part of the
+;; queue (and of the unresolved-state) like the pending file: a later
+;; resolution is queued behind them, so it is written after them, or lost
+;; together with them on a restart (never the finding alone, left unresolved).
 (defonce review-findings-memory-pending (atom {}))
 
 (defn review-findings-state-step [m e]
@@ -5510,8 +5511,9 @@
 ;; from the durable records themselves, i.e. the marked Notes lines (in Notes
 ;; order) followed by the pending file (in queue order). A restart therefore
 ;; loses no state change, and nothing can be "written but not in the state".
-;; Memory-only records are left out until written (a pass never reports the
-;; resolution of a record that may vanish with the process).
+;; Memory-only records are stacked after the pending file in queue order: a
+;; resolution made from them is queued behind them (FIFO), and whenever the
+;; pending file is written the memory records move into it in the same write.
 (def review-findings-line-re
   #"^- [^:]+: review-findings:([0-9a-f]{12}) (レビュー未解決所見|レビュー所見を取得できず（実指摘なしではない）|レビュー所見解消|レビュー非ブロッキング所見) PR (\S+) ")
 
@@ -5541,7 +5543,8 @@
                                   (sanitize-blocker-reason (.getMessage e))))
                        []))
         written-ids (set (map :id written))
-        queued (->> (get (read-edn-safely (review-findings-pending-path) {}) ticket-id {})
+        queued (->> (merge (get @review-findings-memory-pending ticket-id {})
+                           (get (read-edn-safely (review-findings-pending-path) {}) ticket-id {}))
                     (sort-by review-findings-queue-order)
                     (remove (fn [[id _]] (contains? written-ids id)))
                     (map (fn [[id e]] (assoc (select-keys e [:kind :pr-url :prior-id]) :id id))))]
@@ -5555,21 +5558,25 @@
 
 (defn- enqueue-review-finding!
   "Put e at the tail of ticket-id's queue: the pending file, or memory when
-  that write fails too. Returns :file or :memory."
+  that write fails too. A successful file write also moves the ticket's
+  memory records into the file, so e is never durable while an older record
+  of the same ticket is not. Returns :file or :memory."
   [ticket-id run-id e]
   (let [entry (assoc (select-keys e [:kind :pr-url :note :prior-id])
-                     :run-id run-id :queued-at (now-str) :seq (next-review-findings-seq))]
+                     :run-id run-id :queued-at (now-str) :seq (next-review-findings-seq))
+        keep-pos #(if % (merge entry (select-keys % [:seq :queued-at])) entry)]
     ;; An id already queued keeps its original position (re-queuing never
     ;; moves it behind a record queued after it).
-    (try (write-edn-atomically! (review-findings-pending-path)
-                                (update-in (read-edn-safely (review-findings-pending-path) {}) [ticket-id (:id e)]
-                                           #(if % (merge entry (select-keys % [:seq :queued-at])) entry)))
+    (try (let [pending (read-edn-safely (review-findings-pending-path) {})
+               mem (get @review-findings-memory-pending ticket-id {})]
+           (write-edn-atomically! (review-findings-pending-path)
+                                  (update-in (update pending ticket-id #(merge mem %)) [ticket-id (:id e)] keep-pos))
+           (swap! review-findings-memory-pending dissoc ticket-id))
          :file
          (catch Exception pe
            (log! (str "review findings: could not keep pending record for " ticket-id " " (:id e)
                       "; kept in memory: " (sanitize-blocker-reason (.getMessage pe))))
-           (swap! review-findings-memory-pending update-in [ticket-id (:id e)]
-                  #(if % (merge entry (select-keys % [:seq :queued-at])) entry))
+           (swap! review-findings-memory-pending update-in [ticket-id (:id e)] keep-pos)
            :memory))))
 
 (defn- flush-pending-review-findings*
