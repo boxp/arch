@@ -2079,6 +2079,18 @@
 ;; floor (no double counting with unit x N); new grants are :additive.  The
 ;; BOXP-450: PR counts and historical limits are audit-only; only the ticket
 ;; pool can stop a run. See docs/project_docs/BOXP-450/plan.md.
+;;
+;; BOXP-753: when the original ticket has received the result of a finished
+;; stagnation review (`停滞レビュー受領: <review>` in its Notes, the review linked
+;; through `stagnation-review-of::` and done), the ticket limit is raised once
+;; per review to used + unit x max(1, N), so consumption before the review does
+;; not stop the run right after it.  Decided only at the run start
+;; (reservation), when the PR gate result of a run is recorded (before its PR
+;; registrations and its failure are counted) and just before an Owner ticket
+;; grant; each review is decided once (applied or not, with the reason)
+;; in :stagnation-refreshes, append-only.  Not applied while exhausted, without
+;; a failure since the previous refresh, or past the per-ticket cap.  See the
+;; vault spec Projects/task-board-gate-budget/spec.md rule 11.
 
 (def gate-failure-budget-max 10)
 
@@ -2166,7 +2178,7 @@
 
 (defn read-gate-failure-budget []
   (merge {:format-version 1 :failures {} :grants [] :reservations {}
-          :pr-registrations {} :pr-exclusions []}
+          :pr-registrations {} :pr-exclusions [] :stagnation-refreshes []}
          (read-edn-file (gate-failure-budget-path) {})))
 
 (defn write-gate-failure-budget! [budget]
@@ -2293,6 +2305,13 @@
                    (when (and (contains? owners ticket-id) (not (contains? excluded pr))) pr))))
          sort vec)))
 
+(def stagnation-refresh-cap
+  "BOXP-753: automatic refreshes per ticket; further reviews need an Owner grant."
+  2)
+
+(defn gate-budget-applied-refreshes [budget ticket-id]
+  (filterv #(and (= ticket-id (:ticket %)) (:applied? %)) (:stagnation-refreshes budget)))
+
 (defn gate-budget-status [budget scope key]
   (let [used (gate-budget-usage budget scope key)
         unit (gate-failure-budget-limit)
@@ -2304,17 +2323,98 @@
             base (* unit (max 1 n))
             legacy (sum (filter #(not (contains? % :kind)) grants))
             additive (sum (filter #(= :additive (:kind %)) grants))
-            limit (+ (max base (+ unit legacy)) additive)]
-        {:scope scope :key key :used used :limit limit :exhausted? (>= used limit)
-         :scope-prs prs :n n :base base :legacy-granted legacy :additive-granted additive})
+            refreshes (gate-budget-applied-refreshes budget key)
+            refreshed (reduce + 0 (map #(long (or (:amount %) 0)) refreshes))
+            limit (+ (max base (+ unit legacy)) additive refreshed)]
+        (cond-> {:scope scope :key key :used used :limit limit :exhausted? (>= used limit)
+                 :scope-prs prs :n n :base base :legacy-granted legacy :additive-granted additive}
+          (seq refreshes) (assoc :review-refreshed refreshed :review-refreshes (count refreshes))))
       (let [limit (+ unit (sum grants))]
         {:scope scope :key key :used used :limit limit :exhausted? false
          :legacy-limit-reached? (>= used limit)}))))
 
+(declare stagnation-review-pattern)
+
+(defn decide-stagnation-refresh
+  "BOXP-753 (spec rule 11): the budget after deciding the received reviews
+  `review-ids` (oldest first) of `ticket-id`.  A review already decided is
+  skipped, so re-delivered or duplicated receipts never refresh twice."
+  [budget ticket-id review-ids]
+  (reduce
+   (fn [b review]
+     (if (some #(and (= ticket-id (:ticket %)) (= review (:review %))) (:stagnation-refreshes b))
+       b
+       (let [{:keys [used limit base exhausted?]} (gate-budget-status b :ticket ticket-id)
+             applied (gate-budget-applied-refreshes b ticket-id)
+             mark (long (or (:used-at (peek applied)) 0))
+             reason (cond
+                      exhausted? "exhausted"
+                      (<= used mark) "no-failure-since-last-refresh"
+                      (>= (count applied) stagnation-refresh-cap) "cap-reached"
+                      (<= (+ used base) limit) "remaining-not-below-base")
+             record (cond-> {:ticket ticket-id :review review :applied? (nil? reason)
+                             :used-at used :limit-before limit :base base :decided-at (now-str)}
+                      reason (assoc :reason reason)
+                      (nil? reason) (assoc :amount (- (+ used base) limit)))]
+         (update b :stagnation-refreshes (fnil conj []) record))))
+   budget
+   review-ids))
+
+(defn received-stagnation-review-ids
+  "Reviews whose receipt (`停滞レビュー受領: <id>`) the Notes of `ticket-id`
+  record, in receipt order, that are not in `decided`, are done and link back
+  through `stagnation-review-of:: <ticket-id>`.  Only the named review tickets
+  are read (no Tickets/ scan).  A ticket or review that cannot be read is left
+  out, so nothing is decided for it and the next decision point reads it again."
+  [ticket-id decided]
+  (try
+    (let [path (ticket-path ticket-id)
+          text (when (fs/exists? path) (slurp (str path)))
+          lines (vec (str/split-lines (or text "")))
+          notes (when-let [i (section-index lines "## Notes")]
+                  (subvec lines (inc i) (next-section-index lines i)))
+          ;; Only a Notes line whose note body starts with the receipt counts;
+          ;; examples in Summary/Plan or quotes mid-sentence are not receipts.
+          ids (->> notes
+                   (keep #(re-find #"^\s*-\s+[^\[\]]*\[[^\]]+\]:\s*停滞レビュー受領:\s*([A-Z][A-Z0-9]*-\d+)\b" %))
+                   (map second) distinct (remove #(or (= ticket-id %) (contains? decided %))))
+          link (stagnation-review-pattern (java.util.regex.Pattern/quote ticket-id))]
+      (filterv (fn [id]
+                 (try
+                   (let [review-path (ticket-path id)
+                         review (when (fs/exists? review-path) (slurp (str review-path)))]
+                     (and review (re-find link review)
+                          (= "done" (:status (frontmatter-map (vec (str/split-lines review)))))))
+                   (catch Exception e
+                     (log! (str "stagnation review refresh: could not read " id ": " (.getMessage e)))
+                     false)))
+               ids))
+    (catch Exception e
+      (log! (str "stagnation review refresh: could not read " ticket-id ": " (.getMessage e)))
+      nil)))
+
+(defn refresh-gate-budget-for-reviews
+  "Call under the budget lock with the budget just read."
+  [budget ticket-id]
+  (let [decided (set (keep #(when (= ticket-id (:ticket %)) (:review %)) (:stagnation-refreshes budget)))
+        ids (received-stagnation-review-ids ticket-id decided)]
+    (if (seq ids)
+      (let [updated (decide-stagnation-refresh budget ticket-id ids)]
+        (doseq [rec (drop (count (:stagnation-refreshes budget)) (:stagnation-refreshes updated))]
+          (log! (str "stagnation review refresh " ticket-id "/" (:review rec) ": "
+                     (if (:applied? rec)
+                       (str "limit " (:limit-before rec) " -> " (+ (:limit-before rec) (:amount rec)))
+                       (str "not applied (" (:reason rec) ")")))))
+        updated)
+      budget)))
+
 (defn record-gate-pr-registrations! [ticket-id run-id gate-result]
   (with-gate-failure-budget-lock
    (fn []
-     (let [budget (read-gate-failure-budget)
+     ;; BOXP-753: received reviews are decided before this run registers PRs,
+     ;; so the base of a refresh does not include the PRs the run adds now.
+     (let [before (read-gate-failure-budget)
+           budget (refresh-gate-budget-for-reviews before ticket-id)
            urls (concat (:checked-pr-urls gate-result) (:merged-pr-urls gate-result)
                         (when (not (:ok? gate-result)) [(:url gate-result)]))
            prs (distinct (keep canonical-pr-id urls))
@@ -2324,7 +2424,7 @@
                                    (assoc-in b [:pr-registrations k]
                                              {:ticket ticket-id :pr pr :run-id run-id :registered-at (now-str)}))))
                            budget prs)]
-       (when (not= budget updated) (write-gate-failure-budget! updated))
+       (when (not= before updated) (write-gate-failure-budget! updated))
        updated))))
 
 (defn gate-budget-exclude-pr! [ticket-id pr-id by]
@@ -2348,7 +2448,7 @@
   [ticket-id run-id agent review-gate]
   (with-gate-failure-budget-lock
    (fn []
-     (let [budget (read-gate-failure-budget)
+     (let [budget (refresh-gate-budget-for-reviews (read-gate-failure-budget) ticket-id)
            pr-id (canonical-pr-id (:url review-gate))
            event-id (str ticket-id "/" run-id)
            event {:ticket ticket-id
@@ -2433,7 +2533,7 @@
   [ticket-id run-id ticket-text]
   (with-gate-failure-budget-lock
    (fn []
-     (let [budget (read-gate-failure-budget)
+     (let [budget (refresh-gate-budget-for-reviews (read-gate-failure-budget) ticket-id)
            pr-ids (gate-budget-ticket-pr-ids budget ticket-id ticket-text)
            live (into {} (filter (comp gate-budget-reservation-live? val))
                       (:reservations budget))
@@ -2497,7 +2597,10 @@
     (throw (ex-info "amount must be positive" {:amount amount})))
   (with-gate-failure-budget-lock
    (fn []
-     (let [budget (read-gate-failure-budget)
+     (let [budget (cond-> (read-gate-failure-budget)
+                    ;; BOXP-753: decide received reviews before the grant, so a
+                    ;; review received while exhausted never adds to it later.
+                    (= :ticket scope) (refresh-gate-budget-for-reviews key))
            grant {:scope scope :key key :amount amount :kind :additive
                   :granted-by granted-by :granted-at (now-str)}
            budget (update budget :grants (fnil conj []) grant)]
@@ -3070,7 +3173,8 @@
 
            (seq unreceived)
            (str "A finished stagnation review is not yet received: read its result (its Notes and the Project document it names) before anything else, then run: bb " helper " append-note " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --source <you> --note \"停滞レビュー受領: <REVIEW-ID> — 反映: <採る案と次の最小試験>\" for each of " (str/join ", " (map :id unreceived)) ". "
-                "Apply its recommendation only inside the already approved scope; anything that needs a new decision goes to the Owner as one short choice.\n")
+                "Apply its recommendation only inside the already approved scope; anything that needs a new decision goes to the Owner as one short choice. "
+                "After the receipt the runner renews this ticket's gate budget once for that review (remaining = 10 x PR count, at most twice per ticket, not while the budget is already exhausted); do not ask the Owner for a grant for that, and writing the receipt again does not renew it again.\n")
 
            (seq stopped)
            (str "A stagnation review (" (str/join ", " (map :id stopped)) ") is stopped (status not finished) for this ticket: do not request another review for the same problem and do not work around it. Continue only independent, non-conflicting work inside the approved scope; if the original problem cannot progress without that review, return blocked with TASK_BOARD_WAIT_REASON: owner-decision and say which review is waiting.\n")
@@ -9012,6 +9116,114 @@
                                                              :ticket "BOXP-1")))]]
                                  (and (every? #(>= % (+ 10 legacy additive)) limits)
                                       (apply <= limits))))))))
+    ;; BOXP-753: refresh after a received stagnation review.  Expected values come
+    ;; from the examples of rule 11 in the vault spec Projects/task-board-gate-budget/spec.md.
+    (let [tmp-vault (str (fs/create-temp-dir {:prefix "boxp-753-vault-"}))
+          db (atom nil)
+          check (fn [label ok] (if ok (println (str "PASS: " label))
+                                   (do (println (str "FAIL: " label)) (swap! failures conj label))))
+          url "https://github.com/o/r/pull/1"
+          tdir (str tmp-vault "/Tickets")
+          write-ticket! (fn [id body] (spit (str tdir "/" id ".md") body))
+          original! (fn [id] (write-ticket! id (str "---\nid: " id "\nstatus: in-progress\n---\n\n# " id "\n\n## Notes\n")))
+          review! (fn [id original status]
+                    (write-ticket! id (str "---\nid: " id "\nstatus: " status "\n---\n\n# " id "\n\n## Summary\n\nstagnation-review-of:: " original "\n")))
+          receive! (fn [id review] (spit (str tdir "/" id ".md") (str "- 2026-11-28 06:28:00 UTC [claude-opus]: 停滞レビュー受領: " review " — 反映: 案A\n") :append true))
+          runs (atom 0)
+          fail! (fn [id] (:exhausted? (record-gate-failure-budget! id (str "run-" (swap! runs inc)) "agent" {:url url :gate :codex-review})))
+          fails! (fn [id n] (dotimes [_ n] (fail! id)))
+          status (fn [id] (gate-budget-status @db :ticket id))
+          lim (fn [id] (:limit (status id)))]
+      (fs/create-dirs tdir)
+      (try
+        (with-redefs [vault (constantly tmp-vault)
+                      with-gate-failure-budget-lock (fn [f] (f))
+                      read-gate-failure-budget (fn [] (merge {:failures {} :grants [] :reservations {} :pr-registrations {} :pr-exclusions []} @db))
+                      write-gate-failure-budget! (fn [b] (reset! db b))
+                      gate-budget-reservation-live? (constantly false)
+                      gate-failure-budget-limit (constantly 10)]
+          ;; BOXP-749 shape: 9/10, the review is received inside the run, the run fails.
+          (reset! db {})
+          (original! "BOXP-701")
+          (fails! "BOXP-701" 9)
+          (review! "BOXP-702" "BOXP-701" "done")
+          (receive! "BOXP-701" "BOXP-702")
+          (check "753 receipt mid-run refreshes before counting" (and (not (fail! "BOXP-701")) (= 10 (:used (status "BOXP-701"))) (= 19 (lim "BOXP-701"))))
+          (check "753 next run starts after refresh" (reserve-gate-budget-run! "BOXP-701" "run-next" ""))
+          (receive! "BOXP-701" "BOXP-702")
+          (fail! "BOXP-701")
+          (check "753 redelivered receipt does not refresh again" (and (= 19 (lim "BOXP-701")) (= 1 (:review-refreshes (status "BOXP-701")))))
+          (fail! "BOXP-701")
+          (review! "BOXP-703" "BOXP-701" "done")
+          (receive! "BOXP-701" "BOXP-703")
+          (reserve-gate-budget-run! "BOXP-701" "run-r2" "")
+          (check "753 second review after new failures refreshes to used + base" (and (= 12 (:used (status "BOXP-701"))) (= 22 (lim "BOXP-701"))))
+          (fail! "BOXP-701")
+          (review! "BOXP-704" "BOXP-701" "done")
+          (receive! "BOXP-701" "BOXP-704")
+          (reserve-gate-budget-run! "BOXP-701" "run-r3" "")
+          (check "753 third review is past the cap" (and (= 22 (lim "BOXP-701")) (= 2 (:review-refreshes (status "BOXP-701")))))
+          (check "753 failure history is kept" (= 13 (count (filter #(= "BOXP-701" (:ticket %)) (vals (:failures @db))))))
+          ;; No failure since the previous refresh: the same policy again.
+          (reset! db {})
+          (original! "BOXP-711")
+          (fails! "BOXP-711" 3)
+          (review! "BOXP-712" "BOXP-711" "done")
+          (receive! "BOXP-711" "BOXP-712")
+          (reserve-gate-budget-run! "BOXP-711" "run-a" "")
+          (check "753 refresh at run start" (= 13 (lim "BOXP-711")))
+          (review! "BOXP-713" "BOXP-711" "done")
+          (receive! "BOXP-711" "BOXP-713")
+          (reserve-gate-budget-run! "BOXP-711" "run-b" "")
+          (check "753 no refresh without a failure since the last refresh" (and (= 13 (lim "BOXP-711")) (= 1 (:review-refreshes (status "BOXP-711")))))
+          ;; The receipt string outside Notes, or quoted mid-sentence in Notes, is not a receipt.
+          (reset! db {})
+          (write-ticket! "BOXP-761" (str "---\nid: BOXP-761\nstatus: in-progress\n---\n\n# BOXP-761\n\n## Summary\n\n"
+                                         "例: 停滞レビュー受領: BOXP-762\n\n## Plan\n\n- [ ] 停滞レビュー受領: BOXP-762 を書く\n\n## Notes\n\n"
+                                         "- 2026-11-28 06:00:00 UTC [claude-opus]: 調査: Notes の『停滞レビュー受領: BOXP-762』で判定する\n"))
+          (fails! "BOXP-761" 5)
+          (review! "BOXP-762" "BOXP-761" "done")
+          (reserve-gate-budget-run! "BOXP-761" "run-q" "")
+          (check "753 receipt text outside a Notes receipt line does not refresh"
+                 (and (= 10 (lim "BOXP-761")) (empty? (:stagnation-refreshes @db))))
+          (receive! "BOXP-761" "BOXP-762")
+          (reserve-gate-budget-run! "BOXP-761" "run-q2" "")
+          (check "753 receipt line in Notes still refreshes" (= 15 (lim "BOXP-761")))
+          ;; Only requested, or finished without a receipt.
+          (reset! db {})
+          (original! "BOXP-721")
+          (fails! "BOXP-721" 5)
+          (review! "BOXP-722" "BOXP-721" "ready")
+          (receive! "BOXP-721" "BOXP-722")
+          (review! "BOXP-723" "BOXP-721" "done")
+          (reserve-gate-budget-run! "BOXP-721" "run-c" "")
+          (check "753 open review or missing receipt does not refresh" (and (= 10 (lim "BOXP-721")) (empty? (:stagnation-refreshes @db))))
+          ;; Exhausted before the receipt: only the Owner grant counts, and the review stays decided.
+          (reset! db {})
+          (original! "BOXP-731")
+          (fails! "BOXP-731" 10)
+          (review! "BOXP-732" "BOXP-731" "done")
+          (receive! "BOXP-731" "BOXP-732")
+          (check "753 exhausted ticket does not start" (not (reserve-gate-budget-run! "BOXP-731" "run-d" "")))
+          (gate-budget-grant! :ticket "BOXP-731" 1 "owner")
+          (check "753 grant after exhaustion adds only the grant" (= 11 (lim "BOXP-731")))
+          (check "753 decided-while-exhausted review never refreshes later" (and (fail! "BOXP-731") (= 11 (lim "BOXP-731"))))
+          ;; Remaining already at least the base: not refreshed, cap not used.
+          (reset! db {})
+          (original! "BOXP-741")
+          (fails! "BOXP-741" 1)
+          (gate-budget-grant! :ticket "BOXP-741" 5 "owner")
+          (review! "BOXP-742" "BOXP-741" "done")
+          (receive! "BOXP-741" "BOXP-742")
+          (reserve-gate-budget-run! "BOXP-741" "run-e" "")
+          (check "753 remaining not below base is not refreshed" (and (= 15 (lim "BOXP-741")) (nil? (:review-refreshes (status "BOXP-741")))
+                                                                         (= 1 (count (:grants @db)))))
+          ;; Unreadable original: nothing is decided.
+          (reset! db {})
+          (review! "BOXP-752" "BOXP-751" "done")
+          (dotimes [i 3] (record-gate-failure-budget! "BOXP-751" (str "x" i) "agent" {:url url :gate :ci}))
+          (check "753 missing original ticket decides nothing" (and (= 10 (lim "BOXP-751")) (empty? (:stagnation-refreshes @db)))))
+        (finally (fs/delete-tree tmp-vault))))
     (doseq [[input verdict reason blocking low]
             [["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | a\n- real P1 defect in prose" :invalid :unstructured-findings 0 1]
              ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | a\n- extra prose" :invalid :unstructured-findings 1 0]

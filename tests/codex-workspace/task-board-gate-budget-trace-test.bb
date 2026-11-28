@@ -2,7 +2,8 @@
 ;; BOXP-673: replay the operation sequences generated from the Lean model of the PR gate
 ;; failure budget (tests/codex-workspace/gate-budget-model/) against the runner's real
 ;; budget functions and compare, after every operation, what the operation returned, each
-;; ticket's used/limit/PR count/exhaustion/live reservation and each PR's audit count.
+;; ticket's used/limit/PR count/exhaustion/live reservation/review refreshes (BOXP-753) and
+;; each PR's audit count.
 ;; Needs only bb: the sequences are a committed file.
 ;;
 ;;   bb tests/codex-workspace/task-board-gate-budget-trace-test.bb [--traces FILE] [--runner FILE] [--max-report N]
@@ -45,6 +46,8 @@
 (def prs {"a" "o/r#1" "b" "o/r#2"})
 (def pr-urls {"a" "https://github.com/o/r/pull/1" "b" "https://github.com/o/r/pull/2"})
 (def runs "ticket key -> the lock of its run that has started and not finished." (atom {}))
+(def reviews "BOXP-753: ticket key -> ids of the stagnation reviews it received, in order." (atom {}))
+(def review-seq (atom 0))
 
 (alter-var-root #'env (constantly (fn [k default]
                                     (if (= k "CODEX_TASK_BOARD_GATE_FAILURE_BUDGET") "2" default))))
@@ -86,6 +89,30 @@
       (update (read-gate-failure-budget) :grants (fnil conj [])
               {:scope :ticket :key ticket :amount 1 :granted-by "owner" :granted-at (now-str)})))))
 
+(defn tickets-path [id] (str (vault) "/Tickets/" id ".md"))
+
+(defn write-original! [ticket]
+  (spit (tickets-path ticket) (str "---\nid: " ticket "\nstatus: in-progress\n---\n\n# " ticket "\n\n## Notes\n")))
+
+(defn receive-review!
+  "BOXP-753 `v`: a finished review ticket linked to the original, and its receipt in the
+  original's Notes, written the way the runner's agents write them."
+  [k]
+  (let [ticket (tickets k)
+        id (str "BOXP-" (+ 100 (swap! review-seq inc)))]
+    ;; The original is written on its first receipt only, so the many sequences without a
+    ;; review keep the runner on its fast path (no ticket file to read).
+    (when-not (fs/exists? (tickets-path ticket)) (write-original! ticket))
+    (spit (tickets-path id) (str "---\nid: " id "\nstatus: done\n---\n\n# " id "\n\n## Summary\n\nstagnation-review-of:: " ticket "\n"))
+    (swap! reviews update k (fnil conj []) id)
+    (spit (tickets-path ticket) (str "- 2026-01-01 00:00:00 UTC [agent]: 停滞レビュー受領: " id " — 反映: 次の方針\n") :append true)))
+
+(defn redeliver-review!
+  "BOXP-753 `w`: the receipt of the latest received review written once more."
+  [k]
+  (when-let [id (peek (get @reviews k))]
+    (spit (tickets-path (tickets k)) (str "- 2026-01-01 00:00:00 UTC [agent]: 停滞レビュー受領: " id " — 反映: 次の方針\n") :append true)))
+
 (defn apply-ev!
   "Run one operation and return its result as the model counts it: 1 when a run started,
   or when the ticket is exhausted after a failure was processed, otherwise 0."
@@ -107,15 +134,18 @@
            0)
       \g (do (gate-budget-grant! :ticket ticket 1 "owner") 0)
       \l (do (add-legacy-grant! ticket) 0)
-      \x (do (gate-budget-exclude-pr! ticket (prs p) "owner") 0))))
+      \x (do (gate-budget-exclude-pr! ticket (prs p) "owner") 0)
+      \v (do (receive-review! k) 0)
+      \w (do (redeliver-review! k) 0))))
 
 (defn observe-ticket [budget k]
   (let [ticket (tickets k)
-        {:keys [used limit n exhausted?]} (gate-budget-status budget :ticket ticket)
+        {:keys [used limit n exhausted? review-refreshes]} (gate-budget-status budget :ticket ticket)
         reservation (get-in budget [:reservations ticket])]
     (str used "/" limit "/" n (when exhausted? "x")
          (when (and reservation (gate-budget-reservation-live? reservation))
-           (str "r" (str/join (keep (fn [[c id]] (when (some #{id} (:prs reservation)) c)) (sort prs))))))))
+           (str "r" (str/join (keep (fn [[c id]] (when (some #{id} (:prs reservation)) c)) (sort prs)))))
+         (when review-refreshes (str "+" review-refreshes)))))
 
 (defn observe-pr [budget p]
   (let [{:keys [used legacy-limit-reached? exhausted?]} (gate-budget-status budget :pr (prs p))]
@@ -130,8 +160,12 @@
 (defn reset-world! []
   (assert (str/starts-with? (str (root)) tmp))
   (fs/delete-tree (root))
+  (fs/delete-tree (vault))
+  (fs/create-dirs (str (vault) "/Tickets"))
   (reset! clock 0)
   (reset! runs {})
+  (reset! reviews {})
+  (reset! review-seq 0)
   (ensure-root!)
   (activate-owner!))
 

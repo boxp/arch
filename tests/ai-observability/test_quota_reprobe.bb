@@ -105,10 +105,12 @@
                         "ANTHROPIC_CUSTOM_HEADERS" "h" "CLAUDE_CODE_USE_BEDROCK" "1" "CLAUDE_CODE_USE_VERTEX" "1" "CLAUDE_CODE_USE_FOUNDRY" "1"})]
     (is (= {"PATH" "/usr/bin" "HOME" "/h"} e) "API キー・別 provider への切替変数を外す")))
 
-(defn- event-line [status limit]
-  (json/generate-string {:type "rate_limit_event"
-                         :rate_limit_info {:status status :rateLimitType limit :resetsAt reset
-                                           :unifiedWindows {(keyword limit) {:status status :utilization (if (= "allowed" status) 0.0 1.0) :resetsAt reset}}}}))
+(defn- event-line
+  ([status limit] (event-line status limit reset))
+  ([status limit reset-s]
+   (json/generate-string {:type "rate_limit_event"
+                          :rate_limit_info {:status status :rateLimitType limit :resetsAt reset-s
+                                            :unifiedWindows {(keyword limit) {:status status :utilization (if (= "allowed" status) 0.0 1.0) :resetsAt reset-s}}}})))
 
 (deftest classify-results
   (is (= "allowed" (r/classify {:exit 0 :out (str "{\"type\":\"system\"}\n" (event-line "allowed" "seven_day_overage_included") "\n")})))
@@ -122,8 +124,9 @@
   (let [root (str (fs/create-temp-dir {:prefix "reprobe-test"}))
         snap (str root "/ai-ops/subscription/claude.json")
         calls (atom 0)
-        cli (fn [status] (fn [_args] (swap! calls inc) {:exit 0 :out (str (event-line status "seven_day_overage_included") "\n")}))
         now (quot (System/currentTimeMillis) 1000)
+        ;; reset は実時刻基準にする (固定値 reset だと 2026-11-28 07:25 UTC 以降に過去の reset になり失敗した)
+        cli (fn [status] (fn [_args] (swap! calls inc) {:exit 0 :out (str (event-line status "seven_day_overage_included" (+ now (* 3 24 hour))) "\n")}))
         observed (- now (* 2 hour))
         data (assoc-in (held-data observed) [:rate_limit_info :resetsAt] (+ now (* 3 24 hour)))
         data (assoc-in data [:rate_limit_info :unifiedWindows :seven_day_overage_included :resetsAt] (+ now (* 3 24 hour)))

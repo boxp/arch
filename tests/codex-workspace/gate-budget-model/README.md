@@ -1,6 +1,6 @@
-# PR gate 失敗予算（ticket pool）と run 開始の予約のモデル（BOXP-673）
+# PR gate 失敗予算（ticket pool）と run 開始の予約のモデル（BOXP-673、BOXP-753）
 
-Task Board runner の **PR gate 失敗予算（ticket ごとの枠、PR 数に応じた上限、grant、PR の除外）と、run 開始時の予約** だけを
+Task Board runner の **PR gate 失敗予算（ticket ごとの枠、PR 数に応じた上限、grant、PR の除外、停滞レビュー受領による補充）と、run 開始時の予約** だけを
 小さなモデルにし、そこから「操作の並びと、各操作後にこうなっているはず」を機械的に作って、runner の実際の関数に流して比べる。
 
 - 仕様（日本語の規則・具体例・状態の移り変わりの図）の正本: Obsidian vault の `Projects/task-board-gate-budget/spec.md`。
@@ -18,9 +18,14 @@ Task Board runner の **PR gate 失敗予算（ticket ごとの枠、PR 数に�
 ## モデルが言っていること
 
 ticket は T1・T2 の 2 件、PR は P1・P2 の 2 件。unit（PR 1 件あたりの枠）は 2
-（実装の既定は 10。短い手順で上限に届くよう、実装が許す「下げる方向の設定」で 2 にして再生する）。操作は 20 種:
+（実装の既定は 10。短い手順で上限に届くよう、実装が許す「下げる方向の設定」で 2 にして再生する）。操作は 24 種:
 
-run の開始・終了（ticket ごと）、gate の合格・失敗（ticket × PR）、追加 grant・旧 grant（ticket ごと）、PR の除外（ticket × PR）。
+run の開始・終了（ticket ごと）、gate の合格・失敗（ticket × PR）、追加 grant・旧 grant（ticket ごと）、PR の除外（ticket × PR）、
+停滞レビューの受領・同じ受領の再配送（ticket ごと、BOXP-753）。
+
+1 操作は「受領済みレビューの判定（`pre`）」の後に「その操作（`core`）」を行う（`step s e = core (pre s e) e`）。
+判定するのは run の開始（動いている run がないとき）、run の PR gate の結果の記録（合格による PR の登録・失敗の計上。動いている run があるとき）、ticket への grant の 3 か所だけ。
+判定は PR の登録より前に行うので、補充の基本枠にはその run が新しく登録する PR は入らない（実装も `record-gate-pr-registrations!` の先頭で判定する）。
 
 ### 規則と定理の対応
 
@@ -39,6 +44,11 @@ run の開始・終了（ticket ごと）、gate の合格・失敗（ticket × 
 | 8 | 除外はその ticket の上限を上げず、もう一方の ticket の上限を変えない | `exclusion_only_lowers_own` |
 | 9 | 除外が行われない限り、失敗の数は上限を超えない | `never_over_limit`（不変条件 `TkOk`） |
 | 10 | 2 つの ticket の run が同じ PR を同時に予約することはない | `reservations_exclusive`（不変条件 `Exclusive`） |
+| 11 | 停滞レビューの受領で上限 = 失敗の数 + 基本枠 に引き上げる（判定はレビュー 1 件 1 回、上限に達していれば・前回の補充より後に失敗がなければ・2 回使い切っていれば補充しない）。往復で上限は無限に延びない | `refresh_restores_base` `exhausted_no_refresh` `no_refresh_without_new_failure` `no_refresh_over_cap` `refresh_once` `review_does_not_raise` `refresh_bounded`（不変条件 `RefOk`） |
+
+規則 3 の「追加 grant 1 件は上限をちょうど 1 増やす」（`grant_adds_one`）は、未判定のレビューがないときの形。
+未判定のレビューがあると grant の直前に補充されうるので、そのときは「少なくとも 1 増える」（`grant_adds_at_least_one`）。
+規則 4 は、判定が受領済みレビューの記録だけを変えうるので「run が始まらず、上限に達したまま」の形（`exhausted_does_not_start`）。
 
 ### モデルの操作と実装の対応
 
@@ -53,11 +63,13 @@ run の開始・終了（ticket ごと）、gate の合格・失敗（ticket × 
 | 追加 grant | `g1` `g2` | `gate-budget-grant!`（1 件） |
 | 旧 grant | `l1` `l2` | BOXP-448 より前の形（`:kind` なし）の grant を予算ファイルへ足す（当時の実装が書いた形を再現。今の実装にこの形を書く関数はない） |
 | PR の除外 | `x1a` … `x2b` | `gate-budget-exclude-pr!` |
+| レビューの受領 | `v1` `v2` | 一時 vault に status done・`stagnation-review-of:: 元票` のレビュー票を新しく作り、元票の Notes に `停滞レビュー受領: <レビュー票>` を足す（判定は次の開始・計上・grant で実装が行う） |
+| 受領の再配送 | `w1` `w2` | 最後に受領したレビューの受領行を元票の Notes にもう一度足す |
 
 各操作の後に比べるもの（`期待` の 1 項 = `結果;T1;T2;P1;P2`）:
 
 - 結果: run が始まった、または失敗を処理した後に上限へ達している、なら 1
-- ticket ごと: `失敗数/上限/PR数`、上限到達なら `x`、生きている予約があれば `r` と予約した PR（`a` `b`）。読むのは `gate-budget-status` と `gate-budget-reservation-live?`
+- ticket ごと: `失敗数/上限/PR数`、上限到達なら `x`、生きている予約があれば `r` と予約した PR（`a` `b`）、レビュー補充が 1 回以上なら `+` と回数。読むのは `gate-budget-status` と `gate-budget-reservation-live?`
 - PR ごと: その PR での失敗数（全 ticket 合計）と、旧上限に達していれば `L`（記録だけで、開始の判定には使わない）
 
 例: `s1,f1a,e1,s1,f1a|1;0/2/0r;0/2/0;0;0,0;1/2/1r;0/2/0;1;0,0;1/2/1;0/2/0;1;0,1;1/2/1ra;0/2/0;1;0,1;2/2/1xra;0/2/0;2L;0`
@@ -72,6 +84,9 @@ run の開始・終了（ticket ごと）、gate の合格・失敗（ticket × 
 - **lock の期限切れによる予約の失効**。予約が無効になるのは run の終了（lock の解放）だけを扱う。期限切れ・計画停止での回収は `../lock-model/` の対象。
 - **停止の報告・Blocked への遷移・失敗の分類**、PR への grant、PR URL の表記ゆれ、unit の設定値の読み方（2 に固定）。
 - **自動継続の回数**（`consume-continuation!`）。別のカウンタで、今回は対象にしていない。
+- **レビュー票と Notes の中身**（BOXP-753）。モデルは「新しい done のレビューを受領した」「同じ受領をもう一度書いた」の 2 操作だけを持つ。
+  レビュー票が done でない・受領行がない・票が読めない場合、`stagnation-review-of::` の書き方のゆれ、2 件以上の未判定レビューを同時に判定する順は、
+  runner の self-test（`task_board_runner.bb test` の `753 ...`）が見る。「同じ方針の繰り返し」は「前回の補充より後に失敗があるか」で近似している。
 - 手順の長さは、初期状態から **最長 5 手**、下の 3 つの出発点から **最長 3 手**。それより長い並びでだけ出る違いは見つからない。
   たとえば「3 つ目の PR」「上限到達 → grant → 再び上限 → もう一度 grant」「両方の ticket が上限に達した後の衝突」は入らない。
 
@@ -79,15 +94,15 @@ run の開始・終了（ticket ごと）、gate の合格・失敗（ticket × 
 
 ```sh
 cd tests/codex-workspace/gate-budget-model
-lean GateBudgetModel.lean                                   # 定理の検査（通れば何も出ない。2CPU で約 35 秒）
-lean --run GateBudgetModel.lean cover 5 | gzip -n -9 > gate-budget-traces.txt.gz   # 手順の生成（約 25 秒、26,034 本・142,239 操作。圧縮後 約 0.11MB）
-bb ../task-board-gate-budget-trace-test.bb                  # 再生（約 40 秒、Lean 不要）
+lean GateBudgetModel.lean                                   # 定理の検査（通れば何も出ない。2CPU で約 2 分）
+lean --run GateBudgetModel.lean cover 5 | gzip -n -9 > gate-budget-traces.txt.gz   # 手順の生成（2CPU で約 3.5 分、54,562 本・319,879 操作。圧縮後 約 0.21MB）
+bb ../task-board-gate-budget-trace-test.bb                  # 再生（Lean 不要。BOXP-753 の作業環境 2CPU で約 11 分。BOXP-673 の 26,034 本は同じ環境で約 3 分、CI では約 40 秒だった）
 ```
 
 `cover N` は 2 種類の手順を出す。出力は決定的。
 
-1. 初期状態から N-1 手以内で届く全ての状態について、そこからの 20 操作を 1 回ずつ（意味は `../lock-model/README.md` と同じ）。N = 5 で 22,535 本。
-2. **途中の状態から始める手順**（`seeds`）。短い手順では届かない場面を、決めた操作列で作ってから、そこから 2 手以内で届く全ての状態について 20 操作を 1 回ずつ（出発点の後に最長 3 手）。計 3,499 本。
+1. 初期状態から N-1 手以内で届く全ての状態について、そこからの 24 操作を 1 回ずつ（意味は `../lock-model/README.md` と同じ）。N = 5 で 43,563 本。
+2. **途中の状態から始める手順**（`seeds`）。短い手順では届かない場面を、決めた操作列で作ってから、そこから 2 手以内で届く全ての状態について 24 操作を 1 回ずつ（出発点の後に最長 3 手）。計 10,999 本。
    出発点も初期状態からの操作列なので、再生では実装も同じ操作を実行してその状態に入る（状態を直接書き込まない）。
 
 | 出発点 | 操作列 | 届くようになる場面 |
@@ -95,6 +110,8 @@ bb ../task-board-gate-budget-trace-test.bb                  # 再生（約 40 �
 | 両方の ticket が P1 で 1 回ずつ失敗 | `s1,f1a,e1,s2,f2a,e2` | PR の予約の衝突（規則 10）。T1 が P1 を予約して動いている間、T2 は始まらない |
 | T1 が上限 2 に達して停止 | `s1,f1a,e1,s1,f1a,e1` | 上限到達後は始まらない（規則 4）、grant・旧 grant の後に 1 回だけ始まり、落ちれば再び止まる（規則 3・5） |
 | T1 が PR 2 件の持ち主で 3/4 | `s1,p1b,f1a,e1,s1,f1b,e1,s1,f1a,e1` | PR 数に応じた上限の境界（3 回失敗した後も始まり、4 回目の失敗で上限 4 に達する）、除外で上限が 2 に下がると始まらない（規則 8・4） |
+| T1 が 1/2 の run の中で受領（BOXP-749 の形） | `s1,f1a,e1,s1,v1` | 計上の直前の補充（2/3 で止まらない）、再配送・2 件目の受領（規則 11） |
+| T1 が補充を 2 回使い切った | `s1,f1a,e1,v1,s1,f1a,e1,v1,s1,f1a,e1` | 3 件目の受領で補充しない（規則 11 の回数の上限） |
 
 出発点を足した理由: 初期状態から深さ 5 だけでは、PR の予約の衝突（最短 8 手）に届かず、衝突の判定を壊した変異を見逃した。
 深さを 6 に上げる案（72,581 本・再生 約 130 秒）でも届かないので、深さではなく出発点で補った。経緯と数字は
