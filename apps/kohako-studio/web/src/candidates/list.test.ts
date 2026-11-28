@@ -91,6 +91,10 @@ describe('試作候補の一覧', () => {
       { text: '試作を動かす（Keshin2D）', href: './candidates/keshin-0123abc/keshin.html' },
     ])
   })
+  it('人形の絵の見比べ（page: dolls、BOXP-760）は、絵の一覧の画面へリンクする（家の画面ではない）', () => {
+    const d = { ...ok, id: 'dolls-0123abc', page: 'dolls' }
+    expect(candidateLinks(d)).toEqual([{ text: '人形の絵を見比べる', href: './candidates/dolls-0123abc/dolls.html' }])
+  })
   it('Studio の固定入口から候補一覧へ行ける', () => {
     expect(readFileSync(new URL('../../studio.html', import.meta.url), 'utf8')).toContain('href="./candidates.html"')
   })

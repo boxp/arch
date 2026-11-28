@@ -10,7 +10,7 @@ export type Candidate = {
   pr?: string
   actions?: string[]
   problems?: string[]
-  /** 見る画面。home は家の画面（待機中の動きなど、家でしか出ない試作）、keshin は Keshin2D の試作の画面（BOXP-716）。指定なしは動作ボタン・会話連動の 2 つ。 */
+  /** 見る画面。home は家の画面（待機中の動きなど、家でしか出ない試作）、keshin は Keshin2D の試作の画面（BOXP-716）、dolls は人形の絵を見比べる画面（BOXP-760）。指定なしは動作ボタン・会話連動の 2 つ。 */
   page?: string
   /** 実時間の録画（動く画面を開けない端末でも動きを見られるように）。file は ./kohako/candidate-videos/<id>/ の中の mp4。 */
   videos?: { file: string; title: string; note?: string }[]
@@ -68,12 +68,14 @@ function homeLinks(c: Candidate): { text: string; href: string }[] {
 export const candidateLinks = (c: Candidate): { text: string; href: string }[] =>
   c.page === 'keshin'
     ? [{ text: '試作を動かす（Keshin2D）', href: `./candidates/${c.id}/keshin.html` }]
-    : c.page === 'home'
-      ? homeLinks(c)
-      : [
-          { text: '動作ボタンで操作する', href: candidateURL(c) },
-          { text: '会話と連動して見る', href: candidateURL(c, 'studio') },
-        ]
+    : c.page === 'dolls'
+      ? [{ text: '人形の絵を見比べる', href: `./candidates/${c.id}/dolls.html` }]
+      : c.page === 'home'
+        ? homeLinks(c)
+        : [
+            { text: '動作ボタンで操作する', href: candidateURL(c) },
+            { text: '会話と連動して見る', href: candidateURL(c, 'studio') },
+          ]
 
 const VIDEO = /^[a-z0-9][a-z0-9-]{0,59}\.mp4$/
 /** 候補の録画（題・補足・固定パス）。形の崩れたものは捨てる（別のパスや別の種類のファイルへ誘導しない）。 */

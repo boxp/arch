@@ -21,8 +21,8 @@ const candidates = manifest.candidates.map(c => {
     if (!html.includes('<body>')) throw Error(`${file}: no <body>`)
     writeFileSync(file, html.replace('<body>', `<body>${banner}`))
   }
-  // 家の画面で見る候補（page: home）と Keshin2D の試作（page: keshin、BOXP-716）: 画面の配置を崩さないよう、上端の中央に小さな札だけを足す（下端は入力欄・操作の帯）。
-  if (built && (c.page === 'home' || c.page === 'keshin')) {
+  // 家の画面で見る候補（page: home）・Keshin2D の試作（page: keshin、BOXP-716）・人形の絵の見比べ（page: dolls、BOXP-760）: 画面の配置を崩さないよう、上端の中央に小さな札だけを足す（下端は入力欄・操作の帯）。
+  if (built && (c.page === 'home' || c.page === 'keshin' || c.page === 'dolls')) {
     const file = `${out}/${c.id}/${c.page}.html`
     if (!existsSync(file)) throw Error(`${file}: page ${c.page} but no ${c.page}.html`)
     const html = readFileSync(file, 'utf8')
