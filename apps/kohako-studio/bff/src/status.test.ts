@@ -637,6 +637,9 @@ it('定期の /status には Notes を載せず、票の詳細は In Progress �
     },
   })
   expect(await status.ticket('BOXP-2')).toEqual({ state: 'not_found' })
+  // 担当が食い違う票は人形にしないので、中身も返さない（D1）。
+  expect(await status.ticket('BOXP-4')).toEqual({ state: 'not_found' })
+  expect((await status.get()).tasks.dolls.map((d) => d.key)).toEqual(['opus'])
   expect(await status.ticket('BOXP-3')).toEqual({ state: 'not_found' })
 })
 it('票の詳細は文字列でない値を null にし、取得できない時は unavailable（T3）', async () => {
