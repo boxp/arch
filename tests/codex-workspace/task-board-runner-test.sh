@@ -7216,6 +7216,65 @@ test_generated_reclaim_studio() {
   assert_file_contains "${tmp}/out" 'generated-reclaim: hold .*web/dist.* reason=inputs-modified'
 }
 
+# BOXP-781: the measure-only criteria trial rides on the attribution scan,
+# records nothing without a window, never deletes, and stops at `until`.
+test_criteria_trial_attribution() {
+  local tmp vault state root metrics ws now from until
+  tmp="$(mktemp -d)"
+  vault="$tmp/vault"
+  root="$tmp/volume"
+  state="$root/.codex-task-board"
+  metrics="$state/metrics/workspace-capacity.edn"
+  ws="$state/workspaces/T-9/20261101T000000Z-run"
+  mkdir -p "$vault" "$ws/ghq/github.com/o/r/node_modules" "$ws/ghq/github.com/o/r/.git" "$ws/ghq/github.com/o/r/.tools" "$ws/ghq/github.com/o/r/src" "$ws/tmp"
+  printf generated >"$ws/ghq/github.com/o/r/node_modules/a.js"
+  printf object >"$ws/ghq/github.com/o/r/.git/HEAD"
+  printf tool >"$ws/ghq/github.com/o/r/.tools/t"
+  printf src >"$ws/ghq/github.com/o/r/src/a.clj"
+  printf out >"$ws/tmp/out.png"
+  printf body >"$ws/pr-body.md"
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" run_prune "$vault" "$state" >"$tmp/out" 2>&1
+  if grep -q ':event :criteria-trial' "$metrics"; then fail 'trial recorded without a window'; fi
+  now="$(date -u +%s)"
+  from="$(date -u -d "@$((now - 3600))" +%Y-%m-%dT%H:%M:%SZ)"
+  until="$(date -u -d "@$((now + 82800))" +%Y-%m-%dT%H:%M:%SZ)"
+  printf '{:id "T-trial" :from "%s" :until "%s"}\n' "$from" "$until" >"$state/criteria-trial.edn"
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 run_prune "$vault" "$state" >"$tmp/out" 2>&1
+  for p in ghq/github.com/o/r/node_modules/a.js ghq/github.com/o/r/.git/HEAD ghq/github.com/o/r/.tools/t ghq/github.com/o/r/src/a.clj tmp/out.png pr-body.md; do
+    [[ -f "$ws/$p" ]] || fail "trial deleted $p"
+  done
+  grep -q 'criteria-trial: record' "$tmp/out" || fail 'trial record not logged'
+  TEST_METRICS="$metrics" TEST_WS="$ws" bb -e '
+    (require (quote [clojure.edn :as edn]))
+    (let [es (map edn/read-string (clojure.string/split-lines (slurp (System/getenv "TEST_METRICS"))))
+          e (last (filter #(= :criteria-trial (:event %)) es))
+          a (last (filter #(= :capacity-attribution (:event %)) es))
+          b (fn [p] (* 512 (Long/parseLong (clojure.string/trim (:out (babashka.process/shell {:out :string} "stat" "-c" "%b" (str (System/getenv "TEST_WS") "/" p)))))))
+          s (get-in e [:by-status "not-judged"])]
+      (assert e) (assert (= "T-trial" (:trial-id e))) (assert (true? (:scan-complete e)))
+      (assert (not (contains? a :trial-runs)) "the attribution record keeps its shape")
+      (assert (= 1 (:runs s)))
+      (assert (= (b "ghq/github.com/o/r/node_modules/a.js") (:generated s)))
+      (assert (= (b "ghq/github.com/o/r/.git/HEAD") (:git-internal s)))
+      (assert (= (b "ghq/github.com/o/r/.tools/t") (:download s)))
+      (assert (= (b "ghq/github.com/o/r/src/a.clj") (:checkout-other s)))
+      (assert (= (+ (b "tmp/out.png") (b "pr-body.md")) (:outside-ghq s)))
+      (assert (= {:b-named 0 :b-download 0 :b-git-check 0 :d-outside 0 :keep 0} (:candidate e)) "a run without a held outcome is not a candidate")
+      (assert (= 17179869184 (:soft-guard-bytes e))))'
+  # An expired window records nothing more; a window over 25 hours is refused.
+  before="$(grep -c ':event :criteria-trial' "$metrics")"
+  printf '{:id "T-trial" :from "2020-01-01T00:00:00Z" :until "2020-01-02T00:00:00Z"}\n' >"$state/criteria-trial.edn"
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 run_prune "$vault" "$state" >"$tmp/out" 2>&1
+  [[ "$(grep -c ':event :criteria-trial' "$metrics")" == "$before" ]] || fail 'expired trial recorded'
+  printf '{:id "T-trial" :from "%s" :until "2099-01-01T00:00:00Z"}\n' "$from" >"$state/criteria-trial.edn"
+  CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES=0 run_prune "$vault" "$state" >"$tmp/out" 2>&1
+  [[ "$(grep -c ':event :criteria-trial' "$metrics")" == "$before" ]] || fail 'over-long trial recorded'
+  grep -q 'criteria-trial: warning invalid config' "$tmp/out" || fail 'invalid trial config not warned'
+  printf '{:id "T-trial" :from "%s" :until "%s"}\n' "$from" "$until" >"$state/criteria-trial.edn"
+  CODEX_TASK_BOARD_VAULT="$vault" CODEX_TASK_BOARD_ROOT="$state" bb "$RUNNER" criteria-trial-report >"$tmp/report"
+  TEST_REPORT="$tmp/report" bb -e '(let [r (clojure.edn/read-string (slurp (System/getenv "TEST_REPORT")))] (assert (= "T-trial" (:trial-id r))) (assert (= 1 (:records r))))'
+}
+
 test_capacity_attribution() {
   local tmp vault state root metrics before
   tmp="$(mktemp -d)"
