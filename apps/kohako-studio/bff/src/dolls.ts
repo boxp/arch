@@ -3,18 +3,18 @@
  * 担当名 → 実行モデル（見込み）→ 系列 → 人形の鍵。絵が採用されていない系列・分からないモデルは無地（plain）。
  */
 
-/** 本人が採用した絵がある系列（BOXP-760 の初稿 9 案）。表示の順もこの順。新しい絵は採用後にここへ足す。 */
+/** 本人が採用した絵がある系列（BOXP-760 の初稿 9 案。版 2 = 机で作業する姿、BOXP-766 TD-03）。表示の順もこの順。新しい絵は採用後にここへ足す。 */
 export const designs: Record<string, { name: string; version: number }> = {
-  fable: { name: '語り部の人形', version: 1 },
-  opus: { name: '楽長の人形', version: 1 },
-  sonnet: { name: '歌詠みの人形', version: 1 },
-  terra: { name: '庭師の人形', version: 1 },
-  sol: { name: '灯守りの人形', version: 1 },
-  luna: { name: '月見の人形', version: 1 },
-  astra: { name: '星見の人形', version: 1 },
-  neon: { name: '灯り細工の人形', version: 1 },
+  fable: { name: '語り部の人形', version: 2 },
+  opus: { name: '楽長の人形', version: 2 },
+  sonnet: { name: '歌詠みの人形', version: 2 },
+  terra: { name: '庭師の人形', version: 2 },
+  sol: { name: '灯守りの人形', version: 2 },
+  luna: { name: '月見の人形', version: 2 },
+  astra: { name: '星見の人形', version: 2 },
+  neon: { name: '灯り細工の人形', version: 2 },
 }
-export const plain = { name: '無地の人形', version: 1 }
+export const plain = { name: '無地の人形', version: 2 }
 export const order = [...Object.keys(designs), 'plain']
 
 /**

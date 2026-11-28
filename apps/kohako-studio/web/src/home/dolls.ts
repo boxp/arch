@@ -24,12 +24,12 @@ export type TicketResult = { state: 'ok'; fetchedAt: string; item: TicketDetail 
 type Tasks = { state: string; dolls?: DollGroup[] }
 export type DollsState = 'loading' | 'working' | 'none' | 'stale' | 'unavailable'
 
-/** 家に置いてある絵（本人が採用した 9 案）。ここに無い鍵は無地の絵を使う。 */
+/** 家に置いてある絵（本人が採用した 9 案）。版 2 は机で作業する姿（D7）、版 1 は配備の切り替わり中のために残す（D8）。ここに無い鍵・版は無地の版 2。 */
 const art = new Set(['fable', 'opus', 'sonnet', 'terra', 'sol', 'luna', 'astra', 'neon', 'plain'])
 export function dollImage(key: string, version: number): string {
-  return art.has(key) && Number.isInteger(version) && version === 1
+  return art.has(key) && (version === 1 || version === 2)
     ? `./kohako/dolls/${key}-v${version}.webp`
-    : './kohako/dolls/plain-v1.webp'
+    : './kohako/dolls/plain-v2.webp'
 }
 
 /** 状態（3 章）と、いま並べる人形・「+N」の数（D5）。 */
