@@ -811,8 +811,8 @@ export function createConversation({
                       : 24000,
                   )}\n（返答が長すぎるため、ここから先は省略されました）`
                 : extracted.text
-          // BOXP-749: 時間の上限は geocoder が地図ごとに自分の番から数えて持つ（他の会話の地図の後ろで待つ時間で打ち切らない）。
-          // 各検索は応答待ち上限で、地図の番は上限 MAX_GEOCODE_MS で必ず終わる。上限後の検索は送らず位置なし（印なし）になる。
+          // BOXP-751: 位置検索は geocoder が呼ばれた時刻から 60 秒の期限で必ず終わる（他の会話の地図の後ろで待つ時間も含む）。
+          // 期限内に確認できなかった候補は位置なし（印なし）。混雑・遅延時に印が欠けるのは仕様どおり。
           const views = input.kind === 'text' && input.views ? await geocode(extracted.views) : extracted.views
           // BOXP-657: 返答の選択肢（A／B…）は BFF が取り出して返す（端末ごとに抽出規則の写しを持たない）。
           const choices = input.kind === 'text' && !entry.visit ? extractChoices(reply) : null

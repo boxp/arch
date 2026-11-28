@@ -723,7 +723,7 @@ function openViewer(view: View, opener: HTMLElement, focus = true) {
     const places = mapPlaces(view),
       layout = layoutMap(places)
     if (layout) viewerBody.append(renderMap(document, layout, view.title))
-    else line('地図上の位置を特定できませんでした。下のリンクから Google マップで開けます。')
+    else line('地図上の位置を確認できませんでした。下のリンクから Google マップで開けます。')
     const list = document.createElement('ol')
     list.className = 'view-map-list'
     places.forEach((place, i) => {
@@ -742,7 +742,7 @@ function openViewer(view: View, opener: HTMLElement, focus = true) {
             ? `番地まで特定できず「${place.geo?.label}」付近を点線で表示（正確な位置とは異なる場合があります）`
             : place.geo
               ? `位置を特定できず（「${place.geo.label}」付近）。地図に印はありません`
-              : '位置を特定できませんでした。地図に印はありません'
+              : '位置を確認できませんでした。地図に印はありません'
       item.append(note)
       const a = document.createElement('a')
       a.href = mapsUrl({ destination: place, mode: view.mode }, false)

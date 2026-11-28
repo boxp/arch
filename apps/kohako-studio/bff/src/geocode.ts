@@ -51,31 +51,30 @@ function town(address: string): string | null {
 
 /**
  * BOXP-749: 1 件の目的地・候補の位置決めで送りうる検索の最大回数（住所 1・範囲の段 3・範囲内の名称 最大 5）。
- * 地図全体の期限は設けず、1 件ごとの応答待ち上限(timeoutMs)だけで止める（後半の候補が別表記検索まで届かず正しいピンが欠けないように）。
  */
 export const MAX_QUERIES_PER_PLACE = 9
 /**
- * 地図 1 枚が自分の番で検索に使える上限の既定値（候補 5 件 × 最大回数 × 1 件の最長占有時間 max(間隔 1 秒, 応答待ち上限 4 秒) + 2 秒）。
- * 地図は 1 枚ずつ順番に検索し、上限は自分の番が来てから数える（他の地図の後ろで待つ時間は含めない）。
- * 正常時は届かない異常時の保険で、超えた後の検索は送らず未検出（位置なし）として扱う。
+ * BOXP-751 仕様「検索の期限」の優先順位: (1) 生成済みの返答を位置検索のために 60 秒より長く待たせない
+ * （geocode() が呼ばれた時刻から数え、他の地図の後ろで待つ時間も含む） (2) 確認できていない位置に印を立てない
+ * (3) 印は期限内に確認できた分だけ出す。混雑・遅延時に印が欠けるのは仕様どおりの動き。
+ * 60 秒 = 最大 45 件（5 候補 × 9 件）を 1 秒に 1 件で送り切れる長さ + 15 秒。指摘を受けて動かす数字ではない。
  */
-export const MAX_GEOCODE_MS = 5 * MAX_QUERIES_PER_PLACE * 4000 + 2000
+export const GEOCODE_DEADLINE_MS = 60_000
 export function createGeocoder({
   fetcher = fetch,
   url = process.env.KOHAKO_GEOCODE_URL ?? 'https://nominatim.openstreetmap.org/search',
   intervalMs = 1000,
   timeoutMs = 4000,
-  mapBudgetMs = 5 * MAX_QUERIES_PER_PLACE * Math.max(intervalMs, timeoutMs) + 2000,
+  deadlineMs = GEOCODE_DEADLINE_MS,
 }: {
   fetcher?: typeof fetch
   url?: string
   intervalMs?: number
   timeoutMs?: number
-  mapBudgetMs?: number
+  deadlineMs?: number
 } = {}) {
   const cache = new Map<string, { at: number; value: Geo | null }>()
   let queue = Promise.resolve(),
-    turn = Promise.resolve(),
     last = 0
   const queryRaw = async (
     q: string,
@@ -98,7 +97,7 @@ export function createGeocoder({
           resolve(again.value)
           return
         }
-        // BOXP-749: その地図の番の上限を過ぎた検索は送らない（未検出＝位置なし。推測の位置は出さない）。
+        // BOXP-751: 期限を過ぎた検索は送らない（未検出＝位置なし。推測の位置は出さない。印が欠けるのは仕様どおり）。
         if (Date.now() >= deadline) {
           resolve(null)
           return
@@ -106,11 +105,16 @@ export function createGeocoder({
         const wait = Math.max(0, last + intervalMs - Date.now())
         if (wait) await new Promise((r) => setTimeout(r, wait))
         last = Date.now()
+        // 間隔待ちの間に期限を過ぎたら送らない。送る検索は min(応答待ち上限, 期限までの残り) で打ち切る。
+        if (last >= deadline) {
+          resolve(null)
+          return
+        }
         let value: Geo | null = null,
           cacheable = false,
           precision = requested
         const controller = new AbortController(),
-          timer = setTimeout(() => controller.abort(), timeoutMs)
+          timer = setTimeout(() => controller.abort(), Math.min(timeoutMs, deadline - last))
         try {
           const p = new URL(url)
           for (const [k, v] of Object.entries({
@@ -255,24 +259,11 @@ export function createGeocoder({
   }
   const locate = (target: Place, deadline: number): Promise<Geo | null> =>
     resolvePlace(target, deadline).catch(() => null)
-  // BOXP-749: 地図は 1 枚ずつ順番に検索する（会話をまたいで検索キューを奪い合い、後から来た地図が待ちだけで位置なしにならないように）。
-  // 上限 mapBudgetMs はその地図の番が来てから数える。各検索は応答待ち上限で必ず終わるので、地図の番も必ず終わり、後ろの地図へ進む。
-  const exclusive = <T>(fn: () => Promise<T>): Promise<T> => {
-    const result = turn.then(fn)
-    turn = result.then(
-      () => undefined,
-      () => undefined,
-    )
-    return result
-  }
   return async (views: View[]): Promise<View[]> => {
     if (url === 'off') return views
-    return Promise.all(
-      views.map(async (view) => {
-        if (view.kind !== 'map') return view
-        return exclusive(() => locateMap(view, Date.now() + mapBudgetMs))
-      }),
-    )
+    // BOXP-751: 期限は呼ばれた時刻から数える絶対時刻で、1 つの返答の地図すべてで 1 つ（地図ごとの番は設けない）。
+    const deadline = Date.now() + deadlineMs
+    return Promise.all(views.map(async (view) => (view.kind === 'map' ? locateMap(view, deadline) : view)))
   }
   async function locateMap(view: View & { kind: 'map' }, deadline: number): Promise<View> {
     if (view.places) {

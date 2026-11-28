@@ -379,42 +379,44 @@ it('never drops a later place because earlier searches were slow but within thei
   expect(fetcher).toHaveBeenCalledTimes(21) // 「Cafe Renoir」(支店名なし)は 2 件目以降キャッシュ
   expect(result.places.map((p) => p.geo?.precision)).toEqual(['exact', 'exact', 'exact', 'exact', 'exact'])
 })
-it('does not count the wait behind other maps against a map, and still finishes every map', async () => {
-  // 地図 1 枚の上限(400ms)は自分の番が来てから数える。先の 2 枚(各 2 検索 × 140ms = 280ms)の後ろで 560ms 待っても、
-  // 後から来た地図は打ち切られず自分の検索で正確なピンになる（共有キューの待ちで位置なしにしない）。
+it('returns every map within its own deadline counted from the call, even behind slow maps of other conversations', async () => {
+  // 仕様「検索の期限」優先順位 1〜3（BOXP-751）を縮尺した再現: 期限 600ms・応答待ち上限 200ms・各検索 195ms。
+  // 5 候補の地図 2 枚が先に検索中でも、3 つの geocode() はどれも呼ばれてから期限（＋打ち切りの僅かな遅れ）以内に返る。
+  // 後から来た単一の地図は期限内に検索が回らなければ位置なし（点の位置は付かない）。期限後に送られる検索は 0 件。
+  const sent: number[] = []
   const fetcher = vi.fn(async (url: string | URL | Request) => {
+    sent.push(Date.now())
     const q = new URL(String(url)).searchParams.get('q') ?? ''
-    if (q.startsWith('遅い')) await new Promise((r) => setTimeout(r, 140))
+    await new Promise((r) => setTimeout(r, 195))
     return response(q === '東京駅' ? hit : [])
   })
-  const geocode = createGeocoder({ fetcher, intervalMs: 0, timeoutMs: 200, mapBudgetMs: 400 })
+  const geocode = createGeocoder({ fetcher, intervalMs: 10, timeoutMs: 200, deadlineMs: 600 })
   const slowMap = (k: string): View => ({
     kind: 'map',
     title: k,
-    places: [1, 2].map((i) => ({ name: `遅い店${k}${i}` })),
+    places: [1, 2, 3, 4, 5].map((i) => ({ name: `遅い店${k}${i}` })),
   })
-  const started = Date.now()
-  const [a, b, [c]] = await Promise.all([
-    geocode([slowMap('A')]),
-    geocode([slowMap('B')]),
-    geocode([{ kind: 'map', title: '後', destination: { name: '東京駅' } }]),
+  const timed = async (views: View[]) => {
+    const started = Date.now()
+    const [v] = await geocode(views)
+    return { v, started, took: Date.now() - started }
+  }
+  const results = await Promise.all([
+    timed([slowMap('A')]),
+    timed([slowMap('B')]),
+    timed([{ kind: 'map', title: '後', destination: { name: '東京駅' } }]),
   ])
-  expect(Date.now() - started).toBeGreaterThanOrEqual(500)
-  expect(c.kind === 'map' && c.geo?.precision).toBe('exact')
-  expect(fetcher).toHaveBeenCalledTimes(5)
-  expect([a, b].every(([v]) => v.kind === 'map')).toBe(true)
+  for (const r of results) expect(r.took).toBeLessThan(600 + 100)
+  const third = results[2].v
+  expect(third.kind === 'map' && third.geo?.precision).not.toBe('exact')
+  const deadline = Math.max(...results.map((r) => r.started)) + 600
+  expect(sent.filter((t) => t > deadline)).toEqual([])
 })
-it('stops a map whose own turn exceeds its bound and skips its remaining searches without position', async () => {
-  // 1 件の検索が応答待ち上限を無視して返らない異常時でも、その地図の番は上限で終わり、残りの検索は送らず位置なしで返す。
-  let calls = 0
-  const fetcher = vi.fn(async (url: string | URL | Request) => {
-    calls++
-    const q = new URL(String(url)).searchParams.get('q') ?? ''
-    return response(q === '東京駅' ? hit : [])
-  })
-  const geocode = createGeocoder({ fetcher, intervalMs: 0, timeoutMs: 200, mapBudgetMs: 0 })
+it('sends no search after the deadline and leaves the places without position', async () => {
+  const fetcher = vi.fn(async () => response(hit))
+  const geocode = createGeocoder({ fetcher, intervalMs: 0, timeoutMs: 200, deadlineMs: 0 })
   const [result] = await geocode([{ kind: 'map', title: '地図', places: [{ name: '東京駅' }, { name: '新橋駅' }] }])
   if (result.kind !== 'map' || !result.places) throw Error('places expected')
-  expect(calls).toBe(0)
+  expect(fetcher).not.toHaveBeenCalled()
   expect(result.places.every((p) => !p.geo)).toBe(true)
 })
