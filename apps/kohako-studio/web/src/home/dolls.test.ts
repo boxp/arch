@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { ago, cardOf, dollImage, dollsView, type DollGroup } from './dolls'
+import { ago, cardOf, dollImage, dollsKey, dollsView, type DollGroup } from './dolls'
 // 期待値は現行仕様 Projects/kohako-home/model-dolls-home-spec.md の 2〜5 章から。
 const doll = (key: string, n = 1, plainLabel: string | null = null): DollGroup => ({
   key,
@@ -123,4 +123,11 @@ it('カードの中身: 担当名と実行モデル（見込み）を分け、�
     fresh: '',
   })
   expect(cardOf(d, d.tickets[0], 'error', now)).toMatchObject({ noteHead: '記録を取得できません', fresh: '' })
+})
+it('並びの鍵: 件数が同じでも票が入れ替われば作り直す（古い票の ID で開かない）', () => {
+  const a = dollsView(status([doll('opus', 2)]), false, 'pc')
+  const swapped = doll('opus', 2)
+  swapped.tickets = [{ ...swapped.tickets[0], id: 'BOXP-9' }, swapped.tickets[1]]
+  expect(dollsKey(dollsView(status([swapped]), false, 'pc'))).not.toBe(dollsKey(a))
+  expect(dollsKey(dollsView(status([doll('opus', 2)]), false, 'pc'))).toBe(dollsKey(a))
 })

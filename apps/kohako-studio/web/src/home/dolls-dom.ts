@@ -1,6 +1,6 @@
 /** BOXP-766: 人形の列と、押した時のカード（現行仕様 Projects/kohako-home/model-dolls-home-spec.md）。 */
 import './dolls.css'
-import { cardOf, dollImage, dollsView, type DollGroup, type TicketResult } from './dolls'
+import { cardOf, dollImage, dollsKey, dollsView, type DollGroup, type TicketResult } from './dolls'
 type Call = (path: string) => Promise<{ status: number; data: Record<string, unknown> | null }>
 const make = <K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: string) => {
   const e = document.createElement(tag)
@@ -22,9 +22,21 @@ export function createDolls(opts: { host: HTMLElement; card: HTMLElement; call: 
   function render() {
     const v = dollsView(last, failed, document.body.dataset.shape ?? 'pc')
     // 同じ中身なら作り直さない（60 秒ごとの取得で絵を読み直したり、押している最中に消したりしない）。
-    const key = JSON.stringify([v.state, v.more, v.shown.map((d) => [d.key, d.plainLabel, d.tickets.length])])
+    const key = dollsKey(v)
     if (key === shownKey) return
     shownKey = key
+    // 開いているカードの人形も新しい中身へ差し替える（無くなった票・人形のカードは閉じる）。
+    if (open && open !== 'list') {
+      const cur = open
+      const fresh = (last?.tasks.dolls ?? []).find(
+        (d) => d.key === cur.doll.key && d.plainLabel === cur.doll.plainLabel,
+      )
+      const i = fresh ? fresh.tickets.findIndex((t) => t.id === cur.doll.tickets[cur.index]?.id) : -1
+      if (fresh && i >= 0) {
+        open = { doll: fresh, index: i }
+        renderCard()
+      } else hide()
+    }
     host.replaceChildren()
     host.dataset.state = v.state
     if (v.state === 'unavailable') host.append(make('span', 'doll-tag', '人形：確認できません'))

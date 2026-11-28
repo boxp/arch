@@ -101,3 +101,12 @@ export function cardOf(
     fresh: detail && detail !== 'error' ? `取得 ${ago(detail.fetchedAt, now)}` : '',
   }
 }
+
+/** 並びを作り直すかどうかの鍵。票の ID・担当・モデルまで含める（件数が同じでも票が入れ替われば作り直す）。 */
+export function dollsKey(v: { state: DollsState; shown: DollGroup[]; more: number }): string {
+  return JSON.stringify([
+    v.state,
+    v.more,
+    v.shown.map((d) => [d.key, d.version, d.plainLabel, d.tickets.map((t) => [t.id, t.assignee, t.model])]),
+  ])
+}
