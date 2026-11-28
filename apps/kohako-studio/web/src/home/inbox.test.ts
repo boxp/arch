@@ -230,3 +230,167 @@ describe('送信直前の選択肢確認（BOXP-658）', () => {
     expect(noticeChoiceValues({ body: '本文' })).toEqual([])
   })
 })
+
+describe('通知からのジャンプを一度だけ行う（BOXP-772）', () => {
+  it('URL から notification だけを外し、他のパラメータの表記と順序を保つ', async () => {
+    const { withoutNotificationParam } = await import('./inbox')
+    expect(withoutNotificationParam('?notification=event-123456')).toBe('')
+    expect(withoutNotificationParam('?acting=0&notification=event-123456&face=static')).toBe('?acting=0&face=static')
+    expect(withoutNotificationParam('?q=a%20b&notification=x&notification=y&z=c+d')).toBe('?q=a%20b&z=c+d')
+    expect(withoutNotificationParam('?notificationx=1&a=2')).toBeNull()
+    expect(withoutNotificationParam('')).toBeNull()
+  })
+
+  type Item = { eventId: string; source: string; title: string; body: string; receivedAt: string }
+  const setup = async (search: string, items: Item[], failFirst = 0) => {
+    const { initInbox } = await import('./inbox'),
+      { vi } = await import('vitest')
+    const els: Record<string, { hidden: boolean }> = {},
+      // 描画の細部は検査しないので、未定義のプロパティは何でも受ける要素で代用する
+      el = (): { hidden: boolean } => {
+        const props: Record<string | symbol, unknown> = {
+          hidden: true,
+          textContent: '',
+          value: '',
+          dataset: {},
+          style: {},
+        }
+        return new Proxy(props, {
+          get: (t, k) => (k in t ? t[k] : k === 'then' ? undefined : k === 'querySelector' ? () => null : () => el()),
+          set: (t, k, v) => {
+            t[k] = v
+            return true
+          },
+        }) as unknown as { hidden: boolean }
+      }
+    const calls: string[] = [],
+      urls: string[] = [],
+      handlers: Record<string, () => void> = {},
+      sw: { listener?: (e: { data: unknown }) => void } = {}
+    let failures = failFirst
+    const loc = { search, pathname: '/kohako/home.html', hash: '#x' }
+    vi.stubGlobal('document', {
+      hidden: false,
+      getElementById: (id: string) => (els[id] ??= el()),
+      addEventListener: (type: string, fn: () => void) => {
+        handlers[type] = fn
+      },
+      createElement: () => el(),
+      createDocumentFragment: () => el(),
+      createTextNode: () => el(),
+    })
+    vi.stubGlobal('location', loc)
+    vi.stubGlobal('history', {
+      state: null,
+      replaceState: (_s: unknown, _t: string, url: string) => {
+        urls.push(url)
+        loc.search = url.slice(loc.pathname.length).replace(/#.*$/, '')
+      },
+    })
+    vi.stubGlobal('navigator', {
+      serviceWorker: { addEventListener: (_t: string, fn: (e: { data: unknown }) => void) => (sw.listener = fn) },
+    })
+    vi.stubGlobal('window', { setTimeout: () => 0, setInterval: () => 0 })
+    vi.stubGlobal('fetch', async (url: string, init?: { method?: string }) => {
+      const path = url.replace('/kohako/api/v1/', '')
+      calls.push(`${init?.method ?? 'GET'} ${path}`)
+      if (path === 'notifications' && failures > 0) {
+        failures--
+        throw new Error('offline')
+      }
+      return { status: 200, json: async () => (path === 'notifications' ? { items, unread: 0 } : {}) }
+    })
+    initInbox(() => false)
+    const settle = () => new Promise((r) => setTimeout(r, 100))
+    const resume = async () => {
+      handlers.visibilitychange()
+      await settle()
+    }
+    await settle()
+    return { calls, urls, els, resume, sw, settle, loc, vi }
+  }
+  const item = (id: string): Item => ({
+    eventId: id,
+    source: 'task-board-report',
+    title: id,
+    body: '本文',
+    receivedAt: new Date(Date.now() - 60_000).toISOString(),
+  })
+  const reads = (calls: string[], id: string) => calls.filter((c) => c === `POST notifications/${id}/read`).length
+
+  it('URL の通知を 1 度だけ開き、notification だけを履歴を増やさず外す', async () => {
+    const t = await setup('?acting=0&notification=event-AAAAAA&face=static', [item('event-AAAAAA')])
+    try {
+      expect(reads(t.calls, 'event-AAAAAA')).toBe(1)
+      expect(t.els.inbox.hidden).toBe(false)
+      expect(t.urls).toEqual(['/kohako/home.html?acting=0&face=static#x'])
+    } finally {
+      t.vi.unstubAllGlobals()
+    }
+  })
+
+  it('表示へ戻っても開いた通知を開き直さない', async () => {
+    const t = await setup('?notification=event-AAAAAA', [item('event-AAAAAA')])
+    try {
+      t.els.inbox.hidden = true // 本人が受信箱を閉じた
+      await t.resume()
+      await t.resume()
+      expect(reads(t.calls, 'event-AAAAAA')).toBe(1)
+      expect(t.els.inbox.hidden).toBe(true)
+      expect(t.calls.filter((c) => c === 'GET notifications').length).toBeGreaterThanOrEqual(3)
+    } finally {
+      t.vi.unstubAllGlobals()
+    }
+  })
+
+  it('一覧取得に失敗したら消費せず URL も残し、次に取得できた時に 1 度だけ開く', async () => {
+    const t = await setup('?notification=event-AAAAAA', [item('event-AAAAAA')], 1)
+    try {
+      expect(reads(t.calls, 'event-AAAAAA')).toBe(0)
+      expect(t.urls).toEqual([])
+      await t.resume()
+      expect(reads(t.calls, 'event-AAAAAA')).toBe(1)
+      expect(t.urls).toEqual(['/kohako/home.html#x'])
+      await t.resume()
+      expect(reads(t.calls, 'event-AAAAAA')).toBe(1)
+    } finally {
+      t.vi.unstubAllGlobals()
+    }
+  })
+
+  it('一覧に無い通知は開かず URL から外す。不正な ID は読み込み時に外す', async () => {
+    const t = await setup('?notification=event-GONE00', [item('event-AAAAAA')])
+    try {
+      expect(t.calls.some((c) => c.endsWith('/read'))).toBe(false)
+      expect(t.urls).toEqual(['/kohako/home.html#x'])
+    } finally {
+      t.vi.unstubAllGlobals()
+    }
+    const bad = await setup('?a=1&notification=../bad', [item('event-AAAAAA')])
+    try {
+      expect(bad.calls.some((c) => c.endsWith('/read'))).toBe(false)
+      expect(bad.urls).toEqual(['/kohako/home.html?a=1#x'])
+    } finally {
+      bad.vi.unstubAllGlobals()
+    }
+  })
+
+  it('開いたままの家で別の通知を押すと URL を変えずにその通知を開き、表示復帰で開き直さない', async () => {
+    const t = await setup('', [item('event-AAAAAA'), item('event-BBBBBB')])
+    try {
+      t.sw.listener?.({ data: { type: 'open-notification', eventId: 'event-BBBBBB' } })
+      await t.settle()
+      expect(reads(t.calls, 'event-BBBBBB')).toBe(1)
+      t.sw.listener?.({ data: { type: 'open-notification', eventId: 'event-BBBBBB' } })
+      await t.settle()
+      expect(reads(t.calls, 'event-BBBBBB')).toBe(2) // 押すたびに開く
+      t.els.inbox.hidden = true
+      await t.resume()
+      expect(reads(t.calls, 'event-BBBBBB')).toBe(2)
+      expect(t.els.inbox.hidden).toBe(true)
+      expect(t.urls).toEqual([])
+    } finally {
+      t.vi.unstubAllGlobals()
+    }
+  })
+})

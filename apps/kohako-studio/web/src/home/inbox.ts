@@ -82,6 +82,23 @@ export function notificationParam(search: string) {
   const id = new URLSearchParams(search).get('notification')
   return id && /^[A-Za-z0-9._:-]{8,200}$/.test(id) ? id : null
 }
+/**
+ * BOXP-772: 検索文字列から notification パラメータだけを外す（他のパラメータの表記・順序は変えない）。
+ * notification が無ければ null。
+ */
+export function withoutNotificationParam(search: string): string | null {
+  const parts = search.replace(/^\?/, '').split('&'),
+    isNotification = (p: string) => {
+      try {
+        return decodeURIComponent(p.split('=')[0].replace(/\+/g, ' ')) === 'notification'
+      } catch {
+        return false
+      }
+    }
+  if (!search || !parts.some(isNotification)) return null
+  const rest = parts.filter((p) => p && !isNotification(p))
+  return rest.length ? `?${rest.join('&')}` : ''
+}
 export function pickAnnouncements(items: Item[], now = Date.now()) {
   const candidates = announcementCandidates(items, now)
   return {
@@ -158,9 +175,16 @@ export function initInbox(
     waiting = false,
     active = '',
     holdTimer = 0
+  // BOXP-772: 通知を押して開いた URL のジャンプは一覧取得の確定で 1 度だけ消費する（selected とは別に持つ）。
+  let jump = selected
   let opening = !!selected,
     firstOpen = true,
     renderedKey: string | null = null
+  const dropNotificationParam = () => {
+    const search = withoutNotificationParam(location.search)
+    if (search !== null) history.replaceState(history.state, '', `${location.pathname}${search}${location.hash}`)
+  }
+  if (!jump) dropNotificationParam()
   const drafts = new ReplyDrafts()
   const sending = new Set<string>()
   const call = async (path: string, method = 'GET', body?: unknown) => {
@@ -446,23 +470,26 @@ export function initInbox(
       }
     }
   }
-  async function refresh() {
+  /** 一覧の状態が確定した（取得できた・通知機能が無効と分かった）ら true。 */
+  async function refresh(): Promise<boolean> {
     try {
       const r = await call('notifications')
       if (r.status === 503 && r.data?.error === 'notifications_disabled') {
         el('inbox-open').hidden = true
         panel.hidden = true
-        return
+        return true
       }
-      if (r.status !== 200) return
+      if (r.status !== 200) return false
       items = sortAscending(r.data.items)
       el('inbox-open').hidden = false
       el('inbox-badge').textContent = r.data.unread ? String(r.data.unread) : ''
       el('inbox-open').setAttribute('aria-label', r.data.unread ? `受信箱（未読 ${r.data.unread} 件）` : '受信箱')
       render()
       void tryAnnounce()
+      return true
     } catch {
       /* 次回更新で再試行 */
+      return false
     }
   }
   el('inbox-open').addEventListener('click', () => {
@@ -540,8 +567,16 @@ export function initInbox(
   const schedule = () => {
     clearInterval(timer)
     if (!document.hidden) {
-      void refresh().then(() => {
-        if (selected && items.some((i) => i.eventId === selected)) void openNotification(selected)
+      // BOXP-772: 表示へ戻るたびに前の通知を開き直さない。開くのは保留中のジャンプだけで、一覧が確定したら消費する。
+      void refresh().then((loaded) => {
+        const id = jump
+        if (!id || !loaded) {
+          if (!id) opening = false
+          return
+        }
+        jump = null
+        dropNotificationParam()
+        if (items.some((i) => i.eventId === id)) void openNotification(id)
         else opening = false
       })
       timer = window.setInterval(() => void refresh(), 60000)
