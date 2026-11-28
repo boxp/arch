@@ -342,4 +342,40 @@
       (is (str/includes? (:note e) "abcdefabcdef"))
       (is (not (str/includes? (:note e) "review-findings:abcdefabcdef"))))))
 
+(deftest all-blocking-findings-are-recorded
+  (testing "every P0/P1 item is in the record even with more than 10 findings (no truncation)"
+    (let [items (vec (for [i (range 13)] {:severity "P1" :location (format "src/f%02d.bb:1" i) :description (str "impact " i)}))
+          e (first (review-findings-entries "BOXP-1" "r1" (blocking-gate :blocking-items items :blocking-findings {:count 13 :path "/p/b.md"}) {}))]
+      (doseq [i (range 13)]
+        (is (str/includes? (:note e) (format "[P1] src/f%02d.bb:1 — impact %d" i i)) (str "item " i)))
+      (is (not (str/includes? (:note e) "ほか")))
+      (is (not (str/includes? (:note e) "\n"))))))
+
+(deftest low-only-of-passed-prs-kept-when-later-pr-fails
+  (testing "a later PR failing does not drop the earlier passed PR's P2/P3/nit record"
+    (with-redefs [wait-for-pr-state! (fn [_] {:ok? true :gate-results []})
+                  pr-head-oid (fn [u] (if (= u url) head head2))
+                  run-codex-review! (fn [_ u] (if (= u url)
+                                                {:ok? true :gate-results [] :low-priority-findings {:count 2 :paths ["/p/7.md"]}}
+                                                (blocking-gate :url url2)))]
+      (let [g (review-gate! "/nonexistent" (str url " " url2))
+            entries (review-findings-entries "BOXP-1" "r5" g {})
+            low (filter #(= :low-only (:kind %)) entries)
+            blk (filter #(= :blocking (:kind %)) entries)]
+        (is (= 1 (count blk)))
+        (is (= url2 (:pr-url (first blk))))
+        (is (= 1 (count low)))
+        (is (= url (:pr-url (first low))))
+        (is (str/includes? (:note (first low)) "2件"))
+        (is (str/includes? (:note (first low)) "/p/7.md"))
+        (is (str/includes? (:note (first low)) "0e01838"))
+        (is (not (str/includes? (:note (first low)) "codex-review-boxp__example-7.md")) "the failing PR's own low evidence is not attributed to the passed PR"))))
+  (testing "a later non-review gate failure (CI) also keeps the passed PR's record"
+    (with-redefs [wait-for-pr-state! (fn [u] (if (= u url) {:ok? true :gate-results []}
+                                               {:ok? false :gate :ci :url u :retryable? true :gate-results [["ci" "fail"]]}))
+                  pr-head-oid (fn [_] head)
+                  run-codex-review! (fn [_ _] {:ok? true :gate-results [] :low-priority-findings {:count 1 :paths ["/p/7.md"]}})]
+      (let [entries (review-findings-entries "BOXP-1" "r6" (review-gate! "/nonexistent" (str url " " url2)) {})]
+        (is (= [[:low-only url]] (mapv (juxt :kind :pr-url) entries)))))))
+
 (let [result (run-tests 'user)] (when (pos? (+ (:fail result) (:error result))) (System/exit 1)))

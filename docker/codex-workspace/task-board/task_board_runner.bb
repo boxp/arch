@@ -3887,6 +3887,7 @@
                        :checked-pr-urls passed
                        ;; BOXP-775: heads of the PRs that passed before this one.
                        :checked-pr-heads heads
+                       :passed-low-priority-findings low-info
                        :merged-pr-urls merged
                        :pr-urls pr-urls)
 
@@ -3909,6 +3910,9 @@
                            :gate-results (conj results [(name (:gate review)) "fail"])
                            :checked-pr-urls passed
                            :checked-pr-heads heads
+                           ;; BOXP-775: P2/P3/nit of the PRs that passed before this one
+                           ;; (:low-priority-findings is the failing PR's own).
+                           :passed-low-priority-findings low-info
                            :merged-pr-urls merged
                            :pr-urls pr-urls
                            :message (str pr-url ": " (:message pr-state) " " (:message review)))
@@ -5431,15 +5435,14 @@
                      :findings
                      (let [items (sort-by (juxt #(review-findings-severity-rank (:severity %)) :location :description)
                                           (:blocking-items g))
-                           shown (take 10 items)
                            id (review-findings-id (concat ["blocking" u h stop]
                                                           (map #(str (:severity %) "|" (:location %) "|" (:description %)) items)))]
                        {:id id :kind :blocking :pr-url u
                         :note (str "review-findings:" id " レビュー未解決所見 PR " u " head " (review-findings-short-head h)
                                    " run " run-id ": P0/P1 " (or (get-in g [:blocking-findings :count]) (count items)) "件・P2/P3/nit "
                                    (get-in g [:low-priority-findings :count] 0) "件; "
-                                   (str/join "; " (map review-findings-item shown))
-                                   (when (> (count items) (count shown)) (str "; ほか " (- (count items) (count shown)) "件"))
+                                   ;; Every P0/P1 item: each one is bounded, none is dropped.
+                                   (str/join "; " (map review-findings-item items))
                                    "; " (review-findings-stop-text g)
                                    "; 証跡 " (or (get-in g [:blocking-findings :path]) (str (run-dir ticket-id run-id))))})
                      (:command-error :invalid-output)
@@ -5455,10 +5458,13 @@
                      nil)))
         ;; One record per PR that has low-priority findings, with its own
         ;; count and evidence; a PR without findings is not listed.
-        low-by-pr (let [lp (:low-priority-findings g)
+        ;; On a failed gate only the PRs that passed before the failing one
+        ;; are listed (:passed-low-priority-findings); the failing PR's own
+        ;; P2/P3/nit count is part of its blocking record.
+        low-by-pr (let [lp (if (:ok? g) (:low-priority-findings g) (:passed-low-priority-findings g))
                         urls (:checked-pr-urls g)]
                     (cond
-                      (not (:ok? g)) nil
+                      (and (not (:ok? g)) (not (map? (:by-pr lp)))) nil
                       (map? (:by-pr lp)) (for [u urls :let [x (get-in lp [:by-pr u])] :when (pos? (:count x 0))] [u x])
                       ;; Older result shape without :by-pr: attributable only to a single PR.
                       (and (pos? (:count lp 0)) (= 1 (count urls))) [[(first urls) (select-keys lp [:count :paths])]]
