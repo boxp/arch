@@ -2,6 +2,7 @@ import { must } from './must.js'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import * as webPush from 'web-push'
+import type { DevicePush, PushOutcome } from './device-trial.js'
 import type { Item } from './notifications.js'
 import { atomic, load } from './storage.js'
 import { isRecord } from './untrusted.js'
@@ -39,11 +40,14 @@ export async function createPush(
     minimal?: boolean
     now?: () => number
     sender?: typeof webPush.sendNotification
+    /** 試験の送信 1 件ごとの上限（ms）。 */
+    sendTimeoutMs?: number
   },
 ) {
   const keyPath = join(dir, 'vapid.json'),
     path = join(dir, 'push-subscriptions.json'),
-    now = opts.now ?? Date.now
+    now = opts.now ?? Date.now,
+    sendTimeoutMs = opts.sendTimeoutMs ?? 10_000
   let keys = await load<{ publicKey: string; privateKey: string } | null>(keyPath, null)
   if (!keys) {
     keys = webPush.generateVAPIDKeys()
@@ -133,5 +137,49 @@ export async function createPush(
           ? { pushedAt: new Date(now()).toISOString(), pushStats }
           : { pushSkipped: 'error' as const, pushStats }
       }),
+    /**
+     * BOXP-752: 端末への試験依頼の通知。本人がその場で押したものなので静かな時間帯は効かせない。最小表示の設定は守る。
+     * 決まり 12: 家の通知の順番（mutate）には載せず、購読先へ並行に送り、各送信に上限を付ける。
+     * TTL は送る時点での依頼の期限（expiresAt, epoch ms）までの残り秒。期限を過ぎていれば送らない。
+     */
+    sendDevice: async (msg: DevicePush, expiresAt: number): Promise<PushOutcome> => {
+      const list = Object.entries(subscriptions),
+        out: PushOutcome = { sent: 0, errors: 0 }
+      if (!list.length) return { ...out, skipped: 'no-subscriptions' }
+      const shown = opts.minimal ? { ...msg, title: 'コハコの家', body: '試験の通知です（タップで開きます）' } : msg
+      const gone: string[] = []
+      await Promise.all(
+        list.map(async ([key, sub]) => {
+          const ttl = Math.floor((expiresAt - now()) / 1000)
+          if (ttl <= 0) return
+          let timer: ReturnType<typeof setTimeout> | undefined
+          try {
+            await Promise.race([
+              (opts.sender ?? webPush.sendNotification)(sub, JSON.stringify(shown), {
+                TTL: ttl,
+                urgency: 'high',
+                timeout: sendTimeoutMs,
+                vapidDetails: { subject: opts.subject, ...must(keys) },
+              }),
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(() => reject(Error('send timeout')), sendTimeoutMs)
+              }),
+            ])
+            out.sent++
+          } catch (e) {
+            out.errors++
+            if ([404, 410].includes((e as { statusCode?: number }).statusCode ?? 0)) gone.push(key)
+          } finally {
+            clearTimeout(timer)
+          }
+        }),
+      )
+      if (gone.length)
+        await mutate(async () => {
+          for (const key of gone) delete subscriptions[key]
+          await atomic(path, subscriptions)
+        })
+      return out.sent ? out : { ...out, skipped: 'error' }
+    },
   }
 }

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#f3eef9"><link rel="icon" type="image/png" sizes="32x32" href="/kohako/kohako/icons/icon-32-v2.png"><title>端末への試験（地図を開く）｜コハコの家</title></head>
+<body>
+<main class="trial">
+  <h1>端末への試験：通知のタップで地図を開く</h1>
+  <p class="lead">家から通知を送り、スマホやPCで通知をタップすると、選んだ公開施設の地図が開きます。開けるのは1件につき1回、送ってから2分以内だけです。</p>
+  <section id="focus" class="card" hidden aria-live="polite"></section>
+  <section class="card">
+    <h2>通知を送る</h2>
+    <p id="stop-state" role="status">状態を確認中…</p>
+    <label for="place">行き先</label>
+    <select id="place"></select>
+    <div class="actions"><button id="send" type="button">通知を送る</button></div>
+    <p id="send-message" role="status"></p>
+    <div id="pending"></div>
+  </section>
+  <section class="card">
+    <h2>止める</h2>
+    <p>止めている間は通知を送らず、待ちの依頼は取り消します。解除しても、取り消した依頼は戻りません。</p>
+    <div class="actions"><button id="stop" type="button" class="danger">端末への依頼を止める</button><button id="resume" type="button" class="secondary">再開する</button></div>
+  </section>
+  <section class="card">
+    <h2>手順（Galaxy Z Fold と Windows 11 の PC）</h2>
+    <ol>
+      <li>各端末で家（コハコの家）を開き、「受信箱」→「通知をONにする」を押す（1回だけ）。</li>
+      <li>どちらかの端末でこのページを開き、行き先を選んで「通知を送る」。</li>
+      <li>試したい端末で通知をタップし、地図が開くかを見る（1タップで地図か、ページを挟んで2タップか）。</li>
+      <li>もう一方の端末の同じ通知をタップすると「開封済み」と出る（1回だけの確認）。</li>
+      <li>期限切れ: 送ってから2分以上待ってタップすると「期限切れ」と出る。</li>
+      <li>停止: 送った後に「止める」を押してからタップすると「取り消されています」と出る。止めている間は送れない。最後に「再開する」。</li>
+    </ol>
+    <p>結果は下の履歴に残ります（作ってから開くまでの秒数・開いた経路）。</p>
+  </section>
+  <section class="card">
+    <h2>履歴（新しい順）</h2>
+    <table><thead><tr><th>送った時刻</th><th>行き先</th><th>結果</th><th>結果の時刻</th><th>経路</th><th>秒</th></tr></thead><tbody id="history"></tbody></table>
+  </section>
+  <p><a href="/kohako/home.html">家に戻る</a></p>
+</main>
+<script type="module" src="/src/device-trial/main.ts"></script>
+</body></html>

@@ -1,0 +1,91 @@
+name: Test Kohako Device Trial Model
+
+# BOXP-752: Lean model of the kohako-home device trial requests
+# (apps/kohako-studio/bff/contract/device-trial-model/). It checks the proofs (no sorry, no
+# added axiom) and that cases.txt is what the model generates.
+# The implementation replay of cases.txt runs in the bff unit tests (Docker build).
+# Not a required check yet: the required Lean path is being generalised in BOXP-673.
+
+on:
+  pull_request:
+    paths:
+      - apps/kohako-studio/bff/contract/device-trial-model/**
+      - .github/workflows/test-kohako-device-trial-model.yml
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  lean:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 3
+        with:
+          persist-credentials: false
+      - name: Install Lean
+        timeout-minutes: 8
+        working-directory: apps/kohako-studio/bff/contract/device-trial-model
+        run: |
+          set -euo pipefail
+          toolchain="$(cat lean-toolchain)"
+          sha256="$(cat lean-linux.tar.zst.sha256)"
+          if ! [[ "${toolchain}" =~ ^leanprover/lean4:v([0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?)$ ]]; then
+            echo "::error::lean-toolchain is not leanprover/lean4:vX.Y.Z"
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}"
+          if ! [[ "${sha256}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::lean-linux.tar.zst.sha256 is not a sha256"
+            exit 1
+          fi
+          tmp="${RUNNER_TEMP}/lean"
+          mkdir -p "${tmp}"
+          curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 400 -fsSL \
+            "https://github.com/leanprover/lean4/releases/download/v${version}/lean-${version}-linux.tar.zst" \
+            -o "${tmp}/lean.tar.zst"
+          echo "${sha256}  ${tmp}/lean.tar.zst" | sha256sum -c -
+          tar --zstd -xf "${tmp}/lean.tar.zst" -C "${tmp}"
+          rm "${tmp}/lean.tar.zst"
+          echo "${tmp}/lean-${version}-linux/bin" >>"${GITHUB_PATH}"
+      - name: Check proofs and generated cases
+        timeout-minutes: 8
+        working-directory: apps/kohako-studio/bff/contract/device-trial-model
+        run: |
+          set -uo pipefail
+          status=0
+          out="${RUNNER_TEMP}/device-trial-model-olean"
+          mkdir -p "${out}"
+          cat >"${RUNNER_TEMP}/DeviceTrialModelAxioms.lean" <<'LEAN'
+          import Lean
+          import DeviceTrialModel
+          open Lean
+
+          #eval show CoreM Unit from do
+            let allowed : List Name := [``propext, ``Classical.choice, ``Quot.sound]
+            let env ← getEnv
+            let some idx := env.getModuleIdx? `DeviceTrialModel
+              | throwError "module DeviceTrialModel is not loaded"
+            let mut theorems := 0
+            let mut bad : Array String := #[]
+            for (name, info) in env.constants.map₁.toList do
+              if env.getModuleIdxFor? name != some idx then continue
+              if info matches .thmInfo _ then theorems := theorems + 1
+              let extra := (← collectAxioms name).toList.filter (!allowed.contains ·)
+              unless extra.isEmpty do
+                bad := bad.push s!"{name} depends on {extra}"
+            IO.println s!"theorems: {theorems}"
+            unless bad.isEmpty do
+              throwError "not proved from the standard axioms only:\n{"\n".intercalate bad.qsort.toList}"
+            if theorems == 0 then throwError "DeviceTrialModel has no theorem"
+          LEAN
+          lean -o "${out}/DeviceTrialModel.olean" DeviceTrialModel.lean || status=1
+          if [ "${status}" -eq 0 ]; then
+            env LEAN_PATH="${out}" lean "${RUNNER_TEMP}/DeviceTrialModelAxioms.lean" || status=1
+          fi
+          lean --run DeviceTrialModel.lean >"${RUNNER_TEMP}/cases.txt" || status=1
+          cmp "${RUNNER_TEMP}/cases.txt" cases.txt || { echo "::error::cases.txt differs from what DeviceTrialModel.lean generates"; status=1; }
+          exit "${status}"

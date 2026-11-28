@@ -1,0 +1,16 @@
+body { margin: 0; font-family: system-ui, sans-serif; background: #f3eef9; color: #2a2433; }
+.trial { max-width: 720px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 1.25rem; }
+h2 { font-size: 1.05rem; margin: 0 0 8px; }
+.lead { line-height: 1.6; }
+.card { background: #fff; border-radius: 12px; padding: 14px 16px; margin: 12px 0; box-shadow: 0 1px 3px #0002; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+button { font: inherit; padding: 10px 16px; border-radius: 8px; border: 0; background: #6b4fa8; color: #fff; min-height: 44px; }
+button.secondary { background: #e4dcf2; color: #2a2433; }
+button.danger { background: #b03a48; }
+button:disabled { opacity: 0.5; }
+select { font: inherit; padding: 8px; margin-left: 8px; min-height: 40px; }
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #eee; }
+#focus.bad { border-left: 6px solid #b03a48; }
+#focus.good { border-left: 6px solid #3a8a55; }

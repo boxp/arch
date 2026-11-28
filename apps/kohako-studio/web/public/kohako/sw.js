@@ -27,10 +27,45 @@ self.addEventListener('fetch', event => {
 self.addEventListener('push', event => {
   if (!event.data) return
   const data = event.data.json()
-  event.waitUntil(self.registration.showNotification(data.title, { body: data.body, tag: data.tag, data: { url: data.url }, renotify: false }))
+  const extra = data.kind === 'device-request' ? { kind: data.kind, requestId: data.requestId } : {}
+  event.waitUntil(self.registration.showNotification(data.title, { body: data.body, tag: data.tag, data: { url: data.url, ...extra }, renotify: false }))
 })
+// BOXP-752: 端末への試験依頼。開くのは BFF が「開いてよい」と返した Google マップの検索 URL だけ。
+const DEVICE_ID = /^[A-Za-z0-9-]{8,64}$/
+function isMapUrl(value) {
+  try {
+    const u = new URL(value)
+    return u.protocol === 'https:' && u.hostname === 'www.google.com' && u.pathname === '/maps/search/' && !u.username && !u.password && !u.port
+  } catch {
+    return false
+  }
+}
+async function openDeviceRequest(id) {
+  const page = new URL(`/kohako/device-trial.html?request=${encodeURIComponent(id)}&from=notification`, self.location.origin).href
+  let target = null
+  try {
+    const abort = new AbortController(), timer = setTimeout(() => abort.abort(), 4000)
+    try {
+      const r = await fetch(`/kohako/api/v1/device-trial/requests/${encodeURIComponent(id)}/open`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ via: 'notification' }),
+        credentials: 'same-origin', redirect: 'manual', cache: 'no-store', signal: abort.signal,
+      })
+      if (r.ok && r.type === 'basic') {
+        const d = await r.json()
+        if (isMapUrl(d?.url)) target = d.url
+      }
+    } finally { clearTimeout(timer) }
+  } catch {}
+  // 開けなかった時（期限切れ・停止・ログイン切れ・通信失敗）は家の試験ページで理由を出す。
+  await clients.openWindow(target ?? page)
+}
 self.addEventListener('notificationclick', event => {
   event.notification.close()
+  const data = event.notification.data ?? {}
+  if (data.kind === 'device-request') {
+    if (DEVICE_ID.test(data.requestId ?? '')) event.waitUntil(openDeviceRequest(data.requestId))
+    return
+  }
   const url = new URL(event.notification.data.url, self.location.origin)
   if (url.origin !== self.location.origin || url.pathname !== '/kohako/home.html') return
   event.waitUntil(clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async list => {
