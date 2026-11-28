@@ -49,8 +49,8 @@ export function createDolls(opts: { host: HTMLElement; card: HTMLElement; call: 
       const img = make('img', 'doll-img')
       img.src = dollImage(d.key, d.version)
       img.alt = ''
-      img.width = 56
-      img.height = 75
+      img.width = 64
+      img.height = 64
       img.decoding = 'async'
       img.draggable = false
       b.append(img, make('span', 'doll-name', shortName(d)))

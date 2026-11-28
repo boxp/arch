@@ -583,7 +583,7 @@ it('In Progress の票を人形ごとにまとめ、本人・食い違い・他�
     {
       key: 'opus',
       name: '楽長の人形',
-      version: 1,
+      version: 2,
       model: 'claude-opus-5-5',
       plainLabel: null,
       tickets: [
@@ -594,7 +594,7 @@ it('In Progress の票を人形ごとにまとめ、本人・食い違い・他�
     {
       key: 'fable',
       name: '語り部の人形',
-      version: 1,
+      version: 2,
       model: 'claude-fable-5-2',
       plainLabel: null,
       tickets: [{ id: 'BOXP-3', assignee: 'claude-fable', model: 'claude-fable-5-2' }],

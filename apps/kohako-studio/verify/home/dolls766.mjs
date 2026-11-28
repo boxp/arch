@@ -23,7 +23,7 @@ const sample = [
   ['opus', '楽長の人形', 'claude-opus-5-5', null, ['BOXP-1', 'BOXP-2']], ['fable', '語り部の人形', 'claude-fable-5-2', null, ['BOXP-3']],
   ['sol', '灯守りの人形', 'gpt-6.1-sol', null, ['BOXP-4']], ['neon', '灯り細工の人形', null, null, ['BOXP-5']],
   ['plain', '無地の人形', null, 'モデル未確認', ['BOXP-6']], ['luna', '月見の人形', 'gpt-5.6-luna', null, ['BOXP-7']],
-].map(([key, name, model, plainLabel, ids]) => ({ key, name, version: 1, model, plainLabel, tickets: ids.map((id) => ({ id, assignee: key === 'sol' ? 'codex-sol-xhigh' : `claude-${key}`, model })) }))
+].map(([key, name, model, plainLabel, ids]) => ({ key, name, version: 2, model, plainLabel, tickets: ids.map((id) => ({ id, assignee: key === 'sol' ? 'codex-sol-xhigh' : `claude-${key}`, model })) }))
 const statusBody = () => ({ schema: 'kohako-home-status/v1', generatedAt: new Date().toISOString(), quota: { state: 'ok', pools: [] }, tasks: { state: 'ok', fetchedAt: new Date().toISOString(), boardUpdatedAt: null, inProgress: { total: 7, complete: true, byAgent: [{ agent: 'claude-opus', count: 2 }], conflicts: [], laneStatusMismatch: 0 }, ids: [], dolls: sample } })
 const detailBody = (id) => ({ state: 'ok', fetchedAt: new Date(Date.now() - 60000).toISOString(), item: { id, title: `見本の票 ${id}`, assignee: 'claude-opus', status: 'in-progress', ticketUpdatedAt: null, latestNoteAt: new Date(Date.now() - 600000).toISOString(), latestNoteSource: 'claude-opus', progress: '<b>見本</b> の最新の記録（HTML として解釈しないこと）', blocker: null, decision: '本人の判断待ち', readError: null } })
 const browser = await chromium.connect(process.env.PW_WS ?? 'ws://127.0.0.1:39766/')
@@ -55,13 +55,14 @@ for (const [name, viewport, mobile] of [['pc', { width: 1440, height: 900 }, fal
   const info = await page.evaluate(() => {
     const box = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return r.width && r.height ? { x: r.left, y: r.top, w: r.width, h: r.height } : null }
     const hit = (a, b) => a && b && a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
-    const dolls = [...document.querySelectorAll('#dolls .doll')].map((d) => ({ key: d.dataset.doll ?? 'more', box: box(d), img: d.querySelector('img')?.naturalWidth ?? -1 }))
+    const dolls = [...document.querySelectorAll('#dolls .doll')].map((d) => ({ key: d.dataset.doll ?? 'more', box: box(d), img: d.querySelector('img')?.naturalWidth ?? -1, src: (d.querySelector('img')?.getAttribute('src') ?? '').replace(/^.*\//, '') }))
     const others = Object.fromEntries(['#bubble', '#message', '#send', '#stop', '#approval', '#status-widget', '#face', 'canvas#rig'].map((s) => [s, box(document.querySelector(s))]))
     const overlaps = []
     for (const d of dolls) for (const [s, b] of Object.entries(others)) if (s !== '#face' && s !== 'canvas#rig' && hit(d.box, b)) overlaps.push(`${d.key}x${s}`)
     return { state: document.querySelector('#dolls')?.dataset.state, dolls, overlaps, tag: document.querySelector('#dolls .doll-tag')?.textContent ?? null, small: dolls.filter((d) => d.box && (d.box.w < 44 || d.box.h < 44)).map((d) => d.key), outOfView: dolls.filter((d) => d.box && (d.box.x < 0 || d.box.x + d.box.w > innerWidth || d.box.y < 0 || d.box.y + d.box.h > innerHeight)).map((d) => d.key), scrollX: document.documentElement.scrollWidth > innerWidth }
   })
   await page.screenshot({ path: `${OUT}/${name}-room.png` })
+  if (await page.locator('#dolls .doll').count()) await page.locator('#dolls').screenshot({ path: `${OUT}/${name}-dolls.png` }).catch(() => {})
   let card = null
   const first = page.locator('#dolls .doll[data-doll]').first()
   if (await first.count()) {

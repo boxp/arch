@@ -35,11 +35,14 @@ it('PC・横画面は 5 体、スマホ縦は 3 体まで、残りは +N（D5）
   expect(dollsView(status(six.slice(0, 5)), false, 'pc')).toMatchObject({ more: 0 })
 })
 it('絵は家の中の決まった場所だけを指し、形の違う鍵は無地にする（D3）', () => {
+  // D7・D8: 机で作業する版 2。版 1 は配備の切り替わり中のために残す。
+  expect(dollImage('opus', 2)).toBe('./kohako/dolls/opus-v2.webp')
   expect(dollImage('opus', 1)).toBe('./kohako/dolls/opus-v1.webp')
-  expect(dollImage('plain', 1)).toBe('./kohako/dolls/plain-v1.webp')
-  expect(dollImage('../x', 1)).toBe('./kohako/dolls/plain-v1.webp')
-  expect(dollImage('newfamily', 1)).toBe('./kohako/dolls/plain-v1.webp')
-  expect(dollImage('opus', 0)).toBe('./kohako/dolls/plain-v1.webp')
+  expect(dollImage('plain', 2)).toBe('./kohako/dolls/plain-v2.webp')
+  expect(dollImage('../x', 2)).toBe('./kohako/dolls/plain-v2.webp')
+  expect(dollImage('newfamily', 2)).toBe('./kohako/dolls/plain-v2.webp')
+  expect(dollImage('opus', 3)).toBe('./kohako/dolls/plain-v2.webp')
+  expect(dollImage('opus', 0)).toBe('./kohako/dolls/plain-v2.webp')
 })
 it('何分前の記録か（T4）', () => {
   const now = Date.parse('2026-11-28T11:00:00Z')
@@ -136,6 +139,14 @@ it('カードに非公式の添え書きを出さない (BOXP-766 TD-02)', () =>
   const c = cardOf(d, d.tickets[0], null, Date.parse('2026-11-28T11:00:00Z'))
   expect(JSON.stringify(c)).not.toContain('非公式')
 })
+
+it('家に置く絵は 9 体とも版 1・版 2 がそろっている（D7・D8）', async () => {
+  const { existsSync } = await import('node:fs')
+  for (const key of ['fable', 'opus', 'sonnet', 'terra', 'sol', 'luna', 'astra', 'neon', 'plain'])
+    for (const v of [1, 2])
+      expect(existsSync(new URL(`../../public/kohako/dolls/${key}-v${v}.webp`, import.meta.url))).toBe(true)
+})
+
 it('Obsidianで開く: 選んだ票の詳細が取れた時だけ、BOXP vault の票を開くリンク（T7, BOXP-766 TD-04）', () => {
   const ok = (id: string) => ({
     state: 'ok' as const,
