@@ -5337,7 +5337,9 @@
                   str
                   (str/replace #"[\r\n\t]+" " ")
                   (str/replace #"(?i)(authorization:\s*(?:bearer\s+)?)[^\s]+" "$1[REDACTED]")
-                  (str/replace #"(?i)\b[A-Z0-9_]*(?:token|secret|password|api(?:[_-]|\s)+key|credential)[A-Z0-9_]*\s*[=:]\s*[^\s,;]+" "[REDACTED]")
+                  ;; The key may be closed by a quote (JSON, escaped JSON) and the value may be
+                  ;; quoted with spaces inside: redact through the closing quote.
+                  (str/replace #"(?i)\b[A-Z0-9_]*(?:token|secret|password|api(?:[_-]|\s)+key|credential)[A-Z0-9_]*(?:\\?[\"'])?\s*[=:]\s*(?:\\?\"[^\"]*\"?|'[^']*'?|[^\s,;]+)" "[REDACTED]")
                   (str/replace #"\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b" "[REDACTED]"))]
     (if (str/blank? (str/trim value))
       "reason unavailable"

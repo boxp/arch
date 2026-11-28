@@ -51,6 +51,18 @@
         (is (not (str/includes? (:note e2) "\n")))
         (is (not (str/includes? (:note e2) (apply str (repeat 161 "x")))))))))
 
+(deftest quoted-secrets-are-redacted
+  ;; spec: 鍵と値の間に引用符があっても値を伏字にする
+  (doseq [[desc value] [["leaks {\"password\":\"hunter2\"} in body" "hunter2"]
+                        ["config password: \"hunter 2\" is logged" "hunter 2"]
+                        ["escaped {\\\"api_key\\\":\\\"xyzSYNTH\\\"} printed" "xyzSYNTH"]
+                        ["single 'secret': 'sq-val' here" "sq-val"]
+                        ["{\"access_token\": \"tok123SYNTH\", \"x\": 1}" "tok123SYNTH"]]]
+    (let [e (first (review-findings-entries "BOXP-1" "r1"
+                                            (blocking-gate :blocking-items [{:severity "P1" :location "src/a.bb:1" :description desc}]) {}))]
+      (is (not (str/includes? (:note e) value)) desc)
+      (is (str/includes? (:note e) "[REDACTED]") desc))))
+
 (deftest stop-states
   (let [id #(:id (first (review-findings-entries "BOXP-1" "r1" % {})))
         base (blocking-gate)]
