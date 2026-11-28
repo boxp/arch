@@ -23,6 +23,7 @@ const init = (mode) => {
   window.__live = (k) => window.__media[k].filter((t) => t.readyState === 'live').length
   md.getDisplayMedia = async (c) => {
     window.__media.displayAsked++
+    if (mode === 'slow-display') await new Promise((r) => setTimeout(r, 1500))
     window.__media.displayConstraints = JSON.stringify(c)
     if (mode === 'deny-display') throw new DOMException('denied', 'NotAllowedError')
     const canvas = document.createElement('canvas')
@@ -70,6 +71,7 @@ async function scenario(name, opts, run) {
     if (p === 'attachments' && req.method() === 'POST') {
       const body = req.postDataBuffer() ?? Buffer.alloc(0)
       log.attachments.push({ type: req.headers()['content-type'], name: decodeURIComponent(req.headers()['x-kohako-filename'] || ''), size: body.length, jpeg: body[0] === 0xff && body[1] === 0xd8, dims: jpegSize(body) })
+      if (opts.uploadDelay) await new Promise((r) => setTimeout(r, opts.uploadDelay))
       return json(201, { attachmentId: `${log.attachments.length}`.padStart(32, 'a'), name: decodeURIComponent(req.headers()['x-kohako-filename'] || ''), kind: 'image', size: body.length })
     }
     if (p === 'messages' && req.method() === 'POST') {
@@ -151,6 +153,8 @@ await scenario('stop-asking', { texts: ['コハコ、これ何？'], replyDelay:
   await H.start()
   await H.say(1200)
   await H.waitWatch('asking')
+  // 送り終えてから止める（送る前に止めたら送らないのは stop-upload で確かめる）。
+  for (let i = 0; i < 100 && H.log.messages.length === 0; i++) await H.page.waitForTimeout(100)
   await H.page.click('#watch-stop')
   const stopped = await H.ui()
   await H.page.waitForFunction(() => document.body.textContent.includes('黄色い四角'), null, { timeout: 15000 })
@@ -200,6 +204,29 @@ await scenario('deny-mic', { mode: 'deny-mic' }, async (H) => {
   await H.page.waitForTimeout(500)
   const after = await H.ui()
   check('deny-mic', '始めず・取れた画面を止める', after.watch === 'off' && after.displayAsked === 1 && after.display === 0, JSON.stringify({ ...after, history: undefined }))
+})
+
+// 10. 画面共有の選択中に止めると、選び終わってもマイクを求めず、取れた画面も止める（codex review P1）。
+await scenario('stop-starting', { mode: 'slow-display' }, async (H) => {
+  await H.page.click('#watch')
+  await H.page.waitForTimeout(300)
+  await H.page.click('#watch-stop')
+  await H.page.waitForTimeout(2500)
+  const after = await H.ui()
+  check('stop-starting', '止めた後はマイクを求めず画面も手放す', after.watch === 'off' && after.displayAsked === 1 && after.micAsked === 0 && after.display === 0 && after.mic === 0, JSON.stringify({ ...after, history: undefined }))
+})
+
+// 11. 画面のアップロード中に止めると、上げ終わっても認識文を送らず読み上げない（codex review P1）。
+await scenario('stop-upload', { texts: ['コハコ、これ見て'], uploadDelay: 2000, replyDelay: 300 }, async (H) => {
+  await H.start()
+  await H.say(1200)
+  await H.page.waitForFunction(() => window.__kohakoHome.watch === 'asking', null, { timeout: 15000 })
+  await H.page.waitForTimeout(500)
+  const uploading = H.log.attachments.length
+  await H.page.click('#watch-stop')
+  await H.page.waitForTimeout(4000)
+  const after = await H.ui()
+  check('stop-upload', '上げている間に止めたら送らない・読まない', uploading === 1 && after.watch === 'off' && H.log.messages.length === 0 && H.log.tts.length === 0 && after.display === 0 && after.mic === 0, JSON.stringify({ uploading, m: H.log.messages.length, tts: H.log.tts.length, ...after, history: undefined }))
 })
 
 // 7. 聞き取り中に止めると、遅れて届いた「コハコ」の認識結果では送らない。

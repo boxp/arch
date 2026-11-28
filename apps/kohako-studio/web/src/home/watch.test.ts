@@ -1,6 +1,15 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { createSegmenter, frameSize, SEGMENT, wakeCalled, watchStep, type WatchEvent, type WatchState } from './watch'
+import {
+  createSegmenter,
+  frameSize,
+  SEGMENT,
+  wakeCalled,
+  watchAlive,
+  watchStep,
+  type WatchEvent,
+  type WatchState,
+} from './watch'
 
 // 期待値は Obsidian の Projects/kohako-home/watch-together-spec.md（決まり・例）と Lean モデルの cases.txt から。
 describe('wakeCalled（決まり 4）', () => {
@@ -146,5 +155,25 @@ describe('watchStep は Lean モデルの全ての並び（長さ 4 まで）で
     const late = watchStep(s, { type: 'heard', gen: oldGen, heard: 'yes' })
     expect(late.effect).toBe('none')
     expect(late.state).toEqual(s)
+  })
+})
+
+describe('watchAlive: 止めた後に終わった非同期処理は続けない（codex review P1）', () => {
+  it('同じ回で見ている間は続ける', () => {
+    expect(watchAlive({ phase: 'starting', gen: 1 }, 1)).toBe(true)
+    expect(watchAlive({ phase: 'asking', gen: 1 }, 1)).toBe(true)
+  })
+  it('画面共有の取得中に止めたら（番号は同じでも）マイクを取りにいかない', () => {
+    const started = watchStep({ phase: 'off', gen: 0 }, { type: 'start' }).state
+    const stopped = watchStep(started, { type: 'stop' }).state
+    expect(stopped.gen).toBe(started.gen)
+    expect(watchAlive(stopped, started.gen)).toBe(false)
+  })
+  it('画像の送信中に止めたら送らない', () => {
+    const stopped = watchStep({ phase: 'asking', gen: 3 }, { type: 'stop' }).state
+    expect(watchAlive(stopped, 3)).toBe(false)
+  })
+  it('止めてもう一度始めた後、前の回の結果は続けない', () => {
+    expect(watchAlive({ phase: 'starting', gen: 4 }, 3)).toBe(false)
   })
 })

@@ -142,3 +142,8 @@ export function watchStep(s: WatchState, e: WatchEvent): { state: WatchState; ef
       return s.phase === 'replying' ? to('watching', 'none') : same
   }
 }
+
+/** 非同期の処理（取得・認識・送信）が続けてよいか。止めた後（off）や次の回（番号が違う）なら続けない。 */
+export function watchAlive(s: WatchState, gen: number): boolean {
+  return s.phase !== 'off' && s.gen === gen
+}

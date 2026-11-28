@@ -5,7 +5,15 @@ import { must } from '../must'
 import './activity.css'
 import { validateActivity, renderActivity, tickActivity } from './activity'
 import { createDictation, supportsDictation, appendDictation } from './dictation'
-import { createSegmenter, frameSize, wakeCalled, watchStep, type WatchEvent, type WatchState } from './watch'
+import {
+  createSegmenter,
+  frameSize,
+  wakeCalled,
+  watchAlive,
+  watchStep,
+  type WatchEvent,
+  type WatchState,
+} from './watch'
 import {
   attachmentProblem,
   attachmentSubmitAction,
@@ -2979,6 +2987,10 @@ function watchDispatch(e: WatchEvent) {
   return result.effect
 }
 /** 届いた返事が、共有中に送った呼びかけへの返事なら replying へ進めて true。 */
+/** 止めた後に終わった取得・認識・送信は、マイクを取ったり画面を送ったりせずに止める（BOXP-779 codex review）。 */
+function watchLive(gen: number): boolean {
+  return watchAlive(watchState, gen)
+}
 function watchRepliedFor(id: string): boolean {
   if (!id || id !== watchRequest || watchState.phase !== 'asking') return false
   watchRequest = ''
@@ -3032,7 +3044,7 @@ async function watchTranscribe(gen: number, samples: Float32Array, rate: number)
       headers: { 'Content-Type': 'application/octet-stream', 'X-Kohako-Transcription-Id': crypto.randomUUID() },
       body: new Blob([new Uint8Array(pcm16(samples, rate).slice(0, 960000))]),
     })
-    if (gen !== watchState.gen) return
+    if (!watchLive(gen)) return
     if (result.status === 200 && typeof result.data?.text === 'string') {
       text = result.data.text.trim()
       heard = text && wakeCalled(text) ? (watchBusy() ? 'busy' : 'yes') : 'no'
@@ -3041,7 +3053,7 @@ async function watchTranscribe(gen: number, samples: Float32Array, rate: number)
       watchSay('認証が切れました。画面を再読み込みしてください。')
     else watchSay('音声認識に接続できませんでした。もう一度呼んでください。')
   } catch {
-    if (gen !== watchState.gen) return
+    if (!watchLive(gen)) return
     watchSay('音声認識に接続できませんでした。もう一度呼んでください。')
   }
   if (heard === null) {
@@ -3056,7 +3068,7 @@ async function watchTranscribe(gen: number, samples: Float32Array, rate: number)
 async function watchSend(gen: number, text: string) {
   const frame = await (watchFrame ?? Promise.resolve(null))
   watchFrame = null
-  if (gen !== watchState.gen) return
+  if (!watchLive(gen)) return
   if (!frame) {
     watchSay('共有画面を取れませんでした。共有している画面を確かめてください。')
     watchDispatch({ type: 'fail', gen })
@@ -3076,14 +3088,18 @@ async function watchSend(gen: number, text: string) {
   } catch {
     id = ''
   }
-  if (gen !== watchState.gen) return
+  if (!watchLive(gen)) return
   if (!id || watchBusy()) {
     watchSay(id ? 'いまの返事を待っています。終わってからもう一度呼んでください。' : '共有画面を送れませんでした。')
     watchDispatch({ type: 'fail', gen })
     return
   }
   await sendText(text, 'watch', { id, name })
-  if (gen !== watchState.gen) return
+  if (!watchLive(gen)) {
+    // 送っている間に止めたときは、その返事を読み上げない。
+    if (accepted && requestId) watchMuted.add(requestId)
+    return
+  }
   if (accepted && requestId) {
     watchRequest = requestId
     return
@@ -3096,11 +3112,11 @@ async function watchAcquire(gen: number) {
   try {
     // 画面の音（ゲーム音・ボイスチャット）は求めない。
     display = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 5 }, audio: false })
-    if (gen !== watchState.gen) throw new Error('stale')
+    if (!watchLive(gen)) throw new Error('stale')
     mic = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     })
-    if (gen !== watchState.gen) throw new Error('stale')
+    if (!watchLive(gen)) throw new Error('stale')
     const context = new AudioContext(),
       source = context.createMediaStreamSource(mic),
       processor = context.createScriptProcessor(4096, 1, 1),
@@ -3139,7 +3155,7 @@ async function watchAcquire(gen: number) {
   } catch (e) {
     stopTracks(display)
     stopTracks(mic)
-    if (gen !== watchState.gen) return
+    if (!watchLive(gen)) return
     const name = e && typeof e === 'object' && 'name' in e ? String((e as { name: unknown }).name) : ''
     watchSay(
       name === 'NotAllowedError'
