@@ -3113,10 +3113,20 @@ async function watchAcquire(gen: number) {
     // 画面の音（ゲーム音・ボイスチャット）は求めない。
     display = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 5 }, audio: false })
     if (!watchLive(gen)) throw new Error('stale')
+    // マイクの許可を待つ間に共有が終わっても見逃さないよう、先に終了を覚えておく。
+    let displayEnded = false
+    for (const t of display.getTracks()) t.addEventListener('ended', () => (displayEnded = true), { once: true })
     mic = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     })
     if (!watchLive(gen)) throw new Error('stale')
+    if (displayEnded || [...display.getTracks(), ...mic.getTracks()].some((t) => t.readyState === 'ended')) {
+      stopTracks(display)
+      stopTracks(mic)
+      watchSay('共有かマイクが終わったので止めました。')
+      watchDispatch({ type: 'stop' })
+      return
+    }
     const context = new AudioContext(),
       source = context.createMediaStreamSource(mic),
       processor = context.createScriptProcessor(4096, 1, 1),

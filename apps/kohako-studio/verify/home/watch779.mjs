@@ -38,6 +38,7 @@ const init = (mode) => {
   md.getUserMedia = async (c) => {
     window.__media.micAsked++
     if (mode === 'deny-mic') throw new DOMException('denied', 'NotAllowedError')
+    if (mode === 'slow-mic') await new Promise((r) => setTimeout(r, 1500))
     const ctx = new AudioContext(), osc = ctx.createOscillator(), gain = ctx.createGain(), dest = ctx.createMediaStreamDestination()
     osc.frequency.value = 440; gain.gain.value = 0; osc.connect(gain).connect(dest); osc.start()
     window.__say = (ms) => { gain.gain.value = 0.3; setTimeout(() => { gain.gain.value = 0 }, ms) }
@@ -209,11 +210,22 @@ await scenario('deny-mic', { mode: 'deny-mic' }, async (H) => {
 // 10. 画面共有の選択中に止めると、選び終わってもマイクを求めず、取れた画面も止める（codex review P1）。
 await scenario('stop-starting', { mode: 'slow-display' }, async (H) => {
   await H.page.click('#watch')
-  await H.page.waitForTimeout(300)
+  await H.page.waitForFunction(() => window.__media.displayAsked === 1, null, { timeout: 10000 })
   await H.page.click('#watch-stop')
   await H.page.waitForTimeout(2500)
   const after = await H.ui()
   check('stop-starting', '止めた後はマイクを求めず画面も手放す', after.watch === 'off' && after.displayAsked === 1 && after.micAsked === 0 && after.display === 0 && after.mic === 0, JSON.stringify({ ...after, history: undefined }))
+})
+
+// 12. マイクの許可待ちの間に画面共有が終わると、許可されても始めず、マイクも画面も手放す（codex review P1）。
+await scenario('ended-asking-mic', { mode: 'slow-mic' }, async (H) => {
+  await H.page.click('#watch')
+  await H.page.waitForFunction(() => window.__media.micAsked === 1, null, { timeout: 5000 })
+  await H.page.evaluate(() => { for (const t of window.__media.display) { t.stop(); t.dispatchEvent(new Event('ended')) } })
+  await H.page.waitForTimeout(2500)
+  const after = await H.ui()
+  check('ended-asking-mic', '許可待ち中の共有終了で off・マイクも画面も手放す', after.watch === 'off' && after.micAsked === 1 && after.mic === 0 && after.display === 0 && /止めました/.test(after.note), JSON.stringify({ ...after, history: undefined }))
+  check('ended-asking-mic', '終了後は聞かない', H.log.transcriptions.length === 0, '')
 })
 
 // 11. 画面のアップロード中に止めると、上げ終わっても認識文を送らず読み上げない（codex review P1）。
@@ -221,7 +233,7 @@ await scenario('stop-upload', { texts: ['コハコ、これ見て'], uploadDelay
   await H.start()
   await H.say(1200)
   await H.page.waitForFunction(() => window.__kohakoHome.watch === 'asking', null, { timeout: 15000 })
-  await H.page.waitForTimeout(500)
+  for (let i = 0; i < 100 && H.log.attachments.length === 0; i++) await H.page.waitForTimeout(50)
   const uploading = H.log.attachments.length
   await H.page.click('#watch-stop')
   await H.page.waitForTimeout(4000)
@@ -247,7 +259,7 @@ await scenario('normal', { texts: ['コハコ、これどう？'], replyDelay: 4
   await H.page.click('#send')
   await H.page.waitForFunction(() => window.__kohakoHome.state === 'thinking', null, { timeout: 5000 })
   await H.say(1200)
-  await H.page.waitForTimeout(2500)
+  await H.page.waitForFunction(() => /返事を待っています/.test(document.getElementById('watch-note')?.textContent ?? '') && window.__kohakoHome.watch === 'watching', null, { timeout: 15000 }).catch(() => {})
   const busy = await H.ui()
   await H.page.waitForFunction(() => document.body.textContent.includes('普通の会話の返事'), null, { timeout: 15000 })
   await H.page.waitForTimeout(800)
