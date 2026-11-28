@@ -254,4 +254,56 @@
             (record-review-findings! "BOXP-1" "r2" {:ok? true :checked-pr-urls [url] :checked-pr-heads {url head2}})
             (is (empty? (finding-lines ticket)) "no resolution of an unrecorded finding")))))))
 
+;; --- PR gate retry 2 (codex review P1 x2) ------------------------------------
+(defn- state-file-throws [real]
+  (fn [path & args]
+    (if (str/ends-with? (str path) "review-findings-state.edn")
+      (throw (ex-info "state write failed (synthetic)" {}))
+      (apply real path args))))
+
+(def pass-gate {:ok? true :checked-pr-urls [url] :checked-pr-heads {url head2}})
+(defn resolution-lines [ticket] (filterv #(str/includes? % "レビュー所見解消") (finding-lines ticket)))
+
+(deftest memory-record-moved-to-file-still-advances-state
+  (testing "memory record: Notes re-send fails but the pending file write succeeds; written later, the state advances and a pass reports the resolution"
+    (with-env
+      (fn [{:keys [ticket]}]
+        (reset! review-findings-memory-pending {})
+        (reset! review-findings-state-backlog {})
+        (with-redefs [append-note-once! (fn [& _] (throw (ex-info "vault down (synthetic)" {})))
+                      write-edn-atomically! (fn [& _] (throw (ex-info "root down (synthetic)" {})))]
+          (record-review-findings! "BOXP-1" "r1" (blocking-gate)))
+        (with-redefs [append-note-once! (fn [& _] (throw (ex-info "vault down (synthetic)" {})))]
+          (flush-all-pending-review-findings!))
+        (is (empty? @review-findings-memory-pending) "moved to the pending file")
+        (flush-all-pending-review-findings!)
+        (is (= 1 (count (finding-lines ticket))))
+        (record-review-findings! "BOXP-1" "r2" pass-gate)
+        (is (= 1 (count (resolution-lines ticket))) (pr-str (finding-lines ticket)))))))
+
+(deftest state-write-failure-is-retried
+  (testing "Notes written but the state file write fails: the state is kept and a later pass reports the resolution"
+    (with-env
+      (fn [{:keys [ticket root]}]
+        (reset! review-findings-memory-pending {})
+        (reset! review-findings-state-backlog {})
+        (let [real write-edn-atomically!]
+          (with-redefs [write-edn-atomically! (state-file-throws real)]
+            (record-review-findings! "BOXP-1" "r1" (blocking-gate))))
+        (is (= 1 (count (finding-lines ticket))))
+        (record-review-findings! "BOXP-1" "r2" pass-gate)
+        (is (= 1 (count (resolution-lines ticket))) (pr-str (finding-lines ticket)))
+        (is (empty? (get (read-edn-file (fs/path root "review-findings-state.edn") {}) "BOXP-1")))
+        (is (empty? @review-findings-state-backlog))))
+    (testing "the pass itself while the state file still fails also reports the resolution once"
+      (with-env
+        (fn [{:keys [ticket]}]
+          (reset! review-findings-state-backlog {})
+          (let [real write-edn-atomically!]
+            (with-redefs [write-edn-atomically! (state-file-throws real)]
+              (record-review-findings! "BOXP-1" "r1" (blocking-gate))
+              (record-review-findings! "BOXP-1" "r2" pass-gate)
+              (record-review-findings! "BOXP-1" "r3" pass-gate)))
+          (is (= 1 (count (resolution-lines ticket))) (pr-str (finding-lines ticket))))))))
+
 (let [result (run-tests 'user)] (when (pos? (+ (:fail result) (:error result))) (System/exit 1)))

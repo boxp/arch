@@ -5480,12 +5480,37 @@
                 m)
     m))
 
-(defn- update-review-findings-state! [ticket-id entries]
-  (when (seq entries)
-    (try (let [state (read-edn-safely (review-findings-state-path) {})]
-           (write-edn-atomically! (review-findings-state-path)
-                                  (assoc state ticket-id (reduce review-findings-state-step (get state ticket-id {}) entries))))
-         (catch Exception e (log! (str "review findings: state write failed: " (sanitize-blocker-reason (.getMessage e))))))))
+;; State steps whose state-file write failed. Kept in order for the life of
+;; the process, applied on top of the file when reading the state, and
+;; re-written by every flush until the write succeeds (a lost step would hide
+;; a later resolution).
+(defonce review-findings-state-backlog (atom {}))
+
+(defn- review-findings-ticket-state
+  "The unresolved-state of ticket-id: the state file plus not-yet-written steps."
+  [ticket-id]
+  (reduce review-findings-state-step
+          (get (read-edn-safely (review-findings-state-path) {}) ticket-id {})
+          (get @review-findings-state-backlog ticket-id [])))
+
+(defn- update-review-findings-state!
+  "Apply entries (after any backlog) to the state file. On a write failure the
+  steps stay in the backlog. Returns true when the file holds every step."
+  [ticket-id entries]
+  (swap! review-findings-state-backlog update ticket-id (fnil into [])
+         (map #(select-keys % [:id :kind :pr-url :prior-id]) entries))
+  (let [steps (get @review-findings-state-backlog ticket-id [])]
+    (if (empty? steps)
+      (do (swap! review-findings-state-backlog dissoc ticket-id) true)
+      (try (let [state (read-edn-safely (review-findings-state-path) {})]
+             (write-edn-atomically! (review-findings-state-path)
+                                    (assoc state ticket-id (reduce review-findings-state-step (get state ticket-id {}) steps)))
+             (swap! review-findings-state-backlog dissoc ticket-id)
+             true)
+           (catch Exception e
+             (log! (str "review findings: state write failed; kept " (count steps) " step(s) for retry: "
+                        (sanitize-blocker-reason (.getMessage e))))
+             false)))))
 
 (defn- flush-pending-review-findings* [ticket-id]
   (let [pending (read-edn-safely (review-findings-pending-path) {})
@@ -5502,9 +5527,12 @@
             done (set (map :id (remove #(= :failed (:status %)) results)))
             remaining-file (apply dissoc file-entries done)
             remaining-mem (apply dissoc mem-entries done)]
-        ;; Memory-only records advance the state now that they are written.
-        (update-review-findings-state! ticket-id (keep #(when (contains? done %) (assoc (get mem-entries %) :id %))
-                                                       (keys (apply dissoc mem-entries (keys file-entries)))))
+        ;; Records whose state step was held back (they were memory-only when
+        ;; recorded; the flag survives a move to the pending file) advance the
+        ;; state now that they are written. Also retries the state backlog.
+        (update-review-findings-state! ticket-id (keep (fn [[id e]] (when (and (contains? done id) (:state-pending? e))
+                                                                      (assoc e :id id)))
+                                                       entries))
         (swap! review-findings-memory-pending
                (fn [m] (if (seq remaining-mem) (assoc m ticket-id remaining-mem) (dissoc m ticket-id))))
         ;; Try to make the still-unwritten memory records durable again.
@@ -5519,11 +5547,14 @@
 (defn flush-pending-review-findings!
   "Write the pending records of ticket-id. Returns one {:id :kind :status} per record tried."
   [ticket-id]
-  (with-review-findings-lock #(or (flush-pending-review-findings* ticket-id) [])))
+  (with-review-findings-lock #(let [r (or (flush-pending-review-findings* ticket-id) [])]
+                                (update-review-findings-state! ticket-id [])
+                                r)))
 
 (defn flush-all-pending-review-findings! []
   (doseq [ticket-id (distinct (concat (keys (read-edn-safely (review-findings-pending-path) {}))
-                                      (keys @review-findings-memory-pending)))]
+                                      (keys @review-findings-memory-pending)
+                                      (keys @review-findings-state-backlog)))]
     (try (flush-pending-review-findings! ticket-id)
          (catch Exception e (log! (str "review findings: flush failed for " ticket-id ": " (sanitize-blocker-reason (.getMessage e))))))))
 
@@ -5537,8 +5568,8 @@
   (with-review-findings-lock
    (fn []
      (flush-pending-review-findings* ticket-id)
-     (let [state (read-edn-safely (review-findings-state-path) {})
-           entries (review-findings-entries ticket-id run-id g (get state ticket-id {}))]
+     (update-review-findings-state! ticket-id [])
+     (let [entries (review-findings-entries ticket-id run-id g (review-findings-ticket-state ticket-id))]
        (when (seq entries)
          (let [results (vec (for [e entries
                                   :let [pending-entry (assoc (select-keys e [:kind :pr-url :note :prior-id]) :run-id run-id :queued-at (now-str))
@@ -5555,7 +5586,8 @@
                                          (catch Exception pe
                                            (log! (str "review findings: could not keep pending record for " ticket-id " " (:id e)
                                                       "; kept in memory: " (sanitize-blocker-reason (.getMessage pe))))
-                                           (swap! review-findings-memory-pending assoc-in [ticket-id (:id e)] pending-entry)
+                                           (swap! review-findings-memory-pending assoc-in [ticket-id (:id e)]
+                                                  (assoc pending-entry :state-pending? true))
                                            (assoc base :status :failed :reason reason :pending? :memory))))))))
                applied (set (map :id (remove #(= :memory (:pending? %)) results)))]
            (update-review-findings-state! ticket-id (filter #(contains? applied (:id %)) entries))
