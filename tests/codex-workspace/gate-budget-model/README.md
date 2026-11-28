@@ -24,7 +24,8 @@ run の開始・終了（ticket ごと）、gate の合格・失敗（ticket × 
 停滞レビューの受領・同じ受領の再配送（ticket ごと、BOXP-753）。
 
 1 操作は「受領済みレビューの判定（`pre`）」の後に「その操作（`core`）」を行う（`step s e = core (pre s e) e`）。
-判定するのは run の開始（動いている run がないとき）、失敗の計上（動いている run があるとき）、ticket への grant の 3 つだけ。
+判定するのは run の開始（動いている run がないとき）、run の PR gate の結果の記録（合格による PR の登録・失敗の計上。動いている run があるとき）、ticket への grant の 3 か所だけ。
+判定は PR の登録より前に行うので、補充の基本枠にはその run が新しく登録する PR は入らない（実装も `record-gate-pr-registrations!` の先頭で判定する）。
 
 ### 規則と定理の対応
 
@@ -94,14 +95,14 @@ run の開始・終了（ticket ごと）、gate の合格・失敗（ticket × 
 ```sh
 cd tests/codex-workspace/gate-budget-model
 lean GateBudgetModel.lean                                   # 定理の検査（通れば何も出ない。2CPU で約 2 分）
-lean --run GateBudgetModel.lean cover 5 | gzip -n -9 > gate-budget-traces.txt.gz   # 手順の生成（2CPU で約 3.5 分、54,240 本・317,312 操作。圧縮後 約 0.21MB）
-bb ../task-board-gate-budget-trace-test.bb                  # 再生（約 40 秒、Lean 不要）
+lean --run GateBudgetModel.lean cover 5 | gzip -n -9 > gate-budget-traces.txt.gz   # 手順の生成（2CPU で約 3.5 分、54,562 本・319,879 操作。圧縮後 約 0.21MB）
+bb ../task-board-gate-budget-trace-test.bb                  # 再生（Lean 不要。BOXP-753 の作業環境 2CPU で約 11 分。BOXP-673 の 26,034 本は同じ環境で約 3 分、CI では約 40 秒だった）
 ```
 
 `cover N` は 2 種類の手順を出す。出力は決定的。
 
 1. 初期状態から N-1 手以内で届く全ての状態について、そこからの 24 操作を 1 回ずつ（意味は `../lock-model/README.md` と同じ）。N = 5 で 43,563 本。
-2. **途中の状態から始める手順**（`seeds`）。短い手順では届かない場面を、決めた操作列で作ってから、そこから 2 手以内で届く全ての状態について 24 操作を 1 回ずつ（出発点の後に最長 3 手）。計 10,677 本。
+2. **途中の状態から始める手順**（`seeds`）。短い手順では届かない場面を、決めた操作列で作ってから、そこから 2 手以内で届く全ての状態について 24 操作を 1 回ずつ（出発点の後に最長 3 手）。計 10,999 本。
    出発点も初期状態からの操作列なので、再生では実装も同じ操作を実行してその状態に入る（状態を直接書き込まない）。
 
 | 出発点 | 操作列 | 届くようになる場面 |

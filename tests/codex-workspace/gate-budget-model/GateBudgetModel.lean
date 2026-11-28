@@ -137,10 +137,12 @@ abbrev conflict (s : St) (t : T) : Prop :=
   (holds (tk s (other t)) .P1 = true ∧ 0 < (tk s t).f1)
     ∨ (holds (tk s (other t)) .P2 = true ∧ 0 < (tk s t).f2)
 
-/-- 補充を判定する操作の前処理（規則 11）: run の開始（動いている run がないとき）、失敗の計上（動いている run があるとき）、
-ticket への grant の直前に、受領済みのレビューを判定する。それ以外の操作では何もしない。 -/
+/-- 補充を判定する操作の前処理（規則 11）: run の開始（動いている run がないとき）、run の PR gate の結果の記録
+（合格による PR の登録・失敗の計上。動いている run があるとき）、ticket への grant の直前に、受領済みのレビューを判定する。
+それ以外の操作では何もしない。判定は PR の登録より前なので、基本枠はその run が新しく登録する PR を含まない。 -/
 def pre (s : St) : Ev → St
   | .start t => if (tk s t).run = none then refresh s t else s
+  | .pass t _ => if (tk s t).run = none then s else refresh s t
   | .fail t _ => if (tk s t).run = none then s else refresh s t
   | .grant t => refresh s t
   | _ => s
@@ -327,6 +329,10 @@ theorem pre_shape (s : St) (e : Ev) : pre s e = s ∨ ∃ t, pre s e = refresh s
     by_cases h : (tk s t).run = none
     · exact Or.inr ⟨t, by simp [pre, h]⟩
     · exact Or.inl (by simp [pre, h])
+  | pass t p =>
+    by_cases h : (tk s t).run = none
+    · exact Or.inl (by simp [pre, h])
+    · exact Or.inr ⟨t, by simp [pre, h]⟩
   | fail t p =>
     by_cases h : (tk s t).run = none
     · exact Or.inl (by simp [pre, h])

@@ -2085,8 +2085,9 @@
 ;; through `stagnation-review-of::` and done), the ticket limit is raised once
 ;; per review to used + unit x max(1, N), so consumption before the review does
 ;; not stop the run right after it.  Decided only at the run start
-;; (reservation), just before counting a failure and just before an Owner
-;; ticket grant; each review is decided once (applied or not, with the reason)
+;; (reservation), when the PR gate result of a run is recorded (before its PR
+;; registrations and its failure are counted) and just before an Owner ticket
+;; grant; each review is decided once (applied or not, with the reason)
 ;; in :stagnation-refreshes, append-only.  Not applied while exhausted, without
 ;; a failure since the previous refresh, or past the per-ticket cap.  See the
 ;; vault spec Projects/task-board-gate-budget/spec.md rule 11.
@@ -2332,7 +2333,7 @@
         {:scope scope :key key :used used :limit limit :exhausted? false
          :legacy-limit-reached? (>= used limit)}))))
 
-(declare stagnation-reviews-for stagnation-review-received?)
+(declare stagnation-review-pattern)
 
 (defn decide-stagnation-refresh
   "BOXP-753 (spec rule 11): the budget after deciding the received reviews
@@ -2360,20 +2361,28 @@
    review-ids))
 
 (defn received-stagnation-review-ids
-  "Finished reviews linked to `ticket-id` whose receipt the ticket's Notes
-  record, oldest first.  nil when the ticket or the reviews cannot be read, so
-  nothing is decided and the next decision point reads them again."
-  [ticket-id]
+  "Reviews whose receipt (`停滞レビュー受領: <id>`) the Notes of `ticket-id`
+  record, in receipt order, that are not in `decided`, are done and link back
+  through `stagnation-review-of:: <ticket-id>`.  Only the named review tickets
+  are read (no Tickets/ scan).  A ticket or review that cannot be read is left
+  out, so nothing is decided for it and the next decision point reads it again."
+  [ticket-id decided]
   (try
-    (let [path (ticket-path ticket-id)]
-      (when (fs/exists? path)
-        (let [text (slurp (str path))]
-          ;; Most tickets never received a review: skip the Tickets/ scan.
-          (when (str/includes? text "停滞レビュー受領")
-            (->> (stagnation-reviews-for ticket-id)
-                (filter #(= "done" (:status %)))
-                (filter #(stagnation-review-received? text (:id %)))
-                (mapv :id))))))
+    (let [path (ticket-path ticket-id)
+          text (when (fs/exists? path) (slurp (str path)))
+          ids (->> (re-seq #"停滞レビュー受領:\s*([A-Z][A-Z0-9]*-\d+)\b" (or text ""))
+                   (map second) distinct (remove #(or (= ticket-id %) (contains? decided %))))
+          link (stagnation-review-pattern (java.util.regex.Pattern/quote ticket-id))]
+      (filterv (fn [id]
+                 (try
+                   (let [review-path (ticket-path id)
+                         review (when (fs/exists? review-path) (slurp (str review-path)))]
+                     (and review (re-find link review)
+                          (= "done" (:status (frontmatter-map (vec (str/split-lines review)))))))
+                   (catch Exception e
+                     (log! (str "stagnation review refresh: could not read " id ": " (.getMessage e)))
+                     false)))
+               ids))
     (catch Exception e
       (log! (str "stagnation review refresh: could not read " ticket-id ": " (.getMessage e)))
       nil)))
@@ -2381,7 +2390,8 @@
 (defn refresh-gate-budget-for-reviews
   "Call under the budget lock with the budget just read."
   [budget ticket-id]
-  (let [ids (received-stagnation-review-ids ticket-id)]
+  (let [decided (set (keep #(when (= ticket-id (:ticket %)) (:review %)) (:stagnation-refreshes budget)))
+        ids (received-stagnation-review-ids ticket-id decided)]
     (if (seq ids)
       (let [updated (decide-stagnation-refresh budget ticket-id ids)]
         (doseq [rec (drop (count (:stagnation-refreshes budget)) (:stagnation-refreshes updated))]
@@ -2395,7 +2405,10 @@
 (defn record-gate-pr-registrations! [ticket-id run-id gate-result]
   (with-gate-failure-budget-lock
    (fn []
-     (let [budget (read-gate-failure-budget)
+     ;; BOXP-753: received reviews are decided before this run registers PRs,
+     ;; so the base of a refresh does not include the PRs the run adds now.
+     (let [before (read-gate-failure-budget)
+           budget (refresh-gate-budget-for-reviews before ticket-id)
            urls (concat (:checked-pr-urls gate-result) (:merged-pr-urls gate-result)
                         (when (not (:ok? gate-result)) [(:url gate-result)]))
            prs (distinct (keep canonical-pr-id urls))
@@ -2405,7 +2418,7 @@
                                    (assoc-in b [:pr-registrations k]
                                              {:ticket ticket-id :pr pr :run-id run-id :registered-at (now-str)}))))
                            budget prs)]
-       (when (not= budget updated) (write-gate-failure-budget! updated))
+       (when (not= before updated) (write-gate-failure-budget! updated))
        updated))))
 
 (defn gate-budget-exclude-pr! [ticket-id pr-id by]
