@@ -598,16 +598,27 @@ export function initInbox(
     opening = false
     dropNotificationParam()
   }
+  // 開く手順の実行中に来た更新要求（SW 通知・定期更新・表示復帰）は捨てずに記録し、手順が成功しても失敗しても
+  // 終わった直後に 1 度だけまとめて処理する（実行中の要求を黙って落とす経路を残さない）。
+  let requested = false
   function update() {
-    if (jumping) return
+    if (jumping) {
+      requested = true
+      return
+    }
     void refresh().then(async (loaded) => {
+      if (jumping) {
+        requested = true
+        return
+      }
       const id = jump
-      if (!id || !loaded || jumping) return
+      if (!id || !loaded) return
       if (!items.some((i) => i.eventId === id)) {
         consume(id)
         return
       }
       jumping = true
+      requested = false
       let done = false
       try {
         done = await openNotification(id)
@@ -616,7 +627,9 @@ export function initInbox(
         jumping = false
         if (jump) opening = true // 保留中のジャンプが残る間は、今までどおり案内で割り込まない
       }
-      if (done && jump) update()
+      const again = requested
+      requested = false
+      if (jump && (done || again)) update()
     })
   }
   const schedule = () => {

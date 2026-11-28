@@ -274,7 +274,8 @@ describe('通知からのジャンプを一度だけ行う（BOXP-772）', () =>
       urls: string[] = [],
       handlers: Record<string, () => void> = {},
       sw: { listener?: (e: { data: unknown }) => void } = {},
-      ticks: (() => void)[] = []
+      ticks: (() => void)[] = [],
+      holds: { suffix: string; gate: Promise<void> }[] = []
     let failures = failFirst
     let announceFailures = failAnnounce
     const loc = { search, pathname: '/kohako/home.html', hash: '#x' }
@@ -309,6 +310,8 @@ describe('通知からのジャンプを一度だけ行う（BOXP-772）', () =>
     vi.stubGlobal('fetch', async (url: string, init?: { method?: string }) => {
       const path = url.replace('/kohako/api/v1/', '')
       calls.push(`${init?.method ?? 'GET'} ${path}`)
+      const held = holds.findIndex((h) => path.endsWith(h.suffix))
+      if (held >= 0) await holds.splice(held, 1)[0].gate
       if (path === 'notifications' && failures > 0) {
         failures--
         throw new Error('offline')
@@ -334,7 +337,24 @@ describe('通知からのジャンプを一度だけ行う（BOXP-772）', () =>
       await settle()
     }
     await settle()
-    return { calls, urls, els, resume, sw, settle, loc, vi, addFault: (f: (typeof faults)[number]) => faults.push(f) }
+    /** 該当する次の送信 1 回を、返した関数を呼ぶまで止める */
+    const hold = (suffix: string) => {
+      let release = () => {}
+      holds.push({ suffix, gate: new Promise<void>((r) => (release = r)) })
+      return () => release()
+    }
+    return {
+      calls,
+      urls,
+      els,
+      resume,
+      sw,
+      settle,
+      loc,
+      vi,
+      hold,
+      addFault: (f: (typeof faults)[number]) => faults.push(f),
+    }
   }
   const item = (id: string): Item => ({
     eventId: id,
@@ -485,6 +505,36 @@ describe('通知からのジャンプを一度だけ行う（BOXP-772）', () =>
       t.vi.unstubAllGlobals()
     }
   })
+  // 開く手順の実行中に届いた要求は捨てず、実行中の手順が成功しても失敗しても続けて処理する（BOXP-772）
+  it.each([
+    ['失敗', 500],
+    ['成功', 200],
+  ] as const)(
+    '通知 A を開く途中で通知 B の SW 通知が届き A が%sしたら、表示復帰を待たずに B を開く',
+    async (_name, status) => {
+      const t = await setup('', [item('event-AAAAAA'), item('event-BBBBBB')])
+      try {
+        const release = t.hold('event-AAAAAA/announced')
+        if (status !== 200) t.addFault({ suffix: 'event-AAAAAA/announced', result: status })
+        t.sw.listener?.({ data: { type: 'open-notification', eventId: 'event-AAAAAA' } })
+        await t.settle()
+        t.sw.listener?.({ data: { type: 'open-notification', eventId: 'event-BBBBBB' } })
+        await t.settle()
+        expect(reads(t.calls, 'event-BBBBBB')).toBe(0)
+        release()
+        await t.settle()
+        expect(reads(t.calls, 'event-BBBBBB')).toBe(1)
+        expect(t.els.inbox.hidden).toBe(false)
+        t.els.inbox.hidden = true
+        await t.resume()
+        expect(reads(t.calls, 'event-BBBBBB')).toBe(1)
+        expect(reads(t.calls, 'event-AAAAAA')).toBe(status === 200 ? 1 : 0) // A は成功した時だけ既読になり、B の後に開き直さない
+        expect(t.els.inbox.hidden).toBe(true)
+      } finally {
+        t.vi.unstubAllGlobals()
+      }
+    },
+  )
   it('開いたままの家で別の通知を押すと URL を変えずにその通知を開き、表示復帰で開き直さない', async () => {
     const t = await setup('', [item('event-AAAAAA'), item('event-BBBBBB')])
     try {
