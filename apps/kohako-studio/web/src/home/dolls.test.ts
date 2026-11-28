@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { ago, cardOf, dollImage, dollsKey, dollsView, type DollGroup } from './dolls'
+import { ago, cardOf, dollImage, dollsKey, dollsView, ticketLink, type DollGroup } from './dolls'
 // 期待値は現行仕様 Projects/kohako-home/model-dolls-home-spec.md の 2〜5 章から。
 const doll = (key: string, n = 1, plainLabel: string | null = null): DollGroup => ({
   key,
@@ -135,4 +135,23 @@ it('カードに非公式の添え書きを出さない (BOXP-766 TD-02)', () =>
   const d = doll('opus', 1)
   const c = cardOf(d, d.tickets[0], null, Date.parse('2026-11-28T11:00:00Z'))
   expect(JSON.stringify(c)).not.toContain('非公式')
+})
+it('Obsidianで開く: 選んだ票の詳細が取れた時だけ、BOXP vault の票を開くリンク（T7, BOXP-766 TD-04）', () => {
+  const ok = (id: string) => ({
+    state: 'ok' as const,
+    fetchedAt: '2026-11-28T00:00:00Z',
+    item: { id } as unknown as import('./dolls').TicketDetail,
+  })
+  expect(ticketLink('BOXP-766', ok('BOXP-766'))).toEqual({
+    id: 'BOXP-766',
+    href: 'obsidian://open?vault=BOXP&file=Tickets%2FBOXP-766.md',
+  })
+  expect(ticketLink('BOXP-1', ok('BOXP-1'))?.href).toBe('obsidian://open?vault=BOXP&file=Tickets%2FBOXP-1.md')
+  // 取得中・失敗・別の票の結果（切り替え直後）では出さない
+  expect(ticketLink('BOXP-762', null)).toBeNull()
+  expect(ticketLink('BOXP-762', 'error')).toBeNull()
+  expect(ticketLink('BOXP-762', ok('BOXP-766'))).toBeNull()
+  // 不正な番号では出さない
+  for (const bad of ['BOXP-07', 'BOXP-0', 'BOXP-1234567', 'BOXP-1/../x', '../Boards', 'boxp-1', 'BOXP-1 ', ''])
+    expect(ticketLink(bad, ok(bad))).toBeNull()
 })
