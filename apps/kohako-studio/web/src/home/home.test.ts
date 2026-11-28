@@ -171,6 +171,19 @@ describe('保存', () => {
     })
     expect(parseUnconfirmed('{"kind":"text","text":1,"requestId":"abcdefgh","expiresAt":5}')).toBeNull()
   })
+  it('BOXP-779: 共有画面への呼びかけの控えは watch の印を画面の添付と一緒に残す', () => {
+    const id = 'a'.repeat(32)
+    const base = { kind: 'text', text: 'コハコ、これ見て', requestId: 'abcdefgh-1', expiresAt: 5 }
+    expect(
+      parseUnconfirmed(JSON.stringify({ ...base, attachments: [id], attachmentNames: ['画面.jpg'], watch: true })),
+    ).toEqual({ ...base, attachments: [id], attachmentNames: ['画面.jpg'], watch: true })
+    // 画面の添付が無い控えに watch の印だけは付けない（画面の扱いの指示は画面があるときだけ）。
+    expect(parseUnconfirmed(JSON.stringify({ ...base, watch: true }))).toEqual(base)
+    // true 以外は印として扱わない。
+    expect(
+      parseUnconfirmed(JSON.stringify({ ...base, attachments: [id], attachmentNames: ['x'], watch: 'yes' }))?.watch,
+    ).toBeUndefined()
+  })
   it('不正な設定は既定値にする', () => {
     expect(parsePrefs('{"touch":"yes","intensity":"loud","pinned":true}')).toEqual({
       voice: 'kohaku',

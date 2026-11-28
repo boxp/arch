@@ -40,6 +40,7 @@ export function parseUnconfirmed(raw: string | null): Outgoing | null {
                 attachmentNames: Array.isArray(v.attachmentNames)
                   ? v.attachmentNames.filter((x: unknown) => typeof x === 'string').slice(0, 3)
                   : [],
+                ...(v.watch === true ? { watch: true as const } : {}),
               }
             : {}),
         }

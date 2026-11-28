@@ -86,6 +86,8 @@ export type Outgoing = {
   expiresAt: number
   attachments?: string[]
   attachmentNames?: string[]
+  /** BOXP-779: 共有画面への呼びかけ。控えにも残し、再送でも画面の扱いの指示を付け・位置を添えない。 */
+  watch?: true
 }
 /** 期限切れと判断する前に置く猶予（端末と BFF の時計ずれ・遅延到着に備える）。 */
 export const EXPIRY_GRACE_MS = 60_000

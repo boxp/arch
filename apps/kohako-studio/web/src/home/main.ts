@@ -2649,6 +2649,7 @@ async function sendText(
       payload = {
         ...newOutgoing(pending.text, Date.now(), () => crypto.randomUUID()),
         ...(pending.attachments ? { attachments: pending.attachments, attachmentNames: pending.attachmentNames } : {}),
+        ...(pending.watch ? { watch: true as const } : {}),
       }
     }
   } else {
@@ -2660,6 +2661,7 @@ async function sendText(
     if (from === 'watch' && watchFile) {
       payload.attachments = [watchFile.id]
       payload.attachmentNames = [watchFile.name]
+      payload.watch = true
     }
   }
   requestId = payload.requestId
@@ -2671,7 +2673,8 @@ async function sendText(
   try {
     // BOXP-648: 位置は送信の直前に添えるだけで、控え（unconfirmed）・送信待ち・履歴には保存しない。現場（見てきて）は手入力・再送でも添えない。
     // BOXP-779: 共有画面への呼びかけは位置を添えず、watch の印を付ける（BFF がその turn だけ画面の扱いを指示する）。
-    const watching = from === 'watch' && !!watchFile
+    // 印は控え（payload.watch）から決めるので、送信結果が不明だった呼びかけを「確認して再開」で再送しても同じ扱いになる。
+    const watching = payload.watch === true
     const location = watching || from === 'visit' || isVisitText(payload.text) ? undefined : await locationForSend()
     result = await call('messages', {
       method: 'POST',
@@ -2680,7 +2683,6 @@ async function sendText(
         ...payload,
         views: true,
         ...(location ? { location } : {}),
-        ...(watching ? { watch: true } : {}),
       }),
     })
   } catch {
