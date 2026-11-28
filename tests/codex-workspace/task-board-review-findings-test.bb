@@ -30,6 +30,12 @@
         (f {:ticket (fs/path vault-dir "Tickets" "BOXP-1.md") :root root-dir}))
       (finally (fs/delete-tree dir)))))
 
+;; Process restart = every in-memory table is gone.
+(defn- restart! []
+  (doseq [s '[review-findings-memory-pending review-findings-state-backlog]]
+    (when-let [v (resolve s)] (reset! @v {}))))
+(defn- ticket-state [] (#'review-findings-ticket-state "BOXP-1"))
+
 (defn finding-lines [ticket] (filterv #(str/includes? % "review-findings:") (str/split-lines (slurp (str ticket)))))
 
 (deftest blocking-entry-content
@@ -249,11 +255,11 @@
                 (record-review-findings! "BOXP-1" "r1" (blocking-gate)))]
         (is (= [:failed] (mapv :status r)))
         (is (empty? (finding-lines ticket)))
-        (is (empty? (get (read-edn-file (fs/path root "review-findings-state.edn") {}) "BOXP-1")) "state not advanced"))
+        (is (empty? (ticket-state)) "state not advanced"))
       (testing "the record is still re-sent, and only then is it unresolved"
         (flush-all-pending-review-findings!)
         (is (= 1 (count (finding-lines ticket))))
-        (is (seq (get (read-edn-file (fs/path root "review-findings-state.edn") {}) "BOXP-1")))
+        (is (= :blocking (:kind (get (ticket-state) url))))
         (is (empty? @review-findings-memory-pending)))
       (testing "a pass before the re-send would not report a resolution"
         (reset! review-findings-memory-pending {})
@@ -281,7 +287,7 @@
     (with-env
       (fn [{:keys [ticket]}]
         (reset! review-findings-memory-pending {})
-        (reset! review-findings-state-backlog {})
+        (restart!)
         (with-redefs [append-note-once! (fn [& _] (throw (ex-info "vault down (synthetic)" {})))
                       write-edn-atomically! (fn [& _] (throw (ex-info "root down (synthetic)" {})))]
           (record-review-findings! "BOXP-1" "r1" (blocking-gate)))
@@ -298,19 +304,18 @@
     (with-env
       (fn [{:keys [ticket root]}]
         (reset! review-findings-memory-pending {})
-        (reset! review-findings-state-backlog {})
+        (restart!)
         (let [real write-edn-atomically!]
           (with-redefs [write-edn-atomically! (state-file-throws real)]
             (record-review-findings! "BOXP-1" "r1" (blocking-gate))))
         (is (= 1 (count (finding-lines ticket))))
         (record-review-findings! "BOXP-1" "r2" pass-gate)
         (is (= 1 (count (resolution-lines ticket))) (pr-str (finding-lines ticket)))
-        (is (not-any? #{:blocking :unavailable} (map :kind (vals (get (read-edn-file (fs/path root "review-findings-state.edn") {}) "BOXP-1")))) "no unresolved record left")
-        (is (empty? @review-findings-state-backlog))))
+        (is (not-any? #{:blocking :unavailable} (map :kind (vals (ticket-state)))) "no unresolved record left")))
     (testing "the pass itself while the state file still fails also reports the resolution once"
       (with-env
         (fn [{:keys [ticket]}]
-          (reset! review-findings-state-backlog {})
+          (restart!)
           (let [real write-edn-atomically!]
             (with-redefs [write-edn-atomically! (state-file-throws real)]
               (record-review-findings! "BOXP-1" "r1" (blocking-gate))
@@ -325,7 +330,7 @@
     (with-env
       (fn [{:keys [ticket]}]
         (reset! review-findings-memory-pending {})
-        (reset! review-findings-state-backlog {})
+        (restart!)
         (let [real append-note-once!
               fail-blocking (fn [t m note] (if (str/includes? note "レビュー未解決所見")
                                              (throw (ex-info "vault busy (synthetic)" {}))
@@ -396,7 +401,7 @@
     (with-env
       (fn [{:keys [ticket]}]
         (reset! review-findings-memory-pending {})
-        (reset! review-findings-state-backlog {})
+        (restart!)
         (with-redefs [append-note-once! (fn [& _] (throw (ex-info "vault busy (synthetic)" {})))]
           (record-review-findings! "BOXP-1" "r1" (blocking-gate))
           (record-review-findings! "BOXP-1" "r2" pass-gate)
@@ -420,7 +425,7 @@
     (with-env
       (fn [{:keys [ticket]}]
         (reset! review-findings-memory-pending {})
-        (reset! review-findings-state-backlog {})
+        (restart!)
         (record-review-findings! "BOXP-1" "r1" (blocking-gate))
         (record-review-findings! "BOXP-1" "r2" pass-gate)
         (record-review-findings! "BOXP-1" "r3" (blocking-gate))
@@ -433,7 +438,7 @@
     (with-env
       (fn [{:keys [ticket]}]
         (reset! review-findings-memory-pending {})
-        (reset! review-findings-state-backlog {})
+        (restart!)
         (with-redefs [append-note-once! (fn [& _] (throw (ex-info "vault busy (synthetic)" {})))]
           (record-review-findings! "BOXP-1" "r1" (blocking-gate))
           (record-review-findings! "BOXP-1" "r2" (blocking-gate :url url2))
@@ -444,5 +449,60 @@
           (is (= 2 (count lines)) (pr-str lines))
           (is (str/includes? (nth lines 0 "") (str "PR " url " ")) (pr-str lines))
           (is (str/includes? (nth lines 1 "") (str "PR " url2 " ")) (pr-str lines)))))))
+
+;; --- PR gate retry 7 (codex review P1: state lost on restart) ----------------
+;; spec: 未解決状態は Notes の印付き行と保留ファイルから毎回組み立てる。
+(defn- fs-throws-for [suffix real]
+  (fn [path & args]
+    (if (str/ends-with? (str path) suffix)
+      (throw (ex-info "write failed (synthetic)" {}))
+      (apply real path args))))
+
+(deftest state-survives-restart
+  (testing "Notes written, any other runner file write fails, then restart: a pass still reports the resolution once"
+    (with-env
+      (fn [{:keys [ticket]}]
+        (restart!)
+        (let [real write-edn-atomically!]
+          (with-redefs [write-edn-atomically! (fs-throws-for "-state.edn" real)]
+            (record-review-findings! "BOXP-1" "r1" (blocking-gate))))
+        (is (= 1 (count (finding-lines ticket))))
+        (restart!)
+        (record-review-findings! "BOXP-1" "r2" pass-gate)
+        (record-review-findings! "BOXP-1" "r2" pass-gate)
+        (is (= 1 (count (resolution-lines ticket))) (pr-str (finding-lines ticket))))))
+  (testing "queued in the pending file, restart, pass: the finding and then its resolution are written in order"
+    (with-env
+      (fn [{:keys [ticket]}]
+        (restart!)
+        (with-redefs [append-note-once! (fn [& _] (throw (ex-info "vault busy (synthetic)" {})))]
+          (record-review-findings! "BOXP-1" "r1" (blocking-gate)))
+        (restart!)
+        (record-review-findings! "BOXP-1" "r2" pass-gate)
+        (let [lines (finding-lines ticket)]
+          (is (= 2 (count lines)) (pr-str lines))
+          (is (str/includes? (nth lines 0 "") "レビュー未解決所見") (pr-str lines))
+          (is (str/includes? (nth lines 1 "") "レビュー所見解消") (pr-str lines))))))
+  (testing "recurrence after a resolution survives a restart as a new record"
+    (with-env
+      (fn [{:keys [ticket]}]
+        (restart!)
+        (record-review-findings! "BOXP-1" "r1" (blocking-gate))
+        (record-review-findings! "BOXP-1" "r2" pass-gate)
+        (restart!)
+        (record-review-findings! "BOXP-1" "r3" (blocking-gate))
+        (restart!)
+        (record-review-findings! "BOXP-1" "r4" pass-gate)
+        (let [lines (finding-lines ticket)]
+          (is (= 4 (count lines)) (pr-str lines))
+          (is (= ["レビュー未解決所見" "レビュー所見解消" "レビュー未解決所見" "レビュー所見解消"]
+                 (mapv #(re-find #"レビュー(?:未解決所見|所見解消)" %) lines)) (pr-str lines))))))
+  (testing "a line that only quotes a record is not that record"
+    (with-env
+      (fn [{:keys [ticket]}]
+        (restart!)
+        (append-note! "BOXP-1" (str "メモ: review-findings:abcdefabcdef レビュー未解決所見 PR " url " head 0e01838 を参照"))
+        (record-review-findings! "BOXP-1" "r2" pass-gate)
+        (is (empty? (resolution-lines ticket)) (pr-str (finding-lines ticket)))))))
 
 (let [result (run-tests 'user)] (when (pos? (+ (:fail result) (:error result))) (System/exit 1)))

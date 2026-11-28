@@ -5359,7 +5359,6 @@
 (def review-findings-mutex (Object.))
 
 (defn review-findings-pending-path [] (fs/path (root) "review-findings-pending.edn"))
-(defn review-findings-state-path [] (fs/path (root) "review-findings-state.edn"))
 
 (defn with-review-findings-lock [f]
   (locking review-findings-mutex
@@ -5484,8 +5483,8 @@
     (vec (concat resolved (keep identity [failed]) low))))
 
 ;; Records whose Notes write and pending-file write both failed. Kept for the
-;; life of the process and retried by every flush; the unresolved-state table
-;; is only advanced once such a record is actually written (so a later pass
+;; life of the process and retried by every flush; they enter the
+;; unresolved-state only once actually written (so a later pass
 ;; never reports the resolution of a record that is not in the Notes).
 (defonce review-findings-memory-pending (atom {}))
 
@@ -5500,44 +5499,53 @@
                 m)
     m))
 
-;; State steps whose state-file write failed. Kept in order for the life of
-;; the process, applied on top of the file when reading the state, and
-;; re-written by every flush until the write succeeds (a lost step would hide
-;; a later resolution).
-(defonce review-findings-state-backlog (atom {}))
-
-(defn- review-findings-ticket-state
-  "The unresolved-state of ticket-id: the state file plus not-yet-written steps."
-  [ticket-id]
-  (reduce review-findings-state-step
-          (get (read-edn-safely (review-findings-state-path) {}) ticket-id {})
-          (get @review-findings-state-backlog ticket-id [])))
-
-(defn- update-review-findings-state!
-  "Apply entries (after any backlog) to the state file. On a write failure the
-  steps stay in the backlog. Returns true when the file holds every step."
-  [ticket-id entries]
-  (swap! review-findings-state-backlog update ticket-id (fnil into [])
-         (map #(select-keys % [:id :kind :pr-url :prior-id]) entries))
-  (let [steps (get @review-findings-state-backlog ticket-id [])]
-    (if (empty? steps)
-      (do (swap! review-findings-state-backlog dissoc ticket-id) true)
-      (try (let [state (read-edn-safely (review-findings-state-path) {})]
-             (write-edn-atomically! (review-findings-state-path)
-                                    (assoc state ticket-id (reduce review-findings-state-step (get state ticket-id {}) steps)))
-             (swap! review-findings-state-backlog dissoc ticket-id)
-             true)
-           (catch Exception e
-             (log! (str "review findings: state write failed; kept " (count steps) " step(s) for retry: "
-                        (sanitize-blocker-reason (.getMessage e))))
-             false)))))
-
 (defonce review-findings-seq (atom 0))
 
 (defn- next-review-findings-seq []
   (swap! review-findings-seq #(max (inc %) (System/currentTimeMillis))))
 
 (defn- review-findings-queue-order [[id e]] [(or (:seq e) 0) (str (:queued-at e)) id])
+
+;; The unresolved-state is never stored on its own: it is rebuilt every time
+;; from the durable records themselves, i.e. the marked Notes lines (in Notes
+;; order) followed by the pending file (in queue order). A restart therefore
+;; loses no state change, and nothing can be "written but not in the state".
+;; Memory-only records are left out until written (a pass never reports the
+;; resolution of a record that may vanish with the process).
+(def review-findings-line-re
+  #"^- [^:]+: review-findings:([0-9a-f]{12}) (レビュー未解決所見|レビュー所見を取得できず（実指摘なしではない）|レビュー所見解消|レビュー非ブロッキング所見) PR (\S+) ")
+
+(def review-findings-label-kind
+  {"レビュー未解決所見" :blocking
+   "レビュー所見を取得できず（実指摘なしではない）" :unavailable
+   "レビュー所見解消" :resolved
+   "レビュー非ブロッキング所見" :low-only})
+
+(defn review-findings-note-steps
+  "Pure: the state steps of the marked record lines among lines, in order."
+  [lines]
+  (keep (fn [line]
+          (when-let [[_ id label u] (re-find review-findings-line-re line)]
+            (let [kind (review-findings-label-kind label)]
+              (cond-> {:id id :kind kind :pr-url u}
+                (= :resolved kind) (assoc :prior-id (second (re-find #"前回の所見 ([0-9a-f]{12}) は" line)))))))
+        lines))
+
+(defn- review-findings-ticket-state
+  "The unresolved-state of ticket-id, rebuilt from its Notes and pending file."
+  [ticket-id]
+  (let [path (ticket-path ticket-id)
+        written (try (vec (review-findings-note-steps (if (fs/exists? path) (read-lines path) [])))
+                     (catch Exception e
+                       (log! (str "review findings: could not read Notes of " ticket-id ": "
+                                  (sanitize-blocker-reason (.getMessage e))))
+                       []))
+        written-ids (set (map :id written))
+        queued (->> (get (read-edn-safely (review-findings-pending-path) {}) ticket-id {})
+                    (sort-by review-findings-queue-order)
+                    (remove (fn [[id _]] (contains? written-ids id)))
+                    (map (fn [[id e]] (assoc (select-keys e [:kind :pr-url :prior-id]) :id id))))]
+    (reduce review-findings-state-step {} (concat written queued))))
 
 (defn- review-findings-queued?
   "True while any record of ticket-id is still waiting to be written."
@@ -5555,13 +5563,13 @@
     ;; moves it behind a record queued after it).
     (try (write-edn-atomically! (review-findings-pending-path)
                                 (update-in (read-edn-safely (review-findings-pending-path) {}) [ticket-id (:id e)]
-                                           #(if % (merge entry (select-keys % [:seq :queued-at :state-pending?])) entry)))
+                                           #(if % (merge entry (select-keys % [:seq :queued-at])) entry)))
          :file
          (catch Exception pe
            (log! (str "review findings: could not keep pending record for " ticket-id " " (:id e)
                       "; kept in memory: " (sanitize-blocker-reason (.getMessage pe))))
            (swap! review-findings-memory-pending update-in [ticket-id (:id e)]
-                  #(if % (merge entry (select-keys % [:seq :queued-at :state-pending?])) (assoc entry :state-pending? true)))
+                  #(if % (merge entry (select-keys % [:seq :queued-at])) entry))
            :memory))))
 
 (defn- flush-pending-review-findings*
@@ -5588,12 +5596,6 @@
             done (set (map :id (filter #(#{:recorded :duplicate} (:status %)) results)))
             remaining-file (apply dissoc file-entries done)
             remaining-mem (apply dissoc mem-entries done)]
-        ;; Records whose state step was held back (they were memory-only when
-        ;; recorded; the flag survives a move to the pending file) advance the
-        ;; state now that they are written. Also retries the state backlog.
-        (update-review-findings-state! ticket-id (keep (fn [[id e]] (when (and (contains? done id) (:state-pending? e))
-                                                                      (assoc e :id id)))
-                                                       (sort-by review-findings-queue-order entries)))
         (swap! review-findings-memory-pending
                (fn [m] (if (seq remaining-mem) (assoc m ticket-id remaining-mem) (dissoc m ticket-id))))
         ;; Try to make the still-unwritten memory records durable again.
@@ -5608,14 +5610,11 @@
 (defn flush-pending-review-findings!
   "Write the pending records of ticket-id. Returns one {:id :kind :status} per record tried."
   [ticket-id]
-  (with-review-findings-lock #(let [r (or (flush-pending-review-findings* ticket-id) [])]
-                                (update-review-findings-state! ticket-id [])
-                                r)))
+  (with-review-findings-lock #(or (flush-pending-review-findings* ticket-id) [])))
 
 (defn flush-all-pending-review-findings! []
   (doseq [ticket-id (distinct (concat (keys (read-edn-safely (review-findings-pending-path) {}))
-                                      (keys @review-findings-memory-pending)
-                                      (keys @review-findings-state-backlog)))]
+                                      (keys @review-findings-memory-pending)))]
     (try (flush-pending-review-findings! ticket-id)
          (catch Exception e (log! (str "review findings: flush failed for " ticket-id ": " (sanitize-blocker-reason (.getMessage e))))))))
 
@@ -5623,13 +5622,12 @@
   "BOXP-775: write the gate's review records to the ticket Notes once each.
   A failed write stays pending (file, or memory when the file write fails too)
   and is retried later, in order (FIFO per ticket); nothing is dropped silently.
-  The unresolved-state table advances only for records written or durably
-  pending. Returns the per-record statuses."
+  The unresolved-state is rebuilt from the Notes and the pending file, so it
+  covers exactly the records written or durably pending. Returns the per-record statuses."
   [ticket-id run-id g]
   (with-review-findings-lock
    (fn []
      (flush-pending-review-findings* ticket-id)
-     (update-review-findings-state! ticket-id [])
      (let [entries (review-findings-entries ticket-id run-id g (review-findings-ticket-state ticket-id))]
        (when (seq entries)
          ;; FIFO per ticket: while an older record waits, or once one of this
@@ -5646,9 +5644,7 @@
                                                 (log! (str "review findings: Notes write failed for " ticket-id " " (:id e) "; kept pending: " reason))
                                                 (assoc base :status :failed :reason reason
                                                        :pending? (enqueue-review-finding! ticket-id run-id e)))))]
-                                 (recur more (= :failed (:status r)) (conj acc r)))))))
-               applied (set (map :id (remove #(= :memory (:pending? %)) results)))]
-           (update-review-findings-state! ticket-id (filter #(contains? applied (:id %)) entries))
+                                 (recur more (= :failed (:status r)) (conj acc r)))))))]
            (try (let [path (fs/path (run-dir ticket-id run-id) "review-findings.edn")
                       ;; Reprocessing the same run keeps the first outcome of
                       ;; each record (a later :duplicate does not hide :recorded).
