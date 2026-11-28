@@ -319,5 +319,124 @@
     (is (str/includes? p "Do not attach a Lean file for form"))
     (is (str/includes? p "real concurrency is not covered") "the limits of the guarantee are recorded")))
 
+;; ---------------------------------------------------------------------------
+;; BOXP-781: the measure-only criteria trial (spec: Projects/codex-workspace-disk-growth/criteria-trial-spec.md)
+
+(defn- inst [s] (java.time.Instant/parse s))
+
+(deftest criteria-trial-window-is-bounded-and-expires
+  (let [cfg {:id "BOXP-781" :from "2026-11-28T18:00:00Z" :until "2026-11-29T18:00:00Z"}]
+    (is (= "BOXP-781" (:id (criteria-trial-window-of cfg (inst "2026-11-28T18:00:00Z")))) "from is inclusive")
+    (is (some? (criteria-trial-window-of cfg (inst "2026-11-29T17:59:59Z"))))
+    (is (nil? (criteria-trial-window-of cfg (inst "2026-11-29T18:00:00Z"))) "until is exclusive: the trial ends by itself")
+    (is (nil? (criteria-trial-window-of cfg (inst "2026-11-28T17:59:59Z"))) "not yet started"))
+  (testing "a window longer than 25 hours is refused, not truncated"
+    (is (= ::invalid-or-nil (or (criteria-trial-window-of {:from "2026-11-28T18:00:00Z" :until "2026-12-05T18:00:00Z"} (inst "2026-11-28T19:00:00Z")) ::invalid-or-nil)))
+    (is (some? (criteria-trial-window-of {:from "2026-11-28T18:00:00Z" :until "2026-11-29T19:00:00Z"} (inst "2026-11-28T19:00:00Z"))) "exactly 25 hours is allowed")
+    (is (nil? (criteria-trial-window-of {:from "2026-11-28T18:00:00Z" :until "2026-11-29T19:00:01Z"} (inst "2026-11-28T19:00:00Z"))) "25 hours and 1 second is over the limit")
+    (is (nil? (criteria-trial-window-of {:from "2026-11-28T18:00:00Z" :until "2026-11-29T19:00:59Z"} (inst "2026-11-28T19:00:00Z"))) "no rounding down to minutes"))
+  (is (nil? (criteria-trial-window-of {:from "2026-11-29T18:00:00Z" :until "2026-11-28T18:00:00Z"} (inst "2026-11-28T19:00:00Z"))) "until before from")
+  (is (nil? (criteria-trial-window-of {:from "bad" :until "2026-11-29T18:00:00Z"} (inst "2026-11-28T19:00:00Z"))))
+  (is (nil? (criteria-trial-window-of nil (inst "2026-11-28T19:00:00Z"))) "no file, no trial")
+  (is (nil? (criteria-trial-window-of [1 2] (inst "2026-11-28T19:00:00Z")))))
+
+(deftest criteria-trial-classifies-by-name-only
+  (let [c #(criteria-trial-class (str/split % #"/"))]
+    (is (= :generated (c "ghq/github.com/o/r/node_modules/x.js")))
+    (is (= :git-internal (c "ghq/github.com/o/r/.git/objects/ab/cd")))
+    (is (= :git-internal (c "ghq/github.com/o/r/node_modules/p/.git/HEAD")) ".git wins over node_modules")
+    (is (= :git-internal (c "ghq/github.com/o/r/.git")) "a worktree's .git file")
+    (is (= :download (c "ghq/github.com/o/r/.tools/hugetracker/a.c")))
+    (is (= :download (c "trial/uv-cache/sdists/x.tar.gz")) "a download outside ghq is still a download")
+    (is (= :generated (c "ghq/github.com/o/r/apps/w/.lake/build/x.olean")))
+    (is (= :checkout-other (c "ghq/github.com/o/r/src/a.clj")))
+    (is (= :checkout-other (c "ghq/github.com/o/r/dist")) "a file named dist is not a dist directory")
+    (is (= :outside-ghq (c "tmp/out.png")))
+    (is (= :outside-ghq (c "pr-body.md")))))
+
+(deftest criteria-trial-summary-counts-candidates-only-for-held-runs
+  (let [runs {["T-1" "r1"] {:generated 100 :download 10 :git-internal 5 :checkout-other 20 :outside-ghq 3}
+              ["T-1" "r2"] {:generated 1000 :checkout-other 1}
+              ["T-2" "r3"] {:outside-ghq 7}
+              ["T-3" "r4"] {:generated 50}}
+        outcomes {["T-1" "r1"] "held:outside-checkout" ["T-2" "r3"] "held:git-error" ["T-3" "r4"] "deleted"}
+        s (criteria-trial-summary runs outcomes)]
+    (is (= {:runs 1 :bytes 138 :generated 100 :download 10 :git-internal 5 :checkout-other 20 :outside-ghq 3}
+           (get-in s [:by-status "held:outside-checkout"])))
+    (is (= {:runs 1 :bytes 1001 :generated 1000 :download 0 :git-internal 0 :checkout-other 1 :outside-ghq 0}
+           (get-in s [:by-status "not-judged"])) "a run with no outcome this pass is time-protected, not a candidate")
+    (is (= 50 (get-in s [:by-status "deleted" :bytes])))
+    (is (= {:b-named 100 :b-download 10 :b-git-check 20 :d-outside 10 :keep 5} (:candidate s)))
+    (is (= [{:ticket "T-1" :run "r1" :status "held:outside-checkout" :candidate-bytes 133}
+            {:ticket "T-2" :run "r3" :status "held:git-error" :candidate-bytes 7}]
+           (:top-held-runs s)))))
+
+(deftest criteria-trial-alerts-before-the-guard
+  (let [gib 1073741824 soft (* 16 gib)]
+    (is (= #{} (criteria-trial-alerts (* 30 gib) soft nil)))
+    (is (= #{:near-guard} (criteria-trial-alerts (dec (* 20 gib)) soft nil)) "below soft + 4GiB")
+    (is (= #{} (criteria-trial-alerts (* 20 gib) soft nil)))
+    (is (= #{:fast-drop} (criteria-trial-alerts (* 30 gib) soft 23.9)))
+    (is (= #{} (criteria-trial-alerts (* 30 gib) soft 24.0)))))
+
+(deftest criteria-trial-hours-to-guard-from-the-previous-record
+  (let [gib 1073741824]
+    (is (= {:free-drop-bytes-per-hour gib :hours-to-soft-guard 10.0}
+           (criteria-trial-drop (* 26 gib) (* 16 gib) (inst "2026-11-28T20:00:00Z")
+                                {:fs-free-bytes (* 27 gib) :at "2026-11-28T19:00:00Z"})))
+    (is (= {:free-drop-bytes-per-hour (- gib) :hours-to-soft-guard nil}
+           (criteria-trial-drop (* 28 gib) (* 16 gib) (inst "2026-11-28T20:00:00Z")
+                                {:fs-free-bytes (* 27 gib) :at "2026-11-28T19:00:00Z"})) "free space grew")
+    (is (= {:free-drop-bytes-per-hour nil :hours-to-soft-guard nil}
+           (criteria-trial-drop (* 26 gib) (* 16 gib) (inst "2026-11-28T20:00:00Z")
+                                {:fs-free-bytes (* 27 gib) :at "2026-11-28T19:45:00Z"})) "less than 30 minutes apart")
+    (is (= {:free-drop-bytes-per-hour nil :hours-to-soft-guard nil}
+           (criteria-trial-drop (* 26 gib) (* 16 gib) (inst "2026-11-28T20:00:00Z") nil)))
+    (is (= {:free-drop-bytes-per-hour gib :hours-to-soft-guard 10.0}
+           (criteria-trial-drop (* 26 gib) (* 16 gib) (inst "2026-11-28T20:00:00Z")
+                                {:fs-free-bytes (* 27 gib) :scan-at "2026-11-28T19:00:00Z" :at "2026-11-28T19:40:00Z"}))
+        "elapsed time is between scan starts, not from the previous write")))
+
+(deftest criteria-trial-report-separates-generation-from-existing-reclaim
+  (let [w {:id "BOXP-781" :from "2026-11-28T18:00:00Z" :until "2026-11-29T18:00:00Z"}
+        t (fn [at free used] {:event :criteria-trial :trial-id "BOXP-781" :from "2026-11-28T18:00:00Z" :at at
+                              :fs-free-bytes free :fs-used-bytes used :scan-complete true :alert [] :candidate {:b-named 1}})
+        events [(t "2026-11-28T18:10:00Z" 300 700)
+                {:event :prune-run :result :deleted :allocated-bytes 40 :measured? true :at "2026-11-28T19:00:00Z"}
+                {:event :prune-run :result :held :allocated-bytes 999 :at "2026-11-28T19:00:00Z"}
+                {:event :generated-reclaim :result :reclaimed :allocated-bytes 10 :at "2026-11-28T19:00:00Z"}
+                {:event :generated-reclaim :result :would-reclaim :allocated-bytes 500 :at "2026-11-28T19:00:00Z"}
+                {:event :prune-run :result :deleted :allocated-bytes 5000 :measured? true :at "2026-11-29T18:00:00Z"}
+                (assoc (t "2026-11-29T17:00:00Z" 250 750) :alert [:near-guard])
+                (assoc (t "2026-11-29T17:30:00Z" 260 740) :trial-id "other")]
+        r (criteria-trial-report events w)]
+    (is (= 2 (:records r)) "another trial's records are not mixed in")
+    (is (= {:first 300 :last 250 :min 250} (dissoc (:free r) :series)))
+    (is (= 50 (get-in r [:existing-reclaim :total-bytes])) "only deletions inside [from, until); would-reclaim and held are not reclaim")
+    (is (= 50 (:used-delta-bytes r)))
+    (is (= 100 (:generated-bytes-est r)) "generation = used growth + what the existing reclaim removed")
+    (is (= {:near-guard 1} (:alerts r)))))
+
+(deftest criteria-trial-report-counts-reclaim-only-between-records-and-by-scan-start
+  (let [w {:id "BOXP-781" :from "2026-11-28T18:00:00Z" :until "2026-11-29T18:00:00Z"}
+        t (fn [scan-at at free used] {:event :criteria-trial :trial-id "BOXP-781" :from "2026-11-28T18:00:00Z" :scan-at scan-at :at at
+                                      :fs-free-bytes free :fs-used-bytes used :scan-complete true :alert []})
+        rc (fn [at b] {:event :prune-run :result :deleted :allocated-bytes b :measured? true :at at})
+        events [(rc "2026-11-28T18:05:00Z" 70)
+                (t "2026-11-28T18:10:00Z" "2026-11-28T18:20:00Z" 300 700)
+                (rc "2026-11-28T19:00:00Z" 50)
+                (t "2026-11-29T17:00:00Z" "2026-11-29T17:10:00Z" 250 750)
+                (rc "2026-11-29T17:30:00Z" 30)]
+        r (criteria-trial-report events w)]
+    (is (= 150 (get-in r [:existing-reclaim :total-bytes])) "the whole window still reports every existing reclaim")
+    (is (= 50 (:reclaimed-between-records-bytes r)) "only (first scan-at, last scan-at]")
+    (is (= 100 (:generated-bytes-est r)) "used growth 50 + reclaim between the records 50"))
+  (testing "a scan started before until but written after it is inside the window"
+    (let [w {:id "BOXP-781" :from "2026-11-28T18:00:00Z" :until "2026-11-29T18:00:00Z"}
+          e {:event :criteria-trial :trial-id "BOXP-781" :from "2026-11-28T18:00:00Z" :scan-at "2026-11-29T17:55:00Z" :at "2026-11-29T18:05:00Z"
+             :fs-free-bytes 1 :fs-used-bytes 1 :scan-complete true :alert []}
+          late (assoc e :scan-at "2026-11-29T18:00:00Z" :at "2026-11-29T18:10:00Z")]
+      (is (= 1 (:records (criteria-trial-report [e late] w)))))))
+
 (let [{:keys [fail error]} (run-tests)]
   (System/exit (if (zero? (+ fail error)) 0 1)))

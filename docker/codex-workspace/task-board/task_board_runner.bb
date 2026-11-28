@@ -7573,6 +7573,11 @@
             (when (and (contains? #{:deleted :held} result) (workspace-metrics-enabled?))
               (record-prune-result! ctx ticket-id run-id result reason mode
                                     (if (= result :held) (measure-workspace! ctx run-path true) measurement)))
+            (when-let [outcomes (:run-outcomes ctx)]
+              (case result
+                :deleted (swap! outcomes assoc [ticket-id run-id] "deleted")
+                :held (swap! outcomes assoc [ticket-id run-id] (str "held:" (first (str/split (or reason "unknown") #" " 2))))
+                nil))
             (case result
               :deleted (do (swap! stats update :deleted inc)
                            (when (= mode :stale) (swap! stats update :stale-deleted inc)))
@@ -8318,7 +8323,180 @@
                    (into {} (keep (fn [[t v]] (let [b (:bytes v 0)] (when (> b ticket-budget) [t b])))) tickets)
                    {})})
 
-(defn capacity-attribution! []
+;; BOXP-781: a measure-only 24h trial of the BOXP-780 criteria B/D.
+;; Spec: Projects/codex-workspace-disk-growth/criteria-trial-spec.md (vault).
+;; It rides on the capacity-attribution find (no new scan), never deletes,
+;; and never changes a prune, salvage, reclaim or disk-guard decision.
+
+(def criteria-trial-max-hours 25)
+(def criteria-trial-classes [:generated :download :git-internal :checkout-other :outside-ghq])
+(def criteria-trial-generated-names #{"node_modules" "dist" "target" ".next" "__pycache__" ".venv" "venv" ".gradle" ".cpcache" ".shadow-cljs" ".lake"})
+(def criteria-trial-download-names #{".tools" ".cache" "uv-cache" "huggingface" ".npm" "pip-cache"})
+
+(defn criteria-trial-config
+  "Parsed {:id :from :until} (instant strings) of a valid config: both times
+  parse, from < until and the window is at most criteria-trial-max-hours."
+  [config]
+  (try
+    (when (map? config)
+      (let [from (java.time.Instant/parse (str (:from config)))
+            until (java.time.Instant/parse (str (:until config)))]
+        (when (and (.isBefore from until)
+                   (not (.isAfter until (.plus from (java.time.Duration/ofHours criteria-trial-max-hours)))))
+          {:id (str (or (:id config) "criteria-trial")) :from (str from) :until (str until)})))
+    (catch Exception _ nil)))
+
+(defn criteria-trial-window-of
+  "The trial window when config is valid and from <= at < until."
+  [config at]
+  (when-let [{:keys [from until] :as w} (criteria-trial-config config)]
+    (when (and (not (.isBefore at (java.time.Instant/parse from))) (.isBefore at (java.time.Instant/parse until)))
+      w)))
+
+(def criteria-trial-warnings (atom #{}))
+
+(defn criteria-trial-window [at]
+  (let [path (fs/path (root) "criteria-trial.edn")]
+    (when (fs/exists? path {:nofollow-links true})
+      (let [config (try (read-edn-file path nil) (catch Exception _ ::invalid))]
+        (if (criteria-trial-config config)
+          (criteria-trial-window-of config at)
+          (do (when-not (contains? @criteria-trial-warnings (pr-str config))
+                (swap! criteria-trial-warnings conj (pr-str config))
+                (log! "criteria-trial: warning invalid config"))
+              nil))))))
+
+(defn criteria-trial-class
+  "Class of a file from its path parts below the run directory (names only)."
+  [parts]
+  (let [dirs (butlast parts)]
+    (cond (some #{".git"} parts) :git-internal
+          (some criteria-trial-generated-names dirs) :generated
+          (some criteria-trial-download-names dirs) :download
+          (= "ghq" (first parts)) :checkout-other
+          :else :outside-ghq)))
+
+(defn criteria-trial-summary
+  "runs: {[ticket run] {class bytes}}; outcomes: {[ticket run] \"held:<reason>\" | \"deleted\"}."
+  [runs outcomes]
+  (let [zero (zipmap criteria-trial-classes (repeat 0))
+        rows (map (fn [[k v]] (let [v (merge zero v)]
+                                {:key k :status (get outcomes k "not-judged") :classes v
+                                 :bytes (reduce + 0 (vals v))
+                                 :candidate-bytes (reduce + 0 (vals (dissoc v :git-internal)))}))
+                  runs)
+        by-status (reduce (fn [m {:keys [status classes bytes]}]
+                            (update m status (fn [s] (merge-with + (or s (assoc zero :runs 0 :bytes 0)) (assoc classes :runs 1 :bytes bytes)))))
+                          {} rows)
+        held (filter #(str/starts-with? (:status %) "held:") rows)
+        sum (fn [k] (reduce + 0 (map #(get-in % [:classes k]) held)))]
+    {:by-status by-status
+     :candidate {:b-named (sum :generated) :b-download (sum :download) :b-git-check (sum :checkout-other)
+                 :d-outside (sum :outside-ghq) :keep (sum :git-internal)}
+     :top-held-runs (vec (map (fn [{[t r] :key :keys [status candidate-bytes]}] {:ticket t :run r :status status :candidate-bytes candidate-bytes})
+                              (take 20 (sort-by (fn [{[t r] :key c :candidate-bytes}] [(- c) t r]) held))))}))
+
+(defn criteria-trial-alerts [free soft-guard hours-to-soft]
+  (cond-> #{}
+    (and free (< free (+ soft-guard 4294967296))) (conj :near-guard)
+    (and hours-to-soft (< hours-to-soft 24.0)) (conj :fast-drop)))
+
+(defn criteria-trial-drop
+  "Free-space drop per hour since the previous trial record (>= 30 minutes apart),
+  timed between scan starts (:scan-at; old records only have :at) since free
+  space is measured when a scan starts."
+  [free soft-guard at previous]
+  (let [hours (when (and previous (number? (:fs-free-bytes previous)) free)
+                (/ (double (.toMillis (java.time.Duration/between (java.time.Instant/parse (str (or (:scan-at previous) (:at previous)))) at))) 3600000.0))
+        rate (when (and hours (>= hours 0.5)) (long (Math/round (/ (- (:fs-free-bytes previous) free) hours))))]
+    {:free-drop-bytes-per-hour rate
+     :hours-to-soft-guard (when (and rate (pos? rate))
+                            (/ (double (Math/round (* 10.0 (max 0.0 (/ (double (- free soft-guard)) rate))))) 10.0))}))
+
+(defn criteria-trial-previous [window]
+  (let [path (fs/path (root) "metrics" "workspace-capacity.edn")]
+    (when (fs/exists? path)
+      (with-open [reader (clojure.java.io/reader (str path))]
+        (last (keep (fn [line]
+                      (when (str/includes? line ":criteria-trial")
+                        (try (let [e (edn/read-string line)]
+                               (when (and (= :criteria-trial (:event e)) (= (:id window) (:trial-id e))
+                                          (= (:from window) (:from e))) e))
+                             (catch Throwable _ nil))))
+                    (line-seq reader)))))))
+
+(defn criteria-trial-record! [window at runs outcomes {:keys [free used complete]}]
+  (try
+    (let [soft (prune-setting "CODEX_TASK_BOARD_SOFT_MIN_FREE_BYTES" #(parse-bounded-long % 17179869184 0))
+          hard (prune-setting "CODEX_TASK_BOARD_MIN_FREE_BYTES" #(parse-bounded-long % 8589934592 0))
+          drop (criteria-trial-drop free soft at (criteria-trial-previous window))
+          alerts (criteria-trial-alerts free soft (:hours-to-soft-guard drop))
+          summary (criteria-trial-summary runs outcomes)]
+      (workspace-metrics-write! (merge {:event :criteria-trial :trial-id (:id window) :from (:from window) :until (:until window) :scan-at (str at)
+                                        :scan-complete (boolean complete) :fs-free-bytes free :fs-used-bytes used
+                                        :soft-guard-bytes soft :hard-guard-bytes hard :alert (vec (sort alerts))}
+                                       drop summary))
+      (log! (str "criteria-trial: record free=" free " candidate=" (pr-str (:candidate summary))
+                 " hours-to-soft-guard=" (:hours-to-soft-guard drop) " scan-complete=" (boolean complete)))
+      (when (seq alerts)
+        (log! (str "criteria-trial: warning alert=" (str/join "," (map name (sort alerts))) " free=" free " soft-guard=" soft
+                   " hours-to-soft-guard=" (:hours-to-soft-guard drop)))))
+    (catch Throwable e (log! (str "criteria-trial: warning " (one-line (.getMessage e)))))))
+
+(defn criteria-trial-report
+  "Read-only aggregate of one trial window from the metrics lines (spec: 集計コマンド)."
+  [events {:keys [id from until]}]
+  (let [from-i (java.time.Instant/parse from) until-i (java.time.Instant/parse until)
+        ;; A trial record belongs to the window by when its scan started (:scan-at; old
+        ;; records only have :at): a scan started just before until is written after it.
+        t-of (fn [e] (try (java.time.Instant/parse (str (or (:scan-at e) (:at e)))) (catch Exception _ nil)))
+        in? (fn [e] (if-let [t (t-of e)] (and (not (.isBefore t from-i)) (.isBefore t until-i)) false))
+        window (filter in? events)
+        trials (filter #(and (= :criteria-trial (:event %)) (= id (:trial-id %)) (= from (:from %))) window)
+        reclaim-bytes (fn [e] (when (or (and (= :prune-run (:event e)) (= :deleted (:result e)))
+                                        (and (= :generated-reclaim (:event e)) (= :reclaimed (:result e))))
+                                (:allocated-bytes e)))
+        run-deleted (reduce + 0 (keep #(when (and (= :prune-run (:event %)) (= :deleted (:result %))) (:allocated-bytes %)) window))
+        generated-reclaimed (reduce + 0 (keep #(when (and (= :generated-reclaim (:event %)) (= :reclaimed (:result %))) (:allocated-bytes %)) window))
+        reclaimed (+ run-deleted generated-reclaimed)
+        frees (keep :fs-free-bytes trials)
+        first-t (first trials) last-t (last trials)
+        used-delta (when (and first-t last-t (number? (:fs-used-bytes first-t)) (number? (:fs-used-bytes last-t)))
+                     (- (:fs-used-bytes last-t) (:fs-used-bytes first-t)))
+        ;; Only reclaim in (first scan, last scan] shows up in used-delta.
+        between (when used-delta
+                  (let [a (t-of first-t) b (t-of last-t)]
+                    (reduce + 0 (keep (fn [e] (when-let [t (try (java.time.Instant/parse (str (:at e))) (catch Exception _ nil))]
+                                                (when (and (.isAfter t a) (not (.isAfter t b))) (reclaim-bytes e))))
+                                      events))))]
+    {:trial-id id :from from :until until :records (count trials)
+     :incomplete-scans (count (remove :scan-complete trials))
+     :free {:first (first frees) :last (last frees) :min (when (seq frees) (apply min frees))
+            :series (mapv (fn [e] [(or (:scan-at e) (:at e)) (:fs-free-bytes e)]) trials)}
+     :existing-reclaim {:run-deleted-bytes run-deleted :generated-reclaimed-bytes generated-reclaimed :total-bytes reclaimed
+                        :deleted-unmeasured (count (filter #(and (= :prune-run (:event %)) (= :deleted (:result %)) (not (:measured? %))) window))}
+     :used-delta-bytes used-delta
+     :reclaimed-between-records-bytes between
+     :generated-bytes-est (when used-delta (+ used-delta between))
+     :alerts (frequencies (mapcat :alert trials))
+     :last (select-keys last-t [:at :candidate :by-status :top-held-runs :hours-to-soft-guard :free-drop-bytes-per-hour])}))
+
+(defn print-criteria-trial-report! []
+  (let [window (criteria-trial-config (try (read-edn-file (fs/path (root) "criteria-trial.edn") nil) (catch Exception _ nil)))
+        path (fs/path (root) "metrics" "workspace-capacity.edn")]
+    (when-not window (fail "criteria-trial.edn is missing or invalid"))
+    (let [events (if (fs/exists? path)
+                   (with-open [reader (clojure.java.io/reader (str path))]
+                     (doall (keep (fn [line]
+                                    (when (some #(str/includes? line %) [":criteria-trial" ":prune-run" ":generated-reclaim"])
+                                      (try (let [e (edn/read-string line)] (when (map? e) e)) (catch Throwable _ nil))))
+                                  (line-seq reader))))
+                   [])]
+      (prn (criteria-trial-report events window)))))
+
+(defn capacity-attribution!
+  ([] (capacity-attribution! {}))
+  ([outcomes]
   (try
     (when (prune-setting "CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION" parse-prune-enabled)
       (let [instant (now)
@@ -8327,6 +8505,7 @@
             interval (prune-setting "CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION_MIN_INTERVAL_MINUTES" #(parse-bounded-long % 50 0))]
         (when (or (nil? latest) (not (.isAfter (::instant latest) (.minus instant (java.time.Duration/ofMinutes interval)))))
           (let [root-path (or (not-empty (System/getenv "CODEX_TASK_BOARD_CAPACITY_ROOT")) "/home/boxp")
+                trial (criteria-trial-window instant)
                 guard (prune-setting "CODEX_TASK_BOARD_CAPACITY_GUARD_BYTES" #(parse-bounded-long % 8589934592 0))
                 store (java.io.File. root-path)
                 total (.getTotalSpace store) free (.getUsableSpace store) used (- total free)
@@ -8354,6 +8533,9 @@
                 proc (.start builder)
                 result (atom {:areas {} :subareas {} :workspaces {:bytes 0 :fresh-bytes 0 :by-kind {"node_modules" 0 "dist" 0 "git" 0 "other" 0}} :outside-workspaces {:bytes 0 :fresh-bytes 0} :scanned-bytes 0 :scanned-files 0})
                 seen (java.util.HashSet.)
+                ;; BOXP-781: the trial counts each inode once per run, independent of the
+                ;; overall dedup above (its per-run sizes are upper bounds; spec: hardlink).
+                trial-seen (java.util.HashSet.)
                 fresh-cutoff (- (/ (.toEpochMilli instant) 1000.0) 86400.0)
                 scan (future
                       ;; Killing a timed-out find closes this stream under the reader; the
@@ -8380,6 +8562,8 @@
                                          ticket (when (and workspace? (> (count parts) 3)) (nth parts 2))
                                          run-id (when (and ticket (> (count parts) 4)) (nth parts 3))]
                                      (.reset record)
+                                     (when (and trial run-id (> (count parts) 4) (or (= "1" links) (.add trial-seen [ticket run-id inode])))
+                                       (swap! result update-in [:trial-runs [ticket run-id] (criteria-trial-class (drop 4 parts))] (fnil + 0) bytes))
                                      (when (or (= "1" links) (.add seen inode))
                                        (swap! result (fn [r]
                                                        (cond-> (-> r (update :scanned-bytes + bytes) (update :scanned-files inc)
@@ -8413,7 +8597,7 @@
                                                 (prune-setting "CODEX_TASK_BOARD_TICKET_BUDGET_BYTES" #(parse-bounded-long % default-ticket-budget-bytes 0))
                                                 (prune-setting "CODEX_TASK_BOARD_WORKSPACES_BUDGET_BYTES" #(parse-bounded-long % default-workspaces-budget-bytes 0))
                                                 complete)
-                event (merge (dissoc r :tickets) ticket-budget {:workspace-budget budget} {:event :capacity-attribution :root root-path :fs-total-bytes total :fs-free-bytes free :fs-used-bytes used
+                event (merge (dissoc r :tickets :trial-runs) ticket-budget {:workspace-budget budget} {:event :capacity-attribution :root root-path :fs-total-bytes total :fs-free-bytes free :fs-used-bytes used
                                 :scan-ms (quot (- (System/nanoTime) started) 1000000) :scan-exit exit :scan-complete complete :fresh-window-hours 24 :subareas subareas
                                 :baseline-at (:at baseline) :baseline-hours hours :used-delta-bytes delta :used-bytes-per-day rate :area-delta-bytes area-deltas :days-to-guard days})]
             (workspace-metrics-write! event)
@@ -8426,10 +8610,11 @@
             (when-not complete
               (log! (str "capacity-budget: unknown scan-incomplete scan-exit=" exit " workspaces>=" (:total-bytes budget)
                          " (sums are lower bounds; within-budget cannot be confirmed)")))
+            (when trial (criteria-trial-record! trial instant (:trial-runs r) outcomes {:free free :used used :complete complete}))
             (log! (str "capacity-attribution: used=" used " free=" free " outside-workspaces=" (get-in r [:outside-workspaces :bytes])
                        " fresh24h=" (reduce + 0 (map :fresh-bytes (vals (:areas r)))) " days-to-guard=" days
                        " top-fresh=" (str/join "," (map (fn [[a v]] (str (one-line a) ":" (:fresh-bytes v))) (capacity-top-fresh (:areas r))))))))))
-    (catch Throwable e (log! (str "capacity-attribution: warning " (one-line (.getMessage e)))))))
+    (catch Throwable e (log! (str "capacity-attribution: warning " (one-line (.getMessage e))))))))
 
 (defn prune-workspaces!
   ([] (prune-workspaces! {}))
@@ -8447,6 +8632,7 @@
               :measure-count (atom 0)
               :salvage-count (atom 0)
               :measure-limit (if (workspace-metrics-enabled?) (prune-setting "CODEX_TASK_BOARD_WORKSPACE_METRICS_MAX_MEASURE" #(parse-bounded-long % 20 0)) 0)
+              :run-outcomes (atom {})
               :capacity (atom {:reclaimed-allocated-bytes-est 0 :deleted-unmeasured 0 :held-bytes-by-reason {} :held-unmeasured 0})
               :stats (atom {:stale-deleted 0 :deleted 0 :held 0 :recent 0 :branches 0 :empty-dirs 0 :skipped {}})}
          guarded (fn [label path f]
@@ -8479,7 +8665,7 @@
                  capacity (assoc @(:capacity ctx) :fs-free-bytes (when store (.getUsableSpace store)) :fs-total-bytes (when store (.getTotalSpace store))
                                  :duration-ms (quot (- (System/nanoTime) started-nanos) 1000000))]
              (workspace-metrics-write! (merge {:event :prune-summary} @(:stats ctx) capacity))
-             (when (and (not dry-run?) (not (stop?))) (capacity-attribution!)))
+             (when (and (not dry-run?) (not (stop?))) (capacity-attribution! @(:run-outcomes ctx))))
            (catch Exception e (log! (str "workspace-metrics: warning " (.getMessage e))))))
        (log! (str "prune: summary deleted=" deleted
                   " stale-deleted=" stale-deleted
@@ -8983,7 +9169,7 @@
                         :wait-reason (:wait-reason (read-edn-file (fs/path (run-dir ticket-id run-id) "summary.edn") {}))}))))) vec)))
 
 (defn usage []
-  (println "usage: task_board_runner.bb <recheck-list|recheck-reserve BOXP-N --at ISO --assignee AGENT --by NAME|recheck-cancel BOXP-N --by NAME|recheck-audit|tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|reclaim-generated [--dry-run]|workspace-metrics [--since-hours N]|localllm-migrate-markers [--apply]|gate-budget-status BOXP-N|gate-budget-exclude-pr BOXP-N owner/repo#N --by NAME|gate-budget-grant <BOXP-N|owner/repo#N> --amount N --by NAME|quota-reprobe ROUTE>")
+  (println "usage: task_board_runner.bb <recheck-list|recheck-reserve BOXP-N --at ISO --assignee AGENT --by NAME|recheck-cancel BOXP-N --by NAME|recheck-audit|tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|reclaim-generated [--dry-run]|workspace-metrics [--since-hours N]|criteria-trial-report|localllm-migrate-markers [--apply]|gate-budget-status BOXP-N|gate-budget-exclude-pr BOXP-N owner/repo#N --by NAME|gate-budget-grant <BOXP-N|owner/repo#N> --amount N --by NAME|quota-reprobe ROUTE>")
   (System/exit 2))
 
 (defn arg-value [args flag]
@@ -11117,6 +11303,7 @@
   "reclaim-generated" (let [args (vec (rest *command-line-args*))]
                         (when-not (contains? #{[] ["--dry-run"]} args) (usage))
                         (reclaim-generated-outputs! {:dry-run? (= ["--dry-run"] args)}))
+  "criteria-trial-report" (do (when (seq (rest *command-line-args*)) (usage)) (print-criteria-trial-report!))
   "workspace-metrics" (let [args (vec (rest *command-line-args*))
                             hours (if (empty? args) 48
                                     (when (and (= 2 (count args)) (= "--since-hours" (first args)))
