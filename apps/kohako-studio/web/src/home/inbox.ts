@@ -555,12 +555,24 @@ export function initInbox(
     )
       void openNotification(e.data.eventId)
   })
-  /** 開き終えたら true。案内済み・既読の送信が通信失敗したら false（例外は外へ出さない）。 */
+  /**
+   * 開き終えたら true。案内済み・既読の送信が通信失敗または 2xx 以外なら受信箱を開かず false（例外は外へ出さない）。
+   * BOXP-772: 受信箱を表示するのは両方の送信が受理された後だけ（失敗して保留が残る間に開いたままにしない）。
+   */
   async function openNotification(id: string): Promise<boolean> {
     opening = true
     try {
-      await call(`notifications/${encodeURIComponent(id)}/announced`, 'POST')
-      await open(id)
+      const announced = await call(`notifications/${encodeURIComponent(id)}/announced`, 'POST')
+      if (announced.status < 200 || announced.status >= 300) return false
+      const read = await call(`notifications/${encodeURIComponent(id)}/read`, 'POST')
+      if (read.status < 200 || read.status >= 300) return false
+      if (active === id) {
+        active = ''
+        clearTimeout(holdTimer)
+      }
+      selected = id
+      panel.hidden = false
+      await refresh()
       return true
     } catch {
       return false

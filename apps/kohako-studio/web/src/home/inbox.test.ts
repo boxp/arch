@@ -242,7 +242,14 @@ describe('通知からのジャンプを一度だけ行う（BOXP-772）', () =>
   })
 
   type Item = { eventId: string; source: string; title: string; body: string; receivedAt: string }
-  const setup = async (search: string, items: Item[], failFirst = 0, failAnnounce = 0) => {
+  const setup = async (
+    search: string,
+    items: Item[],
+    failFirst = 0,
+    failAnnounce = 0,
+    /** 先頭から順に、該当する送信へ 1 度ずつ返す失敗（'throw' は通信失敗、数値は JSON 付きの HTTP 状態） */
+    faults: { suffix: string; result: 'throw' | number }[] = [],
+  ) => {
     const { initInbox } = await import('./inbox'),
       { vi } = await import('vitest')
     const els: Record<string, { hidden: boolean }> = {},
@@ -309,6 +316,12 @@ describe('通知からのジャンプを一度だけ行う（BOXP-772）', () =>
       if (path.endsWith('/announced') && announceFailures > 0) {
         announceFailures--
         throw new Error('offline')
+      }
+      const fault = faults.findIndex((f) => path.endsWith(f.suffix))
+      if (fault >= 0) {
+        const [{ result }] = faults.splice(fault, 1)
+        if (result === 'throw') throw new Error('offline')
+        return { status: result, json: async () => ({ error: 'internal' }) }
       }
       return { status: 200, json: async () => (path === 'notifications' ? { items, unread: 0 } : {}) }
     })
@@ -399,6 +412,28 @@ describe('通知からのジャンプを一度だけ行う（BOXP-772）', () =>
       expect(t.urls).toEqual(['/kohako/home.html?a=1#x'])
       await t.resume()
       expect(reads(t.calls, 'event-AAAAAA')).toBe(1)
+    } finally {
+      t.vi.unstubAllGlobals()
+    }
+  })
+  it.each([
+    ['案内済みの送信が JSON 付きの HTTP 500', { suffix: '/announced', result: 500 }],
+    ['既読の送信が通信失敗', { suffix: '/read', result: 'throw' }],
+    ['既読の送信が JSON 付きの HTTP 500', { suffix: '/read', result: 500 }],
+  ] as const)('%sなら受信箱を開かず消費せず URL も残し、次に取得できた時に開いてから外す', async (_name, fault) => {
+    const t = await setup('?a=1&notification=event-AAAAAA', [item('event-AAAAAA')], 0, 0, [{ ...fault }])
+    try {
+      expect(t.els.inbox.hidden).toBe(true)
+      expect(t.urls).toEqual([])
+      expect(t.loc.search).toBe('?a=1&notification=event-AAAAAA')
+      await t.resume()
+      expect(t.els.inbox.hidden).toBe(false)
+      expect(t.urls).toEqual(['/kohako/home.html?a=1#x'])
+      const before = reads(t.calls, 'event-AAAAAA')
+      t.els.inbox.hidden = true // 本人が受信箱を閉じた
+      await t.resume()
+      expect(reads(t.calls, 'event-AAAAAA')).toBe(before)
+      expect(t.els.inbox.hidden).toBe(true)
     } finally {
       t.vi.unstubAllGlobals()
     }
