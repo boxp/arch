@@ -1,6 +1,6 @@
 // 期待値は trial-spec.md（決まり 9: 開くのは maps/search の https だけ）から取る。
 import { describe, expect, it } from 'vitest'
-import { errorText, historyRow, isMapUrl, pushText, remaining, requestParam } from './logic'
+import { errorText, historyRow, isMapUrl, pushText, readiness, remaining, requestParam } from './logic'
 
 describe('isMapUrl', () => {
   it('Google マップの検索 URL だけを開く', () => {
@@ -74,5 +74,54 @@ describe('historyRow（決まり 10: 結果の時刻を残す）', () => {
       ),
     ).toEqual(['07:00:00', '東京駅', '期限切れ', '07:02:00', '', ''])
     expect(historyRow({ name: '東京駅', state: 'pending', createdAt: '2026-11-28T07:00:00.000Z' }, t)[3]).toBe('')
+  })
+})
+
+// trial-spec.md 決まり 13・例 17〜19: この端末の準備。
+describe('readiness', () => {
+  const base = {
+    supported: true,
+    permission: 'granted' as const,
+    subscribed: true,
+    registered: true as boolean | null,
+    version: 'device-trial-v1',
+  }
+  it('新しい版・許可あり・購読あり なら受け取れる', () => {
+    expect(readiness(base)).toEqual({ ok: true, text: 'この端末は試験の通知を受け取れます。' })
+  })
+  it('許可がない端末（例 18）', () => {
+    expect(readiness({ ...base, permission: 'denied' })).toEqual({ ok: false, text: '通知が許可されていません。' })
+    expect(readiness({ ...base, permission: 'default' }).ok).toBe(false)
+  })
+  it('購読がない端末（例 19）', () => {
+    expect(readiness({ ...base, subscribed: false })).toEqual({
+      ok: false,
+      text: '通知が ON になっていません。家の受信箱で通知を ON にしてください。',
+    })
+  })
+  it('端末に購読は残るが家が消した（例 20）', () => {
+    expect(readiness({ ...base, registered: false })).toEqual({
+      ok: false,
+      text: 'この端末の通知が家に登録されていません。家の受信箱で通知を OFF にしてから ON にしてください。',
+    })
+  })
+  it('家への登録を確かめられない（例 21）', () => {
+    expect(readiness({ ...base, registered: null })).toEqual({
+      ok: false,
+      text: '家に登録されているか確かめられませんでした。ページを再読み込みしてください。',
+    })
+  })
+  it('古い版（例 17 で切り替わらなかった時）', () => {
+    for (const version of [null, 'old', 'device-trial-v0'])
+      expect(readiness({ ...base, version })).toEqual({
+        ok: false,
+        text: '通知を受ける仕組みが古い版です。ページを再読み込みしてください。',
+      })
+  })
+  it('Service Worker や Push が使えない', () => {
+    expect(readiness({ ...base, supported: false })).toEqual({
+      ok: false,
+      text: 'この端末では確かめられません（通知の仕組みが使えません）。',
+    })
   })
 })

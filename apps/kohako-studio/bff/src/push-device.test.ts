@@ -99,3 +99,21 @@ it('期限を過ぎた依頼の通知は送らない', async () => {
   expect(await push.sendDevice(msg, 5_000)).toEqual({ sent: 0, errors: 0, skipped: 'error' })
   expect(n).toBe(0)
 })
+
+// trial-spec.md 決まり 13・例 20: 家が送信時の 410 で消した購読は「登録されていない」と答える。
+it('has は送信時の 410 で消した購読先を持っていないと答える', async () => {
+  const push = await setup(
+    (async (sub: { endpoint: string }) => {
+      if (sub.endpoint.endsWith('/gone')) throw Object.assign(Error('gone'), { statusCode: 410 })
+      return {}
+    }) as unknown as Sender,
+    Date.now,
+  )
+  await push.add({ endpoint: 'https://example.com/gone', keys })
+  await push.add({ endpoint: 'https://example.com/pc', keys })
+  expect(push.has('https://example.com/gone')).toBe(true)
+  await push.sendDevice(msg, Date.now() + 120_000)
+  expect(push.has('https://example.com/gone')).toBe(false)
+  expect(push.has('https://example.com/pc')).toBe(true)
+  expect(push.has('https://example.com/never')).toBe(false)
+})

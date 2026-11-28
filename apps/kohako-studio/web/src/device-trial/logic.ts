@@ -80,3 +80,29 @@ export function historyRow(r: HistoryReq, time: (iso: string) => string): string
     r.seconds === undefined ? '' : String(r.seconds),
   ]
 }
+
+/** 試験の通知を正しく扱える Service Worker の版（sw.js の SW_VERSION と揃える）。trial-spec.md 決まり 13。 */
+export const SW_VERSION = 'device-trial-v1'
+export type Readiness = {
+  supported: boolean
+  permission: 'granted' | 'denied' | 'default'
+  subscribed: boolean
+  // 家（BFF）がこの購読先を持っているか。null は問い合わせに失敗した。
+  registered: boolean | null
+  version: string | null
+}
+export function readiness(r: Readiness): { ok: boolean; text: string } {
+  if (!r.supported) return { ok: false, text: 'この端末では確かめられません（通知の仕組みが使えません）。' }
+  if (r.permission !== 'granted') return { ok: false, text: '通知が許可されていません。' }
+  if (r.version !== SW_VERSION)
+    return { ok: false, text: '通知を受ける仕組みが古い版です。ページを再読み込みしてください。' }
+  if (!r.subscribed) return { ok: false, text: '通知が ON になっていません。家の受信箱で通知を ON にしてください。' }
+  if (r.registered === null)
+    return { ok: false, text: '家に登録されているか確かめられませんでした。ページを再読み込みしてください。' }
+  if (!r.registered)
+    return {
+      ok: false,
+      text: 'この端末の通知が家に登録されていません。家の受信箱で通知を OFF にしてから ON にしてください。',
+    }
+  return { ok: true, text: 'この端末は試験の通知を受け取れます。' }
+}

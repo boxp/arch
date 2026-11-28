@@ -96,6 +96,7 @@ export async function createPush(
         await atomic(path, subscriptions)
         return true
       }),
+    has: (endpoint: string) => Object.hasOwn(subscriptions, hash(endpoint)),
     remove: (endpoint: string) =>
       mutate(async () => {
         delete subscriptions[hash(endpoint)]

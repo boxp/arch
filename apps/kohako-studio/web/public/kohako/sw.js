@@ -1,8 +1,12 @@
 // Only the self-contained fallback is stored. Never cache authenticated pages or API responses.
 const CACHE = 'kohako-offline-v2'
 const OFFLINE = '/kohako/kohako/offline-v1.html'
+// BOXP-752 決まり 13: 試験の通知を扱える版。試験ページが問い合わせる（web/src/device-trial/logic.ts の SW_VERSION と揃える）。
+const SW_VERSION = 'device-trial-v1'
 // オフライン画面の保存に失敗しても（Access 期限切れ等）SW の導入は止めない。Push を巻き込まないため。
 self.addEventListener('install', event => {
+  // 開いたままのタブや家のアプリがあっても古い版を残さない（古い版は試験の通知のタップを無視する）。
+  self.skipWaiting()
   event.waitUntil((async () => {
     try {
       const response = await fetch(OFFLINE, { redirect: 'error', cache: 'no-store' })
@@ -23,6 +27,9 @@ self.addEventListener('fetch', event => {
   if (request.method !== 'GET' || request.mode !== 'navigate' || url.origin !== self.location.origin || url.pathname !== '/kohako/home.html') return
   // Pass the navigation request through unchanged so Access redirects (manual/opaqueredirect) keep working.
   event.respondWith(fetch(request).catch(async () => (await (await caches.open(CACHE)).match(OFFLINE)) ?? Response.error()))
+})
+self.addEventListener('message', event => {
+  if (event.data?.type === 'sw-version') event.ports?.[0]?.postMessage({ type: 'sw-version', version: SW_VERSION })
 })
 self.addEventListener('push', event => {
   if (!event.data) return

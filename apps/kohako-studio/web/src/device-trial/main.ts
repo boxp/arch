@@ -7,7 +7,9 @@ import {
   type PushOutcome,
   pushText,
   remaining,
+  readiness,
   requestParam,
+  SW_VERSION,
 } from './logic'
 
 type Req = {
@@ -168,3 +170,62 @@ void refresh()
 setInterval(() => {
   if (!document.hidden) void refresh()
 }, 5000)
+
+// trial-spec.md 決まり 13: この端末の準備（SW を登録・更新し、版・許可・購読を確かめる）。
+async function swVersion(sw: ServiceWorker | null): Promise<string | null> {
+  if (!sw) return null
+  return new Promise((resolve) => {
+    const ch = new MessageChannel()
+    const timer = setTimeout(() => resolve(null), 3000)
+    ch.port1.onmessage = (e) => {
+      clearTimeout(timer)
+      resolve(typeof e.data?.version === 'string' ? e.data.version : null)
+    }
+    sw.postMessage({ type: 'sw-version' }, [ch.port2])
+  })
+}
+async function checkDevice() {
+  const out = el('device-state')
+  const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
+  let version: string | null = null,
+    subscribed = false,
+    registered: boolean | null = null
+  if (supported) {
+    try {
+      const reg = await navigator.serviceWorker.register('/kohako/sw.js', { scope: '/kohako/' })
+      await reg.update().catch(() => {})
+      const ready = await navigator.serviceWorker.ready
+      version = await swVersion(ready.active)
+      // 新しい版へ切り替わっている途中なら、切り替わった後にもう一度だけ聞く。
+      if (version !== SW_VERSION && (reg.installing || reg.waiting)) {
+        await new Promise((r) => setTimeout(r, 1500))
+        version = await swVersion(reg.active)
+      }
+      const sub = await reg.pushManager.getSubscription()
+      subscribed = sub !== null
+      // 決まり 13・例 20: 家が送信時の 404・410 で消した購読は端末に残っても届かないので、家に問い合わせる。
+      if (sub) {
+        try {
+          const r = await fetch('/kohako/api/v1/push/subscriptions/check', {
+            method: 'POST',
+            cache: 'no-store',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ endpoint: sub.endpoint }),
+          })
+          const d = r.ok ? await r.json() : null
+          registered = typeof d?.registered === 'boolean' ? d.registered : null
+        } catch {}
+      }
+    } catch {}
+  }
+  const r = readiness({
+    supported,
+    permission: supported ? Notification.permission : 'default',
+    subscribed,
+    registered,
+    version,
+  })
+  out.textContent = r.text
+  out.className = r.ok ? 'good' : 'bad'
+}
+void checkDevice()
