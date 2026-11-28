@@ -15,6 +15,7 @@ import { type createDrama3Tts, type createTts, TtsError } from './tts.js'
 import { pcmToWav, STT_FINAL_FIELDS } from './stt.js'
 import { isRecord } from './untrusted.js'
 import { locationInstructions, locationLogLine, parseLocation, type TurnLocation } from './location.js'
+import { parseWatch, watchInstructions } from './watch.js'
 const BASE_INSTRUCTIONS = 'あなたの返答は Web UI の吹き出しに表示され、必要に応じて音声で読み上げられます。'
 export const vaultImageInstructions =
   ' vault内の画像を家の会話に表示するときは、実在確認したvault相対パスを encodeURIComponent 相当でURLエンコード（括弧も%28/%29へ変換）し、![短い説明](kohako-vault:エンコード済み相対パス) と返してください。絶対パスやMEDIA記法は表示できません。対応はPNG/JPEG/GIF/WebP各5MiBまで。SVG/PDF/動画/その他のファイルはインライン表示非対応です。画像を再生成したり、検証画像をvaultに保存したりしないでください。'
@@ -608,6 +609,15 @@ export function createApp(opts: {
         if (!parsed) return json(400, { error: 'invalid' })
         location = parsed
       }
+      // BOXP-779: 家で本人が共有した画面への呼びかけ。本人の家の発言（views）で、画像 1 件だけを添えた時だけ受ける。
+      const watch = parseWatch(x.watch)
+      if (watch === null) return json(400, { error: 'invalid' })
+      if (watch && principal !== 'owner') return json(403, { error: 'forbidden' })
+      if (
+        watch &&
+        (x.kind !== 'text' || x.views !== true || !Array.isArray(x.attachments) || x.attachments.length !== 1)
+      )
+        return json(400, { error: 'invalid' })
       let input: Input
       const files: NonNullable<Extract<Input, { kind: 'text' }>['attachments']> = []
       if (x.attachments !== undefined) {
@@ -624,6 +634,7 @@ export function createApp(opts: {
           files.push(item)
         }
         // Hermes は要求全体 10MB・正規化テキスト 64KB が上限。画像は base64 で約 4/3 倍になるため合計で制限し、超過は成功を装わず明示する。
+        if (watch && files.some((f) => f.meta.kind !== 'image')) return json(400, { error: 'invalid' })
         if (files.reduce((n, f) => n + (f.meta.kind === 'image' ? f.data.length : 0), 0) > ATTACHMENT_IMAGE_TOTAL)
           return json(413, { error: 'attachments_too_large' })
         if (files.reduce((n, f) => n + Buffer.byteLength(f.meta.extractedText ?? ''), 0) > ATTACHMENT_TEXT_TOTAL)
@@ -688,7 +699,7 @@ export function createApp(opts: {
           : input.kind === 'touch'
             ? instructions
             : input.views
-              ? instructions + locationInstructions(location, now())
+              ? instructions + locationInstructions(location, now()) + (watch ? watchInstructions : '')
               : studioInstructions
       // 参照の取得を待つ間に期限が切れた発言は Hermes へ渡さない（待つ前の確認だけでは足りない）。
       if (x.expiresAt <= now()) return json(410, { error: 'expired' })

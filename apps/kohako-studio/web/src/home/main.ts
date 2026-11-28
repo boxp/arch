@@ -5,6 +5,7 @@ import { must } from '../must'
 import './activity.css'
 import { validateActivity, renderActivity, tickActivity } from './activity'
 import { createDictation, supportsDictation, appendDictation } from './dictation'
+import { createSegmenter, frameSize, wakeCalled, watchStep, type WatchEvent, type WatchState } from './watch'
 import {
   attachmentProblem,
   attachmentSubmitAction,
@@ -59,6 +60,7 @@ import { makeVisemes, visemeAt, boundaryTime, spokenSeconds, type VisemeSequence
 import {
   interpretRequest,
   newOutgoing,
+  pcm16,
   presentation,
   resolveUnconfirmed,
   rigStateOf,
@@ -339,6 +341,21 @@ setInterval(() => {
 message.addEventListener('focus', () => {
   if (syncLocationPref() && (!locationFix || Date.now() - locationFix.capturedAt > REUSE_MS)) void refreshLocation()
 })
+
+// ---- 画面を一緒に見る（BOXP-779）の状態。show()・deliver() から参照するので先に宣言する ----
+const watchEnabled = new URLSearchParams(window.location.search).get('watch') === '1'
+let watchState: WatchState = { phase: 'off', gen: 0 },
+  /** 入口のボタンなどの要素を取り終えた（それまでは renderWatch を呼ばない）。 */
+  watchUiReady = false,
+  /** 共有中に送った呼びかけの受付番号（返事を待っている間だけ）。 */
+  watchRequest = '',
+  /** 共有中に送った呼びかけの返事を読み上げている。 */
+  watchSpeaking = false,
+  watchSegmenter: ReturnType<typeof createSegmenter> | null = null,
+  /** 入口の表示を会話の有効・無効に合わせて描き直す（部品の用意ができてから入る）。 */
+  watchRender: (() => void) | null = null
+/** 返事待ちのまま止めた呼びかけの受付番号（その返事は読み上げない）。 */
+const watchMuted = new Set<string>()
 
 // ---- 会話の状態（Studio と同じ） ----
 let voiceTrouble = false
@@ -891,6 +908,8 @@ function show(next: State) {
   refreshScene()
   renderQueue()
   scheduleDispatch()
+  watchOnShow(next)
+  watchRender?.()
 }
 
 // ---- 場面 ----
@@ -1762,7 +1781,14 @@ function deliver(text: string, views: View[] = [], id = '', quiet = false) {
   lastActivity = Date.now()
   reply.dataset.reply = '1'
   setBubble(text || '（返答の本文がありませんでした）')
-  const willSpeak = !quiet && !!text && canSpeak({ on: speech.checked, voice: prefs.voice, deviceVoice: !!speaker })
+  // BOXP-779: 共有中に送った呼びかけの返事は読み上げ OFF でも読む。止めた後に届いた返事は読まない（文字だけ）。
+  const watchReply = watchRepliedFor(id),
+    watchMute = !!id && watchMuted.has(id)
+  const willSpeak =
+    !quiet &&
+    !watchMute &&
+    !!text &&
+    canSpeak({ on: watchReply || speech.checked, voice: prefs.voice, deviceVoice: !!speaker })
   if (!willSpeak) bubble.dataset.retained = '1'
   updateMessage()
   showReplyChoices(text, id)
@@ -1800,6 +1826,7 @@ function deliver(text: string, views: View[] = [], id = '', quiet = false) {
       },
     )
   } else if (text) mouthOnly(spoken)
+  if (watchReply && state !== 'speaking') watchDispatch({ type: 'spoken', gen: watchState.gen })
 }
 function mouthOnly(text: string) {
   show('speaking')
@@ -2531,7 +2558,11 @@ function sendReplyChoice(choice: Choice, owner: string) {
  * 1 件の発言を送る。from: 'composer' は入力欄から、'pending' は受理未確認の控えの確認・再送、QueueItem は送信待ちの先頭。
  * 受理（202）されるまで履歴に「あなた」として出さない。受理されなかったと確定したら本文を元の場所（入力欄が空ならそこ、送信待ちなら先頭）へ戻す。
  */
-async function sendText(text: string, from: 'composer' | 'choice' | 'pending' | 'visit' | QueueItem): Promise<void> {
+async function sendText(
+  text: string,
+  from: 'composer' | 'choice' | 'pending' | 'visit' | 'watch' | QueueItem,
+  watchFile?: { id: string; name: string },
+): Promise<void> {
   const giveBack = () => {
     if (typeof from === 'object') queue.putBack(from)
     else if (from === 'composer' || from === 'choice') {
@@ -2618,6 +2649,10 @@ async function sendText(text: string, from: 'composer' | 'choice' | 'pending' | 
       payload.attachments = chips.map((x) => must(x.id))
       payload.attachmentNames = chips.map((x) => x.name)
     }
+    if (from === 'watch' && watchFile) {
+      payload.attachments = [watchFile.id]
+      payload.attachmentNames = [watchFile.name]
+    }
   }
   requestId = payload.requestId
   // POST 応答前に再読み込みされても BFF 受理済みの依頼を追い直せるよう、送信前に本文と受付番号を控える（再送時は同じ受付番号で BFF が冪等に扱う）。
@@ -2627,11 +2662,18 @@ async function sendText(text: string, from: 'composer' | 'choice' | 'pending' | 
   let result: Awaited<ReturnType<typeof call>> | null = null
   try {
     // BOXP-648: 位置は送信の直前に添えるだけで、控え（unconfirmed）・送信待ち・履歴には保存しない。現場（見てきて）は手入力・再送でも添えない。
-    const location = from === 'visit' || isVisitText(payload.text) ? undefined : await locationForSend()
+    // BOXP-779: 共有画面への呼びかけは位置を添えず、watch の印を付ける（BFF がその turn だけ画面の扱いを指示する）。
+    const watching = from === 'watch' && !!watchFile
+    const location = watching || from === 'visit' || isVisitText(payload.text) ? undefined : await locationForSend()
     result = await call('messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...payload, views: true, ...(location ? { location } : {}) }),
+      body: JSON.stringify({
+        ...payload,
+        views: true,
+        ...(location ? { location } : {}),
+        ...(watching ? { watch: true } : {}),
+      }),
     })
   } catch {
     result = null
@@ -2854,6 +2896,277 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('pagehide', () => {
   void dictation.cancel()
 })
+
+// ---- 画面を一緒に見る（BOXP-779・?watch=1 だけの試用） ----
+// 本人が自分で始めた画面共有とマイクの間だけ、「コハコ」への呼びかけに共有画面 1 枚を見て返事する。
+// 仕様は Obsidian の Projects/kohako-home/watch-together-spec.md、順序の決まりは web/contract/watch-model（Lean）。
+const watchButton = el<HTMLButtonElement>('watch'),
+  watchPanel = el('watch-panel'),
+  watchStatus = el('watch-status'),
+  watchNote = el('watch-note'),
+  watchStop = el<HTMLButtonElement>('watch-stop')
+const watchSupported =
+  window.isSecureContext &&
+  typeof navigator.mediaDevices?.getDisplayMedia === 'function' &&
+  typeof navigator.mediaDevices?.getUserMedia === 'function' &&
+  typeof window.AudioContext === 'function'
+type WatchResources = {
+  display: MediaStream
+  mic: MediaStream
+  context: AudioContext
+  source: MediaStreamAudioSourceNode
+  processor: ScriptProcessorNode
+  video: HTMLVideoElement
+}
+let watchRes: WatchResources | null = null
+/** 区切れた発話の時点の共有画面（呼びかけでなければ捨てる。上げるのは呼びかけの時だけ）。 */
+let watchFrame: Promise<Blob | null> | null = null
+function watchSay(note = '') {
+  watchNote.textContent = note
+  watchNote.hidden = !note
+}
+function renderWatch() {
+  const phase = watchState.phase
+  watchButton.hidden = !watchEnabled
+  watchButton.disabled = phase !== 'off' || !watchSupported || !enabled || !stt
+  watchButton.setAttribute('aria-pressed', String(phase !== 'off'))
+  watchPanel.hidden = !watchEnabled || (phase === 'off' && watchNote.hidden)
+  watchPanel.dataset.phase = phase
+  watchStop.hidden = phase === 'off'
+  watchStatus.textContent = {
+    off: '画面とマイクの共有は止まっています。',
+    starting: '画面とマイクの共有を準備しています…（共有する画面を選んでください）',
+    watching: '● 画面とマイクを共有中 —「コハコ」と呼ぶと返事します（呼びかけ以外の声は捨てます）',
+    transcribing: '● 共有中 — 聞き取っています…',
+    asking: '● 共有中 — 画面を見て考えています…',
+    replying: '● 共有中 — 返事しています',
+  }[phase]
+}
+function stopTracks(stream: MediaStream | undefined) {
+  stream?.getTracks().forEach((t) => {
+    t.stop()
+  })
+}
+function watchRelease() {
+  const r = watchRes
+  watchRes = null
+  watchFrame = null
+  watchSegmenter = null
+  if (watchRequest) watchMuted.add(watchRequest)
+  watchRequest = ''
+  // 共有中に送った呼びかけの返事を読んでいる途中なら止める（普通の会話の読み上げは止めない）。
+  if (watchSpeaking && state === 'speaking') hushNow()
+  watchSpeaking = false
+  if (!r) return
+  r.processor.onaudioprocess = null
+  r.processor.disconnect()
+  r.source.disconnect()
+  stopTracks(r.display)
+  stopTracks(r.mic)
+  r.video.srcObject = null
+  void r.context.close().catch(() => {})
+}
+function watchDispatch(e: WatchEvent) {
+  const before = watchState.phase,
+    result = watchStep(watchState, e)
+  watchState = result.state
+  if (result.effect === 'release') watchRelease()
+  if (result.effect === 'discard' || result.effect === 'busy' || result.effect === 'error') watchFrame = null
+  if (result.effect === 'busy') watchSay('いまの返事を待っています。終わってからもう一度呼んでください。')
+  if (result.effect === 'speak') watchSpeaking = true
+  if (before === 'replying' && watchState.phase !== 'replying') watchSpeaking = false
+  renderWatch()
+  return result.effect
+}
+/** 届いた返事が、共有中に送った呼びかけへの返事なら replying へ進めて true。 */
+function watchRepliedFor(id: string): boolean {
+  if (!id || id !== watchRequest || watchState.phase !== 'asking') return false
+  watchRequest = ''
+  return watchDispatch({ type: 'replied', gen: watchState.gen }) === 'speak'
+}
+/** 会話の状態の変化から、呼びかけの失敗・読み上げの終わりを拾う。 */
+function watchOnShow(next: State) {
+  if (
+    watchState.phase === 'asking' &&
+    watchRequest &&
+    (next === 'failed' || next === 'stopped' || next === 'offline')
+  ) {
+    watchRequest = ''
+    watchSay('呼びかけへの返事を受け取れませんでした。')
+    watchDispatch({ type: 'fail', gen: watchState.gen })
+  } else if (watchState.phase === 'replying' && next !== 'speaking')
+    watchDispatch({ type: 'spoken', gen: watchState.gen })
+  // 会話の接続（enabled・音声認識の有無）が変わると入口の押せる・押せないも変わる。
+  else if (watchUiReady) renderWatch()
+}
+function captureFrame(video: HTMLVideoElement): Promise<Blob | null> {
+  if (!video.videoWidth || !video.videoHeight) return Promise.resolve(null)
+  const size = frameSize(video.videoWidth, video.videoHeight),
+    canvas = document.createElement('canvas')
+  canvas.width = size.width
+  canvas.height = size.height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return Promise.resolve(null)
+  ctx.drawImage(video, 0, 0, size.width, size.height)
+  return new Promise((resolve) => canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.7))
+}
+function watchBusy(): boolean {
+  return (
+    !enabled ||
+    busy ||
+    dispatching ||
+    !!unconfirmed ||
+    queue.size > 0 ||
+    pendingFromQueue ||
+    !!recording ||
+    starting ||
+    touchActive
+  )
+}
+async function watchTranscribe(gen: number, samples: Float32Array, rate: number) {
+  let heard: 'yes' | 'busy' | 'no' | null = null,
+    text = ''
+  try {
+    const result = await call('transcriptions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Kohako-Transcription-Id': crypto.randomUUID() },
+      body: new Blob([new Uint8Array(pcm16(samples, rate).slice(0, 960000))]),
+    })
+    if (gen !== watchState.gen) return
+    if (result.status === 200 && typeof result.data?.text === 'string') {
+      text = result.data.text.trim()
+      heard = text && wakeCalled(text) ? (watchBusy() ? 'busy' : 'yes') : 'no'
+    } else if (result.status === 422 || result.data?.error === 'no_speech') heard = 'no'
+    else if (result.status === 401 || result.status === 403)
+      watchSay('認証が切れました。画面を再読み込みしてください。')
+    else watchSay('音声認識に接続できませんでした。もう一度呼んでください。')
+  } catch {
+    if (gen !== watchState.gen) return
+    watchSay('音声認識に接続できませんでした。もう一度呼んでください。')
+  }
+  if (heard === null) {
+    watchDispatch({ type: 'fail', gen })
+    return
+  }
+  // 呼びかけの無い認識文は表示も送信もしない（捨てる）。
+  if (watchDispatch({ type: 'heard', gen, heard }) !== 'send') return
+  watchSay('')
+  void watchSend(gen, text)
+}
+async function watchSend(gen: number, text: string) {
+  const frame = await (watchFrame ?? Promise.resolve(null))
+  watchFrame = null
+  if (gen !== watchState.gen) return
+  if (!frame) {
+    watchSay('共有画面を取れませんでした。共有している画面を確かめてください。')
+    watchDispatch({ type: 'fail', gen })
+    return
+  }
+  const now = new Date(),
+    name = `共有画面-${[now.getHours(), now.getMinutes(), now.getSeconds()].map((n) => String(n).padStart(2, '0')).join('')}.jpg`
+  let id = ''
+  try {
+    const result = await call('attachments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'image/jpeg', 'X-Kohako-Filename': encodeURIComponent(name) },
+      body: frame,
+      signal: AbortSignal.timeout(60000),
+    })
+    if (result.status === 201 && typeof result.data?.attachmentId === 'string') id = result.data.attachmentId
+  } catch {
+    id = ''
+  }
+  if (gen !== watchState.gen) return
+  if (!id || watchBusy()) {
+    watchSay(id ? 'いまの返事を待っています。終わってからもう一度呼んでください。' : '共有画面を送れませんでした。')
+    watchDispatch({ type: 'fail', gen })
+    return
+  }
+  await sendText(text, 'watch', { id, name })
+  if (gen !== watchState.gen) return
+  if (accepted && requestId) {
+    watchRequest = requestId
+    return
+  }
+  watchSay('呼びかけを送れませんでした。')
+  watchDispatch({ type: 'fail', gen })
+}
+async function watchAcquire(gen: number) {
+  let display: MediaStream | undefined, mic: MediaStream | undefined
+  try {
+    // 画面の音（ゲーム音・ボイスチャット）は求めない。
+    display = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 5 }, audio: false })
+    if (gen !== watchState.gen) throw new Error('stale')
+    mic = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    })
+    if (gen !== watchState.gen) throw new Error('stale')
+    const context = new AudioContext(),
+      source = context.createMediaStreamSource(mic),
+      processor = context.createScriptProcessor(4096, 1, 1),
+      video = document.createElement('video')
+    video.muted = true
+    video.playsInline = true
+    video.srcObject = display
+    void video.play().catch(() => {})
+    const segmenter = createSegmenter(context.sampleRate)
+    watchSegmenter = segmenter
+    processor.onaudioprocess = (e) => {
+      if (watchSegmenter !== segmenter) return
+      if (watchState.phase !== 'watching') {
+        segmenter.reset()
+        return
+      }
+      const utterance = segmenter.push(new Float32Array(e.inputBuffer.getChannelData(0)))
+      if (!utterance) return
+      const frame = captureFrame(video)
+      if (watchDispatch({ type: 'utter' }) !== 'transcribe') return
+      watchFrame = frame
+      void watchTranscribe(watchState.gen, utterance, context.sampleRate)
+    }
+    source.connect(processor)
+    processor.connect(context.destination)
+    watchRes = { display, mic, context, source, processor, video }
+    const ended = () => {
+      if (watchRes?.display === display) {
+        watchSay('共有かマイクが終わったので止めました。')
+        watchDispatch({ type: 'stop' })
+      }
+    }
+    for (const t of [...display.getTracks(), ...mic.getTracks()]) t.addEventListener('ended', ended)
+    watchSay('')
+    watchDispatch({ type: 'ready', gen })
+  } catch (e) {
+    stopTracks(display)
+    stopTracks(mic)
+    if (gen !== watchState.gen) return
+    const name = e && typeof e === 'object' && 'name' in e ? String((e as { name: unknown }).name) : ''
+    watchSay(
+      name === 'NotAllowedError'
+        ? '画面共有かマイクが許可されなかったので、始めませんでした。'
+        : name === 'NotFoundError'
+          ? 'マイクが見つかりません。'
+          : '画面とマイクの共有を始められませんでした。',
+    )
+    watchDispatch({ type: 'fail', gen })
+  }
+}
+watchButton.addEventListener('click', () => {
+  if (watchButton.disabled || watchState.phase !== 'off') return
+  watchSay('')
+  if (watchDispatch({ type: 'start' }) === 'acquire') void watchAcquire(watchState.gen)
+})
+watchStop.addEventListener('click', () => {
+  watchSay('共有とマイクを止めました。')
+  watchDispatch({ type: 'stop' })
+})
+window.addEventListener('pagehide', () => {
+  watchDispatch({ type: 'stop' })
+})
+if (watchEnabled && !watchSupported)
+  watchSay('この端末のブラウザでは画面共有を使えません（PC のブラウザで開いてください）。')
+watchUiReady = true
+renderWatch()
 
 // ---- ふれあい ----
 function announceTouch(message: string) {
@@ -3580,6 +3893,10 @@ Object.assign(window, {
     get state() {
       return state
     },
+    // BOXP-779: 画面を一緒に見るの状態（off・watching など）。
+    get watch() {
+      return watchState.phase
+    },
     get scene() {
       return sceneNow()
     },
@@ -3702,6 +4019,7 @@ const inbox = initInbox(
   followRequest,
   {
     canAnnounce: () =>
+      watchState.phase === 'off' &&
       enabled &&
       !busy &&
       !unconfirmed &&
