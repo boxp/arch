@@ -11,6 +11,7 @@ export default defineConfig({
         live2d: resolve('live2d.html'),
         candidates: resolve('candidates.html'),
         deviceTrial: resolve('device-trial.html'),
+        dolls: resolve('dolls.html'),
       },
     },
   },

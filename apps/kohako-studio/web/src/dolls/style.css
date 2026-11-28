@@ -1,0 +1,19 @@
+.shell { max-width: 980px }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 12px 0 }
+.doll-card { display: flex; flex-direction: column; gap: 2px; background: #fff; border: 1px solid #ddd2c4; border-radius: 8px; padding: 8px; color: inherit; text-decoration: none }
+.doll-thumb { width: 100%; aspect-ratio: 3 / 4; object-fit: cover; border-radius: 6px; background: #f6f1e7 }
+.who { font-size: 12px; color: #6b5d50; word-break: break-all }
+.tag { font: 12px/1.6 ui-monospace, monospace; background: #fff0c2; color: #5a4300; border-radius: 4px; padding: 0 6px; align-self: flex-start }
+.doll { background: #fff; border: 1px solid #ddd2c4; border-radius: 8px; padding: 12px 14px; margin: 12px 0 }
+.doll h3 { margin: 0 0 6px; font-size: 17px }
+.doll dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0 0 8px; font-size: 14px }
+.doll dt { color: #6b5d50 }
+.doll dd { margin: 0; word-break: break-all }
+.version { margin: 10px 0 0; scroll-margin-top: 36px }
+.version figcaption { margin-bottom: 4px; font-size: 14px }
+.doll-large { display: block; width: 100%; max-width: 520px; height: auto; border: 1px solid #ddd2c4; border-radius: 6px }
+.strip { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; padding: 10px; border-radius: 8px; background: #3a3148 }
+.strip.gray .doll-small { filter: grayscale(1) }
+.small-cell { display: flex; flex-direction: column; align-items: center; width: 56px }
+.doll-small { width: 56px; height: 88px; object-fit: contain; background: #f6f1e7; border-radius: 4px }
+.small-key { font: 10px/1.4 ui-monospace, monospace; color: #e9e2f2 }
