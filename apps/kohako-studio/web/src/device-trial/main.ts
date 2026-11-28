@@ -8,7 +8,6 @@ import {
   pushText,
   remaining,
   requestParam,
-  STATE_LABEL,
 } from './logic'
 
 type Req = {
