@@ -1,6 +1,6 @@
 /** BOXP-766: 人形の列と、押した時のカード（現行仕様 Projects/kohako-home/model-dolls-home-spec.md）。 */
 import './dolls.css'
-import { cardOf, dollImage, dollsKey, dollsView, type DollGroup, type TicketResult } from './dolls'
+import { cardOf, dollImage, dollsKey, dollsView, ticketLink, type DollGroup, type TicketResult } from './dolls'
 type Call = (path: string) => Promise<{ status: number; data: Record<string, unknown> | null }>
 const make = <K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: string) => {
   const e = document.createElement(tag)
@@ -138,8 +138,18 @@ export function createDolls(opts: { host: HTMLElement; card: HTMLElement; call: 
         make('p', 'doll-line', c.assignee),
         make('p', 'doll-line', c.model),
         make('p', 'doll-ticket', c.ticket),
-        make('p', 'doll-note-head muted', c.noteHead),
       )
+      // T7: 選んでいる票の詳細が取れた時だけ、その票を端末の Obsidian で開くリンク（押した時だけ、同じタブのまま）。
+      const link = ticketLink(doll.tickets[index].id, detail)
+      if (link) {
+        const a = make('a', 'obsidian-note doll-obsidian')
+        a.href = link.href
+        a.title = `Obsidianで開く: Tickets/${link.id}.md`
+        a.referrerPolicy = 'no-referrer'
+        a.append(make('span', '', link.id), make('span', 'obsidian-note-badge', 'Obsidianで開く'))
+        body.append(a)
+      }
+      body.append(make('p', 'doll-note-head muted', c.noteHead))
       if (c.noteBody) body.append(make('p', 'doll-note', c.noteBody))
       for (const s of c.situation) body.append(make('p', 'doll-situation', s))
       if (c.fresh) body.append(make('p', 'doll-fresh muted', c.fresh))

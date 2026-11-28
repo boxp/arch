@@ -32,3 +32,4 @@ body[data-shape="portrait"] .doll-card{left:3%;right:3%;bottom:1%;width:auto;max
 body[data-shape="landscape"] .doll-card{bottom:auto;top:3%;max-height:80%}
 body[data-scene="confirm"] .doll-card,body[data-viewer="open"] .doll-card{display:none}
 @media (prefers-reduced-motion:reduce){.doll{transition:none}}
+.doll-obsidian{margin:.1em 0 .3em;font-size:.9em;color:#4a2f86;min-height:24px;align-items:center}
