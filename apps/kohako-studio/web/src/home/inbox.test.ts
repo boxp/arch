@@ -248,7 +248,7 @@ describe('通知からのジャンプを一度だけ行う（BOXP-772）', () =>
     failFirst = 0,
     failAnnounce = 0,
     /** 先頭から順に、該当する送信へ 1 度ずつ返す失敗（'throw' は通信失敗、数値は JSON 付きの HTTP 状態） */
-    faults: { suffix: string; result: 'throw' | number }[] = [],
+    faults: { suffix: string; result: 'throw' | number; skip?: number }[] = [],
   ) => {
     const { initInbox } = await import('./inbox'),
       { vi } = await import('vitest')
@@ -318,7 +318,9 @@ describe('通知からのジャンプを一度だけ行う（BOXP-772）', () =>
         throw new Error('offline')
       }
       const fault = faults.findIndex((f) => path.endsWith(f.suffix))
-      if (fault >= 0) {
+      const f0 = fault >= 0 ? faults[fault] : undefined
+      if (f0?.skip) f0.skip--
+      else if (fault >= 0) {
         const [{ result }] = faults.splice(fault, 1)
         if (result === 'throw') throw new Error('offline')
         return { status: result, json: async () => ({ error: 'internal' }) }
@@ -332,7 +334,7 @@ describe('通知からのジャンプを一度だけ行う（BOXP-772）', () =>
       await settle()
     }
     await settle()
-    return { calls, urls, els, resume, sw, settle, loc, vi }
+    return { calls, urls, els, resume, sw, settle, loc, vi, addFault: (f: (typeof faults)[number]) => faults.push(f) }
   }
   const item = (id: string): Item => ({
     eventId: id,
@@ -434,6 +436,51 @@ describe('通知からのジャンプを一度だけ行う（BOXP-772）', () =>
       await t.resume()
       expect(reads(t.calls, 'event-AAAAAA')).toBe(before)
       expect(t.els.inbox.hidden).toBe(true)
+    } finally {
+      t.vi.unstubAllGlobals()
+    }
+  })
+  // 開く手順（案内済み→既読→一覧の再取得）のどの段の失敗でも、URL と SW のどちらの入口でも同じ扱いにする（BOXP-772）
+  const openFaults = [
+    ['案内済みの送信が JSON 付きの HTTP 500', { suffix: '/announced', result: 500 }],
+    ['既読の送信が通信失敗', { suffix: '/read', result: 'throw' }],
+    ['既読の送信が JSON 付きの HTTP 500', { suffix: '/read', result: 500 }],
+    ['既読後の一覧の再取得が通信失敗', { suffix: 'notifications', result: 'throw', skip: 1 }],
+  ] as const
+  it.each(openFaults)(
+    '開いたままの家への SW 通知で%sなら受信箱を開かず保留し、次の取得で 1 度だけ開く',
+    async (_name, fault) => {
+      const t = await setup('', [item('event-AAAAAA'), item('event-BBBBBB')])
+      try {
+        t.calls.length = 0
+        // 初回の一覧取得が済んだ後に入れるので、skip は SW 通知以降の取得から数える
+        t.addFault({ ...fault })
+        t.sw.listener?.({ data: { type: 'open-notification', eventId: 'event-BBBBBB' } })
+        await t.settle()
+        expect(t.els.inbox.hidden).toBe(true)
+        await t.resume()
+        expect(t.els.inbox.hidden).toBe(false)
+        const before = reads(t.calls, 'event-BBBBBB')
+        t.els.inbox.hidden = true // 本人が受信箱を閉じた
+        await t.resume()
+        expect(reads(t.calls, 'event-BBBBBB')).toBe(before)
+        expect(t.els.inbox.hidden).toBe(true)
+        expect(t.urls).toEqual([])
+      } finally {
+        t.vi.unstubAllGlobals()
+      }
+    },
+  )
+  it('URL のジャンプで既読後の一覧の再取得が失敗したら受信箱を開かず URL も残し、次の取得で開いてから外す', async () => {
+    const t = await setup('?a=1&notification=event-AAAAAA', [item('event-AAAAAA')], 0, 0, [
+      { suffix: 'notifications', result: 'throw', skip: 1 },
+    ])
+    try {
+      expect(t.els.inbox.hidden).toBe(true)
+      expect(t.loc.search).toBe('?a=1&notification=event-AAAAAA')
+      await t.resume()
+      expect(t.els.inbox.hidden).toBe(false)
+      expect(t.urls).toEqual(['/kohako/home.html?a=1#x'])
     } finally {
       t.vi.unstubAllGlobals()
     }

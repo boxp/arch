@@ -548,12 +548,17 @@ export function initInbox(
       }
     })()
   })
+  // BOXP-772: 開いたままの画面への SW 通知も URL のジャンプと同じ保留値に入れ、同じ手順（update）でだけ開く。
+  // 途中で失敗すれば保留が残り、次の定期更新か表示復帰で開き直す（入口ごとに失敗時の扱いを分けない）。
   navigator.serviceWorker?.addEventListener('message', (e) => {
     if (
       e.data?.type === 'open-notification' &&
       notificationParam(`?notification=${encodeURIComponent(e.data.eventId)}`)
-    )
-      void openNotification(e.data.eventId)
+    ) {
+      jump = e.data.eventId
+      opening = true
+      update()
+    }
   })
   /**
    * 開き終えたら true。案内済み・既読の送信が通信失敗または 2xx 以外なら受信箱を開かず false（例外は外へ出さない）。
@@ -566,13 +571,16 @@ export function initInbox(
       if (announced.status < 200 || announced.status >= 300) return false
       const read = await call(`notifications/${encodeURIComponent(id)}/read`, 'POST')
       if (read.status < 200 || read.status >= 300) return false
+      // 一覧の再取得まで確定してから選択を切り替えて描画し、その後で受信箱を表示する
+      // （再取得に失敗したら前の選択の詳細を見せたまま開かない）。
+      if (!(await refresh())) return false
       if (active === id) {
         active = ''
         clearTimeout(holdTimer)
       }
       selected = id
+      render()
       panel.hidden = false
-      await refresh()
       return true
     } catch {
       return false
@@ -583,28 +591,34 @@ export function initInbox(
   // BOXP-772: 表示へ戻るたびに前の通知を開き直さない。開くのは保留中のジャンプだけで、一覧が確定したら消費する
   // （初回取得や開く途中の送信が失敗した場合は消費せず URL も残し、次の定期更新か表示復帰で取得できた時に再び試みる）。
   let jumping = false
-  const update = () =>
+  // 消費は開き始めた時の保留値と同じ場合だけ（途中で別の通知の SW 通知が来たら、それを続けて開く）。
+  const consume = (id: string) => {
+    if (jump !== id) return
+    jump = null
+    opening = false
+    dropNotificationParam()
+  }
+  function update() {
+    if (jumping) return
     void refresh().then(async (loaded) => {
       const id = jump
       if (!id || !loaded || jumping) return
       if (!items.some((i) => i.eventId === id)) {
-        jump = null
-        opening = false
-        dropNotificationParam()
+        consume(id)
         return
       }
       jumping = true
+      let done = false
       try {
-        if (!(await openNotification(id))) {
-          opening = true // 保留中のジャンプが残る間は、今までどおり案内で割り込まない
-          return
-        }
-        jump = null
-        dropNotificationParam()
+        done = await openNotification(id)
+        if (done) consume(id)
       } finally {
         jumping = false
+        if (jump) opening = true // 保留中のジャンプが残る間は、今までどおり案内で割り込まない
       }
+      if (done && jump) update()
     })
+  }
   const schedule = () => {
     clearInterval(timer)
     if (!document.hidden) {

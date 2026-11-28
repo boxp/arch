@@ -13,7 +13,7 @@ const base = `http://localhost:${port}/kohako/home.html`
 for (const [device, viewport, mobile] of [['pc', { width: 1440, height: 900 }, false], ['pixel7', { width: 412, height: 915 }, true]]) {
   const items = ['A', 'B'].map((id, n) => ({ eventId: `event-772-${id}`, source: 'task-board-report', title: `通知${id}`, body: `本文${id}`, receivedAt: new Date(Date.now() - (3 - n) * 60000).toISOString() }))
   const reads = [], replies = [], checks = results[device] = {}
-  let failList = 0, failAnnounce = 0, fail500 = null
+  let failList = 0, failAnnounce = 0, fail500 = null, failListAfterRead = false
   const ctx = await browser.newContext({ viewport, isMobile: mobile, hasTouch: mobile, serviceWorkers: 'block' }), page = await ctx.newPage()
   page.on('request', req => { if (new URL(req.url()).hostname !== 'localhost') external.push(req.url()) })
   await page.route(/^https?:\/\/(?!localhost)/, route => route.abort())
@@ -28,7 +28,7 @@ for (const [device, viewport, mobile] of [['pc', { width: 1440, height: 900 }, f
       const id = decodeURIComponent(m[1]), item = items.find(i => i.eventId === id)
       if (fail500 === m[2]) { fail500 = null; return json(500, { error: 'internal' }) }
       if (m[2] === 'announced' && failAnnounce > 0) { failAnnounce--; return route.abort('internetdisconnected') }
-      if (m[2] === 'read') { reads.push(id); item.readAt = new Date().toISOString() }
+      if (m[2] === 'read') { reads.push(id); item.readAt = new Date().toISOString(); if (failListAfterRead) { failListAfterRead = false; failList = 1 } }
       if (m[2] === 'reply') { const body = req.postDataJSON(); replies.push({ id, ...body }); item.reply = { ...body, requestId: 'request-772', status: 'submitted' }; return json(200, item.reply) }
       return json(200, { claimed: false })
     }
@@ -103,6 +103,23 @@ for (const [device, viewport, mobile] of [['pc', { width: 1440, height: 900 }, f
       check(`${kind} が 500 の後: 次の取得で B を開き URL から外す`, count('event-772-B') === beforeB + 1 && !(await inboxHidden()) && new URL(page.url()).search === '?acting=0')
       await page.locator('#inbox-close').click(); await resume()
       check(`${kind} が 500 の後: 以降は再表示しない`, (await inboxHidden()) && count('event-772-B') === beforeB + 1)
+    }
+    // 9. 開いたままの家への SW 通知でも、開く途中（案内済み・既読・既読後の一覧再取得）の失敗では受信箱を開かず保留し、次の取得で開く
+    if (swAvailable) {
+      for (const kind of ['announced', 'read', 'refetch']) {
+        // 直前に通知 A を選んだ状態で閉じておく（再取得失敗時に A の詳細のまま開かないことも見る）
+        await page.goto(`${base}?acting=0`); await ready(); await page.locator('#inbox-open').click(); await select('通知A'); await page.locator('#inbox-close').click()
+        const beforeB = count('event-772-B')
+        if (kind === 'refetch') failListAfterRead = true; else fail500 = kind
+        await page.evaluate(() => navigator.serviceWorker.dispatchEvent(new MessageEvent('message', { data: { type: 'open-notification', eventId: 'event-772-B' } })))
+        await page.waitForTimeout(1500)
+        check(`SW ${kind} 失敗: 受信箱を開かない`, fail500 === null && failList === 0 && !failListAfterRead && (await inboxHidden()))
+        await resume(); await page.waitForFunction(() => !document.querySelector('#inbox').hidden && document.querySelector('#inbox-detail .detail-title')?.textContent === '通知B', null, { timeout: 10000 }).catch(() => {}); await page.waitForTimeout(300)
+        check(`SW ${kind} 失敗後: 次の取得で B を開く`, !(await inboxHidden()) && (await detailTitle()) === '通知B' && count('event-772-B') >= beforeB + 1 && new URL(page.url()).search === '?acting=0')
+        const afterB = count('event-772-B')
+        await page.locator('#inbox-close').click(); await resume()
+        check(`SW ${kind} 失敗後: 以降は再表示しない`, (await inboxHidden()) && count('event-772-B') === afterB)
+      }
     }
     await page.screenshot({ path: path.join(out, `${device}-final.png`) })
   } catch (e) { checks.exception = e.message; failures.push(`${device}: ${e.message}`); await page.screenshot({ path: path.join(out, `${device}-failure.png`) }).catch(() => {}) }
