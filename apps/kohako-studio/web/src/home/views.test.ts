@@ -60,3 +60,31 @@ it('validates geo and builds only numeric OpenStreetMap URLs', async () => {
   ])
     expect(validateViews([{ ...view, geo: bad }])).toEqual([])
 })
+it('accepts multi-place map views with BFF geo and rejects malformed ones (BOXP-749)', () => {
+  const geo = {
+    lat: 35.6567,
+    lon: 139.7538,
+    bbox: [139.7498, 35.6527, 139.7578, 35.6607] as [number, number, number, number],
+    precision: 'exact' as const,
+    label: 'Cafe Renoir 芝大門店',
+    source: 'openstreetmap' as const,
+  }
+  const view = {
+    kind: 'map',
+    title: '候補',
+    places: [
+      { name: 'Cafe Renoir 芝大門店', address: '東京都港区芝大門2-3-1', aliases: ['ルノアール'], geo },
+      { name: 'B' },
+    ],
+  }
+  expect(validateViews([view])).toEqual([view])
+  for (const bad of [
+    { ...view, places: [view.places[0]] },
+    { ...view, places: Array(6).fill({ name: 'x' }) },
+    { ...view, destination: { name: 'x' } },
+    { kind: 'map', title: 'x' },
+    { ...view, places: [{ name: 'x', geo: { ...geo, lat: 99 } }, { name: 'y' }] },
+    { ...view, places: [{ name: 'x', extra: 1 }, { name: 'y' }] },
+  ])
+    expect(validateViews([bad]), JSON.stringify(bad)).toEqual([])
+})

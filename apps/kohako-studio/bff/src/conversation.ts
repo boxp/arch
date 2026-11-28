@@ -811,14 +811,9 @@ export function createConversation({
                       : 24000,
                   )}\n（返答が長すぎるため、ここから先は省略されました）`
                 : extracted.text
-          // 打ち切りは geocoder 側(7秒)で取得済みの位置を残して行う。ここは異常時の保険。
-          const views =
-            input.kind === 'text' && input.views
-              ? await Promise.race([
-                  geocode(extracted.views),
-                  new Promise<View[]>((r) => setTimeout(() => r(extracted.views), 9000).unref?.()),
-                ])
-              : extracted.views
+          // BOXP-751: 位置検索は geocoder が呼ばれた時刻から 60 秒の期限で必ず終わる（他の会話の地図の後ろで待つ時間も含む）。
+          // 期限内に確認できなかった候補は位置なし（印なし）。混雑・遅延時に印が欠けるのは仕様どおり。
+          const views = input.kind === 'text' && input.views ? await geocode(extracted.views) : extracted.views
           // BOXP-657: 返答の選択肢（A／B…）は BFF が取り出して返す（端末ごとに抽出規則の写しを持たない）。
           const choices = input.kind === 'text' && !entry.visit ? extractChoices(reply) : null
           entry.reply = { text: reply, at: now(), ...(views.length ? { views } : {}), ...(choices ? { choices } : {}) }

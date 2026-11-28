@@ -50,7 +50,8 @@ import {
   miniLabelOf,
   type Status,
 } from './status'
-import { validateViews, mapsUrl, osmUrl, htmlSrcdoc, sanitizeHtml, type View } from './views'
+import { validateViews, mapsUrl, htmlSrcdoc, sanitizeHtml, type View } from './views'
+import { layoutMap, mapPlaces, markable, renderMap } from './mapview'
 import { clipHold, isPetting, petEyesWanted, petFollow, petShown, zeroPet } from './petfollow'
 import { makeVisemes, visemeAt, boundaryTime, spokenSeconds, type VisemeSequence } from '../live2d/viseme'
 import {
@@ -718,43 +719,57 @@ function openViewer(view: View, opener: HTMLElement, focus = true) {
     return p
   }
   if (view.kind === 'map') {
-    // 地図を先頭に置き、スマホでもスクロールなしで見えるようにする。
-    if (view.geo) {
-      const frame = document.createElement('iframe')
-      frame.src = osmUrl(view.geo)
-      frame.setAttribute('sandbox', 'allow-scripts allow-same-origin')
-      frame.referrerPolicy = 'no-referrer'
-      frame.setAttribute('allow', '')
-      frame.loading = 'eager'
-      frame.title = view.title
-      viewerBody.append(frame)
-      line('© OpenStreetMap contributors')
-    } else line('地図上の位置を特定できませんでした。下のリンクから Google マップで開けます。')
-    line([view.destination.name, view.destination.address].filter(Boolean).join(' '))
-    if (view.mode)
-      line(`移動手段: ${{ transit: '公共交通', walking: '徒歩', driving: '車', bicycling: '自転車' }[view.mode]}`)
-    if (view.origin) line(`出発地: ${view.origin}`)
-    if (view.geo) {
-      line(
-        view.geo.precision === 'area'
-          ? `番地まで特定できなかったため、「${view.geo.label}」付近を表示しています（正確な目的地とは異なる場合があります）。`
-          : `「${view.geo.label}」付近（OpenStreetMap の検索結果）`,
-      )
-      line(
-        '地図は OpenStreetMap から読み込みます（目的地付近の位置だけが送られ、出発地は送りません）。経路はこの地図には描かれません。',
-      )
-    }
-    const link = (text: string, origin: boolean) => {
+    // BOXP-749: 地図を先頭に置き、スマホでもスクロールなしで見えるようにする。正確な位置だけにピンを立てる。
+    const places = mapPlaces(view),
+      layout = layoutMap(places)
+    if (layout) viewerBody.append(renderMap(document, layout, view.title))
+    else line('地図上の位置を確認できませんでした。下のリンクから Google マップで開けます。')
+    const list = document.createElement('ol')
+    list.className = 'view-map-list'
+    places.forEach((place, i) => {
+      const item = document.createElement('li'),
+        kind = markable(place.geo)
+      item.dataset.n = String(i + 1)
+      const name = document.createElement('strong')
+      name.textContent = place.name
+      item.append(name)
+      if (place.address) item.append(` ${place.address}`)
+      const note = document.createElement('div')
+      note.textContent =
+        kind === 'pin'
+          ? 'ピン: OpenStreetMap の検索結果の位置'
+          : kind === 'area'
+            ? `番地まで特定できず「${place.geo?.label}」付近を点線で表示（正確な位置とは異なる場合があります）`
+            : place.geo
+              ? `位置を特定できず（「${place.geo.label}」付近）。地図に印はありません`
+              : '位置を確認できませんでした。地図に印はありません'
+      item.append(note)
       const a = document.createElement('a')
-      a.href = mapsUrl(view, origin)
+      a.href = mapsUrl({ destination: place, mode: view.mode }, false)
       a.target = '_blank'
       a.rel = 'noopener noreferrer'
       a.referrerPolicy = 'no-referrer'
-      a.textContent = text
+      a.textContent = places.length > 1 ? 'Google マップで開く' : 'Google マップで経路を開く'
+      item.append(a)
+      list.append(item)
+    })
+    viewerBody.append(list)
+    if (view.mode)
+      line(`移動手段: ${{ transit: '公共交通', walking: '徒歩', driving: '車', bicycling: '自転車' }[view.mode]}`)
+    if (view.origin) line(`出発地: ${view.origin}`)
+    if (layout)
+      line(
+        '地図画像は OpenStreetMap から読み込みます（表示範囲のタイルだけを取得し、出発地は送りません）。経路はこの地図には描かれません。',
+      )
+    if (view.origin && view.destination) {
+      const a = document.createElement('a')
+      a.href = mapsUrl({ ...view, destination: view.destination }, true)
+      a.target = '_blank'
+      a.rel = 'noopener noreferrer'
+      a.referrerPolicy = 'no-referrer'
+      a.textContent = `出発地「${view.origin}」からの経路を Google マップで開く`
       viewerBody.append(a, document.createElement('br'))
     }
-    link('Google マップで経路を開く', false)
-    if (view.origin) link(`出発地「${view.origin}」からの経路を Google マップで開く`, true)
     line('Google マップを開くと、目的地（および選択した出発地）が Google に送信されます。')
   } else if (view.kind === 'html') {
     line('※コハコが作成した参考図です。数値は会話内容にもとづくもので、確認されたデータではありません。')
