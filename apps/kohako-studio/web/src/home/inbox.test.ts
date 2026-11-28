@@ -230,3 +230,393 @@ describe('送信直前の選択肢確認（BOXP-658）', () => {
     expect(noticeChoiceValues({ body: '本文' })).toEqual([])
   })
 })
+
+describe('通知からのジャンプを一度だけ行う（BOXP-772）', () => {
+  it('URL から notification だけを外し、他のパラメータの表記と順序を保つ', async () => {
+    const { withoutNotificationParam } = await import('./inbox')
+    expect(withoutNotificationParam('?notification=event-123456')).toBe('')
+    expect(withoutNotificationParam('?acting=0&notification=event-123456&face=static')).toBe('?acting=0&face=static')
+    expect(withoutNotificationParam('?q=a%20b&notification=x&notification=y&z=c+d')).toBe('?q=a%20b&z=c+d')
+    expect(withoutNotificationParam('?notificationx=1&a=2')).toBeNull()
+    expect(withoutNotificationParam('')).toBeNull()
+  })
+
+  type Item = { eventId: string; source: string; title: string; body: string; receivedAt: string }
+  const setup = async (
+    search: string,
+    items: Item[],
+    failFirst = 0,
+    failAnnounce = 0,
+    /** 先頭から順に、該当する送信へ 1 度ずつ返す失敗（'throw' は通信失敗、数値は JSON 付きの HTTP 状態） */
+    faults: { suffix: string; result: 'throw' | number; skip?: number }[] = [],
+  ) => {
+    const { initInbox } = await import('./inbox'),
+      { vi } = await import('vitest')
+    const els: Record<string, { hidden: boolean }> = {},
+      // 描画の細部は検査しないので、未定義のプロパティは何でも受ける要素で代用する
+      el = (): { hidden: boolean } => {
+        const props: Record<string | symbol, unknown> = {
+          hidden: true,
+          textContent: '',
+          value: '',
+          dataset: {},
+          style: {},
+        }
+        return new Proxy(props, {
+          get: (t, k) => (k in t ? t[k] : k === 'then' ? undefined : k === 'querySelector' ? () => null : () => el()),
+          set: (t, k, v) => {
+            t[k] = v
+            return true
+          },
+        }) as unknown as { hidden: boolean }
+      }
+    const calls: string[] = [],
+      urls: string[] = [],
+      handlers: Record<string, () => void> = {},
+      sw: { listener?: (e: { data: unknown }) => void } = {},
+      ticks: (() => void)[] = [],
+      holds: { suffix: string; gate: Promise<void> }[] = []
+    let failures = failFirst
+    let announceFailures = failAnnounce
+    const loc = { search, pathname: '/kohako/home.html', hash: '#x' }
+    vi.stubGlobal('document', {
+      hidden: false,
+      getElementById: (id: string) => (els[id] ??= el()),
+      addEventListener: (type: string, fn: () => void) => {
+        handlers[type] = fn
+      },
+      createElement: () => el(),
+      createDocumentFragment: () => el(),
+      createTextNode: () => el(),
+    })
+    vi.stubGlobal('location', loc)
+    vi.stubGlobal('history', {
+      state: null,
+      replaceState: (_s: unknown, _t: string, url: string) => {
+        urls.push(url)
+        loc.search = url.slice(loc.pathname.length).replace(/#.*$/, '')
+      },
+    })
+    vi.stubGlobal('navigator', {
+      serviceWorker: { addEventListener: (_t: string, fn: (e: { data: unknown }) => void) => (sw.listener = fn) },
+    })
+    vi.stubGlobal('window', {
+      setTimeout: () => 0,
+      setInterval: (fn: () => void) => {
+        ticks.push(fn)
+        return 0
+      },
+    })
+    vi.stubGlobal('fetch', async (url: string, init?: { method?: string }) => {
+      const path = url.replace('/kohako/api/v1/', '')
+      calls.push(`${init?.method ?? 'GET'} ${path}`)
+      const held = holds.findIndex((h) => path.endsWith(h.suffix))
+      if (held >= 0) await holds.splice(held, 1)[0].gate
+      if (path === 'notifications' && failures > 0) {
+        failures--
+        throw new Error('offline')
+      }
+      if (path.endsWith('/announced') && announceFailures > 0) {
+        announceFailures--
+        throw new Error('offline')
+      }
+      const fault = faults.findIndex((f) => path.endsWith(f.suffix))
+      const f0 = fault >= 0 ? faults[fault] : undefined
+      if (f0?.skip) f0.skip--
+      else if (fault >= 0) {
+        const [{ result }] = faults.splice(fault, 1)
+        if (result === 'throw') throw new Error('offline')
+        return { status: result, json: async () => ({ error: 'internal' }) }
+      }
+      return { status: 200, json: async () => (path === 'notifications' ? { items, unread: 0 } : {}) }
+    })
+    initInbox(() => false)
+    const settle = () => new Promise((r) => setTimeout(r, 100))
+    const resume = async () => {
+      handlers.visibilitychange()
+      await settle()
+    }
+    await settle()
+    /** 該当する次の送信 1 回を、返した関数を呼ぶまで止める */
+    const hold = (suffix: string) => {
+      let release = () => {}
+      holds.push({ suffix, gate: new Promise<void>((r) => (release = r)) })
+      return () => release()
+    }
+    return {
+      calls,
+      urls,
+      els,
+      resume,
+      sw,
+      settle,
+      loc,
+      vi,
+      hold,
+      addFault: (f: (typeof faults)[number]) => faults.push(f),
+    }
+  }
+  const item = (id: string): Item => ({
+    eventId: id,
+    source: 'task-board-report',
+    title: id,
+    body: '本文',
+    receivedAt: new Date(Date.now() - 60_000).toISOString(),
+  })
+  const reads = (calls: string[], id: string) => calls.filter((c) => c === `POST notifications/${id}/read`).length
+
+  it('URL の通知を 1 度だけ開き、notification だけを履歴を増やさず外す', async () => {
+    const t = await setup('?acting=0&notification=event-AAAAAA&face=static', [item('event-AAAAAA')])
+    try {
+      expect(reads(t.calls, 'event-AAAAAA')).toBe(1)
+      expect(t.els.inbox.hidden).toBe(false)
+      expect(t.urls).toEqual(['/kohako/home.html?acting=0&face=static#x'])
+    } finally {
+      t.vi.unstubAllGlobals()
+    }
+  })
+
+  it('表示へ戻っても開いた通知を開き直さない', async () => {
+    const t = await setup('?notification=event-AAAAAA', [item('event-AAAAAA')])
+    try {
+      t.els.inbox.hidden = true // 本人が受信箱を閉じた
+      await t.resume()
+      await t.resume()
+      expect(reads(t.calls, 'event-AAAAAA')).toBe(1)
+      expect(t.els.inbox.hidden).toBe(true)
+      expect(t.calls.filter((c) => c === 'GET notifications').length).toBeGreaterThanOrEqual(3)
+    } finally {
+      t.vi.unstubAllGlobals()
+    }
+  })
+
+  it('一覧取得に失敗したら消費せず URL も残し、次に取得できた時に 1 度だけ開く', async () => {
+    const t = await setup('?notification=event-AAAAAA', [item('event-AAAAAA')], 1)
+    try {
+      expect(reads(t.calls, 'event-AAAAAA')).toBe(0)
+      expect(t.urls).toEqual([])
+      await t.resume()
+      expect(reads(t.calls, 'event-AAAAAA')).toBe(1)
+      expect(t.urls).toEqual(['/kohako/home.html#x'])
+      await t.resume()
+      expect(reads(t.calls, 'event-AAAAAA')).toBe(1)
+    } finally {
+      t.vi.unstubAllGlobals()
+    }
+  })
+
+  it('一覧に無い通知は開かず URL から外す。不正な ID は読み込み時に外す', async () => {
+    const t = await setup('?notification=event-GONE00', [item('event-AAAAAA')])
+    try {
+      expect(t.calls.some((c) => c.endsWith('/read'))).toBe(false)
+      expect(t.urls).toEqual(['/kohako/home.html#x'])
+    } finally {
+      t.vi.unstubAllGlobals()
+    }
+    const bad = await setup('?a=1&notification=../bad', [item('event-AAAAAA')])
+    try {
+      expect(bad.calls.some((c) => c.endsWith('/read'))).toBe(false)
+      expect(bad.urls).toEqual(['/kohako/home.html?a=1#x'])
+    } finally {
+      bad.vi.unstubAllGlobals()
+    }
+  })
+
+  it('一覧は取れたが通知を開く途中で通信失敗したら消費せず URL も残し、次に取得できた時に開いてから外す', async () => {
+    const t = await setup('?a=1&notification=event-AAAAAA', [item('event-AAAAAA')], 0, 1)
+    try {
+      expect(t.calls.filter((c) => c === 'POST notifications/event-AAAAAA/announced').length).toBe(1)
+      expect(reads(t.calls, 'event-AAAAAA')).toBe(0)
+      expect(t.urls).toEqual([])
+      expect(t.loc.search).toBe('?a=1&notification=event-AAAAAA')
+      await t.resume()
+      expect(reads(t.calls, 'event-AAAAAA')).toBe(1)
+      expect(t.urls).toEqual(['/kohako/home.html?a=1#x'])
+      await t.resume()
+      expect(reads(t.calls, 'event-AAAAAA')).toBe(1)
+    } finally {
+      t.vi.unstubAllGlobals()
+    }
+  })
+  it.each([
+    ['案内済みの送信が JSON 付きの HTTP 500', { suffix: '/announced', result: 500 }],
+    ['既読の送信が通信失敗', { suffix: '/read', result: 'throw' }],
+    ['既読の送信が JSON 付きの HTTP 500', { suffix: '/read', result: 500 }],
+  ] as const)('%sなら受信箱を開かず消費せず URL も残し、次に取得できた時に開いてから外す', async (_name, fault) => {
+    const t = await setup('?a=1&notification=event-AAAAAA', [item('event-AAAAAA')], 0, 0, [{ ...fault }])
+    try {
+      expect(t.els.inbox.hidden).toBe(true)
+      expect(t.urls).toEqual([])
+      expect(t.loc.search).toBe('?a=1&notification=event-AAAAAA')
+      await t.resume()
+      expect(t.els.inbox.hidden).toBe(false)
+      expect(t.urls).toEqual(['/kohako/home.html?a=1#x'])
+      const before = reads(t.calls, 'event-AAAAAA')
+      t.els.inbox.hidden = true // 本人が受信箱を閉じた
+      await t.resume()
+      expect(reads(t.calls, 'event-AAAAAA')).toBe(before)
+      expect(t.els.inbox.hidden).toBe(true)
+    } finally {
+      t.vi.unstubAllGlobals()
+    }
+  })
+  // 開く手順（案内済み→既読→一覧の再取得）のどの段の失敗でも、URL と SW のどちらの入口でも同じ扱いにする（BOXP-772）
+  const openFaults = [
+    ['案内済みの送信が JSON 付きの HTTP 500', { suffix: '/announced', result: 500 }],
+    ['既読の送信が通信失敗', { suffix: '/read', result: 'throw' }],
+    ['既読の送信が JSON 付きの HTTP 500', { suffix: '/read', result: 500 }],
+    ['既読後の一覧の再取得が通信失敗', { suffix: 'notifications', result: 'throw', skip: 1 }],
+  ] as const
+  it.each(openFaults)(
+    '開いたままの家への SW 通知で%sなら受信箱を開かず保留し、次の取得で 1 度だけ開く',
+    async (_name, fault) => {
+      const t = await setup('', [item('event-AAAAAA'), item('event-BBBBBB')])
+      try {
+        t.calls.length = 0
+        // 初回の一覧取得が済んだ後に入れるので、skip は SW 通知以降の取得から数える
+        t.addFault({ ...fault })
+        t.sw.listener?.({ data: { type: 'open-notification', eventId: 'event-BBBBBB' } })
+        await t.settle()
+        expect(t.els.inbox.hidden).toBe(true)
+        await t.resume()
+        expect(t.els.inbox.hidden).toBe(false)
+        const before = reads(t.calls, 'event-BBBBBB')
+        t.els.inbox.hidden = true // 本人が受信箱を閉じた
+        await t.resume()
+        expect(reads(t.calls, 'event-BBBBBB')).toBe(before)
+        expect(t.els.inbox.hidden).toBe(true)
+        expect(t.urls).toEqual([])
+      } finally {
+        t.vi.unstubAllGlobals()
+      }
+    },
+  )
+  it('URL のジャンプで既読後の一覧の再取得が失敗したら受信箱を開かず URL も残し、次の取得で開いてから外す', async () => {
+    const t = await setup('?a=1&notification=event-AAAAAA', [item('event-AAAAAA')], 0, 0, [
+      { suffix: 'notifications', result: 'throw', skip: 1 },
+    ])
+    try {
+      expect(t.els.inbox.hidden).toBe(true)
+      expect(t.loc.search).toBe('?a=1&notification=event-AAAAAA')
+      await t.resume()
+      expect(t.els.inbox.hidden).toBe(false)
+      expect(t.urls).toEqual(['/kohako/home.html?a=1#x'])
+    } finally {
+      t.vi.unstubAllGlobals()
+    }
+  })
+  // 開く手順の実行中に届いた要求は捨てず、実行中の手順が成功しても失敗しても続けて処理する（BOXP-772）
+  it.each([
+    ['失敗', 500],
+    ['成功', 200],
+  ] as const)(
+    '通知 A を開く途中で通知 B の SW 通知が届き A が%sしたら、表示復帰を待たずに B を開く',
+    async (_name, status) => {
+      const t = await setup('', [item('event-AAAAAA'), item('event-BBBBBB')])
+      try {
+        const release = t.hold('event-AAAAAA/announced')
+        if (status !== 200) t.addFault({ suffix: 'event-AAAAAA/announced', result: status })
+        t.sw.listener?.({ data: { type: 'open-notification', eventId: 'event-AAAAAA' } })
+        await t.settle()
+        t.sw.listener?.({ data: { type: 'open-notification', eventId: 'event-BBBBBB' } })
+        await t.settle()
+        expect(reads(t.calls, 'event-BBBBBB')).toBe(0)
+        release()
+        await t.settle()
+        expect(reads(t.calls, 'event-BBBBBB')).toBe(1)
+        expect(t.els.inbox.hidden).toBe(false)
+        t.els.inbox.hidden = true
+        await t.resume()
+        expect(reads(t.calls, 'event-BBBBBB')).toBe(1)
+        expect(reads(t.calls, 'event-AAAAAA')).toBe(status === 200 ? 1 : 0) // A は成功した時だけ既読になり、B の後に開き直さない
+        expect(t.els.inbox.hidden).toBe(true)
+      } finally {
+        t.vi.unstubAllGlobals()
+      }
+    },
+  )
+  it('開いたままの家で別の通知を押すと URL を変えずにその通知を開き、表示復帰で開き直さない', async () => {
+    const t = await setup('', [item('event-AAAAAA'), item('event-BBBBBB')])
+    try {
+      t.sw.listener?.({ data: { type: 'open-notification', eventId: 'event-BBBBBB' } })
+      await t.settle()
+      expect(reads(t.calls, 'event-BBBBBB')).toBe(1)
+      t.sw.listener?.({ data: { type: 'open-notification', eventId: 'event-BBBBBB' } })
+      await t.settle()
+      expect(reads(t.calls, 'event-BBBBBB')).toBe(2) // 押すたびに開く
+      t.els.inbox.hidden = true
+      await t.resume()
+      expect(reads(t.calls, 'event-BBBBBB')).toBe(2)
+      expect(t.els.inbox.hidden).toBe(true)
+      expect(t.urls).toEqual([])
+    } finally {
+      t.vi.unstubAllGlobals()
+    }
+  })
+})
+
+it('初回取得に失敗しても、表示したままの定期更新で取得できた時に 1 度だけ開く（BOXP-772）', async () => {
+  // 上の describe の setup は閉じているため、同じ条件を最小限で組み直す
+  const { initInbox } = await import('./inbox'),
+    { vi } = await import('vitest')
+  const el = (): { hidden: boolean } =>
+    new Proxy(
+      { hidden: true, textContent: '', value: '', dataset: {}, style: {} } as Record<string | symbol, unknown>,
+      {
+        get: (t, k) => (k in t ? t[k] : k === 'then' ? undefined : k === 'querySelector' ? () => null : () => el()),
+        set: (t, k, v) => {
+          t[k] = v
+          return true
+        },
+      },
+    ) as unknown as { hidden: boolean }
+  const els: Record<string, { hidden: boolean }> = {},
+    calls: string[] = [],
+    urls: string[] = [],
+    ticks: (() => void)[] = []
+  let failures = 1
+  const loc = { search: '?notification=event-AAAAAA', pathname: '/kohako/home.html', hash: '' }
+  vi.stubGlobal('document', {
+    hidden: false,
+    getElementById: (id: string) => (els[id] ??= el()),
+    addEventListener() {},
+    createElement: () => el(),
+    createDocumentFragment: () => el(),
+    createTextNode: () => el(),
+  })
+  vi.stubGlobal('location', loc)
+  vi.stubGlobal('history', { state: null, replaceState: (_s: unknown, _t: string, url: string) => urls.push(url) })
+  vi.stubGlobal('navigator', {})
+  vi.stubGlobal('window', {
+    setTimeout: () => 0,
+    setInterval: (fn: () => void) => {
+      ticks.push(fn)
+      return 0
+    },
+  })
+  vi.stubGlobal('fetch', async (url: string, init?: { method?: string }) => {
+    const path = url.replace('/kohako/api/v1/', '')
+    calls.push(`${init?.method ?? 'GET'} ${path}`)
+    if (path === 'notifications' && failures-- > 0) return { status: 502, json: async () => ({}) }
+    const items = [
+      { eventId: 'event-AAAAAA', source: 't', title: 'A', body: 'b', receivedAt: new Date().toISOString() },
+    ]
+    return { status: 200, json: async () => (path === 'notifications' ? { items, unread: 0 } : {}) }
+  })
+  const settle = () => new Promise((r) => setTimeout(r, 100))
+  try {
+    initInbox(() => false)
+    await settle()
+    expect(calls).not.toContain('POST notifications/event-AAAAAA/read')
+    expect(urls).toEqual([])
+    ticks[0]()
+    await settle()
+    expect(calls.filter((c) => c === 'POST notifications/event-AAAAAA/read')).toHaveLength(1)
+    expect(urls).toEqual(['/kohako/home.html'])
+    ticks[0]()
+    await settle()
+    expect(calls.filter((c) => c === 'POST notifications/event-AAAAAA/read')).toHaveLength(1)
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})

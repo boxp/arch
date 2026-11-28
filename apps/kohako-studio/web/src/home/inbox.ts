@@ -82,6 +82,23 @@ export function notificationParam(search: string) {
   const id = new URLSearchParams(search).get('notification')
   return id && /^[A-Za-z0-9._:-]{8,200}$/.test(id) ? id : null
 }
+/**
+ * BOXP-772: 検索文字列から notification パラメータだけを外す（他のパラメータの表記・順序は変えない）。
+ * notification が無ければ null。
+ */
+export function withoutNotificationParam(search: string): string | null {
+  const parts = search.replace(/^\?/, '').split('&'),
+    isNotification = (p: string) => {
+      try {
+        return decodeURIComponent(p.split('=')[0].replace(/\+/g, ' ')) === 'notification'
+      } catch {
+        return false
+      }
+    }
+  if (!search || !parts.some(isNotification)) return null
+  const rest = parts.filter((p) => p && !isNotification(p))
+  return rest.length ? `?${rest.join('&')}` : ''
+}
 export function pickAnnouncements(items: Item[], now = Date.now()) {
   const candidates = announcementCandidates(items, now)
   return {
@@ -158,9 +175,16 @@ export function initInbox(
     waiting = false,
     active = '',
     holdTimer = 0
+  // BOXP-772: 通知を押して開いた URL のジャンプは一覧取得の確定で 1 度だけ消費する（selected とは別に持つ）。
+  let jump = selected
   let opening = !!selected,
     firstOpen = true,
     renderedKey: string | null = null
+  const dropNotificationParam = () => {
+    const search = withoutNotificationParam(location.search)
+    if (search !== null) history.replaceState(history.state, '', `${location.pathname}${search}${location.hash}`)
+  }
+  if (!jump) dropNotificationParam()
   const drafts = new ReplyDrafts()
   const sending = new Set<string>()
   const call = async (path: string, method = 'GET', body?: unknown) => {
@@ -446,23 +470,26 @@ export function initInbox(
       }
     }
   }
-  async function refresh() {
+  /** 一覧の状態が確定した（取得できた・通知機能が無効と分かった）ら true。 */
+  async function refresh(): Promise<boolean> {
     try {
       const r = await call('notifications')
       if (r.status === 503 && r.data?.error === 'notifications_disabled') {
         el('inbox-open').hidden = true
         panel.hidden = true
-        return
+        return true
       }
-      if (r.status !== 200) return
+      if (r.status !== 200) return false
       items = sortAscending(r.data.items)
       el('inbox-open').hidden = false
       el('inbox-badge').textContent = r.data.unread ? String(r.data.unread) : ''
       el('inbox-open').setAttribute('aria-label', r.data.unread ? `受信箱（未読 ${r.data.unread} 件）` : '受信箱')
       render()
       void tryAnnounce()
+      return true
     } catch {
       /* 次回更新で再試行 */
+      return false
     }
   }
   el('inbox-open').addEventListener('click', () => {
@@ -521,30 +548,95 @@ export function initInbox(
       }
     })()
   })
+  // BOXP-772: 開いたままの画面への SW 通知も URL のジャンプと同じ保留値に入れ、同じ手順（update）でだけ開く。
+  // 途中で失敗すれば保留が残り、次の定期更新か表示復帰で開き直す（入口ごとに失敗時の扱いを分けない）。
   navigator.serviceWorker?.addEventListener('message', (e) => {
     if (
       e.data?.type === 'open-notification' &&
       notificationParam(`?notification=${encodeURIComponent(e.data.eventId)}`)
-    )
-      void openNotification(e.data.eventId)
+    ) {
+      jump = e.data.eventId
+      opening = true
+      update()
+    }
   })
-  async function openNotification(id: string) {
+  /**
+   * 開き終えたら true。案内済み・既読の送信が通信失敗または 2xx 以外なら受信箱を開かず false（例外は外へ出さない）。
+   * BOXP-772: 受信箱を表示するのは両方の送信が受理された後だけ（失敗して保留が残る間に開いたままにしない）。
+   */
+  async function openNotification(id: string): Promise<boolean> {
     opening = true
     try {
-      await call(`notifications/${encodeURIComponent(id)}/announced`, 'POST')
-      await open(id)
+      const announced = await call(`notifications/${encodeURIComponent(id)}/announced`, 'POST')
+      if (announced.status < 200 || announced.status >= 300) return false
+      const read = await call(`notifications/${encodeURIComponent(id)}/read`, 'POST')
+      if (read.status < 200 || read.status >= 300) return false
+      // 一覧の再取得まで確定してから選択を切り替えて描画し、その後で受信箱を表示する
+      // （再取得に失敗したら前の選択の詳細を見せたまま開かない）。
+      if (!(await refresh())) return false
+      if (active === id) {
+        active = ''
+        clearTimeout(holdTimer)
+      }
+      selected = id
+      render()
+      panel.hidden = false
+      return true
+    } catch {
+      return false
     } finally {
       opening = false
     }
   }
+  // BOXP-772: 表示へ戻るたびに前の通知を開き直さない。開くのは保留中のジャンプだけで、一覧が確定したら消費する
+  // （初回取得や開く途中の送信が失敗した場合は消費せず URL も残し、次の定期更新か表示復帰で取得できた時に再び試みる）。
+  let jumping = false
+  // 消費は開き始めた時の保留値と同じ場合だけ（途中で別の通知の SW 通知が来たら、それを続けて開く）。
+  const consume = (id: string) => {
+    if (jump !== id) return
+    jump = null
+    opening = false
+    dropNotificationParam()
+  }
+  // 開く手順の実行中に来た更新要求（SW 通知・定期更新・表示復帰）は捨てずに記録し、手順が成功しても失敗しても
+  // 終わった直後に 1 度だけまとめて処理する（実行中の要求を黙って落とす経路を残さない）。
+  let requested = false
+  function update() {
+    if (jumping) {
+      requested = true
+      return
+    }
+    void refresh().then(async (loaded) => {
+      if (jumping) {
+        requested = true
+        return
+      }
+      const id = jump
+      if (!id || !loaded) return
+      if (!items.some((i) => i.eventId === id)) {
+        consume(id)
+        return
+      }
+      jumping = true
+      requested = false
+      let done = false
+      try {
+        done = await openNotification(id)
+        if (done) consume(id)
+      } finally {
+        jumping = false
+        if (jump) opening = true // 保留中のジャンプが残る間は、今までどおり案内で割り込まない
+      }
+      const again = requested
+      requested = false
+      if (jump && (done || again)) update()
+    })
+  }
   const schedule = () => {
     clearInterval(timer)
     if (!document.hidden) {
-      void refresh().then(() => {
-        if (selected && items.some((i) => i.eventId === selected)) void openNotification(selected)
-        else opening = false
-      })
-      timer = window.setInterval(() => void refresh(), 60000)
+      update()
+      timer = window.setInterval(update, 60000)
     }
   }
   document.addEventListener('visibilitychange', schedule)
