@@ -83,14 +83,32 @@ const noteTitle = (path: string) => must(path.split('/').pop()).replace(/\.md$/i
 // （コード表記を含む）もノートリンクにする。docs/ などリポジトリのパスと紛らわしいフォルダは対象外。
 const VAULT_ROOT = '/home/boxp/Documents/obsidian-headless/BOXP/'
 const VAULT_DIRS = /^(?:Tickets|Projects|Boards|Incidents|Infrastructure)\//
+// BOXP-778: Obsidian の wiki リンク [[パス|別名]]・[[パス]]。拡張子が無ければ .md を補い、#見出し は外してノート本体を開く。
+// スキームらしい書き出し（javascript: など）と vault 外の絶対パスはリンクにしない（obsidianNotePath の検査も通す）。
+const WIKI_EXT = /\.(?:md|canvas|base|pdf|png|jpe?g|gif|webp|svg)$/i
+function wikiNote(inner: string): Inline | undefined {
+  const bar = inner.indexOf('|'),
+    target = (bar < 0 ? inner : inner.slice(0, bar)).replace(/#.*$/s, '').trim(),
+    alias = bar < 0 ? '' : inner.slice(bar + 1).trim()
+  if (!target || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) return undefined
+  let rel = target.startsWith(VAULT_ROOT)
+    ? target.slice(VAULT_ROOT.length)
+    : /^BOXP-\d{1,6}$/.test(target)
+      ? `Tickets/${target}`
+      : target
+  if (!WIKI_EXT.test(rel)) rel += '.md'
+  const note = obsidianNotePath(obsidianNoteUrl(rel))
+  return note ? { type: 'note', text: alias || noteTitle(note), url: obsidianNoteUrl(note), path: note } : undefined
+}
 export function parseInline(src: string): Inline[] {
   const result: Inline[] = [],
     re =
-      /(!?)\[([^\]]*)\]\(([^\s)]+)\)|obsidian:\/\/open\/?\?[A-Za-z0-9\-._~%&=/+!$'()*,;:@]*[A-Za-z0-9\-_~%=+]|https:\/\/[A-Za-z0-9\-._~:/?#@!$&'*+,;=%]*[A-Za-z0-9\-_~/#=&%+]|\/home\/boxp\/Documents\/obsidian-headless\/BOXP\/[^\n`'"<>「」『』、。，［］[\]{}|\\;]+?\.[mM][dD](?![A-Za-z0-9_])|(?<![A-Za-z0-9_/.-])(?:Tickets|Projects|Boards|Incidents|Infrastructure)\/[^\s`'"<>()（）「」『』、。，．［］[\]{}|\\;]+\.md(?![A-Za-z0-9_])|(?<![A-Za-z0-9_/.-])BOXP-\d{1,6}(?![A-Za-z0-9_-])|`([^`]+)`|\*\*([^*]+)\*\*|~~([^~]+)~~|\*([^*\s][^*]*)\*|(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])/g
+      /(!?)\[([^\]]*)\]\(([^\s)]+)\)|obsidian:\/\/open\/?\?[A-Za-z0-9\-._~%&=/+!$'()*,;:@]*[A-Za-z0-9\-_~%=+]|https:\/\/[A-Za-z0-9\-._~:/?#@!$&'*+,;=%]*[A-Za-z0-9\-_~/#=&%+]|\/home\/boxp\/Documents\/obsidian-headless\/BOXP\/[^\n`'"<>「」『』、。，［］[\]{}|\\;]+?\.[mM][dD](?![A-Za-z0-9_])|(?<![A-Za-z0-9_/.-])(?:Tickets|Projects|Boards|Incidents|Infrastructure)\/[^\s`'"<>()（）「」『』、。，．［］[\]{}|\\;]+\.md(?![A-Za-z0-9_])|(?<![A-Za-z0-9_/.-])BOXP-\d{1,6}(?![A-Za-z0-9_-])|`([^`]+)`|\*\*([^*]+)\*\*|~~([^~]+)~~|\*([^*\s][^*]*)\*|(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])|\[\[([^[\]\n]*)\]\]/g
   let pos = 0
   for (let m = re.exec(src); m; m = re.exec(src)) {
     if (m.index > pos) result.push({ type: 'text', text: src.slice(pos, m.index) })
-    if (m[2] !== undefined) {
+    if (m[9] !== undefined) result.push(wikiNote(m[9]) ?? { type: 'text', text: m[0] })
+    else if (m[2] !== undefined) {
       const image = m[1] && vaultImageUrl(m[3]),
         label = m[1] ? `画像: ${m[2]}` : m[2],
         note = !m[1] ? obsidianNotePath(m[3]) : undefined,
