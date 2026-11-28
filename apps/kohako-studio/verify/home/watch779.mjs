@@ -228,6 +228,20 @@ await scenario('ended-asking-mic', { mode: 'slow-mic' }, async (H) => {
   check('ended-asking-mic', '終了後は聞かない', H.log.transcriptions.length === 0, '')
 })
 
+// 14. マイクの許可待ちの間に「■ やめる」を押すと、許可を待たずにその場で画面共有を止め、許可されてもマイクを手放す（codex review P1）。
+await scenario('stop-asking-mic', { mode: 'slow-mic' }, async (H) => {
+  await H.page.click('#watch')
+  await H.page.waitForFunction(() => window.__media.micAsked === 1, null, { timeout: 5000 })
+  await H.page.click('#watch-stop')
+  // 偽マイクの許可は 1.5 秒後。その前に画面が止まっていること。
+  const mid = await H.ui()
+  check('stop-asking-mic', '許可待ちのうちに画面共有をその場で止める', mid.watch === 'off' && mid.display === 0 && mid.mic === 0, JSON.stringify({ ...mid, history: undefined }))
+  await H.page.waitForTimeout(2500)
+  const after = await H.ui()
+  check('stop-asking-mic', '許可後もマイクと画面を手放したまま off', after.watch === 'off' && after.micAsked === 1 && after.mic === 0 && after.display === 0, JSON.stringify({ ...after, history: undefined }))
+  check('stop-asking-mic', '止めた後は聞かない', H.log.transcriptions.length === 0, '')
+})
+
 // 11. 画面のアップロード中に止めると、上げ終わっても認識文を送らず読み上げない（codex review P1）。
 await scenario('stop-upload', { texts: ['コハコ、これ見て'], uploadDelay: 2000, replyDelay: 300 }, async (H) => {
   await H.start()

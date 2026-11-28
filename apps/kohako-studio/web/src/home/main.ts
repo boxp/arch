@@ -2929,6 +2929,8 @@ type WatchResources = {
   video: HTMLVideoElement
 }
 let watchRes: WatchResources | null = null
+/** 取得の途中で手にした画面・マイク。watchRes に入る前でも、止めたらその場で手放す（BOXP-779 codex review）。 */
+const watchPending = new Set<MediaStream>()
 /** 区切れた発話の時点の共有画面（呼びかけでなければ捨てる。上げるのは呼びかけの時だけ）。 */
 let watchFrame: Promise<Blob | null> | null = null
 function watchSay(note = '') {
@@ -2967,6 +2969,8 @@ function watchRelease() {
   // 共有中に送った呼びかけの返事を読んでいる途中なら止める（普通の会話の読み上げは止めない）。
   if (watchSpeaking && state === 'speaking') hushNow()
   watchSpeaking = false
+  for (const s of watchPending) stopTracks(s)
+  watchPending.clear()
   if (!r) return
   r.processor.onaudioprocess = null
   r.processor.disconnect()
@@ -3114,6 +3118,7 @@ async function watchAcquire(gen: number) {
   try {
     // 画面の音（ゲーム音・ボイスチャット）は求めない。
     display = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 5 }, audio: false })
+    watchPending.add(display)
     if (!watchLive(gen)) throw new Error('stale')
     // マイクの許可を待つ間に共有が終わっても見逃さないよう、先に終了を覚えておく。
     let displayEnded = false
@@ -3121,6 +3126,7 @@ async function watchAcquire(gen: number) {
     mic = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     })
+    watchPending.add(mic)
     if (!watchLive(gen)) throw new Error('stale')
     if (displayEnded || [...display.getTracks(), ...mic.getTracks()].some((t) => t.readyState === 'ended')) {
       stopTracks(display)
@@ -3155,6 +3161,8 @@ async function watchAcquire(gen: number) {
     source.connect(processor)
     processor.connect(context.destination)
     watchRes = { display, mic, context, source, processor, video }
+    watchPending.delete(display)
+    watchPending.delete(mic)
     const ended = () => {
       if (watchRes?.display === display) {
         watchSay('共有かマイクが終わったので止めました。')
@@ -3167,6 +3175,8 @@ async function watchAcquire(gen: number) {
   } catch (e) {
     stopTracks(display)
     stopTracks(mic)
+    if (display) watchPending.delete(display)
+    if (mic) watchPending.delete(mic)
     if (!watchLive(gen)) return
     const name = e && typeof e === 'object' && 'name' in e ? String((e as { name: unknown }).name) : ''
     watchSay(
