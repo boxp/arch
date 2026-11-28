@@ -63,7 +63,10 @@
                         ["config password: \"hunter 2\" is logged" "hunter 2"]
                         ["escaped {\\\"api_key\\\":\\\"xyzSYNTH\\\"} printed" "xyzSYNTH"]
                         ["single 'secret': 'sq-val' here" "sq-val"]
-                        ["{\"access_token\": \"tok123SYNTH\", \"x\": 1}" "tok123SYNTH"]]]
+                        ["{\"access_token\": \"tok123SYNTH\", \"x\": 1}" "tok123SYNTH"]
+                        ["config password=\"abc\\\"esc1SYNTH\" set" "esc1SYNTH"]
+                        ["config secret='abc\\'esc2SYNTH' set" "esc2SYNTH"]
+                        ["escaped {\\\"token\\\":\\\"a\\\\\\\"esc3SYNTH\\\"} printed" "esc3SYNTH"]]]
     (let [e (first (review-findings-entries "BOXP-1" "r1"
                                             (blocking-gate :blocking-items [{:severity "P1" :location "src/a.bb:1" :description desc}]) {}))]
       (is (not (str/includes? (:note e) value)) desc)
