@@ -31,5 +31,8 @@ while read -r role model; do
     printf '絵の無い系列（無地の人形で出ます・絵は BOXP-760 の手順で用意）: %s（%s）\n' "${family:-不明}" "$model"
   fi
 done < <(pairs)
-[[ $(pairs | wc -l) -ge 9 ]] || { echo 'カタログか runner の表を読めませんでした' >&2; status=1; }
+[[ $(pairs | wc -l) -ge 9 ]] || {
+  echo 'カタログか runner の表を読めませんでした' >&2
+  status=1
+}
 exit "$status"
