@@ -2370,7 +2370,13 @@
   (try
     (let [path (ticket-path ticket-id)
           text (when (fs/exists? path) (slurp (str path)))
-          ids (->> (re-seq #"停滞レビュー受領:\s*([A-Z][A-Z0-9]*-\d+)\b" (or text ""))
+          lines (vec (str/split-lines (or text "")))
+          notes (when-let [i (section-index lines "## Notes")]
+                  (subvec lines (inc i) (next-section-index lines i)))
+          ;; Only a Notes line whose note body starts with the receipt counts;
+          ;; examples in Summary/Plan or quotes mid-sentence are not receipts.
+          ids (->> notes
+                   (keep #(re-find #"^\s*-\s+[^\[\]]*\[[^\]]+\]:\s*停滞レビュー受領:\s*([A-Z][A-Z0-9]*-\d+)\b" %))
                    (map second) distinct (remove #(or (= ticket-id %) (contains? decided %))))
           link (stagnation-review-pattern (java.util.regex.Pattern/quote ticket-id))]
       (filterv (fn [id]
@@ -9170,6 +9176,19 @@
           (receive! "BOXP-711" "BOXP-713")
           (reserve-gate-budget-run! "BOXP-711" "run-b" "")
           (check "753 no refresh without a failure since the last refresh" (and (= 13 (lim "BOXP-711")) (= 1 (:review-refreshes (status "BOXP-711")))))
+          ;; The receipt string outside Notes, or quoted mid-sentence in Notes, is not a receipt.
+          (reset! db {})
+          (write-ticket! "BOXP-761" (str "---\nid: BOXP-761\nstatus: in-progress\n---\n\n# BOXP-761\n\n## Summary\n\n"
+                                         "例: 停滞レビュー受領: BOXP-762\n\n## Plan\n\n- [ ] 停滞レビュー受領: BOXP-762 を書く\n\n## Notes\n\n"
+                                         "- 2026-11-28 06:00:00 UTC [claude-opus]: 調査: Notes の『停滞レビュー受領: BOXP-762』で判定する\n"))
+          (fails! "BOXP-761" 5)
+          (review! "BOXP-762" "BOXP-761" "done")
+          (reserve-gate-budget-run! "BOXP-761" "run-q" "")
+          (check "753 receipt text outside a Notes receipt line does not refresh"
+                 (and (= 10 (lim "BOXP-761")) (empty? (:stagnation-refreshes @db))))
+          (receive! "BOXP-761" "BOXP-762")
+          (reserve-gate-budget-run! "BOXP-761" "run-q2" "")
+          (check "753 receipt line in Notes still refreshes" (= 15 (lim "BOXP-761")))
           ;; Only requested, or finished without a receipt.
           (reset! db {})
           (original! "BOXP-721")
