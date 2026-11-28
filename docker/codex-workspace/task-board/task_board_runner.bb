@@ -3880,6 +3880,8 @@
                                            (or (not-empty (:gate-results pr-state))
                                                [[(name (:gate pr-state)) "fail"]]))
                        :checked-pr-urls passed
+                       ;; BOXP-775: heads of the PRs that passed before this one.
+                       :checked-pr-heads heads
                        :merged-pr-urls merged
                        :pr-urls pr-urls)
 
@@ -3901,6 +3903,7 @@
                            :head head
                            :gate-results (conj results [(name (:gate review)) "fail"])
                            :checked-pr-urls passed
+                           :checked-pr-heads heads
                            :merged-pr-urls merged
                            :pr-urls pr-urls
                            :message (str pr-url ": " (:message pr-state) " " (:message review)))
@@ -3908,9 +3911,11 @@
                     ;; URL list rather than carrying arbitrary check/review text.
                     (recur (rest remaining) (conj passed pr-url) merged
                            (cond-> heads head (assoc pr-url head))
-                           (-> low-info
-                               (update :count + (get-in review [:low-priority-findings :count] 0))
-                               (update :paths into (get-in review [:low-priority-findings :paths] [])))
+                           (let [n (get-in review [:low-priority-findings :count] 0)
+                                 paths (get-in review [:low-priority-findings :paths] [])]
+                             (cond-> (-> low-info (update :count + n) (update :paths into paths))
+                               ;; BOXP-775: per-PR count and evidence for the Notes record.
+                               (pos? n) (assoc-in [:by-pr pr-url] {:count n :paths (vec paths)})))
                            (into results (:gate-results review)))))))
             (cond-> {:ok? true
              :skipped? (empty? passed)
@@ -5412,7 +5417,7 @@
                        :when (#{:blocking :unavailable} (:kind p))
                        :let [h (get heads u)
                              id (review-findings-id ["resolved" u h (:id p)])]]
-                   {:id id :kind :resolved :pr-url u
+                   {:id id :kind :resolved :pr-url u :prior-id (:id p)
                     :note (str "review-findings:" id " レビュー所見解消 PR " u " head " (review-findings-short-head h)
                                " run " run-id ": 前回の所見 review-findings:" (:id p) " は今回の head で未検出")})
         failed (when (and (not (:ok? g)) (= :codex-review (:gate g)))
@@ -5443,31 +5448,72 @@
                                    "; " (review-findings-stop-text g)
                                    "; 証跡 " (or (:review-artifact g) (str (run-dir ticket-id run-id))))})
                      nil)))
-        low (when (and (:ok? g) (pos? (get-in g [:low-priority-findings :count] 0)))
-              (let [urls (:checked-pr-urls g)
-                    n (get-in g [:low-priority-findings :count])
-                    id (review-findings-id (concat ["low-only" n] (map #(str % "@" (get heads %)) urls)))]
-                {:id id :kind :low-only :pr-url (first urls)
-                 :note (str "review-findings:" id " レビュー非ブロッキング所見 PR " (str/join ", " urls) " run " run-id
-                            ": P2/P3/nit " n "件（gate 通過・対応は任意）; 証跡 "
-                            (str/join ", " (get-in g [:low-priority-findings :paths])))}))]
-    (vec (concat resolved (keep identity [failed low])))))
+        ;; One record per PR that has low-priority findings, with its own
+        ;; count and evidence; a PR without findings is not listed.
+        low-by-pr (let [lp (:low-priority-findings g)
+                        urls (:checked-pr-urls g)]
+                    (cond
+                      (not (:ok? g)) nil
+                      (map? (:by-pr lp)) (for [u urls :let [x (get-in lp [:by-pr u])] :when (pos? (:count x 0))] [u x])
+                      ;; Older result shape without :by-pr: attributable only to a single PR.
+                      (and (pos? (:count lp 0)) (= 1 (count urls))) [[(first urls) (select-keys lp [:count :paths])]]
+                      :else nil))
+        low (for [[u {n :count paths :paths}] low-by-pr
+                  :let [h (get heads u)
+                        id (review-findings-id ["low-only" u h n])]]
+              {:id id :kind :low-only :pr-url u
+               :note (str "review-findings:" id " レビュー非ブロッキング所見 PR " u " head " (review-findings-short-head h)
+                          " run " run-id ": P2/P3/nit " n "件（gate 通過・対応は任意）; 証跡 " (str/join ", " paths))})]
+    (vec (concat resolved (keep identity [failed]) low))))
+
+;; Records whose Notes write and pending-file write both failed. Kept for the
+;; life of the process and retried by every flush; the unresolved-state table
+;; is only advanced once such a record is actually written (so a later pass
+;; never reports the resolution of a record that is not in the Notes).
+(defonce review-findings-memory-pending (atom {}))
+
+(defn review-findings-state-step [m e]
+  (case (:kind e)
+    (:blocking :unavailable) (assoc m (:pr-url e) {:id (:id e) :kind (:kind e)})
+    :resolved (if (or (nil? (:prior-id e)) (= (:prior-id e) (get-in m [(:pr-url e) :id])))
+                (dissoc m (:pr-url e))
+                m)
+    m))
+
+(defn- update-review-findings-state! [ticket-id entries]
+  (when (seq entries)
+    (try (let [state (read-edn-safely (review-findings-state-path) {})]
+           (write-edn-atomically! (review-findings-state-path)
+                                  (assoc state ticket-id (reduce review-findings-state-step (get state ticket-id {}) entries))))
+         (catch Exception e (log! (str "review findings: state write failed: " (sanitize-blocker-reason (.getMessage e))))))))
 
 (defn- flush-pending-review-findings* [ticket-id]
   (let [pending (read-edn-safely (review-findings-pending-path) {})
-        entries (get pending ticket-id)]
+        file-entries (get pending ticket-id {})
+        mem-entries (get @review-findings-memory-pending ticket-id {})
+        entries (merge mem-entries file-entries)]
     (when (seq entries)
-      (let [results (vec (for [[id e] (sort-by (comp :queued-at val) entries)]
+      (let [results (vec (for [[id e] (sort-by (comp str :queued-at val) entries)]
                            (try {:id id :kind (:kind e) :status (append-note-once! ticket-id (str "review-findings:" id) (:note e))}
                                 (catch Exception ex
                                   (log! (str "review findings: pending write still failing for " ticket-id " " id ": "
                                              (sanitize-blocker-reason (.getMessage ex))))
                                   {:id id :kind (:kind e) :status :failed}))))
             done (set (map :id (remove #(= :failed (:status %)) results)))
-            remaining (apply dissoc entries done)]
-        (when (seq done)
-          (write-edn-atomically! (review-findings-pending-path)
-                                 (if (seq remaining) (assoc pending ticket-id remaining) (dissoc pending ticket-id))))
+            remaining-file (apply dissoc file-entries done)
+            remaining-mem (apply dissoc mem-entries done)]
+        ;; Memory-only records advance the state now that they are written.
+        (update-review-findings-state! ticket-id (keep #(when (contains? done %) (assoc (get mem-entries %) :id %))
+                                                       (keys (apply dissoc mem-entries (keys file-entries)))))
+        (swap! review-findings-memory-pending
+               (fn [m] (if (seq remaining-mem) (assoc m ticket-id remaining-mem) (dissoc m ticket-id))))
+        ;; Try to make the still-unwritten memory records durable again.
+        (let [to-file (merge remaining-file remaining-mem)]
+          (when (or (seq done) (not= (set (keys to-file)) (set (keys remaining-file))))
+            (try (write-edn-atomically! (review-findings-pending-path)
+                                        (if (seq to-file) (assoc pending ticket-id to-file) (dissoc pending ticket-id)))
+                 (swap! review-findings-memory-pending dissoc ticket-id)
+                 (catch Exception e (log! (str "review findings: pending file write failed: " (sanitize-blocker-reason (.getMessage e))))))))
         results))))
 
 (defn flush-pending-review-findings!
@@ -5476,14 +5522,17 @@
   (with-review-findings-lock #(or (flush-pending-review-findings* ticket-id) [])))
 
 (defn flush-all-pending-review-findings! []
-  (doseq [ticket-id (keys (read-edn-safely (review-findings-pending-path) {}))]
+  (doseq [ticket-id (distinct (concat (keys (read-edn-safely (review-findings-pending-path) {}))
+                                      (keys @review-findings-memory-pending)))]
     (try (flush-pending-review-findings! ticket-id)
          (catch Exception e (log! (str "review findings: flush failed for " ticket-id ": " (sanitize-blocker-reason (.getMessage e))))))))
 
 (defn record-review-findings!
   "BOXP-775: write the gate's review records to the ticket Notes once each.
-  A failed write stays pending (and in the run's review-findings.edn) and is
-  retried later; nothing is dropped silently. Returns the per-record statuses."
+  A failed write stays pending (file, or memory when the file write fails too)
+  and is retried later; nothing is dropped silently. The unresolved-state table
+  advances only for records written or durably pending. Returns the per-record
+  statuses."
   [ticket-id run-id g]
   (with-review-findings-lock
    (fn []
@@ -5491,30 +5540,25 @@
      (let [state (read-edn-safely (review-findings-state-path) {})
            entries (review-findings-entries ticket-id run-id g (get state ticket-id {}))]
        (when (seq entries)
-         (let [results (vec (for [e entries]
-                              (try (assoc (select-keys e [:id :kind :pr-url])
-                                          :status (append-note-once! ticket-id (str "review-findings:" (:id e)) (:note e)))
+         (let [results (vec (for [e entries
+                                  :let [pending-entry (assoc (select-keys e [:kind :pr-url :note :prior-id]) :run-id run-id :queued-at (now-str))
+                                        base (select-keys e [:id :kind :pr-url])]]
+                              (try (assoc base :status (append-note-once! ticket-id (str "review-findings:" (:id e)) (:note e)))
                                    (catch Exception ex
                                      (let [reason (sanitize-blocker-reason (.getMessage ex))]
                                        (log! (str "review findings: Notes write failed for " ticket-id " " (:id e) "; kept pending: " reason))
                                        (try
                                          (write-edn-atomically! (review-findings-pending-path)
                                                                 (assoc-in (read-edn-safely (review-findings-pending-path) {})
-                                                                          [ticket-id (:id e)]
-                                                                          (assoc (select-keys e [:kind :pr-url :note]) :run-id run-id :queued-at (now-str))))
-                                         (assoc (select-keys e [:id :kind :pr-url]) :status :failed :reason reason :pending? true)
+                                                                          [ticket-id (:id e)] pending-entry))
+                                         (assoc base :status :failed :reason reason :pending? :file)
                                          (catch Exception pe
-                                           (log! (str "review findings: could not keep pending record for " ticket-id " " (:id e) ": "
-                                                      (sanitize-blocker-reason (.getMessage pe))))
-                                           (assoc (select-keys e [:id :kind :pr-url]) :status :failed :reason reason :pending? false))))))))
-               next-ticket (reduce (fn [m e]
-                                     (case (:kind e)
-                                       (:blocking :unavailable) (assoc m (:pr-url e) {:id (:id e) :kind (:kind e)})
-                                       :resolved (dissoc m (:pr-url e))
-                                       m))
-                                   (get state ticket-id {}) entries)]
-           (try (write-edn-atomically! (review-findings-state-path) (assoc state ticket-id next-ticket))
-                (catch Exception e (log! (str "review findings: state write failed: " (sanitize-blocker-reason (.getMessage e))))))
+                                           (log! (str "review findings: could not keep pending record for " ticket-id " " (:id e)
+                                                      "; kept in memory: " (sanitize-blocker-reason (.getMessage pe))))
+                                           (swap! review-findings-memory-pending assoc-in [ticket-id (:id e)] pending-entry)
+                                           (assoc base :status :failed :reason reason :pending? :memory))))))))
+               applied (set (map :id (remove #(= :memory (:pending? %)) results)))]
+           (update-review-findings-state! ticket-id (filter #(contains? applied (:id %)) entries))
            (try (let [path (fs/path (run-dir ticket-id run-id) "review-findings.edn")
                       ;; Reprocessing the same run keeps the first outcome of
                       ;; each record (a later :duplicate does not hide :recorded).

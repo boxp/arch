@@ -185,4 +185,73 @@
       (is (some #{[:review-findings :codex-review]} calls) (pr-str calls))
       (is (some #{:block-ticket!} calls) (pr-str calls)))))
 
+
+;; --- PR gate retry (codex review P1 x3) --------------------------------------
+(def url2 "https://github.com/boxp/example/pull/8")
+(def head2 "8888888888888888888888888888888888888888")
+
+(deftest multi-pr-gate-keeps-passed-heads
+  (testing "a later PR failing keeps the head of the PR that passed before it"
+    (with-redefs [wait-for-pr-state! (fn [_] {:ok? true :gate-results []})
+                  pr-head-oid (fn [u] (if (= u url) head head2))
+                  run-codex-review! (fn [_ u] (if (= u url)
+                                                {:ok? true :gate-results [["codex-review" "pass"]]}
+                                                {:ok? false :gate :codex-review :failure-kind :findings :url u
+                                                 :blocking-items [{:severity "P1" :location "x.bb:1" :description "d"}]
+                                                 :blocking-findings {:count 1 :path "/p/b.md"}}))]
+      (let [g (review-gate! "/nonexistent" (str url " " url2))
+            entries (review-findings-entries "BOXP-1" "r3" g {url {:id "abcdefabcdef" :kind :blocking}})
+            resolved (first (filter #(= :resolved (:kind %)) entries))]
+        (is (= {url head} (:checked-pr-heads g)))
+        (is (str/includes? (:note resolved) "0e01838"))
+        (is (not (str/includes? (:note resolved) "不明")))))))
+
+(deftest multi-pr-low-only-per-pr
+  (testing "each PR gets its own count and evidence; a PR without findings is not listed"
+    (with-redefs [wait-for-pr-state! (fn [_] {:ok? true :gate-results []})
+                  pr-head-oid (fn [u] (if (= u url) head head2))
+                  run-codex-review! (fn [_ u] (if (= u url)
+                                                {:ok? true :gate-results [] :low-priority-findings {:count 2 :paths ["/p/7.md"]}}
+                                                {:ok? true :gate-results []}))]
+      (let [g (review-gate! "/nonexistent" (str url " " url2))
+            entries (review-findings-entries "BOXP-1" "r4" g {})]
+        (is (= 1 (count entries)))
+        (is (= url (:pr-url (first entries))))
+        (is (str/includes? (:note (first entries)) "2件"))
+        (is (str/includes? (:note (first entries)) "/p/7.md"))
+        (is (not (str/includes? (:note (first entries)) url2))))))
+  (let [g {:ok? true :checked-pr-urls [url url2] :checked-pr-heads {url head url2 head2}
+           :low-priority-findings {:count 3 :paths ["/p/7.md" "/p/8.md"]
+                                   :by-pr {url {:count 1 :paths ["/p/7.md"]} url2 {:count 2 :paths ["/p/8.md"]}}}}
+        [a b :as entries] (review-findings-entries "BOXP-1" "r4" g {})]
+    (is (= 2 (count entries)))
+    (is (and (str/includes? (:note a) "1件") (str/includes? (:note a) "/p/7.md") (not (str/includes? (:note a) "/p/8.md"))))
+    (is (and (str/includes? (:note b) "2件") (str/includes? (:note b) "/p/8.md") (not (str/includes? (:note b) "/p/7.md"))))))
+
+(deftest total-write-failure-does-not-advance-state
+  (with-env
+    (fn [{:keys [ticket root]}]
+      (reset! review-findings-memory-pending {})
+      (let [r (with-redefs [append-note-once! (fn [& _] (throw (ex-info "vault down (synthetic)" {})))
+                            write-edn-atomically! (fn [& _] (throw (ex-info "root down (synthetic)" {})))]
+                (record-review-findings! "BOXP-1" "r1" (blocking-gate)))]
+        (is (= [:failed] (mapv :status r)))
+        (is (empty? (finding-lines ticket)))
+        (is (empty? (get (read-edn-file (fs/path root "review-findings-state.edn") {}) "BOXP-1")) "state not advanced"))
+      (testing "the record is still re-sent, and only then is it unresolved"
+        (flush-all-pending-review-findings!)
+        (is (= 1 (count (finding-lines ticket))))
+        (is (seq (get (read-edn-file (fs/path root "review-findings-state.edn") {}) "BOXP-1")))
+        (is (empty? @review-findings-memory-pending)))
+      (testing "a pass before the re-send would not report a resolution"
+        (reset! review-findings-memory-pending {})
+        (with-env
+          (fn [{:keys [ticket]}]
+            (with-redefs [append-note-once! (fn [& _] (throw (ex-info "vault down (synthetic)" {})))
+                          write-edn-atomically! (fn [& _] (throw (ex-info "root down (synthetic)" {})))]
+              (record-review-findings! "BOXP-1" "r1" (blocking-gate)))
+            (reset! review-findings-memory-pending {})
+            (record-review-findings! "BOXP-1" "r2" {:ok? true :checked-pr-urls [url] :checked-pr-heads {url head2}})
+            (is (empty? (finding-lines ticket)) "no resolution of an unrecorded finding")))))))
+
 (let [result (run-tests 'user)] (when (pos? (+ (:fail result) (:error result))) (System/exit 1)))
