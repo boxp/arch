@@ -36,6 +36,7 @@ import { type Choice, choiceButtonText, choiceMessage, extractChoices } from './
 import './style.css'
 import './room.css'
 import './menus.css'
+import { createDolls } from './dolls-dom'
 import { buildRoomV1, type Daypart, daypartOf, roomOptions } from './room'
 import { IdleDirector, type IdleAct, idleActNames, settledHead } from './idle'
 import { SeatDirector, seatOffsetPx, seatOption } from './seat'
@@ -1266,6 +1267,7 @@ async function refreshStatus() {
   } finally {
     statusLoading = false
     renderStatus()
+    dolls.update(statusValue, statusFailed)
     fitStatusPanel()
     if (!backoff) statusDelay = 60000
     if (!document.hidden) {
@@ -1280,6 +1282,8 @@ document.addEventListener('visibilitychange', () => {
 })
 const statusOpen = el<HTMLButtonElement>('status-widget'),
   statusPanel = el('status-panel')
+// BOXP-766: 作業中の AI モデルの人形。札と同じ取得の結果だけで並べ、押した時だけ票の記録を取る。
+const dolls = createDolls({ host: el('dolls'), card: el('doll-card'), call })
 // 詳細は舞台の中に収める。開く向きは CSS の配置に任せ、はみ出す分だけ高さを詰めて中をスクロールさせる（BOXP-504 TD-02）。
 function fitStatusPanel() {
   statusPanel.style.maxHeight = ''

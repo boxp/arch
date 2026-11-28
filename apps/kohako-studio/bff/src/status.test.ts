@@ -401,6 +401,7 @@ it('取得できない時は値の無い unavailable を返し、URL の無い�
     boardUpdatedAt: null,
     inProgress: { total: null, complete: false, byAgent: [], conflicts: [], laneStatusMismatch: null },
     ids: [],
+    dolls: [],
   })
 })
 it('成功は 60 秒、失敗は 15 秒ちょうどで期限切れにし、取得先ごとに数える', async () => {
@@ -544,4 +545,120 @@ it('Antigravity の群ごとの枠を写し、残量 0 は上限到達、取得�
     'unobserved',
     'unobserved',
   ])
+})
+// BOXP-766: 人形（現行仕様 Projects/kohako-home/model-dolls-home-spec.md）。
+const full = (id: string, assignee: string, extra: object = {}) => ({
+  id,
+  title: `題 ${id}`,
+  lane: 'In Progress',
+  status: 'in-progress',
+  laneStatusMismatch: false,
+  assignee,
+  ticketAssignee: assignee,
+  assigneeMismatch: false,
+  priority: 'medium',
+  ticketUpdatedAt: '2026-11-28T10:00:00Z',
+  latestNoteAt: '2026-11-28T09:59:00Z',
+  latestNoteSource: 'claude-opus',
+  progress: '最新の記録',
+  blocker: null,
+  decision: '本人の判断待ち',
+  readError: null,
+  ...extra,
+})
+it('In Progress の票を人形ごとにまとめ、本人・食い違い・他レーンは人形にしない（D1・D4）', () => {
+  const r = parseBoard(
+    board([
+      full('BOXP-1', 'claude-opus'),
+      full('BOXP-2', 'claude-opus'),
+      full('BOXP-3', 'claude-fable'),
+      full('BOXP-9', 'boxp'),
+      full('BOXP-4', 'codex'),
+      full('BOXP-4', 'codex-sol'),
+      { ...full('BOXP-5', 'claude-sonnet'), lane: 'Ready' },
+    ]),
+    now,
+  )
+  expect(r.dolls).toEqual([
+    {
+      key: 'opus',
+      name: '楽長の人形',
+      version: 1,
+      model: 'claude-opus-5-5',
+      plainLabel: null,
+      tickets: [
+        { id: 'BOXP-1', assignee: 'claude-opus', model: 'claude-opus-5-5' },
+        { id: 'BOXP-2', assignee: 'claude-opus', model: 'claude-opus-5-5' },
+      ],
+    },
+    {
+      key: 'fable',
+      name: '語り部の人形',
+      version: 1,
+      model: 'claude-fable-5-2',
+      plainLabel: null,
+      tickets: [{ id: 'BOXP-3', assignee: 'claude-fable', model: 'claude-fable-5-2' }],
+    },
+  ])
+})
+it('定期の /status には Notes を載せず、票の詳細は In Progress の票だけ返す（T2・T3）', async () => {
+  let clock = now
+  const fetcher = (async (url: string) =>
+    new Response(
+      url === 'board'
+        ? JSON.stringify(
+            board([full('BOXP-1', 'claude-opus', { secret: 'x' }), { ...full('BOXP-2', 'codex'), lane: 'Ready' }]),
+          )
+        : metrics,
+    )) as typeof fetch
+  const status = createStatus({ fetch: fetcher, now: () => clock, quotaUrl: 'quota', boardUrl: 'board' })
+  const s = await status.get()
+  const text = JSON.stringify(s)
+  expect(text).not.toContain('最新の記録')
+  expect(text).not.toContain('本人の判断待ち')
+  expect(text).not.toContain('題 BOXP-1')
+  expect(s.tasks.dolls.map((d) => d.key)).toEqual(['opus'])
+  clock += 1000
+  expect(await status.ticket('BOXP-1')).toEqual({
+    state: 'ok',
+    fetchedAt: new Date(now).toISOString(),
+    item: {
+      id: 'BOXP-1',
+      title: '題 BOXP-1',
+      assignee: 'claude-opus',
+      status: 'in-progress',
+      ticketUpdatedAt: '2026-11-28T10:00:00Z',
+      latestNoteAt: '2026-11-28T09:59:00Z',
+      latestNoteSource: 'claude-opus',
+      progress: '最新の記録',
+      blocker: null,
+      decision: '本人の判断待ち',
+      readError: null,
+    },
+  })
+  expect(await status.ticket('BOXP-2')).toEqual({ state: 'not_found' })
+  expect(await status.ticket('BOXP-3')).toEqual({ state: 'not_found' })
+})
+it('票の詳細は文字列でない値を null にし、取得できない時は unavailable（T3）', async () => {
+  const ok = createStatus({
+    fetch: (async () =>
+      new Response(
+        JSON.stringify(board([full('BOXP-1', 'codex', { title: 7, progress: { a: 1 }, blocker: '<b>止まり</b>' })])),
+      )) as typeof fetch,
+    now: () => now,
+    quotaUrl: '',
+    boardUrl: 'board',
+  })
+  expect(await ok.ticket('BOXP-1')).toMatchObject({
+    state: 'ok',
+    item: { title: null, progress: null, blocker: '<b>止まり</b>' },
+  })
+  const ng = createStatus({
+    fetch: (async () => new Response('x', { status: 500 })) as typeof fetch,
+    now: () => now,
+    quotaUrl: '',
+    boardUrl: 'board',
+  })
+  expect(await ng.ticket('BOXP-1')).toEqual({ state: 'unavailable' })
+  expect((await ng.get()).tasks.dolls).toEqual([])
 })

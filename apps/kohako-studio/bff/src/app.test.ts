@@ -1693,3 +1693,44 @@ it('checks whether a push endpoint is registered for the owner only', async () =
     await rm(dir, { recursive: true, force: true })
   }
 })
+it('BOXP-766: 票の詳細は本人と検証用だけ。眼鏡・通知は 403、形の違う番号は 404、ボードが無ければ 503', async () => {
+  const seen: string[] = []
+  const status = {
+    get: async () => ({}) as never,
+    ticket: async (id: string) => {
+      seen.push(id)
+      return id === 'BOXP-1'
+        ? { state: 'ok' as const, fetchedAt: 'f', item: { id } }
+        : id === 'BOXP-2'
+          ? { state: 'unavailable' as const }
+          : { state: 'not_found' as const }
+    },
+  }
+  const server = createServer(
+    createApp({
+      authenticate: async (h) => (h.authorization as 'owner' | 'verifier' | 'g2' | 'notifier') ?? null,
+      g2Mode: 'write',
+      status: status as never,
+    }),
+  )
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address() as { port: number }
+  const get = (who: string, path: string) =>
+    fetch(`http://127.0.0.1:${port}/kohako/api/v1/${path}`, { headers: { authorization: who } })
+  try {
+    const r = await get('owner', 'status/tickets/BOXP-1')
+    expect(r.status).toBe(200)
+    expect(r.headers.get('cache-control')).toBe('no-store')
+    expect(await r.json()).toEqual({ state: 'ok', fetchedAt: 'f', item: { id: 'BOXP-1' } })
+    expect((await get('verifier', 'status/tickets/BOXP-1')).status).toBe(200)
+    expect((await get('g2', 'status/tickets/BOXP-1')).status).toBe(403)
+    expect((await get('notifier', 'status/tickets/BOXP-1')).status).toBe(403)
+    expect((await get('owner', 'status/tickets/BOXP-3')).status).toBe(404)
+    expect((await get('owner', 'status/tickets/BOXP-2')).status).toBe(503)
+    expect((await get('owner', 'status/tickets/boxp-1')).status).toBe(404)
+    expect((await get('owner', 'status/tickets/BOXP-1/x')).status).toBe(404)
+    expect(seen).toEqual(['BOXP-1', 'BOXP-1', 'BOXP-3', 'BOXP-2'])
+  } finally {
+    server.close()
+  }
+})

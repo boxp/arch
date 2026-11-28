@@ -1,3 +1,4 @@
+import { groupDolls } from './dolls.js'
 type WindowState =
   | 'ok'
   | 'near_limit'
@@ -241,6 +242,25 @@ export function parseQuota(text: string, now: number) {
     pools: result,
   }
 }
+const detailKeys = [
+  'title',
+  'assignee',
+  'status',
+  'ticketUpdatedAt',
+  'latestNoteAt',
+  'latestNoteSource',
+  'progress',
+  'blocker',
+  'decision',
+  'readError',
+] as const
+export type TicketDetail = { id: string } & Record<(typeof detailKeys)[number], string | null>
+/** BOXP-766: 人形を押した時だけ返す票の中身。投影の値を文字列だけ写す（それ以外は null）。 */
+function detailOf(id: string, item: Record<string, unknown>): TicketDetail {
+  const d = { id } as TicketDetail
+  for (const k of detailKeys) d[k] = typeof item[k] === 'string' ? item[k] : null
+  return d
+}
 export function parseBoard(data: unknown, now: number) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) throw Error('invalid board')
   const x = data as Record<string, unknown>
@@ -257,7 +277,7 @@ export function parseBoard(data: unknown, now: number) {
     x.items.some((i) => !i || typeof i !== 'object' || Array.isArray(i) || typeof i.lane !== 'string')
   )
     throw Error('invalid board')
-  const unique = new Map<string, { assignee: string; conflict: boolean; mismatch: boolean }>()
+  const unique = new Map<string, { assignee: string; conflict: boolean; mismatch: boolean; detail: TicketDetail }>()
   for (const item of x.items) {
     if (item.lane !== 'In Progress' || typeof item.id !== 'string' || !/^BOXP-\d+$/.test(item.id)) continue
     const assignee = typeof item.assignee === 'string' && item.assignee.trim() ? item.assignee.trim() : 'unknown',
@@ -265,7 +285,13 @@ export function parseBoard(data: unknown, now: number) {
     if (old) {
       old.conflict ||= old.assignee !== assignee
       old.mismatch ||= item.laneStatusMismatch === true
-    } else unique.set(item.id, { assignee, conflict: false, mismatch: item.laneStatusMismatch === true })
+    } else
+      unique.set(item.id, {
+        assignee,
+        conflict: false,
+        mismatch: item.laneStatusMismatch === true,
+        detail: detailOf(item.id, item),
+      })
   }
   const counts = new Map<string, number>(),
     conflicts: string[] = []
@@ -290,6 +316,8 @@ export function parseBoard(data: unknown, now: number) {
       laneStatusMismatch: mismatch,
     },
     ids: [...unique.keys()].sort(),
+    dolls: groupDolls([...unique].filter(([, i]) => !i.conflict).map(([id, i]) => ({ id, assignee: i.assignee }))),
+    details: new Map([...unique].filter(([, i]) => !i.conflict).map(([id, i]) => [id, i.detail])),
   }
 }
 const unavailableQuota = (now: number) => ({
@@ -306,13 +334,19 @@ const unavailableBoard = (now: number) => ({
   boardUpdatedAt: null,
   inProgress: { total: null, complete: false, byAgent: [], conflicts: [], laneStatusMismatch: null },
   ids: [],
+  dolls: [] as ReturnType<typeof groupDolls>,
+  details: new Map<string, TicketDetail>(),
 })
 export type StatusPayload = {
   schema: 'kohako-home-status/v1'
   generatedAt: string
   quota: ReturnType<typeof parseQuota> | ReturnType<typeof unavailableQuota>
-  tasks: ReturnType<typeof parseBoard> | ReturnType<typeof unavailableBoard>
+  tasks: Omit<ReturnType<typeof parseBoard> | ReturnType<typeof unavailableBoard>, 'details'>
 }
+export type TicketResult =
+  | { state: 'ok'; fetchedAt: string; item: TicketDetail }
+  | { state: 'unavailable' }
+  | { state: 'not_found' }
 export function createStatus(opts: { fetch: typeof fetch; now: () => number; quotaUrl: string; boardUrl: string }) {
   async function read(url: string) {
     if (!url) throw Error('disabled')
@@ -361,14 +395,21 @@ export function createStatus(opts: { fetch: typeof fetch; now: () => number; quo
     async () => parseQuota(await read(opts.quotaUrl), opts.now()),
     () => unavailableQuota(opts.now()),
   )
-  const board = cache<StatusPayload['tasks']>(
+  const board = cache<ReturnType<typeof parseBoard> | ReturnType<typeof unavailableBoard>>(
     async () => parseBoard(JSON.parse(await read(opts.boardUrl)), opts.now()),
     () => unavailableBoard(opts.now()),
   )
   return {
     get: async (): Promise<StatusPayload> => {
-      const [q, tasks] = await Promise.all([quota(), board()])
+      const [q, { details: _, ...tasks }] = await Promise.all([quota(), board()])
       return { schema: 'kohako-home-status/v1', generatedAt: new Date(opts.now()).toISOString(), quota: q, tasks }
+    },
+    /** BOXP-766: 人形を押した時の票の中身。いま In Progress にある票だけ（同じ 60 秒のキャッシュから読む）。 */
+    ticket: async (id: string): Promise<TicketResult> => {
+      const b = await board()
+      if (b.state !== 'ok') return { state: 'unavailable' }
+      const item = b.details.get(id)
+      return item ? { state: 'ok', fetchedAt: b.fetchedAt, item } : { state: 'not_found' }
     },
   }
 }

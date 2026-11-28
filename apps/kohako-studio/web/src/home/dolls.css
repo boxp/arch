@@ -1,0 +1,34 @@
+/* BOXP-766: 作業中の AI モデルの人形。札（.status-anchor）のすぐ上に並べ、札と同じ時に隠れる。動き・ぼかし・すりガラスは使わない。 */
+.dolls{position:absolute;right:0;bottom:calc(100% + 4px);display:flex;align-items:flex-end;gap:4px;pointer-events:none}
+.dolls:empty{display:none}
+.doll{pointer-events:auto;position:relative;display:flex;flex-direction:column;align-items:center;width:58px;min-height:44px;padding:0;margin:0;background:none;border:0;border-radius:10px;cursor:pointer;color:var(--ink)}
+.doll:focus-visible{outline:2px solid var(--gold);outline-offset:1px}
+.doll-img{display:block;width:56px;height:75px;object-fit:contain}
+.doll-name{max-width:64px;margin-top:-6px;padding:0 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:rgba(255,253,251,.94);border:1px solid #d4c4e6;border-radius:7px;font-size:.5625rem;line-height:1.5;color:#4a3a5c}
+.doll-count{position:absolute;top:0;right:2px;min-width:18px;height:18px;padding:0 4px;border-radius:9px;background:#7655a8;color:#fff;font-size:.625rem;line-height:18px;text-align:center}
+.doll-more{width:44px;height:44px;align-self:center;justify-content:center;background:rgba(255,253,251,.94);border:1px solid #d4c4e6;border-radius:22px;font-size:.75rem;color:#604884}
+.doll-tag{pointer-events:auto;align-self:center;padding:2px 8px;white-space:nowrap;background:rgba(255,253,251,.94);border:1px solid #d4c4e6;border-radius:9px;font-size:.625rem;color:#b44257;font-weight:700}
+.dolls[data-state="unavailable"] .doll-tag{color:#745988;font-weight:400}
+.dolls[data-state="stale"] .doll{opacity:.55}
+body[data-shape="pc"][data-scene="show"] .dolls,body[data-shape="portrait"][data-scene="show"] .dolls{top:calc(100% + 4px);bottom:auto;left:0;right:auto}
+/* スマホ縦のくつろぎ中は札が画面の中ほどにあり、上へ並べるとコハコに重なるので、札の下の床へ並べる。 */
+body[data-shape="portrait"][data-scene="relax"] .dolls{top:calc(100% + 6px);bottom:auto;left:50%;right:auto;transform:translateX(-50%)}
+.doll-card{position:absolute;z-index:12;right:2%;bottom:calc(var(--status-h,60px) + 2% + 104px);width:min(360px,44%);max-height:min(60%,460px);overflow:auto;overscroll-behavior:contain;background:#fff;border:1px solid #c6b5d6;border-radius:14px;padding:10px 12px;box-shadow:0 3px 12px #33224433;font-size:.8125rem;line-height:1.5;color:var(--ink)}
+.doll-card[hidden]{display:none}
+.doll-close{position:absolute;top:4px;right:6px;min-width:36px;min-height:36px;padding:0;font-size:1.1rem}
+.doll-card-head{display:flex;gap:8px;align-items:center;padding-right:36px}
+.doll-card-img{width:48px;height:64px;object-fit:contain;flex:none}
+.doll-card-names{display:flex;flex-direction:column}
+.doll-card-name{font-size:.9375rem}
+.doll-card p{margin:.25em 0;white-space:pre-wrap;word-break:break-word}
+.doll-ticket{font-weight:700}
+.doll-note{background:#f7f2fb;border-radius:8px;padding:4px 8px}
+.doll-situation{color:#8a4a12}
+.doll-tabs,.doll-list{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0}
+.doll-list{flex-direction:column;align-items:stretch;padding-right:36px}
+.doll-tab{min-height:32px;padding:2px 8px;font-size:.75rem;background:#f3eef9;color:#604884;border:1px solid #d4c4e6;border-radius:8px}
+.doll-tab.is-current{background:#7655a8;color:#fff}
+body[data-shape="portrait"] .doll-card{left:3%;right:3%;bottom:1%;width:auto;max-height:55%}
+body[data-shape="landscape"] .doll-card{bottom:auto;top:3%;max-height:80%}
+body[data-scene="confirm"] .doll-card,body[data-viewer="open"] .doll-card{display:none}
+@media (prefers-reduced-motion:reduce){.doll{transition:none}}
