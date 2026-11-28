@@ -332,7 +332,9 @@
     (is (nil? (criteria-trial-window-of cfg (inst "2026-11-28T17:59:59Z"))) "not yet started"))
   (testing "a window longer than 25 hours is refused, not truncated"
     (is (= ::invalid-or-nil (or (criteria-trial-window-of {:from "2026-11-28T18:00:00Z" :until "2026-12-05T18:00:00Z"} (inst "2026-11-28T19:00:00Z")) ::invalid-or-nil)))
-    (is (some? (criteria-trial-window-of {:from "2026-11-28T18:00:00Z" :until "2026-11-29T19:00:00Z"} (inst "2026-11-28T19:00:00Z"))) "exactly 25 hours is allowed"))
+    (is (some? (criteria-trial-window-of {:from "2026-11-28T18:00:00Z" :until "2026-11-29T19:00:00Z"} (inst "2026-11-28T19:00:00Z"))) "exactly 25 hours is allowed")
+    (is (nil? (criteria-trial-window-of {:from "2026-11-28T18:00:00Z" :until "2026-11-29T19:00:01Z"} (inst "2026-11-28T19:00:00Z"))) "25 hours and 1 second is over the limit")
+    (is (nil? (criteria-trial-window-of {:from "2026-11-28T18:00:00Z" :until "2026-11-29T19:00:59Z"} (inst "2026-11-28T19:00:00Z"))) "no rounding down to minutes"))
   (is (nil? (criteria-trial-window-of {:from "2026-11-29T18:00:00Z" :until "2026-11-28T18:00:00Z"} (inst "2026-11-28T19:00:00Z"))) "until before from")
   (is (nil? (criteria-trial-window-of {:from "bad" :until "2026-11-29T18:00:00Z"} (inst "2026-11-28T19:00:00Z"))))
   (is (nil? (criteria-trial-window-of nil (inst "2026-11-28T19:00:00Z"))) "no file, no trial")
@@ -389,7 +391,11 @@
            (criteria-trial-drop (* 26 gib) (* 16 gib) (inst "2026-11-28T20:00:00Z")
                                 {:fs-free-bytes (* 27 gib) :at "2026-11-28T19:45:00Z"})) "less than 30 minutes apart")
     (is (= {:free-drop-bytes-per-hour nil :hours-to-soft-guard nil}
-           (criteria-trial-drop (* 26 gib) (* 16 gib) (inst "2026-11-28T20:00:00Z") nil)))))
+           (criteria-trial-drop (* 26 gib) (* 16 gib) (inst "2026-11-28T20:00:00Z") nil)))
+    (is (= {:free-drop-bytes-per-hour gib :hours-to-soft-guard 10.0}
+           (criteria-trial-drop (* 26 gib) (* 16 gib) (inst "2026-11-28T20:00:00Z")
+                                {:fs-free-bytes (* 27 gib) :scan-at "2026-11-28T19:00:00Z" :at "2026-11-28T19:40:00Z"}))
+        "elapsed time is between scan starts, not from the previous write")))
 
 (deftest criteria-trial-report-separates-generation-from-existing-reclaim
   (let [w {:id "BOXP-781" :from "2026-11-28T18:00:00Z" :until "2026-11-29T18:00:00Z"}

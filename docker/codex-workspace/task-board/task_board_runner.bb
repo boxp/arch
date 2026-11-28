@@ -8342,7 +8342,7 @@
       (let [from (java.time.Instant/parse (str (:from config)))
             until (java.time.Instant/parse (str (:until config)))]
         (when (and (.isBefore from until)
-                   (<= (.toMinutes (java.time.Duration/between from until)) (* 60 criteria-trial-max-hours)))
+                   (not (.isAfter until (.plus from (java.time.Duration/ofHours criteria-trial-max-hours)))))
           {:id (str (or (:id config) "criteria-trial")) :from (str from) :until (str until)})))
     (catch Exception _ nil)))
 
@@ -8402,10 +8402,12 @@
     (and hours-to-soft (< hours-to-soft 24.0)) (conj :fast-drop)))
 
 (defn criteria-trial-drop
-  "Free-space drop per hour since the previous trial record (>= 30 minutes apart)."
+  "Free-space drop per hour since the previous trial record (>= 30 minutes apart),
+  timed between scan starts (:scan-at; old records only have :at) since free
+  space is measured when a scan starts."
   [free soft-guard at previous]
   (let [hours (when (and previous (number? (:fs-free-bytes previous)) free)
-                (/ (double (.toMillis (java.time.Duration/between (java.time.Instant/parse (:at previous)) at))) 3600000.0))
+                (/ (double (.toMillis (java.time.Duration/between (java.time.Instant/parse (str (or (:scan-at previous) (:at previous)))) at))) 3600000.0))
         rate (when (and hours (>= hours 0.5)) (long (Math/round (/ (- (:fs-free-bytes previous) free) hours))))]
     {:free-drop-bytes-per-hour rate
      :hours-to-soft-guard (when (and rate (pos? rate))
