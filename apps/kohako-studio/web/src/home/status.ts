@@ -11,6 +11,8 @@ export type Window = {
 export type Pool = { id: string; label: string; windows: Window[]; state?: string; note?: string }
 export type Tasks = {
   state: string
+  /** BOXP-766: 作業中の AI モデルの人形（BFF が In Progress の票から作る）。古い BFF には無い。 */
+  dolls?: import('./dolls').DollGroup[]
   inProgress: {
     total: number | null
     complete: boolean

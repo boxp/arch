@@ -7,7 +7,7 @@ import type { createNotifications } from './notifications.js'
 import type { createPush } from './push.js'
 import type { createDeviceTrial } from './device-trial.js'
 import { VIEW_INSTRUCTIONS } from './views.js'
-import type { StatusPayload } from './status.js'
+import type { StatusPayload, TicketResult } from './status.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createConversation, type Input, VIAS, type Via } from './conversation.js'
 import type { createHermes } from './hermes.js'
@@ -76,7 +76,7 @@ export function createApp(opts: {
   /** BOXP-715: 本人限定の試用声（Drama-3-Japanese）。body の voice: 'drama3' のときだけ使う。 */
   ttsTrial?: ReturnType<typeof createDrama3Tts>
   conversations?: { owner: ReturnType<typeof createConversation>; verifier: ReturnType<typeof createConversation> }
-  status?: { get: () => Promise<StatusPayload> }
+  status?: { get: () => Promise<StatusPayload>; ticket: (id: string) => Promise<TicketResult> }
   now?: () => number
   fetch?: typeof fetch
   attachments?: ReturnType<typeof createAttachments>
@@ -470,6 +470,19 @@ export function createApp(opts: {
       }
       if (method === 'GET' && route === 'status')
         return opts.status ? json(200, await opts.status.get()) : json(503, { error: 'status_disabled' })
+      // BOXP-766: 人形を押した時の票の最新 Notes と状況。本人（と検証用）だけ。眼鏡は g2Route で 403。
+      const ticketRoute = /^status\/tickets\/(BOXP-\d{1,6})$/.exec(route)
+      if (method === 'GET' && route.startsWith('status/tickets/')) {
+        if (principal !== 'owner' && principal !== 'verifier') return json(403, { error: 'forbidden' })
+        if (!ticketRoute) return json(404, { error: 'not_found' })
+        if (!opts.status) return json(503, { error: 'status_disabled' })
+        const r = await opts.status.ticket(ticketRoute[1])
+        return r.state === 'ok'
+          ? json(200, r)
+          : r.state === 'unavailable'
+            ? json(503, { error: 'board_unavailable' })
+            : json(404, { error: 'not_found' })
+      }
       if (method === 'GET' && route === 'me') return json(200, { authenticated: true })
       if (method === 'GET' && route === 'conversation/transcript') {
         if (!conv) return json(503, { error: 'conversation_disabled' })
