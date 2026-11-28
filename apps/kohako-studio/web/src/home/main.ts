@@ -9,6 +9,8 @@ import {
   attachmentProblem,
   attachmentSubmitAction,
   attachmentValidation,
+  PASTE_UNAVAILABLE_NOTE,
+  pastedAttachment,
   formatFileSize,
   composeAttachmentNote,
   remainingAttachmentNotice,
@@ -2379,6 +2381,17 @@ fileInput.onchange = () => {
   if (fileInput.files) void addFiles(fileInput.files)
   fileInput.value = ''
 }
+// BOXP-773: 入力欄への貼り付け。ファイル本体だけを添付待ちへ入れ（送信はしない）、文字の貼り付けはそのまま。
+message.addEventListener('paste', (e) => {
+  const pasted = pastedAttachment<File>(e.clipboardData)
+  if (pasted.kind === 'files') {
+    e.preventDefault()
+    void addFiles(pasted.files)
+  } else if (pasted.kind === 'unavailable') {
+    e.preventDefault()
+    attachmentNote(PASTE_UNAVAILABLE_NOTE)
+  }
+})
 form.addEventListener('dragover', (e) => e.preventDefault())
 form.addEventListener('drop', (e) => {
   e.preventDefault()
