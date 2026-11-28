@@ -296,3 +296,25 @@ it('validates single and multi-place map blocks', () => {
   ])
     expect(validateView(bad), JSON.stringify(bad)).toBeNull()
 })
+it('drops an area result whose real extent is missing or wider than the limit instead of inventing a small box', async () => {
+  // 市区町村の実際の範囲が上限(0.3 度)を超える・範囲が無い時、中心付近の代替範囲を丁目程度の付近として返さない。
+  for (const cityHit of [
+    [{ lat: '43.06', lon: '141.35', place_rank: 16, boundingbox: ['42.76', '43.19', '140.99', '141.52'] }],
+    [{ lat: '43.06', lon: '141.35', place_rank: 16 }],
+  ]) {
+    const fetcher = vi.fn(async (url: string | URL | Request) =>
+      response(new URL(String(url)).searchParams.get('q') === '北海道札幌市中央区' ? cityHit : []),
+    )
+    const [result] = await createGeocoder({ fetcher, intervalMs: 0 })([
+      { kind: 'map', title: '地図', destination: { name: '喫茶 札幌店', address: '北海道札幌市中央区南1条西2-3' } },
+    ])
+    expect(fetcher.mock.calls.map((c) => new URL(String(c[0])).searchParams.get('q'))).toContain('北海道札幌市中央区')
+    expect(result.kind === 'map' && result.geo).toBeFalsy()
+  }
+  // 丁目の結果も範囲が無ければ付近にしない（点線枠を捏造しない）。
+  const fetcher = vi.fn().mockResolvedValue(response([{ lat: '35.65', lon: '139.75', place_rank: 22 }]))
+  const [result] = await createGeocoder({ fetcher, intervalMs: 0 })([
+    { kind: 'map', title: '地図', destination: { name: '店', address: '東京都港区芝大門2-3-1' } },
+  ])
+  expect(result.kind === 'map' && result.geo).toBeFalsy()
+})

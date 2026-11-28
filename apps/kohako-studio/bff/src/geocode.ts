@@ -155,13 +155,18 @@ export function createGeocoder({
           ) {
             // 番地・建物・駅など点で示せる結果(place_rank 26 以上)だけを exact とし、丁目や町域の一致は付近表示にする。
             if (precision === 'exact' && !(Number(item.place_rank) >= 26)) precision = 'area'
-            const delta = precision === 'exact' ? 0.004 : 0.006
-            let bbox: [number, number, number, number] = [
-              Math.max(-180, lon - delta),
-              Math.max(-90, lat - delta),
-              Math.min(180, lon + delta),
-              Math.min(90, lat + delta),
-            ]
+            // 点の結果は周辺 ±0.004 度を範囲にする。範囲(area)の結果は検索結果の実際の範囲だけを使い、
+            // 範囲が無い・壊れている・上限より広い時は代替の範囲を作らず「位置なし」にする
+            // （中心付近の狭い代替範囲を丁目程度の付近として点線表示し、目的地から離れた場所を示さないため）。
+            let bbox: [number, number, number, number] | null =
+              precision === 'exact'
+                ? [
+                    Math.max(-180, lon - 0.004),
+                    Math.max(-90, lat - 0.004),
+                    Math.min(180, lon + 0.004),
+                    Math.min(90, lat + 0.004),
+                  ]
+                : null
             if (precision === 'area' && Array.isArray(item.boundingbox) && item.boundingbox.length === 4) {
               const [south, north, west, east] = item.boundingbox.map(Number)
               if (
@@ -181,7 +186,7 @@ export function createGeocoder({
               )
                 bbox = [west, south, east, north]
             }
-            value = { lat, lon, bbox, precision, label: q.slice(0, 120), source: 'openstreetmap' }
+            if (bbox) value = { lat, lon, bbox, precision, label: q.slice(0, 120), source: 'openstreetmap' }
           }
         } catch {
           /* 検索失敗は地図位置なしで返す */
