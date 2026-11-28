@@ -67,8 +67,14 @@ jobs:
     # auto-merge disabled (Renovate enables it when it creates the PR).
     # status-check is the required check, so this job does not gate merging.
     uses: ./.github/workflows/wc-enable-auto-merge.yaml
+    # BOXP-763: a PR that changes docker/hermes-agent/** is merged automatically only
+    # when its candidate image was built and passed the notify lab (the job
+    # hermes-agent-candidate succeeded). A failed, cancelled (timed out) or skipped run
+    # of that job keeps auto-merge disabled.
     needs:
       - disable-auto-merge
+      - hermes-agent-candidate
+      - path-filter
       - status-check
       - test
     permissions:
@@ -76,7 +82,7 @@ jobs:
       contents: read
     with:
       plan_targets: ${{needs.test.outputs.targets}}
-      upstream_ok: ${{needs.test.result == 'success' && needs.status-check.result != 'failure'}}
+      upstream_ok: ${{needs.test.result == 'success' && needs.status-check.result != 'failure' && (needs.path-filter.outputs.hermes-agent-candidate != 'true' || needs.hermes-agent-candidate.result == 'success')}}
     secrets:
       gh_app_id: ${{secrets.APP_ID}}
       gh_app_private_key: ${{secrets.APP_PRIVATE_KEY}}
@@ -88,10 +94,13 @@ jobs:
   status-check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # BOXP-763: hermes-agent-candidate is also failed here when it was cancelled (a job
+    # that exceeds timeout-minutes is cancelled, and failure() does not see it).
     needs:
       - adr
       - conftest-verify
       - disable-auto-merge
+      - hermes-agent-candidate
       - hide-comment
       - lock-model
       - opa-fmt
@@ -99,7 +108,7 @@ jobs:
       - test
       - test-ansible
       - update-aqua-checksums
-    if: failure()
+    if: failure() || needs.hermes-agent-candidate.result == 'cancelled'
     steps:
       - run: exit 1
 
@@ -213,6 +222,19 @@ jobs:
       ref: ${{needs.path-filter.outputs.merge_commit_sha}}
       lean: ${{needs.path-filter.outputs.lock-model == 'true'}}
       replay: ${{needs.path-filter.outputs.model-replay == 'true'}}
+
+  hermes-agent-candidate:
+    # BOXP-763: build the Hermes Agent candidate image of the PR (not pushed, no build
+    # cache written) and run the lolice notify lab on it: bootstrap, gateway start and
+    # the boxp-notify regression. Runs when the PR changes docker/hermes-agent/**.
+    # status-check needs this job, so its failure blocks the merge. No secret is passed.
+    uses: ./.github/workflows/test-hermes-agent-candidate.yml
+    needs: path-filter
+    if: needs.path-filter.outputs.hermes-agent-candidate == 'true'
+    permissions:
+      contents: read
+    with:
+      ref: ${{needs.path-filter.outputs.merge_commit_sha}}
 
   update-aqua-checksums:
     uses: ./.github/workflows/wc-update-aqua-checksums.yaml

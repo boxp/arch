@@ -1,0 +1,114 @@
+name: Test Hermes Agent Candidate Image
+
+# BOXP-763: merge gate for docker/hermes-agent changes (above all Renovate updates of the
+# upstream Hermes Agent image, which are auto-merged unless they are a major release).
+#
+# - builds the candidate image from the PR (not pushed, no build cache written);
+# - starts it in the lolice notify lab (tests/hermes-agent/notify-lab, BOXP-582): the
+#   Pod's bootstrap init script, the gateway and the boxp-notify channel, with the
+#   LLM and Telegram replaced by a loopback stub and --network none;
+# - judges the lab evidence with check-stage2.bb (any NG fails the job).
+#
+# Merge gate: test.yaml (pull_request_target) calls this workflow as the job
+# `hermes-agent-candidate` when a PR changes docker/hermes-agent/** (wc-path-filter.yaml:
+# hermes-agent-candidate). The required check `status-check` fails when that job fails
+# or is cancelled (a timeout is reported as cancelled), and enable-auto-merge enables
+# auto-merge only when the job succeeded. That run uses this file as it is on the base
+# branch, so a PR cannot turn the checks off for itself.
+# The pull_request trigger below runs only when this file changes, to try the changed
+# definition before it is merged. It is not the required check.
+#
+# The lab is taken from lolice main (the production manifests and plugin) and the
+# dispatcher from this checkout (docker/codex-workspace/task-board).
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: The ref to checkout
+        type: string
+        default: ""
+  pull_request:
+    paths:
+      - .github/workflows/test-hermes-agent-candidate.yml
+
+permissions: {}
+
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      BABASHKA_VERSION: 1.13.230
+      BABASHKA_SHA256: ffa98e905c75b6b13eb0b644b778219205180569bfe6004a3e35c3a9798a145d
+      CANDIDATE_IMAGE: hermes-agent-candidate:pr
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 3
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 3
+        with:
+          repository: boxp/lolice
+          ref: main
+          path: lolice
+          sparse-checkout: |
+            argoproj/hermes-agent
+            tests/hermes-agent/notify-lab
+          persist-credentials: false
+
+      - name: Install Babashka
+        timeout-minutes: 5
+        run: |
+          set -eux
+          tmp="$(mktemp -d)"
+          curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 200 -fsSL \
+            "https://github.com/babashka/babashka/releases/download/v${BABASHKA_VERSION}/babashka-${BABASHKA_VERSION}-linux-amd64-static.tar.gz" \
+            -o "${tmp}/bb.tar.gz"
+          echo "${BABASHKA_SHA256}  ${tmp}/bb.tar.gz" | sha256sum -c -
+          tar -xzf "${tmp}/bb.tar.gz" -C "${tmp}"
+          sudo install -m 0755 "$(find "${tmp}" -type f -name bb | head -n 1)" /usr/local/bin/bb
+          bb --version
+
+      - name: Test Sunrise monitor
+        timeout-minutes: 5
+        run: python3 -m unittest discover -s tests/sunrise -v
+
+      - name: Build the candidate image
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          docker build --pull -t "${CANDIDATE_IMAGE}" docker/hermes-agent
+          grep -m 1 '^FROM ' docker/hermes-agent/Dockerfile | tee candidate-base.txt
+          docker image inspect "${CANDIDATE_IMAGE}" --format '{{.Id}}' | tee -a candidate-base.txt
+
+      - name: Build the notify lab on the candidate
+        timeout-minutes: 10
+        env:
+          ARCH_DIR: ${{ github.workspace }}
+        run: lolice/tests/hermes-agent/notify-lab/stage2.sh build notify-lab "${CANDIDATE_IMAGE}" lolice/argoproj/hermes-agent
+
+      - name: Start the candidate and run the notify regression
+        timeout-minutes: 25
+        run: |
+          set -o pipefail
+          lolice/tests/hermes-agent/notify-lab/stage2.sh run notify-lab notify-lab evidence | tee evidence.log
+
+      - name: Check evidence
+        timeout-minutes: 3
+        run: bb lolice/tests/hermes-agent/notify-lab/check-stage2.bb evidence
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hermes-agent-candidate-evidence
+          path: |
+            evidence*
+            candidate-base.txt
+          if-no-files-found: warn

@@ -401,17 +401,29 @@
     //   が同居する。docker versioning では v2026.x が「major 2026」として最新扱いになる
     //   ため、allowedVersions で v0.MINOR.PATCH 形式の安定版 tag だけに限定する。
     //   (rc.N-… は docker versioning として無効なので元から候補に入らない)
-    // - 上流 minor 更新は config 自動移行 / s6 起動方式の変更を伴い得るので automerge
-    //   しない。digest-only 更新 (同 tag の再 push) も image build の smoke test を見てから
-    //   手動 merge する。更新手順・rollback は docs/project_docs/BOXP-313/plan.md。
-    // - 通知 channel (boxp-notify plugin) の回帰試験は boxp/lolice の tests/hermes-agent/notify-lab/
-    //   (README の「上流更新時の検証」)。候補 image で stage2 を流してから merge する (BOXP-582)。
+    // - 更新手順・rollback は docs/project_docs/BOXP-313/plan.md。
+    // - BOXP-763: major 以外 (minor / patch / digest) は automerge する。merge できるのは、
+    //   test.yaml の job hermes-agent-candidate (test-hermes-agent-candidate.yml) が成功した
+    //   時だけ: PR の候補 image を build し、boxp/lolice の tests/hermes-agent/notify-lab/
+    //   (BOXP-582) で bootstrap・gateway 起動・通知 channel (boxp-notify) の回帰を判定する。
+    //   失敗・timeout (cancelled)・未実行は status-check / enable-auto-merge で止まる。
+    //   major は従来どおり手動 merge (下の rule)。
+    // - notify lab の Alertmanager 判定 (A1) は relay の静音時間 (02-09 JST = 17-00 UTC) に
+    //   落ちるので、PR の作成・更新 (= CI の実行) をその時間の外 (00-16 UTC) に限る。
     {
       matchDatasources: ["docker"],
       matchPackageNames: ["docker.io/nousresearch/hermes-agent"],
       allowedVersions: "/^v?0\\.[0-9]+\\.[0-9]+$/",
+      schedule: ["* 0-15 * * *"],
+      automerge: true,
+      addLabels: ["hermes-agent"],
+    },
+    {
+      matchDatasources: ["docker"],
+      matchPackageNames: ["docker.io/nousresearch/hermes-agent"],
+      matchUpdateTypes: ["major"],
       automerge: false,
-      addLabels: ["hermes-agent", "manual-review-required"],
+      addLabels: ["manual-review-required"],
     },
     // BOXP-681: docker/hermes-agent の Babashka は tarball の SHA256 (ARG BABASHKA_SHA256) で
     // 検証しているが、regex manager は BABASHKA_VERSION しか更新できない。版だけ上がった PR を

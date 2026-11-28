@@ -26,6 +26,8 @@ on:
         value: ${{jobs.path-filter.outputs.lock-model}}
       model-replay:
         value: ${{jobs.path-filter.outputs.model-replay}}
+      hermes-agent-candidate:
+        value: ${{jobs.path-filter.outputs.hermes-agent-candidate}}
 
 jobs:
   path-filter:
@@ -43,6 +45,7 @@ jobs:
       test-ansible: ${{steps.changes.outputs.test-ansible}}
       lock-model: ${{steps.changes.outputs.lock-model}}
       model-replay: ${{steps.changes.outputs.model-replay}}
+      hermes-agent-candidate: ${{steps.changes.outputs.hermes-agent-candidate}}
     steps:
       - name: Generate token
         id: token
@@ -118,3 +121,9 @@ jobs:
               - .github/workflows/test-task-board-lock-model.yml
               - .github/workflows/wc-path-filter.yaml
               - .github/workflows/test.yaml
+
+            # BOXP-763: build the Hermes Agent candidate image and run the lolice notify
+            # lab on it (merge gate of the Renovate updates of the upstream image).
+            hermes-agent-candidate:
+              - docker/hermes-agent/**
+              - .github/workflows/test-hermes-agent-candidate.yml
