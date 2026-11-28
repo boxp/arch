@@ -55,27 +55,32 @@ function town(address: string): string | null {
  */
 export const MAX_QUERIES_PER_PLACE = 9
 /**
- * 地図 1 枚の位置決めの最長時間（候補 5 件 × 最大回数 × 1 件の最長占有時間 = max(間隔 1 秒, 応答待ち上限 4 秒)）。
- * 会話側の保険の打ち切りに使う。保険が働いた時は位置なし（印なし）で返す。
+ * 地図 1 枚が自分の番で検索に使える上限の既定値（候補 5 件 × 最大回数 × 1 件の最長占有時間 max(間隔 1 秒, 応答待ち上限 4 秒) + 2 秒）。
+ * 地図は 1 枚ずつ順番に検索し、上限は自分の番が来てから数える（他の地図の後ろで待つ時間は含めない）。
+ * 正常時は届かない異常時の保険で、超えた後の検索は送らず未検出（位置なし）として扱う。
  */
-export const MAX_GEOCODE_MS = 5 * MAX_QUERIES_PER_PLACE * 4000
+export const MAX_GEOCODE_MS = 5 * MAX_QUERIES_PER_PLACE * 4000 + 2000
 export function createGeocoder({
   fetcher = fetch,
   url = process.env.KOHAKO_GEOCODE_URL ?? 'https://nominatim.openstreetmap.org/search',
   intervalMs = 1000,
   timeoutMs = 4000,
+  mapBudgetMs = 5 * MAX_QUERIES_PER_PLACE * Math.max(intervalMs, timeoutMs) + 2000,
 }: {
   fetcher?: typeof fetch
   url?: string
   intervalMs?: number
   timeoutMs?: number
+  mapBudgetMs?: number
 } = {}) {
   const cache = new Map<string, { at: number; value: Geo | null }>()
   let queue = Promise.resolve(),
+    turn = Promise.resolve(),
     last = 0
   const queryRaw = async (
     q: string,
     requested: Geo['precision'],
+    deadline: number,
     municipal = false,
     within?: Geo['bbox'],
   ): Promise<Geo | null> => {
@@ -91,6 +96,11 @@ export function createGeocoder({
         const again = cache.get(key)
         if (again && Date.now() - again.at < 86400_000) {
           resolve(again.value)
+          return
+        }
+        // BOXP-749: その地図の番の上限を過ぎた検索は送らない（未検出＝位置なし。推測の位置は出さない）。
+        if (Date.now() >= deadline) {
+          resolve(null)
           return
         }
         const wait = Math.max(0, last + intervalMs - Date.now())
@@ -200,10 +210,10 @@ export function createGeocoder({
   }
   // 住所が与えられた時は住所由来の位置を正とし、名称検索の結果はその範囲内にある時だけ採用する（同名の別店舗を避ける）。
   // 各検索は timeoutMs で打ち切られ（失敗は未検出として次の段へ進む）、キューを塞がない。
-  const resolvePlace = async (target: Place): Promise<Geo | null> => {
+  const resolvePlace = async (target: Place, deadline: number): Promise<Geo | null> => {
     const { address, name } = target
     const query = (q: string, p: Geo['precision'], municipal = false, within?: Geo['bbox']) =>
-      queryRaw(q, p, municipal, within)
+      queryRaw(q, p, deadline, municipal, within)
     if (address) {
       const exact = await query(address, 'exact')
       if (exact?.precision === 'exact') return exact
@@ -243,25 +253,39 @@ export function createGeocoder({
     }
     return query(name, 'exact')
   }
-  const locate = (target: Place): Promise<Geo | null> => resolvePlace(target).catch(() => null)
+  const locate = (target: Place, deadline: number): Promise<Geo | null> =>
+    resolvePlace(target, deadline).catch(() => null)
+  // BOXP-749: 地図は 1 枚ずつ順番に検索する（会話をまたいで検索キューを奪い合い、後から来た地図が待ちだけで位置なしにならないように）。
+  // 上限 mapBudgetMs はその地図の番が来てから数える。各検索は応答待ち上限で必ず終わるので、地図の番も必ず終わり、後ろの地図へ進む。
+  const exclusive = <T>(fn: () => Promise<T>): Promise<T> => {
+    const result = turn.then(fn)
+    turn = result.then(
+      () => undefined,
+      () => undefined,
+    )
+    return result
+  }
   return async (views: View[]): Promise<View[]> => {
     if (url === 'off') return views
     return Promise.all(
       views.map(async (view) => {
         if (view.kind !== 'map') return view
-        if (view.places) {
-          const places = await Promise.all(
-            view.places.map(async ({ geo: _ignored, ...target }) => {
-              const geo = await locate(target)
-              return geo ? { ...target, geo } : target
-            }),
-          )
-          return { ...view, places }
-        }
-        if (!view.destination) return view
-        const geo = await locate(view.destination)
-        return geo ? { ...view, geo } : view
+        return exclusive(() => locateMap(view, Date.now() + mapBudgetMs))
       }),
     )
+  }
+  async function locateMap(view: View & { kind: 'map' }, deadline: number): Promise<View> {
+    if (view.places) {
+      const places = await Promise.all(
+        view.places.map(async ({ geo: _ignored, ...target }) => {
+          const geo = await locate(target, deadline)
+          return geo ? { ...target, geo } : target
+        }),
+      )
+      return { ...view, places }
+    }
+    if (!view.destination) return view
+    const geo = await locate(view.destination, deadline)
+    return geo ? { ...view, geo } : view
   }
 }
