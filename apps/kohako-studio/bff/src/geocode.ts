@@ -229,10 +229,10 @@ export function createGeocoder({
       if (!area) return area
       // 名称 → 支店名を除いた名称 → 別表記の順に、住所の範囲内で点の一致を探す。
       // 範囲が市区町村まで広がった時は、同じ市区町村内の同じチェーンの別店舗を拾わないよう、
-      // 支店名を含む名称そのものだけを探す（支店名除去・別表記は使わない）。
-      const names = (
-        broad ? [branchless(name) ? name : null] : [name, branchless(name), ...(target.aliases ?? [])]
-      ).filter((n): n is string => !!n && n !== address)
+      // 与えられた名称そのものだけを探す（支店名除去・別表記は使わない。支店名の無い駅などの名称はそのまま探す）。
+      const names = (broad ? [name] : [name, branchless(name), ...(target.aliases ?? [])]).filter(
+        (n): n is string => !!n && n !== address,
+      )
       const m = 0.002,
         [w, s, e, n] = area.bbox
       for (const candidate of [...new Set(names)]) {

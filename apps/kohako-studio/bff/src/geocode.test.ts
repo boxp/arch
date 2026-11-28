@@ -244,6 +244,23 @@ it('only searches the full branch name when the area widened to the municipality
   expect(qs.at(-1)).toBe('Cafe Renoir 芝大門店')
   expect(result.kind === 'map' && result.geo).toMatchObject({ precision: 'area', label: '東京都港区' })
 })
+it('finds a name without a branch inside the municipality when the area widened to it', async () => {
+  // 支店名を持たない目的地（駅など）は、市区町村まで広がった範囲でも名称そのもので探し、範囲内の点の一致をピンにする。
+  const chiyoda = [
+    { lat: '35.694', lon: '139.753', place_rank: 12, boundingbox: ['35.66', '35.71', '139.72', '139.79'] },
+  ]
+  const station = [
+    { lat: '35.6812', lon: '139.7671', place_rank: 30, boundingbox: ['35.6811', '35.6813', '139.767', '139.7672'] },
+  ]
+  const fetcher = vi.fn(async (url: string | URL | Request) => {
+    const q = new URL(String(url)).searchParams.get('q')
+    return response(q === '東京都千代田区' ? chiyoda : q === '東京駅' ? station : [])
+  })
+  const [result] = await createGeocoder({ fetcher, intervalMs: 0 })([
+    { kind: 'map', title: '地図', destination: { name: '東京駅', address: '東京都千代田区丸の内1-9-1' } },
+  ])
+  expect(result.kind === 'map' && result.geo).toMatchObject({ precision: 'exact', label: '東京駅', lat: 35.6812 })
+})
 it('does not use aliases or the branch-less name without an address', async () => {
   const fetcher = vi.fn().mockResolvedValue(response([]))
   await createGeocoder({ fetcher, intervalMs: 0 })([
