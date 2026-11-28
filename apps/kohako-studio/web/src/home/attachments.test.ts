@@ -1,11 +1,13 @@
 import { readFileSync } from 'node:fs'
-import { expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
   attachmentProblem,
   attachmentSubmitAction,
   attachmentValidation,
   formatFileSize,
   OTHER_MAX_BYTES,
+  PASTE_UNAVAILABLE_NOTE,
+  pastedAttachment,
   PDF_MAX_BYTES,
   composeAttachmentNote,
   remainingAttachmentNotice,
@@ -144,4 +146,73 @@ it('BOXP-677: 一部読取の添付を続けて追加したり別の添付が失
   const withError = composeAttachmentNote('c.pdf を送れませんでした', [...chips, {}])
   expect(withError.split('\n')).toEqual(['c.pdf を送れませんでした', a.notice, b.notice])
   expect(composeAttachmentNote('', [])).toBe('')
+})
+
+// BOXP-773: 入力欄への貼り付け。期待値は Projects/kohako-home/attachment-paste-spec.md の決まり 1〜4 と例の表から。
+describe('pastedAttachment (BOXP-773)', () => {
+  const png = { name: 'image.png', type: 'image/png', size: 10 }
+  const pdfFile = { name: 'a.pdf', type: 'application/pdf', size: 10 }
+  const clip = (o: {
+    types?: string[]
+    text?: string
+    files?: object[]
+    items?: { kind: string; file: object | null }[]
+  }) => ({
+    types: o.types ?? [],
+    files: o.files ?? [],
+    items: (o.items ?? []).map((x) => ({ kind: x.kind, getAsFile: () => x.file })),
+    getData: (t: string) => (t === 'text/plain' ? (o.text ?? '') : ''),
+  })
+  it('attaches a screenshot from files', () => {
+    expect(pastedAttachment(clip({ types: ['Files'], files: [png] }))).toEqual({ kind: 'files', files: [png] })
+  })
+  it('falls back to items when files is empty', () => {
+    expect(pastedAttachment(clip({ types: ['Files'], items: [{ kind: 'file', file: pdfFile }] }))).toEqual({
+      kind: 'files',
+      files: [pdfFile],
+    })
+  })
+  it('does not duplicate files listed in both files and items', () => {
+    const r = pastedAttachment(clip({ types: ['Files'], files: [png], items: [{ kind: 'file', file: png }] }))
+    expect(r).toEqual({ kind: 'files', files: [png] })
+  })
+  it('keeps plain text paste as text', () => {
+    expect(pastedAttachment(clip({ types: ['text/plain'], text: 'こんにちは' }))).toEqual({ kind: 'text' })
+  })
+  it('prefers text when text and a rendered image come together (Excel/Word)', () => {
+    expect(
+      pastedAttachment(clip({ types: ['text/plain', 'text/html', 'Files'], text: 'A1\tB1', files: [png] })),
+    ).toEqual({ kind: 'text' })
+  })
+  it('attaches a browser-copied image that has html but no text', () => {
+    expect(pastedAttachment(clip({ types: ['text/html', 'Files'], files: [png] }))).toEqual({
+      kind: 'files',
+      files: [png],
+    })
+  })
+  it('reports unavailable when a file is announced but its body cannot be read', () => {
+    expect(pastedAttachment(clip({ types: ['Files'], items: [{ kind: 'file', file: null }] }))).toEqual({
+      kind: 'unavailable',
+    })
+    expect(pastedAttachment(clip({ types: ['Files'] }))).toEqual({ kind: 'unavailable' })
+  })
+  it('does not treat a file name or path text as a file', () => {
+    expect(pastedAttachment(clip({ types: ['text/plain', 'text/uri-list'], text: 'file:///Users/a/b.pdf' }))).toEqual({
+      kind: 'text',
+    })
+  })
+  it('whitespace-only text with a file attaches the file', () => {
+    expect(pastedAttachment(clip({ types: ['text/plain', 'Files'], text: '  \n', files: [png] }))).toEqual({
+      kind: 'files',
+      files: [png],
+    })
+  })
+  it('does nothing for empty or html-only clipboards', () => {
+    expect(pastedAttachment(clip({}))).toEqual({ kind: 'none' })
+    expect(pastedAttachment(clip({ types: ['text/html'] }))).toEqual({ kind: 'none' })
+    expect(pastedAttachment(null)).toEqual({ kind: 'none' })
+  })
+  it('has a guidance message pointing to the file picker', () => {
+    expect(PASTE_UNAVAILABLE_NOTE).toContain('📎')
+  })
 })

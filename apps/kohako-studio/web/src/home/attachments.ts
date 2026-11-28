@@ -136,3 +136,37 @@ export function composeAttachmentNote(text: string, chips: readonly { notice?: s
   for (const notice of chips.map((x) => x.notice)) if (notice && !lines.includes(notice)) lines.push(notice)
   return lines.join('\n')
 }
+
+/** BOXP-773: ファイルがあると示されているのに本体を受け取れなかった貼り付けの案内。文字をファイルとみなさず 📎 へ誘導する。 */
+export const PASTE_UNAVAILABLE_NOTE =
+  'このブラウザでは貼り付けたファイルの中身を受け取れませんでした。📎 から選んで添付してください。'
+type ClipboardLike = {
+  types: ArrayLike<string>
+  files: ArrayLike<unknown>
+  items: ArrayLike<{ kind: string; getAsFile(): unknown }>
+  getData(type: string): string
+}
+/**
+ * BOXP-773: 入力欄への貼り付けの扱い（Projects/kohako-home/attachment-paste-spec.md）。
+ * 1. text/plain に文字がある → 文字の貼り付け（Excel などが添える表の画像は添付しない）
+ * 2. ファイル本体が取れる → 添付
+ * 3. ファイルがあると示されるのに本体が取れない → 取得不可の案内
+ * 4. それ以外 → 何もしない
+ * 渡された paste イベントのクリップボードだけを読み、クリップボード API を自分から呼ばない。
+ */
+export function pastedAttachment<F>(
+  data: ClipboardLike | null | undefined,
+): { kind: 'files'; files: F[] } | { kind: 'text' | 'unavailable' | 'none' } {
+  if (!data) return { kind: 'none' }
+  if (data.getData('text/plain').trim()) return { kind: 'text' }
+  const files: F[] = Array.from(data.files) as F[]
+  const items = Array.from(data.items).filter((x) => x.kind === 'file')
+  if (!files.length)
+    for (const item of items) {
+      const file = item.getAsFile()
+      if (file && !files.includes(file as F)) files.push(file as F)
+    }
+  if (files.length) return { kind: 'files', files }
+  if (items.length || Array.from(data.types).includes('Files')) return { kind: 'unavailable' }
+  return { kind: 'none' }
+}
