@@ -1660,3 +1660,36 @@ it('returns 429 busy for a notification reply while a run is in progress without
     await rm(dir, { recursive: true, force: true })
   }
 })
+// trial-spec.md 決まり 13・例 20: 購読先が家に登録されているかを本人だけが問い合わせられる（登録は変えない）。
+it('checks whether a push endpoint is registered for the owner only', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises'),
+    { tmpdir } = await import('node:os'),
+    { join } = await import('node:path'),
+    { createPush } = await import('./push.js'),
+    { createNotifications } = await import('./notifications.js')
+  const dir = await mkdtemp(join(tmpdir(), 'push-check-')),
+    push = await createPush(dir, { subject: 'https://example.com', quietHours: '0-0' }),
+    notifications = await createNotifications(dir, push.send)
+  const keys = { p256dh: Buffer.alloc(65).toString('base64url'), auth: Buffer.alloc(16).toString('base64url') }
+  await push.add({ endpoint: 'https://example.com/fold', keys })
+  let principal = 'owner'
+  const server = createServer(createApp({ authenticate: async () => principal as never, notifications, push }))
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+  try {
+    const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/push/subscriptions/check`
+    const check = (body: unknown) =>
+      fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    const yes = await check({ endpoint: 'https://example.com/fold' })
+    expect(yes.status).toBe(200)
+    expect(await yes.json()).toEqual({ registered: true })
+    expect(await (await check({ endpoint: 'https://example.com/gone' })).json()).toEqual({ registered: false })
+    expect(push.has('https://example.com/gone')).toBe(false)
+    expect((await check({ endpoint: 1 })).status).toBe(400)
+    principal = 'verifier'
+    expect((await check({ endpoint: 'https://example.com/fold' })).status).toBe(403)
+  } finally {
+    server.closeAllConnections()
+    await new Promise<void>((r) => server.close(() => r()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})

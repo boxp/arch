@@ -79,7 +79,13 @@ describe('historyRow（決まり 10: 結果の時刻を残す）', () => {
 
 // trial-spec.md 決まり 13・例 17〜19: この端末の準備。
 describe('readiness', () => {
-  const base = { supported: true, permission: 'granted' as const, subscribed: true, version: 'device-trial-v1' }
+  const base = {
+    supported: true,
+    permission: 'granted' as const,
+    subscribed: true,
+    registered: true as boolean | null,
+    version: 'device-trial-v1',
+  }
   it('新しい版・許可あり・購読あり なら受け取れる', () => {
     expect(readiness(base)).toEqual({ ok: true, text: 'この端末は試験の通知を受け取れます。' })
   })
@@ -91,6 +97,18 @@ describe('readiness', () => {
     expect(readiness({ ...base, subscribed: false })).toEqual({
       ok: false,
       text: '通知が ON になっていません。家の受信箱で通知を ON にしてください。',
+    })
+  })
+  it('端末に購読は残るが家が消した（例 20）', () => {
+    expect(readiness({ ...base, registered: false })).toEqual({
+      ok: false,
+      text: 'この端末の通知が家に登録されていません。家の受信箱で通知を OFF にしてから ON にしてください。',
+    })
+  })
+  it('家への登録を確かめられない（例 21）', () => {
+    expect(readiness({ ...base, registered: null })).toEqual({
+      ok: false,
+      text: '家に登録されているか確かめられませんでした。ページを再読み込みしてください。',
     })
   })
   it('古い版（例 17 で切り替わらなかった時）', () => {

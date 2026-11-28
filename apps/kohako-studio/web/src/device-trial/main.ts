@@ -188,7 +188,8 @@ async function checkDevice() {
   const out = el('device-state')
   const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
   let version: string | null = null,
-    subscribed = false
+    subscribed = false,
+    registered: boolean | null = null
   if (supported) {
     try {
       const reg = await navigator.serviceWorker.register('/kohako/sw.js', { scope: '/kohako/' })
@@ -200,10 +201,30 @@ async function checkDevice() {
         await new Promise((r) => setTimeout(r, 1500))
         version = await swVersion(reg.active)
       }
-      subscribed = (await reg.pushManager.getSubscription()) !== null
+      const sub = await reg.pushManager.getSubscription()
+      subscribed = sub !== null
+      // 決まり 13・例 20: 家が送信時の 404・410 で消した購読は端末に残っても届かないので、家に問い合わせる。
+      if (sub) {
+        try {
+          const r = await fetch('/kohako/api/v1/push/subscriptions/check', {
+            method: 'POST',
+            cache: 'no-store',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ endpoint: sub.endpoint }),
+          })
+          const d = r.ok ? await r.json() : null
+          registered = typeof d?.registered === 'boolean' ? d.registered : null
+        } catch {}
+      }
     } catch {}
   }
-  const r = readiness({ supported, permission: supported ? Notification.permission : 'default', subscribed, version })
+  const r = readiness({
+    supported,
+    permission: supported ? Notification.permission : 'default',
+    subscribed,
+    registered,
+    version,
+  })
   out.textContent = r.text
   out.className = r.ok ? 'good' : 'bad'
 }
