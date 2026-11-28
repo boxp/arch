@@ -7233,6 +7233,12 @@ test_criteria_trial_attribution() {
   printf src >"$ws/ghq/github.com/o/r/src/a.clj"
   printf out >"$ws/tmp/out.png"
   printf body >"$ws/pr-body.md"
+  # A hardlink shared with another run counts in each run; twice inside one run counts once.
+  wsb="$state/workspaces/T-8/20261101T000000Z-runb"
+  mkdir -p "$wsb/tmp"
+  printf linked >"$ws/tmp/h"
+  ln "$ws/tmp/h" "$ws/tmp/h2"
+  ln "$ws/tmp/h" "$wsb/tmp/h"
   CODEX_TASK_BOARD_CAPACITY_ATTRIBUTION=on CODEX_TASK_BOARD_CAPACITY_ROOT="$root" run_prune "$vault" "$state" >"$tmp/out" 2>&1
   if grep -q ':event :criteria-trial' "$metrics"; then fail 'trial recorded without a window'; fi
   now="$(date -u +%s)"
@@ -7253,12 +7259,12 @@ test_criteria_trial_attribution() {
           s (get-in e [:by-status "not-judged"])]
       (assert e) (assert (= "T-trial" (:trial-id e))) (assert (true? (:scan-complete e))) (assert (string? (:scan-at e)) "the record keeps when its scan started")
       (assert (not (contains? a :trial-runs)) "the attribution record keeps its shape")
-      (assert (= 1 (:runs s)))
+      (assert (= 2 (:runs s)))
       (assert (= (b "ghq/github.com/o/r/node_modules/a.js") (:generated s)))
       (assert (= (b "ghq/github.com/o/r/.git/HEAD") (:git-internal s)))
       (assert (= (b "ghq/github.com/o/r/.tools/t") (:download s)))
       (assert (= (b "ghq/github.com/o/r/src/a.clj") (:checkout-other s)))
-      (assert (= (+ (b "tmp/out.png") (b "pr-body.md")) (:outside-ghq s)))
+      (assert (= (+ (b "tmp/out.png") (b "pr-body.md") (* 2 (b "tmp/h"))) (:outside-ghq s)) "a shared hardlink counts once per run, not once overall")
       (assert (= {:b-named 0 :b-download 0 :b-git-check 0 :d-outside 0 :keep 0} (:candidate e)) "a run without a held outcome is not a candidate")
       (assert (= 17179869184 (:soft-guard-bytes e))))'
   # An expired window records nothing more; a window over 25 hours is refused.

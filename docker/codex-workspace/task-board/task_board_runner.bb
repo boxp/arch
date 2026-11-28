@@ -8533,6 +8533,9 @@
                 proc (.start builder)
                 result (atom {:areas {} :subareas {} :workspaces {:bytes 0 :fresh-bytes 0 :by-kind {"node_modules" 0 "dist" 0 "git" 0 "other" 0}} :outside-workspaces {:bytes 0 :fresh-bytes 0} :scanned-bytes 0 :scanned-files 0})
                 seen (java.util.HashSet.)
+                ;; BOXP-781: the trial counts each inode once per run, independent of the
+                ;; overall dedup above (its per-run sizes are upper bounds; spec: hardlink).
+                trial-seen (java.util.HashSet.)
                 fresh-cutoff (- (/ (.toEpochMilli instant) 1000.0) 86400.0)
                 scan (future
                       ;; Killing a timed-out find closes this stream under the reader; the
@@ -8559,6 +8562,8 @@
                                          ticket (when (and workspace? (> (count parts) 3)) (nth parts 2))
                                          run-id (when (and ticket (> (count parts) 4)) (nth parts 3))]
                                      (.reset record)
+                                     (when (and trial run-id (> (count parts) 4) (or (= "1" links) (.add trial-seen [ticket run-id inode])))
+                                       (swap! result update-in [:trial-runs [ticket run-id] (criteria-trial-class (drop 4 parts))] (fnil + 0) bytes))
                                      (when (or (= "1" links) (.add seen inode))
                                        (swap! result (fn [r]
                                                        (cond-> (-> r (update :scanned-bytes + bytes) (update :scanned-files inc)
@@ -8572,8 +8577,7 @@
                                                          ;; BOXP-638 S3b: per-ticket workspace bytes (observation only).
                                                          ticket (update-in [:tickets ticket :bytes] (fnil + 0) bytes)
                                                          ticket (update-in [:tickets ticket :fresh-bytes] (fnil + 0) fresh)
-                                                         run-id (update-in [:tickets ticket :runs] (fnil conj #{}) run-id)
-                                                         (and trial run-id (> (count parts) 4)) (update-in [:trial-runs [ticket run-id] (criteria-trial-class (drop 4 parts))] (fnil + 0) bytes))))))
+                                                         run-id (update-in [:tickets ticket :runs] (fnil conj #{}) run-id))))))
                                    (.write record b))
                                  (recur))))))
                        (catch java.io.IOException _ nil)))
