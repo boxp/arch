@@ -2,7 +2,7 @@ FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b
 
 # Keep pinned versions here covered by renovate.json5 customManagers when adding new tools.
 ARG CODEX_VERSION=0.172.0
-ARG CLAUDE_CODE_VERSION=2.1.331
+ARG CLAUDE_CODE_VERSION=2.1.332
 # BOXP-735: official Grok Build CLI (xai-security). Used only for the Owner's device-code
 # login on codex-auth and the isolated X read check; never with XAI_API_KEY.
 ARG GROK_CLI_VERSION=1.0.92
