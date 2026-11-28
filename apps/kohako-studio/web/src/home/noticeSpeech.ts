@@ -18,6 +18,7 @@ export function urlName(url: string): string {
   const site = SITES.find(([re]) => re.test(host))?.[1]
   return site ? `${site} のリンク` : 'リンク'
 }
+const URL_LABEL_RE = /(?<!!)\[\s*(?:https?|mailto):[^\]]*\]\(/gi
 const isUrl = (text: string) => /^(?:https?|mailto):/i.test(text.trim())
 const replaceUrls = (text: string) => text.replace(URL_RE, (url) => urlName(url))
 
@@ -33,7 +34,8 @@ function inlineText(nodes: Inline[]): string {
 
 /** 返答・通知の本文（Markdown）から読み上げる文を作る。markdown.ts の plainText と同じ形で、URL だけ言い換える。 */
 export function spokenText(src: string): string {
-  return parseMarkdown(src)
+  // 仕様: ラベル自体が URL の Markdown リンクはサイトを問わず「リンク」と読む（裸の URL は上の urlName で呼び名を付ける）
+  return parseMarkdown(src.replace(URL_LABEL_RE, '[リンク]('))
     .map((b) =>
       b.type === 'rule'
         ? ''

@@ -16,6 +16,8 @@ it('reads a bare URL as the name of what it links to, not the URL itself', () =>
 it('reads the label of a markdown link, and リンク when the label itself is a URL', () => {
   expect(spokenText('[設計メモ](https://example.com/x)')).toBe('設計メモ')
   expect(spokenText('[https://example.com](https://example.com)')).toBe('リンク')
+  expect(spokenText('[https://github.com/boxp/arch/pull/1](https://github.com/boxp/arch/pull/1)')).toBe('リンク')
+  expect(spokenText('[https://youtu.be/abc](https://youtu.be/abc)')).toBe('リンク')
 })
 
 it('reads vault note links by their title as the screen shows them', () => {
