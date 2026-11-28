@@ -411,5 +411,26 @@
     (is (= 100 (:generated-bytes-est r)) "generation = used growth + what the existing reclaim removed")
     (is (= {:near-guard 1} (:alerts r)))))
 
+(deftest criteria-trial-report-counts-reclaim-only-between-records-and-by-scan-start
+  (let [w {:id "BOXP-781" :from "2026-11-28T18:00:00Z" :until "2026-11-29T18:00:00Z"}
+        t (fn [scan-at at free used] {:event :criteria-trial :trial-id "BOXP-781" :from "2026-11-28T18:00:00Z" :scan-at scan-at :at at
+                                      :fs-free-bytes free :fs-used-bytes used :scan-complete true :alert []})
+        rc (fn [at b] {:event :prune-run :result :deleted :allocated-bytes b :measured? true :at at})
+        events [(rc "2026-11-28T18:05:00Z" 70)
+                (t "2026-11-28T18:10:00Z" "2026-11-28T18:20:00Z" 300 700)
+                (rc "2026-11-28T19:00:00Z" 50)
+                (t "2026-11-29T17:00:00Z" "2026-11-29T17:10:00Z" 250 750)
+                (rc "2026-11-29T17:30:00Z" 30)]
+        r (criteria-trial-report events w)]
+    (is (= 150 (get-in r [:existing-reclaim :total-bytes])) "the whole window still reports every existing reclaim")
+    (is (= 50 (:reclaimed-between-records-bytes r)) "only (first scan-at, last scan-at]")
+    (is (= 100 (:generated-bytes-est r)) "used growth 50 + reclaim between the records 50"))
+  (testing "a scan started before until but written after it is inside the window"
+    (let [w {:id "BOXP-781" :from "2026-11-28T18:00:00Z" :until "2026-11-29T18:00:00Z"}
+          e {:event :criteria-trial :trial-id "BOXP-781" :from "2026-11-28T18:00:00Z" :scan-at "2026-11-29T17:55:00Z" :at "2026-11-29T18:05:00Z"
+             :fs-free-bytes 1 :fs-used-bytes 1 :scan-complete true :alert []}
+          late (assoc e :scan-at "2026-11-29T18:00:00Z" :at "2026-11-29T18:10:00Z")]
+      (is (= 1 (:records (criteria-trial-report [e late] w)))))))
+
 (let [{:keys [fail error]} (run-tests)]
   (System/exit (if (zero? (+ fail error)) 0 1)))

@@ -8430,7 +8430,7 @@
           drop (criteria-trial-drop free soft at (criteria-trial-previous window))
           alerts (criteria-trial-alerts free soft (:hours-to-soft-guard drop))
           summary (criteria-trial-summary runs outcomes)]
-      (workspace-metrics-write! (merge {:event :criteria-trial :trial-id (:id window) :from (:from window) :until (:until window)
+      (workspace-metrics-write! (merge {:event :criteria-trial :trial-id (:id window) :from (:from window) :until (:until window) :scan-at (str at)
                                         :scan-complete (boolean complete) :fs-free-bytes free :fs-used-bytes used
                                         :soft-guard-bytes soft :hard-guard-bytes hard :alert (vec (sort alerts))}
                                        drop summary))
@@ -8445,24 +8445,37 @@
   "Read-only aggregate of one trial window from the metrics lines (spec: 集計コマンド)."
   [events {:keys [id from until]}]
   (let [from-i (java.time.Instant/parse from) until-i (java.time.Instant/parse until)
-        in? (fn [e] (try (let [t (java.time.Instant/parse (:at e))] (and (not (.isBefore t from-i)) (.isBefore t until-i))) (catch Exception _ false)))
+        ;; A trial record belongs to the window by when its scan started (:scan-at; old
+        ;; records only have :at): a scan started just before until is written after it.
+        t-of (fn [e] (try (java.time.Instant/parse (str (or (:scan-at e) (:at e)))) (catch Exception _ nil)))
+        in? (fn [e] (if-let [t (t-of e)] (and (not (.isBefore t from-i)) (.isBefore t until-i)) false))
         window (filter in? events)
         trials (filter #(and (= :criteria-trial (:event %)) (= id (:trial-id %)) (= from (:from %))) window)
+        reclaim-bytes (fn [e] (when (or (and (= :prune-run (:event e)) (= :deleted (:result e)))
+                                        (and (= :generated-reclaim (:event e)) (= :reclaimed (:result e))))
+                                (:allocated-bytes e)))
         run-deleted (reduce + 0 (keep #(when (and (= :prune-run (:event %)) (= :deleted (:result %))) (:allocated-bytes %)) window))
         generated-reclaimed (reduce + 0 (keep #(when (and (= :generated-reclaim (:event %)) (= :reclaimed (:result %))) (:allocated-bytes %)) window))
         reclaimed (+ run-deleted generated-reclaimed)
         frees (keep :fs-free-bytes trials)
         first-t (first trials) last-t (last trials)
         used-delta (when (and first-t last-t (number? (:fs-used-bytes first-t)) (number? (:fs-used-bytes last-t)))
-                     (- (:fs-used-bytes last-t) (:fs-used-bytes first-t)))]
+                     (- (:fs-used-bytes last-t) (:fs-used-bytes first-t)))
+        ;; Only reclaim in (first scan, last scan] shows up in used-delta.
+        between (when used-delta
+                  (let [a (t-of first-t) b (t-of last-t)]
+                    (reduce + 0 (keep (fn [e] (when-let [t (try (java.time.Instant/parse (str (:at e))) (catch Exception _ nil))]
+                                                (when (and (.isAfter t a) (not (.isAfter t b))) (reclaim-bytes e))))
+                                      events))))]
     {:trial-id id :from from :until until :records (count trials)
      :incomplete-scans (count (remove :scan-complete trials))
      :free {:first (first frees) :last (last frees) :min (when (seq frees) (apply min frees))
-            :series (mapv (fn [e] [(:at e) (:fs-free-bytes e)]) trials)}
+            :series (mapv (fn [e] [(or (:scan-at e) (:at e)) (:fs-free-bytes e)]) trials)}
      :existing-reclaim {:run-deleted-bytes run-deleted :generated-reclaimed-bytes generated-reclaimed :total-bytes reclaimed
                         :deleted-unmeasured (count (filter #(and (= :prune-run (:event %)) (= :deleted (:result %)) (not (:measured? %))) window))}
      :used-delta-bytes used-delta
-     :generated-bytes-est (when used-delta (+ used-delta reclaimed))
+     :reclaimed-between-records-bytes between
+     :generated-bytes-est (when used-delta (+ used-delta between))
      :alerts (frequencies (mapcat :alert trials))
      :last (select-keys last-t [:at :candidate :by-status :top-held-runs :hours-to-soft-guard :free-drop-bytes-per-hour])}))
 

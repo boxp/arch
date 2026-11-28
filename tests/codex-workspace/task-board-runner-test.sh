@@ -7251,7 +7251,7 @@ test_criteria_trial_attribution() {
           a (last (filter #(= :capacity-attribution (:event %)) es))
           b (fn [p] (* 512 (Long/parseLong (clojure.string/trim (:out (babashka.process/shell {:out :string} "stat" "-c" "%b" (str (System/getenv "TEST_WS") "/" p)))))))
           s (get-in e [:by-status "not-judged"])]
-      (assert e) (assert (= "T-trial" (:trial-id e))) (assert (true? (:scan-complete e)))
+      (assert e) (assert (= "T-trial" (:trial-id e))) (assert (true? (:scan-complete e))) (assert (string? (:scan-at e)) "the record keeps when its scan started")
       (assert (not (contains? a :trial-runs)) "the attribution record keeps its shape")
       (assert (= 1 (:runs s)))
       (assert (= (b "ghq/github.com/o/r/node_modules/a.js") (:generated s)))
