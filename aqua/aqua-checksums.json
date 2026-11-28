@@ -1,23 +1,23 @@
 {
   "checksums": [
     {
-      "id": "github_release/github.com/babarot/regomark/v0.4.0/regomark_darwin_amd64.tar.gz",
-      "checksum": "A3123F6946BF2AAEEEC11F41EFBDB0201EC1EEEA6A36BD49BB8D585C762BBA58",
+      "id": "github_release/github.com/babarot/regomark/v0.5.0/regomark_darwin_amd64.tar.gz",
+      "checksum": "8FFE2D6D1FAF0FE283664898EA7CA9BF9253BE59ED78F6A222E8ED356E01CFAB",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/babarot/regomark/v0.4.0/regomark_darwin_arm64.tar.gz",
-      "checksum": "8A8A248D5AD193AEF218980962610B69E1E38BC3AA5022813D333E45DBAE468E",
+      "id": "github_release/github.com/babarot/regomark/v0.5.0/regomark_darwin_arm64.tar.gz",
+      "checksum": "4A918F8BFF083A937432BF6230A43704425260FDD055C83490BB3483E6548719",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/babarot/regomark/v0.4.0/regomark_linux_amd64.tar.gz",
-      "checksum": "B5C173850645E18FC7E6DFEBAB819F9277DB75026861CD9105C2668AFE907D75",
+      "id": "github_release/github.com/babarot/regomark/v0.5.0/regomark_linux_amd64.tar.gz",
+      "checksum": "FAEE549BE12BD0F21BD068D248C7002D5BBB37B839078E0D98F225FD6770115A",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/babarot/regomark/v0.4.0/regomark_linux_arm64.tar.gz",
-      "checksum": "58FFAC3A9C6E10C8F695FC3BFBF275AD9AE45A2C49D72AB2EC6857AEFB253BA4",
+      "id": "github_release/github.com/babarot/regomark/v0.5.0/regomark_linux_arm64.tar.gz",
+      "checksum": "AFF62D1E5D92D6093DECDD1E0AB8DF4C9F6C69D6396632861F1CED6216C316B6",
       "algorithm": "sha256"
     },
     {
