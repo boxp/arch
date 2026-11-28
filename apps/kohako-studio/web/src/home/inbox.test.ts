@@ -242,7 +242,7 @@ describe('通知からのジャンプを一度だけ行う（BOXP-772）', () =>
   })
 
   type Item = { eventId: string; source: string; title: string; body: string; receivedAt: string }
-  const setup = async (search: string, items: Item[], failFirst = 0) => {
+  const setup = async (search: string, items: Item[], failFirst = 0, failAnnounce = 0) => {
     const { initInbox } = await import('./inbox'),
       { vi } = await import('vitest')
     const els: Record<string, { hidden: boolean }> = {},
@@ -269,6 +269,7 @@ describe('通知からのジャンプを一度だけ行う（BOXP-772）', () =>
       sw: { listener?: (e: { data: unknown }) => void } = {},
       ticks: (() => void)[] = []
     let failures = failFirst
+    let announceFailures = failAnnounce
     const loc = { search, pathname: '/kohako/home.html', hash: '#x' }
     vi.stubGlobal('document', {
       hidden: false,
@@ -303,6 +304,10 @@ describe('通知からのジャンプを一度だけ行う（BOXP-772）', () =>
       calls.push(`${init?.method ?? 'GET'} ${path}`)
       if (path === 'notifications' && failures > 0) {
         failures--
+        throw new Error('offline')
+      }
+      if (path.endsWith('/announced') && announceFailures > 0) {
+        announceFailures--
         throw new Error('offline')
       }
       return { status: 200, json: async () => (path === 'notifications' ? { items, unread: 0 } : {}) }
@@ -382,6 +387,22 @@ describe('通知からのジャンプを一度だけ行う（BOXP-772）', () =>
     }
   })
 
+  it('一覧は取れたが通知を開く途中で通信失敗したら消費せず URL も残し、次に取得できた時に開いてから外す', async () => {
+    const t = await setup('?a=1&notification=event-AAAAAA', [item('event-AAAAAA')], 0, 1)
+    try {
+      expect(t.calls.filter((c) => c === 'POST notifications/event-AAAAAA/announced').length).toBe(1)
+      expect(reads(t.calls, 'event-AAAAAA')).toBe(0)
+      expect(t.urls).toEqual([])
+      expect(t.loc.search).toBe('?a=1&notification=event-AAAAAA')
+      await t.resume()
+      expect(reads(t.calls, 'event-AAAAAA')).toBe(1)
+      expect(t.urls).toEqual(['/kohako/home.html?a=1#x'])
+      await t.resume()
+      expect(reads(t.calls, 'event-AAAAAA')).toBe(1)
+    } finally {
+      t.vi.unstubAllGlobals()
+    }
+  })
   it('開いたままの家で別の通知を押すと URL を変えずにその通知を開き、表示復帰で開き直さない', async () => {
     const t = await setup('', [item('event-AAAAAA'), item('event-BBBBBB')])
     try {

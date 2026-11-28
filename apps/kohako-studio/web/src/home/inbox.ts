@@ -555,25 +555,43 @@ export function initInbox(
     )
       void openNotification(e.data.eventId)
   })
-  async function openNotification(id: string) {
+  /** 開き終えたら true。案内済み・既読の送信が通信失敗したら false（例外は外へ出さない）。 */
+  async function openNotification(id: string): Promise<boolean> {
     opening = true
     try {
       await call(`notifications/${encodeURIComponent(id)}/announced`, 'POST')
       await open(id)
+      return true
+    } catch {
+      return false
     } finally {
       opening = false
     }
   }
   // BOXP-772: 表示へ戻るたびに前の通知を開き直さない。開くのは保留中のジャンプだけで、一覧が確定したら消費する
-  // （初回取得が失敗した場合は、次の定期更新か表示復帰で取得できた時に消費する）。
+  // （初回取得や開く途中の送信が失敗した場合は消費せず URL も残し、次の定期更新か表示復帰で取得できた時に再び試みる）。
+  let jumping = false
   const update = () =>
-    void refresh().then((loaded) => {
+    void refresh().then(async (loaded) => {
       const id = jump
-      if (!id || !loaded) return
-      jump = null
-      dropNotificationParam()
-      if (items.some((i) => i.eventId === id)) void openNotification(id)
-      else opening = false
+      if (!id || !loaded || jumping) return
+      if (!items.some((i) => i.eventId === id)) {
+        jump = null
+        opening = false
+        dropNotificationParam()
+        return
+      }
+      jumping = true
+      try {
+        if (!(await openNotification(id))) {
+          opening = true // 保留中のジャンプが残る間は、今までどおり案内で割り込まない
+          return
+        }
+        jump = null
+        dropNotificationParam()
+      } finally {
+        jumping = false
+      }
     })
   const schedule = () => {
     clearInterval(timer)
