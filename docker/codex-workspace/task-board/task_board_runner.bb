@@ -5430,13 +5430,17 @@
                     :note (str "review-findings:" id " レビュー所見解消 PR " u " head " (review-findings-short-head h)
                                " run " run-id ": 前回の所見 " (:id p) " は今回の head で未検出")})
         failed (when (and (not (:ok? g)) (= :codex-review (:gate g)))
-                 (let [u (:url g) h (:head g) stop (review-findings-stop-state g)]
+                 (let [u (:url g) h (:head g) stop (review-findings-stop-state g)
+                       ;; A recurrence after a resolution is a new record: its id
+                       ;; also hashes the last resolution of this PR.
+                       after (some->> (get-in prior [u :after]) (vector "after"))]
                    (case (:failure-kind g)
                      :findings
                      (let [items (sort-by (juxt #(review-findings-severity-rank (:severity %)) :location :description)
                                           (:blocking-items g))
                            id (review-findings-id (concat ["blocking" u h stop]
-                                                          (map #(str (:severity %) "|" (:location %) "|" (:description %)) items)))]
+                                                          (map #(str (:severity %) "|" (:location %) "|" (:description %)) items)
+                                                          after))]
                        {:id id :kind :blocking :pr-url u
                         :note (str "review-findings:" id " レビュー未解決所見 PR " u " head " (review-findings-short-head h)
                                    " run " run-id ": P0/P1 " (or (get-in g [:blocking-findings :count]) (count items)) "件・P2/P3/nit "
@@ -5449,7 +5453,7 @@
                      (let [reason (if (= :command-error (:failure-kind g))
                                     "command-error"
                                     (str "invalid-output:" (review-findings-text (or (:review-judgment-failure g) "unknown") 40)))
-                           id (review-findings-id ["unavailable" u h reason stop])]
+                           id (review-findings-id (concat ["unavailable" u h reason stop] after))]
                        {:id id :kind :unavailable :pr-url u
                         :note (str "review-findings:" id " レビュー所見を取得できず（実指摘なしではない） PR " u
                                    " head " (review-findings-short-head h) " run " run-id ": 理由 " reason
@@ -5485,9 +5489,12 @@
 
 (defn review-findings-state-step [m e]
   (case (:kind e)
-    (:blocking :unavailable) (assoc m (:pr-url e) {:id (:id e) :kind (:kind e)})
+    (:blocking :unavailable) (assoc m (:pr-url e) (cond-> {:id (:id e) :kind (:kind e)}
+                                                    (get-in m [(:pr-url e) :after]) (assoc :after (get-in m [(:pr-url e) :after]))))
+    ;; The PR entry stays as :resolved and remembers the resolution id, so a
+    ;; later recurrence of the same finding gets a new id (written after it).
     :resolved (if (or (nil? (:prior-id e)) (= (:prior-id e) (get-in m [(:pr-url e) :id])))
-                (dissoc m (:pr-url e))
+                (assoc m (:pr-url e) {:id (:id e) :kind :resolved :after (:id e)})
                 m)
     m))
 
@@ -5542,13 +5549,17 @@
   [ticket-id run-id e]
   (let [entry (assoc (select-keys e [:kind :pr-url :note :prior-id])
                      :run-id run-id :queued-at (now-str) :seq (next-review-findings-seq))]
+    ;; An id already queued keeps its original position (re-queuing never
+    ;; moves it behind a record queued after it).
     (try (write-edn-atomically! (review-findings-pending-path)
-                                (assoc-in (read-edn-safely (review-findings-pending-path) {}) [ticket-id (:id e)] entry))
+                                (update-in (read-edn-safely (review-findings-pending-path) {}) [ticket-id (:id e)]
+                                           #(if % (merge entry (select-keys % [:seq :queued-at :state-pending?])) entry)))
          :file
          (catch Exception pe
            (log! (str "review findings: could not keep pending record for " ticket-id " " (:id e)
                       "; kept in memory: " (sanitize-blocker-reason (.getMessage pe))))
-           (swap! review-findings-memory-pending assoc-in [ticket-id (:id e)] (assoc entry :state-pending? true))
+           (swap! review-findings-memory-pending update-in [ticket-id (:id e)]
+                  #(if % (merge entry (select-keys % [:seq :queued-at :state-pending?])) (assoc entry :state-pending? true)))
            :memory))))
 
 (defn- flush-pending-review-findings*

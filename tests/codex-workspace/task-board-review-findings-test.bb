@@ -293,7 +293,7 @@
         (is (= 1 (count (finding-lines ticket))))
         (record-review-findings! "BOXP-1" "r2" pass-gate)
         (is (= 1 (count (resolution-lines ticket))) (pr-str (finding-lines ticket)))
-        (is (empty? (get (read-edn-file (fs/path root "review-findings-state.edn") {}) "BOXP-1")))
+        (is (not-any? #{:blocking :unavailable} (map :kind (vals (get (read-edn-file (fs/path root "review-findings-state.edn") {}) "BOXP-1")))) "no unresolved record left")
         (is (empty? @review-findings-state-backlog))))
     (testing "the pass itself while the state file still fails also reports the resolution once"
       (with-env
@@ -377,5 +377,60 @@
                   run-codex-review! (fn [_ _] {:ok? true :gate-results [] :low-priority-findings {:count 1 :paths ["/p/7.md"]}})]
       (let [entries (review-findings-entries "BOXP-1" "r6" (review-gate! "/nonexistent" (str url " " url2)) {})]
         (is (= [[:low-only url]] (mapv (juxt :kind :pr-url) entries)))))))
+
+;; --- PR gate retry 5 (codex review P1: recurrence overtakes resolution) -------
+(deftest recurrence-after-resolution-is-written-after-it
+  (testing "queued: A, resolution R, then the same A again -> Notes A, R, A' in that order"
+    (with-env
+      (fn [{:keys [ticket]}]
+        (reset! review-findings-memory-pending {})
+        (reset! review-findings-state-backlog {})
+        (with-redefs [append-note-once! (fn [& _] (throw (ex-info "vault busy (synthetic)" {})))]
+          (record-review-findings! "BOXP-1" "r1" (blocking-gate))
+          (record-review-findings! "BOXP-1" "r2" pass-gate)
+          (record-review-findings! "BOXP-1" "r3" (blocking-gate)))
+        (is (empty? (finding-lines ticket)))
+        (flush-all-pending-review-findings!)
+        (let [lines (finding-lines ticket)]
+          (is (= 3 (count lines)) (pr-str lines))
+          (is (str/includes? (nth lines 0 "") "レビュー未解決所見") (pr-str lines))
+          (is (str/includes? (nth lines 1 "") "レビュー所見解消") (pr-str lines))
+          (is (str/includes? (nth lines 2 "") "レビュー未解決所見") (pr-str lines))
+          (is (str/includes? (nth lines 2 "") "run r3") (pr-str lines)))
+        (testing "reprocessing the recurrence run adds nothing; a later pass resolves it once"
+          (record-review-findings! "BOXP-1" "r3" (blocking-gate))
+          (is (= 3 (count (finding-lines ticket))))
+          (record-review-findings! "BOXP-1" "r4" pass-gate)
+          (record-review-findings! "BOXP-1" "r4" pass-gate)
+          (is (= 4 (count (finding-lines ticket))))
+          (is (str/includes? (last (finding-lines ticket)) "レビュー所見解消"))))))
+  (testing "written directly: the recurrence after a resolution is a new line after it"
+    (with-env
+      (fn [{:keys [ticket]}]
+        (reset! review-findings-memory-pending {})
+        (reset! review-findings-state-backlog {})
+        (record-review-findings! "BOXP-1" "r1" (blocking-gate))
+        (record-review-findings! "BOXP-1" "r2" pass-gate)
+        (record-review-findings! "BOXP-1" "r3" (blocking-gate))
+        (let [lines (finding-lines ticket)]
+          (is (= 3 (count lines)) (pr-str lines))
+          (is (str/includes? (nth lines 2 "") "run r3") (pr-str lines)))))))
+
+(deftest requeued-record-keeps-its-position
+  (testing "re-queuing an id that is already pending keeps its original order"
+    (with-env
+      (fn [{:keys [ticket]}]
+        (reset! review-findings-memory-pending {})
+        (reset! review-findings-state-backlog {})
+        (with-redefs [append-note-once! (fn [& _] (throw (ex-info "vault busy (synthetic)" {})))]
+          (record-review-findings! "BOXP-1" "r1" (blocking-gate))
+          (record-review-findings! "BOXP-1" "r2" (blocking-gate :url url2))
+          ;; the first run is processed again while both still wait
+          (record-review-findings! "BOXP-1" "r1" (blocking-gate)))
+        (flush-all-pending-review-findings!)
+        (let [lines (finding-lines ticket)]
+          (is (= 2 (count lines)) (pr-str lines))
+          (is (str/includes? (nth lines 0 "") (str "PR " url " ")) (pr-str lines))
+          (is (str/includes? (nth lines 1 "") (str "PR " url2 " ")) (pr-str lines)))))))
 
 (let [result (run-tests 'user)] (when (pos? (+ (:fail result) (:error result))) (System/exit 1)))
