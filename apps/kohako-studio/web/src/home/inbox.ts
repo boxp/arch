@@ -564,22 +564,22 @@ export function initInbox(
       opening = false
     }
   }
+  // BOXP-772: 表示へ戻るたびに前の通知を開き直さない。開くのは保留中のジャンプだけで、一覧が確定したら消費する
+  // （初回取得が失敗した場合は、次の定期更新か表示復帰で取得できた時に消費する）。
+  const update = () =>
+    void refresh().then((loaded) => {
+      const id = jump
+      if (!id || !loaded) return
+      jump = null
+      dropNotificationParam()
+      if (items.some((i) => i.eventId === id)) void openNotification(id)
+      else opening = false
+    })
   const schedule = () => {
     clearInterval(timer)
     if (!document.hidden) {
-      // BOXP-772: 表示へ戻るたびに前の通知を開き直さない。開くのは保留中のジャンプだけで、一覧が確定したら消費する。
-      void refresh().then((loaded) => {
-        const id = jump
-        if (!id || !loaded) {
-          if (!id) opening = false
-          return
-        }
-        jump = null
-        dropNotificationParam()
-        if (items.some((i) => i.eventId === id)) void openNotification(id)
-        else opening = false
-      })
-      timer = window.setInterval(() => void refresh(), 60000)
+      update()
+      timer = window.setInterval(update, 60000)
     }
   }
   document.addEventListener('visibilitychange', schedule)

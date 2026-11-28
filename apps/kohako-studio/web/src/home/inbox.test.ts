@@ -266,7 +266,8 @@ describe('通知からのジャンプを一度だけ行う（BOXP-772）', () =>
     const calls: string[] = [],
       urls: string[] = [],
       handlers: Record<string, () => void> = {},
-      sw: { listener?: (e: { data: unknown }) => void } = {}
+      sw: { listener?: (e: { data: unknown }) => void } = {},
+      ticks: (() => void)[] = []
     let failures = failFirst
     const loc = { search, pathname: '/kohako/home.html', hash: '#x' }
     vi.stubGlobal('document', {
@@ -290,7 +291,13 @@ describe('通知からのジャンプを一度だけ行う（BOXP-772）', () =>
     vi.stubGlobal('navigator', {
       serviceWorker: { addEventListener: (_t: string, fn: (e: { data: unknown }) => void) => (sw.listener = fn) },
     })
-    vi.stubGlobal('window', { setTimeout: () => 0, setInterval: () => 0 })
+    vi.stubGlobal('window', {
+      setTimeout: () => 0,
+      setInterval: (fn: () => void) => {
+        ticks.push(fn)
+        return 0
+      },
+    })
     vi.stubGlobal('fetch', async (url: string, init?: { method?: string }) => {
       const path = url.replace('/kohako/api/v1/', '')
       calls.push(`${init?.method ?? 'GET'} ${path}`)
@@ -393,4 +400,70 @@ describe('通知からのジャンプを一度だけ行う（BOXP-772）', () =>
       t.vi.unstubAllGlobals()
     }
   })
+})
+
+it('初回取得に失敗しても、表示したままの定期更新で取得できた時に 1 度だけ開く（BOXP-772）', async () => {
+  // 上の describe の setup は閉じているため、同じ条件を最小限で組み直す
+  const { initInbox } = await import('./inbox'),
+    { vi } = await import('vitest')
+  const el = (): { hidden: boolean } =>
+    new Proxy(
+      { hidden: true, textContent: '', value: '', dataset: {}, style: {} } as Record<string | symbol, unknown>,
+      {
+        get: (t, k) => (k in t ? t[k] : k === 'then' ? undefined : k === 'querySelector' ? () => null : () => el()),
+        set: (t, k, v) => {
+          t[k] = v
+          return true
+        },
+      },
+    ) as unknown as { hidden: boolean }
+  const els: Record<string, { hidden: boolean }> = {},
+    calls: string[] = [],
+    urls: string[] = [],
+    ticks: (() => void)[] = []
+  let failures = 1
+  const loc = { search: '?notification=event-AAAAAA', pathname: '/kohako/home.html', hash: '' }
+  vi.stubGlobal('document', {
+    hidden: false,
+    getElementById: (id: string) => (els[id] ??= el()),
+    addEventListener() {},
+    createElement: () => el(),
+    createDocumentFragment: () => el(),
+    createTextNode: () => el(),
+  })
+  vi.stubGlobal('location', loc)
+  vi.stubGlobal('history', { state: null, replaceState: (_s: unknown, _t: string, url: string) => urls.push(url) })
+  vi.stubGlobal('navigator', {})
+  vi.stubGlobal('window', {
+    setTimeout: () => 0,
+    setInterval: (fn: () => void) => {
+      ticks.push(fn)
+      return 0
+    },
+  })
+  vi.stubGlobal('fetch', async (url: string, init?: { method?: string }) => {
+    const path = url.replace('/kohako/api/v1/', '')
+    calls.push(`${init?.method ?? 'GET'} ${path}`)
+    if (path === 'notifications' && failures-- > 0) return { status: 502, json: async () => ({}) }
+    const items = [
+      { eventId: 'event-AAAAAA', source: 't', title: 'A', body: 'b', receivedAt: new Date().toISOString() },
+    ]
+    return { status: 200, json: async () => (path === 'notifications' ? { items, unread: 0 } : {}) }
+  })
+  const settle = () => new Promise((r) => setTimeout(r, 100))
+  try {
+    initInbox(() => false)
+    await settle()
+    expect(calls).not.toContain('POST notifications/event-AAAAAA/read')
+    expect(urls).toEqual([])
+    ticks[0]()
+    await settle()
+    expect(calls.filter((c) => c === 'POST notifications/event-AAAAAA/read')).toHaveLength(1)
+    expect(urls).toEqual(['/kohako/home.html'])
+    ticks[0]()
+    await settle()
+    expect(calls.filter((c) => c === 'POST notifications/event-AAAAAA/read')).toHaveLength(1)
+  } finally {
+    vi.unstubAllGlobals()
+  }
 })

@@ -11,7 +11,7 @@
 
 - 仕様: vault `Projects/kohako-home/notice-jump-spec.md`（spec_feature `kohako-home-notice-jump`）。
 - URL のジャンプを `selected` と分離した保留値 `jump` にし、一覧取得が確定した時点で 1 度だけ消費する。消費時に `history.replaceState` で `notification` だけを外す（他パラメータの表記・順序・hash は維持、履歴は増やさない）。
-- 取得失敗時は消費せず URL も残す（次の表示復帰で再試行）。不正な ID は読み込み時に外す。
+- 取得失敗時は消費せず URL も残す（次の定期更新か表示復帰で再試行）。不正な ID は読み込み時に外す。
 - `visibilitychange` は一覧更新のみで、開き直さない。
 - SW の `open-notification`（開いたままの画面）、受信箱からの明示オープン、返信の紐付け（開いている `eventId`）は変更しない。
 - Lean モデルは作らない: 状態は保留値 1 個で、消費は 1 回きりの単純な規則のため、例を直接テストする。
