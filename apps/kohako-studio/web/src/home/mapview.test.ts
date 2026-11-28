@@ -89,3 +89,14 @@ it('reads both single-destination and multi-place map views', () => {
   }
   expect(mapPlaces(multi)).toEqual([{ name: 'A', geo: renoir }, { name: 'B' }])
 })
+it('fits every pin even when candidates are on opposite sides of the world', () => {
+  // 仕様: 地図は全候補の印が収まる縮尺で 1 枚に描く（東京・ロンドン・ホノルルでも全ピンが枠内）。
+  const layout = layoutMap([
+    { name: '東京の店', geo: exact(35.6567, 139.7538, '東京の店') },
+    { name: 'ロンドンの店', geo: exact(51.5074, -0.1278, 'ロンドンの店') },
+    { name: 'ホノルルの店', geo: exact(21.3069, -157.8583, 'ホノルルの店') },
+  ])
+  if (!layout) throw Error('layout expected')
+  expect(layout.marks).toHaveLength(3)
+  for (const m of layout.marks) expect(inside(m.left) && inside(m.top), JSON.stringify(m)).toBe(true)
+})

@@ -60,7 +60,8 @@ export function layoutMap(places: MapPlace[]): MapLayout | null {
         ],
   )
   let zoom = items.length === 1 && items[0].kind === 'pin' ? 16 : 17
-  for (; zoom > 3; zoom--) {
+  // 縮尺 0 では世界全体が 256px 四方に収まり、枠（余白を除き 544×264px）に必ず入る。離れた候補でも全ピンを出すため 0 まで下げる。
+  for (; zoom > 0; zoom--) {
     const pts = corners.map(([lat, lon]) => project(lat, lon, zoom))
     const xs = pts.map((p) => p.x),
       ys = pts.map((p) => p.y)
