@@ -1307,8 +1307,13 @@
              insert-idx (if (= "## Notes" (nth lines idx))
                           (count lines)
                           (count lines))
+             ;; The marker must be the first token of the bullet: a line
+             ;; that merely mentions it (e.g. a resolution citing the prior
+             ;; record) is not that record.
+             marker-re (when marker
+                         (re-pattern (str "^- [^:]+: " (java.util.regex.Pattern/quote marker) "(\\s|$)")))
              present? (if marker
-                        (some #(str/includes? % marker) lines)
+                        (some #(re-find marker-re %) lines)
                         (some #(= bullet %) lines))
              new-lines (if present?
                          lines
@@ -5419,7 +5424,7 @@
                              id (review-findings-id ["resolved" u h (:id p)])]]
                    {:id id :kind :resolved :pr-url u :prior-id (:id p)
                     :note (str "review-findings:" id " レビュー所見解消 PR " u " head " (review-findings-short-head h)
-                               " run " run-id ": 前回の所見 review-findings:" (:id p) " は今回の head で未検出")})
+                               " run " run-id ": 前回の所見 " (:id p) " は今回の head で未検出")})
         failed (when (and (not (:ok? g)) (= :codex-review (:gate g)))
                  (let [u (:url g) h (:head g) stop (review-findings-stop-state g)]
                    (case (:failure-kind g)
@@ -5512,19 +5517,56 @@
                         (sanitize-blocker-reason (.getMessage e))))
              false)))))
 
-(defn- flush-pending-review-findings* [ticket-id]
+(defonce review-findings-seq (atom 0))
+
+(defn- next-review-findings-seq []
+  (swap! review-findings-seq #(max (inc %) (System/currentTimeMillis))))
+
+(defn- review-findings-queue-order [[id e]] [(or (:seq e) 0) (str (:queued-at e)) id])
+
+(defn- review-findings-queued?
+  "True while any record of ticket-id is still waiting to be written."
+  [ticket-id]
+  (boolean (or (seq (get (read-edn-safely (review-findings-pending-path) {}) ticket-id))
+               (seq (get @review-findings-memory-pending ticket-id)))))
+
+(defn- enqueue-review-finding!
+  "Put e at the tail of ticket-id's queue: the pending file, or memory when
+  that write fails too. Returns :file or :memory."
+  [ticket-id run-id e]
+  (let [entry (assoc (select-keys e [:kind :pr-url :note :prior-id])
+                     :run-id run-id :queued-at (now-str) :seq (next-review-findings-seq))]
+    (try (write-edn-atomically! (review-findings-pending-path)
+                                (assoc-in (read-edn-safely (review-findings-pending-path) {}) [ticket-id (:id e)] entry))
+         :file
+         (catch Exception pe
+           (log! (str "review findings: could not keep pending record for " ticket-id " " (:id e)
+                      "; kept in memory: " (sanitize-blocker-reason (.getMessage pe))))
+           (swap! review-findings-memory-pending assoc-in [ticket-id (:id e)] (assoc entry :state-pending? true))
+           :memory))))
+
+(defn- flush-pending-review-findings*
+  "Write ticket-id's queue in order, stopping at the first failure: a record
+  is never written before an older one of the same ticket (so a resolution
+  never precedes the finding it resolves)."
+  [ticket-id]
   (let [pending (read-edn-safely (review-findings-pending-path) {})
         file-entries (get pending ticket-id {})
         mem-entries (get @review-findings-memory-pending ticket-id {})
         entries (merge mem-entries file-entries)]
     (when (seq entries)
-      (let [results (vec (for [[id e] (sort-by (comp str :queued-at val) entries)]
-                           (try {:id id :kind (:kind e) :status (append-note-once! ticket-id (str "review-findings:" id) (:note e))}
-                                (catch Exception ex
-                                  (log! (str "review findings: pending write still failing for " ticket-id " " id ": "
-                                             (sanitize-blocker-reason (.getMessage ex))))
-                                  {:id id :kind (:kind e) :status :failed}))))
-            done (set (map :id (remove #(= :failed (:status %)) results)))
+      (let [results (loop [[[id e] & more] (sort-by review-findings-queue-order entries) acc []]
+                      (if (nil? id)
+                        acc
+                        (let [r (try {:id id :kind (:kind e) :status (append-note-once! ticket-id (str "review-findings:" id) (:note e))}
+                                     (catch Exception ex
+                                       (log! (str "review findings: pending write still failing for " ticket-id " " id ": "
+                                                  (sanitize-blocker-reason (.getMessage ex))))
+                                       {:id id :kind (:kind e) :status :failed}))]
+                          (if (= :failed (:status r))
+                            (into (conj acc r) (map (fn [[id2 e2]] {:id id2 :kind (:kind e2) :status :queued})) more)
+                            (recur more (conj acc r))))))
+            done (set (map :id (filter #(#{:recorded :duplicate} (:status %)) results)))
             remaining-file (apply dissoc file-entries done)
             remaining-mem (apply dissoc mem-entries done)]
         ;; Records whose state step was held back (they were memory-only when
@@ -5532,7 +5574,7 @@
         ;; state now that they are written. Also retries the state backlog.
         (update-review-findings-state! ticket-id (keep (fn [[id e]] (when (and (contains? done id) (:state-pending? e))
                                                                       (assoc e :id id)))
-                                                       entries))
+                                                       (sort-by review-findings-queue-order entries)))
         (swap! review-findings-memory-pending
                (fn [m] (if (seq remaining-mem) (assoc m ticket-id remaining-mem) (dissoc m ticket-id))))
         ;; Try to make the still-unwritten memory records durable again.
@@ -5561,9 +5603,9 @@
 (defn record-review-findings!
   "BOXP-775: write the gate's review records to the ticket Notes once each.
   A failed write stays pending (file, or memory when the file write fails too)
-  and is retried later; nothing is dropped silently. The unresolved-state table
-  advances only for records written or durably pending. Returns the per-record
-  statuses."
+  and is retried later, in order (FIFO per ticket); nothing is dropped silently.
+  The unresolved-state table advances only for records written or durably
+  pending. Returns the per-record statuses."
   [ticket-id run-id g]
   (with-review-findings-lock
    (fn []
@@ -5571,24 +5613,21 @@
      (update-review-findings-state! ticket-id [])
      (let [entries (review-findings-entries ticket-id run-id g (review-findings-ticket-state ticket-id))]
        (when (seq entries)
-         (let [results (vec (for [e entries
-                                  :let [pending-entry (assoc (select-keys e [:kind :pr-url :note :prior-id]) :run-id run-id :queued-at (now-str))
-                                        base (select-keys e [:id :kind :pr-url])]]
-                              (try (assoc base :status (append-note-once! ticket-id (str "review-findings:" (:id e)) (:note e)))
-                                   (catch Exception ex
-                                     (let [reason (sanitize-blocker-reason (.getMessage ex))]
-                                       (log! (str "review findings: Notes write failed for " ticket-id " " (:id e) "; kept pending: " reason))
-                                       (try
-                                         (write-edn-atomically! (review-findings-pending-path)
-                                                                (assoc-in (read-edn-safely (review-findings-pending-path) {})
-                                                                          [ticket-id (:id e)] pending-entry))
-                                         (assoc base :status :failed :reason reason :pending? :file)
-                                         (catch Exception pe
-                                           (log! (str "review findings: could not keep pending record for " ticket-id " " (:id e)
-                                                      "; kept in memory: " (sanitize-blocker-reason (.getMessage pe))))
-                                           (swap! review-findings-memory-pending assoc-in [ticket-id (:id e)]
-                                                  (assoc pending-entry :state-pending? true))
-                                           (assoc base :status :failed :reason reason :pending? :memory))))))))
+         ;; FIFO per ticket: while an older record waits, or once one of this
+         ;; batch fails, the rest are queued behind it without a write.
+         (let [results (loop [[e & more] entries blocked? (review-findings-queued? ticket-id) acc []]
+                         (if (nil? e)
+                           acc
+                           (let [base (select-keys e [:id :kind :pr-url])]
+                             (if blocked?
+                               (recur more true (conj acc (assoc base :status :queued :pending? (enqueue-review-finding! ticket-id run-id e))))
+                               (let [r (try (assoc base :status (append-note-once! ticket-id (str "review-findings:" (:id e)) (:note e)))
+                                            (catch Exception ex
+                                              (let [reason (sanitize-blocker-reason (.getMessage ex))]
+                                                (log! (str "review findings: Notes write failed for " ticket-id " " (:id e) "; kept pending: " reason))
+                                                (assoc base :status :failed :reason reason
+                                                       :pending? (enqueue-review-finding! ticket-id run-id e)))))]
+                                 (recur more (= :failed (:status r)) (conj acc r)))))))
                applied (set (map :id (remove #(= :memory (:pending? %)) results)))]
            (update-review-findings-state! ticket-id (filter #(contains? applied (:id %)) entries))
            (try (let [path (fs/path (run-dir ticket-id run-id) "review-findings.edn")

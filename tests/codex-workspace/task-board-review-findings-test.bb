@@ -306,4 +306,40 @@
               (record-review-findings! "BOXP-1" "r3" pass-gate)))
           (is (= 1 (count (resolution-lines ticket))) (pr-str (finding-lines ticket))))))))
 
+
+;; --- PR gate retry 3 (codex review P1: marker collision / order) -------------
+(deftest pending-blocking-is-not-lost-behind-a-resolution
+  (testing "a queued blocking record that a later resolution mentions is still written, and before the resolution"
+    (with-env
+      (fn [{:keys [ticket]}]
+        (reset! review-findings-memory-pending {})
+        (reset! review-findings-state-backlog {})
+        (let [real append-note-once!
+              fail-blocking (fn [t m note] (if (str/includes? note "レビュー未解決所見")
+                                             (throw (ex-info "vault busy (synthetic)" {}))
+                                             (real t m note)))]
+          (with-redefs [append-note-once! fail-blocking]
+            (record-review-findings! "BOXP-1" "r1" (blocking-gate))
+            (record-review-findings! "BOXP-1" "r2" pass-gate))
+          (is (empty? (finding-lines ticket)) "the resolution waits behind the unwritten blocking record")
+          (flush-all-pending-review-findings!)
+          (let [lines (finding-lines ticket)]
+            (is (= 2 (count lines)) (pr-str lines))
+            (is (str/includes? (first lines) "レビュー未解決所見") (pr-str lines))
+            (is (str/includes? (second lines) "レビュー所見解消") (pr-str lines)))
+          (is (empty? (get (read-edn-file (fs/path (root) "review-findings-pending.edn") {}) "BOXP-1"))))))))
+
+(deftest marker-matches-only-the-record-head
+  (testing "a line that merely mentions the id is not the record itself"
+    (with-env
+      (fn [{:keys [ticket]}]
+        (append-note! "BOXP-1" "メモ: 前回の所見 review-findings:abcdefabcdef を参照")
+        (is (= :recorded (append-note-once! "BOXP-1" "review-findings:abcdefabcdef" "review-findings:abcdefabcdef 本体")))
+        (is (= :duplicate (append-note-once! "BOXP-1" "review-findings:abcdefabcdef" "review-findings:abcdefabcdef 本体")))
+        (is (= 1 (count (filter #(str/includes? % "本体") (str/split-lines (slurp (str ticket))))))))))
+  (testing "the resolution line does not carry the prior record's marker"
+    (let [[e] (review-findings-entries "BOXP-1" "r9" pass-gate {url {:id "abcdefabcdef" :kind :blocking}})]
+      (is (str/includes? (:note e) "abcdefabcdef"))
+      (is (not (str/includes? (:note e) "review-findings:abcdefabcdef"))))))
+
 (let [result (run-tests 'user)] (when (pos? (+ (:fail result) (:error result))) (System/exit 1)))
