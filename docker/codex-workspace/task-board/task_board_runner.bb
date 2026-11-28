@@ -1273,7 +1273,20 @@
     {:text text
      :frontmatter (frontmatter-map (vec (str/split-lines text)))}))
 
+(declare append-note-lines!)
+
 (defn append-note! [ticket-id note]
+  (append-note-lines! ticket-id note nil))
+
+(defn append-note-once!
+  "BOXP-775: append note unless a line of the ticket already contains marker.
+  The check and the write share the ticket's write locks, so concurrent or
+  repeated calls with the same marker leave one line. Returns :recorded or
+  :duplicate."
+  [ticket-id marker note]
+  (append-note-lines! ticket-id note marker))
+
+(defn append-note-lines! [ticket-id note marker]
   @todo-module-loaded?
   (locking (ticket-mutex ticket-id)
     ;; Deterministic black-box failure hook; unset in deployment.
@@ -1294,10 +1307,19 @@
              insert-idx (if (= "## Notes" (nth lines idx))
                           (count lines)
                           (count lines))
-             new-lines (if (some #(= bullet %) lines)
+             ;; The marker must be the first token of the bullet: a line
+             ;; that merely mentions it (e.g. a resolution citing the prior
+             ;; record) is not that record.
+             marker-re (when marker
+                         (re-pattern (str "^- [^:]+: " (java.util.regex.Pattern/quote marker) "(\\s|$)")))
+             present? (if marker
+                        (some #(re-find marker-re %) lines)
+                        (some #(= bullet %) lines))
+             new-lines (if present?
                          lines
                          (vec (concat (subvec lines 0 insert-idx) [bullet] (subvec lines insert-idx))))]
-         (write-lines! path new-lines))))))))
+         (when-not present? (write-lines! path new-lines))
+         (if present? :duplicate :recorded))))))))
 
 (defn project-ticket-status! [ticket-id {:keys [status done]}]
   (update-frontmatter! ticket-id (cond-> {:status status}
@@ -3797,6 +3819,7 @@
        :failure-kind :command-error
        :url pr-url
        :retryable? false
+       :review-artifact (str review-path)
        :message (str "codex review command failed: " (:err proc))}
 
       :else
@@ -3815,11 +3838,15 @@
                        :fingerprint-key (str/join "\n" lines)
                        :blocking-files (vec (distinct (map #(review-finding-file (:location %)) blocking)))
                        :blocking-findings {:count (count blocking) :path (str path)}
+                       ;; BOXP-775: structured fields only; the Notes record
+                       ;; sanitizes them and never copies the raw output.
+                       :blocking-items (mapv #(select-keys % [:severity :location :description]) blocking)
                        :low-priority-findings low-info
                        :message (str "codex review reported " (count blocking) " blocking finding(s) (P0/P1): " (str/join " " lines)
                                      (when (pos? (count low)) (str "; " (count low) " low-priority finding(s) (P2/P3/nit) are non-blocking and excluded from the retry instruction")))})
           :invalid {:ok? false :gate :codex-review :failure-kind :invalid-output :url pr-url :retryable? false
                     :review-judgment-failure (name reason)
+                    :review-artifact (str review-path)
                     :message (str "codex review output could not be judged (" (name reason) "); "
                                   (when (= reason :conflicting-result-marker) "The output contains more than one CODEX_REVIEW_RESULT line; exactly one is required. ")
                                   (when (= reason :malformed-finding) "A CODEX_REVIEW_FINDING line is missing its location or description. ")
@@ -3858,6 +3885,9 @@
                                            (or (not-empty (:gate-results pr-state))
                                                [[(name (:gate pr-state)) "fail"]]))
                        :checked-pr-urls passed
+                       ;; BOXP-775: heads of the PRs that passed before this one.
+                       :checked-pr-heads heads
+                       :passed-low-priority-findings low-info
                        :merged-pr-urls merged
                        :pr-urls pr-urls)
 
@@ -3876,8 +3906,13 @@
                       results (into results (:gate-results pr-state))]
                   (if-not (:ok? review)
                     (assoc review
+                           :head head
                            :gate-results (conj results [(name (:gate review)) "fail"])
                            :checked-pr-urls passed
+                           :checked-pr-heads heads
+                           ;; BOXP-775: P2/P3/nit of the PRs that passed before this one
+                           ;; (:low-priority-findings is the failing PR's own).
+                           :passed-low-priority-findings low-info
                            :merged-pr-urls merged
                            :pr-urls pr-urls
                            :message (str pr-url ": " (:message pr-state) " " (:message review)))
@@ -3885,9 +3920,11 @@
                     ;; URL list rather than carrying arbitrary check/review text.
                     (recur (rest remaining) (conj passed pr-url) merged
                            (cond-> heads head (assoc pr-url head))
-                           (-> low-info
-                               (update :count + (get-in review [:low-priority-findings :count] 0))
-                               (update :paths into (get-in review [:low-priority-findings :paths] [])))
+                           (let [n (get-in review [:low-priority-findings :count] 0)
+                                 paths (get-in review [:low-priority-findings :paths] [])]
+                             (cond-> (-> low-info (update :count + n) (update :paths into paths))
+                               ;; BOXP-775: per-PR count and evidence for the Notes record.
+                               (pos? n) (assoc-in [:by-pr pr-url] {:count n :paths (vec paths)})))
                            (into results (:gate-results review)))))))
             (cond-> {:ok? true
              :skipped? (empty? passed)
@@ -5300,11 +5337,333 @@
                   str
                   (str/replace #"[\r\n\t]+" " ")
                   (str/replace #"(?i)(authorization:\s*(?:bearer\s+)?)[^\s]+" "$1[REDACTED]")
-                  (str/replace #"(?i)\b[A-Z0-9_]*(?:token|secret|password|api(?:[_-]|\s)+key|credential)[A-Z0-9_]*\s*[=:]\s*[^\s,;]+" "[REDACTED]")
+                  ;; The key may be closed by a quote (JSON, escaped JSON) and the value may be
+                  ;; quoted with spaces inside: redact through the closing quote; a backslash escapes
+                  ;; the next character, so an escaped quote does not end the value.
+                  (str/replace #"(?i)\b[A-Z0-9_]*(?:token|secret|password|api(?:[_-]|\s)+key|credential)[A-Z0-9_]*(?:\\?[\"'])?\s*[=:]\s*(?:\\?\"(?:\\.|[^\"\\])*\"?|'(?:\\.|[^'\\])*'?|[^\s,;]+)" "[REDACTED]")
                   (str/replace #"\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b" "[REDACTED]"))]
     (if (str/blank? (str/trim value))
       "reason unavailable"
       (subs value 0 (min 600 (count value))))))
+
+;; ---------------------------------------------------------------------------
+;; BOXP-775: PR gate review findings in the ticket Notes
+;; (spec: Projects/task-board-review-findings/spec.md in the vault)
+;;
+;; The runner, not the agent, writes one marked line per PR whenever codex
+;; review produced findings, could not be judged, or a previously recorded
+;; PR passed. Only structured fields are used: descriptions are one line,
+;; redacted and bounded; P0 descriptions are never written. A failed write is
+;; kept in review-findings-pending.edn and retried; the marker keeps every
+;; retry and reprocessing from adding a second line.
+
+(def review-findings-mutex (Object.))
+
+(defn review-findings-pending-path [] (fs/path (root) "review-findings-pending.edn"))
+
+(defn with-review-findings-lock [f]
+  (locking review-findings-mutex
+    (let [path (fs/path (root) "locks" "review-findings.lock")]
+      (fs/create-dirs (fs/parent path))
+      (with-open [file (java.io.RandomAccessFile. (str path) "rw") channel (.getChannel file)]
+        (let [_lock (.lock channel)] (with-inner-lock-hold :review-findings f))))))
+
+(defn write-edn-atomically! [path value]
+  (let [tmp (fs/path (fs/parent path) (str "." (fs/file-name path) "." (random-uuid) ".tmp"))]
+    (write-edn-file! tmp value)
+    (fs/move tmp path {:replace-existing true :atomic-move true})))
+
+(defn read-edn-safely [path fallback]
+  (try (read-edn-file path fallback)
+       (catch Exception e
+         (log! (str "review findings: unreadable " path ": " (.getMessage e)))
+         fallback)))
+
+(defn review-findings-text [s limit]
+  (let [v (sanitize-blocker-reason s)]
+    (if (> (count v) limit) (str (subs v 0 limit) "…") v)))
+
+(defn review-findings-id [parts]
+  (let [digest (java.security.MessageDigest/getInstance "SHA-256")]
+    (->> (.digest digest (.getBytes (str/join "\n" (map str parts)) "UTF-8"))
+         (take 6)
+         (map #(format "%02x" (bit-and 0xff %)))
+         (apply str))))
+
+(defn review-findings-stop-state [g]
+  (cond (:budget-exhausted? g) "budget-exhausted"
+        (:retry-exhausted? g) "retry-exhausted"
+        (:continuation-exhausted? g) "continuation-exhausted"
+        (:retryable? g) "retrying"
+        :else "stopped"))
+
+(defn review-findings-stop-text [g]
+  (case (review-findings-stop-state g)
+    "budget-exhausted" "gate 失敗予算枯渇で自動再試行は停止（Owner の grant 待ち）"
+    "retry-exhausted" (str "再試行 " (:retry-count g) "/" (:retry-limit g) "・自動再試行は停止（Owner 判断待ち）")
+    "continuation-exhausted" "自動継続上限で停止"
+    "retrying" (if (:retry-count g) (str "再試行 " (:retry-count g) "/" (:retry-limit g)) "再試行予定")
+    "自動再試行なし"))
+
+(defn review-findings-short-head [h]
+  (if (and (string? h) (re-matches #"[0-9a-f]{7,40}" h)) (subs h 0 7) "不明"))
+
+(defn review-findings-severity-rank [sev]
+  (get {"P0" 0 "P1" 1 "P2" 2 "P3" 3 "nit" 4} sev 5))
+
+(defn review-findings-item [{:keys [severity location description]}]
+  (str "[" (review-findings-text severity 8) "] " (review-findings-text location 120) " — "
+       (if (= "P0" severity)
+         ;; P0 may describe a leak or an exploitable hole: location only.
+         "(詳細は証跡を参照)"
+         (review-findings-text description 160))))
+
+(defn review-findings-entries
+  "Pure: the records a gate result produces. prior maps a PR URL to the last
+  unresolved record {:id :kind} of this ticket."
+  [ticket-id run-id g prior]
+  (let [heads (or (:checked-pr-heads g) {})
+        resolved (for [u (:checked-pr-urls g)
+                       :let [p (get prior u)]
+                       :when (#{:blocking :unavailable} (:kind p))
+                       :let [h (get heads u)
+                             id (review-findings-id ["resolved" u h (:id p)])]]
+                   {:id id :kind :resolved :pr-url u :prior-id (:id p)
+                    :note (str "review-findings:" id " レビュー所見解消 PR " u " head " (review-findings-short-head h)
+                               " run " run-id ": 前回の所見 " (:id p) " は今回の head で未検出")})
+        failed (when (and (not (:ok? g)) (= :codex-review (:gate g)))
+                 (let [u (:url g) h (:head g) stop (review-findings-stop-state g)
+                       ;; A recurrence after a resolution is a new record: its id
+                       ;; also hashes the last resolution of this PR.
+                       after (some->> (get-in prior [u :after]) (vector "after"))]
+                   (case (:failure-kind g)
+                     :findings
+                     (let [items (sort-by (juxt #(review-findings-severity-rank (:severity %)) :location :description)
+                                          (:blocking-items g))
+                           id (review-findings-id (concat ["blocking" u h stop]
+                                                          (map #(str (:severity %) "|" (:location %) "|" (:description %)) items)
+                                                          after))]
+                       {:id id :kind :blocking :pr-url u
+                        :note (str "review-findings:" id " レビュー未解決所見 PR " u " head " (review-findings-short-head h)
+                                   " run " run-id ": P0/P1 " (or (get-in g [:blocking-findings :count]) (count items)) "件・P2/P3/nit "
+                                   (get-in g [:low-priority-findings :count] 0) "件; "
+                                   ;; Every P0/P1 item: each one is bounded, none is dropped.
+                                   (str/join "; " (map review-findings-item items))
+                                   "; " (review-findings-stop-text g)
+                                   "; 証跡 " (or (get-in g [:blocking-findings :path]) (str (run-dir ticket-id run-id))))})
+                     (:command-error :invalid-output)
+                     (let [reason (if (= :command-error (:failure-kind g))
+                                    "command-error"
+                                    (str "invalid-output:" (review-findings-text (or (:review-judgment-failure g) "unknown") 40)))
+                           id (review-findings-id (concat ["unavailable" u h reason stop] after))]
+                       {:id id :kind :unavailable :pr-url u
+                        :note (str "review-findings:" id " レビュー所見を取得できず（実指摘なしではない） PR " u
+                                   " head " (review-findings-short-head h) " run " run-id ": 理由 " reason
+                                   "; " (review-findings-stop-text g)
+                                   "; 証跡 " (or (:review-artifact g) (str (run-dir ticket-id run-id))))})
+                     nil)))
+        ;; One record per PR that has low-priority findings, with its own
+        ;; count and evidence; a PR without findings is not listed.
+        ;; On a failed gate only the PRs that passed before the failing one
+        ;; are listed (:passed-low-priority-findings); the failing PR's own
+        ;; P2/P3/nit count is part of its blocking record.
+        low-by-pr (let [lp (if (:ok? g) (:low-priority-findings g) (:passed-low-priority-findings g))
+                        urls (:checked-pr-urls g)]
+                    (cond
+                      (and (not (:ok? g)) (not (map? (:by-pr lp)))) nil
+                      (map? (:by-pr lp)) (for [u urls :let [x (get-in lp [:by-pr u])] :when (pos? (:count x 0))] [u x])
+                      ;; Older result shape without :by-pr: attributable only to a single PR.
+                      (and (pos? (:count lp 0)) (= 1 (count urls))) [[(first urls) (select-keys lp [:count :paths])]]
+                      :else nil))
+        low (for [[u {n :count paths :paths}] low-by-pr
+                  :let [h (get heads u)
+                        id (review-findings-id ["low-only" u h n])]]
+              {:id id :kind :low-only :pr-url u
+               :note (str "review-findings:" id " レビュー非ブロッキング所見 PR " u " head " (review-findings-short-head h)
+                          " run " run-id ": P2/P3/nit " n "件（gate 通過・対応は任意）; 証跡 " (str/join ", " paths))})]
+    (vec (concat resolved (keep identity [failed]) low))))
+
+;; Records whose Notes write and pending-file write both failed. Kept for the
+;; life of the process and retried by every flush. They are part of the
+;; queue (and of the unresolved-state) like the pending file: a later
+;; resolution is queued behind them, so it is written after them, or lost
+;; together with them on a restart (never the finding alone, left unresolved).
+(defonce review-findings-memory-pending (atom {}))
+
+(defn review-findings-state-step [m e]
+  (case (:kind e)
+    (:blocking :unavailable) (assoc m (:pr-url e) (cond-> {:id (:id e) :kind (:kind e)}
+                                                    (get-in m [(:pr-url e) :after]) (assoc :after (get-in m [(:pr-url e) :after]))))
+    ;; The PR entry stays as :resolved and remembers the resolution id, so a
+    ;; later recurrence of the same finding gets a new id (written after it).
+    :resolved (if (or (nil? (:prior-id e)) (= (:prior-id e) (get-in m [(:pr-url e) :id])))
+                (assoc m (:pr-url e) {:id (:id e) :kind :resolved :after (:id e)})
+                m)
+    m))
+
+(defonce review-findings-seq (atom 0))
+
+(defn- next-review-findings-seq []
+  (swap! review-findings-seq #(max (inc %) (System/currentTimeMillis))))
+
+(defn- review-findings-queue-order [[id e]] [(or (:seq e) 0) (str (:queued-at e)) id])
+
+;; The unresolved-state is never stored on its own: it is rebuilt every time
+;; from the durable records themselves, i.e. the marked Notes lines (in Notes
+;; order) followed by the pending file (in queue order). A restart therefore
+;; loses no state change, and nothing can be "written but not in the state".
+;; Memory-only records are stacked after the pending file in queue order: a
+;; resolution made from them is queued behind them (FIFO), and whenever the
+;; pending file is written the memory records move into it in the same write.
+(def review-findings-line-re
+  #"^- [^:]+: review-findings:([0-9a-f]{12}) (レビュー未解決所見|レビュー所見を取得できず（実指摘なしではない）|レビュー所見解消|レビュー非ブロッキング所見) PR (\S+) ")
+
+(def review-findings-label-kind
+  {"レビュー未解決所見" :blocking
+   "レビュー所見を取得できず（実指摘なしではない）" :unavailable
+   "レビュー所見解消" :resolved
+   "レビュー非ブロッキング所見" :low-only})
+
+(defn review-findings-note-steps
+  "Pure: the state steps of the marked record lines among lines, in order."
+  [lines]
+  (keep (fn [line]
+          (when-let [[_ id label u] (re-find review-findings-line-re line)]
+            (let [kind (review-findings-label-kind label)]
+              (cond-> {:id id :kind kind :pr-url u}
+                (= :resolved kind) (assoc :prior-id (second (re-find #"前回の所見 ([0-9a-f]{12}) は" line)))))))
+        lines))
+
+(defn- review-findings-ticket-state
+  "The unresolved-state of ticket-id, rebuilt from its Notes and pending file."
+  [ticket-id]
+  (let [path (ticket-path ticket-id)
+        written (try (vec (review-findings-note-steps (if (fs/exists? path) (read-lines path) [])))
+                     (catch Exception e
+                       (log! (str "review findings: could not read Notes of " ticket-id ": "
+                                  (sanitize-blocker-reason (.getMessage e))))
+                       []))
+        written-ids (set (map :id written))
+        queued (->> (merge (get @review-findings-memory-pending ticket-id {})
+                           (get (read-edn-safely (review-findings-pending-path) {}) ticket-id {}))
+                    (sort-by review-findings-queue-order)
+                    (remove (fn [[id _]] (contains? written-ids id)))
+                    (map (fn [[id e]] (assoc (select-keys e [:kind :pr-url :prior-id]) :id id))))]
+    (reduce review-findings-state-step {} (concat written queued))))
+
+(defn- review-findings-queued?
+  "True while any record of ticket-id is still waiting to be written."
+  [ticket-id]
+  (boolean (or (seq (get (read-edn-safely (review-findings-pending-path) {}) ticket-id))
+               (seq (get @review-findings-memory-pending ticket-id)))))
+
+(defn- enqueue-review-finding!
+  "Put e at the tail of ticket-id's queue: the pending file, or memory when
+  that write fails too. A successful file write also moves the ticket's
+  memory records into the file, so e is never durable while an older record
+  of the same ticket is not. Returns :file or :memory."
+  [ticket-id run-id e]
+  (let [entry (assoc (select-keys e [:kind :pr-url :note :prior-id])
+                     :run-id run-id :queued-at (now-str) :seq (next-review-findings-seq))
+        keep-pos #(if % (merge entry (select-keys % [:seq :queued-at])) entry)]
+    ;; An id already queued keeps its original position (re-queuing never
+    ;; moves it behind a record queued after it).
+    (try (let [pending (read-edn-safely (review-findings-pending-path) {})
+               mem (get @review-findings-memory-pending ticket-id {})]
+           (write-edn-atomically! (review-findings-pending-path)
+                                  (update-in (update pending ticket-id #(merge mem %)) [ticket-id (:id e)] keep-pos))
+           (swap! review-findings-memory-pending dissoc ticket-id))
+         :file
+         (catch Exception pe
+           (log! (str "review findings: could not keep pending record for " ticket-id " " (:id e)
+                      "; kept in memory: " (sanitize-blocker-reason (.getMessage pe))))
+           (swap! review-findings-memory-pending update-in [ticket-id (:id e)] keep-pos)
+           :memory))))
+
+(defn- flush-pending-review-findings*
+  "Write ticket-id's queue in order, stopping at the first failure: a record
+  is never written before an older one of the same ticket (so a resolution
+  never precedes the finding it resolves)."
+  [ticket-id]
+  (let [pending (read-edn-safely (review-findings-pending-path) {})
+        file-entries (get pending ticket-id {})
+        mem-entries (get @review-findings-memory-pending ticket-id {})
+        entries (merge mem-entries file-entries)]
+    (when (seq entries)
+      (let [results (loop [[[id e] & more] (sort-by review-findings-queue-order entries) acc []]
+                      (if (nil? id)
+                        acc
+                        (let [r (try {:id id :kind (:kind e) :status (append-note-once! ticket-id (str "review-findings:" id) (:note e))}
+                                     (catch Exception ex
+                                       (log! (str "review findings: pending write still failing for " ticket-id " " id ": "
+                                                  (sanitize-blocker-reason (.getMessage ex))))
+                                       {:id id :kind (:kind e) :status :failed}))]
+                          (if (= :failed (:status r))
+                            (into (conj acc r) (map (fn [[id2 e2]] {:id id2 :kind (:kind e2) :status :queued})) more)
+                            (recur more (conj acc r))))))
+            done (set (map :id (filter #(#{:recorded :duplicate} (:status %)) results)))
+            remaining-file (apply dissoc file-entries done)
+            remaining-mem (apply dissoc mem-entries done)]
+        (swap! review-findings-memory-pending
+               (fn [m] (if (seq remaining-mem) (assoc m ticket-id remaining-mem) (dissoc m ticket-id))))
+        ;; Try to make the still-unwritten memory records durable again.
+        (let [to-file (merge remaining-file remaining-mem)]
+          (when (or (seq done) (not= (set (keys to-file)) (set (keys remaining-file))))
+            (try (write-edn-atomically! (review-findings-pending-path)
+                                        (if (seq to-file) (assoc pending ticket-id to-file) (dissoc pending ticket-id)))
+                 (swap! review-findings-memory-pending dissoc ticket-id)
+                 (catch Exception e (log! (str "review findings: pending file write failed: " (sanitize-blocker-reason (.getMessage e))))))))
+        results))))
+
+(defn flush-pending-review-findings!
+  "Write the pending records of ticket-id. Returns one {:id :kind :status} per record tried."
+  [ticket-id]
+  (with-review-findings-lock #(or (flush-pending-review-findings* ticket-id) [])))
+
+(defn flush-all-pending-review-findings! []
+  (doseq [ticket-id (distinct (concat (keys (read-edn-safely (review-findings-pending-path) {}))
+                                      (keys @review-findings-memory-pending)))]
+    (try (flush-pending-review-findings! ticket-id)
+         (catch Exception e (log! (str "review findings: flush failed for " ticket-id ": " (sanitize-blocker-reason (.getMessage e))))))))
+
+(defn record-review-findings!
+  "BOXP-775: write the gate's review records to the ticket Notes once each.
+  A failed write stays pending (file, or memory when the file write fails too)
+  and is retried later, in order (FIFO per ticket); nothing is dropped silently.
+  The unresolved-state is rebuilt from the Notes and the pending file, so it
+  covers exactly the records written or durably pending. Returns the per-record statuses."
+  [ticket-id run-id g]
+  (with-review-findings-lock
+   (fn []
+     (flush-pending-review-findings* ticket-id)
+     (let [entries (review-findings-entries ticket-id run-id g (review-findings-ticket-state ticket-id))]
+       (when (seq entries)
+         ;; FIFO per ticket: while an older record waits, or once one of this
+         ;; batch fails, the rest are queued behind it without a write.
+         (let [results (loop [[e & more] entries blocked? (review-findings-queued? ticket-id) acc []]
+                         (if (nil? e)
+                           acc
+                           (let [base (select-keys e [:id :kind :pr-url])]
+                             (if blocked?
+                               (recur more true (conj acc (assoc base :status :queued :pending? (enqueue-review-finding! ticket-id run-id e))))
+                               (let [r (try (assoc base :status (append-note-once! ticket-id (str "review-findings:" (:id e)) (:note e)))
+                                            (catch Exception ex
+                                              (let [reason (sanitize-blocker-reason (.getMessage ex))]
+                                                (log! (str "review findings: Notes write failed for " ticket-id " " (:id e) "; kept pending: " reason))
+                                                (assoc base :status :failed :reason reason
+                                                       :pending? (enqueue-review-finding! ticket-id run-id e)))))]
+                                 (recur more (= :failed (:status r)) (conj acc r)))))))]
+           (try (let [path (fs/path (run-dir ticket-id run-id) "review-findings.edn")
+                      ;; Reprocessing the same run keeps the first outcome of
+                      ;; each record (a later :duplicate does not hide :recorded).
+                      old (into {} (map (juxt :id identity)) (:entries (read-edn-safely path {})))
+                      merged (reduce (fn [m r] (if (and (= :duplicate (:status r)) (contains? m (:id r))) m (assoc m (:id r) r)))
+                                     old results)]
+                  (fs/create-dirs (fs/parent path))
+                  (write-edn-file! path {:format-version 1 :recorded-at (now-str) :entries (vec (vals merged))}))
+                (catch Exception e (log! (str "review findings: run record write failed: " (sanitize-blocker-reason (.getMessage e))))))
+           results))))))
+
 
 (defn blocker-category [result exit review-gate exception]
   (cond
@@ -5900,6 +6259,11 @@
                 ;; BOXP-737 (spec R9): the PR conflict observation future, so
                 ;; the lock release can wait for it (bounded) before releasing.
                 pr-observation (atom nil)
+                ;; BOXP-775: the gate result once it is known (with the retry
+                ;; state once recorded), so the exception path can still write
+                ;; the review findings record; whether it was written already.
+                findings-gate (atom nil)
+                findings-recorded? (atom false)
                 ;; Set once a localllm docs-edit wrote its target notes inside
                 ;; this commit; a later failure of the lane / frontmatter /
                 ;; Notes transition rolls that write back (Blocked == unapplied).
@@ -6021,6 +6385,7 @@
                     last-message (if committed (:last-message committed) last-message)
                     ;; A deferred localllm commit can still end in blocked.
                     outcome (intended-outcome action result exit)
+                    _ (reset! findings-gate gate-result)
                     _ (when gate-result (record-gate-pr-registrations! ticket-id run-id gate-result))
                     _ (when gate-result (try (record-same-file-review-streak! ticket-id run-id gate-result) (catch Throwable e (log! (str "same-file review streak recording failed: " (.getMessage e))))))
                     review-gate (if gate-result
@@ -6031,6 +6396,13 @@
                                       (record-pr-gate-failure! ticket-id run-id assignee gate-result)
                                       gate-result))
                                   {:ok? true})
+                    ;; BOXP-775: after the ownership check, before lane / final
+                    ;; note / event. Write failures are kept pending inside.
+                    _ (when gate-result
+                        (reset! findings-gate review-gate)
+                        (try (record-review-findings! ticket-id run-id review-gate)
+                             (reset! findings-recorded? true)
+                             (catch Throwable e (log! (str "review findings recording failed: " (sanitize-blocker-reason (.getMessage e)))))))
                     ;; BOXP-395: a passed gate returns the card to Ready, so a
                     ;; finite budget keeps a run that never finishes from
                     ;; looping forever. Persisted first: a crash can only
@@ -6265,6 +6637,11 @@
                         (append-note! ticket-id (str "localllm docs run " (:run-id lock)
                                                      " は文書を更新した後の状態遷移に失敗したため、backup から復元しました（未適用扱い）: "
                                                      (str/join "; " (map #(str (:path %) " " (name (:status %)) " " (:reason %)) restored))))))
+                    ;; BOXP-775: a crash after the gate still leaves the review
+                    ;; findings in the Notes (the marker prevents a duplicate).
+                    (when (and @findings-gate (not @findings-recorded?))
+                      (try (record-review-findings! ticket-id (:run-id lock) @findings-gate)
+                           (catch Throwable re (log! (str "review findings recording failed: " (sanitize-blocker-reason (.getMessage re)))))))
                     (if (block-ticket! ticket-id (:run-id lock) action nil nil nil e nil)
                       (do (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
                           (record-ai-ops-finish! ticket-id (:run-id lock) assignee action (ai-ops-run-lane status) "blocked" "blocked" {}))
@@ -9059,6 +9436,7 @@
       (sync-all!)
       (let [done (collect-completed-futures!)
             _ (sweep-rechecks!)
+            _ (flush-all-pending-review-findings!)
             in-flight-ids (set (keys @in-flight-futures))
             candidates (candidate-cards)
             new-candidates (vec (remove #(contains? in-flight-ids (:ticket-id %)) candidates))

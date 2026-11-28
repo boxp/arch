@@ -127,6 +127,7 @@ jobs:
           time bb tests/codex-workspace/task-board-todos-test.bb
           time bb tests/codex-workspace/task-board-same-file-review-test.bb
           time bb tests/codex-workspace/task-board-runner-boundary-test.bb
+          time bb tests/codex-workspace/task-board-review-findings-test.bb
           time bb tests/codex-workspace/task-board-mutation.bb --self-test
           time bb docker/codex-workspace/task-board/test/langfuse_exporter_test.bb
 
