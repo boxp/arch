@@ -82,6 +82,31 @@ type Def = {
 }
 // 角度は v11r の Param（度）。正は 頭X=画面右を向く / 頭Y=上を向く / 頭Z=頭頂が画面右へ傾く、視線は右・上が正（gesture.ts と同じ）。
 // 待機クリップ（頭X ±13°）や首かしげの演技（13°）より小さくし、そばで過ごしている程度に留める。
+/**
+ * BOXP-764（試作候補だけ）: 手を前でそろえる形。体の前の低い位置で両手のひらを下へ向け、
+ * 画面右の手（コハコの左手。右腕が手前に描かれる）を照れで使っている手の甲の絵（cover）に替えて、
+ * 横へ寝かせたもう片方の手の甲へそっと載せる。下の手の指先は上の手の下へ隠れる（指先どうしが X 字に交差しない）。
+ * 肘は 0.96 以上（V 字の切れ目が見える 0.3〜0.94 で止めない）・1.4 未満（差し戻した下腹の前の形にしない＝仕様 D2a）。
+ * 仕様: vault の Projects/kohako-home/tidy-hands-764.md。
+ */
+export const TIDY_ARMS = {
+  right: { up: 0.05, fo: 1.1, ha: 0.1, haS: 0.85, art: 'cover' },
+  left: { up: 0.05, fo: 0.98, ha: 1.2, haS: 0.8 },
+} as const satisfies Arms
+/** 通常版（仕様 D1）の手そろえの形。候補の版で ?tidy=old を付けると、並べて比べるためにこちらを出す。 */
+export const TIDY_OLD_ARMS = {
+  right: { up: 0.08, fo: 1.05, ha: -0.15 },
+  left: { up: 0.07, fo: 0.98, ha: -0.25 },
+} as const satisfies Arms
+/** 候補の版の比べる指定。?tidy=old は通常版の形、?idle=tidy は待機しぐさを手そろえだけにする。それ以外の値は指定なし。 */
+export function tidyOption(search: string): { old: boolean; only: boolean } {
+  const q = new URLSearchParams(search)
+  return { old: q.get('tidy') === 'old', only: q.get('idle') === 'tidy' }
+}
+/** 手そろえの形を入れ替える（?tidy=old。起動時に 1 回だけ呼ぶ）。 */
+export function useTidyArms(old: boolean) {
+  idleActs.tidy.arms = old ? TIDY_OLD_ARMS : TIDY_ARMS
+}
 export const idleActs: Record<IdleAct, Def> = {
   // 窓の月を見上げる（月は画面の右上）。
   moon: {
@@ -177,11 +202,12 @@ export const idleActs: Record<IdleAct, Def> = {
   // BOXP-694 TD-01: 腕は動かして運ばず（1.2 秒かけて寄せていく動きを本人が「不自然」と評価した）、ほほえんでいる間だけフェードで出す（仕様 D1・D3）。
   // 姿勢の形は #15607 より前の形と位置（肘 1.05 / 0.98）そのまま。#15607 で入れた「両手を下腹の前で重ねる形」（肘 1.5 / 1.42）は
   // 本人が「手が不自然な形になっており逆効果」と差し戻したので、入れ直さないこと（仕様 D2a）。
+  // BOXP-764（試作候補）: 形は TIDY_ARMS（画面右の手を手の甲の絵にして、もう片方の甲へそっと載せる）。?tidy=old で上の形へ戻す。
   tidy: {
     seconds: [3, 4.4],
     in: 1.2,
     pose: { headZ: 5, headY: -2, bodyZ: -1.5, lean: 1 },
-    arms: { right: { up: 0.08, fo: 1.05, ha: -0.15 }, left: { up: 0.07, fo: 0.98, ha: -0.25 } },
+    arms: TIDY_ARMS,
     mirror: false,
     emotion: 'smile',
     weight: 0.9,
@@ -315,7 +341,11 @@ export class IdleDirector {
   private forced: IdleAct | null = null
   /** 直前の step で出してよい状況だったか（中断から落ち着いた瞬間を知る）。 */
   private wasCalm = true
-  constructor(private rng: () => number = Math.random) {}
+  /** only: このしぐさだけを出す（BOXP-764 の候補の ?idle=tidy。比べる用）。間の決め方は変えない。 */
+  constructor(
+    private rng: () => number = Math.random,
+    private only: IdleAct | null = null,
+  ) {}
   /** 予定と出ているしぐさを捨てる（非表示になった時など）。 */
   reset() {
     this.running = null
@@ -330,6 +360,7 @@ export class IdleDirector {
   }
   /** 直前と同じものは選ばない。重みは時間帯で変える。控えめでは身振りのクリップを借りるしぐさを出さない。 */
   pick(daypart: Daypart, subtle = false): IdleAct {
+    if (this.only) return this.only
     const pool = idleActNames.filter((a) => a !== this.last && !(subtle && idleActs[a].gesture)),
       weights = pool.map((a) => idleActs[a].weight * (idleActs[a].dayparts?.[daypart] ?? 1))
     let r = this.rng() * weights.reduce((s, w) => s + w, 0)

@@ -19,6 +19,10 @@ import {
   SETTLE_WAIT,
   SUBTLE_SCALE,
   settledHead,
+  TIDY_ARMS,
+  TIDY_OLD_ARMS,
+  tidyOption,
+  useTidyArms,
 } from './idle'
 
 const calm: IdleInput = { calm: true, settled: () => true, daypart: 'day', subtle: false }
@@ -362,7 +366,8 @@ it('G1: フェードで出す姿勢（armSet）は出ている間 1 つの形の
 
 it('D1・D2: フェードで出す姿勢の形は #15607 より前の形と位置そのまま（下腹の前で重ねる形は本人が差し戻した）', () => {
   // 仕様 D1・D2 の値そのもの。
-  expect(idleActs.tidy.arms).toEqual({
+  // BOXP-764 の候補では、手そろえの形は候補の形（下の BOXP-764 のテスト）。通常版 D1 の形は TIDY_OLD_ARMS に残し、?tidy=old で出す。
+  expect(TIDY_OLD_ARMS).toEqual({
     right: { up: 0.08, fo: 1.05, ha: -0.15 },
     left: { up: 0.07, fo: 0.98, ha: -0.25 },
   })
@@ -637,4 +642,61 @@ it('ほほえみや照れを伴うしぐさが半分以上を占める', () => {
   const warm = idleActNames.filter((a) => idleActs[a].emotion),
     total = idleActNames.reduce((s, a) => s + idleActs[a].weight, 0)
   expect(warm.reduce((s, a) => s + idleActs[a].weight, 0) / total).toBeGreaterThan(0.5)
+})
+
+// ---- BOXP-764: 手を前でそろえるしぐさの試作候補（仕様 vault の Projects/kohako-home/tidy-hands-764.md）----
+it('BOXP-764: 候補の手そろえは、画面右の手（コハコの左手）を手の甲の絵にして、もう片方の甲へ載せる', () => {
+  expect(idleActs.tidy.arms).toEqual(TIDY_ARMS)
+  // 決めた値（仕様の「決めた値」）
+  expect(TIDY_ARMS).toEqual({
+    right: { up: 0.05, fo: 1.1, ha: 0.1, haS: 0.85, art: 'cover' },
+    left: { up: 0.05, fo: 0.98, ha: 1.2, haS: 0.8 },
+  })
+  // 上の手だけが手の甲の絵。下の手は絵を替えない（右腕が手前に描かれるので、上の手は右）。
+  expect(TIDY_ARMS.left).not.toHaveProperty('art')
+  for (const a of [TIDY_ARMS.right, TIDY_ARMS.left]) {
+    // D2a: 差し戻した下腹の前の形（肘 1.4 以上）にしない。C: 肘の V 字が見える 0.3〜0.94 では止めない。
+    expect(Math.abs(a.fo ?? 0)).toBeLessThan(1.4)
+    expect(Math.abs(a.fo ?? 0)).toBeGreaterThanOrEqual(0.96)
+    // 体の前の低い位置: 肩はほとんど上げない
+    expect(Math.abs(a.up ?? 0)).toBeLessThan(0.1)
+  }
+  // 両手とも手のひらを下へ向けて寝かせる: 下の手は手首から横へ（指先を上の手の側へ）、上の手の甲の絵は斜め下へ
+  expect(TIDY_ARMS.left.ha ?? 0).toBeGreaterThan(0.9)
+  expect(idleActs.tidy.mirror).toBe(false) // 上になる手が入れ替わらない
+})
+
+it('BOXP-764: ?tidy=old で通常版 D1 の形に戻し、それ以外は候補の形', () => {
+  expect(tidyOption('')).toEqual({ old: false, only: false })
+  expect(tidyOption('?tidy=old')).toEqual({ old: true, only: false })
+  expect(tidyOption('?idle=tidy')).toEqual({ old: false, only: true })
+  expect(tidyOption('?idle=tidy&tidy=old')).toEqual({ old: true, only: true })
+  expect(tidyOption('?idle=wave&tidy=abc')).toEqual({ old: false, only: false })
+  useTidyArms(true)
+  try {
+    expect(idleActs.tidy.arms).toEqual(TIDY_OLD_ARMS)
+    const d = new IdleDirector(seq(0.4))
+    d.force('tidy')
+    expect(run(d, 0, 9).find((x) => x.f.armSet)?.f.armSet).toEqual(TIDY_OLD_ARMS)
+  } finally {
+    useTidyArms(false)
+  }
+  expect(idleActs.tidy.arms).toEqual(TIDY_ARMS)
+})
+
+it('BOXP-764: ?idle=tidy では待機しぐさが手そろえだけになり、間は通常どおり', () => {
+  const d = new IdleDirector(seq(0.5), 'tidy'),
+    acts: { act: IdleAct; t: number }[] = []
+  let last: IdleAct | null = null
+  for (const x of run(d, 0, 120)) {
+    if (x.f.act && x.f.act !== last) acts.push({ act: x.f.act, t: x.t })
+    last = x.f.act
+  }
+  expect(acts.length).toBeGreaterThan(3)
+  expect(acts.every((a) => a.act === 'tidy')).toBe(true)
+  // 最初は FIRST_GAP（乱数 0.5 で 7.5 秒）の後
+  expect(acts[0].t).toBeGreaterThanOrEqual(FIRST_GAP[0])
+  expect(acts[0].t).toBeLessThanOrEqual(FIRST_GAP[1] + SETTLE_WAIT)
+  // 2 回目以降も、前の戻り切りから GAP 以上あける（同じしぐさを続けて出す）
+  for (let i = 1; i < acts.length; i++) expect(acts[i].t - acts[i - 1].t).toBeGreaterThan(GAP[0])
 })

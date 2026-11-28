@@ -1297,4 +1297,12 @@ describe('待機のしぐさの腕（BOXP-605）', () => {
     expect(p?.right).toEqual({ up: -0.17, upS: 1, fo: 0, foS: 1, ha: -0.25, haS: 1 })
     expect(p?.left).toEqual({ up: 0, upS: 1, fo: 0.28, foS: 1, ha: 0, haS: 1 })
   })
+  it('BOXP-764: 手の甲の絵（art）と手の大きさ（haS）を指定した時だけ、その腕の手を差し替える（濃さは腕のフェードに従う）', () => {
+    const p = idleArmPoses({
+      right: { up: 0.05, fo: 1.1, ha: 0.1, haS: 0.85, art: 'cover' },
+      left: { fo: 0.98, haS: 0.8 },
+    })
+    expect(p?.right).toEqual({ up: 0.05, upS: 1, fo: 1.1, foS: 1, ha: 0.1, haS: 0.85, art: 'cover', artW: 1 })
+    expect(p?.left).toEqual({ up: 0, upS: 1, fo: 0.98, foS: 1, ha: 0, haS: 0.8 })
+  })
 })

@@ -37,7 +37,7 @@ import './style.css'
 import './room.css'
 import './menus.css'
 import { buildRoomV1, type Daypart, daypartOf, roomOptions } from './room'
-import { IdleDirector, type IdleAct, idleActNames, settledHead } from './idle'
+import { IdleDirector, type IdleAct, idleActNames, settledHead, tidyOption, useTidyArms } from './idle'
 import { SeatDirector, seatOffsetPx, seatOption } from './seat'
 import {
   states,
@@ -3187,7 +3187,10 @@ window.addEventListener('resize', () => {
 // ---- リグの読込と描画ループ ----
 let petEyesLatched = false
 // BOXP-605: 待機中のしぐさ。待機が続き、会話・ふれあい・演出・操作が無い間だけ、不規則な間をあけて小さなしぐさを挟む（決め方は idle.ts）。
-const idleDirector = new IdleDirector()
+// BOXP-764（試作候補）: ?tidy=old で手そろえを通常版の形へ、?idle=tidy で待機しぐさを手そろえだけにする（同じ版で並べて比べる用）。
+const tidyConfig = tidyOption(location.search)
+useTidyArms(tidyConfig.old)
+const idleDirector = new IdleDirector(Math.random, tidyConfig.only ? 'tidy' : null)
 let pointerMovedAt = -Infinity,
   idleEmotion: Emotion | null = null
 /** 待機のしぐさが始めた身振りの印。会話・ふれあいの身振りはこの印を持たないので、止める時に巻き込まない。 */

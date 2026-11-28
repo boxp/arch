@@ -774,11 +774,19 @@ export function shyArmPoint(px: Vec, m: { angle: number; drop: number }): Vec {
  */
 /** BOXP-698: 腰かけた姿（level 座り具合・chair 椅子の濃さ・swing 左右の足のぶらぶら -1〜1）。 */
 export type SeatPose = { level: number; chair: number; swingRight: number; swingLeft: number }
-export type IdleArm = { up?: number; fo?: number; ha?: number }
+/** art は手を別の絵（手の甲 cover など）へ差し替える（BOXP-764。右腕だけ。haS は手の大きさ）。 */
+export type IdleArm = { up?: number; fo?: number; ha?: number; haS?: number; art?: HandArt }
 const IDLE_ARM_MIN = 1e-4
 /** 動きが無ければ null（腕の変形そのものを通さない）。 */
 export function idleArmPoses(v: { right?: IdleArm; left?: IdleArm } | null): { right: ArmPose; left: ArmPose } | null {
-  const arm = (a?: IdleArm): ArmPose => ({ ...REST, up: a?.up ?? 0, fo: a?.fo ?? 0, ha: a?.ha ?? 0 })
+  const arm = (a?: IdleArm): ArmPose => ({
+    ...REST,
+    up: a?.up ?? 0,
+    fo: a?.fo ?? 0,
+    ha: a?.ha ?? 0,
+    haS: a?.haS ?? 1,
+    ...(a?.art ? { art: a.art, artW: 1 } : {}),
+  })
   const right = arm(v?.right),
     left = arm(v?.left)
   return [right, left].some((a) => Math.abs(a.up) + Math.abs(a.fo) + Math.abs(a.ha) > IDLE_ARM_MIN)
@@ -1100,7 +1108,8 @@ export function createActingStage(
   let idleSetWant: { right: ArmPose; left: ArmPose } | null = null,
     idleSetShown: { right: ArmPose; left: ArmPose } | null = null,
     idleSetSkip = false
-  const sameArm = (a: ArmPose, b: ArmPose) => a.up === b.up && a.fo === b.fo && a.ha === b.ha
+  const sameArm = (a: ArmPose, b: ArmPose) =>
+    a.up === b.up && a.fo === b.fo && a.ha === b.ha && a.haS === b.haS && a.art === b.art
   const sameSet = (a: { right: ArmPose; left: ArmPose } | null, b: { right: ArmPose; left: ArmPose } | null) =>
     !!a && !!b && sameArm(a.right, b.right) && sameArm(a.left, b.left)
   const ghosts = new Map<number, { index: number; pointer: number; side: 'right' | 'left' }>()
