@@ -335,3 +335,24 @@ it('drops an area result whose real extent is missing or wider than the limit in
   ])
   expect(result.kind === 'map' && result.geo).toBeFalsy()
 })
+it('gives a 5-place map enough time for every place to reach its last alias search', async () => {
+  // 各候補: 住所 0 件 → 丁目の範囲 → 名称 0 件 → 支店名なし 0 件 → 別表記で点の一致（1 候補あたり 5 検索、計 25 検索）。
+  const fetcher = vi.fn(async (url: string | URL | Request) => {
+    const q = new URL(String(url)).searchParams.get('q') ?? ''
+    return response(
+      /^東京都港区芝大門[一二三四五]丁目$/.test(q) ? shibaChome : /^ルノアール[1-5]$/.test(q) ? renoirNode : [],
+    )
+  })
+  const view: View = {
+    kind: 'map',
+    title: '候補',
+    places: [1, 2, 3, 4, 5].map((i) => ({
+      name: `Cafe Renoir 芝大門${i}号店`,
+      address: `東京都港区芝大門${i}-3-1`,
+      aliases: [`ルノアール${i}`],
+    })),
+  }
+  const [result] = await createGeocoder({ fetcher, intervalMs: 30, deadlineMs: 50 })([view])
+  if (result.kind !== 'map' || !result.places) throw Error('places expected')
+  expect(result.places.map((p) => p.geo?.precision)).toEqual(['exact', 'exact', 'exact', 'exact', 'exact'])
+})

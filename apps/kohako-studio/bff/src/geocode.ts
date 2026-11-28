@@ -49,6 +49,23 @@ function town(address: string): string | null {
   return match?.[1].trim() || null
 }
 
+/**
+ * BOXP-749: 1 件の目的地・候補の位置決めで送りうる検索の最大回数（住所 1・範囲の段 3・範囲内の名称 最大 5）。
+ * 検索は intervalMs 間隔で 1 件ずつ送るので、期限はこの回数から決める（最後の別表記まで届かず正しいピンが欠けないように）。
+ */
+export const MAX_QUERIES_PER_PLACE = 9
+/** 地図 1 枚の位置決めの最長時間の目安（候補 5 件 × 最大回数 × 間隔 + 応答待ちの余裕）。会話側の保険の打ち切りに使う。 */
+export const MAX_GEOCODE_MS = 5 * MAX_QUERIES_PER_PLACE * 1000 + 7000
+export function plannedQueries(target: Place): number {
+  const { address, name } = target
+  if (!address) return 1
+  const areas = new Set(
+    [normalizeChome(address), town(address), municipality(address)].filter((c) => c && c !== address),
+  )
+  const names = new Set([name, branchless(name), ...(target.aliases ?? [])].filter((n) => n && n !== address))
+  return Math.min(MAX_QUERIES_PER_PLACE, 1 + areas.size + names.size)
+}
+
 export function createGeocoder({
   fetcher = fetch,
   url = process.env.KOHAKO_GEOCODE_URL ?? 'https://nominatim.openstreetmap.org/search',
@@ -282,8 +299,9 @@ export function createGeocoder({
       views.map(async (view) => {
         if (view.kind !== 'map') return view
         if (view.places) {
-          // 検索は 1 件ずつ順に送るので、候補が多いほど期限を延ばす（上限は deadlineMs の 3 倍）。
-          const budget = Math.min(deadlineMs * 3, deadlineMs + (deadlineMs / 2) * (view.places.length - 1))
+          // 検索は intervalMs 間隔で 1 件ずつ順に送るので、全候補が最後の検索まで届く回数分の時間に応答待ちの余裕 deadlineMs を足す。
+          const planned = view.places.reduce((sum, { geo: _g, ...target }) => sum + plannedQueries(target), 0)
+          const budget = deadlineMs + planned * intervalMs
           const started = Date.now()
           const places = await Promise.all(
             view.places.map(async ({ geo: _ignored, ...target }) => {
@@ -294,7 +312,7 @@ export function createGeocoder({
           return { ...view, places }
         }
         if (!view.destination) return view
-        const geo = await locate(view.destination, deadlineMs)
+        const geo = await locate(view.destination, deadlineMs + plannedQueries(view.destination) * intervalMs)
         return geo ? { ...view, geo } : view
       }),
     )
