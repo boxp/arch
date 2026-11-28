@@ -2382,6 +2382,8 @@ fileInput.onchange = () => {
   fileInput.value = ''
 }
 // BOXP-773: 入力欄への貼り付け。ファイル本体だけを添付待ちへ入れ（送信はしない）、文字の貼り付けはそのまま。
+// 入力欄 #message は会話無効・応答待ち・送信中でも disabled/readOnly にしない（無効化するのは送信ボタンだけ）ので、
+// その間もフォーカスして貼り付けられ、📎 選択・ドロップと同じく添付待ちへ入る。送信条件は submit 側のまま。
 message.addEventListener('paste', (e) => {
   const pasted = pastedAttachment<File>(e.clipboardData)
   if (pasted.kind === 'files') {

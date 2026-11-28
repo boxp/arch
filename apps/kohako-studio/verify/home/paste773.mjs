@@ -17,11 +17,11 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
   const r = results[device] = {}, posts = [], uploads = []
   const ctx = await browser.newContext({ viewport, isMobile: mobile, hasTouch: mobile, permissions: ['clipboard-read', 'clipboard-write'] }), page = await ctx.newPage()
   await ctx.route(/^https?:\/\/(?!localhost)/, route => route.abort())
-  let n = 0
+  let n = 0, convEnabled = true
   await ctx.route('**/kohako/api/v1/**', async route => {
     const req = route.request(), p = new URL(req.url()).pathname.split('/v1/')[1], json = (s, d) => route.fulfill({ status: s, contentType: 'application/json', body: JSON.stringify(d) })
     if (p === 'me') return json(200, { authenticated: true })
-    if (p === 'conversation') return json(200, { enabled: true, stt: null })
+    if (p === 'conversation') return json(200, { enabled: convEnabled, stt: null })
     if (p === 'status') return json(200, { schema: 'kohako-home-status/v1', generatedAt: new Date().toISOString(), quota: { state: 'ok', pools: [] }, tasks: { state: 'ok', inProgress: { total: 0, complete: true, byAgent: [], conflicts: [] } } })
     if (p === 'notifications') return json(200, { items: [], unread: 0 })
     if (p === 'attachments') { const name = decodeURIComponent(req.headers()['x-kohako-filename'] || ''); uploads.push({ name, type: req.headers()['content-type'], size: req.postDataBuffer()?.length }); return json(201, { attachmentId: (++n).toString(16).padStart(32, 'a'), kind: name.endsWith('.png') ? 'image' : 'text', name, size: 6, truncated: false }) }
@@ -94,6 +94,16 @@ for (const [device, viewport, mobile] of [['pc', { width: 1280, height: 800 }, f
     check(await chips() === 0, 'chips cleared after accept')
     r.history = await page.evaluate(() => document.getElementById('history-list').textContent); check(r.history.includes('📎 memo.txt') && r.history.includes('📎 image.png'), `history ${r.history}`)
     await shot('sent')
+    // 9) 会話が無効でも入力欄（textarea）は無効化されず（送信ボタンだけ無効）、フォーカスして本物の貼り付けで添付待ちへ入る
+    convEnabled = false
+    await page.reload(); await page.waitForTimeout(2500)
+    r.disabledState = await page.evaluate(() => { const m = document.getElementById('message'); return { message: m.disabled, readOnly: m.readOnly, send: document.getElementById('send').disabled } })
+    check(r.disabledState.send && !r.disabledState.message && !r.disabledState.readOnly, `conversation disabled state ${JSON.stringify(r.disabledState)}`)
+    await copyScreenshot()
+    await page.focus('#message'); r.disabledFocused = await page.evaluate(() => document.activeElement?.id)
+    await page.keyboard.press(key); await page.waitForTimeout(800)
+    check(r.disabledFocused === 'message' && await chips() === 1 && posts.length === 1, `paste while conversation disabled focus=${r.disabledFocused}`)
+    await shot('conversation-disabled-pasted')
     r.uploads = uploads
   } catch (e) { failures.push(`${device}: ${e.message}`) }
   await ctx.close()
