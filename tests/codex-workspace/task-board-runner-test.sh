@@ -2391,7 +2391,12 @@ test_review_p1_finding_retries_and_consumes_budget() {
   assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: in-progress$'
   assert_file_contains "${vault}/Tickets/BOXP-405.md" 'Retrying with Codex instruction 1/2'
   assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-findings'
-  assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'nil deref'
+  # BOXP-775: the ticket keeps a one-line sanitized summary (marker, severity,
+  # location, impact, retry state), never the raw codex output.
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'review-findings:[0-9a-f]{12} レビュー未解決所見 PR https://github.com/boxp/example/pull/123'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '\[P1\] src/a.clj:10 — nil deref on empty input; 再試行 1/2'
+  [[ "$(grep -c 'review-findings:' "${vault}/Tickets/BOXP-405.md")" == 1 ]] || fail "expected one review findings line"
+  assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'CODEX_REVIEW_FINDING'
   artifact="$(find "${state}/runs/BOXP-405" -name codex-review-boxp__example-123-blocking.md -print -quit)"
   assert_file_contains "${artifact}" 'nil deref on empty input'
   assert_file_contains "${state}/gate-failure-budget.edn" 'BOXP-405'
