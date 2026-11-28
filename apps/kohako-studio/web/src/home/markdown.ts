@@ -85,7 +85,8 @@ const VAULT_ROOT = '/home/boxp/Documents/obsidian-headless/BOXP/'
 const VAULT_DIRS = /^(?:Tickets|Projects|Boards|Incidents|Infrastructure)\//
 // BOXP-778: Obsidian の wiki リンク [[パス|別名]]・[[パス]]。拡張子が無ければ .md を補い、#見出し は外してノート本体を開く。
 // スキームらしい書き出し（javascript: など）と vault 外の絶対パスはリンクにしない（obsidianNotePath の検査も通す）。
-const WIKI_EXT = /\.(?:md|canvas|base|pdf|png|jpe?g|gif|webp|svg)$/i
+// 最後の部分が「. + 英字始まりの英数字 1〜8 文字」で終われば拡張子付きとしてそのまま開く（v1.2 や空白を含むものは .md を補う）。
+const WIKI_EXT = /\.[A-Za-z][A-Za-z0-9]{0,7}$/
 function wikiNote(inner: string): Inline | undefined {
   const bar = inner.indexOf('|'),
     target = (bar < 0 ? inner : inner.slice(0, bar)).replace(/#.*$/s, '').trim(),

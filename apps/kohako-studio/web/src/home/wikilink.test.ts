@@ -30,6 +30,10 @@ it('follows the spec examples for names, extensions, headings, tickets and absol
   expect(parseInline('[[ Projects/a/b | 別名 ]]')).toEqual([note('別名', 'Projects/a/b.md')])
   expect(parseInline('[[Projects/a/b|]]')).toEqual([note('b', 'Projects/a/b.md')])
   expect(parseInline('[[Projects/a/b.canvas]]')).toEqual([note('b.canvas', 'Projects/a/b.canvas')])
+  expect(parseInline('[[Projects/a/file.txt]]')).toEqual([note('file.txt', 'Projects/a/file.txt')])
+  expect(parseInline('[[Projects/a/data.json|データ]]')).toEqual([note('データ', 'Projects/a/data.json')])
+  expect(parseInline('[[Projects/a/v1.2]]')).toEqual([note('v1.2', 'Projects/a/v1.2.md')])
+  expect(parseInline('[[Projects/a/b. c]]')).toEqual([note('b. c', 'Projects/a/b. c.md')])
   expect(parseInline('[[/home/boxp/Documents/obsidian-headless/BOXP/Projects/調査 (案)|調査]]')).toEqual([
     note('調査', 'Projects/調査 (案).md'),
   ])
