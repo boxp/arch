@@ -811,12 +811,12 @@ export function createConversation({
                       : 24000,
                   )}\n（返答が長すぎるため、ここから先は省略されました）`
                 : extracted.text
-          // 打ち切りは geocoder 側(7秒)で取得済みの位置を残して行う。ここは異常時の保険。
+          // 打ち切りは geocoder 側(単一 7 秒・複数候補は最大 21 秒)で取得済みの位置を残して行う。ここは異常時の保険。
           const views =
             input.kind === 'text' && input.views
               ? await Promise.race([
                   geocode(extracted.views),
-                  new Promise<View[]>((r) => setTimeout(() => r(extracted.views), 9000).unref?.()),
+                  new Promise<View[]>((r) => setTimeout(() => r(extracted.views), 23000).unref?.()),
                 ])
               : extracted.views
           // BOXP-657: 返答の選択肢（A／B…）は BFF が取り出して返す（端末ごとに抽出規則の写しを持たない）。

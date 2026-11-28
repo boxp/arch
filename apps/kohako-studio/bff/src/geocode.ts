@@ -1,5 +1,5 @@
 import { must } from './must.js'
-import type { Geo, View } from './views.js'
+import type { Geo, Place, View } from './views.js'
 
 const kanji = (n: number) =>
   n < 10
@@ -38,6 +38,10 @@ export function municipality(address: string): string | null {
   const local = rest.match(/^.+?[区町村]/)?.[0]
   return local ? pref + local : null
 }
+/** 末尾の「〜店」を除いた名称（例: 「Cafe Renoir 芝大門店」→「Cafe Renoir」）。除けない時は null。 */
+export function branchless(name: string): string | null {
+  return name.match(/^(.+?)[\s　]+\S+店$/)?.[1].trim() || null
+}
 function town(address: string): string | null {
   const match = address.match(
     /^(.+?)[\s　]*[0-9０-９〇零一二三四五六七八九十百千]+(?:丁目|番地|番|号|[-−ー－‐‑–—―]|\s|　|$)/,
@@ -66,9 +70,10 @@ export function createGeocoder({
     requested: Geo['precision'],
     deadline?: AbortSignal,
     municipal = false,
+    within?: Geo['bbox'],
   ): Promise<Geo | null> => {
     if (deadline?.aborted) return null
-    const key = `${requested}:${municipal}:${q}`,
+    const key = `${requested}:${municipal}:${within?.join(',') ?? ''}:${q}`,
       cached = cache.get(key)
     if (cached && Date.now() - cached.at < 86400_000) return cached.value
     let resolve!: (v: Geo | null) => void
@@ -111,6 +116,12 @@ export function createGeocoder({
             q,
           }))
             p.searchParams.set(k, v)
+          if (within) {
+            // BOXP-749: 名称・別表記は住所の範囲内に限って検索する（同じチェーンの別店舗を拾わない）。
+            const [w, south, e, n] = within
+            p.searchParams.set('viewbox', `${w},${n},${e},${south}`)
+            p.searchParams.set('bounded', '1')
+          }
           const response = await Promise.race([
             fetcher(p.toString(), {
               headers: { 'User-Agent': 'kohako-home/1.0 (+https://github.com/boxp/arch)' },
@@ -190,13 +201,10 @@ export function createGeocoder({
   }
   // 住所が与えられた時は住所由来の位置を正とし、名称検索の結果はその範囲内にある時だけ採用する（同名の別店舗を避ける）。
   // deadlineMs を過ぎたら、それまでに得た最良の位置（概略でも）を返す。
-  const resolveView = async (
-    view: Extract<View, { kind: 'map' }>,
-    best: { geo: Geo | null },
-    deadline: AbortSignal,
-  ): Promise<Geo | null> => {
-    const { address, name } = view.destination
-    const query = (q: string, p: Geo['precision'], municipal = false) => queryRaw(q, p, deadline, municipal)
+  const resolvePlace = async (target: Place, best: { geo: Geo | null }, deadline: AbortSignal): Promise<Geo | null> => {
+    const { address, name } = target
+    const query = (q: string, p: Geo['precision'], municipal = false, within?: Geo['bbox']) =>
+      queryRaw(q, p, deadline, municipal, within)
     if (address) {
       const exact = await query(address, 'exact')
       best.geo = exact
@@ -211,43 +219,71 @@ export function createGeocoder({
         area = await query(candidate, 'area', candidate === city)
         best.geo = area
       }
-      if (!area || !name || name === address) return area
-      const named = await query(name, 'exact')
+      if (!area) return area
+      // 名称 → 支店名を除いた名称 → 別表記の順に、住所の範囲内で点の一致を探す。
+      const names = [name, branchless(name), ...(target.aliases ?? [])].filter((n): n is string => !!n && n !== address)
       const m = 0.002,
         [w, s, e, n] = area.bbox
-      return named?.precision === 'exact' &&
-        named.lon >= w - m &&
-        named.lon <= e + m &&
-        named.lat >= s - m &&
-        named.lat <= n + m
-        ? named
-        : area
+      for (const candidate of [...new Set(names)]) {
+        if (deadline.aborted) break
+        const named = await query(candidate, 'exact', false, area.bbox)
+        if (
+          named?.precision === 'exact' &&
+          named.lon >= w - m &&
+          named.lon <= e + m &&
+          named.lat >= s - m &&
+          named.lat <= n + m
+        ) {
+          const found = { ...named, label: name.slice(0, 120) }
+          best.geo = found
+          return found
+        }
+      }
+      return area
     }
     const named = await query(name, 'exact')
     best.geo = named
     return named
+  }
+  const locate = async (target: Place, budgetMs: number): Promise<Geo | null> => {
+    const best: { geo: Geo | null } = { geo: null }
+    const deadline = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    // 期限で deadline を中断し、送信中の検索の打ち切り・未送信の検索の取り止めを行う。
+    // deadlineMs を過ぎたら、それまでに得た最良の位置（概略でも）を返す。
+    const geo = await Promise.race([
+      resolvePlace(target, best, deadline.signal).catch(() => best.geo),
+      new Promise<Geo | null>((r) => {
+        timer = setTimeout(() => {
+          deadline.abort()
+          r(best.geo)
+        }, budgetMs)
+        timer.unref?.()
+      }),
+    ])
+    clearTimeout(timer)
+    deadline.abort()
+    return geo
   }
   return async (views: View[]): Promise<View[]> => {
     if (url === 'off') return views
     return Promise.all(
       views.map(async (view) => {
         if (view.kind !== 'map') return view
-        const best: { geo: Geo | null } = { geo: null }
-        const deadline = new AbortController()
-        let timer: ReturnType<typeof setTimeout> | undefined
-        // 期限で deadline を中断し、送信中の検索の打ち切り・未送信の検索の取り止めを行う。
-        const geo = await Promise.race([
-          resolveView(view, best, deadline.signal).catch(() => best.geo),
-          new Promise<Geo | null>((r) => {
-            timer = setTimeout(() => {
-              deadline.abort()
-              r(best.geo)
-            }, deadlineMs)
-            timer.unref?.()
-          }),
-        ])
-        clearTimeout(timer)
-        deadline.abort()
+        if (view.places) {
+          // 検索は 1 件ずつ順に送るので、候補が多いほど期限を延ばす（上限は deadlineMs の 3 倍）。
+          const budget = Math.min(deadlineMs * 3, deadlineMs + (deadlineMs / 2) * (view.places.length - 1))
+          const started = Date.now()
+          const places = await Promise.all(
+            view.places.map(async ({ geo: _ignored, ...target }) => {
+              const geo = await locate(target, Math.max(0, budget - (Date.now() - started)))
+              return geo ? { ...target, geo } : target
+            }),
+          )
+          return { ...view, places }
+        }
+        if (!view.destination) return view
+        const geo = await locate(view.destination, deadlineMs)
         return geo ? { ...view, geo } : view
       }),
     )

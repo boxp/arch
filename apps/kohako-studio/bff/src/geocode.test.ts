@@ -174,3 +174,100 @@ it('extracts municipalities whose names contain 市・区・町・村・郡', ()
   ]
   for (const [address, expected] of cases) expect(municipality(address), address).toBe(expected)
 })
+
+// BOXP-749: 仕様 Projects/kohako-home/map-view-spec.md の例から期待値を決める。
+const shibaChome = [
+  { lat: '35.6550', lon: '139.7538', place_rank: 22, boundingbox: ['35.6530', '35.6580', '139.7510', '139.7570'] },
+]
+const renoirNode = [
+  { lat: '35.6567', lon: '139.7538', place_rank: 30, boundingbox: ['35.6566', '35.6568', '139.7537', '139.7539'] },
+]
+it('finds the Cafe Renoir pin by searching the name, the name without the branch and aliases inside the chome', async () => {
+  const fetcher = vi.fn(async (url: string | URL | Request) => {
+    const q = new URL(String(url)).searchParams.get('q')
+    return response(q === '東京都港区芝大門二丁目' ? shibaChome : q === 'ルノアール' ? renoirNode : [])
+  })
+  const view: View = {
+    kind: 'map',
+    title: '地図',
+    destination: { name: 'Cafe Renoir 芝大門店', address: '東京都港区芝大門2-3-1 常泉ビル2F', aliases: ['ルノアール'] },
+    origin: '秘密の出発地',
+  }
+  const [result] = await createGeocoder({ fetcher, intervalMs: 0 })([view])
+  const urls = fetcher.mock.calls.map((c) => new URL(String(c[0])))
+  expect(urls.map((u) => u.searchParams.get('q'))).toEqual([
+    '東京都港区芝大門2-3-1 常泉ビル2F',
+    '東京都港区芝大門二丁目',
+    'Cafe Renoir 芝大門店',
+    'Cafe Renoir',
+    'ルノアール',
+  ])
+  // 名称の検索は丁目の範囲内に限る
+  for (const u of urls.slice(2)) {
+    expect(u.searchParams.get('bounded')).toBe('1')
+    expect(u.searchParams.get('viewbox')).toBe('139.751,35.658,139.757,35.653')
+  }
+  expect(JSON.stringify(fetcher.mock.calls)).not.toContain('秘密の出発地')
+  expect(result.kind === 'map' && result.geo).toMatchObject({ precision: 'exact', lat: 35.6567, lon: 139.7538 })
+})
+it('keeps the chome as an area (not a pin) when no name matches inside it', async () => {
+  const fetcher = vi.fn(async (url: string | URL | Request) =>
+    response(new URL(String(url)).searchParams.get('q') === '東京都港区芝大門二丁目' ? shibaChome : []),
+  )
+  const [result] = await createGeocoder({ fetcher, intervalMs: 0 })([
+    { kind: 'map', title: '地図', destination: { name: 'Cafe Renoir 芝大門店', address: '東京都港区芝大門2-3-1' } },
+  ])
+  expect(result.kind === 'map' && result.geo).toMatchObject({ precision: 'area', label: '東京都港区芝大門二丁目' })
+})
+it('does not use aliases or the branch-less name without an address', async () => {
+  const fetcher = vi.fn().mockResolvedValue(response([]))
+  await createGeocoder({ fetcher, intervalMs: 0 })([
+    { kind: 'map', title: '地図', destination: { name: 'ロバーツコーヒー 麻布十番店', aliases: ["Robert's Coffee"] } },
+  ])
+  const urls = fetcher.mock.calls.map((c) => new URL(String(c[0])))
+  expect(urls.map((u) => u.searchParams.get('q'))).toEqual(['ロバーツコーヒー 麻布十番店'])
+  expect(urls[0].searchParams.has('bounded')).toBe(false)
+})
+it('geocodes every candidate of a multi-place map and leaves unknown ones without geo', async () => {
+  const fetcher = vi.fn(async (url: string | URL | Request) => {
+    const q = new URL(String(url)).searchParams.get('q')
+    return response(
+      q === '東京都港区芝大門二丁目' ? shibaChome : q === 'ルノアール' ? renoirNode : q === '東京駅' ? hit : [],
+    )
+  })
+  const view: View = {
+    kind: 'map',
+    title: '候補',
+    places: [
+      { name: 'Cafe Renoir 芝大門店', address: '東京都港区芝大門2-3-1', aliases: ['ルノアール'] },
+      { name: '東京駅' },
+      { name: '存在しない店' },
+    ],
+    origin: '秘密の出発地',
+  }
+  const [result] = await createGeocoder({ fetcher, intervalMs: 0 })([view])
+  expect(JSON.stringify(fetcher.mock.calls)).not.toContain('秘密の出発地')
+  if (result.kind !== 'map' || !result.places) throw Error('places expected')
+  expect(result.places.map((p) => p.geo?.precision)).toEqual(['exact', 'exact', undefined])
+  expect(result.places[0].geo).toMatchObject({ lat: 35.6567 })
+  expect(validateView(result, true)).not.toBeNull()
+  // モデルが座標を書いたブロックは受け付けない
+  expect(validateView(result)).toBeNull()
+})
+it('validates single and multi-place map blocks', () => {
+  const place = { name: '店', address: '東京都港区芝1-1' }
+  const base = { kind: 'map', title: '候補' }
+  expect(validateView({ ...base, places: [place, { name: '別の店', aliases: ['別名'] }] })).not.toBeNull()
+  expect(validateView({ ...base, destination: { ...place, aliases: ['a', 'b', 'c'] } })).not.toBeNull()
+  for (const bad of [
+    { ...base, places: [place] },
+    { ...base, places: Array(6).fill(place) },
+    { ...base, places: [place, place], destination: place },
+    { ...base },
+    { ...base, destination: { ...place, aliases: ['a', 'b', 'c', 'd'] } },
+    { ...base, destination: { ...place, aliases: [''] } },
+    { ...base, places: [place, { ...place, extra: 1 }] },
+    { ...base, places: [place, { ...place, geo: { lat: 1 } }] },
+  ])
+    expect(validateView(bad), JSON.stringify(bad)).toBeNull()
+})

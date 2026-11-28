@@ -6,12 +6,16 @@ export type Geo = {
   label: string
   source: 'openstreetmap'
 }
+/** BOXP-749: 地図の 1 候補。geo は BFF が OpenStreetMap で調べた位置。 */
+export type Place = { name: string; address?: string; aliases?: string[] }
 export type View =
   | { kind: 'usage'; title?: string }
   | {
       kind: 'map'
       title: string
-      destination: { name: string; address?: string }
+      /** 単一の目的地。places（2〜5件の比較候補）とどちらか一方だけ。 */
+      destination?: Place
+      places?: (Place & { geo?: Geo })[]
       origin?: string
       geo?: Geo
       mode?: 'transit' | 'walking' | 'driving' | 'bicycling'
@@ -60,6 +64,17 @@ export function osmUrl(geo: Geo): string {
   if (geo.precision === 'exact') p.set('marker', `${geo.lat},${geo.lon}`)
   return `https://www.openstreetmap.org/export/embed.html?${p}`
 }
+function place(v: unknown, withGeo: boolean): boolean {
+  return (
+    object(v) &&
+    keys(v, withGeo ? ['name', 'address', 'aliases', 'geo'] : ['name', 'address', 'aliases']) &&
+    str(v.name, 80) &&
+    (v.address === undefined || str(v.address, 120)) &&
+    (v.aliases === undefined ||
+      (Array.isArray(v.aliases) && v.aliases.length <= 3 && v.aliases.every((a) => str(a, 80)))) &&
+    (v.geo === undefined || validGeo(v.geo))
+  )
+}
 export function validateView(v: unknown): View | null {
   if (!object(v)) return null
   if (v.kind === 'usage')
@@ -68,13 +83,16 @@ export function validateView(v: unknown): View | null {
   if (v.kind === 'html') return keys(v, ['kind', 'title', 'html']) && str(v.html, 20000, true) ? (v as View) : null
   if (
     v.kind === 'map' &&
-    keys(v, ['kind', 'title', 'destination', 'origin', 'mode', 'geo']) &&
-    object(v.destination) &&
-    keys(v.destination, ['name', 'address']) &&
-    str(v.destination.name, 80) &&
-    (v.destination.address === undefined || str(v.destination.address, 120)) &&
+    keys(v, ['kind', 'title', 'destination', 'places', 'origin', 'mode', 'geo']) &&
+    (v.destination === undefined) !== (v.places === undefined) &&
+    (v.destination === undefined || place(v.destination, false)) &&
+    (v.places === undefined ||
+      (Array.isArray(v.places) &&
+        v.places.length >= 2 &&
+        v.places.length <= 5 &&
+        v.places.every((p) => place(p, true)))) &&
     (v.origin === undefined || str(v.origin, 120)) &&
-    (v.geo === undefined || validGeo(v.geo)) &&
+    (v.geo === undefined || (v.destination !== undefined && validGeo(v.geo))) &&
     (v.mode === undefined || ['transit', 'walking', 'driving', 'bicycling'].includes(v.mode as string))
   )
     return v as View
@@ -89,10 +107,13 @@ export function validateViews(v: unknown): View[] {
         .slice(0, 1)
     : []
 }
-export function mapsUrl(view: Extract<View, { kind: 'map' }>, useOrigin: boolean): string {
+export function mapsUrl(
+  view: Pick<Extract<View, { kind: 'map' }>, 'mode' | 'origin'> & { destination?: Place },
+  useOrigin: boolean,
+): string {
   const p = new URLSearchParams({
     api: '1',
-    destination: [view.destination.name, view.destination.address].filter(Boolean).join(' '),
+    destination: [view.destination?.name, view.destination?.address].filter(Boolean).join(' '),
   })
   if (view.mode) p.set('travelmode', view.mode)
   if (useOrigin && view.origin) p.set('origin', view.origin)
