@@ -5,6 +5,7 @@ import { OTHER_MAX_BYTES, PDF_MAX_BYTES } from './attachment-limits.js'
 import { createGeocoder } from './geocode.js'
 import type { createNotifications } from './notifications.js'
 import type { createPush } from './push.js'
+import type { createDeviceTrial } from './device-trial.js'
 import { VIEW_INSTRUCTIONS } from './views.js'
 import type { StatusPayload } from './status.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -68,6 +69,8 @@ export function createApp(opts: {
   hermes?: ReturnType<typeof createHermes>
   notifications?: Awaited<ReturnType<typeof createNotifications>>
   push?: Awaited<ReturnType<typeof createPush>>
+  /** BOXP-752: 端末へ 1 タップで地図を開く試験（本人だけ）。未設定なら 503。 */
+  deviceTrial?: Awaited<ReturnType<typeof createDeviceTrial>>
   sttUrl?: string
   tts?: ReturnType<typeof createTts>
   /** BOXP-715: 本人限定の試用声（Drama-3-Japanese）。body の voice: 'drama3' のときだけ使う。 */
@@ -274,6 +277,47 @@ export function createApp(opts: {
                 : {}),
           })
         }
+      }
+      if (route === 'device-trial' || route.startsWith('device-trial/')) {
+        // BOXP-752: 作る・開く・やめる・止めるは本人（owner）だけ。検証用・通知用・眼鏡は 403。
+        if (principal !== 'owner') return json(403, { error: 'forbidden' })
+        const trial = opts.deviceTrial
+        if (!trial) return json(503, { error: 'device_trial_disabled' })
+        if (method === 'GET' && route === 'device-trial') return json(200, await trial.view())
+        const act = /^device-trial\/requests\/([A-Za-z0-9-]{8,64})\/(open|cancel)$/.exec(route)
+        if (method !== 'POST' || !(act || route === 'device-trial/requests' || route === 'device-trial/stop'))
+          return json(404, { error: 'not_found' })
+        if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] ?? ''))
+          return json(415, { error: 'content_type' })
+        const chunks: Buffer[] = []
+        let size = 0
+        for await (const chunk of req) {
+          const b = Buffer.from(chunk)
+          size += b.length
+          if (size > 1024) return json(413, { error: 'too_large' })
+          chunks.push(b)
+        }
+        let x: unknown
+        try {
+          x = JSON.parse(Buffer.concat(chunks).toString())
+        } catch {
+          return json(400, { error: 'invalid' })
+        }
+        const reply = (r: { status: number; error?: string; url?: string; request?: unknown }) =>
+          json(
+            r.status,
+            r.error ? { error: r.error } : r.url ? { url: r.url } : r.request ? r.request : { status: 'ok' },
+          )
+        if (route === 'device-trial/requests') return reply(await trial.create(x))
+        if (route === 'device-trial/stop') {
+          if (!isRecord(x) || Object.keys(x).length !== 1 || typeof x.stopped !== 'boolean')
+            return json(400, { error: 'invalid' })
+          return reply(await trial.setStopped(x.stopped))
+        }
+        if (act?.[2] === 'cancel') return reply(await trial.cancel(act[1]))
+        if (!isRecord(x) || Object.keys(x).length !== 1 || (x.via !== 'notification' && x.via !== 'page'))
+          return json(400, { error: 'invalid' })
+        return reply(await trial.open(must(act)[1], x.via))
       }
       if (principal === 'notifier') return json(403, { error: 'forbidden' })
       if (route === 'vault-image' && method === 'GET') {

@@ -6,6 +6,9 @@ import { createHermes } from './hermes.js'
 import { createModelTrial } from './model-trial.js'
 import { createStatus } from './status.js'
 import { createPush } from './push.js'
+import { createDeviceTrial } from './device-trial.js'
+import { atomic, load } from './storage.js'
+import { join } from 'node:path'
 import { createNotifications } from './notifications.js'
 import { createGeocoder } from './geocode.js'
 import { createConversation } from './conversation.js'
@@ -53,6 +56,16 @@ const push = config.dataDir
     })
   : undefined
 const notifications = config.dataDir && push ? await createNotifications(config.dataDir, push.send) : undefined
+// BOXP-752: 端末へ 1 タップで地図を開く試験。家の Push と同じ購読に送る。
+const deviceTrialPath = config.dataDir ? join(config.dataDir, 'device-trial.json') : undefined
+const deviceTrial =
+  deviceTrialPath && push
+    ? await createDeviceTrial({
+        store: { load: () => load<unknown>(deviceTrialPath, undefined), save: (v) => atomic(deviceTrialPath, v) },
+        now: Date.now,
+        send: push.sendDevice,
+      })
+    : undefined
 const geocode = createGeocoder({ fetcher: fetch })
 // BOXP-706: 家の会話（owner）にだけ渡す。検証用の会話には渡さない。
 const modelTrial =
@@ -84,6 +97,7 @@ const server = createServer(
     conversations,
     push,
     notifications,
+    deviceTrial,
     status: createStatus({ fetch, now: Date.now, quotaUrl: config.quotaUrl, boardUrl: config.boardUrl }),
     sttUrl: config.sttUrl,
     tts: config.ttsUrl
@@ -107,7 +121,12 @@ const shutdown = () => {
   }, 20_000)
   server.close(() => {
     void (async () => {
-      await Promise.all([notifications?.flush(), conversations?.owner.flush(), conversations?.verifier.flush()])
+      await Promise.all([
+        deviceTrial?.flush(),
+        notifications?.flush(),
+        conversations?.owner.flush(),
+        conversations?.verifier.flush(),
+      ])
       await push?.flush()
       clearTimeout(timeout)
       process.exit(0)

@@ -2,6 +2,7 @@ import { must } from './must.js'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import * as webPush from 'web-push'
+import type { DevicePush, PushOutcome } from './device-trial.js'
 import type { Item } from './notifications.js'
 import { atomic, load } from './storage.js'
 import { isRecord } from './untrusted.js'
@@ -132,6 +133,35 @@ export async function createPush(
         return pushStats.sent
           ? { pushedAt: new Date(now()).toISOString(), pushStats }
           : { pushSkipped: 'error' as const, pushStats }
+      }),
+    /**
+     * BOXP-752: 端末への試験依頼の通知。本人がその場で押したものなので静かな時間帯は効かせない。
+     * TTL は依頼の残り時間に合わせ、期限の後に届いて開けない通知を残さない。最小表示の設定は守る。
+     */
+    sendDevice: (msg: DevicePush, ttlSeconds: number) =>
+      mutate(async (): Promise<PushOutcome> => {
+        const list = Object.entries(subscriptions),
+          out: PushOutcome = { sent: 0, errors: 0 }
+        if (!list.length) return { ...out, skipped: 'no-subscriptions' }
+        const shown = opts.minimal ? { ...msg, title: 'コハコの家', body: '試験の通知です（タップで開きます）' } : msg
+        let changed = false
+        for (const [key, sub] of list)
+          try {
+            await (opts.sender ?? webPush.sendNotification)(sub, JSON.stringify(shown), {
+              TTL: ttlSeconds,
+              urgency: 'high',
+              vapidDetails: { subject: opts.subject, ...must(keys) },
+            })
+            out.sent++
+          } catch (e) {
+            out.errors++
+            if ([404, 410].includes((e as { statusCode?: number }).statusCode ?? 0)) {
+              delete subscriptions[key]
+              changed = true
+            }
+          }
+        if (changed) await atomic(path, subscriptions)
+        return out.sent ? out : { ...out, skipped: 'error' }
       }),
   }
 }
