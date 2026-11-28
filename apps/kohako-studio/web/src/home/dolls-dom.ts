@@ -120,7 +120,7 @@ export function createDolls(opts: { host: HTMLElement; card: HTMLElement; call: 
       img.src = dollImage(doll.key, doll.version)
       img.alt = ''
       const names = make('div', 'doll-card-names')
-      names.append(make('strong', 'doll-card-name', c.name), make('small', 'muted', c.note))
+      names.append(make('strong', 'doll-card-name', c.name))
       head.append(img, names)
       body.append(head)
       if (doll.tickets.length > 1) {

@@ -77,7 +77,6 @@ it('カードの中身: 担当名と実行モデル（見込み）を分け、�
   )
   expect(c).toEqual({
     name: 'opusの人形',
-    note: 'この家だけの非公式の人形',
     assignee: '担当 a-opus',
     model: '実行モデル（見込み） m-opus',
     ticket: 'BOXP-1 人形を置く',
@@ -130,4 +129,10 @@ it('並びの鍵: 件数が同じでも票が入れ替われば作り直す（�
   swapped.tickets = [{ ...swapped.tickets[0], id: 'BOXP-9' }, swapped.tickets[1]]
   expect(dollsKey(dollsView(status([swapped]), false, 'pc'))).not.toBe(dollsKey(a))
   expect(dollsKey(dollsView(status([doll('opus', 2)]), false, 'pc'))).toBe(dollsKey(a))
+})
+
+it('カードに非公式の添え書きを出さない (BOXP-766 TD-02)', () => {
+  const d = doll('opus', 1)
+  const c = cardOf(d, d.tickets[0], null, Date.parse('2026-11-28T11:00:00Z'))
+  expect(JSON.stringify(c)).not.toContain('非公式')
 })

@@ -85,7 +85,6 @@ export function cardOf(
   ]
   return {
     name: doll.name,
-    note: 'この家だけの非公式の人形',
     assignee: `担当 ${ticket.assignee}`,
     model,
     ticket: item?.title ? `${ticket.id} ${item.title}` : ticket.id,
