@@ -1,4 +1,5 @@
 /** BOXP-766: 作業中の AI モデルの人形（現行仕様 Projects/kohako-home/model-dolls-home-spec.md）。表示の決まりだけ。 */
+import { obsidianNoteUrl } from './markdown'
 export type DollGroup = {
   key: string
   name: string
@@ -108,4 +109,13 @@ export function dollsKey(v: { state: DollsState; shown: DollGroup[]; more: numbe
     v.more,
     v.shown.map((d) => [d.key, d.version, d.plainLabel, d.tickets.map((t) => [t.id, t.assignee, t.model])]),
   ])
+}
+
+/**
+ * カードの「Obsidianで開く」（T7, BOXP-766 TD-04）。いま選んでいる票の詳細が取れ、返った票の番号が同じで、
+ * 番号の形が BOXP-N（1〜6 桁、先頭 0 なし）の時だけ、BOXP vault の Tickets/BOXP-N.md を開く URL を返す。
+ */
+export function ticketLink(id: string, detail: TicketResult | 'error' | null): { id: string; href: string } | null {
+  if (!detail || detail === 'error' || detail.item?.id !== id || !/^BOXP-[1-9]\d{0,5}$/.test(id)) return null
+  return { id, href: obsidianNoteUrl(`Tickets/${id}.md`) }
 }

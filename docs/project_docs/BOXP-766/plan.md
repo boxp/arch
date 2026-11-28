@@ -30,3 +30,11 @@
 - 判定・件数・タップ詳細・本人限定アクセスは変えない。
 - 状態の移り変わりは増えない（絵と枠の大きさだけ）ので Lean のモデルは作らない。
 - 確認: 単体（仕様 D7・D8 の例）、手元 build と配備版を `verify/home/dolls766.mjs` で PC/スマホ、人形の並びの拡大写しで作業中と見分けられること。
+
+## TD-04: 人形カードの「Obsidianで開く」
+
+- 仕様: model-dolls-home-spec の T7（T5 の例外を明記、5 章に例 4 つ）。
+- `dolls.ts` の `ticketLink(id, detail)`: 選んでいる票の詳細が `ok` で `item.id` が同じ、かつ番号が `BOXP-[1-9]\d{0,5}` の時だけ、既存の `obsidianNoteUrl('Tickets/BOXP-N.md')`（BOXP-581）で URL を作る。取得中・失敗・別票の結果・不正な番号は null。
+- `dolls-dom.ts`: 票の行の下に会話と同じ `.obsidian-note`（「BOXP-N」＋「Obsidianで開く」）を置く。同じタブ・押した時だけ・新規タブなし。
+- 本人限定は既存の `status/tickets` の認可（owner/verifier）のまま。BFF は変えない。
+- Lean: 状態は「取得中/取れた/失敗」の小さな関数で、順序で破れる決まりは無いので作らない（札の切替は取得中→取得結果の既存の seq で扱う）。

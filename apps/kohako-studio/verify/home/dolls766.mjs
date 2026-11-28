@@ -74,6 +74,23 @@ for (const [name, viewport, mobile] of [['pc', { width: 1440, height: 900 }, fal
       return { hidden: c.hidden, lines: [...c.querySelectorAll('p,strong,small')].map((e) => e.className.split(' ')[0] + ':' + (e.className.includes('doll-note') && !e.className.includes('head') ? `(${e.textContent.length}字)` : e.textContent)), htmlInjected: !!c.querySelector('.doll-note b'), inView: r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight, tabs: c.querySelectorAll('.doll-tab').length }
     })
     await page.screenshot({ path: `${OUT}/${name}-card.png` })
+    // T7 (BOXP-766 TD-04): 選んだ票の「Obsidianで開く」と、札で切り替えた先への追従。押してもページは移らない。
+    const linkOf = () => page.evaluate(() => { const a = document.querySelector("#doll-card a.doll-obsidian"); return { tab: document.querySelector("#doll-card .doll-tab.is-current")?.textContent ?? null, ticket: document.querySelector("#doll-card .doll-ticket")?.textContent.split(" ")[0] ?? null, href: a?.getAttribute("href") ?? null, text: a?.textContent ?? null, target: a?.getAttribute("target") ?? null, links: document.querySelectorAll("#doll-card a").length } })
+    card.link = await linkOf()
+    if (card.tabs > 1) {
+      await page.locator("#doll-card .doll-tab").nth(1).click()
+      card.linkWhileLoading = await linkOf()
+      await page.waitForSelector("#doll-card .doll-fresh", { timeout: 10000 }).catch(() => {})
+      await page.waitForTimeout(500)
+      card.linkAfterSwitch = await linkOf()
+      await page.screenshot({ path: `${OUT}/${name}-card-tab2.png` })
+    }
+    if (card.link.href) {
+      const before = page.url()
+      await page.locator("#doll-card a.doll-obsidian").click({ noWaitAfter: true }).catch((e) => { card.linkClickError = String(e).slice(0, 120) })
+      await page.waitForTimeout(500)
+      card.linkClickKeptPage = page.url() === before && context.pages().length === 1
+    }
     await page.keyboard.press('Escape')
     await page.waitForTimeout(300)
     card.closedByEsc = await page.evaluate(() => document.querySelector('#doll-card').hidden)
