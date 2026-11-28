@@ -72,22 +72,22 @@ it('ignores a same-name exact match outside the address area and does not trust 
   expect(await createGeocoder({ fetcher: none, intervalMs: 0 })([map])).toEqual([map])
   expect(none).toHaveBeenCalledTimes(3)
 })
-it('keeps an already found area when later searches time out at the deadline', async () => {
+it('keeps an already found area when later searches time out', async () => {
   const fetcher = vi
     .fn()
     .mockResolvedValueOnce(response(areaHit))
     .mockImplementation(() => new Promise<Response>(() => {}))
-  const [result] = await createGeocoder({ fetcher, intervalMs: 0, timeoutMs: 1000, deadlineMs: 50 })([map])
+  const [result] = await createGeocoder({ fetcher, intervalMs: 0, timeoutMs: 50 })([map])
   expect(result.kind === 'map' && result.geo?.precision).toBe('area')
 })
-it('drops queued searches after the deadline so timed-out lookups do not block later ones', async () => {
+it('aborts a hung search at its own timeout so it does not block later ones', async () => {
   let hang = true
   const fetcher = vi.fn((_: string, init?: RequestInit) =>
     hang
       ? new Promise<Response>((_r, reject) => init?.signal?.addEventListener('abort', () => reject(Error('aborted'))))
       : Promise.resolve(response(hit)),
   )
-  const geocode = createGeocoder({ fetcher, intervalMs: 0, timeoutMs: 10_000, deadlineMs: 40 })
+  const geocode = createGeocoder({ fetcher, intervalMs: 0, timeoutMs: 40 })
   const views = Array.from(
     { length: 5 },
     (_, i): View => ({ kind: 'map', title: 'x', destination: { name: `店${i}` } }),
@@ -96,7 +96,7 @@ it('drops queued searches after the deadline so timed-out lookups do not block l
   expect(timedOut.every(([v]) => v.kind === 'map' && !v.geo)).toBe(true)
   await new Promise((r) => setTimeout(r, 20))
   const calls = fetcher.mock.calls.length
-  // 期限を過ぎた検索は送信中なら中断され、キューに残らない
+  // 応答待ち上限を過ぎた検索は中断され、キューに残らない
   expect(fetcher.mock.calls.every((c) => c[1]?.signal?.aborted)).toBe(true)
   hang = false
   const started = Date.now()
@@ -352,7 +352,30 @@ it('gives a 5-place map enough time for every place to reach its last alias sear
       aliases: [`ルノアール${i}`],
     })),
   }
-  const [result] = await createGeocoder({ fetcher, intervalMs: 30, deadlineMs: 50 })([view])
+  const [result] = await createGeocoder({ fetcher, intervalMs: 30 })([view])
   if (result.kind !== 'map' || !result.places) throw Error('places expected')
+  expect(result.places.map((p) => p.geo?.precision)).toEqual(['exact', 'exact', 'exact', 'exact', 'exact'])
+})
+it('never drops a later place because earlier searches were slow but within their own timeout', async () => {
+  // 21 検索がそれぞれ応答待ち上限(200ms)内の 40ms かかっても、後半の候補が別表記検索まで届き全件が正確なピンになる。
+  const fetcher = vi.fn(async (url: string | URL | Request) => {
+    await new Promise((r) => setTimeout(r, 40))
+    const q = new URL(String(url)).searchParams.get('q') ?? ''
+    return response(
+      /^東京都港区芝大門[一二三四五]丁目$/.test(q) ? shibaChome : /^ルノアール[1-5]$/.test(q) ? renoirNode : [],
+    )
+  })
+  const view: View = {
+    kind: 'map',
+    title: '候補',
+    places: [1, 2, 3, 4, 5].map((i) => ({
+      name: `Cafe Renoir 芝大門${i}号店`,
+      address: `東京都港区芝大門${i}-3-1`,
+      aliases: [`ルノアール${i}`],
+    })),
+  }
+  const [result] = await createGeocoder({ fetcher, intervalMs: 5, timeoutMs: 200 })([view])
+  if (result.kind !== 'map' || !result.places) throw Error('places expected')
+  expect(fetcher).toHaveBeenCalledTimes(21) // 「Cafe Renoir」(支店名なし)は 2 件目以降キャッシュ
   expect(result.places.map((p) => p.geo?.precision)).toEqual(['exact', 'exact', 'exact', 'exact', 'exact'])
 })

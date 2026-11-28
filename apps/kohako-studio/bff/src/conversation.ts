@@ -812,7 +812,7 @@ export function createConversation({
                       : 24000,
                   )}\n（返答が長すぎるため、ここから先は省略されました）`
                 : extracted.text
-          // 打ち切りは geocoder 側(検索回数 × 1 秒 + 7 秒、最大 MAX_GEOCODE_MS)で取得済みの位置を残して行う。ここは異常時の保険。
+          // geocoder は地図全体の期限を持たず、1 件ごとの応答待ち上限で止まる（最長 MAX_GEOCODE_MS）。ここは異常時の保険で、働いた時は位置なしで返す。
           const views =
             input.kind === 'text' && input.views
               ? await Promise.race([

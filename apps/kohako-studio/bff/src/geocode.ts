@@ -51,33 +51,24 @@ function town(address: string): string | null {
 
 /**
  * BOXP-749: 1 件の目的地・候補の位置決めで送りうる検索の最大回数（住所 1・範囲の段 3・範囲内の名称 最大 5）。
- * 検索は intervalMs 間隔で 1 件ずつ送るので、期限はこの回数から決める（最後の別表記まで届かず正しいピンが欠けないように）。
+ * 地図全体の期限は設けず、1 件ごとの応答待ち上限(timeoutMs)だけで止める（後半の候補が別表記検索まで届かず正しいピンが欠けないように）。
  */
 export const MAX_QUERIES_PER_PLACE = 9
-/** 地図 1 枚の位置決めの最長時間の目安（候補 5 件 × 最大回数 × 間隔 + 応答待ちの余裕）。会話側の保険の打ち切りに使う。 */
-export const MAX_GEOCODE_MS = 5 * MAX_QUERIES_PER_PLACE * 1000 + 7000
-export function plannedQueries(target: Place): number {
-  const { address, name } = target
-  if (!address) return 1
-  const areas = new Set(
-    [normalizeChome(address), town(address), municipality(address)].filter((c) => c && c !== address),
-  )
-  const names = new Set([name, branchless(name), ...(target.aliases ?? [])].filter((n) => n && n !== address))
-  return Math.min(MAX_QUERIES_PER_PLACE, 1 + areas.size + names.size)
-}
-
+/**
+ * 地図 1 枚の位置決めの最長時間（候補 5 件 × 最大回数 × 1 件の最長占有時間 = max(間隔 1 秒, 応答待ち上限 4 秒)）。
+ * 会話側の保険の打ち切りに使う。保険が働いた時は位置なし（印なし）で返す。
+ */
+export const MAX_GEOCODE_MS = 5 * MAX_QUERIES_PER_PLACE * 4000
 export function createGeocoder({
   fetcher = fetch,
   url = process.env.KOHAKO_GEOCODE_URL ?? 'https://nominatim.openstreetmap.org/search',
   intervalMs = 1000,
   timeoutMs = 4000,
-  deadlineMs = 7000,
 }: {
   fetcher?: typeof fetch
   url?: string
   intervalMs?: number
   timeoutMs?: number
-  deadlineMs?: number
 } = {}) {
   const cache = new Map<string, { at: number; value: Geo | null }>()
   let queue = Promise.resolve(),
@@ -85,11 +76,9 @@ export function createGeocoder({
   const queryRaw = async (
     q: string,
     requested: Geo['precision'],
-    deadline?: AbortSignal,
     municipal = false,
     within?: Geo['bbox'],
   ): Promise<Geo | null> => {
-    if (deadline?.aborted) return null
     const key = `${requested}:${municipal}:${within?.join(',') ?? ''}:${q}`,
       cached = cache.get(key)
     if (cached && Date.now() - cached.at < 86400_000) return cached.value
@@ -104,25 +93,14 @@ export function createGeocoder({
           resolve(again.value)
           return
         }
-        // 期限切れの検索は送らずにキューを空ける（タイムアウトした検索が後続を塞がないように）。
-        if (deadline?.aborted) {
-          resolve(null)
-          return
-        }
         const wait = Math.max(0, last + intervalMs - Date.now())
         if (wait) await new Promise((r) => setTimeout(r, wait))
-        if (deadline?.aborted) {
-          resolve(null)
-          return
-        }
         last = Date.now()
         let value: Geo | null = null,
           cacheable = false,
           precision = requested
         const controller = new AbortController(),
           timer = setTimeout(() => controller.abort(), timeoutMs)
-        const onDeadline = () => controller.abort()
-        deadline?.addEventListener('abort', onDeadline, { once: true })
         try {
           const p = new URL(url)
           for (const [k, v] of Object.entries({
@@ -209,7 +187,6 @@ export function createGeocoder({
           /* 検索失敗は地図位置なしで返す */
         } finally {
           clearTimeout(timer)
-          deadline?.removeEventListener('abort', onDeadline)
         }
         if (cacheable) {
           cache.delete(key)
@@ -222,26 +199,24 @@ export function createGeocoder({
     return result
   }
   // 住所が与えられた時は住所由来の位置を正とし、名称検索の結果はその範囲内にある時だけ採用する（同名の別店舗を避ける）。
-  // deadlineMs を過ぎたら、それまでに得た最良の位置（概略でも）を返す。
-  const resolvePlace = async (target: Place, best: { geo: Geo | null }, deadline: AbortSignal): Promise<Geo | null> => {
+  // 各検索は timeoutMs で打ち切られ（失敗は未検出として次の段へ進む）、キューを塞がない。
+  const resolvePlace = async (target: Place): Promise<Geo | null> => {
     const { address, name } = target
     const query = (q: string, p: Geo['precision'], municipal = false, within?: Geo['bbox']) =>
-      queryRaw(q, p, deadline, municipal, within)
+      queryRaw(q, p, municipal, within)
     if (address) {
       const exact = await query(address, 'exact')
-      best.geo = exact
       if (exact?.precision === 'exact') return exact
       let area = exact,
         broad = false
       const city = municipality(address)
       const seen = new Set([address])
       for (const candidate of [normalizeChome(address), town(address), city]) {
-        if (area || deadline.aborted) break
+        if (area) break
         if (!candidate || seen.has(candidate)) continue
         seen.add(candidate)
         area = await query(candidate, 'area', candidate === city)
         broad = candidate === city
-        best.geo = area
       }
       if (!area) return area
       // 名称 → 支店名を除いた名称 → 別表記の順に、住所の範囲内で点の一致を探す。
@@ -253,7 +228,6 @@ export function createGeocoder({
       const m = 0.002,
         [w, s, e, n] = area.bbox
       for (const candidate of [...new Set(names)]) {
-        if (deadline.aborted) break
         const named = await query(candidate, 'exact', false, area.bbox)
         if (
           named?.precision === 'exact' &&
@@ -262,57 +236,30 @@ export function createGeocoder({
           named.lat >= s - m &&
           named.lat <= n + m
         ) {
-          const found = { ...named, label: name.slice(0, 120) }
-          best.geo = found
-          return found
+          return { ...named, label: name.slice(0, 120) }
         }
       }
       return area
     }
-    const named = await query(name, 'exact')
-    best.geo = named
-    return named
+    return query(name, 'exact')
   }
-  const locate = async (target: Place, budgetMs: number): Promise<Geo | null> => {
-    const best: { geo: Geo | null } = { geo: null }
-    const deadline = new AbortController()
-    let timer: ReturnType<typeof setTimeout> | undefined
-    // 期限で deadline を中断し、送信中の検索の打ち切り・未送信の検索の取り止めを行う。
-    // deadlineMs を過ぎたら、それまでに得た最良の位置（概略でも）を返す。
-    const geo = await Promise.race([
-      resolvePlace(target, best, deadline.signal).catch(() => best.geo),
-      new Promise<Geo | null>((r) => {
-        timer = setTimeout(() => {
-          deadline.abort()
-          r(best.geo)
-        }, budgetMs)
-        timer.unref?.()
-      }),
-    ])
-    clearTimeout(timer)
-    deadline.abort()
-    return geo
-  }
+  const locate = (target: Place): Promise<Geo | null> => resolvePlace(target).catch(() => null)
   return async (views: View[]): Promise<View[]> => {
     if (url === 'off') return views
     return Promise.all(
       views.map(async (view) => {
         if (view.kind !== 'map') return view
         if (view.places) {
-          // 検索は intervalMs 間隔で 1 件ずつ順に送るので、全候補が最後の検索まで届く回数分の時間に応答待ちの余裕 deadlineMs を足す。
-          const planned = view.places.reduce((sum, { geo: _g, ...target }) => sum + plannedQueries(target), 0)
-          const budget = deadlineMs + planned * intervalMs
-          const started = Date.now()
           const places = await Promise.all(
             view.places.map(async ({ geo: _ignored, ...target }) => {
-              const geo = await locate(target, Math.max(0, budget - (Date.now() - started)))
+              const geo = await locate(target)
               return geo ? { ...target, geo } : target
             }),
           )
           return { ...view, places }
         }
         if (!view.destination) return view
-        const geo = await locate(view.destination, deadlineMs + plannedQueries(view.destination) * intervalMs)
+        const geo = await locate(view.destination)
         return geo ? { ...view, geo } : view
       }),
     )
