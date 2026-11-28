@@ -139,22 +139,32 @@ resource "cloudflare_zero_trust_access_application" "kohako_studio" {
 # BOXP-736: 個人 WARP 不要・本人限定の試験入口 kohako-g2-trial.b0xp.io。
 # 会社の Cloudflare One client を使っている間は個人組織の WARP に切り替えられず、
 # 現行入口（kohako_g2: Owner email AND Require Gateway）を開けない。現行入口は
-# 変えずに、別 hostname・別 Access application で「GitHub ログインだけで本人限定」
-# の入口を試す。
-# - include は Owner の email のみ、require は既存 GitHub IdP 経由のログイン
-#   （kohako_studio_owner と同じ型）。one-time PIN や One Client session の email
-#   一致だけでは通らない。allowed_idps も GitHub のみ。
+# 変えずに、別 hostname・別 Access application で本人限定の入口を試す。
+# - BOXP-736 TD-04（Owner 承認 2026-11-28 案B）: 当初の GitHub ログインは Even App
+#   内で GitHub の 404 になった（POST /session の 302 で発行された cookie が次の
+#   GET に載らないと読める）。試験アプリだけ IdP を account 既存の one-time PIN
+#   （Owner email にコードをメール送信）に替える。GitHub への遷移が無くなる。
+# - include は Owner の email のみ、require は one-time PIN IdP 経由のログイン。
+#   GitHub ログインや One Client session の email 一致だけでは通らない。
+#   allowed_idps も one-time PIN のみ。強さは「GitHub + 2FA」から「Owner の
+#   メールアカウント」に下がる（試験入口のみ。現行入口・Studio は不変）。
 # - One Client 認証は使わない（allow_authenticate_via_warp = false）。
 # - AUD は現行アプリと別。tunnel ingress がこの hostname にこの AUD の JWT だけを
 #   要求するので、現行アプリの JWT を試験 hostname に持ち込んでも通らない（逆も同じ）。
 # - 試験をやめる時はこの block と tunnel.tf / dns.tf の試験分を消す（fail-closed）。
 locals {
   kohako_g2_trial_hostname = "kohako-g2-trial.b0xp.io"
+  # account に既存の one-time PIN IdP（IaC 管理外、1 account に 1 つ）。
+  # 無ければ plan が index error で止まる（fail-closed）。
+  onetimepin_idp_id = [
+    for p in data.cloudflare_zero_trust_access_identity_providers.all.result :
+    p.id if p.type == "onetimepin"
+  ][0]
 }
 
 resource "cloudflare_zero_trust_access_policy" "kohako_g2_trial_owner" {
   account_id = var.account_id
-  name       = "policy for ${local.kohako_g2_trial_hostname} (owner via GitHub, trial)"
+  name       = "policy for ${local.kohako_g2_trial_hostname} (owner via one-time PIN, trial)"
   decision   = "allow"
   include = [
     for email in local.kohako_g2_owner_emails : {
@@ -163,7 +173,7 @@ resource "cloudflare_zero_trust_access_policy" "kohako_g2_trial_owner" {
   ]
   require = [{
     login_method = {
-      id = local.github_idp_id
+      id = local.onetimepin_idp_id
     }
   }]
 }
@@ -175,7 +185,7 @@ resource "cloudflare_zero_trust_access_application" "kohako_g2_trial" {
   type                        = "self_hosted"
   session_duration            = "24h"
   allow_authenticate_via_warp = false
-  allowed_idps                = [local.github_idp_id]
+  allowed_idps                = [local.onetimepin_idp_id]
   auto_redirect_to_identity   = true
   enable_binding_cookie       = false
   http_only_cookie_attribute  = true
