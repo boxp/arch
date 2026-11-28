@@ -1273,7 +1273,20 @@
     {:text text
      :frontmatter (frontmatter-map (vec (str/split-lines text)))}))
 
+(declare append-note-lines!)
+
 (defn append-note! [ticket-id note]
+  (append-note-lines! ticket-id note nil))
+
+(defn append-note-once!
+  "BOXP-775: append note unless a line of the ticket already contains marker.
+  The check and the write share the ticket's write locks, so concurrent or
+  repeated calls with the same marker leave one line. Returns :recorded or
+  :duplicate."
+  [ticket-id marker note]
+  (append-note-lines! ticket-id note marker))
+
+(defn append-note-lines! [ticket-id note marker]
   @todo-module-loaded?
   (locking (ticket-mutex ticket-id)
     ;; Deterministic black-box failure hook; unset in deployment.
@@ -1294,10 +1307,14 @@
              insert-idx (if (= "## Notes" (nth lines idx))
                           (count lines)
                           (count lines))
-             new-lines (if (some #(= bullet %) lines)
+             present? (if marker
+                        (some #(str/includes? % marker) lines)
+                        (some #(= bullet %) lines))
+             new-lines (if present?
                          lines
                          (vec (concat (subvec lines 0 insert-idx) [bullet] (subvec lines insert-idx))))]
-         (write-lines! path new-lines))))))))
+         (when-not present? (write-lines! path new-lines))
+         (if present? :duplicate :recorded))))))))
 
 (defn project-ticket-status! [ticket-id {:keys [status done]}]
   (update-frontmatter! ticket-id (cond-> {:status status}
@@ -3797,6 +3814,7 @@
        :failure-kind :command-error
        :url pr-url
        :retryable? false
+       :review-artifact (str review-path)
        :message (str "codex review command failed: " (:err proc))}
 
       :else
@@ -3815,11 +3833,15 @@
                        :fingerprint-key (str/join "\n" lines)
                        :blocking-files (vec (distinct (map #(review-finding-file (:location %)) blocking)))
                        :blocking-findings {:count (count blocking) :path (str path)}
+                       ;; BOXP-775: structured fields only; the Notes record
+                       ;; sanitizes them and never copies the raw output.
+                       :blocking-items (mapv #(select-keys % [:severity :location :description]) blocking)
                        :low-priority-findings low-info
                        :message (str "codex review reported " (count blocking) " blocking finding(s) (P0/P1): " (str/join " " lines)
                                      (when (pos? (count low)) (str "; " (count low) " low-priority finding(s) (P2/P3/nit) are non-blocking and excluded from the retry instruction")))})
           :invalid {:ok? false :gate :codex-review :failure-kind :invalid-output :url pr-url :retryable? false
                     :review-judgment-failure (name reason)
+                    :review-artifact (str review-path)
                     :message (str "codex review output could not be judged (" (name reason) "); "
                                   (when (= reason :conflicting-result-marker) "The output contains more than one CODEX_REVIEW_RESULT line; exactly one is required. ")
                                   (when (= reason :malformed-finding) "A CODEX_REVIEW_FINDING line is missing its location or description. ")
@@ -3876,6 +3898,7 @@
                       results (into results (:gate-results pr-state))]
                   (if-not (:ok? review)
                     (assoc review
+                           :head head
                            :gate-results (conj results [(name (:gate review)) "fail"])
                            :checked-pr-urls passed
                            :merged-pr-urls merged
@@ -5306,6 +5329,204 @@
       "reason unavailable"
       (subs value 0 (min 600 (count value))))))
 
+;; ---------------------------------------------------------------------------
+;; BOXP-775: PR gate review findings in the ticket Notes
+;; (spec: Projects/task-board-review-findings/spec.md in the vault)
+;;
+;; The runner, not the agent, writes one marked line per PR whenever codex
+;; review produced findings, could not be judged, or a previously recorded
+;; PR passed. Only structured fields are used: descriptions are one line,
+;; redacted and bounded; P0 descriptions are never written. A failed write is
+;; kept in review-findings-pending.edn and retried; the marker keeps every
+;; retry and reprocessing from adding a second line.
+
+(def review-findings-mutex (Object.))
+
+(defn review-findings-pending-path [] (fs/path (root) "review-findings-pending.edn"))
+(defn review-findings-state-path [] (fs/path (root) "review-findings-state.edn"))
+
+(defn with-review-findings-lock [f]
+  (locking review-findings-mutex
+    (let [path (fs/path (root) "locks" "review-findings.lock")]
+      (fs/create-dirs (fs/parent path))
+      (with-open [file (java.io.RandomAccessFile. (str path) "rw") channel (.getChannel file)]
+        (let [_lock (.lock channel)] (with-inner-lock-hold :review-findings f))))))
+
+(defn write-edn-atomically! [path value]
+  (let [tmp (fs/path (fs/parent path) (str "." (fs/file-name path) "." (random-uuid) ".tmp"))]
+    (write-edn-file! tmp value)
+    (fs/move tmp path {:replace-existing true :atomic-move true})))
+
+(defn read-edn-safely [path fallback]
+  (try (read-edn-file path fallback)
+       (catch Exception e
+         (log! (str "review findings: unreadable " path ": " (.getMessage e)))
+         fallback)))
+
+(defn review-findings-text [s limit]
+  (let [v (sanitize-blocker-reason s)]
+    (if (> (count v) limit) (str (subs v 0 limit) "…") v)))
+
+(defn review-findings-id [parts]
+  (let [digest (java.security.MessageDigest/getInstance "SHA-256")]
+    (->> (.digest digest (.getBytes (str/join "\n" (map str parts)) "UTF-8"))
+         (take 6)
+         (map #(format "%02x" (bit-and 0xff %)))
+         (apply str))))
+
+(defn review-findings-stop-state [g]
+  (cond (:budget-exhausted? g) "budget-exhausted"
+        (:retry-exhausted? g) "retry-exhausted"
+        (:continuation-exhausted? g) "continuation-exhausted"
+        (:retryable? g) "retrying"
+        :else "stopped"))
+
+(defn review-findings-stop-text [g]
+  (case (review-findings-stop-state g)
+    "budget-exhausted" "gate 失敗予算枯渇で自動再試行は停止（Owner の grant 待ち）"
+    "retry-exhausted" (str "再試行 " (:retry-count g) "/" (:retry-limit g) "・自動再試行は停止（Owner 判断待ち）")
+    "continuation-exhausted" "自動継続上限で停止"
+    "retrying" (if (:retry-count g) (str "再試行 " (:retry-count g) "/" (:retry-limit g)) "再試行予定")
+    "自動再試行なし"))
+
+(defn review-findings-short-head [h]
+  (if (and (string? h) (re-matches #"[0-9a-f]{7,40}" h)) (subs h 0 7) "不明"))
+
+(defn review-findings-severity-rank [sev]
+  (get {"P0" 0 "P1" 1 "P2" 2 "P3" 3 "nit" 4} sev 5))
+
+(defn review-findings-item [{:keys [severity location description]}]
+  (str "[" (review-findings-text severity 8) "] " (review-findings-text location 120) " — "
+       (if (= "P0" severity)
+         ;; P0 may describe a leak or an exploitable hole: location only.
+         "(詳細は証跡を参照)"
+         (review-findings-text description 160))))
+
+(defn review-findings-entries
+  "Pure: the records a gate result produces. prior maps a PR URL to the last
+  unresolved record {:id :kind} of this ticket."
+  [ticket-id run-id g prior]
+  (let [heads (or (:checked-pr-heads g) {})
+        resolved (for [u (:checked-pr-urls g)
+                       :let [p (get prior u)]
+                       :when (#{:blocking :unavailable} (:kind p))
+                       :let [h (get heads u)
+                             id (review-findings-id ["resolved" u h (:id p)])]]
+                   {:id id :kind :resolved :pr-url u
+                    :note (str "review-findings:" id " レビュー所見解消 PR " u " head " (review-findings-short-head h)
+                               " run " run-id ": 前回の所見 review-findings:" (:id p) " は今回の head で未検出")})
+        failed (when (and (not (:ok? g)) (= :codex-review (:gate g)))
+                 (let [u (:url g) h (:head g) stop (review-findings-stop-state g)]
+                   (case (:failure-kind g)
+                     :findings
+                     (let [items (sort-by (juxt #(review-findings-severity-rank (:severity %)) :location :description)
+                                          (:blocking-items g))
+                           shown (take 10 items)
+                           id (review-findings-id (concat ["blocking" u h stop]
+                                                          (map #(str (:severity %) "|" (:location %) "|" (:description %)) items)))]
+                       {:id id :kind :blocking :pr-url u
+                        :note (str "review-findings:" id " レビュー未解決所見 PR " u " head " (review-findings-short-head h)
+                                   " run " run-id ": P0/P1 " (or (get-in g [:blocking-findings :count]) (count items)) "件・P2/P3/nit "
+                                   (get-in g [:low-priority-findings :count] 0) "件; "
+                                   (str/join "; " (map review-findings-item shown))
+                                   (when (> (count items) (count shown)) (str "; ほか " (- (count items) (count shown)) "件"))
+                                   "; " (review-findings-stop-text g)
+                                   "; 証跡 " (or (get-in g [:blocking-findings :path]) (str (run-dir ticket-id run-id))))})
+                     (:command-error :invalid-output)
+                     (let [reason (if (= :command-error (:failure-kind g))
+                                    "command-error"
+                                    (str "invalid-output:" (review-findings-text (or (:review-judgment-failure g) "unknown") 40)))
+                           id (review-findings-id ["unavailable" u h reason stop])]
+                       {:id id :kind :unavailable :pr-url u
+                        :note (str "review-findings:" id " レビュー所見を取得できず（実指摘なしではない） PR " u
+                                   " head " (review-findings-short-head h) " run " run-id ": 理由 " reason
+                                   "; " (review-findings-stop-text g)
+                                   "; 証跡 " (or (:review-artifact g) (str (run-dir ticket-id run-id))))})
+                     nil)))
+        low (when (and (:ok? g) (pos? (get-in g [:low-priority-findings :count] 0)))
+              (let [urls (:checked-pr-urls g)
+                    n (get-in g [:low-priority-findings :count])
+                    id (review-findings-id (concat ["low-only" n] (map #(str % "@" (get heads %)) urls)))]
+                {:id id :kind :low-only :pr-url (first urls)
+                 :note (str "review-findings:" id " レビュー非ブロッキング所見 PR " (str/join ", " urls) " run " run-id
+                            ": P2/P3/nit " n "件（gate 通過・対応は任意）; 証跡 "
+                            (str/join ", " (get-in g [:low-priority-findings :paths])))}))]
+    (vec (concat resolved (keep identity [failed low])))))
+
+(defn- flush-pending-review-findings* [ticket-id]
+  (let [pending (read-edn-safely (review-findings-pending-path) {})
+        entries (get pending ticket-id)]
+    (when (seq entries)
+      (let [results (vec (for [[id e] (sort-by (comp :queued-at val) entries)]
+                           (try {:id id :kind (:kind e) :status (append-note-once! ticket-id (str "review-findings:" id) (:note e))}
+                                (catch Exception ex
+                                  (log! (str "review findings: pending write still failing for " ticket-id " " id ": "
+                                             (sanitize-blocker-reason (.getMessage ex))))
+                                  {:id id :kind (:kind e) :status :failed}))))
+            done (set (map :id (remove #(= :failed (:status %)) results)))
+            remaining (apply dissoc entries done)]
+        (when (seq done)
+          (write-edn-atomically! (review-findings-pending-path)
+                                 (if (seq remaining) (assoc pending ticket-id remaining) (dissoc pending ticket-id))))
+        results))))
+
+(defn flush-pending-review-findings!
+  "Write the pending records of ticket-id. Returns one {:id :kind :status} per record tried."
+  [ticket-id]
+  (with-review-findings-lock #(or (flush-pending-review-findings* ticket-id) [])))
+
+(defn flush-all-pending-review-findings! []
+  (doseq [ticket-id (keys (read-edn-safely (review-findings-pending-path) {}))]
+    (try (flush-pending-review-findings! ticket-id)
+         (catch Exception e (log! (str "review findings: flush failed for " ticket-id ": " (sanitize-blocker-reason (.getMessage e))))))))
+
+(defn record-review-findings!
+  "BOXP-775: write the gate's review records to the ticket Notes once each.
+  A failed write stays pending (and in the run's review-findings.edn) and is
+  retried later; nothing is dropped silently. Returns the per-record statuses."
+  [ticket-id run-id g]
+  (with-review-findings-lock
+   (fn []
+     (flush-pending-review-findings* ticket-id)
+     (let [state (read-edn-safely (review-findings-state-path) {})
+           entries (review-findings-entries ticket-id run-id g (get state ticket-id {}))]
+       (when (seq entries)
+         (let [results (vec (for [e entries]
+                              (try (assoc (select-keys e [:id :kind :pr-url])
+                                          :status (append-note-once! ticket-id (str "review-findings:" (:id e)) (:note e)))
+                                   (catch Exception ex
+                                     (let [reason (sanitize-blocker-reason (.getMessage ex))]
+                                       (log! (str "review findings: Notes write failed for " ticket-id " " (:id e) "; kept pending: " reason))
+                                       (try
+                                         (write-edn-atomically! (review-findings-pending-path)
+                                                                (assoc-in (read-edn-safely (review-findings-pending-path) {})
+                                                                          [ticket-id (:id e)]
+                                                                          (assoc (select-keys e [:kind :pr-url :note]) :run-id run-id :queued-at (now-str))))
+                                         (assoc (select-keys e [:id :kind :pr-url]) :status :failed :reason reason :pending? true)
+                                         (catch Exception pe
+                                           (log! (str "review findings: could not keep pending record for " ticket-id " " (:id e) ": "
+                                                      (sanitize-blocker-reason (.getMessage pe))))
+                                           (assoc (select-keys e [:id :kind :pr-url]) :status :failed :reason reason :pending? false))))))))
+               next-ticket (reduce (fn [m e]
+                                     (case (:kind e)
+                                       (:blocking :unavailable) (assoc m (:pr-url e) {:id (:id e) :kind (:kind e)})
+                                       :resolved (dissoc m (:pr-url e))
+                                       m))
+                                   (get state ticket-id {}) entries)]
+           (try (write-edn-atomically! (review-findings-state-path) (assoc state ticket-id next-ticket))
+                (catch Exception e (log! (str "review findings: state write failed: " (sanitize-blocker-reason (.getMessage e))))))
+           (try (let [path (fs/path (run-dir ticket-id run-id) "review-findings.edn")
+                      ;; Reprocessing the same run keeps the first outcome of
+                      ;; each record (a later :duplicate does not hide :recorded).
+                      old (into {} (map (juxt :id identity)) (:entries (read-edn-safely path {})))
+                      merged (reduce (fn [m r] (if (and (= :duplicate (:status r)) (contains? m (:id r))) m (assoc m (:id r) r)))
+                                     old results)]
+                  (fs/create-dirs (fs/parent path))
+                  (write-edn-file! path {:format-version 1 :recorded-at (now-str) :entries (vec (vals merged))}))
+                (catch Exception e (log! (str "review findings: run record write failed: " (sanitize-blocker-reason (.getMessage e))))))
+           results))))))
+
+
 (defn blocker-category [result exit review-gate exception]
   (cond
     exception "runner-internal-error"
@@ -5900,6 +6121,11 @@
                 ;; BOXP-737 (spec R9): the PR conflict observation future, so
                 ;; the lock release can wait for it (bounded) before releasing.
                 pr-observation (atom nil)
+                ;; BOXP-775: the gate result once it is known (with the retry
+                ;; state once recorded), so the exception path can still write
+                ;; the review findings record; whether it was written already.
+                findings-gate (atom nil)
+                findings-recorded? (atom false)
                 ;; Set once a localllm docs-edit wrote its target notes inside
                 ;; this commit; a later failure of the lane / frontmatter /
                 ;; Notes transition rolls that write back (Blocked == unapplied).
@@ -6021,6 +6247,7 @@
                     last-message (if committed (:last-message committed) last-message)
                     ;; A deferred localllm commit can still end in blocked.
                     outcome (intended-outcome action result exit)
+                    _ (reset! findings-gate gate-result)
                     _ (when gate-result (record-gate-pr-registrations! ticket-id run-id gate-result))
                     _ (when gate-result (try (record-same-file-review-streak! ticket-id run-id gate-result) (catch Throwable e (log! (str "same-file review streak recording failed: " (.getMessage e))))))
                     review-gate (if gate-result
@@ -6031,6 +6258,13 @@
                                       (record-pr-gate-failure! ticket-id run-id assignee gate-result)
                                       gate-result))
                                   {:ok? true})
+                    ;; BOXP-775: after the ownership check, before lane / final
+                    ;; note / event. Write failures are kept pending inside.
+                    _ (when gate-result
+                        (reset! findings-gate review-gate)
+                        (try (record-review-findings! ticket-id run-id review-gate)
+                             (reset! findings-recorded? true)
+                             (catch Throwable e (log! (str "review findings recording failed: " (sanitize-blocker-reason (.getMessage e)))))))
                     ;; BOXP-395: a passed gate returns the card to Ready, so a
                     ;; finite budget keeps a run that never finishes from
                     ;; looping forever. Persisted first: a crash can only
@@ -6265,6 +6499,11 @@
                         (append-note! ticket-id (str "localllm docs run " (:run-id lock)
                                                      " は文書を更新した後の状態遷移に失敗したため、backup から復元しました（未適用扱い）: "
                                                      (str/join "; " (map #(str (:path %) " " (name (:status %)) " " (:reason %)) restored))))))
+                    ;; BOXP-775: a crash after the gate still leaves the review
+                    ;; findings in the Notes (the marker prevents a duplicate).
+                    (when (and @findings-gate (not @findings-recorded?))
+                      (try (record-review-findings! ticket-id (:run-id lock) @findings-gate)
+                           (catch Throwable re (log! (str "review findings recording failed: " (sanitize-blocker-reason (.getMessage re)))))))
                     (if (block-ticket! ticket-id (:run-id lock) action nil nil nil e nil)
                       (do (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
                           (record-ai-ops-finish! ticket-id (:run-id lock) assignee action (ai-ops-run-lane status) "blocked" "blocked" {}))
@@ -8873,6 +9112,7 @@
       (sync-all!)
       (let [done (collect-completed-futures!)
             _ (sweep-rechecks!)
+            _ (flush-all-pending-review-findings!)
             in-flight-ids (set (keys @in-flight-futures))
             candidates (candidate-cards)
             new-candidates (vec (remove #(contains? in-flight-ids (:ticket-id %)) candidates))
