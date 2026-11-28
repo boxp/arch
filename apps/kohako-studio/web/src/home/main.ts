@@ -92,6 +92,7 @@ import {
   type Zone,
 } from './touch'
 import { createVoicePlayer, replyTextWaitMs, speechHoldsQueue, splitVoiceSentences } from './voice'
+import { announcementText, canSpeak, spokenText } from './noticeSpeech'
 import { parsePrefs, parseVolume, type Prefs } from './prefs'
 import {
   acquire,
@@ -1755,7 +1756,7 @@ function deliver(text: string, views: View[] = [], id = '', quiet = false) {
   lastActivity = Date.now()
   reply.dataset.reply = '1'
   setBubble(text || '（返答の本文がありませんでした）')
-  const willSpeak = !quiet && speech.checked && !!text && (prefs.voice !== 'browser' || !!speaker)
+  const willSpeak = !quiet && !!text && canSpeak({ on: speech.checked, voice: prefs.voice, deviceVoice: !!speaker })
   if (!willSpeak) bubble.dataset.retained = '1'
   updateMessage()
   showReplyChoices(text, id)
@@ -1767,7 +1768,8 @@ function deliver(text: string, views: View[] = [], id = '', quiet = false) {
     firstButton = first && cardList.querySelector<HTMLButtonElement>('button[data-view]')
   if (!quiet && first && firstButton) openViewer(first, firstButton, false)
   if (willSpeak) {
-    speechChunks = splitVoiceSentences(splitSentences(spoken))
+    // BOXP-756: 読み上げる文では URL を「GitHub のリンク」などの呼び方へ言い換える（表示はそのまま）。
+    speechChunks = splitVoiceSentences(splitSentences(spokenText(text)))
     speechNext = 0
     playReply()
   } else if (!quiet && actingEnabled && text) {
@@ -3692,8 +3694,15 @@ const inbox = initInbox(
       !touchActive &&
       !CONVERSING.includes(state),
     announce: (item, actions, more) => {
-      const body = item.body.length > 300 ? `${item.body.slice(0, 300)}…（続きは受信箱でご覧いただけます）` : item.body
-      const text = `ご主人さま、お知らせが届いています。\n${item.title}\n${body}${more ? `\nほかにも ${more} 件、受信箱に届いています。` : ''}`
+      const text = announcementText(item, more)
+      // BOXP-756: 読み上げ ON なら、案内文（見出し＋本文）を返答と同じ声・同じ再生器で読む。
+      // 止めた・失敗した返答の「続きから読む」が出ている間は、その位置を守るため表示だけにする。
+      const speak = canSpeak({
+        on: speech.checked,
+        voice: prefs.voice,
+        deviceVoice: !!speaker,
+        resumePending: !resumeSpeech.hidden,
+      })
       setBubble(text)
       addHistory('お知らせ', text)
       const box = el('notice-actions'),
@@ -3735,6 +3744,12 @@ const inbox = initInbox(
         updateMessage()
         actions.later()
       })
+      if (speak) {
+        clearSpeechResume()
+        speechChunks = splitVoiceSentences(splitSentences(spokenText(text)))
+        speechNext = 0
+        playReply()
+      }
     },
   },
   {
