@@ -1,6 +1,6 @@
 // 期待値は trial-spec.md（決まり 9: 開くのは maps/search の https だけ）から取る。
 import { describe, expect, it } from 'vitest'
-import { errorText, isMapUrl, pushText, remaining, requestParam } from './logic'
+import { errorText, historyRow, isMapUrl, pushText, remaining, requestParam } from './logic'
 
 describe('isMapUrl', () => {
   it('Google マップの検索 URL だけを開く', () => {
@@ -42,4 +42,37 @@ it('残り時間は切り上げで、過ぎたら 0', () => {
   const at = Date.parse('2026-11-28T10:02:00Z')
   expect(remaining('2026-11-28T10:02:00Z', at - 1500)).toBe(2)
   expect(remaining('2026-11-28T10:02:00Z', at + 10)).toBe(0)
+})
+
+describe('historyRow（決まり 10: 結果の時刻を残す）', () => {
+  const t = (iso: string) => iso.slice(11, 19)
+  it('開いた依頼は結果の時刻・経路・秒を出す', () => {
+    expect(
+      historyRow(
+        {
+          name: '東京都庁',
+          state: 'opened',
+          createdAt: '2026-11-28T07:00:00.000Z',
+          endedAt: '2026-11-28T07:00:12.000Z',
+          via: 'notification',
+          seconds: 12,
+        },
+        t,
+      ),
+    ).toEqual(['07:00:00', '東京都庁', '開いた', '07:00:12', '通知', '12'])
+  })
+  it('期限切れは期限の時刻を結果の時刻に出し、待ちは空', () => {
+    expect(
+      historyRow(
+        {
+          name: '東京駅',
+          state: 'expired',
+          createdAt: '2026-11-28T07:00:00.000Z',
+          endedAt: '2026-11-28T07:02:00.000Z',
+        },
+        t,
+      ),
+    ).toEqual(['07:00:00', '東京駅', '期限切れ', '07:02:00', '', ''])
+    expect(historyRow({ name: '東京駅', state: 'pending', createdAt: '2026-11-28T07:00:00.000Z' }, t)[3]).toBe('')
+  })
 })

@@ -2,6 +2,7 @@ import './style.css'
 import {
   type DeviceState,
   errorText,
+  historyRow,
   isMapUrl,
   type PushOutcome,
   pushText,
@@ -16,6 +17,7 @@ type Req = {
   state: DeviceState
   createdAt: string
   expiresAt: string
+  endedAt?: string
   via?: 'notification' | 'page'
   seconds?: number
   push?: PushOutcome
@@ -124,13 +126,7 @@ function render() {
   body.replaceChildren(
     ...[...view.requests].reverse().map((r) => {
       const tr = document.createElement('tr')
-      for (const text of [
-        time(r.createdAt),
-        r.name,
-        STATE_LABEL[r.state],
-        r.via === 'notification' ? '通知' : r.via === 'page' ? 'ページ' : '',
-        r.seconds === undefined ? '' : String(r.seconds),
-      ]) {
+      for (const text of historyRow(r, time)) {
         const td = document.createElement('td')
         td.textContent = text
         tr.append(td)

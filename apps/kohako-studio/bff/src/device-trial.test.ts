@@ -22,15 +22,15 @@ function memory() {
 function setup(start = T0) {
   const clock = { now: start },
     { m, store } = memory(),
-    sent: { msg: DevicePush; ttl: number }[] = []
+    sent: { msg: DevicePush; expiresAt: number }[] = []
   let n = 0
   const make = () =>
     createDeviceTrial({
       store,
       now: () => clock.now,
       id: () => `req-${String(n++).padStart(4, '0')}-0000`,
-      send: async (msg, ttl) => {
-        sent.push({ msg, ttl })
+      send: async (msg, expiresAt) => {
+        sent.push({ msg, expiresAt })
         return { sent: 1, errors: 0 }
       },
     })
@@ -43,7 +43,7 @@ it('例 1: 待ちがない時に東京都庁で送ると、待ちになり 2 分
   const r = await t.create({ place: 'tocho' })
   expect(r.status).toBe(201)
   expect(s.sent).toHaveLength(1)
-  expect(s.sent[0].ttl).toBe(120)
+  expect(s.sent[0].expiresAt).toBe(T0 + 120_000)
   expect(s.sent[0].msg.body).toContain('東京都庁')
   expect(s.sent[0].msg.body).toContain('2分')
   expect(`${s.sent[0].msg.title} ${s.sent[0].msg.body}`).not.toMatch(/https?:|google/i)
@@ -287,7 +287,8 @@ it('HTTP: 本人だけが作る・開く・止める。検証用・通知用・�
     const req = (await created.json()) as { id: string; push: unknown }
     expect(req.push).toEqual({ sent: 2, errors: 0 })
     expect(calls).toHaveLength(2)
-    expect(calls[0].ttl).toBe(120)
+    expect(calls[0].ttl).toBeGreaterThan(115)
+    expect(calls[0].ttl).toBeLessThanOrEqual(120)
     expect(JSON.parse(calls[0].payload)).toMatchObject({ kind: 'device-request', requestId: req.id })
     expect(calls[0].payload).not.toContain('google')
     expect((await post(`/requests/${req.id}/open`, { via: 'x' })).status).toBe(400)

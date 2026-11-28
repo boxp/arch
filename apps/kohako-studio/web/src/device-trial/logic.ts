@@ -60,3 +60,23 @@ export function pushText(p: PushOutcome | undefined): string {
 /** 残り時間（秒、0 未満は 0）。 */
 export const remaining = (expiresAt: string, now: number) =>
   Math.max(0, Math.ceil((Date.parse(expiresAt) - now) / 1000))
+
+/** 決まり 10: 履歴の 1 行。送った時刻・行き先・結果・結果の時刻・経路・秒。 */
+export type HistoryReq = {
+  name: string
+  state: DeviceState
+  createdAt: string
+  endedAt?: string
+  via?: 'notification' | 'page'
+  seconds?: number
+}
+export function historyRow(r: HistoryReq, time: (iso: string) => string): string[] {
+  return [
+    time(r.createdAt),
+    r.name,
+    STATE_LABEL[r.state],
+    r.endedAt ? time(r.endedAt) : '',
+    r.via === 'notification' ? '通知' : r.via === 'page' ? 'ページ' : '',
+    r.seconds === undefined ? '' : String(r.seconds),
+  ]
+}

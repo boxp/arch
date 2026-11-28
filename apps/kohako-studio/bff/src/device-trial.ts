@@ -72,7 +72,7 @@ function parse(x: unknown): Saved {
 export async function createDeviceTrial(opts: {
   store: { load: () => Promise<unknown>; save: (v: Saved) => Promise<void> }
   now: () => number
-  send: (msg: DevicePush, ttlSeconds: number) => Promise<PushOutcome>
+  send: (msg: DevicePush, expiresAt: number) => Promise<PushOutcome>
   id?: () => string
   /** 送信を待つ上限。過ぎたら送信失敗として記録する。 */
   sendTimeoutMs?: number
@@ -185,7 +185,7 @@ export async function createDeviceTrial(opts: {
                 kind: 'device-request',
                 requestId: r.id,
               },
-              Math.ceil(TTL_MS / 1000),
+              r.expiresAt,
             ),
             new Promise<never>((_, reject) => {
               timer = setTimeout(() => reject(Error('send timeout')), sendTimeoutMs)
