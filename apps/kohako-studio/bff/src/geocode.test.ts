@@ -219,6 +219,31 @@ it('keeps the chome as an area (not a pin) when no name matches inside it', asyn
   ])
   expect(result.kind === 'map' && result.geo).toMatchObject({ precision: 'area', label: '東京都港区芝大門二丁目' })
 })
+it('only searches the full branch name when the area widened to the municipality', async () => {
+  // 丁目・町域が見つからず港区まで広がった時、同じ区内の別店舗（「Cafe Renoir」「ルノアール」の一致）をピンにしない。
+  const minato = [
+    { lat: '35.658', lon: '139.751', place_rank: 12, boundingbox: ['35.62', '35.69', '139.72', '139.78'] },
+  ]
+  const otherBranch = [
+    { lat: '35.67', lon: '139.74', place_rank: 30, boundingbox: ['35.6699', '35.6701', '139.7399', '139.7401'] },
+  ]
+  const fetcher = vi.fn(async (url: string | URL | Request) => {
+    const q = new URL(String(url)).searchParams.get('q')
+    return response(q === '東京都港区' ? minato : q === 'Cafe Renoir' || q === 'ルノアール' ? otherBranch : [])
+  })
+  const [result] = await createGeocoder({ fetcher, intervalMs: 0 })([
+    {
+      kind: 'map',
+      title: '地図',
+      destination: { name: 'Cafe Renoir 芝大門店', address: '東京都港区芝大門2-3-1', aliases: ['ルノアール'] },
+    },
+  ])
+  const qs = fetcher.mock.calls.map((c) => new URL(String(c[0])).searchParams.get('q'))
+  expect(qs).not.toContain('Cafe Renoir')
+  expect(qs).not.toContain('ルノアール')
+  expect(qs.at(-1)).toBe('Cafe Renoir 芝大門店')
+  expect(result.kind === 'map' && result.geo).toMatchObject({ precision: 'area', label: '東京都港区' })
+})
 it('does not use aliases or the branch-less name without an address', async () => {
   const fetcher = vi.fn().mockResolvedValue(response([]))
   await createGeocoder({ fetcher, intervalMs: 0 })([
